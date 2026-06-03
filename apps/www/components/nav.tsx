@@ -29,6 +29,7 @@ const navLinks = [
   { label: "Features", href: "/features" },
   { label: "Install", href: "/install" },
   { label: "Why Open Source", href: "/why" },
+  { label: "Writing", href: "/blog" },
   { label: "Updates", href: "/updates" },
 ];
 
