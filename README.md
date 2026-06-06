@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
+  <a href="https://demo.openvpm.com/login">Live Demo</a> &middot;
   <a href="https://openvpm.com">Website</a> &middot;
-  <a href="https://openvpm.com/demo">Live Demo</a> &middot;
   <a href="#features">Features</a> &middot;
   <a href="#quick-start">Quick Start</a> &middot;
   <a href="#api">API Docs</a> &middot;
@@ -20,7 +20,15 @@
 <p align="center">
   <a href="https://github.com/evangauer/openvpm/actions"><img src="https://github.com/evangauer/openvpm/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
+  <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome" /></a>
+  <a href="https://github.com/evangauer/openvpm/discussions"><img src="https://img.shields.io/badge/Discussions-join-blue.svg" alt="Discussions" /></a>
   <a href="https://github.com/evangauer/openvpm/stargazers"><img src="https://img.shields.io/github/stars/evangauer/openvpm?style=social" alt="GitHub Stars" /></a>
+</p>
+
+---
+
+<p align="center">
+  <strong>▶ <a href="https://demo.openvpm.com/login">Try the live demo</a></strong> — one-click logins, no signup. &nbsp;|&nbsp; If you believe veterinary software should be open, <strong><a href="https://github.com/evangauer/openvpm">give us a ⭐</a></strong> — it helps other clinics and builders find the project.
 </p>
 
 ---
@@ -301,6 +309,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding standards, 
 
 ## Roadmap
 
+See **[ROADMAP.md](ROADMAP.md)** for what's shipping now, next, and later — and how to influence it.
+
 - [x] Patient & client management
 - [x] Appointment scheduling with calendar views
 - [x] Electronic medical records (SOAP, labs, vaccinations, prescriptions)
@@ -313,6 +323,12 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding standards, 
 - [x] Client portal
 - [x] Open API with webhooks
 - [x] AI integration points
+- [x] Public REST API (`/api/v1`) with scoped API keys
+- [x] OpenVPM Agent — operate the practice via natural language over the API
+- [x] Drug dosing calculator, vital signs, treatment plans
+- [x] Wellness plans / recurring billing
+- [x] Self-service online booking (client portal)
+- [x] CSV import for migrating clients & patients
 - [ ] Online booking widget (embeddable)
 - [ ] FHIR-inspired veterinary data standard
 - [ ] Multi-language support

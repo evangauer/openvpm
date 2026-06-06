@@ -31,6 +31,7 @@ const navLinks = [
   { label: "Why Open Source", href: "/why" },
   { label: "Writing", href: "/blog" },
   { label: "Updates", href: "/updates" },
+  { label: "Feedback", href: "/feedback" },
 ];
 
 export function MarketingNav() {

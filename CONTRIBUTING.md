@@ -72,6 +72,26 @@ Every endpoint ships with mapper unit tests **and** a contract test
 (`schema.parse(toApiX(row))`) so internal changes can't silently break the
 public contract.
 
+## Good first issues
+
+New here? These are scoped, self-contained, and well-tested — great first PRs.
+Comment on the matching [issue](https://github.com/evangauer/openvpm/issues) (or
+open one) to claim it.
+
+- **Expand the drug dosing formulary** — add drugs with species-specific reference
+  ranges to `apps/web/lib/dosing/formulary.ts`. Data-only, fully unit-tested
+  (`apps/web/lib/dosing/__tests__/`). Keep ranges conservative and cite a source.
+- **Drag-to-reschedule on the calendar** — the `appointments.reschedule` API
+  already exists with conflict checking; wire it into the schedule UI.
+- **Appointment waitlist** — small schema + tRPC router + a list view.
+- **CSV import UI** — a Settings → Data screen for the existing
+  `data.importClientsCsv` / `importPatientsCsv` procedures.
+- **Embeddable booking widget** — an iframe/script version of the client-portal
+  booking flow (`apps/web/app/portal/[token]/book`).
+
+Want to help but unsure where to start? Open a
+[Discussion](https://github.com/evangauer/openvpm/discussions) and say hello.
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the MIT License.

@@ -41,6 +41,12 @@ export const recurringFrequencyEnum = pgEnum("recurring_frequency", [
   "annual",
 ]);
 
+export const waitlistStatusEnum = pgEnum("waitlist_status", [
+  "waiting",
+  "scheduled",
+  "cancelled",
+]);
+
 export const appointmentTypes = pgTable("appointment_types", {
   ...baseColumns(),
   practiceId: uuid("practice_id")
@@ -101,6 +107,30 @@ export const appointments = pgTable(
     ),
     patientIdx: index("appointments_patient_idx").on(table.patientId),
     doctorIdx: index("appointments_doctor_idx").on(table.doctorId, table.startTime),
+  })
+);
+
+export const appointmentWaitlist = pgTable(
+  "appointment_waitlist",
+  {
+    ...baseColumns(),
+    practiceId: uuid("practice_id")
+      .notNull()
+      .references(() => practices.id),
+    clientId: uuid("client_id")
+      .notNull()
+      .references(() => clients.id),
+    patientId: uuid("patient_id").references(() => patients.id),
+    typeId: uuid("type_id").references(() => appointmentTypes.id),
+    status: waitlistStatusEnum("status").notNull().default("waiting"),
+    // Optional date window the client is available within.
+    preferredFrom: date("preferred_from"),
+    preferredTo: date("preferred_to"),
+    notes: text("notes"),
+    createdBy: uuid("created_by").references(() => users.id),
+  },
+  (table) => ({
+    practiceIdx: index("waitlist_practice_idx").on(table.practiceId, table.status),
   })
 );
 
@@ -185,6 +215,28 @@ export const staffSchedulesRelations = relations(
     location: one(locations, {
       fields: [staffSchedules.locationId],
       references: [locations.id],
+    }),
+  })
+);
+
+export const appointmentWaitlistRelations = relations(
+  appointmentWaitlist,
+  ({ one }) => ({
+    practice: one(practices, {
+      fields: [appointmentWaitlist.practiceId],
+      references: [practices.id],
+    }),
+    client: one(clients, {
+      fields: [appointmentWaitlist.clientId],
+      references: [clients.id],
+    }),
+    patient: one(patients, {
+      fields: [appointmentWaitlist.patientId],
+      references: [patients.id],
+    }),
+    type: one(appointmentTypes, {
+      fields: [appointmentWaitlist.typeId],
+      references: [appointmentTypes.id],
     }),
   })
 );
