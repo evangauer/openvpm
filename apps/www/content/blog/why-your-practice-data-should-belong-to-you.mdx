@@ -1,0 +1,50 @@
+---
+title: "Why your practice data should belong to you"
+description: "Most veterinary practices pay $200-600 a month for software that locks them out of their own records. Here's why we built OpenVPM open source, and what owning your data actually changes."
+date: "2026-06-12"
+author: "Evan Gauer"
+tags: ["open-source", "practice-ownership", "pims"]
+---
+
+Ask a practice owner what happens if they want to leave their PIMS. The honest answer is usually: a painful export (if the vendor allows one at all), a conversion project measured in months, and records that arrive mangled on the other side.
+
+That's not a software problem. That's a leverage problem. When switching is that painful, your vendor doesn't have to earn your business every month. The lock-in does it for them.
+
+## The model we think is broken
+
+Commercial veterinary practice management systems typically run $200-600 per month, per practice. For that you get:
+
+- Your own clinical records, stored in a format you can't read
+- An export process designed to discourage exporting
+- Feature requests that go into a queue you'll never see
+- Integrations only with partners your vendor has a deal with
+
+The software itself is often fine. The deal is what's broken.
+
+## What we did instead
+
+We built OpenVPM and released it MIT-licensed. The whole system — patient records, scheduling, EMR with SOAP notes, billing, inventory, controlled substance tracking, a client portal — is public code you can run yourself for free.
+
+Three things matter most in how it's built:
+
+**Everything sits behind an open REST API.** Your clients, patients, and appointments are reachable through documented, versioned endpoints with scoped API keys. Any integrator, any tool, any AI agent can plug in. Nothing about your data is private to us, because we never hold it.
+
+**You don't have to switch to start.** Rip-and-replace is a massive lift, and we stopped asking practices to do it. OpenVPM can run alongside the system you already use, as a live, exportable copy of your own data, read-only until you want more.
+
+**The changelog is public.** Every feature we ship is visible in the open repository. No roadmap theater. You can watch the work happen, file issues, or contribute.
+
+## What ownership changes day to day
+
+Owning your data isn't an abstract principle. It changes practical things:
+
+- A new tool comes out that could help your front desk? Connect it through the API today, no vendor partnership required.
+- Want a report your PIMS doesn't offer? Your data is in PostgreSQL. Query it.
+- Decide our software isn't for you? Take everything and go. The export is the database.
+
+## Where this goes
+
+We think the next decade of practice software gets rebuilt around open data and agents that do the busywork. OpenVPM already ships with an AI agent that operates on practice data through typed tools: find a patient, pull a clinical summary, list overdue vaccinations, calculate a weight-based dose, book the appointment. Every write gated for review.
+
+That future only works if practices control their own records. So that's where we started.
+
+Try the live demo at [demo.openvpm.com](https://demo.openvpm.com) (one-click logins, no signup), star the repo on [GitHub](https://github.com/evangauer/openvpm), or join the managed-hosting waitlist on the [homepage](/#waitlist).

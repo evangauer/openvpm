@@ -30,6 +30,7 @@ const navLinks = [
   { label: "Install", href: "/install" },
   { label: "Why Open Source", href: "/why" },
   { label: "Updates", href: "/updates" },
+  { label: "Blog", href: "/blog" },
   { label: "Feedback", href: "/feedback" },
 ];
 

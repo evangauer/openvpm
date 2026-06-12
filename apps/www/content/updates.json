@@ -1,0 +1,54 @@
+[
+  {
+    "date": "June 2, 2026",
+    "tag": "Platform",
+    "title": "A calendar you can trust",
+    "body": "Scheduling got a correctness overhaul. Back-to-back appointments no longer trip a false 'conflict' (a real bug — the old check counted touching time slots as overlaps), and the calendar now catches room double-bookings, not just doctor clashes. Appointments can be rescheduled — moved to a new time, doctor, or room — with the same conflict checks applied, so dragging an appointment can't quietly create a clash.",
+    "points": [
+      "Strict overlap detection across both doctor and room.",
+      "Reschedule with automatic conflict checking, excluding the appointment being moved."
+    ]
+  },
+  {
+    "date": "June 2, 2026",
+    "tag": "Clinical",
+    "title": "Deeper clinical tooling: vitals, treatment plans, wellness plans",
+    "body": "Closing the gap with the established systems. Per-visit vital signs now have a dedicated tab on the patient record, treatment plans link to a patient's problem list with progress tracking, and practices can offer wellness/membership plans with recurring billing schedules. Plus self-service online booking landed in the client portal."
+  },
+  {
+    "date": "June 1, 2026",
+    "tag": "Direction",
+    "title": "Don't switch — connect. A second PIMS that you own.",
+    "body": "We heard it from every practice we talked to: changing your PIMS is a massive lift, and you won't do it on a whim. So we changed the ask. Instead of rip-and-replace, OpenVPM is becoming the open data layer that connects to the system you already run — giving you a live, exportable copy of your own data in a system you control.",
+    "points": [
+      "New positioning: run OpenVPM alongside your current PIMS, read-only until you want more.",
+      "Everything stays behind a documented, exportable API. No lock-in, ever."
+    ]
+  },
+  {
+    "date": "June 1, 2026",
+    "tag": "AI",
+    "title": "Meet the OpenVPM Agent",
+    "body": "OpenVPM now ships with an AI agent that operates on your practice data through real, typed tools — not guesses. It can find clients and patients, pull a clinical summary, list overdue vaccinations for recall, calculate a weight-based drug dose, and book appointments. Every write is gated for review, and the agent is scoped so it can only ever touch your own practice's data.",
+    "points": [
+      "Bring your own model key. The agent is open source and fully inspectable.",
+      "Foundation for an agent-operated clinic — the busywork runs itself."
+    ]
+  },
+  {
+    "date": "June 1, 2026",
+    "tag": "Platform",
+    "title": "Public REST API (v1) + scoped API keys",
+    "body": "A versioned, public REST API over your core records — clients, patients, and appointments — authenticated with scoped, per-practice API keys. Built so integrators and AI agents can plug in without touching the internal app, with response shapes frozen independently of the database so integrations never break on an internal change.",
+    "points": [
+      "Scoped keys (clients:read, patients:read, appointments:write, …) with per-key rate limits.",
+      "Appointment creation fires real webhooks. See docs/api for the full reference."
+    ]
+  },
+  {
+    "date": "June 1, 2026",
+    "tag": "Clinical",
+    "title": "Dosing calculator + vital signs tracking",
+    "body": "Two clinical-depth features that bring OpenVPM closer to parity with the leading systems. A weight-based drug dosing calculator with a curated formulary, species-specific reference ranges, tablet-split suggestions, and verify-before-prescribing guard rails — plus full vital-signs capture per visit (temperature, heart rate, respiration, weight, body condition, pain score, and more)."
+  }
+]

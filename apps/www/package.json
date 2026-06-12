@@ -11,8 +11,10 @@
   },
   "dependencies": {
     "@next/third-parties": "^16.2.4",
+    "@tailwindcss/typography": "^0.5.20",
     "lucide-react": "^0.577.0",
     "next": "^14.2.0",
+    "next-mdx-remote": "^6.0.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0"
   },

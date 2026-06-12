@@ -45,6 +45,9 @@ export function MarketingFooter() {
             <Link href="/updates" className="text-sm text-gray-500 hover:text-teal-600 transition-colors">
               Updates
             </Link>
+            <Link href="/blog" className="text-sm text-gray-500 hover:text-teal-600 transition-colors">
+              Blog
+            </Link>
             <Link href="/feedback" className="text-sm text-gray-500 hover:text-teal-600 transition-colors">
               Feedback
             </Link>
