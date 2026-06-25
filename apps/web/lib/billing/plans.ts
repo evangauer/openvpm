@@ -43,6 +43,16 @@ export const CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD = 99;
 /** No per-seat charge under the flat model (kept at 0 for type/back-compat). */
 export const CLOUD_SEAT_UNIT_PRICE_MONTHLY_USD = 0;
 
+/**
+ * Metered overage list prices (USD per unit) beyond the included monthly
+ * allowance. Set ~2-3x our marginal cost so heavy users stay margin-positive
+ * while the price is still cheap and transparent for the clinic. The included
+ * allowance is modeled as the $0 first tier on the Stripe metered price, so
+ * these only bill past `includedAiRunsPerMonth` / `includedSmsPerMonth`.
+ */
+export const CLOUD_AI_OVERAGE_PRICE_USD = 0.05;
+export const CLOUD_SMS_OVERAGE_PRICE_USD = 0.03;
+
 /** Env vars holding Stripe Price IDs for hosted billing (PRIVATE). */
 export const STRIPE_PRICE_CLOUD_LOCATION_ENV = "STRIPE_PRICE_CLOUD_LOCATION";
 export const STRIPE_PRICE_CLOUD_USER_ENV = "STRIPE_PRICE_CLOUD_USER";
@@ -69,6 +79,10 @@ export interface PlanDefinition {
   includedSmsPerMonth: number | null;
   /** Included monthly AI agent runs before metered overage. null = unlimited/custom. */
   includedAiRunsPerMonth: number | null;
+  /** USD per AI action beyond the included allowance. null = no metered overage. */
+  aiOveragePriceUsd: number | null;
+  /** USD per SMS beyond the included allowance. null = no metered overage. */
+  smsOveragePriceUsd: number | null;
   /** Env var holding the recurring location Stripe Price ID for this tier. */
   stripeLocationPriceEnv?: string;
   /** Env var holding the recurring staff-user Stripe Price ID for this tier. */
@@ -92,6 +106,8 @@ export const PLANS: Record<PlanTier, PlanDefinition> = {
     features: [],
     includedSmsPerMonth: 0,
     includedAiRunsPerMonth: 0,
+    aiOveragePriceUsd: null,
+    smsOveragePriceUsd: null,
     selfServe: true,
   },
   cloud: {
@@ -106,6 +122,8 @@ export const PLANS: Record<PlanTier, PlanDefinition> = {
     features: [...ALL_FEATURES],
     includedSmsPerMonth: 1000,
     includedAiRunsPerMonth: 1000,
+    aiOveragePriceUsd: CLOUD_AI_OVERAGE_PRICE_USD,
+    smsOveragePriceUsd: CLOUD_SMS_OVERAGE_PRICE_USD,
     stripeLocationPriceEnv: STRIPE_PRICE_CLOUD_LOCATION_ENV,
     stripeSeatPriceEnv: STRIPE_PRICE_CLOUD_USER_ENV,
     selfServe: true,
@@ -122,6 +140,8 @@ export const PLANS: Record<PlanTier, PlanDefinition> = {
     features: [...ALL_FEATURES],
     includedSmsPerMonth: null,
     includedAiRunsPerMonth: null,
+    aiOveragePriceUsd: null,
+    smsOveragePriceUsd: null,
     selfServe: false,
   },
 };
@@ -155,6 +175,22 @@ export function cloudCheckoutPriceIds(): {
   return {
     locationPriceId: process.env[STRIPE_PRICE_CLOUD_LOCATION_ENV],
     seatPriceId: process.env[STRIPE_PRICE_CLOUD_USER_ENV],
+  };
+}
+
+/**
+ * Metered overage Stripe Price IDs (AI + SMS), if configured. These are added
+ * as additional, quantity-less subscription items at checkout so Stripe meters
+ * usage and bills overage beyond the included allowance. Absent = no overage
+ * billing wired (the app still records usage and alerts ops on spikes).
+ */
+export function cloudMeteredPriceIds(): {
+  aiOveragePriceId?: string;
+  smsOveragePriceId?: string;
+} {
+  return {
+    aiOveragePriceId: process.env[STRIPE_PRICE_AI_OVERAGE_ENV],
+    smsOveragePriceId: process.env[STRIPE_PRICE_SMS_OVERAGE_ENV],
   };
 }
 

@@ -57,7 +57,7 @@ export async function constructWebhookEvent(
  * map the resulting subscription back to a practice.
  */
 export async function createSubscriptionCheckoutSession(data: {
-  lineItems: Array<{ priceId: string; quantity: number }>;
+  lineItems: Array<{ priceId: string; quantity?: number; metered?: boolean }>;
   practiceId: string;
   customerId?: string | null;
   customerEmail?: string | null;
@@ -77,7 +77,7 @@ export async function createSubscriptionCheckoutSession(data: {
 }
 
 export function buildSubscriptionCheckoutSessionParams(data: {
-  lineItems: Array<{ priceId: string; quantity: number }>;
+  lineItems: Array<{ priceId: string; quantity?: number; metered?: boolean }>;
   practiceId: string;
   customerId?: string | null;
   customerEmail?: string | null;
@@ -93,10 +93,13 @@ export function buildSubscriptionCheckoutSessionParams(data: {
   return {
     mode: "subscription",
     payment_method_collection: hasTrial ? "if_required" : "always",
-    line_items: data.lineItems.map((item) => ({
-      price: item.priceId,
-      quantity: Math.max(0, item.quantity),
-    })),
+    // Metered prices (usage-based overage) must be added WITHOUT a quantity;
+    // licensed prices (per-location) carry the active count.
+    line_items: data.lineItems.map((item) =>
+      item.metered
+        ? { price: item.priceId }
+        : { price: item.priceId, quantity: Math.max(0, item.quantity ?? 0) }
+    ),
     ...(data.customerId
       ? { customer: data.customerId }
       : { customer_email: data.customerEmail ?? undefined }),

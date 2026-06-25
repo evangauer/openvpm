@@ -637,11 +637,11 @@ function BillingTab() {
             </p>
           </div>
           <div>
-            <p className="text-muted-foreground">AI runs this month</p>
+            <p className="text-muted-foreground">AI actions this month</p>
             <p className="font-medium">
               {data.usage.aiRuns}
               {currentPlan?.includedAiRunsPerMonth != null
-                ? ` / ${currentPlan.includedAiRunsPerMonth} included`
+                ? ` / ${currentPlan.includedAiRunsPerMonth.toLocaleString()} included`
                 : ""}
             </p>
           </div>
@@ -707,6 +707,8 @@ function PlanGrid({
     locationLimit: number | null;
     includedSmsPerMonth: number | null;
     includedAiRunsPerMonth: number | null;
+    aiOveragePriceUsd: number | null;
+    smsOveragePriceUsd: number | null;
     selfServe: boolean;
     purchasable: boolean;
   }>;
@@ -754,10 +756,20 @@ function PlanGrid({
                 {p.locationLimit === 1 ? "" : "s"}
               </li>
               {p.includedSmsPerMonth ? (
-                <li>{p.includedSmsPerMonth} SMS/mo included</li>
+                <li>
+                  {p.includedSmsPerMonth.toLocaleString()} SMS/mo included
+                  {p.smsOveragePriceUsd
+                    ? `, then $${p.smsOveragePriceUsd}/SMS`
+                    : ""}
+                </li>
               ) : null}
               {p.includedAiRunsPerMonth ? (
-                <li>{p.includedAiRunsPerMonth} AI runs/mo included</li>
+                <li>
+                  {p.includedAiRunsPerMonth.toLocaleString()} AI actions/mo included
+                  {p.aiOveragePriceUsd
+                    ? `, then $${p.aiOveragePriceUsd}/action`
+                    : ""}
+                </li>
               ) : null}
               {p.features.length > 0 ? (
                 p.features.map((f) => (

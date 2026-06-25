@@ -12,6 +12,7 @@ import {
   PLAN_ORDER,
   billingEnforced,
   cloudCheckoutPriceIds,
+  cloudMeteredPriceIds,
   estimatedCloudBaseMonthlyUsd,
   CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD,
   CLOUD_SEAT_UNIT_PRICE_MONTHLY_USD,
@@ -111,6 +112,8 @@ export const subscriptionRouter = createRouter({
           locationLimit: p.locationLimit,
           includedSmsPerMonth: p.includedSmsPerMonth,
           includedAiRunsPerMonth: p.includedAiRunsPerMonth,
+          aiOveragePriceUsd: p.aiOveragePriceUsd,
+          smsOveragePriceUsd: p.smsOveragePriceUsd,
           selfServe: p.selfServe,
           purchasable: purchasable(t),
         };
@@ -151,10 +154,18 @@ export const subscriptionRouter = createRouter({
         new Date(practice.trialEndsAt).getTime() > Date.now()
           ? practice.trialEndsAt
           : null;
+      // Per-location licensed item, plus the metered overage items (AI + SMS)
+      // when configured. Metered items carry no quantity; Stripe meters them.
+      const { aiOveragePriceId, smsOveragePriceId } = cloudMeteredPriceIds();
+      const lineItems: Array<{
+        priceId: string;
+        quantity?: number;
+        metered?: boolean;
+      }> = [{ priceId: locationPriceId, quantity: counts.locationCount }];
+      if (aiOveragePriceId) lineItems.push({ priceId: aiOveragePriceId, metered: true });
+      if (smsOveragePriceId) lineItems.push({ priceId: smsOveragePriceId, metered: true });
       const result = await createSubscriptionCheckoutSession({
-        lineItems: [
-          { priceId: locationPriceId, quantity: counts.locationCount },
-        ],
+        lineItems,
         practiceId: ctx.practiceId,
         customerId: practice?.stripeCustomerId ?? undefined,
         customerEmail: practice?.email ?? ctx.session.user.email,

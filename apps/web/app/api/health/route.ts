@@ -13,9 +13,10 @@ function configured(name: string): boolean {
   return Boolean(process.env[name]);
 }
 
-// Overage price envs (STRIPE_PRICE_SMS_OVERAGE / STRIPE_PRICE_AI_OVERAGE) are
-// intentionally NOT required: launch billing is generous-unmetered, so Stripe
-// usage metering is not wired and those prices are unused. See lib/billing/usage.ts.
+// Overage price envs (STRIPE_PRICE_SMS_OVERAGE / STRIPE_PRICE_AI_OVERAGE) drive
+// metered overage via Stripe Billing Meters. They are NOT required here so the
+// app still boots before the meters are configured (and so usage is recorded
+// even when overage billing is intentionally off). See lib/billing/usage.ts.
 const HOSTED_BILLING_ENV_NAMES = [
   "STRIPE_SECRET_KEY",
   "STRIPE_SUBSCRIPTION_WEBHOOK_SECRET",

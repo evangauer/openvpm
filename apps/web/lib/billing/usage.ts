@@ -1,20 +1,22 @@
+import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@openpims/db/client";
-import { usageRecords } from "@openpims/db";
+import { usageRecords, practices } from "@openpims/db";
 import { withSystem } from "@/lib/tenant-db";
 import { alertOps } from "@/lib/alerts";
 import { billingEnforced } from "./plans";
+import { recordMeterEvent } from "./stripe-meters";
 
 export type UsageKind = "sms" | "ai_run";
 
 /**
- * Soft abuse thresholds for the generous-unmetered launch model. We do NOT cap
- * usage — SMS/AI keep working past the included allowance — but we alert ops
- * once when a practice crosses a high monthly threshold so abuse is visible.
+ * Soft abuse thresholds. Overage past the included allowance (1,000/mo) now
+ * bills via Stripe meters, so these sit well ABOVE the allowance and only flag
+ * genuinely abnormal volume to ops — not normal paid overage. We never hard-cap.
  */
 export const ABUSE_ALERT_THRESHOLDS: Record<UsageKind, number> = {
-  sms: 2000,
-  ai_run: 1000,
+  sms: 5000,
+  ai_run: 5000,
 };
 
 /** Pure: did `kind` cross its abuse threshold moving from `before` to `after`? */
@@ -56,8 +58,40 @@ export async function recordUsage(opts: {
       })
     );
     await maybeAlertOnSpike(opts.practiceId, opts.kind, periodMonth, quantity);
+    await maybeMeterToStripe(opts.practiceId, opts.kind, quantity);
   } catch (e) {
     console.error("[usage] failed to record", opts.kind, e);
+  }
+}
+
+/**
+ * Report the event to Stripe's meter so overage bills automatically. Only fires
+ * once the practice has a Stripe customer (i.e. a subscription exists) — usage
+ * during the pre-checkout no-card trial has no customer and stays free. The
+ * local `usageRecords` row remains the source of truth for display/reconcile.
+ */
+async function maybeMeterToStripe(
+  practiceId: string,
+  kind: UsageKind,
+  quantity: number
+): Promise<void> {
+  try {
+    const [practice] = await withSystem(db, (tx) =>
+      tx
+        .select({ stripeCustomerId: practices.stripeCustomerId })
+        .from(practices)
+        .where(eq(practices.id, practiceId))
+        .limit(1)
+    );
+    if (!practice?.stripeCustomerId) return;
+    await recordMeterEvent({
+      kind,
+      stripeCustomerId: practice.stripeCustomerId,
+      value: quantity,
+      identifier: randomUUID(),
+    });
+  } catch (e) {
+    console.error("[usage] meter event failed", kind, e);
   }
 }
 
@@ -79,7 +113,7 @@ async function maybeAlertOnSpike(
     if (crossesAbuseThreshold(kind, before, after)) {
       await alertOps(
         `usage spike: ${kind}`,
-        `Practice ${practiceId} crossed ${ABUSE_ALERT_THRESHOLDS[kind]} ${kind} events in ${periodMonth} (now ${after}). Launch is generous-unmetered — review for abuse.`
+        `Practice ${practiceId} crossed ${ABUSE_ALERT_THRESHOLDS[kind]} ${kind} events in ${periodMonth} (now ${after}). Overage is billed past the included allowance — review for abuse.`
       );
     }
   } catch (e) {

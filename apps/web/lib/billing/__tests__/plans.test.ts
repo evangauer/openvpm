@@ -11,11 +11,16 @@ import {
   hasHostedFullAccess,
   estimatedCloudBaseMonthlyUsd,
   tierForStripePrice,
+  cloudMeteredPriceIds,
   STRIPE_PRICE_CLOUD_LOCATION_ENV,
   STRIPE_PRICE_CLOUD_USER_ENV,
   STRIPE_PRICE_CLOUD_LEGACY_ENV,
+  STRIPE_PRICE_AI_OVERAGE_ENV,
+  STRIPE_PRICE_SMS_OVERAGE_ENV,
   CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD,
   CLOUD_SEAT_UNIT_PRICE_MONTHLY_USD,
+  CLOUD_AI_OVERAGE_PRICE_USD,
+  CLOUD_SMS_OVERAGE_PRICE_USD,
   ALL_FEATURES,
 } from "../plans";
 
@@ -134,6 +139,30 @@ describe("hosted full access", () => {
     expect(hasHostedFullAccess("cloud", "past_due", future, now, true)).toBe(false);
     expect(hasHostedFullAccess("cloud", "canceled", future, now, true)).toBe(false);
     expect(hasHostedFullAccess("free", "none", null, now, true)).toBe(false);
+  });
+});
+
+describe("metered overage", () => {
+  it("cloud carries included allowances + overage prices; free/enterprise do not bill overage", () => {
+    expect(PLANS.cloud.includedAiRunsPerMonth).toBe(1000);
+    expect(PLANS.cloud.includedSmsPerMonth).toBe(1000);
+    expect(PLANS.cloud.aiOveragePriceUsd).toBe(CLOUD_AI_OVERAGE_PRICE_USD);
+    expect(PLANS.cloud.smsOveragePriceUsd).toBe(CLOUD_SMS_OVERAGE_PRICE_USD);
+    expect(PLANS.free.aiOveragePriceUsd).toBeNull();
+    expect(PLANS.enterprise.smsOveragePriceUsd).toBeNull();
+  });
+
+  it("cloudMeteredPriceIds reads the configured overage price envs", () => {
+    expect(cloudMeteredPriceIds()).toEqual({
+      aiOveragePriceId: undefined,
+      smsOveragePriceId: undefined,
+    });
+    vi.stubEnv(STRIPE_PRICE_AI_OVERAGE_ENV, "price_ai");
+    vi.stubEnv(STRIPE_PRICE_SMS_OVERAGE_ENV, "price_sms");
+    expect(cloudMeteredPriceIds()).toEqual({
+      aiOveragePriceId: "price_ai",
+      smsOveragePriceId: "price_sms",
+    });
   });
 });
 

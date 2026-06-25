@@ -85,15 +85,23 @@ For local or staging signup tests without real email delivery, set `OPENVPM_EXPO
 
 ## Stripe Setup
 
-Create one Stripe product for OpenVPM Cloud with recurring monthly prices:
+Create one Stripe product for OpenVPM Cloud with these recurring monthly prices:
 
-- Cloud location: `$99/month`, env `STRIPE_PRICE_CLOUD_LOCATION` (flat per active location, unlimited staff)
-- SMS overage metered price, env `STRIPE_PRICE_SMS_OVERAGE`
-- AI overage metered price, env `STRIPE_PRICE_AI_OVERAGE`
+- Cloud location: `$99/month`, env `STRIPE_PRICE_CLOUD_LOCATION` (flat per active location, unlimited staff).
+- `$0/month` seat price, env `STRIPE_PRICE_CLOUD_USER` — the flat-model seat item. It is not added to new checkout, but the env must be set (the plan only shows as purchasable, and `/api/health` only passes, when both location and user prices are present).
+- AI overage metered price, env `STRIPE_PRICE_AI_OVERAGE`.
+- SMS overage metered price, env `STRIPE_PRICE_SMS_OVERAGE`.
 
-`STRIPE_PRICE_CLOUD_USER` (legacy per-seat) and `STRIPE_PRICE_CLOUD` (legacy single price) are only kept for mapping existing subscriptions; new checkout uses the per-location price only.
+`STRIPE_PRICE_CLOUD` (legacy single price) is only kept for mapping existing subscriptions; new checkout never uses it.
 
-The app creates one subscription with a single recurring per-location line item. Quantity sync updates the active non-deleted location count.
+### Included allowance + metered overage (Stripe Billing Meters)
+
+The Cloud plan includes **1,000 AI actions + 1,000 SMS per month**, then bills **$0.05/AI action** and **$0.03/SMS**. This is modeled with Stripe Billing Meters (the legacy usage-records API is gone as of API version 2025-03-31.basil):
+
+1. Create two meters — `openvpm_ai_run` and `openvpm_sms` — with sum aggregation, value payload key `value`, and customer mapping by `stripe_customer_id`. The event names must match `lib/billing/stripe-meters.ts`.
+2. Create a graduated metered price per meter with the included allowance as the $0 first tier: tiers `[{ up_to: 1000, unit_amount: 0 }, { up_to: inf, unit_amount: 5 }]` for AI (cents) and `… unit_amount: 3` for SMS, each with `recurring.usage_type=metered` and `recurring.meter=<meter id>`. Wire to `STRIPE_PRICE_AI_OVERAGE` / `STRIPE_PRICE_SMS_OVERAGE`.
+
+Checkout creates one subscription: a per-location licensed item (quantity = active non-deleted locations, kept current by quantity sync) plus the two quantity-less metered items. `recordUsage()` writes the local `usage_records` row (display/reconcile source of truth) and, once the practice has a Stripe customer, reports a meter event so Stripe bills overage automatically. Pre-checkout no-card trial usage has no customer and stays free. Leaving the overage price envs unset keeps usage recorded but unbilled.
 
 Webhook endpoint:
 

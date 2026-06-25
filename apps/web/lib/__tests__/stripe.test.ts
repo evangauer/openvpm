@@ -28,6 +28,26 @@ describe("buildSubscriptionCheckoutSessionParams", () => {
     });
   });
 
+  it("adds metered overage items without a quantity", () => {
+    const params = buildSubscriptionCheckoutSessionParams({
+      practiceId: "practice_123",
+      customerId: "cus_123",
+      lineItems: [
+        { priceId: "price_location", quantity: 3 },
+        { priceId: "price_ai_overage", metered: true },
+        { priceId: "price_sms_overage", metered: true },
+      ],
+      successUrl: "https://app.example.com/success",
+      cancelUrl: "https://app.example.com/cancel",
+    });
+
+    expect(params.line_items).toEqual([
+      { price: "price_location", quantity: 3 },
+      { price: "price_ai_overage" },
+      { price: "price_sms_overage" },
+    ]);
+  });
+
   it("requires payment collection when no trial is passed", () => {
     const params = buildSubscriptionCheckoutSessionParams({
       practiceId: "practice_123",
