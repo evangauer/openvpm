@@ -48,7 +48,16 @@ function RegisterPageInner() {
   const [loading, setLoading] = useState(false);
 
   const registerMutation = trpc.auth.register.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (data) => {
+      // Hosted: verification is required before access. Send the user to the
+      // "check your inbox" screen instead of dropping them into a read-only app.
+      if (data.verificationRequired) {
+        router.push(
+          `/verify-email?email=${encodeURIComponent(email.trim().toLowerCase())}`
+        );
+        return;
+      }
+      // Self-host: no verification needed — sign in immediately.
       const result = await signIn("credentials", {
         email: email.trim().toLowerCase(),
         password,

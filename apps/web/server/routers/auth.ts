@@ -228,6 +228,55 @@ export const authRouter = createRouter({
       return { ok: true };
     }),
 
+  /** Resend the email-verification link. Generic response (no enumeration). */
+  resendVerification: publicProcedure
+    .input(z.object({ email: z.string().email() }))
+    .mutation(async ({ ctx, input }) => {
+      const { success } = rateLimit({
+        key: `verifyresend:${input.email}`,
+        limit: 5,
+        windowMs: 3600000,
+      });
+      if (!success) {
+        throw new TRPCError({
+          code: "TOO_MANY_REQUESTS",
+          message: "Too many requests. Please try again later.",
+        });
+      }
+
+      const [user] = await ctx.db
+        .select({
+          id: users.id,
+          email: users.email,
+          name: users.name,
+          emailVerifiedAt: users.emailVerifiedAt,
+        })
+        .from(users)
+        .where(eq(users.email, input.email.trim().toLowerCase()))
+        .limit(1);
+
+      // Only send for an existing, not-yet-verified account. Respond the same
+      // either way so the endpoint can't be used to probe for accounts.
+      if (user && !user.emailVerifiedAt) {
+        try {
+          const token = await createAuthToken({
+            userId: user.id,
+            email: user.email,
+            type: "email_verify",
+            db: ctx.db,
+          });
+          await sendVerificationEmail({
+            to: user.email,
+            name: user.name,
+            verifyUrl: `${appBaseUrl()}/verify-email?token=${token}`,
+          });
+        } catch (err) {
+          console.error("[resendVerification] email failed:", err);
+        }
+      }
+      return { ok: true };
+    }),
+
   /** Request a password-reset email. Always succeeds (no account enumeration). */
   requestPasswordReset: publicProcedure
     .input(z.object({ email: z.string().email() }))

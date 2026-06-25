@@ -5,6 +5,10 @@ import { db } from "@openpims/db/client";
 import { users } from "@openpims/db";
 import { eq } from "drizzle-orm";
 import { withSystem } from "@/lib/tenant-db";
+import { billingEnforced } from "@/lib/billing/plans";
+
+/** Thrown-error code the login page maps to the "verify your email" state. */
+export const EMAIL_NOT_VERIFIED = "EMAIL_NOT_VERIFIED";
 
 declare module "next-auth" {
   interface Session {
@@ -60,9 +64,14 @@ export const authOptions: NextAuthOptions = {
         const isValid = await compare(credentials.password, user.passwordHash);
         if (!isValid) return null;
 
-        // Email verification is a SOFT requirement on hosted: new users sign in
-        // immediately after signup (so onboarding + the value tour aren't blocked
-        // by an email round-trip) and are nudged to confirm via an in-app banner.
+        // Hosted: require a verified email before granting a session, so a new
+        // signup can't slip past verification into a confusing read-only app.
+        // Self-host stays frictionless (no email round-trip). The login page maps
+        // this thrown code to the "verify your email" + resend UI.
+        if (billingEnforced() && !user.emailVerifiedAt) {
+          throw new Error(EMAIL_NOT_VERIFIED);
+        }
+
         return {
           id: user.id,
           email: user.email,
