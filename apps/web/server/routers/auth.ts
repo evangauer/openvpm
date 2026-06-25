@@ -376,11 +376,17 @@ export const authRouter = createRouter({
         role: users.role,
         practiceId: users.practiceId,
         avatarUrl: users.avatarUrl,
+        emailVerifiedAt: users.emailVerifiedAt,
       })
       .from(users)
       .where(eq(users.id, ctx.user.id))
       .limit(1);
 
-    return user;
+    return {
+      ...user,
+      // Soft email-verification nudge: only relevant on the hosted service.
+      emailVerified: Boolean(user?.emailVerifiedAt),
+      verificationEnabled: billingEnforced(),
+    };
   }),
 });

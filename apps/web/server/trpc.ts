@@ -101,39 +101,45 @@ export const protectedProcedure = t.procedure.use(
         message: "Your account has read-only (viewer) access.",
       });
     }
-    if (
-      type === "mutation" &&
-      billingEnforced() &&
-      !HOSTED_READ_ONLY_MUTATION_ALLOWLIST.has(path)
-    ) {
-      const [practice] = await ctx.db
-        .select({
-          tier: practices.subscriptionTier,
-          billingStatus: practices.billingStatus,
-          trialEndsAt: practices.trialEndsAt,
-        })
-        .from(practices)
-        .where(eq(practices.id, ctx.session.user.practiceId))
-        .limit(1);
-      if (
-        !hasHostedFullAccess(
-          practice?.tier,
-          practice?.billingStatus,
-          practice?.trialEndsAt
-        )
-      ) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message:
-            "OpenVPM Cloud is read-only until your trial or subscription is active. You can still manage billing and export your data.",
-        });
-      }
-    }
-
     const user = ctx.session.user;
     // Run the whole request in a tenant DB context so Postgres RLS scopes every
     // query to this practice (defense-in-depth behind the app-layer filters).
     return withTenant(ctx.db, user.practiceId, async (tx) => {
+      // Hosted read-only guard: block mutations unless the practice has an
+      // active trial or subscription. This MUST run inside withTenant (via tx),
+      // not on the raw connection — under the least-privilege production role
+      // RLS only returns the practices row when app.current_practice_id is set,
+      // so a context-less lookup returns zero rows and would wrongly read-only
+      // every tenant (the owner role used in dev bypasses RLS and hid this).
+      if (
+        type === "mutation" &&
+        billingEnforced() &&
+        !HOSTED_READ_ONLY_MUTATION_ALLOWLIST.has(path)
+      ) {
+        const [practice] = await tx
+          .select({
+            tier: practices.subscriptionTier,
+            billingStatus: practices.billingStatus,
+            trialEndsAt: practices.trialEndsAt,
+          })
+          .from(practices)
+          .where(eq(practices.id, user.practiceId))
+          .limit(1);
+        if (
+          !hasHostedFullAccess(
+            practice?.tier,
+            practice?.billingStatus,
+            practice?.trialEndsAt
+          )
+        ) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message:
+              "OpenVPM Cloud is read-only until your trial or subscription is active. You can still manage billing and export your data.",
+          });
+        }
+      }
+
       const result = await next({
         ctx: { session: ctx.session, user, practiceId: user.practiceId, db: tx },
       });

@@ -67,12 +67,10 @@ function LoginPageInner() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
-  const [showVerifyHint, setShowVerifyHint] = useState(false);
   const [loading, setLoading] = useState(false);
 
   async function signInWith(emailValue: string, passwordValue: string) {
     setError("");
-    setShowVerifyHint(false);
     setLoading(true);
     setEmail(emailValue);
     setPassword(passwordValue);
@@ -86,14 +84,7 @@ function LoginPageInner() {
     setLoading(false);
 
     if (result?.error) {
-      // Unverified hosted accounts can't sign in yet — send them to the
-      // "check your inbox" screen (with resend) instead of a dead-end error.
-      if (result.error.includes("EMAIL_NOT_VERIFIED")) {
-        router.push(`/verify-email?email=${encodeURIComponent(emailValue)}`);
-        return;
-      }
-      setError("Invalid email or password.");
-      setShowVerifyHint(true);
+      setError("Invalid email or password");
     } else {
       router.push(nextPath);
       router.refresh();
@@ -164,19 +155,7 @@ function LoginPageInner() {
         <form onSubmit={handleSubmit} className="space-y-4">
           {error && (
             <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
-              <p>{error}</p>
-              {showVerifyHint && (
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Just signed up?{" "}
-                  <Link
-                    href={`/verify-email?email=${encodeURIComponent(email)}`}
-                    className="text-primary hover:underline"
-                  >
-                    Verify your email
-                  </Link>{" "}
-                  first.
-                </p>
-              )}
+              {error}
             </div>
           )}
 

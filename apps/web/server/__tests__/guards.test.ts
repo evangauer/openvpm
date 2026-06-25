@@ -53,7 +53,11 @@ describe("viewer read-only guard", () => {
 
   it("blocks hosted lapsed accounts from protected mutations before resolver writes", async () => {
     vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
-    const db: Record<string, unknown> = {
+    // The read-only guard now runs inside withTenant (a transaction) so the
+    // practice lookup is RLS-scoped. The tx exposes execute() (for the
+    // set_config RLS call) and the select() chain returning a lapsed practice.
+    const tx: Record<string, unknown> = {
+      execute: async () => undefined,
       select: () => ({
         from: () => ({
           where: () => ({
@@ -67,6 +71,10 @@ describe("viewer read-only guard", () => {
           }),
         }),
       }),
+    };
+    const db: Record<string, unknown> = {
+      transaction: async (fn: (t: unknown) => unknown) => fn(tx),
+      execute: async () => undefined,
     };
     const caller = callerFor("front_desk", db);
     await expect(
