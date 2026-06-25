@@ -799,7 +799,7 @@ function PlanGrid({
                 </Button>
               ) : !p.selfServe ? (
                 <a
-                  href="mailto:sales@openvpm.com?subject=OpenVPM%20Enterprise"
+                  href="mailto:evan@openvpm.com?subject=OpenVPM%20Enterprise"
                   className="text-xs font-medium text-primary hover:underline"
                 >
                   Contact sales
