@@ -8,7 +8,11 @@ import { rateLimit } from "@/lib/rate-limit";
 import { seedPractice, seedDemoData } from "@/lib/onboarding/defaults";
 import { billingEnforced, TRIAL_DAYS } from "@/lib/billing/plans";
 import { createAuthToken, consumeAuthToken } from "@/lib/auth-tokens";
-import { sendVerificationEmail, sendPasswordResetEmail } from "@/lib/email";
+import {
+  sendVerificationEmail,
+  sendPasswordResetEmail,
+  sendWelcomeEmail,
+} from "@/lib/email";
 import { appBaseUrl, exposeAuthLinksForPreview } from "@/lib/app-url";
 
 /** Display name from explicit input, else derived from the email local-part. */
@@ -198,6 +202,20 @@ export const authRouter = createRouter({
         } catch (err) {
           console.error("[register] verification email failed:", err);
           verificationEmailSent = false;
+        }
+      }
+
+      // Send a branded welcome email (hosted only). Non-fatal — signup succeeds
+      // regardless of delivery.
+      if (billingEnforced()) {
+        try {
+          await sendWelcomeEmail({
+            to: user!.email,
+            practiceName: input.practiceName.trim(),
+            trialDays: TRIAL_DAYS,
+          });
+        } catch (err) {
+          console.error("[register] welcome email failed:", err);
         }
       }
 
