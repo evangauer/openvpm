@@ -53,9 +53,9 @@ DECLARE
   tbls text[] := array[
     'api_keys','appointment_types','appointment_waitlist','appointments','audit_log',
     'cases','clients','clinical_notes','communications','controlled_substance_log',
-    'files','insurance_claims','insurance_policies','invoices','lab_results','locations',
-    'patients','prescriptions','problem_list','procedures','products','purchase_orders',
-    'recurring_series','rooms','services','soap_notes','staff_schedules','suppliers',
+    'files','insurance_claims','insurance_policies','invoices','lab_results','location_messaging',
+    'locations','patients','prescriptions','problem_list','procedures','products','purchase_orders',
+    'recurring_series','rooms','services','sms_suppressions','soap_notes','staff_schedules','suppliers',
     'treatment_plans','treatment_templates','usage_records','users','vaccination_records',
     'vital_signs','webhooks','wellness_enrollments','wellness_plans'
   ];

@@ -6,6 +6,7 @@ import {
   STRIPE_PRICE_CLOUD_USER_ENV,
   billingEnforced,
 } from "@/lib/billing/plans";
+import { requiredMessagingEnvNames } from "@/lib/messaging";
 
 export const dynamic = "force-dynamic";
 
@@ -40,12 +41,6 @@ const HOSTED_STORAGE_ENV_NAMES = [
 ];
 
 const HOSTED_EMAIL_ENV_NAMES = ["RESEND_API_KEY"];
-
-const HOSTED_SMS_ENV_NAMES = [
-  "TWILIO_ACCOUNT_SID",
-  "TWILIO_AUTH_TOKEN",
-  "TWILIO_PHONE_NUMBER",
-];
 
 // AI is provider-agnostic: the model is chosen by AI_MODEL and the provider is
 // inferred from the id, so require the matching API key (Gemini vs Claude).
@@ -123,7 +118,7 @@ export async function GET() {
     // serve requests", not "every optional capability is wired". SMS is deferred
     // until Twilio is provisioned; ops alerting (Slack webhook) is recommended.
     checks.hostedSms = {
-      ...hostedEnvCheck(HOSTED_SMS_ENV_NAMES, "Hosted SMS envs present"),
+      ...hostedEnvCheck(requiredMessagingEnvNames(), "Hosted SMS envs present"),
       advisory: true,
     };
     checks.hostedOpsAlerting = {

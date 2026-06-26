@@ -1,33 +1,18 @@
-import Twilio from "twilio";
 import { recordUsage } from "@/lib/billing/usage";
 import { db } from "@openpims/db/client";
 import { practices } from "@openpims/db";
 import { eq } from "drizzle-orm";
 import { withSystem } from "@/lib/tenant-db";
 import { billingEnforced, hasHostedFullAccess } from "@/lib/billing/plans";
-
-// ---------------------------------------------------------------------------
-// Twilio client – initialised lazily so the module can be imported even when
-// credentials are not set (local dev / CI).
-// ---------------------------------------------------------------------------
-
-let twilioClient: Twilio.Twilio | null = null;
-
-function getTwilio(): Twilio.Twilio | null {
-  if (twilioClient) return twilioClient;
-  const accountSid = process.env.TWILIO_ACCOUNT_SID;
-  const authToken = process.env.TWILIO_AUTH_TOKEN;
-  if (!accountSid || !authToken) return null;
-  twilioClient = Twilio(accountSid, authToken);
-  return twilioClient;
-}
-
-function getFromNumber(): string {
-  return process.env.TWILIO_PHONE_NUMBER || "";
-}
+import { getMessagingProvider, resolveSender, isSuppressed } from "@/lib/messaging";
 
 // ---------------------------------------------------------------------------
 // Core send function
+//
+// Transport is provider-agnostic (lib/messaging): the active provider (Telnyx
+// preferred, Twilio fallback, console in dev) is chosen by env. This module
+// keeps the hosted entitlement gate and usage metering; the per-location sender
+// is resolved by lib/messaging (env default today, per-location config in P1).
 // ---------------------------------------------------------------------------
 
 export async function sendSms(options: {
@@ -35,6 +20,8 @@ export async function sendSms(options: {
   body: string;
   /** When set (and a real send occurs), meters the SMS for hosted billing. */
   practiceId?: string;
+  /** Future: selects the location's own number/messaging profile (P1). */
+  locationId?: string;
 }): Promise<{ success: boolean; sid?: string; error?: string }> {
   if (options.practiceId && billingEnforced()) {
     const [practice] = await withSystem(db, (tx) =>
@@ -63,36 +50,38 @@ export async function sendSms(options: {
     }
   }
 
-  const client = getTwilio();
-
-  if (!client) {
-    // Development fallback – log to console instead of sending
-    console.log("──────────────────────────────────────────");
-    console.log("[SMS] No Twilio credentials configured – logging SMS to console");
-    console.log(`  To:   ${options.to}`);
-    console.log(`  Body: ${options.body}`);
-    console.log("──────────────────────────────────────────");
-    return { success: true, sid: "dev-console" };
-  }
-
-  try {
-    const message = await client.messages.create({
-      to: options.to,
-      from: getFromNumber(),
-      body: options.body,
-    });
-
-    // Meter the real send for hosted billing (no-op on self-host).
-    if (options.practiceId) {
-      void recordUsage({ practiceId: options.practiceId, kind: "sms" });
+  // Hard opt-out gate: never text a number on the practice's suppression list.
+  // Fail closed — if we can't verify opt-out status, block rather than risk it.
+  if (options.practiceId) {
+    try {
+      if (await isSuppressed(options.practiceId, options.to)) {
+        return { success: false, error: "Recipient has opted out of SMS (STOP)." };
+      }
+    } catch {
+      return {
+        success: false,
+        error: "Could not verify SMS opt-out status; send blocked.",
+      };
     }
-
-    return { success: true, sid: message.sid };
-  } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : "Unknown SMS error";
-    console.error("[SMS] Twilio error:", errorMessage);
-    return { success: false, error: errorMessage };
   }
+
+  const provider = getMessagingProvider();
+  const sender = await resolveSender({
+    practiceId: options.practiceId,
+    locationId: options.locationId,
+  });
+  const result = await provider.send({
+    to: options.to,
+    body: options.body,
+    sender,
+  });
+
+  // Meter only real sends (not the dev-console fallback); no-op on self-host.
+  if (result.success && provider.name !== "console" && options.practiceId) {
+    void recordUsage({ practiceId: options.practiceId, kind: "sms" });
+  }
+
+  return { success: result.success, sid: result.id, error: result.error };
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +96,7 @@ export async function sendAppointmentReminderSms(data: {
   practiceName: string;
   practicePhone?: string;
   practiceId?: string;
+  locationId?: string;
 }): Promise<{ success: boolean }> {
   const phoneInfo = data.practicePhone
     ? `Call ${data.practicePhone} to reschedule.`
@@ -114,7 +104,12 @@ export async function sendAppointmentReminderSms(data: {
 
   const body = `Hi! Reminder: ${data.patientName} has an appointment on ${data.appointmentDate} at ${data.appointmentTime}. ${phoneInfo} - ${data.practiceName}`;
 
-  const result = await sendSms({ to: data.to, body, practiceId: data.practiceId });
+  const result = await sendSms({
+    to: data.to,
+    body,
+    practiceId: data.practiceId,
+    locationId: data.locationId,
+  });
   return { success: result.success };
 }
 
@@ -129,6 +124,7 @@ export async function sendVaccinationReminderSms(data: {
   practiceName: string;
   practicePhone?: string;
   practiceId?: string;
+  locationId?: string;
 }): Promise<{ success: boolean }> {
   const phoneInfo = data.practicePhone
     ? `Call ${data.practicePhone} to schedule.`
@@ -136,6 +132,11 @@ export async function sendVaccinationReminderSms(data: {
 
   const body = `Hi! ${data.patientName} is due for their ${data.vaccineName} vaccination. ${phoneInfo} - ${data.practiceName}`;
 
-  const result = await sendSms({ to: data.to, body, practiceId: data.practiceId });
+  const result = await sendSms({
+    to: data.to,
+    body,
+    practiceId: data.practiceId,
+    locationId: data.locationId,
+  });
   return { success: result.success };
 }

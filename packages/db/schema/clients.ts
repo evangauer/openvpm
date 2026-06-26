@@ -4,6 +4,8 @@ import {
   uuid,
   varchar,
   text,
+  boolean,
+  timestamp,
   index,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
@@ -35,6 +37,12 @@ export const clients = pgTable(
     emergencyContact: varchar("emergency_contact", { length: 255 }),
     emergencyPhone: varchar("emergency_phone", { length: 32 }),
     preferredContactMethod: contactMethodEnum("preferred_contact_method").default("phone"),
+    // SMS opt-in for TCPA: consent state + an audit trail of how/when it was
+    // captured and the exact disclosure shown. Required before texting a client.
+    smsConsent: boolean("sms_consent").notNull().default(false),
+    smsConsentAt: timestamp("sms_consent_at", { withTimezone: true }),
+    smsConsentSource: varchar("sms_consent_source", { length: 32 }), // intake|verbal|import|portal
+    smsConsentDisclosure: text("sms_consent_disclosure"),
     notes: text("notes"),
     accessToken: varchar("access_token", { length: 64 }).unique(),
   },
