@@ -1,4 +1,11 @@
 import { Resend } from "resend";
+import {
+  openvpmBrand,
+  renderWelcomeEmail,
+  renderTrialEndingEmail,
+  renderPaymentReceiptEmail,
+  renderPaymentFailedEmail,
+} from "@openpims/email";
 
 // ---------------------------------------------------------------------------
 // Resend client – initialised lazily so the module can be imported even when
@@ -86,6 +93,8 @@ export async function sendEmail(options: {
   subject: string;
   html: string;
   from?: string;
+  replyTo?: string;
+  headers?: Record<string, string>;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   const client = getResend();
 
@@ -107,6 +116,8 @@ export async function sendEmail(options: {
       to: options.to,
       subject: options.subject,
       html: options.html,
+      ...(options.replyTo ? { replyTo: options.replyTo } : {}),
+      ...(options.headers ? { headers: options.headers } : {}),
     });
 
     if (error) {
@@ -335,4 +346,94 @@ export async function sendStaffInviteEmail(data: {
     html,
   });
   return { success: result.success };
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle emails (branded via @openpims/email — React Email)
+// ---------------------------------------------------------------------------
+
+const SUPPORT_ADDRESS =
+  process.env.EMAIL_SUPPORT_ADDRESS || "evan@openvpm.com";
+
+/** Welcome email sent when a practice signs up (hosted trial). */
+export async function sendWelcomeEmail(data: {
+  to: string;
+  practiceName: string;
+  trialDays?: number;
+}): Promise<{ success: boolean; id?: string; error?: string }> {
+  const brand = openvpmBrand();
+  const { subject, html } = await renderWelcomeEmail({
+    brand,
+    practiceName: data.practiceName,
+    trialDays: data.trialDays ?? 14,
+  });
+  return sendEmail({ to: data.to, subject, html, replyTo: SUPPORT_ADDRESS });
+}
+
+/** Trial-ending nudge (T-7 / T-3 / T-1). Promotional → carries unsubscribe. */
+export async function sendTrialEndingEmail(data: {
+  to: string;
+  practiceName: string;
+  daysLeft: number;
+  trialEndDate: string;
+  monthlyPrice?: string;
+  billingUrl?: string;
+}): Promise<{ success: boolean; id?: string; error?: string }> {
+  const brand = openvpmBrand();
+  const billingUrl = data.billingUrl ?? `${brand.appUrl}/settings?tab=billing`;
+  const { subject, html } = await renderTrialEndingEmail({
+    brand,
+    practiceName: data.practiceName,
+    daysLeft: data.daysLeft,
+    trialEndDate: data.trialEndDate,
+    monthlyPrice: data.monthlyPrice ?? "$99",
+    billingUrl,
+    unsubscribeUrl: billingUrl,
+  });
+  return sendEmail({
+    to: data.to,
+    subject,
+    html,
+    replyTo: SUPPORT_ADDRESS,
+    headers: { "List-Unsubscribe": `<${billingUrl}>` },
+  });
+}
+
+/** Receipt sent on a successful subscription payment. */
+export async function sendPaymentReceiptEmail(data: {
+  to: string;
+  practiceName: string;
+  amount: string;
+  periodLabel: string;
+  invoiceUrl?: string;
+}): Promise<{ success: boolean; id?: string; error?: string }> {
+  const brand = openvpmBrand();
+  const { subject, html } = await renderPaymentReceiptEmail({
+    brand,
+    practiceName: data.practiceName,
+    amount: data.amount,
+    periodLabel: data.periodLabel,
+    invoiceUrl: data.invoiceUrl,
+  });
+  return sendEmail({ to: data.to, subject, html, replyTo: SUPPORT_ADDRESS });
+}
+
+/** Dunning email sent on a failed subscription payment. */
+export async function sendPaymentFailedEmail(data: {
+  to: string;
+  practiceName: string;
+  amount: string;
+  nextRetryDate?: string;
+  billingUrl?: string;
+}): Promise<{ success: boolean; id?: string; error?: string }> {
+  const brand = openvpmBrand();
+  const billingUrl = data.billingUrl ?? `${brand.appUrl}/settings?tab=billing`;
+  const { subject, html } = await renderPaymentFailedEmail({
+    brand,
+    practiceName: data.practiceName,
+    amount: data.amount,
+    nextRetryDate: data.nextRetryDate,
+    billingUrl,
+  });
+  return sendEmail({ to: data.to, subject, html, replyTo: SUPPORT_ADDRESS });
 }

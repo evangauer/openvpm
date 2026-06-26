@@ -8,6 +8,7 @@ import {
   jsonb,
   timestamp,
   index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { baseColumns } from "./common";
@@ -35,19 +36,32 @@ export const commStatusEnum = pgEnum("comm_status", [
   "failed",
 ]);
 
-export const communications = pgTable("communications", {
-  ...baseColumns(),
-  practiceId: uuid("practice_id")
-    .notNull()
-    .references(() => practices.id),
-  clientId: uuid("client_id").references(() => clients.id),
-  channel: channelEnum("channel").notNull(),
-  direction: directionEnum("direction").notNull(),
-  subject: varchar("subject", { length: 255 }),
-  content: text("content"),
-  status: commStatusEnum("status").notNull().default("pending"),
-  assignedTo: uuid("assigned_to").references(() => users.id),
-});
+export const communications = pgTable(
+  "communications",
+  {
+    ...baseColumns(),
+    practiceId: uuid("practice_id")
+      .notNull()
+      .references(() => practices.id),
+    clientId: uuid("client_id").references(() => clients.id),
+    channel: channelEnum("channel").notNull(),
+    direction: directionEnum("direction").notNull(),
+    subject: varchar("subject", { length: 255 }),
+    content: text("content"),
+    status: commStatusEnum("status").notNull().default("pending"),
+    assignedTo: uuid("assigned_to").references(() => users.id),
+    // Idempotency key for system-sent lifecycle emails (welcome, receipt,
+    // dunning, trial-ending, usage). Null for ordinary client comms — Postgres
+    // treats NULLs as distinct, so the unique index only constrains real keys
+    // and makes "send exactly once" race-safe under webhook/cron retries.
+    dedupeKey: varchar("dedupe_key", { length: 160 }),
+  },
+  (table) => ({
+    dedupeKeyIdx: uniqueIndex("communications_dedupe_key_idx").on(
+      table.dedupeKey
+    ),
+  })
+);
 
 export const webhooks = pgTable("webhooks", {
   ...baseColumns(),

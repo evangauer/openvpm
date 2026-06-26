@@ -8,6 +8,11 @@ import { tierForStripePrice, normalizeBillingStatus } from "@/lib/billing/plans"
 import { syncPracticeSubscriptionQuantities } from "@/lib/billing/subscription-sync";
 import { alertOps } from "@/lib/alerts";
 import { withSystem } from "@/lib/tenant-db";
+import {
+  sendPaymentReceiptEmail,
+  sendPaymentFailedEmail,
+} from "@/lib/email";
+import { sendLifecycleEmail } from "@/lib/email-lifecycle";
 
 /**
  * Stripe webhook for hosted-SaaS subscriptions — a SEPARATE endpoint from the
@@ -92,6 +97,36 @@ export async function POST(req: NextRequest) {
         break;
       }
 
+      case "invoice.payment_succeeded": {
+        const inv = event.data.object as Stripe.Invoice;
+        const customerId =
+          typeof inv.customer === "string" ? inv.customer : inv.customer?.id;
+        // Only a real (non-$0) charge warrants a receipt — skip the $0 invoice
+        // Stripe emits at trial start.
+        if (customerId && (inv.amount_paid ?? 0) > 0) {
+          const practice = await practiceForCustomer(customerId);
+          if (practice?.email) {
+            const to = practice.email;
+            const practiceName = practice.name ?? "your practice";
+            await sendLifecycleEmail({
+              practiceId: practice.id,
+              to,
+              emailType: "receipt",
+              dedupeKey: `lc:receipt:${inv.id}`,
+              send: () =>
+                sendPaymentReceiptEmail({
+                  to,
+                  practiceName,
+                  amount: formatMoney(inv.amount_paid, inv.currency),
+                  periodLabel: invoicePeriodLabel(inv),
+                  invoiceUrl: inv.hosted_invoice_url ?? undefined,
+                }),
+            });
+          }
+        }
+        break;
+      }
+
       case "invoice.payment_failed": {
         const inv = event.data.object as Stripe.Invoice;
         const customerId =
@@ -107,6 +142,25 @@ export async function POST(req: NextRequest) {
             "Subscription payment failed",
             `Stripe customer ${customerId} had a failed subscription payment; marked past_due.`,
           );
+          const practice = await practiceForCustomer(customerId);
+          if (practice?.email) {
+            const to = practice.email;
+            const practiceName = practice.name ?? "your practice";
+            await sendLifecycleEmail({
+              practiceId: practice.id,
+              to,
+              emailType: "dunning",
+              // One dunning email per Stripe retry attempt.
+              dedupeKey: `lc:dunning:${inv.id}:${inv.attempt_count ?? 0}`,
+              send: () =>
+                sendPaymentFailedEmail({
+                  to,
+                  practiceName,
+                  amount: formatMoney(inv.amount_due, inv.currency),
+                  nextRetryDate: formatUnixDate(inv.next_payment_attempt),
+                }),
+            });
+          }
         }
         break;
       }
@@ -159,4 +213,46 @@ async function applySubscription(sub: Stripe.Subscription) {
       subscriptionId: sub.id,
     })
   );
+}
+
+/** Look up a practice's id / email / name by its Stripe customer id. */
+async function practiceForCustomer(customerId: string) {
+  const [p] = await withSystem(db, (tx) =>
+    tx
+      .select({
+        id: practices.id,
+        email: practices.email,
+        name: practices.name,
+      })
+      .from(practices)
+      .where(eq(practices.stripeCustomerId, customerId))
+      .limit(1),
+  );
+  return p ?? null;
+}
+
+function formatMoney(
+  cents: number | null | undefined,
+  currency: string | null | undefined,
+): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: (currency ?? "usd").toUpperCase(),
+  }).format((cents ?? 0) / 100);
+}
+
+function formatUnixDate(sec: number | null | undefined): string | undefined {
+  if (!sec) return undefined;
+  return new Date(sec * 1000).toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function invoicePeriodLabel(inv: Stripe.Invoice): string {
+  const s = formatUnixDate(inv.period_start);
+  const e = formatUnixDate(inv.period_end);
+  if (s && e) return `${s} – ${e}`;
+  return e ?? s ?? "";
 }

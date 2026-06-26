@@ -40,6 +40,9 @@ importers:
       '@openpims/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@openpims/email':
+        specifier: workspace:*
+        version: link:../../packages/email
       '@radix-ui/react-avatar':
         specifier: ^1.1.11
         version: 1.1.11(@types/react-dom@18.3.7(@types/react@18.3.28))(@types/react@18.3.28)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
