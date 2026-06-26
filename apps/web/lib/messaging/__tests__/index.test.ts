@@ -12,6 +12,7 @@ afterEach(() => {
 /** Clear every messaging env so each test starts from a known-empty baseline. */
 function clearMessagingEnv() {
   for (const name of [
+    "NEXT_PUBLIC_DEMO_MODE",
     "MESSAGING_PROVIDER",
     "TELNYX_API_KEY",
     "TELNYX_MESSAGING_PROFILE_ID",
@@ -57,6 +58,14 @@ describe("getMessagingProvider", () => {
     vi.stubEnv("MESSAGING_PROVIDER", "twilio");
     vi.stubEnv("TELNYX_API_KEY", "KEY123"); // configured, but overridden
     expect(getMessagingProvider().name).toBe("twilio");
+  });
+
+  it("forces the console provider in demo mode even with real creds", () => {
+    clearMessagingEnv();
+    vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", "true");
+    vi.stubEnv("TELNYX_API_KEY", "KEY123");
+    vi.stubEnv("MESSAGING_PROVIDER", "telnyx");
+    expect(getMessagingProvider().name).toBe("console");
   });
 });
 

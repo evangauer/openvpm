@@ -18,6 +18,9 @@ export { isSuppressed, addSuppression, removeSuppression } from "./suppression";
  * provider-agnostic selection in lib/agent/runner.ts.
  */
 export function getMessagingProvider(): MessagingProvider {
+  // Demo deployments never send real messages, regardless of configured creds —
+  // the demo is purely a demo. This is the single chokepoint for all sends.
+  if (process.env.NEXT_PUBLIC_DEMO_MODE === "true") return consoleProvider;
   const override = process.env.MESSAGING_PROVIDER?.toLowerCase();
   if (override === "telnyx") return telnyxProvider;
   if (override === "twilio") return twilioProvider;
