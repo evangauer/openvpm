@@ -72,26 +72,24 @@ async function setClientConsent(
 
 export async function POST(request: Request) {
   const rawBody = await request.text();
+  // Fail closed: this public route mutates tenant data (suppression, consent,
+  // inbox), so a missing key, missing headers, or a bad signature all reject —
+  // matching the codebase's fail-closed auth elsewhere (cron-auth, Stripe webhook).
   const publicKey = process.env.TELNYX_PUBLIC_KEY;
-  if (publicKey) {
-    const sig = request.headers.get("telnyx-signature-ed25519");
-    const ts = request.headers.get("telnyx-timestamp");
-    if (
-      !sig ||
-      !ts ||
-      !verifyTelnyxSignature({
-        rawBody,
-        signatureB64: sig,
-        timestamp: ts,
-        publicKeyB64: publicKey,
-      })
-    ) {
-      return NextResponse.json({ error: "invalid signature" }, { status: 401 });
-    }
-  } else {
-    console.warn(
-      "[telnyx-webhook] TELNYX_PUBLIC_KEY not set — skipping signature verification"
-    );
+  const sig = request.headers.get("telnyx-signature-ed25519");
+  const ts = request.headers.get("telnyx-timestamp");
+  if (
+    !publicKey ||
+    !sig ||
+    !ts ||
+    !verifyTelnyxSignature({
+      rawBody,
+      signatureB64: sig,
+      timestamp: ts,
+      publicKeyB64: publicKey,
+    })
+  ) {
+    return NextResponse.json({ error: "invalid signature" }, { status: 401 });
   }
 
   let event: unknown;
