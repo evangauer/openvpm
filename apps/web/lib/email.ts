@@ -5,6 +5,8 @@ import {
   renderTrialEndingEmail,
   renderPaymentReceiptEmail,
   renderPaymentFailedEmail,
+  renderSubscriptionConfirmedEmail,
+  renderSubscriptionCanceledEmail,
 } from "@openpims/email";
 
 // ---------------------------------------------------------------------------
@@ -434,6 +436,40 @@ export async function sendPaymentFailedEmail(data: {
     amount: data.amount,
     nextRetryDate: data.nextRetryDate,
     billingUrl,
+  });
+  return sendEmail({ to: data.to, subject, html, replyTo: SUPPORT_ADDRESS });
+}
+
+/** Confirmation sent when a practice subscribes (checkout completed). */
+export async function sendSubscriptionConfirmedEmail(data: {
+  to: string;
+  practiceName: string;
+  monthlyPrice?: string;
+}): Promise<{ success: boolean; id?: string; error?: string }> {
+  const brand = openvpmBrand();
+  const { subject, html } = await renderSubscriptionConfirmedEmail({
+    brand,
+    practiceName: data.practiceName,
+    monthlyPrice: data.monthlyPrice ?? "$99",
+  });
+  return sendEmail({ to: data.to, subject, html, replyTo: SUPPORT_ADDRESS });
+}
+
+/** Confirmation sent when a subscription is canceled. */
+export async function sendSubscriptionCanceledEmail(data: {
+  to: string;
+  practiceName: string;
+  accessUntil?: string;
+  reactivateUrl?: string;
+}): Promise<{ success: boolean; id?: string; error?: string }> {
+  const brand = openvpmBrand();
+  const reactivateUrl =
+    data.reactivateUrl ?? `${brand.appUrl}/settings?tab=billing`;
+  const { subject, html } = await renderSubscriptionCanceledEmail({
+    brand,
+    practiceName: data.practiceName,
+    accessUntil: data.accessUntil,
+    reactivateUrl,
   });
   return sendEmail({ to: data.to, subject, html, replyTo: SUPPORT_ADDRESS });
 }

@@ -13,6 +13,14 @@ import {
   PaymentFailedEmail,
   type PaymentFailedEmailProps,
 } from "./templates/PaymentFailedEmail";
+import {
+  SubscriptionConfirmedEmail,
+  type SubscriptionConfirmedEmailProps,
+} from "./templates/SubscriptionConfirmedEmail";
+import {
+  SubscriptionCanceledEmail,
+  type SubscriptionCanceledEmailProps,
+} from "./templates/SubscriptionCanceledEmail";
 
 export interface RenderedEmail {
   subject: string;
@@ -53,5 +61,23 @@ export async function renderPaymentFailedEmail(
   return {
     subject: "Action needed: your OpenVPM payment didn't go through",
     html: await render(<PaymentFailedEmail {...p} />),
+  };
+}
+
+export async function renderSubscriptionConfirmedEmail(
+  p: SubscriptionConfirmedEmailProps,
+): Promise<RenderedEmail> {
+  return {
+    subject: "You're on OpenVPM Cloud",
+    html: await render(<SubscriptionConfirmedEmail {...p} />),
+  };
+}
+
+export async function renderSubscriptionCanceledEmail(
+  p: SubscriptionCanceledEmailProps,
+): Promise<RenderedEmail> {
+  return {
+    subject: "Your OpenVPM subscription was canceled",
+    html: await render(<SubscriptionCanceledEmail {...p} />),
   };
 }

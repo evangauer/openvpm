@@ -11,6 +11,8 @@ import { withSystem } from "@/lib/tenant-db";
 import {
   sendPaymentReceiptEmail,
   sendPaymentFailedEmail,
+  sendSubscriptionConfirmedEmail,
+  sendSubscriptionCanceledEmail,
 } from "@/lib/email";
 import { sendLifecycleEmail } from "@/lib/email-lifecycle";
 
@@ -69,6 +71,18 @@ export async function POST(req: NextRequest) {
               subscriptionId,
             })
           );
+          const practice = await practiceById(practiceId);
+          if (practice?.email) {
+            const to = practice.email;
+            const practiceName = practice.name ?? "your practice";
+            await sendLifecycleEmail({
+              practiceId,
+              to,
+              emailType: "subscription_confirmed",
+              dedupeKey: `lc:confirmed:${subscriptionId}`,
+              send: () => sendSubscriptionConfirmedEmail({ to, practiceName }),
+            });
+          }
         }
         break;
       }
@@ -93,6 +107,18 @@ export async function POST(req: NextRequest) {
               })
               .where(eq(practices.id, practiceId))
           );
+          const practice = await practiceById(practiceId);
+          if (practice?.email) {
+            const to = practice.email;
+            const practiceName = practice.name ?? "your practice";
+            await sendLifecycleEmail({
+              practiceId,
+              to,
+              emailType: "subscription_canceled",
+              dedupeKey: `lc:canceled:${sub.id}`,
+              send: () => sendSubscriptionCanceledEmail({ to, practiceName }),
+            });
+          }
         }
         break;
       }
@@ -226,6 +252,22 @@ async function practiceForCustomer(customerId: string) {
       })
       .from(practices)
       .where(eq(practices.stripeCustomerId, customerId))
+      .limit(1),
+  );
+  return p ?? null;
+}
+
+/** Look up a practice's id / email / name by id. */
+async function practiceById(practiceId: string) {
+  const [p] = await withSystem(db, (tx) =>
+    tx
+      .select({
+        id: practices.id,
+        email: practices.email,
+        name: practices.name,
+      })
+      .from(practices)
+      .where(eq(practices.id, practiceId))
       .limit(1),
   );
   return p ?? null;

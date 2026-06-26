@@ -9,6 +9,8 @@ import {
   renderTrialEndingEmail,
   renderPaymentReceiptEmail,
   renderPaymentFailedEmail,
+  renderSubscriptionConfirmedEmail,
+  renderSubscriptionCanceledEmail,
 } from "./src/render";
 
 const brand = openvpmBrand();
@@ -42,6 +44,17 @@ async function main() {
       amount: "$99.00",
       nextRetryDate: "July 3, 2026",
       billingUrl,
+    }),
+    "subscription-confirmed": await renderSubscriptionConfirmedEmail({
+      brand,
+      practiceName,
+      monthlyPrice: "$99",
+    }),
+    "subscription-canceled": await renderSubscriptionCanceledEmail({
+      brand,
+      practiceName,
+      accessUntil: "August 10, 2026",
+      reactivateUrl: billingUrl,
     }),
   };
 

@@ -8,3 +8,5 @@ export type { WelcomeEmailProps } from "./src/templates/WelcomeEmail";
 export type { TrialEndingEmailProps } from "./src/templates/TrialEndingEmail";
 export type { PaymentReceiptEmailProps } from "./src/templates/PaymentReceiptEmail";
 export type { PaymentFailedEmailProps } from "./src/templates/PaymentFailedEmail";
+export type { SubscriptionConfirmedEmailProps } from "./src/templates/SubscriptionConfirmedEmail";
+export type { SubscriptionCanceledEmailProps } from "./src/templates/SubscriptionCanceledEmail";
