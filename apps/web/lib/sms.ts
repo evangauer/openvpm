@@ -97,7 +97,7 @@ export async function sendAppointmentReminderSms(data: {
   practicePhone?: string;
   practiceId?: string;
   locationId?: string;
-}): Promise<{ success: boolean }> {
+}): Promise<{ success: boolean; error?: string }> {
   const phoneInfo = data.practicePhone
     ? `Call ${data.practicePhone} to reschedule.`
     : "Contact us to reschedule.";
@@ -110,7 +110,7 @@ export async function sendAppointmentReminderSms(data: {
     practiceId: data.practiceId,
     locationId: data.locationId,
   });
-  return { success: result.success };
+  return { success: result.success, error: result.error };
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +125,7 @@ export async function sendVaccinationReminderSms(data: {
   practicePhone?: string;
   practiceId?: string;
   locationId?: string;
-}): Promise<{ success: boolean }> {
+}): Promise<{ success: boolean; error?: string }> {
   const phoneInfo = data.practicePhone
     ? `Call ${data.practicePhone} to schedule.`
     : "Contact us to schedule.";
@@ -138,5 +138,5 @@ export async function sendVaccinationReminderSms(data: {
     practiceId: data.practiceId,
     locationId: data.locationId,
   });
-  return { success: result.success };
+  return { success: result.success, error: result.error };
 }

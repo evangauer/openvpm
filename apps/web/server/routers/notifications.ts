@@ -17,6 +17,8 @@ import {
   sendInvoiceEmail,
   sendVaccinationReminder,
 } from "@/lib/email";
+import { sendAppointmentReminderSms } from "@/lib/sms";
+import { pickReminderChannel } from "@/lib/messaging/reminders";
 import { formatCurrency } from "@/lib/locale/format";
 
 function formatDate(d: Date | string): string {
@@ -49,10 +51,16 @@ export const notificationsRouter = createRouter({
           clientFirstName: clients.firstName,
           clientLastName: clients.lastName,
           clientEmail: clients.email,
+          clientPhone: clients.phone,
+          preferredContactMethod: clients.preferredContactMethod,
+          smsConsent: clients.smsConsent,
+          practiceName: practices.name,
+          practicePhone: practices.phone,
         })
         .from(appointments)
         .leftJoin(patients, eq(appointments.patientId, patients.id))
         .leftJoin(clients, eq(appointments.clientId, clients.id))
+        .leftJoin(practices, eq(appointments.practiceId, practices.id))
         .where(
           and(
             eq(appointments.id, input.appointmentId),
@@ -65,30 +73,75 @@ export const notificationsRouter = createRouter({
       if (!appt) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Appointment not found" });
       }
-      if (!appt.clientEmail) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "Client does not have an email address on file" });
+
+      // Manual send: respect the client's preferred channel + SMS consent.
+      // Quiet hours don't apply — this is a deliberate staff action.
+      const logReminder = (channel: "sms" | "email") =>
+        ctx.db.insert(communications).values({
+          practiceId: ctx.practiceId,
+          clientId: appt.clientId!,
+          channel,
+          direction: "outbound",
+          subject: "Appointment Reminder",
+          content: `Appointment reminder sent for ${appt.patientName} on ${formatDate(appt.startTime)}`,
+          status: "sent",
+        });
+
+      const sendEmail = async () => {
+        await sendAppointmentReminder({
+          to: appt.clientEmail!,
+          clientName: `${appt.clientFirstName} ${appt.clientLastName}`,
+          patientName: appt.patientName ?? "Unknown",
+          appointmentDate: formatDate(appt.startTime),
+          appointmentTime: formatTime(appt.startTime),
+          practiceName: appt.practiceName ?? "",
+        });
+        await logReminder("email");
+      };
+
+      const channel = pickReminderChannel({
+        preferredContactMethod: appt.preferredContactMethod,
+        phone: appt.clientPhone,
+        smsConsent: appt.smsConsent ?? false,
+        hasEmail: Boolean(appt.clientEmail),
+        quietHours: false,
+      });
+
+      if (channel === "none") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "Client has no email and no SMS-consented phone number on file",
+        });
       }
 
-      await sendAppointmentReminder({
-        to: appt.clientEmail,
-        clientName: `${appt.clientFirstName} ${appt.clientLastName}`,
-        patientName: appt.patientName ?? "Unknown",
-        appointmentDate: formatDate(appt.startTime),
-        appointmentTime: formatTime(appt.startTime),
-        practiceName: "",
-      });
+      if (channel === "sms") {
+        const result = await sendAppointmentReminderSms({
+          to: appt.clientPhone!,
+          patientName: appt.patientName ?? "Unknown",
+          appointmentDate: formatDate(appt.startTime),
+          appointmentTime: formatTime(appt.startTime),
+          practiceName: appt.practiceName ?? "",
+          practicePhone: appt.practicePhone ?? undefined,
+          practiceId: ctx.practiceId,
+        });
+        if (result.success) {
+          await logReminder("sms");
+          return { success: true, channel: "sms" as const };
+        }
+        // SMS blocked (e.g. opted out) — fall back to email if we can.
+        if (appt.clientEmail) {
+          await sendEmail();
+          return { success: true, channel: "email" as const };
+        }
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: result.error ?? "Could not send SMS reminder",
+        });
+      }
 
-      await ctx.db.insert(communications).values({
-        practiceId: ctx.practiceId,
-        clientId: appt.clientId!,
-        channel: "email",
-        direction: "outbound",
-        subject: "Appointment Reminder",
-        content: `Appointment reminder sent for ${appt.patientName} on ${formatDate(appt.startTime)}`,
-        status: "sent",
-      });
-
-      return { success: true };
+      await sendEmail();
+      return { success: true, channel: "email" as const };
     }),
 
   sendInvoiceEmail: protectedProcedure
