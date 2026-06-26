@@ -122,7 +122,11 @@ export async function POST(req: NextRequest) {
   // ---------- Upload ----------
   try {
     const buffer = Buffer.from(await file.arrayBuffer());
-    const url = await uploadFile(key, buffer, mimeType);
+    await uploadFile(key, buffer, mimeType);
+
+    // Serve through the same-origin proxy (app/api/files/[...path]). The raw
+    // R2/S3 URL is private and can't be loaded by an <img> tag.
+    const url = `/api/files/${key}`;
 
     // Persist metadata in the database (tenant-scoped for RLS).
     await withTenant(db, practiceId, (tx) =>

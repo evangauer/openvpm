@@ -32,10 +32,12 @@ export function ActivationChecklist() {
   const isAdmin =
     status === "authenticated" && session?.user?.role === "admin";
 
+  // No long staleTime: each dashboard mount re-checks, so a milestone you just
+  // completed (uploaded a logo, invited a teammate, asked the AI) shows as done
+  // when you come back here.
   const opts = {
     enabled: isAdmin,
     retry: false,
-    staleTime: 60 * 1000,
     refetchOnWindowFocus: false,
   } as const;
   const state = trpc.settings.getOnboardingState.useQuery(undefined, opts);
@@ -52,6 +54,9 @@ export function ActivationChecklist() {
   const tourDone =
     state.data.tourStatus === "completed" ||
     state.data.tourStatus === "skipped";
+  const brandColor = (
+    practice.data?.settings as { brandColor?: string } | null
+  )?.brandColor;
 
   const milestones: Milestone[] = [
     {
@@ -65,7 +70,7 @@ export function ActivationChecklist() {
       key: "brand",
       label: "Make it your brand",
       hint: "Add your logo and accent color.",
-      done: !!practice.data?.logoUrl,
+      done: !!practice.data?.logoUrl || !!brandColor,
       href: "/settings?tab=practice",
     },
     {
@@ -107,7 +112,12 @@ export function ActivationChecklist() {
   const pct = total === 0 ? 100 : (doneCount / total) * 100;
   const allDone = doneCount === total;
 
-  function onDismiss() {
+  // The corner X just hides the checklist for this session — it comes back next
+  // visit ("show later"). "Don't show this again" dismisses it for good.
+  function snooze() {
+    setHidden(true);
+  }
+  function dontShowAgain() {
     setHidden(true);
     dismiss.mutate();
   }
@@ -127,7 +137,7 @@ export function ActivationChecklist() {
             ready to run.
           </p>
         </div>
-        <Button variant="ghost" size="sm" onClick={onDismiss}>
+        <Button variant="ghost" size="sm" onClick={dontShowAgain}>
           Dismiss
         </Button>
       </Card>
@@ -138,8 +148,9 @@ export function ActivationChecklist() {
     <Card className="relative p-5 sm:p-6">
       <button
         type="button"
-        onClick={onDismiss}
-        aria-label="Dismiss checklist"
+        onClick={snooze}
+        aria-label="Hide for now"
+        title="Hide for now"
         className="absolute right-3 top-3 rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
       >
         <X className="h-4 w-4" />
@@ -219,6 +230,16 @@ export function ActivationChecklist() {
             </button>
           );
         })}
+      </div>
+
+      <div className="mt-4 flex justify-end">
+        <button
+          type="button"
+          onClick={dontShowAgain}
+          className="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+        >
+          Don&apos;t show this again
+        </button>
       </div>
     </Card>
   );

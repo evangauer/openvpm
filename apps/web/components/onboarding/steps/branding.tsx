@@ -1,15 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Check, ImageIcon, Loader2, Upload } from "lucide-react";
+import { ImageIcon, Loader2, Upload } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { AccentColorPicker } from "@/components/brand/accent-color-picker";
 import { toast } from "sonner";
 import type { StepHandle } from "../journey-types";
-
-// The four accent swatches the brand uses elsewhere.
-const ACCENTS = ["#0d9488", "#16a34a", "#f97316", "#db2777"];
 
 /**
  * Step 2: optional logo upload and accent color. Both save right away through
@@ -123,41 +120,11 @@ export function BrandingStep({ register }: { register: (h: StepHandle) => void }
       {/* Accent color */}
       <div className="space-y-2">
         <span className="text-sm font-medium text-slate-700">Accent color</span>
-        <div className="flex gap-2.5">
-          {ACCENTS.map((c) => {
-            const active = (savedColor ?? "").toLowerCase() === c;
-            return (
-              <button
-                key={c}
-                type="button"
-                aria-label={`Use accent color ${c}`}
-                disabled={updatePractice.isPending}
-                className={cn(
-                  "flex h-10 w-10 items-center justify-center rounded-full border-2 transition-transform disabled:opacity-60",
-                  active ? "scale-110 border-slate-900" : "border-transparent"
-                )}
-                style={{ backgroundColor: c }}
-                onClick={() => pickColor(c)}
-              >
-                {active ? <Check className="h-4 w-4 text-white" /> : null}
-              </button>
-            );
-          })}
-        </div>
-        <div className="mt-3 flex items-center gap-2">
-          <span className="text-xs text-slate-500">Or paste a hex code</span>
-          <input
-            type="text"
-            defaultValue={savedColor ?? "#0d9488"}
-            placeholder="#0d9488"
-            maxLength={7}
-            onChange={(e) => {
-              const v = e.target.value.trim();
-              if (/^#[0-9a-fA-F]{6}$/.test(v)) pickColor(v);
-            }}
-            className="h-9 w-28 rounded-md border border-input bg-white px-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          />
-        </div>
+        <AccentColorPicker
+          value={savedColor}
+          onChange={pickColor}
+          disabled={updatePractice.isPending}
+        />
       </div>
     </div>
   );

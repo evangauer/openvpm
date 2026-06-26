@@ -30,6 +30,7 @@ import {
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { AccentColorPicker } from "@/components/brand/accent-color-picker";
 import { cn, isValidEmail } from "@/lib/utils";
 import { toast } from "sonner";
 import { regionDefaults } from "@/lib/locale/format";
@@ -84,8 +85,8 @@ const PRESET_COLORS = [
   "#6b7280",
 ];
 
-// Brand accent swatches offered in the Branding section.
-const BRAND_COLORS = ["#0d9488", "#16a34a", "#f97316", "#db2777"];
+// Accent swatches now live in the shared <AccentColorPicker /> (presets +
+// custom hex), reused by Settings and the onboarding journey.
 
 const ROLE_BADGE: Record<string, string> = {
   admin: "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400",
@@ -461,24 +462,11 @@ function PracticeInfoTab() {
         {/* Accent color */}
         <div className="space-y-2">
           <span className="text-sm font-medium">Accent color</span>
-          <div className="flex gap-2">
-            {BRAND_COLORS.map((c) => (
-              <button
-                key={c}
-                type="button"
-                aria-label={`Set accent color ${c}`}
-                disabled={brandingMutation.isPending}
-                className={cn(
-                  "h-9 w-9 rounded-full border-2 transition-transform disabled:opacity-50",
-                  (currentBrandColor ?? "").toLowerCase() === c
-                    ? "border-foreground scale-110"
-                    : "border-transparent"
-                )}
-                style={{ backgroundColor: c }}
-                onClick={() => brandingMutation.mutate({ brandColor: c })}
-              />
-            ))}
-          </div>
+          <AccentColorPicker
+            value={currentBrandColor}
+            onChange={(c) => brandingMutation.mutate({ brandColor: c })}
+            disabled={brandingMutation.isPending}
+          />
         </div>
       </div>
 

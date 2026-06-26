@@ -46,6 +46,29 @@ export async function uploadFile(
 }
 
 /**
+ * Read an object's bytes + content type. Used by the same-origin file proxy
+ * (`/api/files/...`) so uploaded images serve through the app instead of the
+ * private R2/S3 API endpoint (which rejects unauthenticated <img> requests).
+ *
+ * @param key Object key in S3
+ * @returns The object bytes + content type, or null if it does not exist.
+ */
+export async function getObject(
+  key: string,
+): Promise<{ body: Uint8Array; contentType?: string } | null> {
+  try {
+    const res = await s3.send(
+      new GetObjectCommand({ Bucket: bucket, Key: key }),
+    );
+    const body = await res.Body?.transformToByteArray();
+    if (!body) return null;
+    return { body, contentType: res.ContentType };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Generate a pre-signed URL for reading a private object.
  *
  * @param key       Object key in S3
