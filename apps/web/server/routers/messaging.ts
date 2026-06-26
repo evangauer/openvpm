@@ -12,9 +12,13 @@ import {
 import { usageForPractice, currentPeriodMonth } from "@/lib/billing/usage";
 import { getPlan } from "@/lib/billing/plans";
 import { normalizeE164 } from "@/lib/messaging";
+import { sendSms } from "@/lib/sms";
 import {
   searchAvailableNumbers,
   checkHostedEligibility,
+  createMessagingProfile,
+  buyNumber,
+  createHostedOrder,
   TelnyxNotConfiguredError,
 } from "@/lib/messaging/telnyx-provisioning";
 
@@ -158,5 +162,137 @@ export const messagingRouter = createRouter({
       } catch (e) {
         throw provisioningError(e);
       }
+    }),
+
+  /**
+   * Stand up a texting number for a location: create a messaging profile (with
+   * our inbound webhook), then either text-enable the location's existing number
+   * (host) or buy a new local number, and save the config. Leaves the location
+   * disabled + registration pending (carrier A2P approval precedes sending).
+   */
+  provisionNumber: adminOnly
+    .input(
+      z.object({
+        locationId: z.string().uuid(),
+        mode: z.enum(["host", "buy"]),
+        // Required for "buy"; for "host" we use the location's existing number.
+        phoneNumber: z.string().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [loc] = await ctx.db
+        .select({ id: locations.id, name: locations.name, phone: locations.phone })
+        .from(locations)
+        .where(
+          and(
+            eq(locations.id, input.locationId),
+            eq(locations.practiceId, ctx.practiceId)
+          )
+        )
+        .limit(1);
+      if (!loc) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Location not found" });
+      }
+
+      const e164 = normalizeE164(
+        input.mode === "host" ? loc.phone : input.phoneNumber
+      );
+      if (!e164) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            input.mode === "host"
+              ? "Add a valid phone number to this location before text-enabling it."
+              : "Select a valid number to purchase.",
+        });
+      }
+
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "";
+      const webhookUrl = `${appUrl}/api/webhooks/telnyx`;
+
+      try {
+        const profile = await createMessagingProfile({
+          name: `${loc.name} — OpenVPM`,
+          webhookUrl,
+        });
+        const numberSource = input.mode === "host" ? "hosted" : "purchased";
+        if (input.mode === "host") {
+          await createHostedOrder({ phoneNumber: e164, messagingProfileId: profile.id });
+        } else {
+          await buyNumber({ phoneNumber: e164, messagingProfileId: profile.id });
+        }
+
+        await ctx.db
+          .insert(locationMessaging)
+          .values({
+            practiceId: ctx.practiceId,
+            locationId: loc.id,
+            provider: "telnyx",
+            messagingProfileId: profile.id,
+            senderE164: e164,
+            numberSource,
+            registrationStatus: "pending",
+            registrationDetail:
+              "Carrier registration (A2P 10DLC) in progress — required before messages can send; typically 1–2 weeks.",
+            enabled: false,
+          })
+          .onConflictDoUpdate({
+            target: locationMessaging.locationId,
+            set: {
+              provider: "telnyx",
+              messagingProfileId: profile.id,
+              senderE164: e164,
+              numberSource,
+              registrationStatus: "pending",
+              updatedAt: new Date(),
+            },
+          });
+
+        return { ok: true, senderE164: e164, numberSource };
+      } catch (e) {
+        throw provisioningError(e);
+      }
+    }),
+
+  /** Turn sending on/off for a location (independent of registration state). */
+  setEnabled: adminOnly
+    .input(z.object({ locationId: z.string().uuid(), enabled: z.boolean() }))
+    .mutation(async ({ ctx, input }) => {
+      const [updated] = await ctx.db
+        .update(locationMessaging)
+        .set({ enabled: input.enabled, updatedAt: new Date() })
+        .where(
+          and(
+            eq(locationMessaging.locationId, input.locationId),
+            eq(locationMessaging.practiceId, ctx.practiceId)
+          )
+        )
+        .returning();
+      if (!updated) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Set up a number for this location first.",
+        });
+      }
+      return { ok: true, enabled: updated.enabled };
+    }),
+
+  /** Send a test SMS to a staff number from the location's sender. */
+  testSend: adminOnly
+    .input(z.object({ locationId: z.string().uuid(), to: z.string().min(7) }))
+    .mutation(async ({ ctx, input }) => {
+      const result = await sendSms({
+        to: input.to,
+        body: "OpenVPM test message — your texting is set up correctly.",
+        practiceId: ctx.practiceId,
+        locationId: input.locationId,
+      });
+      if (!result.success) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: result.error ?? "Test send failed.",
+        });
+      }
+      return { ok: true, id: result.sid };
     }),
 });

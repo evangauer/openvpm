@@ -118,12 +118,17 @@ export const clientsRouter = createRouter({
         state: z.string().optional(),
         zip: z.string().optional(),
         notes: z.string().optional(),
+        smsConsent: z.boolean().optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
+      const { smsConsent, ...rest } = input;
+      const consent = smsConsent
+        ? { smsConsent: true, smsConsentAt: new Date(), smsConsentSource: "intake" }
+        : {};
       const [client] = await ctx.db
         .insert(clients)
-        .values({ ...input, practiceId: ctx.practiceId })
+        .values({ ...rest, ...consent, practiceId: ctx.practiceId })
         .returning();
       return client!;
     }),
@@ -141,10 +146,20 @@ export const clientsRouter = createRouter({
         state: z.string().optional(),
         zip: z.string().optional(),
         notes: z.string().optional(),
+        smsConsent: z.boolean().optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { id, ...data } = input;
+      const { id, smsConsent, ...rest } = input;
+      const data: Record<string, unknown> = { ...rest };
+      // Record consent transitions with an audit timestamp + source.
+      if (smsConsent !== undefined) {
+        data.smsConsent = smsConsent;
+        if (smsConsent) {
+          data.smsConsentAt = new Date();
+          data.smsConsentSource = "intake";
+        }
+      }
       const [client] = await ctx.db
         .update(clients)
         .set(data)

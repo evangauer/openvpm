@@ -143,3 +143,56 @@ export async function checkHostedEligibility(
     detail: row?.reason,
   };
 }
+
+// --- Mutating operations (spend money / change account state) ----------------
+
+/** Create a messaging profile (sender pool + inbound webhook + A2P binding). */
+export async function createMessagingProfile(opts: {
+  name: string;
+  webhookUrl: string;
+}): Promise<{ id: string }> {
+  const json = await telnyxRequest<{ data?: { id?: string } }>(
+    "POST",
+    "/messaging_profiles",
+    {
+      name: opts.name,
+      webhook_url: opts.webhookUrl,
+      webhook_api_version: "2",
+    }
+  );
+  const id = json.data?.id;
+  if (!id) throw new TelnyxError("Telnyx did not return a messaging profile id", 502);
+  return { id };
+}
+
+/** Purchase a new local number and assign it to a messaging profile. */
+export async function buyNumber(opts: {
+  phoneNumber: string;
+  messagingProfileId: string;
+}): Promise<{ orderId: string; status: string | null }> {
+  const json = await telnyxRequest<{ data?: { id?: string; status?: string } }>(
+    "POST",
+    "/number_orders",
+    {
+      phone_numbers: [{ phone_number: opts.phoneNumber }],
+      messaging_profile_id: opts.messagingProfileId,
+    }
+  );
+  return { orderId: json.data?.id ?? "", status: json.data?.status ?? null };
+}
+
+/** Text-enable an existing (non-Telnyx) number via a hosted-SMS order. */
+export async function createHostedOrder(opts: {
+  phoneNumber: string;
+  messagingProfileId: string;
+}): Promise<{ orderId: string; status: string | null }> {
+  const json = await telnyxRequest<{ data?: { id?: string; status?: string } }>(
+    "POST",
+    "/messaging_hosted_number_orders",
+    {
+      phone_numbers: [opts.phoneNumber],
+      messaging_profile_id: opts.messagingProfileId,
+    }
+  );
+  return { orderId: json.data?.id ?? "", status: json.data?.status ?? null };
+}
