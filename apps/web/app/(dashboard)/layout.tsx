@@ -6,7 +6,7 @@ import { TopBar } from "@/components/layout/top-bar";
 import { CommandSearch } from "@/components/common/command-search";
 import { ErrorBoundary } from "@/components/common/error-boundary";
 import { TourProvider } from "@/components/tour/tour-provider";
-import { OnboardingJourney } from "@/components/onboarding/journey-overlay";
+import { OnboardingJourneyProvider } from "@/components/onboarding/journey-overlay";
 import { BrandTheme } from "@/components/brand/brand-theme";
 import { VerifyEmailBanner } from "@/components/layout/verify-email-banner";
 
@@ -34,21 +34,22 @@ export default function DashboardLayout({
 
   return (
     <TourProvider>
-      <div className="flex h-screen overflow-hidden">
-        <Sidebar />
-        <div className="flex flex-1 flex-col overflow-hidden">
-          <TopBar onSearchOpen={() => setSearchOpen(true)} />
-          <VerifyEmailBanner />
-          <main id="main-content" className="flex-1 overflow-y-auto bg-surface p-6">
-            <ErrorBoundary>{children}</ErrorBoundary>
-          </main>
+      <OnboardingJourneyProvider>
+        <div className="flex h-screen overflow-hidden">
+          <Sidebar />
+          <div className="flex flex-1 flex-col overflow-hidden">
+            <TopBar onSearchOpen={() => setSearchOpen(true)} />
+            <VerifyEmailBanner />
+            <main id="main-content" className="flex-1 overflow-y-auto bg-surface p-6">
+              <ErrorBoundary>{children}</ErrorBoundary>
+            </main>
+          </div>
+          <CommandSearch
+            open={searchOpen}
+            onClose={() => setSearchOpen(false)}
+          />
         </div>
-        <CommandSearch
-          open={searchOpen}
-          onClose={() => setSearchOpen(false)}
-        />
-      </div>
-      <OnboardingJourney />
+      </OnboardingJourneyProvider>
       <BrandTheme />
     </TourProvider>
   );

@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { Calendar, PawPrint, DollarSign, FileText, Clock, TrendingUp } from "lucide-react";
-import { FinishSetupCard } from "@/components/dashboard/finish-setup-card";
+import { WelcomePanel } from "@/components/dashboard/welcome-panel";
+import { ActivationChecklist } from "@/components/dashboard/activation-checklist";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { formatCurrency, localeForCountry } from "@/lib/locale/format";
@@ -187,7 +188,8 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-8">
-      <FinishSetupCard />
+      <WelcomePanel />
+      <ActivationChecklist />
       {/* KPI Cards */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         {stats.isLoading

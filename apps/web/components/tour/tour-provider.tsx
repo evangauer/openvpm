@@ -67,26 +67,17 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
     persist("in_progress", TOUR_STEPS[0]!.id);
   }, [persist]);
 
-  // Auto-start once per mount: explicit ?tour=start (fresh signup) or a
-  // not-yet-started admin workspace. Terminal states never relaunch.
+  // Start ONLY on an explicit ?tour=start deep-link. Onboarding is opt-in: a
+  // not-yet-started workspace is no longer auto-nagged into the tour — the
+  // welcome panel and activation checklist invoke start() on demand instead.
   useEffect(() => {
     if (autoStarted.current || index !== null || !isAdmin) return;
-    const status = stateQuery.data?.tourStatus;
-    if (status === "completed" || status === "skipped") {
-      autoStarted.current = true;
-      return;
-    }
     const wantStart =
       typeof window !== "undefined" &&
       new URLSearchParams(window.location.search).get("tour") === "start";
     if (wantStart) {
       autoStarted.current = true;
       router.replace(pathname); // strip the param so a refresh won't relaunch
-      start();
-      return;
-    }
-    if (status === "not_started") {
-      autoStarted.current = true;
       start();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

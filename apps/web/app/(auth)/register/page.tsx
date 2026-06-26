@@ -58,7 +58,9 @@ function RegisterPageInner() {
         redirect: false,
       });
       if (result?.ok) {
-        router.push("/?tour=start");
+        // Land directly in the live (sample-data-seeded) product with a welcome
+        // beat. The tour and guided setup are opt-in from there, not forced.
+        router.push("/?welcome=1");
         router.refresh();
       } else {
         toast.success("Account created. Please sign in.");

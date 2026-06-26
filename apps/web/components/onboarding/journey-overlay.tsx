@@ -1,7 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useSession } from "next-auth/react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useRef,
+  useState,
+} from "react";
 import { ArrowLeft, ArrowRight, Loader2, PawPrint } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -24,47 +29,48 @@ const STEPS = [
 
 const TOTAL = STEPS.length;
 
+interface OnboardingJourneyContextValue {
+  /** Open the "Make it yours" guided setup from the first step. */
+  openJourney: () => void;
+  isOpen: boolean;
+}
+
+const OnboardingJourneyContext = createContext<OnboardingJourneyContextValue>({
+  openJourney: () => {},
+  isOpen: false,
+});
+
+export function useOnboardingJourney() {
+  return useContext(OnboardingJourneyContext);
+}
+
 /**
- * The "Make it yours" guided setup. Opens once, right after the value tour ends,
- * for a fresh admin who has not finished onboarding. Each step runs its own
- * server work on Continue; finishing marks onboarding complete (and clears the
- * sample data unless the user chose to keep it), so it never reopens.
+ * Provides the "Make it yours" guided setup as an OPT-IN overlay. It no longer
+ * auto-opens after the tour — onboarding is opt-in now, so the welcome panel and
+ * activation checklist invoke `openJourney()` explicitly. Mount once in the
+ * dashboard layout, wrapping the content so consumers can open it. Each step
+ * runs its own server work on Continue; finishing marks onboarding complete (and
+ * clears the sample data unless the user chose to keep it).
  */
-export function OnboardingJourney() {
-  const { data: session, status } = useSession();
-  const isAdmin =
-    status === "authenticated" && session?.user?.role === "admin";
-
-  const statusQuery = trpc.settings.onboardingStatus.useQuery(undefined, {
-    enabled: isAdmin,
-  });
-  const stateQuery = trpc.settings.getOnboardingState.useQuery(undefined, {
-    enabled: isAdmin,
-  });
-
+export function OnboardingJourneyProvider({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   // null = closed; a number is the active step index.
   const [index, setIndex] = useState<number | null>(null);
-  // Opens at most once per mount, so finishing/skipping never reopens it.
-  const opened = useRef(false);
+  const openJourney = useCallback(() => setIndex(0), []);
 
-  const tourDone =
-    stateQuery.data?.tourStatus === "completed" ||
-    stateQuery.data?.tourStatus === "skipped";
-  const notFinished = statusQuery.data?.completedAt == null;
-
-  useEffect(() => {
-    if (opened.current || index !== null) return;
-    if (!isAdmin) return;
-    if (!statusQuery.data || !stateQuery.data) return;
-    if (notFinished && tourDone) {
-      opened.current = true;
-      setIndex(0);
-    }
-  }, [isAdmin, statusQuery.data, stateQuery.data, notFinished, tourDone, index]);
-
-  if (index === null) return null;
-
-  return <JourneyShell index={index} setIndex={setIndex} />;
+  return (
+    <OnboardingJourneyContext.Provider
+      value={{ openJourney, isOpen: index !== null }}
+    >
+      {children}
+      {index !== null ? (
+        <JourneyShell index={index} setIndex={setIndex} />
+      ) : null}
+    </OnboardingJourneyContext.Provider>
+  );
 }
 
 /**
