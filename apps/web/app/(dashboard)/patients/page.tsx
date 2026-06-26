@@ -170,20 +170,29 @@ export default function PatientsPage() {
       ) : (
         <div className="mt-6 rounded-lg border border-dashed border-border bg-card p-12 text-center">
           <PawPrint className="mx-auto h-10 w-10 text-muted-foreground/50" />
-          <p className="mt-2 text-muted-foreground">
+          <p className="mt-3 font-medium text-foreground">
             {search || species
               ? "No patients match your filters"
               : "No patients yet"}
           </p>
-          {!search && !species && (
-            <Button
-              variant="outline"
-              className="mt-4"
-              onClick={() => router.push("/patients/new")}
-            >
-              <Plus className="mr-2 h-4 w-4" />
-              Add your first patient
-            </Button>
+          {!search && !species ? (
+            <>
+              <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
+                Add your first patient to start tracking visits, records,
+                vaccines, and reminders.
+              </p>
+              <Button
+                className="mt-4"
+                onClick={() => router.push("/patients/new")}
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                Add your first patient
+              </Button>
+            </>
+          ) : (
+            <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
+              Try a different search or clear your filters.
+            </p>
           )}
         </div>
       )}

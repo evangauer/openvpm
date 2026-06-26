@@ -112,18 +112,27 @@ export default function ClientsPage() {
       ) : (
         <div className="mt-6 rounded-lg border border-dashed border-border bg-card p-12 text-center">
           <Users className="mx-auto h-10 w-10 text-muted-foreground/50" />
-          <p className="mt-2 text-muted-foreground">
+          <p className="mt-3 font-medium text-foreground">
             {search ? "No clients match your search" : "No clients yet"}
           </p>
-          {!search && (
-            <Button
-              variant="outline"
-              className="mt-4"
-              onClick={() => router.push("/clients/new")}
-            >
-              <Plus className="mr-2 h-4 w-4" />
-              Add your first client
-            </Button>
+          {!search ? (
+            <>
+              <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
+                Add your first client to start booking visits, sending
+                reminders, and sharing their pet portal.
+              </p>
+              <Button
+                className="mt-4"
+                onClick={() => router.push("/clients/new")}
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                Add your first client
+              </Button>
+            </>
+          ) : (
+            <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
+              Try a different name, email, or phone number.
+            </p>
           )}
         </div>
       )}

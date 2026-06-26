@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSession } from "next-auth/react";
-import { Clock } from "lucide-react";
+import { Clock, ShieldAlert } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 
@@ -30,20 +30,32 @@ export function TrialBadge() {
   if (trialing) {
     const ms = new Date(data.trialEndsAt!).getTime() - Date.now();
     const days = Math.max(0, Math.ceil(ms / (24 * 60 * 60 * 1000)));
-    const urgent = days <= 3;
+    // Progressive urgency: calm teal with plenty of runway, amber as it winds
+    // down, red in the final stretch. The CTA shifts from a neutral "Subscribe"
+    // to the more motivating "Keep your data" once the clock matters.
+    const tone = days <= 2 ? "red" : days <= 5 ? "amber" : "teal";
+    const toneClass = {
+      teal: "border-teal-200 bg-teal-50 text-teal-800 hover:bg-teal-100",
+      amber: "border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100",
+      red: "border-red-200 bg-red-50 text-red-800 hover:bg-red-100",
+    }[tone];
+    const label =
+      days === 0
+        ? "Trial ends today"
+        : `${days} day${days === 1 ? "" : "s"} left in trial`;
     return (
       <Link
         href="/settings?tab=billing"
         className={cn(
           "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors",
-          urgent
-            ? "border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100"
-            : "border-teal-200 bg-teal-50 text-teal-800 hover:bg-teal-100"
+          toneClass
         )}
       >
         <Clock className="h-3.5 w-3.5" />
-        {days === 0 ? "Trial ends today" : `${days} day${days === 1 ? "" : "s"} left in trial`}
-        <span className="font-semibold">· Subscribe</span>
+        {label}
+        <span className="font-semibold">
+          · {tone === "teal" ? "Subscribe" : "Keep your data"}
+        </span>
       </Link>
     );
   }
@@ -55,7 +67,7 @@ export function TrialBadge() {
         href="/settings?tab=billing"
         className="inline-flex items-center gap-1.5 rounded-full border border-destructive/30 bg-destructive/10 px-3 py-1 text-xs font-medium text-destructive transition-colors hover:bg-destructive/20"
       >
-        <Clock className="h-3.5 w-3.5" />
+        <ShieldAlert className="h-3.5 w-3.5" />
         Trial ended — read-only · Reactivate
       </Link>
     );
