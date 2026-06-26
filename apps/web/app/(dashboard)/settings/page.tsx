@@ -26,18 +26,20 @@ import {
   ImageIcon,
   Mail,
   Copy,
+  MessageSquare,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AccentColorPicker } from "@/components/brand/accent-color-picker";
+import { MessagingTab } from "@/components/settings/messaging-tab";
 import { cn, isValidEmail } from "@/lib/utils";
 import { toast } from "sonner";
 import { regionDefaults } from "@/lib/locale/format";
 import { useCurrencyFormatter } from "@/lib/locale/useCurrency";
 
 // ── Types ───────────────────────────────────────────────────
-type Tab = "practice" | "staff" | "appointmentTypes" | "rooms" | "data" | "templates" | "billing";
+type Tab = "practice" | "staff" | "appointmentTypes" | "rooms" | "data" | "templates" | "messaging" | "billing";
 
 const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: "practice", label: "Practice Info", icon: Settings },
@@ -46,6 +48,7 @@ const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: "rooms", label: "Rooms", icon: DoorOpen },
   { id: "data", label: "Data", icon: Database },
   { id: "templates", label: "Templates", icon: Layers },
+  { id: "messaging", label: "Messaging", icon: MessageSquare },
   { id: "billing", label: "Plan & Billing", icon: CreditCard },
 ];
 
@@ -174,6 +177,7 @@ function SettingsPageInner() {
         {activeTab === "rooms" && <RoomsTab />}
         {activeTab === "data" && <DataTab />}
         {activeTab === "templates" && <TemplatesTab />}
+        {activeTab === "messaging" && <MessagingTab />}
         {activeTab === "billing" && <BillingTab />}
       </div>
     </div>

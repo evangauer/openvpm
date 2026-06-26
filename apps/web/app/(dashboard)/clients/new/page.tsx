@@ -6,6 +6,7 @@ import { ArrowLeft } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 
 export default function NewClientPage() {
@@ -20,6 +21,7 @@ export default function NewClientPage() {
     state: "",
     zip: "",
   });
+  const [smsConsent, setSmsConsent] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const createClient = trpc.clients.create.useMutation({
@@ -51,6 +53,7 @@ export default function NewClientPage() {
       city: form.city.trim() || undefined,
       state: form.state.trim() || undefined,
       zip: form.zip.trim() || undefined,
+      smsConsent,
     });
   };
 
@@ -138,6 +141,23 @@ export default function NewClientPage() {
             />
           </div>
         </div>
+
+        <label className="flex items-start gap-2 rounded-md border border-border p-3 text-sm">
+          <Checkbox
+            checked={smsConsent}
+            onChange={(e) => setSmsConsent(e.target.checked)}
+            className="mt-0.5"
+          />
+          <span>
+            <span className="font-medium">
+              Client agrees to receive text messages
+            </span>
+            <span className="block text-xs text-muted-foreground">
+              Appointment and care reminders by SMS. They can reply STOP to opt out
+              anytime.
+            </span>
+          </span>
+        </label>
 
         <div>
           <label className="text-sm font-medium" htmlFor="address">
