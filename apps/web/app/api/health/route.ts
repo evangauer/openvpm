@@ -55,11 +55,12 @@ function requiredAiEnvNames(): string[] {
   return [isGemini ? "GOOGLE_API_KEY" : "ANTHROPIC_API_KEY"];
 }
 
-const HOSTED_OPS_ENV_NAMES = [
-  "OPS_ALERT_WEBHOOK_URL",
-  "CRON_SECRET",
-  "PLATFORM_ADMIN_EMAILS",
-];
+// Required ops envs: cron auth + platform admin access must be present.
+const HOSTED_OPS_ENV_NAMES = ["CRON_SECRET", "PLATFORM_ADMIN_EMAILS"];
+
+// Advisory ops envs: recommended for prod observability but not required to
+// serve requests, so they do not gate the health `ok` / status code.
+const HOSTED_OPS_ALERTING_ENV_NAMES = ["OPS_ALERT_WEBHOOK_URL"];
 
 function hostedEnvCheck(
   names: string[],
@@ -77,7 +78,10 @@ function hostedEnvCheck(
 
 export async function GET() {
   const startedAt = Date.now();
-  const checks: Record<string, { ok: boolean; detail?: string }> = {};
+  const checks: Record<
+    string,
+    { ok: boolean; detail?: string; advisory?: boolean }
+  > = {};
 
   try {
     await db.execute(sql`select 1`);
@@ -106,10 +110,6 @@ export async function GET() {
       HOSTED_EMAIL_ENV_NAMES,
       "Hosted email envs present"
     );
-    checks.hostedSms = hostedEnvCheck(
-      HOSTED_SMS_ENV_NAMES,
-      "Hosted SMS envs present"
-    );
     checks.hostedAi = hostedEnvCheck(
       requiredAiEnvNames(),
       "Hosted AI envs present"
@@ -118,6 +118,21 @@ export async function GET() {
       HOSTED_OPS_ENV_NAMES,
       "Hosted ops envs present"
     );
+
+    // Advisory checks are reported but do NOT gate readiness — a 200 means "can
+    // serve requests", not "every optional capability is wired". SMS is deferred
+    // until Twilio is provisioned; ops alerting (Slack webhook) is recommended.
+    checks.hostedSms = {
+      ...hostedEnvCheck(HOSTED_SMS_ENV_NAMES, "Hosted SMS envs present"),
+      advisory: true,
+    };
+    checks.hostedOpsAlerting = {
+      ...hostedEnvCheck(
+        HOSTED_OPS_ALERTING_ENV_NAMES,
+        "Ops alerting configured"
+      ),
+      advisory: true,
+    };
   } else {
     checks.hostedConfig = {
       ok: true,
@@ -125,7 +140,9 @@ export async function GET() {
     };
   }
 
-  const ok = Object.values(checks).every((check) => check.ok);
+  // Advisory checks are excluded from the readiness gate (status code) but are
+  // still returned so operators can see what's intentionally deferred.
+  const ok = Object.values(checks).every((check) => check.advisory || check.ok);
   return NextResponse.json(
     {
       ok,

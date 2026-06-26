@@ -11,13 +11,11 @@ import {
 import { sendAppointmentReminder } from "@/lib/email";
 import { alertOps } from "@/lib/alerts";
 import { withSystem, withTenant } from "@/lib/tenant-db";
+import { cronAuthError } from "@/lib/cron-auth";
 
 export async function GET(request: Request) {
-  // Validate the cron secret to prevent unauthorized access
-  const cronSecret = request.headers.get("x-cron-secret");
-  if (!cronSecret || cronSecret !== process.env.CRON_SECRET) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const authError = cronAuthError(request);
+  if (authError) return authError;
 
   try {
     const now = new Date();
