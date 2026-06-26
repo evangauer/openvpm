@@ -1,0 +1,145 @@
+/**
+ * Telnyx provisioning (v2 REST) for self-serve SMS onboarding. This module holds
+ * the API integration; the messaging tRPC router orchestrates it and persists
+ * results to `location_messaging`.
+ *
+ * Read-only operations (number search, hosted-SMS eligibility) are safe to call
+ * anytime. Mutating operations (buy/host a number, register A2P brand/campaign)
+ * spend money / require an L2-verified account and are added as the self-serve
+ * flow is wired up.
+ */
+
+const TELNYX_BASE = "https://api.telnyx.com/v2";
+
+export class TelnyxError extends Error {
+  constructor(
+    message: string,
+    readonly status: number
+  ) {
+    super(message);
+    this.name = "TelnyxError";
+  }
+}
+
+export class TelnyxNotConfiguredError extends Error {
+  constructor() {
+    super("Telnyx is not configured (TELNYX_API_KEY missing).");
+    this.name = "TelnyxNotConfiguredError";
+  }
+}
+
+function apiKey(): string {
+  const key = process.env.TELNYX_API_KEY;
+  if (!key) throw new TelnyxNotConfiguredError();
+  return key;
+}
+
+/** Thin authed JSON request to the Telnyx v2 API. Throws TelnyxError on non-2xx. */
+async function telnyxRequest<T = unknown>(
+  method: string,
+  path: string,
+  body?: unknown
+): Promise<T> {
+  const res = await fetch(`${TELNYX_BASE}${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${apiKey()}`,
+      "Content-Type": "application/json",
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  const text = await res.text();
+  const json = text ? safeJson(text) : undefined;
+  if (!res.ok) {
+    throw new TelnyxError(telnyxErrorMessage(json) ?? `Telnyx ${res.status}`, res.status);
+  }
+  return json as T;
+}
+
+function safeJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Telnyx returns `{ errors: [{ detail, title }] }` on failure. */
+function telnyxErrorMessage(json: unknown): string | undefined {
+  const errors = (json as { errors?: Array<{ detail?: string; title?: string }> })?.errors;
+  if (!errors?.length) return undefined;
+  return errors
+    .map((e) => e.detail || e.title)
+    .filter(Boolean)
+    .join("; ");
+}
+
+export interface AvailableNumber {
+  phoneNumber: string;
+  /** Monthly cost in USD, as returned by Telnyx (string). */
+  monthlyCost: string | null;
+}
+
+/**
+ * Search purchasable local numbers that support SMS, optionally by US area code.
+ * Read-only.
+ */
+export async function searchAvailableNumbers(opts: {
+  areaCode?: string;
+  limit?: number;
+}): Promise<AvailableNumber[]> {
+  const params = new URLSearchParams();
+  params.set("filter[country_code]", "US");
+  params.set("filter[features][]", "sms");
+  params.set("filter[limit]", String(Math.min(opts.limit ?? 10, 50)));
+  if (opts.areaCode) params.set("filter[national_destination_code]", opts.areaCode);
+  const json = await telnyxRequest<{ data?: TelnyxAvailableNumber[] }>(
+    "GET",
+    `/available_phone_numbers?${params.toString()}`
+  );
+  return parseAvailableNumbers(json);
+}
+
+interface TelnyxAvailableNumber {
+  phone_number?: string;
+  cost_information?: { monthly_cost?: string };
+}
+
+/** Pure: map a Telnyx available-numbers response to our shape. */
+export function parseAvailableNumbers(json: {
+  data?: TelnyxAvailableNumber[];
+}): AvailableNumber[] {
+  return (json.data ?? [])
+    .filter((n): n is TelnyxAvailableNumber & { phone_number: string } =>
+      Boolean(n.phone_number)
+    )
+    .map((n) => ({
+      phoneNumber: n.phone_number,
+      monthlyCost: n.cost_information?.monthly_cost ?? null,
+    }));
+}
+
+export interface HostedEligibility {
+  eligible: boolean;
+  detail?: string;
+}
+
+/**
+ * Check whether an existing number can be text-enabled (hosted SMS) without a
+ * voice port. Read-only. Telnyx returns per-number eligibility; we collapse to a
+ * single verdict for the given number.
+ */
+export async function checkHostedEligibility(
+  phoneNumber: string
+): Promise<HostedEligibility> {
+  const json = await telnyxRequest<{
+    data?: Array<{ eligible?: boolean; phone_number?: string; reason?: string }>;
+  }>("POST", "/messaging_hosted_number_orders/eligibility_numbers", {
+    phone_numbers: [phoneNumber],
+  });
+  const row = (json.data ?? [])[0];
+  return {
+    eligible: Boolean(row?.eligible),
+    detail: row?.reason,
+  };
+}
