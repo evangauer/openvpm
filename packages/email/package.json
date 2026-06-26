@@ -6,12 +6,20 @@
   "exports": {
     ".": "./index.ts"
   },
+  "scripts": {
+    "type-check": "tsc --noEmit",
+    "preview": "tsx preview.tsx"
+  },
   "dependencies": {
     "@react-email/components": "^0.0.25",
+    "@react-email/render": "^1.0.2",
     "react": "^18.3.0"
   },
   "devDependencies": {
     "@openpims/config": "workspace:*",
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.3.0",
+    "tsx": "^4.19.2",
     "typescript": "^5.5.0"
   }
 }
