@@ -25,7 +25,7 @@ Thank you for your interest in contributing to OpenVPM!
 - `apps/web/` — Next.js frontend + API (tRPC)
 - `packages/db/` — Drizzle ORM schema and migrations
 - `packages/api/` — Shared Zod validators and types
-- `packages/config/` — Shared TypeScript, Tailwind, ESLint config
+- `packages/config/` — Shared TypeScript and Tailwind config
 
 ## Development Workflow
 
