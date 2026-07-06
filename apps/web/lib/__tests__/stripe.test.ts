@@ -1,9 +1,58 @@
-import { describe, expect, it } from "vitest";
-import { buildSubscriptionCheckoutSessionParams } from "../stripe";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  buildInvoiceCheckoutSessionParams,
+  buildSubscriptionCheckoutSessionParams,
+  STRIPE_TAX_ENABLED_ENV,
+} from "../stripe";
 import { TRIAL_DAYS } from "../billing/plans";
 
+afterEach(() => {
+  vi.doUnmock("stripe");
+  vi.resetModules();
+  vi.clearAllMocks();
+  vi.unstubAllEnvs();
+});
+
+async function importStripeWithMock() {
+  const checkoutCreate = vi.fn();
+  const billingPortalCreate = vi.fn();
+  const accountCreate = vi.fn();
+  const accountRetrieve = vi.fn();
+  const accountLinkCreate = vi.fn();
+  const accountLoginLinkCreate = vi.fn();
+  const constructEvent = vi.fn();
+
+  vi.resetModules();
+  vi.doMock("stripe", () => ({
+    default: class StripeMock {
+      checkout = { sessions: { create: checkoutCreate } };
+      billingPortal = { sessions: { create: billingPortalCreate } };
+      accounts = {
+        create: accountCreate,
+        retrieve: accountRetrieve,
+        createLoginLink: accountLoginLinkCreate,
+      };
+      accountLinks = { create: accountLinkCreate };
+      webhooks = { constructEvent };
+    },
+  }));
+  vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_123");
+
+  const stripeModule = await import("../stripe");
+  return {
+    stripeModule,
+    checkoutCreate,
+    billingPortalCreate,
+    accountCreate,
+    accountRetrieve,
+    accountLinkCreate,
+    accountLoginLinkCreate,
+    constructEvent,
+  };
+}
+
 describe("buildSubscriptionCheckoutSessionParams", () => {
-  it("creates a no-card trial subscription checkout with location and staff items", () => {
+  it("creates a card-collected trial subscription checkout with location and staff items", () => {
     const params = buildSubscriptionCheckoutSessionParams({
       practiceId: "practice_123",
       customerEmail: "admin@example.com",
@@ -17,7 +66,8 @@ describe("buildSubscriptionCheckoutSessionParams", () => {
     });
 
     expect(params.mode).toBe("subscription");
-    expect(params.payment_method_collection).toBe("if_required");
+    expect(params.payment_method_collection).toBe("always");
+    expect(params.customer_email).toBe("admin@example.com");
     expect(params.line_items).toEqual([
       { price: "price_location", quantity: 2 },
       { price: "price_user", quantity: 7 },
@@ -25,6 +75,9 @@ describe("buildSubscriptionCheckoutSessionParams", () => {
     expect(params.subscription_data).toMatchObject({
       metadata: { practiceId: "practice_123" },
       trial_period_days: TRIAL_DAYS,
+      trial_settings: {
+        end_behavior: { missing_payment_method: "cancel" },
+      },
     });
   });
 
@@ -61,5 +114,379 @@ describe("buildSubscriptionCheckoutSessionParams", () => {
     expect(params.subscription_data).toEqual({
       metadata: { practiceId: "practice_123" },
     });
+  });
+
+  it("enables Stripe Tax for hosted subscriptions when configured", () => {
+    vi.stubEnv(STRIPE_TAX_ENABLED_ENV, " true ");
+
+    const params = buildSubscriptionCheckoutSessionParams({
+      practiceId: "practice_123",
+      customerEmail: "admin@example.com",
+      lineItems: [{ priceId: "price_location", quantity: 1 }],
+      successUrl: "https://app.example.com/success",
+      cancelUrl: "https://app.example.com/cancel",
+    });
+
+    expect(params.automatic_tax).toEqual({ enabled: true });
+    expect(params.tax_id_collection).toEqual({
+      enabled: true,
+      required: "if_supported",
+    });
+    expect(params.customer_update).toBeUndefined();
+  });
+
+  it("lets Checkout persist collected tax address on existing customers", () => {
+    vi.stubEnv(STRIPE_TAX_ENABLED_ENV, "true");
+
+    const params = buildSubscriptionCheckoutSessionParams({
+      practiceId: "practice_123",
+      customerId: "cus_123",
+      lineItems: [{ priceId: "price_location", quantity: 1 }],
+      successUrl: "https://app.example.com/success",
+      cancelUrl: "https://app.example.com/cancel",
+    });
+
+    expect(params.customer).toBe("cus_123");
+    expect(params.customer_update).toEqual({
+      address: "auto",
+      name: "auto",
+    });
+  });
+
+  it("leaves Stripe Tax disabled for blank configured values", () => {
+    vi.stubEnv(STRIPE_TAX_ENABLED_ENV, "   ");
+
+    const params = buildSubscriptionCheckoutSessionParams({
+      practiceId: "practice_123",
+      customerEmail: "admin@example.com",
+      lineItems: [{ priceId: "price_location", quantity: 1 }],
+      successUrl: "https://app.example.com/success",
+      cancelUrl: "https://app.example.com/cancel",
+    });
+
+    expect(params.automatic_tax).toBeUndefined();
+    expect(params.tax_id_collection).toBeUndefined();
+    expect(params.customer_update).toBeUndefined();
+  });
+
+  it("normalizes subscription checkout customer emails and omits blanks", () => {
+    expect(
+      buildSubscriptionCheckoutSessionParams({
+        practiceId: "practice_123",
+        customerEmail: " Admin@Example.COM ",
+        lineItems: [{ priceId: "price_location", quantity: 1 }],
+        successUrl: "https://app.example.com/success",
+        cancelUrl: "https://app.example.com/cancel",
+      }).customer_email
+    ).toBe("admin@example.com");
+
+    expect(
+      buildSubscriptionCheckoutSessionParams({
+        practiceId: "practice_123",
+        customerEmail: "   ",
+        lineItems: [{ priceId: "price_location", quantity: 1 }],
+        successUrl: "https://app.example.com/success",
+        cancelUrl: "https://app.example.com/cancel",
+      }).customer_email
+    ).toBeUndefined();
+  });
+});
+
+describe("buildInvoiceCheckoutSessionParams", () => {
+  it("creates a client invoice payment checkout session", () => {
+    const params = buildInvoiceCheckoutSessionParams({
+      invoiceId: "invoice_123",
+      amount: 12550,
+      clientEmail: "client@example.com",
+      clientName: "Jane Client",
+      description: "Invoice payment for Biscuit",
+      currency: "USD",
+      successUrl: "https://app.example.com/billing?payment=success",
+      cancelUrl: "https://app.example.com/billing?payment=cancelled",
+    });
+
+    expect(params).toMatchObject({
+      mode: "payment",
+      customer_email: "client@example.com",
+      client_reference_id: "invoice_123",
+      metadata: { invoiceId: "invoice_123", source: "client_invoice" },
+      payment_intent_data: {
+        metadata: { invoiceId: "invoice_123", source: "client_invoice" },
+      },
+      success_url: "https://app.example.com/billing?payment=success",
+      cancel_url: "https://app.example.com/billing?payment=cancelled",
+    });
+    expect(params.line_items).toEqual([
+      {
+        price_data: {
+          currency: "usd",
+          product_data: { name: "Invoice payment for Biscuit" },
+          unit_amount: 12550,
+        },
+        quantity: 1,
+      },
+    ]);
+  });
+
+  it("omits customer email when a client has no email on file", () => {
+    const params = buildInvoiceCheckoutSessionParams({
+      invoiceId: "invoice_123",
+      amount: 5000,
+      clientEmail: null,
+      clientName: "Jane Client",
+      description: "Invoice payment",
+      successUrl: "https://app.example.com/success",
+      cancelUrl: "https://app.example.com/cancel",
+    });
+
+    expect(params.customer_email).toBeUndefined();
+  });
+
+  it("normalizes invoice checkout client emails and omits blanks", () => {
+    expect(
+      buildInvoiceCheckoutSessionParams({
+        invoiceId: "invoice_123",
+        amount: 5000,
+        clientEmail: " Client@Example.COM ",
+        clientName: "Jane Client",
+        description: "Invoice payment",
+        successUrl: "https://app.example.com/success",
+        cancelUrl: "https://app.example.com/cancel",
+      }).customer_email
+    ).toBe("client@example.com");
+
+    expect(
+      buildInvoiceCheckoutSessionParams({
+        invoiceId: "invoice_123",
+        amount: 5000,
+        clientEmail: "   ",
+        clientName: "Jane Client",
+        description: "Invoice payment",
+        successUrl: "https://app.example.com/success",
+        cancelUrl: "https://app.example.com/cancel",
+      }).customer_email
+    ).toBeUndefined();
+  });
+
+  it("does not add Stripe Tax to already-totaled clinic invoice payments", () => {
+    vi.stubEnv(STRIPE_TAX_ENABLED_ENV, "true");
+
+    const params = buildInvoiceCheckoutSessionParams({
+      invoiceId: "invoice_123",
+      amount: 12550,
+      clientEmail: "client@example.com",
+      clientName: "Jane Client",
+      description: "Invoice payment for Biscuit",
+      successUrl: "https://app.example.com/billing?payment=success",
+      cancelUrl: "https://app.example.com/billing?payment=cancelled",
+    });
+
+    expect(params.automatic_tax).toBeUndefined();
+    expect(params.tax_id_collection).toBeUndefined();
+  });
+
+  it("can create client invoice checkout on a connected Stripe account", () => {
+    const params = buildInvoiceCheckoutSessionParams({
+      invoiceId: "invoice_123",
+      amount: 12550,
+      clientEmail: "client@example.com",
+      clientName: "Jane Client",
+      description: "Invoice payment for Biscuit",
+      connectedAccountId: "acct_123",
+      applicationFeeAmount: 125,
+      successUrl: "https://app.example.com/billing?payment=success",
+      cancelUrl: "https://app.example.com/billing?payment=cancelled",
+    });
+
+    expect(params.metadata).toEqual({
+      invoiceId: "invoice_123",
+      source: "client_invoice_connect",
+      stripeConnectAccountId: "acct_123",
+    });
+    expect(params.payment_intent_data).toEqual({
+      metadata: {
+        invoiceId: "invoice_123",
+        source: "client_invoice_connect",
+        stripeConnectAccountId: "acct_123",
+      },
+      application_fee_amount: 125,
+    });
+  });
+});
+
+describe("create Stripe hosted sessions", () => {
+  it("returns safe HTTPS redirect URLs from Stripe sessions", async () => {
+    const { stripeModule, checkoutCreate, billingPortalCreate } =
+      await importStripeWithMock();
+    checkoutCreate
+      .mockResolvedValueOnce({ url: "https://checkout.stripe.com/c/pay_123" })
+      .mockResolvedValueOnce({ url: "https://checkout.stripe.com/c/sub_123" });
+    billingPortalCreate.mockResolvedValueOnce({
+      url: "https://billing.stripe.com/session/portal_123",
+    });
+
+    await expect(
+      stripeModule.createCheckoutSession({
+        invoiceId: "invoice_123",
+        amount: 12550,
+        clientName: "Jane Client",
+        description: "Invoice payment",
+        successUrl: "https://app.example.com/billing?payment=success",
+        cancelUrl: "https://app.example.com/billing?payment=cancelled",
+      })
+    ).resolves.toEqual({ url: "https://checkout.stripe.com/c/pay_123" });
+    expect(checkoutCreate).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        metadata: { invoiceId: "invoice_123", source: "client_invoice" },
+      })
+    );
+
+    await expect(
+      stripeModule.createSubscriptionCheckoutSession({
+        practiceId: "practice_123",
+        customerEmail: "admin@example.com",
+        lineItems: [{ priceId: "price_location", quantity: 1 }],
+        successUrl: "https://app.example.com/settings?checkout=success",
+        cancelUrl: "https://app.example.com/settings?checkout=cancelled",
+      })
+    ).resolves.toEqual({ url: "https://checkout.stripe.com/c/sub_123" });
+
+    await expect(
+      stripeModule.createBillingPortalSession({
+        customerId: "cus_123",
+        returnUrl: "https://app.example.com/settings?tab=billing",
+      })
+    ).resolves.toEqual({
+      url: "https://billing.stripe.com/session/portal_123",
+    });
+  });
+
+  it("passes the connected account option when creating clinic-owned invoice checkout", async () => {
+    const { stripeModule, checkoutCreate } = await importStripeWithMock();
+    checkoutCreate.mockResolvedValueOnce({
+      url: "https://checkout.stripe.com/c/pay_123",
+    });
+
+    await expect(
+      stripeModule.createCheckoutSession({
+        invoiceId: "invoice_123",
+        amount: 12550,
+        clientName: "Jane Client",
+        description: "Invoice payment",
+        connectedAccountId: "acct_123",
+        successUrl: "https://app.example.com/billing?payment=success",
+        cancelUrl: "https://app.example.com/billing?payment=cancelled",
+      })
+    ).resolves.toEqual({ url: "https://checkout.stripe.com/c/pay_123" });
+
+    expect(checkoutCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          source: "client_invoice_connect",
+          stripeConnectAccountId: "acct_123",
+        }),
+      }),
+      { stripeAccount: "acct_123" }
+    );
+  });
+
+  it("returns null URLs when Stripe responds with unsafe redirects", async () => {
+    const { stripeModule, checkoutCreate, billingPortalCreate } =
+      await importStripeWithMock();
+    checkoutCreate
+      .mockResolvedValueOnce({ url: "http://checkout.stripe.com/c/pay_123" })
+      .mockResolvedValueOnce({ url: "javascript:alert(1)" });
+    billingPortalCreate.mockResolvedValueOnce({
+      url: "https://user:pass@billing.stripe.com/session/portal_123",
+    });
+
+    await expect(
+      stripeModule.createCheckoutSession({
+        invoiceId: "invoice_123",
+        amount: 12550,
+        clientName: "Jane Client",
+        description: "Invoice payment",
+        successUrl: "https://app.example.com/billing?payment=success",
+        cancelUrl: "https://app.example.com/billing?payment=cancelled",
+      })
+    ).resolves.toEqual({ url: null });
+
+    await expect(
+      stripeModule.createSubscriptionCheckoutSession({
+        practiceId: "practice_123",
+        customerEmail: "admin@example.com",
+        lineItems: [{ priceId: "price_location", quantity: 1 }],
+        successUrl: "https://app.example.com/settings?checkout=success",
+        cancelUrl: "https://app.example.com/settings?checkout=cancelled",
+      })
+    ).resolves.toEqual({ url: null });
+
+    await expect(
+      stripeModule.createBillingPortalSession({
+        customerId: "cus_123",
+        returnUrl: "https://app.example.com/settings?tab=billing",
+      })
+    ).resolves.toEqual({ url: null });
+  });
+});
+
+describe("construct Stripe webhook events", () => {
+  it("does not call Stripe verification when endpoint secrets are blank", async () => {
+    const { stripeModule, constructEvent } = await importStripeWithMock();
+    vi.stubEnv("STRIPE_WEBHOOK_SECRET", "   ");
+    vi.stubEnv("STRIPE_CONNECT_WEBHOOK_SECRET", "\n");
+    vi.stubEnv("STRIPE_SUBSCRIPTION_WEBHOOK_SECRET", "\t");
+
+    await expect(
+      stripeModule.constructWebhookEvent("{}", "sig_client")
+    ).resolves.toBeNull();
+    await expect(
+      stripeModule.constructConnectWebhookEvent("{}", "sig_connect")
+    ).resolves.toBeNull();
+    await expect(
+      stripeModule.constructSubscriptionWebhookEvent("{}", "sig_sub")
+    ).resolves.toBeNull();
+    expect(constructEvent).not.toHaveBeenCalled();
+  });
+
+  it("passes trimmed endpoint secrets to Stripe verification", async () => {
+    const { stripeModule, constructEvent } = await importStripeWithMock();
+    vi.stubEnv("STRIPE_WEBHOOK_SECRET", " whsec_client ");
+    vi.stubEnv("STRIPE_CONNECT_WEBHOOK_SECRET", " whsec_connect ");
+    vi.stubEnv("STRIPE_SUBSCRIPTION_WEBHOOK_SECRET", " whsec_subscription ");
+    constructEvent
+      .mockReturnValueOnce({ id: "evt_client" })
+      .mockReturnValueOnce({ id: "evt_connect" })
+      .mockReturnValueOnce({ id: "evt_subscription" });
+
+    await expect(
+      stripeModule.constructWebhookEvent("{}", "sig_client")
+    ).resolves.toEqual({ id: "evt_client" });
+    await expect(
+      stripeModule.constructConnectWebhookEvent("{}", "sig_connect")
+    ).resolves.toEqual({ id: "evt_connect" });
+    await expect(
+      stripeModule.constructSubscriptionWebhookEvent("{}", "sig_sub")
+    ).resolves.toEqual({ id: "evt_subscription" });
+
+    expect(constructEvent).toHaveBeenNthCalledWith(
+      1,
+      "{}",
+      "sig_client",
+      "whsec_client"
+    );
+    expect(constructEvent).toHaveBeenNthCalledWith(
+      2,
+      "{}",
+      "sig_connect",
+      "whsec_connect"
+    );
+    expect(constructEvent).toHaveBeenNthCalledWith(
+      3,
+      "{}",
+      "sig_sub",
+      "whsec_subscription"
+    );
   });
 });

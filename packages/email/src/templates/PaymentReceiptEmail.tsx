@@ -9,7 +9,7 @@ import type { Brand } from "../brand";
 export interface PaymentReceiptEmailProps {
   brand: Brand;
   practiceName: string;
-  amount: string; // e.g. "$99.00"
+  amount: string; // e.g. "$79.00"
   periodLabel: string; // e.g. "Jun 10 – Jul 10, 2026"
   invoiceUrl?: string;
 }

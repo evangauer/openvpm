@@ -30,8 +30,8 @@ export async function recordMeterEvent(opts: {
   stripeCustomerId: string;
   value?: number;
   identifier?: string;
-}): Promise<void> {
-  if (!stripe) return;
+}): Promise<boolean> {
+  if (!stripe) return false;
   try {
     await stripe.billing.meterEvents.create({
       event_name: meterEventName(opts.kind),
@@ -41,7 +41,9 @@ export async function recordMeterEvent(opts: {
       },
       ...(opts.identifier ? { identifier: opts.identifier } : {}),
     });
+    return true;
   } catch (e) {
     console.error("[meter] failed to record Stripe meter event", opts.kind, e);
+    return false;
   }
 }

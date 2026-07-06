@@ -1,7 +1,186 @@
 import { z } from "zod";
-import { eq, and, isNull, ilike, sql } from "drizzle-orm";
-import { createRouter, protectedProcedure } from "../trpc";
-import { products, suppliers } from "@openpims/db";
+import { eq, and, isNull, ilike, sql, type SQL } from "drizzle-orm";
+import { TRPCError } from "@trpc/server";
+import { createRouter, protectedProcedure, requireRole } from "../trpc";
+import { practices, products, suppliers } from "@openpims/db";
+import type { Database } from "@openpims/db/client";
+import { formatDateInputForTimeZone } from "@/lib/date-input";
+import {
+  addDaysYmd,
+  inventoryAlert,
+} from "@/lib/inventory/alerts";
+import {
+  INVENTORY_ADJUSTMENT_REASON_MAX_LENGTH,
+  INVENTORY_PRODUCT_CATEGORY_MAX_LENGTH,
+  INVENTORY_PRODUCT_LOT_NUMBER_MAX_LENGTH,
+  INVENTORY_PRODUCT_NAME_MAX_LENGTH,
+  INVENTORY_PRODUCT_SEARCH_MAX_LENGTH,
+  INVENTORY_PRODUCT_SKU_MAX_LENGTH,
+  INVENTORY_SUPPLIER_ADDRESS_MAX_LENGTH,
+  INVENTORY_SUPPLIER_EMAIL_MAX_LENGTH,
+  INVENTORY_SUPPLIER_NAME_MAX_LENGTH,
+  INVENTORY_SUPPLIER_NOTES_MAX_LENGTH,
+  INVENTORY_SUPPLIER_PHONE_MAX_LENGTH,
+  isInventoryCurrencyAmountInputValid,
+} from "@/lib/inventory/policy";
+import { clinicalDateInput } from "@/lib/records/clinical-inputs";
+import { listOffsetInput } from "./pagination";
+import {
+  POSTGRES_INTEGER_MAX,
+  integerColumnDeltaInput,
+  nonnegativeIntegerColumnInput,
+} from "./storage-bounds";
+
+const inventoryAlertFilterSchema = z
+  .enum(["all", "attention", "low_stock", "expired", "expiring_soon"])
+  .default("all");
+
+const moneyInput = z
+  .string()
+  .trim()
+  .refine(
+    isInventoryCurrencyAmountInputValid,
+    "Amount must be a valid currency amount."
+  );
+
+const requiredTrimmedString = (label: string, max: number) =>
+  z
+    .string()
+    .trim()
+    .min(1, `${label} is required.`)
+    .max(max, `${label} must be at most ${max} characters.`);
+
+const optionalTrimmedString = (label: string, max: number) =>
+  z
+    .string()
+    .trim()
+    .max(max, `${label} must be at most ${max} characters.`)
+    .optional();
+
+const optionalEmailInput = z
+  .string()
+  .trim()
+  .email()
+  .max(INVENTORY_SUPPLIER_EMAIL_MAX_LENGTH)
+  .transform((value) => value.toLowerCase())
+  .optional();
+
+const nullableOptionalEmailInput = z
+  .union([
+    z
+      .string()
+      .trim()
+      .email()
+      .max(INVENTORY_SUPPLIER_EMAIL_MAX_LENGTH)
+      .transform((value) => value.toLowerCase()),
+    z.null(),
+  ])
+  .optional();
+
+const nullableOptionalTrimmedString = (label: string, max: number) =>
+  z
+    .union([
+      z
+        .string()
+        .trim()
+        .max(max, `${label} must be at most ${max} characters.`),
+      z.null(),
+    ])
+    .optional();
+
+const productCreateInput = z.object({
+  name: requiredTrimmedString(
+    "Product name",
+    INVENTORY_PRODUCT_NAME_MAX_LENGTH
+  ),
+  sku: optionalTrimmedString("SKU", INVENTORY_PRODUCT_SKU_MAX_LENGTH),
+  category: optionalTrimmedString(
+    "Category",
+    INVENTORY_PRODUCT_CATEGORY_MAX_LENGTH
+  ),
+  unitPrice: moneyInput,
+  costPrice: moneyInput.optional(),
+  stockQuantity: nonnegativeIntegerColumnInput.default(0),
+  reorderPoint: nonnegativeIntegerColumnInput.default(10),
+  lotNumber: optionalTrimmedString(
+    "Lot number",
+    INVENTORY_PRODUCT_LOT_NUMBER_MAX_LENGTH
+  ),
+  expirationDate: clinicalDateInput("Expiration date").optional(),
+});
+
+const productUpdateInput = z
+  .object({
+    id: z.string().uuid(),
+    name: requiredTrimmedString(
+      "Product name",
+      INVENTORY_PRODUCT_NAME_MAX_LENGTH
+    ).optional(),
+    sku: optionalTrimmedString("SKU", INVENTORY_PRODUCT_SKU_MAX_LENGTH),
+    category: optionalTrimmedString(
+      "Category",
+      INVENTORY_PRODUCT_CATEGORY_MAX_LENGTH
+    ),
+    unitPrice: moneyInput.optional(),
+    costPrice: moneyInput.optional(),
+    reorderPoint: nonnegativeIntegerColumnInput.optional(),
+    lotNumber: optionalTrimmedString(
+      "Lot number",
+      INVENTORY_PRODUCT_LOT_NUMBER_MAX_LENGTH
+    ),
+    expirationDate: clinicalDateInput("Expiration date").nullable().optional(),
+  })
+  .strict();
+
+type InventoryContext = {
+  db: Pick<Database, "select">;
+  practiceId: string;
+};
+
+const inventoryManagerProcedure = protectedProcedure.use(
+  requireRole("admin", "veterinarian", "technician", "front_desk")
+);
+
+function activePracticePredicate(practiceId: string) {
+  return sql`exists (
+    select 1
+    from ${practices}
+    where ${practices.id} = ${practiceId}
+      and ${practices.deletedAt} is null
+  )`;
+}
+
+async function assertActivePractice(ctx: InventoryContext) {
+  const [practice] = await ctx.db
+    .select({ id: practices.id })
+    .from(practices)
+    .where(and(eq(practices.id, ctx.practiceId), isNull(practices.deletedAt)))
+    .limit(1);
+
+  if (!practice) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "Practice not found",
+    });
+  }
+}
+
+async function practiceTimeZone(
+  ctx: InventoryContext
+): Promise<string | null> {
+  const [practice] = await ctx.db
+    .select({ timezone: practices.timezone })
+    .from(practices)
+    .where(and(eq(practices.id, ctx.practiceId), isNull(practices.deletedAt)))
+    .limit(1);
+  if (!practice) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "Practice not found",
+    });
+  }
+  return practice.timezone ?? null;
+}
 
 export const inventoryRouter = createRouter({
   // --- Products ---
@@ -9,29 +188,74 @@ export const inventoryRouter = createRouter({
   list: protectedProcedure
     .input(
       z.object({
-        search: z.string().optional(),
-        category: z.string().optional(),
-        limit: z.number().min(1).max(100).default(50),
-        offset: z.number().min(0).default(0),
+        search: optionalTrimmedString(
+          "Search",
+          INVENTORY_PRODUCT_SEARCH_MAX_LENGTH
+        ),
+        category: optionalTrimmedString(
+          "Category",
+          INVENTORY_PRODUCT_CATEGORY_MAX_LENGTH
+        ),
+        alert: inventoryAlertFilterSchema.optional(),
+        limit: z.number().int().min(1).max(100).default(50),
+        offset: listOffsetInput,
       })
     )
     .query(async ({ ctx, input }) => {
-      const conditions: ReturnType<typeof eq>[] = [
+      const todayYmd = formatDateInputForTimeZone(
+        new Date(),
+        await practiceTimeZone(ctx)
+      );
+      const soonYmd = addDaysYmd(todayYmd, 90);
+      const lowStockCondition = sql`${products.stockQuantity} <= coalesce(${products.reorderPoint}, 10)`;
+      const expiredCondition = sql`${products.expirationDate} is not null and ${products.expirationDate} < ${todayYmd}`;
+      const expiringSoonCondition = sql`${products.expirationDate} is not null and ${products.expirationDate} >= ${todayYmd} and ${products.expirationDate} <= ${soonYmd}`;
+      const attentionCondition = sql`(${lowStockCondition} or (${products.expirationDate} is not null and ${products.expirationDate} <= ${soonYmd}))`;
+
+      const baseConditions: SQL[] = [
         eq(products.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
         isNull(products.deletedAt),
       ];
 
       if (input.search) {
-        conditions.push(
+        baseConditions.push(
           sql`(${ilike(products.name, `%${input.search}%`)} OR ${ilike(products.sku, `%${input.search}%`)})`
         );
       }
 
       if (input.category) {
-        conditions.push(eq(products.category, input.category));
+        baseConditions.push(eq(products.category, input.category));
       }
 
-      const [items, countResult] = await Promise.all([
+      const alertCondition =
+        input.alert === "attention"
+          ? attentionCondition
+          : input.alert === "low_stock"
+            ? lowStockCondition
+            : input.alert === "expired"
+              ? expiredCondition
+              : input.alert === "expiring_soon"
+                ? expiringSoonCondition
+                : null;
+      const conditions = alertCondition
+        ? [...baseConditions, alertCondition]
+        : baseConditions;
+
+      const countWhere = (extra?: SQL) =>
+        ctx.db
+          .select({ count: sql<number>`count(*)` })
+          .from(products)
+          .where(and(...(extra ? [...baseConditions, extra] : baseConditions)));
+
+      const [
+        items,
+        countResult,
+        attentionCount,
+        lowStockCount,
+        expiredCount,
+        expiringSoonCount,
+      ] = await Promise.all([
         ctx.db
           .select()
           .from(products)
@@ -39,37 +263,32 @@ export const inventoryRouter = createRouter({
           .orderBy(products.name)
           .limit(input.limit)
           .offset(input.offset),
-        ctx.db
-          .select({ count: sql<number>`count(*)` })
-          .from(products)
-          .where(and(...conditions)),
+        countWhere(alertCondition ?? undefined),
+        countWhere(attentionCondition),
+        countWhere(lowStockCondition),
+        countWhere(expiredCondition),
+        countWhere(expiringSoonCondition),
       ]);
 
       return {
         items: items.map((p) => ({
           ...p,
-          stockStatus:
-            p.stockQuantity <= (p.reorderPoint ?? 10) ? "low" : "ok",
+          ...inventoryAlert(p, todayYmd),
         })),
         total: Number(countResult[0]?.count ?? 0),
+        alertCounts: {
+          attention: Number(attentionCount[0]?.count ?? 0),
+          lowStock: Number(lowStockCount[0]?.count ?? 0),
+          expired: Number(expiredCount[0]?.count ?? 0),
+          expiringSoon: Number(expiringSoonCount[0]?.count ?? 0),
+        },
       };
     }),
 
-  create: protectedProcedure
-    .input(
-      z.object({
-        name: z.string().min(1).max(255),
-        sku: z.string().max(64).optional(),
-        category: z.string().max(128).optional(),
-        unitPrice: z.string().refine((v) => !isNaN(parseFloat(v)) && parseFloat(v) >= 0, "Must be a valid price"),
-        costPrice: z.string().optional(),
-        stockQuantity: z.number().int().min(0).default(0),
-        reorderPoint: z.number().int().min(0).default(10),
-        lotNumber: z.string().max(64).optional(),
-        expirationDate: z.string().optional(),
-      })
-    )
+  create: inventoryManagerProcedure
+    .input(productCreateInput)
     .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
       const [product] = await ctx.db
         .insert(products)
         .values({
@@ -88,21 +307,8 @@ export const inventoryRouter = createRouter({
       return product!;
     }),
 
-  update: protectedProcedure
-    .input(
-      z.object({
-        id: z.string().uuid(),
-        name: z.string().min(1).max(255).optional(),
-        sku: z.string().max(64).optional(),
-        category: z.string().max(128).optional(),
-        unitPrice: z.string().optional(),
-        costPrice: z.string().optional(),
-        stockQuantity: z.number().int().min(0).optional(),
-        reorderPoint: z.number().int().min(0).optional(),
-        lotNumber: z.string().max(64).optional(),
-        expirationDate: z.string().nullable().optional(),
-      })
-    )
+  update: inventoryManagerProcedure
+    .input(productUpdateInput)
     .mutation(async ({ ctx, input }) => {
       const { id, ...updates } = input;
       // Filter out undefined values
@@ -114,7 +320,10 @@ export const inventoryRouter = createRouter({
       }
 
       if (Object.keys(setValues).length === 0) {
-        throw new Error("No fields to update");
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "No fields to update",
+        });
       }
 
       const [product] = await ctx.db
@@ -124,24 +333,69 @@ export const inventoryRouter = createRouter({
           and(
             eq(products.id, id),
             eq(products.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
             isNull(products.deletedAt)
           )
         )
         .returning();
 
-      if (!product) throw new Error("Product not found");
+      if (!product) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Product not found",
+        });
+      }
       return product;
     }),
 
-  adjustStock: protectedProcedure
+  adjustStock: inventoryManagerProcedure
     .input(
       z.object({
         id: z.string().uuid(),
-        adjustment: z.number().int(),
-        reason: z.string().min(1).max(500),
+        adjustment: integerColumnDeltaInput,
+        reason: requiredTrimmedString(
+          "Reason",
+          INVENTORY_ADJUSTMENT_REASON_MAX_LENGTH
+        ),
       })
     )
     .mutation(async ({ ctx, input }) => {
+      const [current] = await ctx.db
+        .select({
+          id: products.id,
+          stockQuantity: products.stockQuantity,
+        })
+        .from(products)
+        .where(
+          and(
+            eq(products.id, input.id),
+            eq(products.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(products.deletedAt)
+          )
+        )
+        .limit(1);
+
+      if (!current) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Product not found",
+        });
+      }
+
+      if (current.stockQuantity + input.adjustment < 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Stock adjustment would make quantity negative.",
+        });
+      }
+      if (current.stockQuantity + input.adjustment > POSTGRES_INTEGER_MAX) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Stock adjustment would exceed the maximum stock quantity.",
+        });
+      }
+
       const [product] = await ctx.db
         .update(products)
         .set({
@@ -151,41 +405,65 @@ export const inventoryRouter = createRouter({
           and(
             eq(products.id, input.id),
             eq(products.practiceId, ctx.practiceId),
-            isNull(products.deletedAt)
+            activePracticePredicate(ctx.practiceId),
+            isNull(products.deletedAt),
+            sql`${products.stockQuantity} + ${input.adjustment} >= 0`,
+            sql`${products.stockQuantity} + ${input.adjustment} <= ${POSTGRES_INTEGER_MAX}`
           )
         )
         .returning();
 
-      if (!product) throw new Error("Product not found");
+      if (!product) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "Stock adjustment would move quantity outside the allowed stock range.",
+        });
+      }
       return product;
     }),
 
   // --- Suppliers ---
 
   listSuppliers: protectedProcedure.query(async ({ ctx }) => {
+    await assertActivePractice(ctx);
     return ctx.db
       .select()
       .from(suppliers)
       .where(
         and(
           eq(suppliers.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
           isNull(suppliers.deletedAt)
         )
       )
       .orderBy(suppliers.name);
   }),
 
-  createSupplier: protectedProcedure
+  createSupplier: inventoryManagerProcedure
     .input(
       z.object({
-        name: z.string().min(1).max(255),
-        contactEmail: z.string().email().max(255).optional(),
-        phone: z.string().max(32).optional(),
-        address: z.string().optional(),
-        notes: z.string().optional(),
+        name: requiredTrimmedString(
+          "Supplier name",
+          INVENTORY_SUPPLIER_NAME_MAX_LENGTH
+        ),
+        contactEmail: optionalEmailInput,
+        phone: optionalTrimmedString(
+          "Phone",
+          INVENTORY_SUPPLIER_PHONE_MAX_LENGTH
+        ),
+        address: optionalTrimmedString(
+          "Address",
+          INVENTORY_SUPPLIER_ADDRESS_MAX_LENGTH
+        ),
+        notes: optionalTrimmedString(
+          "Notes",
+          INVENTORY_SUPPLIER_NOTES_MAX_LENGTH
+        ),
       })
     )
     .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
       const [supplier] = await ctx.db
         .insert(suppliers)
         .values({
@@ -198,5 +476,67 @@ export const inventoryRouter = createRouter({
         })
         .returning();
       return supplier!;
+    }),
+
+  updateSupplier: inventoryManagerProcedure
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        name: requiredTrimmedString(
+          "Supplier name",
+          INVENTORY_SUPPLIER_NAME_MAX_LENGTH
+        ).optional(),
+        contactEmail: nullableOptionalEmailInput,
+        phone: nullableOptionalTrimmedString(
+          "Phone",
+          INVENTORY_SUPPLIER_PHONE_MAX_LENGTH
+        ),
+        address: nullableOptionalTrimmedString(
+          "Address",
+          INVENTORY_SUPPLIER_ADDRESS_MAX_LENGTH
+        ),
+        notes: nullableOptionalTrimmedString(
+          "Notes",
+          INVENTORY_SUPPLIER_NOTES_MAX_LENGTH
+        ),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { id, ...updates } = input;
+      const setValues: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(updates)) {
+        if (value !== undefined) {
+          setValues[key] = value;
+        }
+      }
+
+      if (Object.keys(setValues).length === 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "No fields to update",
+        });
+      }
+
+      const [supplier] = await ctx.db
+        .update(suppliers)
+        .set(setValues)
+        .where(
+          and(
+            eq(suppliers.id, id),
+            eq(suppliers.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(suppliers.deletedAt)
+          )
+        )
+        .returning();
+
+      if (!supplier) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Supplier not found",
+        });
+      }
+
+      return supplier;
     }),
 });

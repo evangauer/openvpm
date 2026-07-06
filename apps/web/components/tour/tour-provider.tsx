@@ -50,6 +50,8 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
 
   const persist = useCallback(
     (status: "in_progress" | "completed" | "skipped", stepId?: string) => {
+      if (!isAdmin) return;
+
       // Keep the cached onboarding state in sync so the auto-start effect never
       // re-reads a stale "not_started" after a terminal status.
       utils.settings.getOnboardingState.setData(undefined, (prev) => ({
@@ -59,13 +61,15 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
       }));
       setTourStatus.mutate({ status, lastStepId: stepId ?? null });
     },
-    [setTourStatus, utils]
+    [isAdmin, setTourStatus, utils]
   );
 
   const start = useCallback(() => {
+    if (!isAdmin) return;
+
     setIndex(0);
     persist("in_progress", TOUR_STEPS[0]!.id);
-  }, [persist]);
+  }, [isAdmin, persist]);
 
   // Start ONLY on an explicit ?tour=start deep-link. Onboarding is opt-in: a
   // not-yet-started workspace is no longer auto-nagged into the tour — the

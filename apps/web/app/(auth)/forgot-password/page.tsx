@@ -4,6 +4,11 @@ import { useState } from "react";
 import Link from "next/link";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
+import {
+  AUTH_EMAIL_MAX_LENGTH,
+  isAuthEmailLengthValid,
+} from "@/lib/auth-input-policy";
+import { isValidEmail } from "@/lib/utils";
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
@@ -13,6 +18,7 @@ export default function ForgotPasswordPage() {
     onSuccess: () => setSent(true),
     onError: (err) => toast.error(err.message),
   });
+  const canSubmit = isAuthEmailLengthValid(email) && isValidEmail(email);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-surface">
@@ -31,7 +37,8 @@ export default function ForgotPasswordPage() {
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              request.mutate({ email });
+              if (!canSubmit) return;
+              request.mutate({ email: email.trim().toLowerCase() });
             }}
             className="space-y-4"
           >
@@ -45,13 +52,14 @@ export default function ForgotPasswordPage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
+                maxLength={AUTH_EMAIL_MAX_LENGTH}
                 className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
                 placeholder="you@clinic.com"
               />
             </div>
             <button
               type="submit"
-              disabled={request.isPending}
+              disabled={!canSubmit || request.isPending}
               className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
             >
               {request.isPending ? "Sending…" : "Send reset link"}

@@ -6,6 +6,7 @@ import {
   hasScope,
   API_KEY_PREFIX,
   API_SCOPES,
+  apiScopesHaveValidDependencies,
 } from "../api-auth";
 
 describe("generateApiKey", () => {
@@ -72,8 +73,22 @@ describe("hasScope", () => {
 });
 
 describe("API_SCOPES", () => {
-  it("includes the agent:run scope and the wildcard", () => {
+  it("includes separate agent run/write scopes and the wildcard", () => {
     expect(API_SCOPES).toContain("agent:run");
+    expect(API_SCOPES).toContain("agent:write");
     expect(API_SCOPES).toContain("*");
+  });
+
+  it("treats agent:write as a companion to agent:run or the wildcard", () => {
+    expect(apiScopesHaveValidDependencies(["agent:run"])).toBe(true);
+    expect(apiScopesHaveValidDependencies(["agent:run", "agent:write"])).toBe(
+      true
+    );
+    expect(apiScopesHaveValidDependencies(["*"])).toBe(true);
+    expect(apiScopesHaveValidDependencies(["*", "agent:write"])).toBe(true);
+    expect(apiScopesHaveValidDependencies(["agent:write"])).toBe(false);
+    expect(
+      apiScopesHaveValidDependencies(["agent:write", "appointments:write"])
+    ).toBe(false);
   });
 });

@@ -1,0 +1,87 @@
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+import {
+  isMessagingAreaCodeInputValid,
+  isMessagingPhoneInputValid,
+  MESSAGING_AREA_CODE_LENGTH,
+  MESSAGING_PHONE_MAX_LENGTH,
+  MESSAGING_PHONE_MIN_LENGTH,
+  MESSAGING_SEARCH_LIMIT_MAX,
+} from "../messaging/policy";
+
+describe("messaging settings UI", () => {
+  const tabSource = readFileSync("components/settings/messaging-tab.tsx", "utf8");
+  const wizardSource = readFileSync(
+    "components/settings/messaging-wizard.tsx",
+    "utf8"
+  );
+  const routerSource = readFileSync("server/routers/messaging.ts", "utf8");
+
+  it("keeps messaging phone policy aligned across settings and router", () => {
+    expect(MESSAGING_PHONE_MIN_LENGTH).toBe(7);
+    expect(MESSAGING_PHONE_MAX_LENGTH).toBe(32);
+    expect(MESSAGING_AREA_CODE_LENGTH).toBe(3);
+    expect(MESSAGING_SEARCH_LIMIT_MAX).toBe(20);
+    expect(isMessagingPhoneInputValid("(555) 555-0100")).toBe(true);
+    expect(isMessagingPhoneInputValid("+1 555 555 0100")).toBe(true);
+    expect(isMessagingPhoneInputValid("12345")).toBe(false);
+    expect(isMessagingPhoneInputValid("1".repeat(33))).toBe(false);
+    expect(isMessagingAreaCodeInputValid("")).toBe(true);
+    expect(isMessagingAreaCodeInputValid("415")).toBe(true);
+    expect(isMessagingAreaCodeInputValid("41")).toBe(false);
+    expect(routerSource).toContain("MESSAGING_PHONE_MIN_LENGTH");
+    expect(routerSource).toContain("MESSAGING_PHONE_MAX_LENGTH");
+    expect(routerSource).toContain("MESSAGING_AREA_CODE_LENGTH");
+    expect(routerSource).toContain("MESSAGING_SEARCH_LIMIT_MAX");
+  });
+
+  it("gates messaging setup and test-send controls before server rejection", () => {
+    expect(tabSource).toContain("function hasConfiguredSender");
+    expect(tabSource).toContain("messaging.senderE164?.trim()");
+    expect(tabSource).toContain("messaging.messagingProfileId?.trim()");
+    expect(tabSource).toContain("const canEnableSending =");
+    expect(tabSource).toContain(
+      'm.registrationStatus === "active" && hasConfiguredSender(m)'
+    );
+    expect(tabSource).toContain(
+      "const canSendTest =\n    m.enabled && canEnableSending && isMessagingPhoneInputValid(testTo)"
+    );
+    expect(tabSource).toContain("maxLength={MESSAGING_PHONE_MAX_LENGTH}");
+    expect(tabSource).toContain(
+      "disabled={setEnabled.isPending || (!m.enabled && !canEnableSending)}"
+    );
+    expect(tabSource).toContain("disabled={!canSendTest || testSend.isPending}");
+    expect(tabSource).toContain("to: testTo.trim()");
+    expect(wizardSource).toContain("MESSAGING_AREA_CODE_LENGTH");
+    expect(wizardSource).toContain("isMessagingAreaCodeInputValid(areaCode)");
+    expect(wizardSource).toContain("disabled={checking || !isMessagingAreaCodeInputValid(areaCode)}");
+    expect(wizardSource).toContain(
+      "When registration is active, turn sending on from Messaging settings"
+    );
+    expect(wizardSource).not.toContain("trpc.messaging.testSend.useMutation");
+    expect(wizardSource).not.toContain("isMessagingPhoneInputValid(testTo)");
+    expect(wizardSource).not.toContain("maxLength={MESSAGING_PHONE_MAX_LENGTH}");
+    expect(wizardSource).not.toContain("to: testTo.trim()");
+    expect(wizardSource).not.toContain("Send test");
+  });
+
+  it("surfaces messaging status query failures and missing payloads before showing placeholder stats", () => {
+    expect(tabSource).toContain("error, refetch");
+    expect(tabSource).toContain("function MessagingLoadError");
+    expect(tabSource).toContain("if (error)");
+    expect(tabSource).toContain("if (!data)");
+    expect(tabSource).toContain("Unable to load messaging settings");
+    expect(tabSource).toContain("Messaging status is unavailable");
+    expect(tabSource).toContain("onRetry={() => void refetch()}");
+    expect(tabSource.indexOf("if (error)")).toBeLessThan(
+      tabSource.indexOf("if (!data)")
+    );
+    expect(tabSource.indexOf("if (!data)")).toBeLessThan(
+      tabSource.indexOf("const usage = data.usage")
+    );
+    expect(tabSource).toContain("const locations = data.locations as MessagingSetupLocation[]");
+    expect(tabSource).not.toContain("data?.locations ?? []");
+    expect(tabSource).not.toContain("const usage = data?.usage");
+    expect(tabSource).not.toContain("const consent = data?.consent");
+  });
+});

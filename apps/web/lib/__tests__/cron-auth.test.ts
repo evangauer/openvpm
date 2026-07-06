@@ -20,6 +20,13 @@ describe("isCronAuthorized", () => {
     expect(isCronAuthorized(req({ authorization: "Bearer s3cret-value" }))).toBe(true);
   });
 
+  it("trims the configured secret and provided headers before comparison", () => {
+    process.env.CRON_SECRET = " s3cret-value ";
+
+    expect(isCronAuthorized(req({ authorization: "Bearer s3cret-value" }))).toBe(true);
+    expect(isCronAuthorized(req({ "x-cron-secret": " s3cret-value " }))).toBe(true);
+  });
+
   it("accepts a lowercase `bearer` scheme", () => {
     expect(isCronAuthorized(req({ authorization: "bearer s3cret-value" }))).toBe(true);
   });
@@ -41,5 +48,11 @@ describe("isCronAuthorized", () => {
     delete process.env.CRON_SECRET;
     expect(isCronAuthorized(req({ authorization: "Bearer s3cret-value" }))).toBe(false);
     expect(isCronAuthorized(req({ "x-cron-secret": "s3cret-value" }))).toBe(false);
+  });
+
+  it("rejects everything when CRON_SECRET is blank", () => {
+    process.env.CRON_SECRET = "   ";
+    expect(isCronAuthorized(req({ authorization: "Bearer s3cret-value" }))).toBe(false);
+    expect(isCronAuthorized(req({ "x-cron-secret": "   " }))).toBe(false);
   });
 });

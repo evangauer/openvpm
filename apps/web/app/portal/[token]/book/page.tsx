@@ -1,9 +1,18 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { AlertCircle, PawPrint } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { EmptyState } from "@/components/common/empty-state";
+import {
+  isPortalBookingReasonValid,
+  isPortalBookingStartWithinBounds,
+  PORTAL_BOOKING_REASON_MAX_LENGTH,
+  portalBookingTimeBounds,
+} from "@/lib/portal/booking";
+import { formatPortalDateInput } from "@/lib/portal/date";
 
 export default function BookAppointmentPage() {
   const params = useParams();
@@ -19,15 +28,75 @@ export default function BookAppointmentPage() {
   const [preferredTime, setPreferredTime] = useState("");
   const [reason, setReason] = useState("");
 
+  const appointmentTypesMissing =
+    !types.isLoading && !types.error && !types.data;
+  const appointmentTypesUnavailable =
+    Boolean(types.error) || appointmentTypesMissing;
+  const verifiedAppointmentTypes =
+    types.error || appointmentTypesMissing || !types.data ? null : types.data;
+  const appointmentTypes = verifiedAppointmentTypes ?? [];
+  const selectedType = verifiedAppointmentTypes?.find((t) => t.id === typeId);
+  const selectedDurationMinutes = selectedType?.durationMinutes ?? 30;
+  const timeBounds = portalBookingTimeBounds(selectedDurationMinutes);
+  const hasValidBookingWindow = Boolean(timeBounds.maxTime);
+  const hasValidPreferredTime = isPortalBookingStartWithinBounds(
+    preferredTime,
+    selectedDurationMinutes
+  );
+  const hasValidAppointmentType = !typeId || Boolean(selectedType);
+  const hasValidReason = isPortalBookingReasonValid(reason);
+  const showTimeBoundsError =
+    preferredTime !== "" && hasValidBookingWindow && !hasValidPreferredTime;
+
+  useEffect(() => {
+    if (!appointmentTypesUnavailable || !typeId) return;
+    setTypeId("");
+    setPreferredTime("");
+  }, [appointmentTypesUnavailable, typeId]);
+
   // Suggested open times for the chosen date.
   const slots = trpc.portal.availableSlots.useQuery(
-    { token, date: preferredDate, durationMinutes: 30 },
+    { token, date: preferredDate, durationMinutes: selectedDurationMinutes },
     { enabled: !!preferredDate }
   );
+  const slotsUnavailable = Boolean(
+    preferredDate &&
+      !slots.isLoading &&
+      (Boolean(slots.error) || !slots.data)
+  );
 
-  const pets = client.data?.patients ?? [];
-  const canSubmit =
-    patientId && preferredDate && preferredTime && reason.trim() && !request.isPending;
+  if (client.isLoading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-teal-600 border-t-transparent" />
+      </div>
+    );
+  }
+
+  if (client.error || !client.data) {
+    return (
+      <div className="max-w-xl">
+        <EmptyState
+          className="py-12"
+          icon={AlertCircle}
+          title="Unable to load booking form"
+          description="This portal link is invalid or has expired. Please contact your veterinary clinic for a new link."
+        />
+      </div>
+    );
+  }
+
+  const clientData = client.data;
+  const today = formatPortalDateInput(new Date(), clientData.timezone);
+  const pets = clientData.patients;
+  const canSubmit = Boolean(
+    patientId &&
+      preferredDate &&
+      hasValidAppointmentType &&
+      hasValidPreferredTime &&
+      hasValidReason &&
+      !request.isPending
+  );
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -35,7 +104,7 @@ export default function BookAppointmentPage() {
     request.mutate({
       token,
       patientId,
-      typeId: typeId || undefined,
+      typeId: hasValidAppointmentType && typeId ? typeId : undefined,
       preferredDate,
       preferredTime,
       reason: reason.trim(),
@@ -79,115 +148,185 @@ export default function BookAppointmentPage() {
         Pick a time that works for you. The clinic will confirm the final time.
       </p>
 
-      <form onSubmit={submit} className="space-y-5">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">Pet</label>
-          <select
-            value={patientId}
-            onChange={(e) => setPatientId(e.target.value)}
-            required
-            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
-          >
-            <option value="">Select a pet…</option>
-            {pets.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">
-            Reason for visit
-          </label>
-          <select
-            value={typeId}
-            onChange={(e) => setTypeId(e.target.value)}
-            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
-          >
-            <option value="">General visit</option>
-            {(types.data ?? []).map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="grid grid-cols-2 gap-4">
+      {pets.length === 0 ? (
+        <EmptyState
+          className="py-10"
+          icon={PawPrint}
+          title="No pets on file yet"
+          description="Your clinic will add pets here when they create patient records."
+        />
+      ) : (
+        <form onSubmit={submit} className="space-y-5">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">Preferred date</label>
-            <input
-              type="date"
-              value={preferredDate}
-              onChange={(e) => setPreferredDate(e.target.value)}
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              Pet
+            </label>
+            <select
+              value={patientId}
+              onChange={(e) => setPatientId(e.target.value)}
               required
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">Preferred time</label>
-            <input
-              type="time"
-              value={preferredTime}
-              onChange={(e) => setPreferredTime(e.target.value)}
-              required
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
-            />
-          </div>
-        </div>
-
-        {preferredDate && (slots.data?.length ?? 0) > 0 && (
-          <div>
-            <p className="text-xs font-medium text-gray-500 mb-2">
-              Open times on {preferredDate} (tap to pick)
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {slots.data!.map((s) => (
-                <button
-                  key={s.iso}
-                  type="button"
-                  onClick={() => setPreferredTime(s.time)}
-                  className={`rounded-md border px-2.5 py-1 text-xs transition-colors ${
-                    preferredTime === s.time
-                      ? "border-teal-500 bg-teal-50 text-teal-700"
-                      : "border-gray-200 text-gray-600 hover:border-teal-300"
-                  }`}
-                >
-                  {s.time}
-                </button>
+            >
+              <option value="">Select a pet…</option>
+              {pets.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
               ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              Reason for visit
+            </label>
+            <select
+              value={typeId}
+              onChange={(e) => {
+                setTypeId(e.target.value);
+                setPreferredTime("");
+              }}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+            >
+              <option value="">General visit</option>
+              {appointmentTypes.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+            {appointmentTypesUnavailable && (
+              <p className="mt-1.5 text-xs text-red-600">
+                Appointment types could not be verified. You can still request a general visit.
+              </p>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                Preferred date
+              </label>
+              <input
+                type="date"
+                value={preferredDate}
+                onChange={(e) => {
+                  setPreferredDate(e.target.value);
+                  setPreferredTime("");
+                }}
+                min={today}
+                required
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                Preferred time
+              </label>
+              <input
+                type="time"
+                value={preferredTime}
+                onChange={(e) => setPreferredTime(e.target.value)}
+                min={timeBounds.minTime}
+                max={timeBounds.maxTime ?? timeBounds.minTime}
+                disabled={!hasValidBookingWindow}
+                aria-invalid={showTimeBoundsError}
+                aria-describedby="preferred-time-help"
+                required
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+              />
+              <p
+                id="preferred-time-help"
+                className={`mt-1.5 text-xs ${
+                  showTimeBoundsError ? "text-red-600" : "text-gray-500"
+                }`}
+              >
+                {showTimeBoundsError
+                  ? `Choose a start time from ${timeBounds.minTime} to ${timeBounds.maxTime}.`
+                  : timeBounds.maxTime
+                  ? `Choose a start time from ${timeBounds.minTime} to ${timeBounds.maxTime}.`
+                  : "This visit type is longer than the online booking window."}
+              </p>
             </div>
           </div>
-        )}
 
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">
-            Anything we should know?
-          </label>
-          <textarea
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-            required
-            rows={3}
-            placeholder="Briefly describe the reason for the visit"
-            className="w-full resize-none rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
-          />
-        </div>
+          {preferredDate && slots.isLoading && (
+            <p className="text-xs text-gray-500">Checking open times…</p>
+          )}
 
-        {request.error && (
-          <p className="text-sm text-red-600">{request.error.message}</p>
-        )}
+          {slotsUnavailable && (
+            <p className="text-xs text-red-600">
+              Open times could not be loaded. You can still enter a preferred time.
+            </p>
+          )}
 
-        <button
-          type="submit"
-          disabled={!canSubmit}
-          className="w-full rounded-lg bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-50 transition-colors"
-        >
-          {request.isPending ? "Sending…" : "Request appointment"}
-        </button>
-      </form>
+          {preferredDate &&
+            !slots.isLoading &&
+            !slots.error &&
+            slots.data &&
+            slots.data.length === 0 && (
+              <p className="text-xs text-gray-500">
+                No suggested open times are available for this date.
+              </p>
+            )}
+
+          {preferredDate &&
+            !slots.isLoading &&
+            !slots.error &&
+            slots.data &&
+            slots.data.length > 0 && (
+              <div>
+                <p className="text-xs font-medium text-gray-500 mb-2">
+                  Open times on {preferredDate} (tap to pick)
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {slots.data.map((s) => (
+                    <button
+                      key={s.iso}
+                      type="button"
+                      onClick={() => setPreferredTime(s.time)}
+                      className={`rounded-md border px-2.5 py-1 text-xs transition-colors ${
+                        preferredTime === s.time
+                          ? "border-teal-500 bg-teal-50 text-teal-700"
+                          : "border-gray-200 text-gray-600 hover:border-teal-300"
+                      }`}
+                    >
+                      {s.time}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              Anything we should know?
+            </label>
+            <textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              required
+              rows={3}
+              maxLength={PORTAL_BOOKING_REASON_MAX_LENGTH}
+              aria-invalid={reason.length > 0 && !hasValidReason}
+              placeholder="Briefly describe the reason for the visit"
+              className="w-full resize-none rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+            />
+          </div>
+
+          {request.error && (
+            <p className="text-sm text-red-600">{request.error.message}</p>
+          )}
+
+          <button
+            type="submit"
+            disabled={!canSubmit}
+            className="w-full rounded-lg bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-50 transition-colors"
+          >
+            {request.isPending ? "Sending…" : "Request appointment"}
+          </button>
+        </form>
+      )}
     </div>
   );
 }

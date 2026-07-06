@@ -47,27 +47,52 @@ export const waitlistStatusEnum = pgEnum("waitlist_status", [
   "cancelled",
 ]);
 
-export const appointmentTypes = pgTable("appointment_types", {
-  ...baseColumns(),
-  practiceId: uuid("practice_id")
-    .notNull()
-    .references(() => practices.id),
-  name: varchar("name", { length: 128 }).notNull(),
-  durationMinutes: integer("duration_minutes").notNull().default(30),
-  color: varchar("color", { length: 7 }).default("#0d9488"),
-  requiresDoctor: integer("requires_doctor").notNull().default(1),
-  defaultRoomType: roomTypeEnum("default_room_type").default("exam"),
-});
+export const appointmentTypes = pgTable(
+  "appointment_types",
+  {
+    ...baseColumns(),
+    practiceId: uuid("practice_id")
+      .notNull()
+      .references(() => practices.id),
+    name: varchar("name", { length: 128 }).notNull(),
+    durationMinutes: integer("duration_minutes").notNull().default(30),
+    color: varchar("color", { length: 7 }).default("#0d9488"),
+    requiresDoctor: integer("requires_doctor").notNull().default(1),
+    defaultRoomType: roomTypeEnum("default_room_type").default("exam"),
+  },
+  (table) => ({
+    practiceNameIdx: index("appointment_types_practice_name_idx").on(
+      table.practiceId,
+      table.deletedAt,
+      table.name
+    ),
+  })
+);
 
-export const rooms = pgTable("rooms", {
-  ...baseColumns(),
-  practiceId: uuid("practice_id")
-    .notNull()
-    .references(() => practices.id),
-  locationId: uuid("location_id").references(() => locations.id),
-  name: varchar("name", { length: 128 }).notNull(),
-  type: roomTypeEnum("type").notNull().default("exam"),
-});
+export const rooms = pgTable(
+  "rooms",
+  {
+    ...baseColumns(),
+    practiceId: uuid("practice_id")
+      .notNull()
+      .references(() => practices.id),
+    locationId: uuid("location_id").references(() => locations.id),
+    name: varchar("name", { length: 128 }).notNull(),
+    type: roomTypeEnum("type").notNull().default("exam"),
+  },
+  (table) => ({
+    practiceNameIdx: index("rooms_practice_name_idx").on(
+      table.practiceId,
+      table.deletedAt,
+      table.name
+    ),
+    locationIdx: index("rooms_location_idx").on(
+      table.practiceId,
+      table.locationId,
+      table.deletedAt
+    ),
+  })
+);
 
 export const recurringSeries = pgTable("recurring_series", {
   ...baseColumns(),
@@ -107,6 +132,36 @@ export const appointments = pgTable(
     ),
     patientIdx: index("appointments_patient_idx").on(table.patientId),
     doctorIdx: index("appointments_doctor_idx").on(table.doctorId, table.startTime),
+    clientStatusIdx: index("appointments_client_status_idx").on(
+      table.practiceId,
+      table.clientId,
+      table.status,
+      table.deletedAt
+    ),
+    patientStatusIdx: index("appointments_patient_status_idx").on(
+      table.practiceId,
+      table.patientId,
+      table.status,
+      table.deletedAt
+    ),
+    doctorStatusIdx: index("appointments_doctor_status_idx").on(
+      table.practiceId,
+      table.doctorId,
+      table.status,
+      table.deletedAt
+    ),
+    typeStatusIdx: index("appointments_type_status_idx").on(
+      table.practiceId,
+      table.typeId,
+      table.status,
+      table.deletedAt
+    ),
+    roomStatusIdx: index("appointments_room_status_idx").on(
+      table.practiceId,
+      table.roomId,
+      table.status,
+      table.deletedAt
+    ),
   })
 );
 
@@ -131,22 +186,49 @@ export const appointmentWaitlist = pgTable(
   },
   (table) => ({
     practiceIdx: index("waitlist_practice_idx").on(table.practiceId, table.status),
+    clientStatusIdx: index("waitlist_client_status_idx").on(
+      table.practiceId,
+      table.clientId,
+      table.status,
+      table.deletedAt
+    ),
+    patientStatusIdx: index("waitlist_patient_status_idx").on(
+      table.practiceId,
+      table.patientId,
+      table.status,
+      table.deletedAt
+    ),
   })
 );
 
-export const staffSchedules = pgTable("staff_schedules", {
-  ...baseColumns(),
-  practiceId: uuid("practice_id")
-    .notNull()
-    .references(() => practices.id),
-  userId: uuid("user_id")
-    .notNull()
-    .references(() => users.id),
-  dayOfWeek: integer("day_of_week").notNull(), // 0=Sun, 6=Sat
-  startTime: time("start_time").notNull(),
-  endTime: time("end_time").notNull(),
-  locationId: uuid("location_id").references(() => locations.id),
-});
+export const staffSchedules = pgTable(
+  "staff_schedules",
+  {
+    ...baseColumns(),
+    practiceId: uuid("practice_id")
+      .notNull()
+      .references(() => practices.id),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    dayOfWeek: integer("day_of_week").notNull(), // 0=Sun, 6=Sat
+    startTime: time("start_time").notNull(),
+    endTime: time("end_time").notNull(),
+    locationId: uuid("location_id").references(() => locations.id),
+  },
+  (table) => ({
+    locationIdx: index("staff_schedules_location_idx").on(
+      table.practiceId,
+      table.locationId,
+      table.deletedAt
+    ),
+    userIdx: index("staff_schedules_user_idx").on(
+      table.practiceId,
+      table.userId,
+      table.deletedAt
+    ),
+  })
+);
 
 // Relations
 export const appointmentTypesRelations = relations(

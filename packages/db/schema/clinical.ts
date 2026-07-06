@@ -75,95 +75,157 @@ export const soapNotes = pgTable(
   })
 );
 
-export const vaccinationRecords = pgTable("vaccination_records", {
-  ...baseColumns(),
-  practiceId: uuid("practice_id")
-    .notNull()
-    .references(() => practices.id),
-  patientId: uuid("patient_id")
-    .notNull()
-    .references(() => patients.id),
-  vaccineName: varchar("vaccine_name", { length: 255 }).notNull(),
-  lotNumber: varchar("lot_number", { length: 64 }),
-  manufacturer: varchar("manufacturer", { length: 128 }),
-  administeredBy: uuid("administered_by").references(() => users.id),
-  administeredAt: timestamp("administered_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  nextDueDate: date("next_due_date"),
-  certificateUrl: varchar("certificate_url", { length: 512 }),
-});
+export const vaccinationRecords = pgTable(
+  "vaccination_records",
+  {
+    ...baseColumns(),
+    practiceId: uuid("practice_id")
+      .notNull()
+      .references(() => practices.id),
+    patientId: uuid("patient_id")
+      .notNull()
+      .references(() => patients.id),
+    vaccineName: varchar("vaccine_name", { length: 255 }).notNull(),
+    lotNumber: varchar("lot_number", { length: 64 }),
+    manufacturer: varchar("manufacturer", { length: 128 }),
+    administeredBy: uuid("administered_by").references(() => users.id),
+    administeredAt: timestamp("administered_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    nextDueDate: date("next_due_date"),
+    certificateUrl: varchar("certificate_url", { length: 512 }),
+  },
+  (table) => ({
+    patientIdx: index("vaccination_records_patient_idx").on(
+      table.patientId,
+      table.nextDueDate
+    ),
+    practiceDueIdx: index("vaccination_records_practice_due_idx").on(
+      table.practiceId,
+      table.nextDueDate,
+      table.deletedAt
+    ),
+  })
+);
 
-export const labResults = pgTable("lab_results", {
-  ...baseColumns(),
-  practiceId: uuid("practice_id")
-    .notNull()
-    .references(() => practices.id),
-  patientId: uuid("patient_id")
-    .notNull()
-    .references(() => patients.id),
-  appointmentId: uuid("appointment_id").references(() => appointments.id),
-  testName: varchar("test_name", { length: 255 }).notNull(),
-  resultValue: varchar("result_value", { length: 128 }),
-  unit: varchar("unit", { length: 32 }),
-  referenceRangeLow: numeric("reference_range_low", {
-    precision: 10,
-    scale: 3,
-  }),
-  referenceRangeHigh: numeric("reference_range_high", {
-    precision: 10,
-    scale: 3,
-  }),
-  status: labStatusEnum("status").notNull().default("pending"),
-  orderedBy: uuid("ordered_by").references(() => users.id),
-  reviewedBy: uuid("reviewed_by").references(() => users.id),
-});
+export const labResults = pgTable(
+  "lab_results",
+  {
+    ...baseColumns(),
+    practiceId: uuid("practice_id")
+      .notNull()
+      .references(() => practices.id),
+    patientId: uuid("patient_id")
+      .notNull()
+      .references(() => patients.id),
+    appointmentId: uuid("appointment_id").references(() => appointments.id),
+    testName: varchar("test_name", { length: 255 }).notNull(),
+    resultValue: varchar("result_value", { length: 128 }),
+    unit: varchar("unit", { length: 32 }),
+    referenceRangeLow: numeric("reference_range_low", {
+      precision: 10,
+      scale: 3,
+    }),
+    referenceRangeHigh: numeric("reference_range_high", {
+      precision: 10,
+      scale: 3,
+    }),
+    status: labStatusEnum("status").notNull().default("pending"),
+    orderedBy: uuid("ordered_by").references(() => users.id),
+    reviewedBy: uuid("reviewed_by").references(() => users.id),
+  },
+  (table) => ({
+    patientIdx: index("lab_results_patient_idx").on(table.patientId, table.status),
+    practiceStatusIdx: index("lab_results_practice_status_idx").on(
+      table.practiceId,
+      table.status,
+      table.deletedAt
+    ),
+  })
+);
 
-export const procedures = pgTable("procedures", {
-  ...baseColumns(),
-  practiceId: uuid("practice_id")
-    .notNull()
-    .references(() => practices.id),
-  patientId: uuid("patient_id")
-    .notNull()
-    .references(() => patients.id),
-  appointmentId: uuid("appointment_id").references(() => appointments.id),
-  name: varchar("name", { length: 255 }).notNull(),
-  description: text("description"),
-  performedBy: uuid("performed_by").references(() => users.id),
-  anesthesiaUsed: text("anesthesia_used"),
-  durationMinutes: integer("duration_minutes"),
-  notes: text("notes"),
-});
+export const procedures = pgTable(
+  "procedures",
+  {
+    ...baseColumns(),
+    practiceId: uuid("practice_id")
+      .notNull()
+      .references(() => practices.id),
+    patientId: uuid("patient_id")
+      .notNull()
+      .references(() => patients.id),
+    appointmentId: uuid("appointment_id").references(() => appointments.id),
+    name: varchar("name", { length: 255 }).notNull(),
+    description: text("description"),
+    performedBy: uuid("performed_by").references(() => users.id),
+    anesthesiaUsed: text("anesthesia_used"),
+    durationMinutes: integer("duration_minutes"),
+    notes: text("notes"),
+  },
+  (table) => ({
+    patientIdx: index("procedures_patient_idx").on(table.patientId),
+    practiceIdx: index("procedures_practice_idx").on(
+      table.practiceId,
+      table.deletedAt
+    ),
+  })
+);
 
-export const clinicalNotes = pgTable("clinical_notes", {
-  ...baseColumns(),
-  practiceId: uuid("practice_id")
-    .notNull()
-    .references(() => practices.id),
-  patientId: uuid("patient_id")
-    .notNull()
-    .references(() => patients.id),
-  authorId: uuid("author_id")
-    .notNull()
-    .references(() => users.id),
-  noteType: noteTypeEnum("note_type").notNull().default("general"),
-  content: text("content").notNull(),
-});
+export const clinicalNotes = pgTable(
+  "clinical_notes",
+  {
+    ...baseColumns(),
+    practiceId: uuid("practice_id")
+      .notNull()
+      .references(() => practices.id),
+    patientId: uuid("patient_id")
+      .notNull()
+      .references(() => patients.id),
+    authorId: uuid("author_id")
+      .notNull()
+      .references(() => users.id),
+    noteType: noteTypeEnum("note_type").notNull().default("general"),
+    content: text("content").notNull(),
+  },
+  (table) => ({
+    patientIdx: index("clinical_notes_patient_idx").on(
+      table.patientId,
+      table.noteType
+    ),
+    practiceIdx: index("clinical_notes_practice_idx").on(
+      table.practiceId,
+      table.deletedAt
+    ),
+  })
+);
 
-export const problemList = pgTable("problem_list", {
-  ...baseColumns(),
-  practiceId: uuid("practice_id")
-    .notNull()
-    .references(() => practices.id),
-  patientId: uuid("patient_id")
-    .notNull()
-    .references(() => patients.id),
-  description: varchar("description", { length: 500 }).notNull(),
-  status: problemStatusEnum("status").notNull().default("active"),
-  onsetDate: date("onset_date"),
-  resolvedDate: date("resolved_date"),
-});
+export const problemList = pgTable(
+  "problem_list",
+  {
+    ...baseColumns(),
+    practiceId: uuid("practice_id")
+      .notNull()
+      .references(() => practices.id),
+    patientId: uuid("patient_id")
+      .notNull()
+      .references(() => patients.id),
+    description: varchar("description", { length: 500 }).notNull(),
+    status: problemStatusEnum("status").notNull().default("active"),
+    onsetDate: date("onset_date"),
+    resolvedDate: date("resolved_date"),
+  },
+  (table) => ({
+    patientStatusIdx: index("problem_list_patient_status_idx").on(
+      table.patientId,
+      table.status
+    ),
+    practiceStatusIdx: index("problem_list_practice_status_idx").on(
+      table.practiceId,
+      table.status,
+      table.deletedAt
+    ),
+  })
+);
 
 export const vitalSigns = pgTable(
   "vital_signs",
@@ -198,34 +260,57 @@ export const vitalSigns = pgTable(
   })
 );
 
-export const cases = pgTable("cases", {
-  ...baseColumns(),
-  practiceId: uuid("practice_id")
-    .notNull()
-    .references(() => practices.id),
-  patientId: uuid("patient_id")
-    .notNull()
-    .references(() => patients.id),
-  title: varchar("title", { length: 255 }).notNull(),
-  description: text("description"),
-  status: caseStatusEnum("status").notNull().default("open"),
-  openedAt: timestamp("opened_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  closedAt: timestamp("closed_at", { withTimezone: true }),
-  primaryVetId: uuid("primary_vet_id").references(() => users.id),
-});
+export const cases = pgTable(
+  "cases",
+  {
+    ...baseColumns(),
+    practiceId: uuid("practice_id")
+      .notNull()
+      .references(() => practices.id),
+    patientId: uuid("patient_id")
+      .notNull()
+      .references(() => patients.id),
+    title: varchar("title", { length: 255 }).notNull(),
+    description: text("description"),
+    status: caseStatusEnum("status").notNull().default("open"),
+    openedAt: timestamp("opened_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    primaryVetId: uuid("primary_vet_id").references(() => users.id),
+  },
+  (table) => ({
+    patientStatusIdx: index("cases_patient_status_idx").on(
+      table.patientId,
+      table.status
+    ),
+    practiceStatusIdx: index("cases_practice_status_idx").on(
+      table.practiceId,
+      table.status,
+      table.deletedAt
+    ),
+  })
+);
 
-export const caseEntries = pgTable("case_entries", {
-  ...baseColumns(),
-  caseId: uuid("case_id")
-    .notNull()
-    .references(() => cases.id),
-  appointmentId: uuid("appointment_id").references(() => appointments.id),
-  medicalRecordType: varchar("medical_record_type", { length: 64 }),
-  medicalRecordId: uuid("medical_record_id"),
-  notes: text("notes"),
-});
+export const caseEntries = pgTable(
+  "case_entries",
+  {
+    ...baseColumns(),
+    caseId: uuid("case_id")
+      .notNull()
+      .references(() => cases.id),
+    appointmentId: uuid("appointment_id").references(() => appointments.id),
+    medicalRecordType: varchar("medical_record_type", { length: 64 }),
+    medicalRecordId: uuid("medical_record_id"),
+    notes: text("notes"),
+  },
+  (table) => ({
+    caseIdx: index("case_entries_case_idx").on(
+      table.caseId,
+      table.deletedAt
+    ),
+  })
+);
 
 export const treatmentPlans = pgTable(
   "treatment_plans",
@@ -251,16 +336,26 @@ export const treatmentPlans = pgTable(
   })
 );
 
-export const treatmentPlanItems = pgTable("treatment_plan_items", {
-  ...baseColumns(),
-  planId: uuid("plan_id")
-    .notNull()
-    .references(() => treatmentPlans.id),
-  description: varchar("description", { length: 500 }).notNull(),
-  instructions: text("instructions"),
-  status: treatmentPlanItemStatusEnum("status").notNull().default("pending"),
-  sortOrder: integer("sort_order").notNull().default(0),
-});
+export const treatmentPlanItems = pgTable(
+  "treatment_plan_items",
+  {
+    ...baseColumns(),
+    planId: uuid("plan_id")
+      .notNull()
+      .references(() => treatmentPlans.id),
+    description: varchar("description", { length: 500 }).notNull(),
+    instructions: text("instructions"),
+    status: treatmentPlanItemStatusEnum("status").notNull().default("pending"),
+    sortOrder: integer("sort_order").notNull().default(0),
+  },
+  (table) => ({
+    planOrderIdx: index("treatment_plan_items_plan_order_idx").on(
+      table.planId,
+      table.deletedAt,
+      table.sortOrder
+    ),
+  })
+);
 
 // Relations
 export const soapNotesRelations = relations(soapNotes, ({ one }) => ({

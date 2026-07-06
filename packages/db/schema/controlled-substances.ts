@@ -48,6 +48,11 @@ export const controlledSubstanceLog = pgTable(
       table.drugName,
       table.performedAt
     ),
+    practiceDateIdx: index("cs_log_practice_date_idx").on(
+      table.practiceId,
+      table.deletedAt,
+      table.performedAt
+    ),
   })
 );
 

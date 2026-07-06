@@ -2,11 +2,25 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Check } from "lucide-react";
+import { useSession } from "next-auth/react";
+import { AlertCircle, ArrowLeft, Check, Loader2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { EmptyState } from "@/components/common/empty-state";
 import { toast } from "sonner";
+import {
+  CLIENT_SEARCH_MAX_LENGTH,
+  isClientSearchInputValid,
+} from "@/lib/clients/policy";
+import {
+  PATIENT_BREED_MAX_LENGTH,
+  PATIENT_COLOR_MAX_LENGTH,
+  PATIENT_MICROCHIP_NUMBER_MAX_LENGTH,
+  PATIENT_NAME_MAX_LENGTH,
+  isOptionalPatientTextValid,
+  isRequiredPatientTextValid,
+} from "@/lib/patients/policy";
 
 const speciesOptions = [
   { value: "canine", label: "Canine" },
@@ -27,6 +41,56 @@ const sexOptions = [
 
 export default function NewPatientPage() {
   const router = useRouter();
+  const { data: session, status } = useSession();
+
+  if (status === "loading") {
+    return (
+      <div className="flex items-center justify-center gap-2 rounded-lg border border-border bg-card p-8 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Checking patient access...
+      </div>
+    );
+  }
+
+  if (!canManagePatientFormRole(session?.user?.role)) {
+    return (
+      <div className="max-w-2xl">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => router.push("/patients")}
+          className="mb-4"
+        >
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Back to Patients
+        </Button>
+        <EmptyState
+          icon={AlertCircle}
+          title="Patient actions are read-only"
+          description="Only staff roles with patient write access can create patients."
+          action={{
+            label: "Back to Patients",
+            onClick: () => router.push("/patients"),
+          }}
+        />
+      </div>
+    );
+  }
+
+  return <NewPatientForm />;
+}
+
+function canManagePatientFormRole(role?: string | null): boolean {
+  return (
+    role === "admin" ||
+    role === "veterinarian" ||
+    role === "technician" ||
+    role === "front_desk"
+  );
+}
+
+function NewPatientForm() {
+  const router = useRouter();
   const [form, setForm] = useState({
     clientId: "",
     name: "",
@@ -41,11 +105,23 @@ export default function NewPatientPage() {
   const [showClientDropdown, setShowClientDropdown] = useState(false);
   const [selectedClientName, setSelectedClientName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const trimmedClientSearch = clientSearch.trim();
+  const canSearchClients = isClientSearchInputValid(clientSearch);
 
-  const { data: clientResults } = trpc.clients.search.useQuery(
-    { query: clientSearch },
-    { enabled: clientSearch.length >= 1 }
+  const {
+    data: clientResults,
+    isLoading: isSearchingClients,
+    error: clientSearchError,
+  } = trpc.clients.search.useQuery(
+    { query: trimmedClientSearch },
+    { enabled: canSearchClients }
   );
+  const clientSearchMissing =
+    canSearchClients &&
+    !selectedClientName &&
+    !isSearchingClients &&
+    !clientSearchError &&
+    !clientResults;
 
   const createPatient = trpc.patients.create.useMutation({
     onSuccess: () => {
@@ -58,6 +134,16 @@ export default function NewPatientPage() {
     },
   });
 
+  const canSubmit =
+    !!form.clientId &&
+    isRequiredPatientTextValid(form.name, PATIENT_NAME_MAX_LENGTH) &&
+    isOptionalPatientTextValid(form.breed, PATIENT_BREED_MAX_LENGTH) &&
+    isOptionalPatientTextValid(form.color, PATIENT_COLOR_MAX_LENGTH) &&
+    isOptionalPatientTextValid(
+      form.microchipNumber,
+      PATIENT_MICROCHIP_NUMBER_MAX_LENGTH
+    );
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -68,6 +154,10 @@ export default function NewPatientPage() {
     }
     if (!form.name.trim()) {
       setError("Patient name is required.");
+      return;
+    }
+    if (!canSubmit) {
+      setError("Check required fields and field lengths.");
       return;
     }
 
@@ -148,6 +238,7 @@ export default function NewPatientPage() {
               <Input
                 placeholder="Search clients by name or email..."
                 value={clientSearch}
+                maxLength={CLIENT_SEARCH_MAX_LENGTH}
                 onChange={(e) => {
                   setClientSearch(e.target.value);
                   setShowClientDropdown(true);
@@ -158,11 +249,20 @@ export default function NewPatientPage() {
                   setTimeout(() => setShowClientDropdown(false), 200);
                 }}
               />
-              {showClientDropdown &&
-                clientResults &&
-                clientResults.length > 0 && (
-                  <div className="absolute z-10 mt-1 w-full rounded-md border border-border bg-card shadow-lg">
-                    {clientResults.map((client) => (
+              {showClientDropdown && canSearchClients && (
+                <div className="absolute z-10 mt-1 w-full rounded-md border border-border bg-card shadow-lg">
+                  {clientSearchError || clientSearchMissing ? (
+                    <div className="p-3 text-sm text-destructive">
+                      {clientSearchError?.message ??
+                        "Unable to search clients. Please retry."}
+                    </div>
+                  ) : isSearchingClients ? (
+                    <div className="flex items-center gap-2 p-3 text-sm text-muted-foreground">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      Searching clients...
+                    </div>
+                  ) : clientResults && clientResults.length > 0 ? (
+                    clientResults.map((client) => (
                       <button
                         key={client.id}
                         type="button"
@@ -177,17 +277,14 @@ export default function NewPatientPage() {
                           {client.email || client.phone || ""}
                         </span>
                       </button>
-                    ))}
-                  </div>
-                )}
-              {showClientDropdown &&
-                clientSearch.length >= 1 &&
-                clientResults &&
-                clientResults.length === 0 && (
-                  <div className="absolute z-10 mt-1 w-full rounded-md border border-border bg-card p-3 text-center text-sm text-muted-foreground shadow-lg">
-                    No clients found
-                  </div>
-                )}
+                    ))
+                  ) : (
+                    <div className="p-3 text-center text-sm text-muted-foreground">
+                      No clients found
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -202,6 +299,7 @@ export default function NewPatientPage() {
             onChange={(e) => updateField("name", e.target.value)}
             placeholder="Patient name"
             className="mt-1"
+            maxLength={PATIENT_NAME_MAX_LENGTH}
             required
           />
         </div>
@@ -234,6 +332,7 @@ export default function NewPatientPage() {
               onChange={(e) => updateField("breed", e.target.value)}
               placeholder="Breed"
               className="mt-1"
+              maxLength={PATIENT_BREED_MAX_LENGTH}
             />
           </div>
         </div>
@@ -282,6 +381,7 @@ export default function NewPatientPage() {
               onChange={(e) => updateField("color", e.target.value)}
               placeholder="e.g., Black and white"
               className="mt-1"
+              maxLength={PATIENT_COLOR_MAX_LENGTH}
             />
           </div>
           <div>
@@ -294,12 +394,13 @@ export default function NewPatientPage() {
               onChange={(e) => updateField("microchipNumber", e.target.value)}
               placeholder="Microchip ID"
               className="mt-1"
+              maxLength={PATIENT_MICROCHIP_NUMBER_MAX_LENGTH}
             />
           </div>
         </div>
 
         <div className="flex gap-3 pt-4">
-          <Button type="submit" disabled={createPatient.isPending}>
+          <Button type="submit" disabled={!canSubmit || createPatient.isPending}>
             {createPatient.isPending ? "Creating..." : "Create Patient"}
           </Button>
           <Button

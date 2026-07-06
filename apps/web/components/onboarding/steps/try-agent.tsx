@@ -1,11 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Bot, Loader2, Send, Sparkles } from "lucide-react";
+import { AlertTriangle, Bot, Loader2, Send, Sparkles } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import type { StepHandle } from "../journey-types";
+import {
+  AGENT_INSTRUCTION_MAX_LENGTH,
+  isAgentInstructionValid,
+} from "@/lib/agent/policy";
 
 const DEFAULT_QUESTION = "Which pets are overdue for vaccines?";
 
@@ -43,7 +47,11 @@ function ExampleChat() {
  * Step 5: let the user try the built-in AI helper. If no key is set yet, show a
  * friendly note instead. Continue never blocks here.
  */
-export function TryAgentStep({ register }: { register: (h: StepHandle) => void }) {
+export function TryAgentStep({
+  register,
+}: {
+  register: (h: StepHandle) => void;
+}) {
   const status = trpc.agent.status.useQuery();
   const run = trpc.agent.run.useMutation();
   const [question, setQuestion] = useState(DEFAULT_QUESTION);
@@ -52,18 +60,60 @@ export function TryAgentStep({ register }: { register: (h: StepHandle) => void }
     register({ onContinue: async () => true });
   }, [register]);
 
-  const configured = status.data?.configured ?? false;
+  const statusMissing = !status.isLoading && !status.error && !status.data;
+  const verifiedAgentStatus =
+    status.error || statusMissing || !status.data ? null : status.data;
+  const configured = verifiedAgentStatus
+    ? verifiedAgentStatus.configured
+    : false;
+  const questionInvalid =
+    question.length > 0 && !isAgentInstructionValid(question);
+  const canAsk = Boolean(
+    verifiedAgentStatus &&
+    configured &&
+    isAgentInstructionValid(question) &&
+    !run.isPending
+  );
 
   function ask() {
-    const q = question.trim();
-    if (!q || run.isPending) return;
-    run.mutate({ instruction: q });
+    if (!canAsk) return;
+    run.mutate({ instruction: question.trim() });
   }
 
   if (status.isLoading) {
     return (
       <div className="flex items-center justify-center py-10">
         <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (status.error || statusMissing) {
+    return (
+      <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm">
+        <div className="flex items-start gap-3">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+          <div>
+            <p className="font-medium text-destructive">
+              {statusMissing
+                ? "AI helper status is unavailable"
+                : "AI helper status could not load"}
+            </p>
+            <p className="mt-1 text-slate-600">
+              {status.error?.message ??
+                "AI helper configuration could not be verified. Please retry before asking the helper."}
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void status.refetch()}
+              className="mt-3"
+            >
+              Retry
+            </Button>
+          </div>
+        </div>
       </div>
     );
   }
@@ -103,14 +153,12 @@ export function TryAgentStep({ register }: { register: (h: StepHandle) => void }
           onKeyDown={(e) => {
             if (e.key === "Enter") ask();
           }}
+          maxLength={AGENT_INSTRUCTION_MAX_LENGTH}
+          aria-invalid={questionInvalid || undefined}
           placeholder="Ask your AI helper something"
           aria-label="Ask your AI helper"
         />
-        <Button
-          type="button"
-          onClick={ask}
-          disabled={!question.trim() || run.isPending}
-        >
+        <Button type="button" onClick={ask} disabled={!canAsk}>
           {run.isPending ? (
             <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
           ) : (

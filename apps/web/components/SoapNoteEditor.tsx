@@ -1,10 +1,11 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Underline from "@tiptap/extension-underline";
 import Highlight from "@tiptap/extension-highlight";
-import { Bold, Italic, Copy, Trash2 } from "lucide-react";
+import { Bold, Italic, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -21,6 +22,7 @@ export function SoapNoteEditor({
   placeholder = "Enter text here...",
   className,
 }: SoapNoteEditorProps) {
+  const [isEmpty, setIsEmpty] = useState(!value);
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
@@ -34,9 +36,10 @@ export function SoapNoteEditor({
       Underline,
       Highlight.configure({ multicolor: true }),
     ],
-    content: value || `<p>${placeholder}</p>`,
+    content: value || "",
     onUpdate: ({ editor }) => {
-      onChange(editor.getHTML());
+      setIsEmpty(editor.isEmpty);
+      onChange(editor.isEmpty ? "" : editor.getHTML());
     },
     editorProps: {
       attributes: {
@@ -48,6 +51,15 @@ export function SoapNoteEditor({
       },
     },
   });
+
+  useEffect(() => {
+    if (!editor) return;
+    const nextValue = value || "";
+    const currentValue = editor.isEmpty ? "" : editor.getHTML();
+    if (currentValue === nextValue) return;
+    editor.commands.setContent(nextValue, false);
+    setIsEmpty(editor.isEmpty);
+  }, [editor, value]);
 
   if (!editor) return null;
 
@@ -133,7 +145,14 @@ export function SoapNoteEditor({
       </div>
 
       {/* Editor */}
-      <EditorContent editor={editor} />
+      <div className="relative">
+        <EditorContent editor={editor} />
+        {isEmpty && (
+          <div className="pointer-events-none absolute left-3 top-3 text-sm text-muted-foreground">
+            {placeholder}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -52,9 +52,9 @@ DECLARE
   t text;
   tbls text[] := array[
     'api_keys','appointment_types','appointment_waitlist','appointments','audit_log',
-    'cases','clients','clinical_notes','communications','controlled_substance_log',
+    'cases','clients','clinical_notes','communications','controlled_substance_log','email_suppressions',
     'files','insurance_claims','insurance_policies','invoices','lab_results','location_messaging',
-    'locations','patients','prescriptions','problem_list','procedures','products','purchase_orders',
+    'locations','patients','practice_payment_accounts','prescriptions','problem_list','procedures','products','purchase_orders',
     'recurring_series','rooms','services','sms_suppressions','soap_notes','staff_schedules','suppliers',
     'treatment_plans','treatment_templates','usage_records','users','vaccination_records',
     'vital_signs','webhooks','wellness_enrollments','wellness_plans'
@@ -110,6 +110,21 @@ DROP POLICY IF EXISTS reference_update ON drug_interactions;
 CREATE POLICY reference_update ON drug_interactions FOR UPDATE USING (app_rls_bypass()) WITH CHECK (app_rls_bypass());
 DROP POLICY IF EXISTS reference_delete ON drug_interactions;
 CREATE POLICY reference_delete ON drug_interactions FOR DELETE USING (app_rls_bypass());
+
+-- Stripe webhook event de-duplication is global/system state. Only system
+-- context may read or write it; ordinary tenant context should see nothing.
+ALTER TABLE stripe_events ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS system_only ON stripe_events;
+CREATE POLICY system_only ON stripe_events
+  USING (app_rls_bypass())
+  WITH CHECK (app_rls_bypass());
+
+-- Durable rate-limit buckets are also global/system state.
+ALTER TABLE rate_limit_buckets ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS system_only ON rate_limit_buckets;
+CREATE POLICY system_only ON rate_limit_buckets
+  USING (app_rls_bypass())
+  WITH CHECK (app_rls_bypass());
 
 -- 7) Auth-infra tables are NOT tenant-scoped (tokens are used pre-login; the
 --    NextAuth session/verification tables are unused under the JWT strategy). We

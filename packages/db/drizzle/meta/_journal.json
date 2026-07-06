@@ -1,0 +1,188 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1782542920671,
+      "tag": "0000_baseline",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1782547263384,
+      "tag": "0001_wellness_enrollment_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1782554881337,
+      "tag": "0002_location_messaging_sender_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1782660389368,
+      "tag": "0003_product_inventory_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1782664904342,
+      "tag": "0004_auth_expiry_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1782665073213,
+      "tag": "0005_rate_limit_bucket_reset_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1782665308992,
+      "tag": "0006_practice_billing_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1782668755485,
+      "tag": "0007_patient_chart_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1782668965955,
+      "tag": "0008_payment_invoice_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1782669303855,
+      "tag": "0009_scheduling_configuration_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1782669611717,
+      "tag": "0010_webhook_dispatch_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1782669794629,
+      "tag": "0011_catalog_lookup_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1782669985240,
+      "tag": "0012_wellness_plan_list_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1782670191948,
+      "tag": "0013_api_key_practice_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1782670449434,
+      "tag": "0014_clinical_child_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1782701715704,
+      "tag": "0015_waitlist_target_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1782702040135,
+      "tag": "0016_appointment_target_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1782702335485,
+      "tag": "0017_location_guard_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1782702565031,
+      "tag": "0018_invoice_item_active_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1782702764119,
+      "tag": "0019_invoice_list_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1782702967599,
+      "tag": "0020_invoice_target_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1782703345785,
+      "tag": "0021_communications_active_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1782704455780,
+      "tag": "0022_email_suppressions",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1782822227014,
+      "tag": "0023_sms_suppression_practice_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1782822520173,
+      "tag": "0024_controlled_substance_practice_date_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1782873534000,
+      "tag": "0025_practice_payment_accounts",
+      "breakpoints": true
+    }
+  ]
+}

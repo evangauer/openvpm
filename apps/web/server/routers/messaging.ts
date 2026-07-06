@@ -9,9 +9,18 @@ import {
   smsSuppressions,
   practices,
 } from "@openpims/db";
+import type { Database } from "@openpims/db/client";
 import { usageForPractice, currentPeriodMonth } from "@/lib/billing/usage";
 import { getPlan } from "@/lib/billing/plans";
 import { normalizeE164 } from "@/lib/messaging";
+import { summarizeInboxSmsStatus } from "@/lib/messaging/inbox-status";
+import { hasNonBlankMessagingSender } from "@/lib/messaging/sender-query";
+import {
+  MESSAGING_AREA_CODE_LENGTH,
+  MESSAGING_PHONE_MAX_LENGTH,
+  MESSAGING_PHONE_MIN_LENGTH,
+  MESSAGING_SEARCH_LIMIT_MAX,
+} from "@/lib/messaging/policy";
 import { sendSms } from "@/lib/sms";
 import {
   searchAvailableNumbers,
@@ -21,8 +30,34 @@ import {
   createHostedOrder,
   TelnyxNotConfiguredError,
 } from "@/lib/messaging/telnyx-provisioning";
+import { normalizeAppBaseUrl } from "@/lib/app-url";
 
 const adminOnly = protectedProcedure.use(requireRole("admin"));
+const MESSAGING_REGISTRATION_PENDING_DETAIL =
+  "Carrier registration (A2P 10DLC) in progress — required before messages can send; typically 1–2 weeks.";
+
+const messagingPhoneInput = z
+  .string()
+  .trim()
+  .min(
+    MESSAGING_PHONE_MIN_LENGTH,
+    `Phone number must be at least ${MESSAGING_PHONE_MIN_LENGTH} characters.`
+  )
+  .max(
+    MESSAGING_PHONE_MAX_LENGTH,
+    `Phone number must be at most ${MESSAGING_PHONE_MAX_LENGTH} characters.`
+  )
+  .transform((value, ctx) => {
+    const e164 = normalizeE164(value);
+    if (!e164) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Phone number must be a valid SMS-capable number.",
+      });
+      return z.NEVER;
+    }
+    return e164;
+  });
 
 /** Map a thrown provisioning error to a tRPC error the UI can show. */
 function provisioningError(e: unknown): TRPCError {
@@ -35,12 +70,151 @@ function provisioningError(e: unknown): TRPCError {
   });
 }
 
+function activePracticeWhere(practiceId: string) {
+  return and(eq(practices.id, practiceId), isNull(practices.deletedAt));
+}
+
+function activePracticePredicate(practiceId: string) {
+  return sql`exists (
+    select 1
+    from ${practices}
+    where ${practices.id} = ${practiceId}
+      and ${practices.deletedAt} is null
+  )`;
+}
+
+function practiceNotFound(): TRPCError {
+  return new TRPCError({ code: "NOT_FOUND", message: "Practice not found" });
+}
+
+async function assertActivePractice(ctx: {
+  db: Pick<Database, "select">;
+  practiceId: string;
+}) {
+  const [practice] = await ctx.db
+    .select({ id: practices.id })
+    .from(practices)
+    .where(activePracticeWhere(ctx.practiceId))
+    .limit(1);
+
+  if (!practice) {
+    throw practiceNotFound();
+  }
+}
+
+function telnyxWebhookUrl(): string {
+  const rawBase = configuredWebhookBaseUrl();
+  if (!rawBase) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Set NEXT_PUBLIC_APP_URL or NEXTAUTH_URL to your public HTTPS app URL before provisioning texting.",
+    });
+  }
+
+  const normalized = normalizeAppBaseUrl(rawBase);
+  if (!normalized) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Set NEXT_PUBLIC_APP_URL or NEXTAUTH_URL to a valid public HTTPS app URL before provisioning texting.",
+    });
+  }
+
+  const baseUrl = new URL(normalized);
+  const hostname = baseUrl.hostname.toLowerCase();
+  const localHostnames = new Set([
+    "localhost",
+    "127.0.0.1",
+    "0.0.0.0",
+    "::1",
+    "[::1]",
+  ]);
+  if (
+    baseUrl.protocol !== "https:" ||
+    localHostnames.has(hostname) ||
+    hostname.endsWith(".local")
+  ) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Set NEXT_PUBLIC_APP_URL or NEXTAUTH_URL to your public HTTPS app URL before provisioning texting.",
+    });
+  }
+
+  return new URL("/api/webhooks/telnyx", baseUrl).toString();
+}
+
+function configuredWebhookBaseUrl(): string {
+  const publicUrl = process.env.NEXT_PUBLIC_APP_URL?.trim();
+  if (publicUrl) return publicUrl;
+  const authUrl = process.env.NEXTAUTH_URL?.trim();
+  if (authUrl) return authUrl;
+  return "";
+}
+
 export const messagingRouter = createRouter({
+  /**
+   * Safe, lightweight messaging state for the shared inbox. Unlike the Settings
+   * status endpoint, this is visible to all authenticated staff so they can see
+   * why SMS is available, pending, or disabled before composing.
+   */
+  getInboxStatus: protectedProcedure.query(async ({ ctx }) => {
+    await assertActivePractice(ctx);
+    const locs = await ctx.db
+      .select({
+        locationId: locations.id,
+        name: locations.name,
+        provider: locationMessaging.provider,
+        senderE164: locationMessaging.senderE164,
+        messagingProfileId: locationMessaging.messagingProfileId,
+        registrationStatus: locationMessaging.registrationStatus,
+        enabled: locationMessaging.enabled,
+      })
+      .from(locations)
+      .leftJoin(
+        locationMessaging,
+        and(
+          eq(locationMessaging.locationId, locations.id),
+          eq(locationMessaging.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
+          isNull(locationMessaging.deletedAt)
+        )
+      )
+      .where(
+        and(
+          eq(locations.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
+          isNull(locations.deletedAt)
+        )
+      );
+
+    const locationsForSummary = locs.map((l) => ({
+      locationId: l.locationId,
+      name: l.name,
+      messaging: l.provider
+        ? {
+            senderE164: l.senderE164,
+            messagingProfileId: l.messagingProfileId,
+            registrationStatus: l.registrationStatus ?? "not_started",
+            enabled: l.enabled ?? false,
+          }
+        : null,
+    }));
+
+    return {
+      canManage: ctx.user.role === "admin",
+      locations: locationsForSummary,
+      summary: summarizeInboxSmsStatus(locationsForSummary),
+    };
+  }),
+
   /**
    * Per-location messaging status + this month's SMS usage + consent stats.
    * Drives the Settings → Messaging tab.
    */
   getStatus: adminOnly.query(async ({ ctx }) => {
+    await assertActivePractice(ctx);
     const locs = await ctx.db
       .select({
         locationId: locations.id,
@@ -49,6 +223,7 @@ export const messagingRouter = createRouter({
         existingPhone: locations.phone,
         provider: locationMessaging.provider,
         senderE164: locationMessaging.senderE164,
+        messagingProfileId: locationMessaging.messagingProfileId,
         numberSource: locationMessaging.numberSource,
         registrationStatus: locationMessaging.registrationStatus,
         registrationDetail: locationMessaging.registrationDetail,
@@ -57,10 +232,19 @@ export const messagingRouter = createRouter({
       .from(locations)
       .leftJoin(
         locationMessaging,
-        eq(locationMessaging.locationId, locations.id)
+        and(
+          eq(locationMessaging.locationId, locations.id),
+          eq(locationMessaging.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
+          isNull(locationMessaging.deletedAt)
+        )
       )
       .where(
-        and(eq(locations.practiceId, ctx.practiceId), isNull(locations.deletedAt))
+        and(
+          eq(locations.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
+          isNull(locations.deletedAt)
+        )
       );
 
     const period = currentPeriodMonth();
@@ -69,9 +253,12 @@ export const messagingRouter = createRouter({
     const [practice] = await ctx.db
       .select({ tier: practices.subscriptionTier })
       .from(practices)
-      .where(eq(practices.id, ctx.practiceId))
+      .where(activePracticeWhere(ctx.practiceId))
       .limit(1);
-    const includedSms = getPlan(practice?.tier ?? "free")?.includedSmsPerMonth ?? null;
+    if (!practice) {
+      throw practiceNotFound();
+    }
+    const includedSms = getPlan(practice.tier ?? "free")?.includedSmsPerMonth ?? null;
 
     const [consentRow] = await ctx.db
       .select({ n: sql<number>`count(*)::int` })
@@ -79,6 +266,7 @@ export const messagingRouter = createRouter({
       .where(
         and(
           eq(clients.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
           eq(clients.smsConsent, true),
           isNull(clients.deletedAt)
         )
@@ -86,7 +274,12 @@ export const messagingRouter = createRouter({
     const [suppressedRow] = await ctx.db
       .select({ n: sql<number>`count(*)::int` })
       .from(smsSuppressions)
-      .where(eq(smsSuppressions.practiceId, ctx.practiceId));
+      .where(
+        and(
+          eq(smsSuppressions.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId)
+        )
+      );
 
     return {
       locations: locs.map((l) => ({
@@ -98,6 +291,7 @@ export const messagingRouter = createRouter({
           ? {
               provider: l.provider,
               senderE164: l.senderE164,
+              messagingProfileId: l.messagingProfileId,
               numberSource: l.numberSource,
               registrationStatus: l.registrationStatus,
               registrationDetail: l.registrationDetail,
@@ -119,12 +313,16 @@ export const messagingRouter = createRouter({
       z.object({
         areaCode: z
           .string()
-          .regex(/^\d{3}$/, "Area code must be 3 digits")
+          .regex(
+            new RegExp(`^\\d{${MESSAGING_AREA_CODE_LENGTH}}$`),
+            `Area code must be ${MESSAGING_AREA_CODE_LENGTH} digits`
+          )
           .optional(),
-        limit: z.number().int().min(1).max(20).optional(),
+        limit: z.number().int().min(1).max(MESSAGING_SEARCH_LIMIT_MAX).optional(),
       })
     )
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
       try {
         return await searchAvailableNumbers(input);
       } catch (e) {
@@ -136,13 +334,16 @@ export const messagingRouter = createRouter({
   checkEligibility: adminOnly
     .input(z.object({ locationId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
       const [loc] = await ctx.db
         .select({ phone: locations.phone })
         .from(locations)
         .where(
           and(
             eq(locations.id, input.locationId),
-            eq(locations.practiceId, ctx.practiceId)
+            eq(locations.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(locations.deletedAt)
           )
         )
         .limit(1);
@@ -176,17 +377,20 @@ export const messagingRouter = createRouter({
         locationId: z.string().uuid(),
         mode: z.enum(["host", "buy"]),
         // Required for "buy"; for "host" we use the location's existing number.
-        phoneNumber: z.string().optional(),
+        phoneNumber: messagingPhoneInput.optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
       const [loc] = await ctx.db
         .select({ id: locations.id, name: locations.name, phone: locations.phone })
         .from(locations)
         .where(
           and(
             eq(locations.id, input.locationId),
-            eq(locations.practiceId, ctx.practiceId)
+            eq(locations.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(locations.deletedAt)
           )
         )
         .limit(1);
@@ -207,8 +411,7 @@ export const messagingRouter = createRouter({
         });
       }
 
-      const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "";
-      const webhookUrl = `${appUrl}/api/webhooks/telnyx`;
+      const webhookUrl = telnyxWebhookUrl();
 
       try {
         const profile = await createMessagingProfile({
@@ -232,8 +435,7 @@ export const messagingRouter = createRouter({
             senderE164: e164,
             numberSource,
             registrationStatus: "pending",
-            registrationDetail:
-              "Carrier registration (A2P 10DLC) in progress — required before messages can send; typically 1–2 weeks.",
+            registrationDetail: MESSAGING_REGISTRATION_PENDING_DETAIL,
             enabled: false,
           })
           .onConflictDoUpdate({
@@ -244,6 +446,9 @@ export const messagingRouter = createRouter({
               senderE164: e164,
               numberSource,
               registrationStatus: "pending",
+              registrationDetail: MESSAGING_REGISTRATION_PENDING_DETAIL,
+              enabled: false,
+              deletedAt: null,
               updatedAt: new Date(),
             },
           });
@@ -258,17 +463,73 @@ export const messagingRouter = createRouter({
   setEnabled: adminOnly
     .input(z.object({ locationId: z.string().uuid(), enabled: z.boolean() }))
     .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
+      const [loc] = await ctx.db
+        .select({ id: locations.id })
+        .from(locations)
+        .where(
+          and(
+            eq(locations.id, input.locationId),
+            eq(locations.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(locations.deletedAt)
+          )
+        )
+        .limit(1);
+      if (!loc) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Location not found" });
+      }
+
+      if (input.enabled) {
+        const [readySender] = await ctx.db
+          .select({ locationId: locationMessaging.locationId })
+          .from(locationMessaging)
+          .where(
+            and(
+              eq(locationMessaging.locationId, input.locationId),
+              eq(locationMessaging.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(locationMessaging.deletedAt),
+              eq(locationMessaging.registrationStatus, "active"),
+              hasNonBlankMessagingSender()
+            )
+          )
+          .limit(1);
+
+        if (!readySender) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Carrier registration must be active before enabling SMS sending.",
+          });
+        }
+      }
+
+      const updateConditions = [
+        eq(locationMessaging.locationId, input.locationId),
+        eq(locationMessaging.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(locationMessaging.deletedAt),
+      ];
+      if (input.enabled) {
+        updateConditions.push(
+          eq(locationMessaging.registrationStatus, "active"),
+          hasNonBlankMessagingSender()
+        );
+      }
+
       const [updated] = await ctx.db
         .update(locationMessaging)
         .set({ enabled: input.enabled, updatedAt: new Date() })
-        .where(
-          and(
-            eq(locationMessaging.locationId, input.locationId),
-            eq(locationMessaging.practiceId, ctx.practiceId)
-          )
-        )
+        .where(and(...updateConditions))
         .returning();
       if (!updated) {
+        if (input.enabled) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Messaging sender changed while enabling. Refresh and try again.",
+          });
+        }
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Set up a number for this location first.",
@@ -279,8 +540,59 @@ export const messagingRouter = createRouter({
 
   /** Send a test SMS to a staff number from the location's sender. */
   testSend: adminOnly
-    .input(z.object({ locationId: z.string().uuid(), to: z.string().min(7) }))
+    .input(z.object({ locationId: z.string().uuid(), to: messagingPhoneInput }))
     .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
+      const [loc] = await ctx.db
+        .select({ id: locations.id })
+        .from(locations)
+        .where(
+          and(
+            eq(locations.id, input.locationId),
+            eq(locations.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(locations.deletedAt)
+          )
+        )
+        .limit(1);
+      if (!loc) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Location not found" });
+      }
+
+      const [sender] = await ctx.db
+        .select({ locationId: locationMessaging.locationId })
+        .from(locationMessaging)
+        .innerJoin(
+          locations,
+          and(
+            eq(locations.id, locationMessaging.locationId),
+            eq(locations.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(locations.deletedAt)
+          )
+        )
+        .where(
+          and(
+            eq(locationMessaging.locationId, input.locationId),
+            eq(locationMessaging.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(locationMessaging.deletedAt),
+            eq(locations.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(locations.deletedAt),
+            eq(locationMessaging.enabled, true),
+            eq(locationMessaging.registrationStatus, "active"),
+            hasNonBlankMessagingSender()
+          )
+        )
+        .limit(1);
+      if (!sender) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Set up and enable an active texting number first.",
+        });
+      }
+
       const result = await sendSms({
         to: input.to,
         body: "OpenVPM test message — your texting is set up correctly.",

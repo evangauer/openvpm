@@ -14,6 +14,8 @@ export interface DoseInput {
   concentrationMgPerMl?: number;
 }
 
+export const DOSING_WEIGHT_MAX_KG = 200;
+
 export interface TabletSuggestion {
   strengthMg: number;
   /** Tablets per dose at the midpoint of the range, rounded to 1/4 tablet. */
@@ -64,7 +66,7 @@ export function calculateDose(input: DoseInput): DoseResult {
   if (!Number.isFinite(input.weightKg) || input.weightKg <= 0) {
     throw new Error("Weight must be a positive number of kilograms.");
   }
-  if (input.weightKg > 200) {
+  if (input.weightKg > DOSING_WEIGHT_MAX_KG) {
     throw new Error("Weight exceeds a plausible range (>200kg). Check units.");
   }
 

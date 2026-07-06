@@ -1,10 +1,13 @@
-import { eq } from "drizzle-orm";
+import { and, eq, lte } from "drizzle-orm";
 import { db } from "@openpims/db/client";
 import { communications } from "@openpims/db";
 import { withSystem } from "@/lib/tenant-db";
 import { alertOps } from "@/lib/alerts";
 
 type SendResult = { success: boolean; id?: string; error?: string };
+type ClaimedLifecycleEmail = { id: string };
+
+export const LIFECYCLE_EMAIL_PENDING_RECLAIM_MS = 30 * 60 * 1000;
 
 /**
  * Send a system lifecycle email exactly once, recording it in the practice's
@@ -29,25 +32,10 @@ export async function sendLifecycleEmail(opts: {
   // Never throw into the caller (Stripe webhook / cron). Any infra error
   // (incl. a not-yet-migrated dedupe column) degrades to "not sent" + an alert.
   try {
-    // 1. Atomic claim — no row back means someone already claimed this key.
-    const claimed = await withSystem(db, (tx) =>
-      tx
-        .insert(communications)
-        .values({
-          practiceId: opts.practiceId,
-          clientId: null,
-          channel: "email",
-          direction: "outbound",
-          subject: opts.emailType,
-          content: opts.emailType,
-          status: "pending",
-          dedupeKey: opts.dedupeKey,
-        })
-        .onConflictDoNothing({ target: communications.dedupeKey })
-        .returning({ id: communications.id }),
-    );
-
-    const row = claimed[0];
+    // 1. Atomic claim. A fresh existing pending row means another worker is
+    // sending right now; an old pending row means the previous worker likely
+    // died before recording sent/failed, so it can be reclaimed.
+    const row = await claimLifecycleEmail(opts);
     if (!row) {
       return { sent: false, deduped: true };
     }
@@ -65,10 +53,18 @@ export async function sendLifecycleEmail(opts: {
 
     // 3. Record the outcome.
     if (result.success) {
+      const sentUpdate: {
+        status: "sent";
+        providerMessageId?: string;
+      } = { status: "sent" };
+      if (result.id) {
+        sentUpdate.providerMessageId = result.id;
+      }
+
       await withSystem(db, (tx) =>
         tx
           .update(communications)
-          .set({ status: "sent" })
+          .set(sentUpdate)
           .where(eq(communications.id, row.id)),
       );
       return { sent: true, deduped: false };
@@ -100,4 +96,73 @@ export async function sendLifecycleEmail(opts: {
     );
     return { sent: false, deduped: false };
   }
+}
+
+async function claimLifecycleEmail(opts: {
+  practiceId: string;
+  emailType: string;
+  dedupeKey: string;
+}): Promise<ClaimedLifecycleEmail | null> {
+  const claimed = await insertLifecycleEmailClaim(opts);
+  const row = claimed[0];
+  if (row) return row;
+
+  const [existing] = await withSystem(db, (tx) =>
+    tx
+      .select({
+        id: communications.id,
+        status: communications.status,
+        createdAt: communications.createdAt,
+      })
+      .from(communications)
+      .where(eq(communications.dedupeKey, opts.dedupeKey))
+      .limit(1),
+  );
+  if (!existing || existing.status !== "pending") return null;
+
+  const staleBefore = new Date(
+    Date.now() - LIFECYCLE_EMAIL_PENDING_RECLAIM_MS
+  );
+  if (new Date(existing.createdAt).getTime() > staleBefore.getTime()) {
+    return null;
+  }
+
+  const deleted = await withSystem(db, (tx) =>
+    tx
+      .delete(communications)
+      .where(
+        and(
+          eq(communications.dedupeKey, opts.dedupeKey),
+          eq(communications.status, "pending"),
+          lte(communications.createdAt, staleBefore)
+        )
+      )
+      .returning({ id: communications.id }),
+  );
+  if (!deleted[0]) return null;
+
+  return (await insertLifecycleEmailClaim(opts))[0] ?? null;
+}
+
+function insertLifecycleEmailClaim(opts: {
+  practiceId: string;
+  emailType: string;
+  dedupeKey: string;
+}) {
+  return withSystem(db, (tx) =>
+    tx
+      .insert(communications)
+      .values({
+        practiceId: opts.practiceId,
+        clientId: null,
+        channel: "email",
+        direction: "outbound",
+        subject: opts.emailType,
+        content: opts.emailType,
+        status: "pending",
+        dedupeKey: opts.dedupeKey,
+      })
+      .onConflictDoNothing({ target: communications.dedupeKey })
+      .returning({ id: communications.id }),
+  );
 }

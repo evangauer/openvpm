@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { AlertTriangle, Loader2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { FormField } from "@/components/ui/form-field";
+import { PRACTICE_NAME_MAX_LENGTH } from "@/lib/settings-policy";
 import type { StepHandle } from "../journey-types";
 
 // Same regions the settings page offers. Choosing a country auto-fills
@@ -39,14 +41,26 @@ const selectClass =
  * Step 1: capture the clinic name, country, and timezone. Continue saves them
  * with updatePractice (which also fills in currency and tax from the country).
  */
-export function PracticeBasicsStep({ register }: { register: (h: StepHandle) => void }) {
-  const { data: practice, isLoading } = trpc.settings.getPractice.useQuery();
+export function PracticeBasicsStep({
+  register,
+}: {
+  register: (h: StepHandle) => void;
+}) {
+  const {
+    data: practice,
+    isLoading,
+    error,
+    refetch,
+  } = trpc.settings.getPractice.useQuery();
   const updatePractice = trpc.settings.updatePractice.useMutation();
 
   const [name, setName] = useState("");
   const [country, setCountry] = useState("US");
   const [timezone, setTimezone] = useState("America/New_York");
   const [filled, setFilled] = useState(false);
+  const trimmedName = name.trim();
+  const practiceNameInvalid =
+    trimmedName.length > 0 && trimmedName.length > PRACTICE_NAME_MAX_LENGTH;
 
   // Prefill once from the saved practice without stomping later edits.
   useEffect(() => {
@@ -60,17 +74,37 @@ export function PracticeBasicsStep({ register }: { register: (h: StepHandle) => 
   useEffect(() => {
     register({
       async onContinue() {
-        const trimmed = name.trim();
-        if (!trimmed) return true; // nothing to save; let them move on
+        if (error || isLoading) return false;
+        if (practiceNameInvalid) return false;
+        if (!trimmedName) return true; // nothing to save; let them move on
         await updatePractice.mutateAsync({
-          name: trimmed,
+          name: trimmedName,
           country,
           timezone,
         });
         return true;
       },
     });
-  }, [register, name, country, timezone, updatePractice]);
+  }, [
+    register,
+    error,
+    isLoading,
+    trimmedName,
+    practiceNameInvalid,
+    country,
+    timezone,
+    updatePractice,
+  ]);
+
+  if (error) {
+    return (
+      <OnboardingStepError
+        title="Practice details could not load"
+        message={error.message}
+        onRetry={() => void refetch()}
+      />
+    );
+  }
 
   if (isLoading) {
     return (
@@ -92,9 +126,19 @@ export function PracticeBasicsStep({ register }: { register: (h: StepHandle) => 
           id="ob-practice-name"
           value={name}
           onChange={(e) => setName(e.target.value)}
+          maxLength={PRACTICE_NAME_MAX_LENGTH}
+          aria-invalid={practiceNameInvalid || undefined}
+          aria-describedby={
+            practiceNameInvalid ? "ob-practice-name-error" : undefined
+          }
           placeholder="Neighborhood Veterinary"
           autoFocus
         />
+        {practiceNameInvalid ? (
+          <p id="ob-practice-name-error" className="text-xs text-destructive">
+            Practice name must be at most {PRACTICE_NAME_MAX_LENGTH} characters.
+          </p>
+        ) : null}
       </FormField>
 
       <div className="grid gap-4 sm:grid-cols-2">
@@ -127,6 +171,31 @@ export function PracticeBasicsStep({ register }: { register: (h: StepHandle) => 
             ))}
           </select>
         </FormField>
+      </div>
+    </div>
+  );
+}
+
+function OnboardingStepError({
+  title,
+  message,
+  onRetry,
+}: {
+  title: string;
+  message: string;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm">
+      <div className="flex items-start gap-3">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+        <div>
+          <p className="font-medium text-destructive">{title}</p>
+          <p className="mt-1 text-slate-600">{message}</p>
+          <Button variant="outline" size="sm" onClick={onRetry} className="mt-3">
+            Retry
+          </Button>
+        </div>
       </div>
     </div>
   );

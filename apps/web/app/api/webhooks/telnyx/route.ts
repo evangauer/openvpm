@@ -1,81 +1,94 @@
 import { NextResponse } from "next/server";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 import { db } from "@openpims/db/client";
-import { locationMessaging, clients, communications } from "@openpims/db";
-import { withSystem, withTenant } from "@/lib/tenant-db";
+import { communications } from "@openpims/db";
+import { withTenant } from "@/lib/tenant-db";
+import { readRequestTextWithLimit } from "@/lib/request-json";
 import {
-  addSuppression,
-  removeSuppression,
-  normalizeE164,
-} from "@/lib/messaging";
+  MESSAGING_WEBHOOK_BODY_MAX_BYTES,
+  messagingWebhookContentLengthTooLarge,
+} from "@/lib/messaging-webhook-limits";
+import { addSuppression, normalizeE164 } from "@/lib/messaging";
+import {
+  findMessagingLocationForWebhook,
+  handleInboundSmsReply,
+} from "@/lib/messaging/inbound";
+import { envValue } from "@/lib/messaging/env";
+import {
+  telnyxDeliveryStatus,
+  telnyxProviderMessageId,
+  type CommunicationDeliveryStatus,
+} from "@/lib/messaging/telnyx-events";
 import { verifyTelnyxSignature } from "@/lib/messaging/telnyx-signature";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Carrier-mandated opt-out / opt-in keywords (Telnyx also auto-handles these at
-// the network level; we mirror them into our own suppression list for the gate).
-const STOP_KEYWORDS = new Set([
-  "STOP",
-  "STOPALL",
-  "UNSUBSCRIBE",
-  "CANCEL",
-  "END",
-  "QUIT",
-  "REVOKE",
-  "OPTOUT",
-]);
-const START_KEYWORDS = new Set(["START", "YES", "UNSTOP"]);
-
-/** Best-effort: find a client in the practice whose phone matches (last 10 digits). */
-async function findClientId(
-  practiceId: string,
-  e164: string
-): Promise<string | null> {
-  const digits = e164.replace(/\D/g, "").slice(-10);
-  if (digits.length < 10) return null;
-  const [row] = await withSystem(db, (tx) =>
-    tx
-      .select({ id: clients.id })
-      .from(clients)
-      .where(
-        and(
-          eq(clients.practiceId, practiceId),
-          sql`right(regexp_replace(${clients.phone}, '\D', '', 'g'), 10) = ${digits}`
-        )
-      )
-      .limit(1)
+function payloadTooLargeResponse() {
+  return NextResponse.json(
+    { error: "Messaging webhook payload too large" },
+    { status: 413 }
   );
-  return row?.id ?? null;
 }
 
-/** Flip a client's SMS consent flag (best-effort audit on opt-out/opt-in). */
-async function setClientConsent(
-  practiceId: string,
-  e164: string,
-  consent: boolean
-): Promise<void> {
-  const digits = e164.replace(/\D/g, "").slice(-10);
-  if (digits.length < 10) return;
-  await withSystem(db, (tx) =>
-    tx
-      .update(clients)
-      .set({ smsConsent: consent, smsConsentAt: new Date() })
-      .where(
-        and(
-          eq(clients.practiceId, practiceId),
-          sql`right(regexp_replace(${clients.phone}, '\D', '', 'g'), 10) = ${digits}`
-        )
-      )
+function firstPayloadToPhone(payload: {
+  to?:
+    | Array<{ phone_number?: string; status?: string }>
+    | { phone_number?: string; status?: string };
+}): string | null {
+  const raw = Array.isArray(payload.to)
+    ? payload.to[0]?.phone_number
+    : payload.to?.phone_number;
+  return normalizeE164(raw);
+}
+
+function payloadString(value: unknown): string | null {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  return trimmed || null;
+}
+
+function payloadMessagingProfileId(payload: {
+  messaging_profile_id?: unknown;
+  messagingProfileId?: unknown;
+  messaging_profile?: { id?: unknown };
+}): string | null {
+  return (
+    payloadString(payload.messaging_profile_id) ??
+    payloadString(payload.messagingProfileId) ??
+    payloadString(payload.messaging_profile?.id)
   );
+}
+
+function deliveryReceiptCurrentStatusCondition(
+  deliveryStatus: CommunicationDeliveryStatus
+) {
+  if (deliveryStatus === "sent") {
+    return eq(communications.status, "pending");
+  }
+
+  return or(
+    eq(communications.status, "pending"),
+    eq(communications.status, "sent")
+  )!;
 }
 
 export async function POST(request: Request) {
-  const rawBody = await request.text();
+  if (messagingWebhookContentLengthTooLarge(request.headers)) {
+    return payloadTooLargeResponse();
+  }
+
+  const rawBody = await readRequestTextWithLimit(
+    request,
+    MESSAGING_WEBHOOK_BODY_MAX_BYTES
+  );
+  if (!rawBody.ok) {
+    return payloadTooLargeResponse();
+  }
+
   // Fail closed: this public route mutates tenant data (suppression, consent,
   // inbox), so a missing key, missing headers, or a bad signature all reject —
   // matching the codebase's fail-closed auth elsewhere (cron-auth, Stripe webhook).
-  const publicKey = process.env.TELNYX_PUBLIC_KEY;
+  const publicKey = envValue("TELNYX_PUBLIC_KEY");
   const sig = request.headers.get("telnyx-signature-ed25519");
   const ts = request.headers.get("telnyx-timestamp");
   if (
@@ -83,7 +96,7 @@ export async function POST(request: Request) {
     !sig ||
     !ts ||
     !verifyTelnyxSignature({
-      rawBody,
+      rawBody: rawBody.text,
       signatureB64: sig,
       timestamp: ts,
       publicKeyB64: publicKey,
@@ -94,7 +107,7 @@ export async function POST(request: Request) {
 
   let event: unknown;
   try {
-    event = JSON.parse(rawBody);
+    event = JSON.parse(rawBody.text);
   } catch {
     return NextResponse.json({ error: "bad json" }, { status: 400 });
   }
@@ -104,13 +117,72 @@ export async function POST(request: Request) {
   const payload = data?.payload as
     | {
         from?: { phone_number?: string };
-        to?: Array<{ phone_number?: string }> | { phone_number?: string };
+        to?:
+          | Array<{ phone_number?: string; status?: string }>
+          | { phone_number?: string; status?: string };
         text?: string;
+        id?: string;
+        message_id?: string;
+        status?: string;
+        delivery_status?: string;
+        messaging_profile_id?: string;
+        messagingProfileId?: string;
+        messaging_profile?: { id?: string };
       }
     | undefined;
 
-  // We only act on inbound messages. DLRs and other events are acked.
-  if (eventType !== "message.received" || !payload) {
+  if (!payload) {
+    return NextResponse.json({ ok: true });
+  }
+
+  const deliveryStatus = telnyxDeliveryStatus(eventType, payload);
+  const providerMessageId = telnyxProviderMessageId(payload);
+  const messagingProfileId = payloadMessagingProfileId(payload);
+  if (deliveryStatus && providerMessageId) {
+    const fromPhone = normalizeE164(payload.from?.phone_number);
+    const loc = await findMessagingLocationForWebhook({
+      senderE164: fromPhone,
+      messagingProfileId,
+      provider: "telnyx",
+    });
+
+    if (loc) {
+      const updatedCommunications = await withTenant(db, loc.practiceId, (tx) =>
+        tx
+          .update(communications)
+          .set({ status: deliveryStatus })
+          .where(
+            and(
+              eq(communications.practiceId, loc.practiceId),
+              eq(communications.providerMessageId, providerMessageId),
+              eq(communications.channel, "sms"),
+              eq(communications.direction, "outbound"),
+              isNull(communications.deletedAt),
+              deliveryReceiptCurrentStatusCondition(deliveryStatus)
+            )
+          )
+          .returning({ id: communications.id })
+      );
+
+      if (deliveryStatus === "failed" && updatedCommunications.length > 0) {
+        const failedRecipient = firstPayloadToPhone(payload);
+        if (failedRecipient) {
+          await addSuppression({
+            practiceId: loc.practiceId,
+            locationId: loc.locationId,
+            phone: failedRecipient,
+            reason: "bounce",
+            detail: `Delivery failed for provider message ${providerMessageId}`,
+          });
+        }
+      }
+    }
+
+    return NextResponse.json({ ok: true });
+  }
+
+  // We only log inbound messages. Other events are acked after DLR handling.
+  if (eventType !== "message.received") {
     return NextResponse.json({ ok: true });
   }
 
@@ -120,58 +192,29 @@ export async function POST(request: Request) {
   const fromPhone = normalizeE164(payload.from?.phone_number);
   const toPhone = normalizeE164(toRaw);
   const text = (payload.text ?? "").trim();
-  if (!fromPhone || !toPhone) {
+  if (!fromPhone || (!toPhone && !messagingProfileId)) {
+    return NextResponse.json({ ok: true });
+  }
+  if (!text) {
     return NextResponse.json({ ok: true });
   }
 
-  // Attribute the inbound number to a practice/location by our sender number.
-  const [loc] = await withSystem(db, (tx) =>
-    tx
-      .select({
-        practiceId: locationMessaging.practiceId,
-        locationId: locationMessaging.locationId,
-      })
-      .from(locationMessaging)
-      .where(eq(locationMessaging.senderE164, toPhone))
-      .limit(1)
-  );
-  if (!loc) {
-    console.warn(`[telnyx-webhook] inbound to unrecognised number ${toPhone}`);
+  const result = await handleInboundSmsReply({
+    provider: "telnyx",
+    fromPhone,
+    toPhone,
+    text,
+    providerMessageId,
+    messagingProfileId,
+  });
+
+  if (result.action === "ignored") {
+    console.warn(
+      `[telnyx-webhook] inbound to unrecognised sender ${
+        toPhone ?? messagingProfileId
+      }`
+    );
     return NextResponse.json({ ok: true });
   }
-
-  const keyword = text.toUpperCase().replace(/[^A-Z]/g, "");
-
-  if (STOP_KEYWORDS.has(keyword)) {
-    await addSuppression({
-      practiceId: loc.practiceId,
-      locationId: loc.locationId,
-      phone: fromPhone,
-      reason: "stop",
-      detail: `Inbound opt-out: "${text}"`,
-    });
-    await setClientConsent(loc.practiceId, fromPhone, false);
-    return NextResponse.json({ ok: true, action: "suppressed" });
-  }
-
-  if (START_KEYWORDS.has(keyword)) {
-    await removeSuppression(loc.practiceId, fromPhone);
-    await setClientConsent(loc.practiceId, fromPhone, true);
-    return NextResponse.json({ ok: true, action: "unsuppressed" });
-  }
-
-  // A real inbound reply → write to the two-way inbox (communications).
-  const clientId = await findClientId(loc.practiceId, fromPhone);
-  await withTenant(db, loc.practiceId, (tx) =>
-    tx.insert(communications).values({
-      practiceId: loc.practiceId,
-      clientId: clientId ?? undefined,
-      channel: "sms",
-      direction: "inbound",
-      subject: `SMS from ${fromPhone}`,
-      content: text,
-      status: "delivered",
-    })
-  );
-  return NextResponse.json({ ok: true, action: "logged" });
+  return NextResponse.json(result);
 }

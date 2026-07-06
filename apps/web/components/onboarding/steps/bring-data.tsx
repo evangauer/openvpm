@@ -13,15 +13,27 @@ import {
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import {
+  IMPORT_CSV_MAX_BYTES,
+  isImportCsvSizeValid,
+} from "@/lib/import/policy";
 import { toast } from "sonner";
 import type { StepHandle, StepProps } from "../journey-types";
 
 type Choice = "import" | "api" | "keep";
+type CsvPreview = {
+  total: number;
+  willInsert: number;
+  duplicates?: number;
+  unmatchedClient?: number;
+  errors: string[];
+};
 
 const CLIENT_COLUMNS =
   "firstName, lastName, email, phone, address, city, state, zip";
 const PET_COLUMNS =
   "clientEmail, name, species, breed, sex, dob, color, microchipNumber";
+const IMPORT_CSV_SIZE_MESSAGE = "CSV imports must be 5 MB or less.";
 
 const textareaClass =
   "w-full resize-y rounded-md border border-input bg-background p-3 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -47,8 +59,8 @@ export function BringDataStep({
   register,
   setState,
 }: Pick<StepProps, "register" | "setState">) {
-  const importClients = trpc.data.importClientsCsv.useMutation();
-  const importPatients = trpc.data.importPatientsCsv.useMutation();
+  const importClientsCsv = trpc.data.importClientsCsv.useMutation();
+  const importPatientsCsv = trpc.data.importPatientsCsv.useMutation();
 
   // Default to keeping the sample data; the skip behavior matches this too.
   const [choice, setChoice] = useState<Choice>("keep");
@@ -56,11 +68,29 @@ export function BringDataStep({
   const [petsCsv, setPetsCsv] = useState("");
   const [clientsFileName, setClientsFileName] = useState("");
   const [petsFileName, setPetsFileName] = useState("");
+  const [clientsPreview, setClientsPreview] = useState<CsvPreview | null>(null);
+  const [petsPreview, setPetsPreview] = useState<CsvPreview | null>(null);
   const [result, setResult] = useState<{
     clients: number;
     pets: number;
     errors: string[];
   } | null>(null);
+
+  function clearImportReview() {
+    setClientsPreview(null);
+    setPetsPreview(null);
+    setResult(null);
+  }
+
+  function updateClientsCsv(value: string) {
+    setClientsCsv(value);
+    clearImportReview();
+  }
+
+  function updatePetsCsv(value: string) {
+    setPetsCsv(value);
+    clearImportReview();
+  }
 
   async function onPickFile(
     e: React.ChangeEvent<HTMLInputElement>,
@@ -69,8 +99,24 @@ export function BringDataStep({
   ) {
     const file = e.target.files?.[0];
     if (!file) return;
+    function clearPickedFile() {
+      setCsv("");
+      if (which === "clients") setClientsFileName("");
+      else setPetsFileName("");
+      e.target.value = "";
+    }
+    if (file.size > IMPORT_CSV_MAX_BYTES) {
+      clearPickedFile();
+      toast.error(IMPORT_CSV_SIZE_MESSAGE);
+      return;
+    }
     try {
       const text = await readFileText(file);
+      if (!isImportCsvSizeValid(text)) {
+        clearPickedFile();
+        toast.error(IMPORT_CSV_SIZE_MESSAGE);
+        return;
+      }
       setCsv(text);
       if (which === "clients") setClientsFileName(file.name);
       else setPetsFileName(file.name);
@@ -79,33 +125,105 @@ export function BringDataStep({
     }
   }
 
-  // Picking a choice updates the shared state so finish knows whether to clear
-  // the sample data. Only an actual file import (with real rows pasted in)
-  // replaces it; "connect later" and "keep" both leave the sample data alone.
-  const hasRealRows =
-    choice === "import" && (clientsCsv.trim().length > 0 || petsCsv.trim().length > 0);
+  const clientsCsvTooLarge = !isImportCsvSizeValid(clientsCsv);
+  const petsCsvTooLarge = !isImportCsvSizeValid(petsCsv);
+  const importCsvSizeError = [
+    clientsCsvTooLarge ? "Client CSV must be 5 MB or less." : null,
+    petsCsvTooLarge ? "Pet CSV must be 5 MB or less." : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const hasImportCsvSizeError = importCsvSizeError.length > 0;
+  const hasClientsCsv = clientsCsv.trim().length > 0;
+  const hasPetsCsv = petsCsv.trim().length > 0;
+  const hasImportCsv = choice === "import" && (hasClientsCsv || hasPetsCsv);
+  const needsDryRun =
+    (hasClientsCsv && !clientsPreview) || (hasPetsCsv && !petsPreview);
+  const previewReady = hasImportCsv && !needsDryRun;
+  const previewWillInsert =
+    (clientsPreview?.willInsert ?? 0) + (petsPreview?.willInsert ?? 0);
+
+  // Finish only clears sample data after real rows have imported. Checking a
+  // CSV or connecting later leaves the demo clinic intact.
+  const hasImportedRows =
+    choice === "import" && Boolean(result && result.clients + result.pets > 0);
   useEffect(() => {
-    setState({ keepSampleData: !hasRealRows });
-  }, [hasRealRows, setState]);
+    setState({ keepSampleData: !hasImportedRows });
+  }, [hasImportedRows, setState]);
 
   useEffect(() => {
     register({
       async onContinue() {
         // Only the file path does extra work on Continue; the others just move on.
         if (choice !== "import") return true;
-        if (!clientsCsv.trim() && !petsCsv.trim()) return true;
+        if (!hasClientsCsv && !hasPetsCsv) return true;
+        if (result) return true;
+        if (hasImportCsvSizeError) {
+          toast.error(importCsvSizeError || IMPORT_CSV_SIZE_MESSAGE);
+          return false;
+        }
+
+        if (needsDryRun) {
+          if (hasClientsCsv) {
+            const r = await importClientsCsv.mutateAsync({
+              csv: clientsCsv.trim(),
+              dryRun: true,
+            });
+            if ("dryRun" in r && r.dryRun) {
+              setClientsPreview({
+                total: r.total,
+                willInsert: r.willInsert,
+                duplicates: r.duplicates,
+                errors: r.errors,
+              });
+            }
+          }
+          if (hasPetsCsv) {
+            const r = await importPatientsCsv.mutateAsync({
+              csv: petsCsv.trim(),
+              dryRun: true,
+            });
+            if ("dryRun" in r && r.dryRun) {
+              setPetsPreview({
+                total: r.total,
+                willInsert: r.willInsert,
+                unmatchedClient: r.unmatchedClient,
+                errors: r.errors,
+              });
+            }
+          }
+          toast.success("CSV checked. Review the plan before importing.");
+          return false;
+        }
+
+        if (previewWillInsert === 0) {
+          setResult({
+            clients: 0,
+            pets: 0,
+            errors: [
+              "No new rows were found to import. You can adjust the CSV or continue with sample data.",
+            ],
+          });
+          return false;
+        }
 
         const errors: string[] = [];
         let clientsImported = 0;
         let petsImported = 0;
 
-        if (clientsCsv.trim()) {
-          const r = await importClients.mutateAsync({ csv: clientsCsv.trim() });
+        if (hasClientsCsv) {
+          const r = await importClientsCsv.mutateAsync({
+            csv: clientsCsv.trim(),
+            dryRun: false,
+          });
           clientsImported = r.imported ?? 0;
           if (r.errors?.length) errors.push(...r.errors);
         }
-        if (petsCsv.trim()) {
-          const r = await importPatients.mutateAsync({ csv: petsCsv.trim() });
+        if (hasPetsCsv) {
+          const r = await importPatientsCsv.mutateAsync({
+            csv: petsCsv.trim(),
+            dryRun: false,
+          });
           petsImported = r.imported ?? 0;
           if (r.errors?.length) errors.push(...r.errors);
         }
@@ -117,9 +235,23 @@ export function BringDataStep({
         return false;
       },
     });
-  }, [register, choice, clientsCsv, petsCsv, importClients, importPatients]);
+  }, [
+    register,
+    choice,
+    clientsCsv,
+    petsCsv,
+    hasClientsCsv,
+    hasPetsCsv,
+    hasImportCsvSizeError,
+    importCsvSizeError,
+    needsDryRun,
+    previewWillInsert,
+    result,
+    importClientsCsv,
+    importPatientsCsv,
+  ]);
 
-  const importing = importClients.isPending || importPatients.isPending;
+  const importing = importClientsCsv.isPending || importPatientsCsv.isPending;
 
   return (
     <div className="space-y-4">
@@ -134,13 +266,16 @@ export function BringDataStep({
           icon={<FileSpreadsheet className="h-5 w-5" />}
           title="Import from a file"
           subtitle="Paste your clients and pets from a spreadsheet."
-          onClick={() => setChoice("import")}
+          onClick={() => {
+            setChoice("import");
+            clearImportReview();
+          }}
         />
         {choice === "import" ? (
           <div className="space-y-4 rounded-lg border border-slate-200 bg-slate-50/70 p-4">
             <p className="text-xs text-slate-500">
-              Pick a CSV file for each one, or paste the rows below. The file
-              picker is the easy way.
+              Pick a CSV file for each one, or paste the rows below. Continue
+              checks the files first; nothing imports until you review the plan.
             </p>
             <div className="space-y-1.5">
               <span className="text-sm font-medium text-slate-700">
@@ -152,7 +287,7 @@ export function BringDataStep({
               <input
                 type="file"
                 accept=".csv,text/csv"
-                onChange={(e) => onPickFile(e, setClientsCsv, "clients")}
+                onChange={(e) => onPickFile(e, updateClientsCsv, "clients")}
                 className={fileInputClass}
                 aria-label="Choose a clients CSV file"
               />
@@ -165,9 +300,19 @@ export function BringDataStep({
                 rows={4}
                 className={textareaClass}
                 value={clientsCsv}
-                onChange={(e) => setClientsCsv(e.target.value)}
+                maxLength={IMPORT_CSV_MAX_BYTES}
+                aria-invalid={clientsCsvTooLarge || undefined}
+                aria-describedby={
+                  clientsCsvTooLarge ? "clients-csv-size-error" : undefined
+                }
+                onChange={(e) => updateClientsCsv(e.target.value)}
                 placeholder={`firstName,lastName,email,phone,address,city,state,zip`}
               />
+              {clientsCsvTooLarge ? (
+                <p id="clients-csv-size-error" className="text-xs text-red-700">
+                  Client CSV must be 5 MB or less.
+                </p>
+              ) : null}
             </div>
             <div className="space-y-1.5">
               <span className="text-sm font-medium text-slate-700">Pets</span>
@@ -175,7 +320,7 @@ export function BringDataStep({
               <input
                 type="file"
                 accept=".csv,text/csv"
-                onChange={(e) => onPickFile(e, setPetsCsv, "pets")}
+                onChange={(e) => onPickFile(e, updatePetsCsv, "pets")}
                 className={fileInputClass}
                 aria-label="Choose a pets CSV file"
               />
@@ -186,14 +331,53 @@ export function BringDataStep({
                 rows={4}
                 className={textareaClass}
                 value={petsCsv}
-                onChange={(e) => setPetsCsv(e.target.value)}
+                maxLength={IMPORT_CSV_MAX_BYTES}
+                aria-invalid={petsCsvTooLarge || undefined}
+                aria-describedby={
+                  petsCsvTooLarge ? "pets-csv-size-error" : undefined
+                }
+                onChange={(e) => updatePetsCsv(e.target.value)}
                 placeholder={`clientEmail,name,species,breed,sex,dob,color,microchipNumber`}
               />
+              {petsCsvTooLarge ? (
+                <p id="pets-csv-size-error" className="text-xs text-red-700">
+                  Pet CSV must be 5 MB or less.
+                </p>
+              ) : null}
             </div>
+            {clientsPreview || petsPreview ? (
+              <div className="space-y-3">
+                <div>
+                  <p className="text-sm font-medium text-slate-800">
+                    Dry-run preview
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    No data has been imported yet. Review the counts, then
+                    press Continue again to import.
+                  </p>
+                </div>
+                {clientsPreview ? (
+                  <CsvPreviewCard
+                    title="Clients"
+                    preview={clientsPreview}
+                    duplicateLabel="Duplicates"
+                    duplicateValue={clientsPreview.duplicates ?? 0}
+                  />
+                ) : null}
+                {petsPreview ? (
+                  <CsvPreviewCard
+                    title="Pets"
+                    preview={petsPreview}
+                    duplicateLabel="Missing owners"
+                    duplicateValue={petsPreview.unmatchedClient ?? 0}
+                  />
+                ) : null}
+              </div>
+            ) : null}
             {importing ? (
               <p className="flex items-center gap-2 text-xs text-slate-500">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                Adding your data
+                {previewReady ? "Importing your data" : "Checking your data"}
               </p>
             ) : null}
             {result ? (
@@ -202,18 +386,27 @@ export function BringDataStep({
                   Added {result.clients} clients and {result.pets} pets.
                 </p>
                 {result.errors.length > 0 ? (
-                  <ul className="mt-2 list-disc space-y-0.5 pl-4 text-amber-800">
-                    {result.errors.slice(0, 5).map((e, i) => (
-                      <li key={i}>{e}</li>
-                    ))}
-                    {result.errors.length > 5 ? (
-                      <li>and {result.errors.length - 5} more</li>
-                    ) : null}
-                  </ul>
+                  <>
+                    <ul className="mt-2 list-disc space-y-0.5 pl-4 text-amber-800">
+                      {result.errors.slice(0, 5).map((e, i) => (
+                        <li key={i}>{e}</li>
+                      ))}
+                      {result.errors.length > 5 ? (
+                        <li>and {result.errors.length - 5} more</li>
+                      ) : null}
+                    </ul>
+                    <p className="mt-2">Press Continue when you are ready.</p>
+                  </>
                 ) : (
                   <p className="mt-1">Press Continue when you are ready.</p>
                 )}
               </div>
+            ) : null}
+            {importClientsCsv.error || importPatientsCsv.error ? (
+              <p className="text-xs text-red-700">
+                {importClientsCsv.error?.message ??
+                  importPatientsCsv.error?.message}
+              </p>
             ) : null}
           </div>
         ) : null}
@@ -223,7 +416,10 @@ export function BringDataStep({
           icon={<PlugZap className="h-5 w-5" />}
           title="Connect later by API"
           subtitle="Move data in from another system whenever you want."
-          onClick={() => setChoice("api")}
+          onClick={() => {
+            setChoice("api");
+            clearImportReview();
+          }}
         />
         {choice === "api" ? (
           <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-4 text-sm text-slate-600">
@@ -246,9 +442,62 @@ export function BringDataStep({
           icon={<Sparkles className="h-5 w-5" />}
           title="Keep the sample data for now"
           subtitle="Explore with the example pets we set up for you."
-          onClick={() => setChoice("keep")}
+          onClick={() => {
+            setChoice("keep");
+            clearImportReview();
+          }}
         />
       </div>
+    </div>
+  );
+}
+
+function CsvPreviewCard({
+  title,
+  preview,
+  duplicateLabel,
+  duplicateValue,
+}: {
+  title: string;
+  preview: CsvPreview;
+  duplicateLabel: string;
+  duplicateValue: number;
+}) {
+  return (
+    <div className="rounded-md border border-slate-200 bg-white p-3">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm font-medium text-slate-800">{title}</p>
+        <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
+          {preview.willInsert > 0 ? "Ready" : "Review"}
+        </span>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <ImportStat label="Rows" value={preview.total} />
+        <ImportStat label="Will import" value={preview.willInsert} />
+        <ImportStat label={duplicateLabel} value={duplicateValue} />
+        <ImportStat label="Issues" value={preview.errors.length} />
+      </div>
+      {preview.errors.length > 0 ? (
+        <ul className="mt-3 max-h-24 space-y-0.5 overflow-y-auto text-xs text-amber-800">
+          {preview.errors.slice(0, 5).map((error, index) => (
+            <li key={index}>{error}</li>
+          ))}
+          {preview.errors.length > 5 ? (
+            <li>and {preview.errors.length - 5} more</li>
+          ) : null}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+function ImportStat({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded bg-slate-100 px-2 py-1.5">
+      <p className="text-[11px] text-slate-500">{label}</p>
+      <p className="text-sm font-semibold text-slate-900">
+        {value.toLocaleString()}
+      </p>
     </div>
   );
 }

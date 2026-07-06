@@ -11,7 +11,7 @@ export interface TrialEndingEmailProps {
   practiceName: string;
   daysLeft: number;
   trialEndDate: string; // e.g. "July 10, 2026"
-  monthlyPrice: string; // e.g. "$99"
+  monthlyPrice: string; // e.g. "$79"
   billingUrl: string;
   unsubscribeUrl?: string;
 }

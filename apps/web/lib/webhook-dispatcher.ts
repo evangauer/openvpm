@@ -4,6 +4,9 @@ import { db } from "@openpims/db/client";
 import { webhooks } from "@openpims/db";
 import { alertOps } from "@/lib/alerts";
 import { withTenant } from "@/lib/tenant-db";
+import { isWebhookDeliveryUrl } from "@/lib/webhook-urls";
+
+export const WEBHOOK_DELIVERY_TIMEOUT_MS = 10_000;
 
 export async function dispatchWebhookEvent(
   practiceId: string,
@@ -27,6 +30,10 @@ export async function dispatchWebhookEvent(
     );
   } catch (err) {
     console.error("[WebhookDispatcher] Failed to query webhooks:", err);
+    await alertOps(
+      "Webhook dispatch query failed",
+      `Could not load webhook subscriptions for practice ${practiceId} while dispatching '${event}'.`
+    );
     return;
   }
 
@@ -46,20 +53,34 @@ export async function dispatchWebhookEvent(
 
   const requests = matching.map(async (wh) => {
     try {
+      if (!isWebhookDeliveryUrl(wh.url)) {
+        throw new Error("Invalid webhook delivery URL");
+      }
+
       const signature = createHmac("sha256", wh.secret)
         .update(body)
         .digest("hex");
 
-      const res = await fetch(wh.url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Webhook-Event": event,
-          "X-Webhook-Signature": signature,
-        },
-        body,
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const controller = new AbortController();
+      const timeout = setTimeout(
+        () => controller.abort(),
+        WEBHOOK_DELIVERY_TIMEOUT_MS,
+      );
+      try {
+        const res = await fetch(wh.url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Webhook-Event": event,
+            "X-Webhook-Signature": signature,
+          },
+          body,
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      } finally {
+        clearTimeout(timeout);
+      }
       return true;
     } catch (err) {
       console.error(
@@ -70,22 +91,17 @@ export async function dispatchWebhookEvent(
     }
   });
 
-  // Fire all requests in parallel (don't block on responses). Alert ops once
-  // per batch if any deliveries failed — a silently dead webhook means an
-  // integration stops receiving events with no signal.
-  Promise.allSettled(requests)
-    .then((results) => {
-      const failed = results.filter(
-        (r) => r.status === "rejected" || r.value === false,
-      ).length;
-      if (failed > 0) {
-        void alertOps(
-          "Webhook delivery failed",
-          `${failed} of ${matching.length} '${event}' webhook deliveries failed for practice ${practiceId}.`,
-        );
-      }
-    })
-    .catch(() => {
-      // Intentionally swallowed - individual errors are logged above
-    });
+  // Deliver in parallel, but let the returned promise represent the delivery
+  // batch. Most callers await this helper after committing a clinical event;
+  // resolving early risks losing work in serverless runtimes.
+  const results = await Promise.allSettled(requests);
+  const failed = results.filter(
+    (r) => r.status === "rejected" || r.value === false
+  ).length;
+  if (failed > 0) {
+    await alertOps(
+      "Webhook delivery failed",
+      `${failed} of ${matching.length} '${event}' webhook deliveries failed for practice ${practiceId}.`
+    );
+  }
 }

@@ -9,7 +9,7 @@ import type { Brand } from "../brand";
 export interface PaymentFailedEmailProps {
   brand: Brand;
   practiceName: string;
-  amount: string; // e.g. "$99.00"
+  amount: string; // e.g. "$79.00"
   nextRetryDate?: string; // e.g. "July 3, 2026"
   billingUrl: string;
 }

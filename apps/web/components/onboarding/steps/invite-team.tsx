@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { Input } from "@/components/ui/input";
+import { SETTINGS_EMAIL_MAX_LENGTH } from "@/lib/settings-policy";
 import { isValidEmail } from "@/lib/utils";
 import { toast } from "sonner";
 import type { StepHandle } from "../journey-types";
@@ -31,18 +32,42 @@ const EMPTY_ROWS: Row[] = [
   { email: "", role: "front_desk" },
 ];
 
+function getInviteEmailError(email: string): string | null {
+  const trimmed = email.trim();
+  if (!trimmed) return null;
+  if (trimmed.length > SETTINGS_EMAIL_MAX_LENGTH) {
+    return `Email must be at most ${SETTINGS_EMAIL_MAX_LENGTH} characters.`;
+  }
+  if (!isValidEmail(trimmed)) return "Enter a valid teammate email.";
+  return null;
+}
+
+function isInviteEmailValid(email: string): boolean {
+  return email.trim().length > 0 && getInviteEmailError(email) === null;
+}
+
 /**
  * Step 3: invite up to three teammates by email. Continue sends one invite per
  * valid email and reports a short summary.
  */
-export function InviteTeamStep({ register }: { register: (h: StepHandle) => void }) {
+export function InviteTeamStep({
+  register,
+}: {
+  register: (h: StepHandle) => void;
+}) {
   const inviteStaff = trpc.settings.inviteStaff.useMutation();
   const [rows, setRows] = useState<Row[]>(EMPTY_ROWS);
 
   useEffect(() => {
     register({
       async onContinue() {
-        const toInvite = rows.filter((r) => isValidEmail(r.email));
+        const invalidRows = rows.filter((r) => getInviteEmailError(r.email));
+        if (invalidRows.length > 0) {
+          toast.error("Fix invalid teammate emails before continuing.");
+          return false;
+        }
+
+        const toInvite = rows.filter((r) => isInviteEmailValid(r.email));
         if (toInvite.length === 0) return true;
 
         let sent = 0;
@@ -72,7 +97,9 @@ export function InviteTeamStep({ register }: { register: (h: StepHandle) => void
   }, [register, rows, inviteStaff]);
 
   function update(i: number, patch: Partial<Row>) {
-    setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+    setRows((prev) =>
+      prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r))
+    );
   }
 
   return (
@@ -83,29 +110,46 @@ export function InviteTeamStep({ register }: { register: (h: StepHandle) => void
       </p>
 
       <div className="space-y-3">
-        {rows.map((row, i) => (
-          <div key={i} className="grid grid-cols-[minmax(0,1fr)_140px] gap-3">
-            <Input
-              type="email"
-              value={row.email}
-              onChange={(e) => update(i, { email: e.target.value })}
-              placeholder="teammate@clinic.com"
-              aria-label={`Teammate email ${i + 1}`}
-            />
-            <select
-              className={selectClass}
-              value={row.role}
-              onChange={(e) => update(i, { role: e.target.value as Role })}
-              aria-label={`Teammate role ${i + 1}`}
+        {rows.map((row, i) => {
+          const emailError = getInviteEmailError(row.email);
+          const emailErrorId = `teammate-email-${i + 1}-error`;
+          return (
+            <div
+              key={i}
+              className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_140px]"
             >
-              {ROLES.map((r) => (
-                <option key={r.value} value={r.value}>
-                  {r.label}
-                </option>
-              ))}
-            </select>
-          </div>
-        ))}
+              <div className="space-y-1">
+                <Input
+                  type="email"
+                  value={row.email}
+                  maxLength={SETTINGS_EMAIL_MAX_LENGTH}
+                  aria-invalid={Boolean(emailError) || undefined}
+                  aria-describedby={emailError ? emailErrorId : undefined}
+                  onChange={(e) => update(i, { email: e.target.value })}
+                  placeholder="teammate@clinic.com"
+                  aria-label={`Teammate email ${i + 1}`}
+                />
+                {emailError ? (
+                  <p id={emailErrorId} className="text-xs text-red-700">
+                    {emailError}
+                  </p>
+                ) : null}
+              </div>
+              <select
+                className={selectClass}
+                value={row.role}
+                onChange={(e) => update(i, { role: e.target.value as Role })}
+                aria-label={`Teammate role ${i + 1}`}
+              >
+                {ROLES.map((r) => (
+                  <option key={r.value} value={r.value}>
+                    {r.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

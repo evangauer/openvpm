@@ -1,7 +1,24 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure } from "../trpc";
-import { FORMULARY, DOSING_DISCLAIMER, calculateDose } from "@/lib/dosing";
+import {
+  FORMULARY,
+  DOSING_DISCLAIMER,
+  DOSING_WEIGHT_MAX_KG,
+  FORMULARY_DRUG_ID_MAX_LENGTH,
+  calculateDose,
+  isFormularyDrugId,
+} from "@/lib/dosing";
+
+const formularyDrugIdInput = z
+  .string()
+  .trim()
+  .min(1, "Drug is required.")
+  .max(
+    FORMULARY_DRUG_ID_MAX_LENGTH,
+    `Drug ID must be at most ${FORMULARY_DRUG_ID_MAX_LENGTH} characters.`
+  )
+  .refine(isFormularyDrugId, "Drug must be in the formulary.");
 
 export const dosingRouter = createRouter({
   /** List the formulary for a drug picker. */
@@ -23,10 +40,10 @@ export const dosingRouter = createRouter({
   calculate: protectedProcedure
     .input(
       z.object({
-        drugId: z.string().min(1),
+        drugId: formularyDrugIdInput,
         species: z.enum(["canine", "feline"]),
-        weightKg: z.number().positive(),
-        concentrationMgPerMl: z.number().positive().optional(),
+        weightKg: z.number().finite().positive().max(DOSING_WEIGHT_MAX_KG),
+        concentrationMgPerMl: z.number().finite().positive().optional(),
       })
     )
     .query(({ input }) => {

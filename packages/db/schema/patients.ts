@@ -71,29 +71,50 @@ export const patients = pgTable(
   })
 );
 
-export const patientWeights = pgTable("patient_weights", {
-  ...baseColumns(),
-  patientId: uuid("patient_id")
-    .notNull()
-    .references(() => patients.id),
-  weightKg: numeric("weight_kg", { precision: 8, scale: 3 }).notNull(),
-  recordedAt: timestamp("recorded_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  recordedBy: uuid("recorded_by").references(() => users.id),
-});
+export const patientWeights = pgTable(
+  "patient_weights",
+  {
+    ...baseColumns(),
+    patientId: uuid("patient_id")
+      .notNull()
+      .references(() => patients.id),
+    weightKg: numeric("weight_kg", { precision: 8, scale: 3 }).notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    recordedBy: uuid("recorded_by").references(() => users.id),
+  },
+  (table) => ({
+    patientRecordedIdx: index("patient_weights_patient_recorded_idx").on(
+      table.patientId,
+      table.deletedAt,
+      table.recordedAt
+    ),
+  })
+);
 
-export const patientAllergies = pgTable("patient_allergies", {
-  ...baseColumns(),
-  patientId: uuid("patient_id")
-    .notNull()
-    .references(() => patients.id),
-  allergen: varchar("allergen", { length: 255 }).notNull(),
-  reaction: text("reaction"),
-  severity: allergySeverityEnum("severity").notNull().default("moderate"),
-  notedBy: uuid("noted_by").references(() => users.id),
-  notedAt: timestamp("noted_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const patientAllergies = pgTable(
+  "patient_allergies",
+  {
+    ...baseColumns(),
+    patientId: uuid("patient_id")
+      .notNull()
+      .references(() => patients.id),
+    allergen: varchar("allergen", { length: 255 }).notNull(),
+    reaction: text("reaction"),
+    severity: allergySeverityEnum("severity").notNull().default("moderate"),
+    notedBy: uuid("noted_by").references(() => users.id),
+    notedAt: timestamp("noted_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    patientIdx: index("patient_allergies_patient_idx").on(
+      table.patientId,
+      table.deletedAt
+    ),
+  })
+);
 
 export const patientsRelations = relations(patients, ({ one, many }) => ({
   practice: one(practices, {

@@ -1,10 +1,18 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ImageIcon, Loader2, Upload } from "lucide-react";
+import { AlertTriangle, ImageIcon, Loader2, Upload } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { AccentColorPicker } from "@/components/brand/accent-color-picker";
+import {
+  CLIENT_UPLOAD_TIMEOUT_MS,
+  fetchWithClientTimeout,
+} from "@/lib/client-fetch";
+import {
+  IMAGE_UPLOAD_POLICY_MESSAGE,
+  isImageUploadFileValid,
+} from "@/lib/upload-policy";
 import { toast } from "sonner";
 import type { StepHandle } from "../journey-types";
 
@@ -13,7 +21,11 @@ import type { StepHandle } from "../journey-types";
  * updatePractice, so Continue has nothing extra to do.
  */
 export function BrandingStep({ register }: { register: (h: StepHandle) => void }) {
-  const { data: practice } = trpc.settings.getPractice.useQuery();
+  const {
+    data: practice,
+    error: practiceError,
+    refetch: refetchPractice,
+  } = trpc.settings.getPractice.useQuery();
   const utils = trpc.useUtils();
   const updatePractice = trpc.settings.updatePractice.useMutation({
     onSuccess: () => {
@@ -36,12 +48,21 @@ export function BrandingStep({ register }: { register: (h: StepHandle) => void }
   }, [register]);
 
   async function handleFile(file: File) {
+    if (!isImageUploadFileValid(file)) {
+      toast.error(IMAGE_UPLOAD_POLICY_MESSAGE);
+      return;
+    }
+
     setUploading(true);
     try {
       const body = new FormData();
       body.append("file", file);
       body.append("category", "branding");
-      const res = await fetch("/api/upload", { method: "POST", body });
+      const res = await fetchWithClientTimeout(
+        "/api/upload",
+        { method: "POST", body },
+        CLIENT_UPLOAD_TIMEOUT_MS
+      );
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? "Upload failed");
       setLogoUrl(json.url);
@@ -67,6 +88,29 @@ export function BrandingStep({ register }: { register: (h: StepHandle) => void }
         Add your logo and pick a color. This is just for looks, so feel free to
         skip it and come back later.
       </p>
+
+      {practiceError ? (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+            <div>
+              <p className="font-medium text-destructive">
+                Saved branding could not load
+              </p>
+              <p className="mt-1 text-slate-600">{practiceError.message}</p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void refetchPractice()}
+                className="mt-3"
+              >
+                Retry
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Logo */}
       <div className="space-y-2">

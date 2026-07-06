@@ -28,6 +28,16 @@ describe("parseCsv", () => {
     expect(rows[0]).toEqual({ a: "1", b: "2" });
   });
 
+  it("reports unterminated quoted fields instead of returning collapsed rows", () => {
+    const result = parseCsv('name,note\n"Rex,line one\nLuna,line two');
+
+    expect(result).toEqual({
+      headers: [],
+      rows: [],
+      errors: ["CSV has an unterminated quoted field."],
+    });
+  });
+
   it("normalizeKey collapses case, spaces, and underscores", () => {
     expect(normalizeKey("First Name")).toBe("firstname");
     expect(normalizeKey("first_name")).toBe("firstname");
@@ -43,6 +53,15 @@ describe("csvToClientRecords", () => {
     ]);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatch(/Row 2/);
+  });
+
+  it("does not map records from malformed quoted CSV", () => {
+    const { records, errors } = csvToClientRecords(
+      'First Name,Last Name\n"Jane,Doe'
+    );
+
+    expect(records).toEqual([]);
+    expect(errors).toEqual(["CSV has an unterminated quoted field."]);
   });
 });
 
@@ -71,5 +90,14 @@ describe("csvToPatientRecords", () => {
     const { records } = csvToPatientRecords(csv);
     expect(records[0]!.sex).toBeUndefined();
     expect(records[0]!.species).toBe("feline");
+  });
+
+  it("does not map patient records from malformed quoted CSV", () => {
+    const { records, errors } = csvToPatientRecords(
+      'clientEmail,name,species\n"owner@example.com,Rex,canine'
+    );
+
+    expect(records).toEqual([]);
+    expect(errors).toEqual(["CSV has an unterminated quoted field."]);
   });
 });

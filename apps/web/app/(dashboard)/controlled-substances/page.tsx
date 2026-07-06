@@ -1,6 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import {
   ShieldAlert,
   Plus,
@@ -8,11 +10,25 @@ import {
   ChevronRight,
   Search,
   Loader2,
+  AlertTriangle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { EmptyState } from "@/components/common/empty-state";
+import {
+  CONTROLLED_SUBSTANCE_DRUG_NAME_MAX_LENGTH,
+  CONTROLLED_SUBSTANCE_LOT_NUMBER_MAX_LENGTH,
+  CONTROLLED_SUBSTANCE_NOTES_MAX_LENGTH,
+  CONTROLLED_SUBSTANCE_QUANTITY_MAX,
+  CONTROLLED_SUBSTANCE_QUANTITY_MIN,
+  CONTROLLED_SUBSTANCE_QUANTITY_STEP,
+  CONTROLLED_SUBSTANCE_UNIT_MAX_LENGTH,
+  isControlledSubstanceOptionalTextInputValid,
+  isControlledSubstanceQuantityInputValid,
+  isControlledSubstanceRequiredTextInputValid,
+} from "@/lib/controlled-substances/policy";
 
 const DEA_SCHEDULES = [
   { label: "Schedule II", value: "II" },
@@ -43,6 +59,41 @@ const ACTION_STYLES: Record<string, string> = {
   returned: "bg-gray-100 text-gray-700",
 };
 
+function canManageControlledSubstancesRole(role?: string | null): boolean {
+  return role === "admin" || role === "veterinarian";
+}
+
+const trimmedOrUndefined = (value: string) => value.trim() || undefined;
+
+function formatControlledSubstanceDateTime(
+  date: Date | string,
+  timeZone?: string | null
+) {
+  const options: Intl.DateTimeFormatOptions = {
+    dateStyle: "short",
+    timeStyle: "short",
+    timeZone: timeZone ?? undefined,
+  };
+
+  try {
+    return new Date(date).toLocaleString("en-US", options);
+  } catch {
+    return new Date(date).toLocaleString("en-US", {
+      ...options,
+      timeZone: undefined,
+    });
+  }
+}
+
+function InlineLookupError({ message }: { message: string }) {
+  return (
+    <p className="mt-1 flex items-center gap-1 text-xs text-destructive">
+      <AlertTriangle className="h-3 w-3" />
+      {message}
+    </p>
+  );
+}
+
 function LogEntryForm({ onClose }: { onClose: () => void }) {
   const utils = trpc.useUtils();
   const createMutation = trpc.controlledSubstances.create.useMutation({
@@ -56,6 +107,11 @@ function LogEntryForm({ onClose }: { onClose: () => void }) {
       toast.error(err.message);
     },
   });
+  const patientsQuery = trpc.patients.list.useQuery({
+    limit: 100,
+    offset: 0,
+  });
+  const witnessesQuery = trpc.controlledSubstances.listWitnesses.useQuery();
 
   const [form, setForm] = useState({
     drugName: "",
@@ -63,33 +119,96 @@ function LogEntryForm({ onClose }: { onClose: () => void }) {
     action: "received",
     quantity: "",
     unit: "mg",
-    patient: "",
-    witness: "",
+    patientId: "",
+    witnessedBy: "",
     lotNumber: "",
     notes: "",
   });
+  const patientsMissing =
+    !patientsQuery.isLoading && !patientsQuery.error && !patientsQuery.data;
+  const witnessesMissing =
+    !witnessesQuery.isLoading && !witnessesQuery.error && !witnessesQuery.data;
+  const patientOptions =
+    patientsQuery.data && !patientsQuery.error && !patientsMissing
+      ? patientsQuery.data.items
+      : [];
+  const witnessOptions =
+    witnessesQuery.data && !witnessesQuery.error && !witnessesMissing
+      ? witnessesQuery.data
+      : [];
+  const patientLookupUnavailable =
+    form.action === "administered" &&
+    (patientsQuery.isLoading ||
+      Boolean(patientsQuery.error) ||
+      patientsMissing);
+  const witnessLookupUnavailable =
+    form.action === "wasted" &&
+    (witnessesQuery.isLoading ||
+      Boolean(witnessesQuery.error) ||
+      witnessesMissing);
+  const canSubmit =
+    isControlledSubstanceRequiredTextInputValid(
+      form.drugName,
+      CONTROLLED_SUBSTANCE_DRUG_NAME_MAX_LENGTH
+    ) &&
+    isControlledSubstanceQuantityInputValid(form.quantity) &&
+    isControlledSubstanceRequiredTextInputValid(
+      form.unit,
+      CONTROLLED_SUBSTANCE_UNIT_MAX_LENGTH
+    ) &&
+    isControlledSubstanceOptionalTextInputValid(
+      form.lotNumber,
+      CONTROLLED_SUBSTANCE_LOT_NUMBER_MAX_LENGTH
+    ) &&
+    isControlledSubstanceOptionalTextInputValid(
+      form.notes,
+      CONTROLLED_SUBSTANCE_NOTES_MAX_LENGTH
+    ) &&
+    (form.action !== "administered" || Boolean(form.patientId)) &&
+    (form.action !== "wasted" || Boolean(form.witnessedBy)) &&
+    !patientLookupUnavailable &&
+    !witnessLookupUnavailable &&
+    !createMutation.isPending;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.drugName || !form.quantity) return;
-    if (form.action === "administered" && !form.patient) {
+    if (!canSubmit) return;
+    if (patientLookupUnavailable) {
+      toast.error(
+        patientsQuery.error?.message ??
+          (patientsMissing
+            ? "Patient lookup is unavailable. Please retry."
+            : "Patient lookup is still loading")
+      );
+      return;
+    }
+    if (witnessLookupUnavailable) {
+      toast.error(
+        witnessesQuery.error?.message ??
+          (witnessesMissing
+            ? "Witness lookup is unavailable. Please retry."
+            : "Witness lookup is still loading")
+      );
+      return;
+    }
+    if (form.action === "administered" && !form.patientId) {
       toast.error("Patient is required for administered entries");
       return;
     }
-    if (form.action === "wasted" && !form.witness) {
+    if (form.action === "wasted" && !form.witnessedBy) {
       toast.error("Witness is required for wasted entries");
       return;
     }
     createMutation.mutate({
-      drugName: form.drugName,
+      drugName: form.drugName.trim(),
       deaSchedule: form.deaSchedule as "II" | "III" | "IV" | "V",
       action: form.action as "received" | "administered" | "wasted" | "returned",
-      quantity: form.quantity,
-      unit: form.unit,
-      patientId: form.patient || undefined,
-      witnessedBy: form.witness || undefined,
-      lotNumber: form.lotNumber || undefined,
-      notes: form.notes || undefined,
+      quantity: form.quantity.trim(),
+      unit: form.unit.trim(),
+      patientId: form.patientId || undefined,
+      witnessedBy: form.witnessedBy || undefined,
+      lotNumber: trimmedOrUndefined(form.lotNumber),
+      notes: trimmedOrUndefined(form.notes),
     });
   };
 
@@ -107,6 +226,7 @@ function LogEntryForm({ onClose }: { onClose: () => void }) {
           <Input
             placeholder="Drug name"
             value={form.drugName}
+            maxLength={CONTROLLED_SUBSTANCE_DRUG_NAME_MAX_LENGTH}
             onChange={(e) => setForm({ ...form, drugName: e.target.value })}
             required
           />
@@ -150,8 +270,9 @@ function LogEntryForm({ onClose }: { onClose: () => void }) {
             </label>
             <Input
               type="number"
-              step="0.01"
-              min="0.01"
+              step={CONTROLLED_SUBSTANCE_QUANTITY_STEP}
+              min={CONTROLLED_SUBSTANCE_QUANTITY_MIN}
+              max={CONTROLLED_SUBSTANCE_QUANTITY_MAX}
               placeholder="Qty"
               value={form.quantity}
               onChange={(e) => setForm({ ...form, quantity: e.target.value })}
@@ -181,23 +302,86 @@ function LogEntryForm({ onClose }: { onClose: () => void }) {
           <label className="block text-xs font-medium text-muted-foreground mb-1">
             Patient {form.action === "administered" && "*"}
           </label>
-          <Input
-            placeholder="Patient name"
-            value={form.patient}
-            onChange={(e) => setForm({ ...form, patient: e.target.value })}
+          <select
+            value={form.patientId}
+            onChange={(e) => setForm({ ...form, patientId: e.target.value })}
             required={form.action === "administered"}
-          />
+            disabled={
+              patientsQuery.isLoading ||
+              Boolean(patientsQuery.error) ||
+              patientsMissing
+            }
+            className={[
+              "flex h-10 w-full rounded-md border border-input bg-background",
+              "px-3 py-2 text-sm",
+            ].join(" ")}
+          >
+            <option value="">
+              {patientsQuery.error || patientsMissing
+                ? "Unable to load patients"
+                : patientsQuery.isLoading
+                  ? "Loading patients..."
+                  : "No patient"}
+            </option>
+            {patientOptions.map((patient) => (
+              <option key={patient.id} value={patient.id}>
+                {patient.name}
+                {patient.clientFirstName || patient.clientLastName
+                  ? ` (${[patient.clientFirstName, patient.clientLastName]
+                      .filter(Boolean)
+                      .join(" ")})`
+                  : ""}
+              </option>
+            ))}
+          </select>
+          {patientsQuery.error || patientsMissing ? (
+            <InlineLookupError
+              message={
+                patientsQuery.error?.message ??
+                "Patient lookup returned no data. Please retry before recording an administered dose."
+              }
+            />
+          ) : null}
         </div>
         <div>
           <label className="block text-xs font-medium text-muted-foreground mb-1">
             Witness {form.action === "wasted" && "*"}
           </label>
-          <Input
-            placeholder="Witness name"
-            value={form.witness}
-            onChange={(e) => setForm({ ...form, witness: e.target.value })}
+          <select
+            value={form.witnessedBy}
+            onChange={(e) => setForm({ ...form, witnessedBy: e.target.value })}
             required={form.action === "wasted"}
-          />
+            disabled={
+              witnessesQuery.isLoading ||
+              Boolean(witnessesQuery.error) ||
+              witnessesMissing
+            }
+            className={[
+              "flex h-10 w-full rounded-md border border-input bg-background",
+              "px-3 py-2 text-sm",
+            ].join(" ")}
+          >
+            <option value="">
+              {witnessesQuery.error || witnessesMissing
+                ? "Unable to load witnesses"
+                : witnessesQuery.isLoading
+                  ? "Loading witnesses..."
+                  : "No witness"}
+            </option>
+            {witnessOptions.map((user) => (
+              <option key={user.id} value={user.id}>
+                {user.name} ({user.role.replace("_", " ")})
+              </option>
+            ))}
+          </select>
+          {witnessesQuery.error || witnessesMissing ? (
+            <InlineLookupError
+              message={
+                witnessesQuery.error?.message ??
+                "Witness lookup returned no data. Please retry before recording wasted inventory."
+              }
+            />
+          ) : null}
         </div>
         <div>
           <label className="block text-xs font-medium text-muted-foreground mb-1">
@@ -206,6 +390,7 @@ function LogEntryForm({ onClose }: { onClose: () => void }) {
           <Input
             placeholder="Lot #"
             value={form.lotNumber}
+            maxLength={CONTROLLED_SUBSTANCE_LOT_NUMBER_MAX_LENGTH}
             onChange={(e) => setForm({ ...form, lotNumber: e.target.value })}
           />
         </div>
@@ -216,12 +401,13 @@ function LogEntryForm({ onClose }: { onClose: () => void }) {
           <Input
             placeholder="Optional notes"
             value={form.notes}
+            maxLength={CONTROLLED_SUBSTANCE_NOTES_MAX_LENGTH}
             onChange={(e) => setForm({ ...form, notes: e.target.value })}
           />
         </div>
       </div>
       <div className="flex gap-2">
-        <Button type="submit" size="sm" disabled={createMutation.isPending}>
+        <Button type="submit" size="sm" disabled={!canSubmit}>
           {createMutation.isPending ? "Submitting..." : "Submit Entry"}
         </Button>
         <Button type="button" variant="outline" size="sm" onClick={onClose}>
@@ -239,7 +425,8 @@ function LogEntryForm({ onClose }: { onClose: () => void }) {
 
 function SummarySection() {
   const [expanded, setExpanded] = useState(false);
-  const { data, isLoading } = trpc.controlledSubstances.summary.useQuery({});
+  const { data, isLoading, error } = trpc.controlledSubstances.summary.useQuery({});
+  const summaryMissing = !isLoading && !error && !data;
 
   return (
     <div className="rounded-lg border border-border bg-card">
@@ -256,7 +443,12 @@ function SummarySection() {
       </button>
       {expanded && (
         <div className="border-t border-border px-4 py-3">
-          {isLoading ? (
+          {error || summaryMissing ? (
+            <div className="rounded-md border border-destructive bg-destructive/10 p-3 text-sm text-destructive">
+              {error?.message ??
+                "Unable to load controlled-substance balances. Please retry."}
+            </div>
+          ) : isLoading ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
               Loading summary...
@@ -314,7 +506,12 @@ function SummarySection() {
               </table>
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground">No data available.</p>
+            <EmptyState
+              className="border-0 bg-transparent py-6"
+              icon={ShieldAlert}
+              title="No balance data yet"
+              description="Balance totals will appear once controlled-substance entries are logged."
+            />
           )}
         </div>
       )}
@@ -323,17 +520,71 @@ function SummarySection() {
 }
 
 export default function ControlledSubstancesPage() {
+  const router = useRouter();
+  const { data: session, status } = useSession();
+
+  if (status === "loading") {
+    return (
+      <div className="rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
+        <div className="flex items-center gap-2">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Checking controlled-substance access...
+        </div>
+      </div>
+    );
+  }
+
+  if (!canManageControlledSubstancesRole(session?.user?.role)) {
+    return (
+      <EmptyState
+        icon={ShieldAlert}
+        title="Controlled substance log is restricted"
+        description="Only administrators and veterinarians can view or record controlled-substance activity."
+        action={{
+          label: "Back to dashboard",
+          onClick: () => router.push("/"),
+        }}
+      />
+    );
+  }
+
+  return <ControlledSubstancesLogPage />;
+}
+
+function ControlledSubstancesLogPage() {
   const [showForm, setShowForm] = useState(false);
   const [search, setSearch] = useState("");
   const [offset, setOffset] = useState(0);
   const limit = 25;
+  const searchFilter = search.trim();
+  const settingsQuery = trpc.controlledSubstances.settings.useQuery();
 
-  const { data, isLoading, error } =
-    trpc.controlledSubstances.list.useQuery({
-      drugName: search || undefined,
-      limit,
-      offset,
-    });
+  const { data, isLoading, error } = trpc.controlledSubstances.list.useQuery({
+    drugName: searchFilter || undefined,
+    limit,
+    offset,
+  });
+  const logError = settingsQuery.error ?? error;
+  const isLogLoading = settingsQuery.isLoading || isLoading;
+  const settingsMissing =
+    !settingsQuery.isLoading && !settingsQuery.error && !settingsQuery.data;
+  const logMissing = !isLoading && !error && !data;
+  const controlledSubstanceLogMissing = settingsMissing || logMissing;
+  const verifiedLogPayload =
+    !logError &&
+    !isLogLoading &&
+    !controlledSubstanceLogMissing &&
+    settingsQuery.data &&
+    data
+      ? { settings: settingsQuery.data, log: data }
+      : null;
+  const canRecordControlledSubstance = Boolean(verifiedLogPayload);
+
+  useEffect(() => {
+    if (!canRecordControlledSubstance && showForm) {
+      setShowForm(false);
+    }
+  }, [canRecordControlledSubstance, showForm]);
 
   return (
     <div>
@@ -346,13 +597,21 @@ export default function ControlledSubstancesPage() {
             DEA-required tracking for scheduled drugs
           </p>
         </div>
-        <Button onClick={() => setShowForm(true)}>
+        <Button
+          disabled={!canRecordControlledSubstance}
+          onClick={() => {
+            if (!canRecordControlledSubstance) return;
+            setShowForm(true);
+          }}
+        >
           <Plus className="mr-1 h-4 w-4" />
           Log Entry
         </Button>
       </div>
 
-      {showForm && <LogEntryForm onClose={() => setShowForm(false)} />}
+      {canRecordControlledSubstance && showForm && (
+        <LogEntryForm onClose={() => setShowForm(false)} />
+      )}
 
       {/* Summary Section */}
       <div className="mt-6">
@@ -366,6 +625,7 @@ export default function ControlledSubstancesPage() {
           <Input
             placeholder="Filter by drug name..."
             value={search}
+            maxLength={CONTROLLED_SUBSTANCE_DRUG_NAME_MAX_LENGTH}
             onChange={(e) => {
               setSearch(e.target.value);
               setOffset(0);
@@ -375,19 +635,23 @@ export default function ControlledSubstancesPage() {
         </div>
       </div>
 
-      {error && (
+      {logError || controlledSubstanceLogMissing ? (
         <div className="mt-4 rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
-          {error.message}
+          {logError?.message ??
+            "Unable to load controlled-substance entries. Please retry."}
         </div>
-      )}
-
-      {isLoading ? (
-        <div className="mt-6 text-center text-muted-foreground">
-          Loading...
+      ) : isLogLoading ? (
+        <div className="mt-6 flex items-center justify-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading controlled-substance entries...
         </div>
-      ) : data && data.items.length > 0 ? (
+      ) : !verifiedLogPayload ? (
+        <div className="mt-4 rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
+          Unable to load controlled-substance entries. Please retry.
+        </div>
+      ) : verifiedLogPayload.log.items.length > 0 ? (
         <>
-          <div className="mt-4 overflow-hidden rounded-lg border border-border">
+          <div className="mt-4 overflow-x-auto rounded-lg border border-border">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border bg-muted/50">
@@ -421,14 +685,17 @@ export default function ControlledSubstancesPage() {
                 </tr>
               </thead>
               <tbody>
-                {data.items.map((entry) => (
+                {verifiedLogPayload.log.items.map((entry) => (
                   <tr
                     key={entry.id}
                     className="border-b border-border last:border-0 hover:bg-muted/30 transition-colors"
                   >
                     <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
                       {entry.performedAt
-                        ? new Date(entry.performedAt).toLocaleString()
+                        ? formatControlledSubstanceDateTime(
+                            entry.performedAt,
+                            verifiedLogPayload.settings.timezone
+                          )
                         : "\u2014"}
                     </td>
                     <td className="px-4 py-3 font-medium">
@@ -470,8 +737,9 @@ export default function ControlledSubstancesPage() {
           {/* Pagination */}
           <div className="mt-4 flex items-center justify-between text-sm text-muted-foreground">
             <p>
-              Showing {offset + 1}--{Math.min(offset + limit, data.total)} of{" "}
-              {data.total}
+              Showing {offset + 1}--
+              {Math.min(offset + limit, verifiedLogPayload.log.total)} of{" "}
+              {verifiedLogPayload.log.total}
             </p>
             <div className="flex gap-2">
               <Button
@@ -485,7 +753,7 @@ export default function ControlledSubstancesPage() {
               <Button
                 variant="outline"
                 size="sm"
-                disabled={offset + limit >= data.total}
+                disabled={offset + limit >= verifiedLogPayload.log.total}
                 onClick={() => setOffset(offset + limit)}
               >
                 Next
@@ -494,14 +762,32 @@ export default function ControlledSubstancesPage() {
           </div>
         </>
       ) : (
-        <div className="mt-6 rounded-lg border border-dashed border-border bg-card p-12 text-center">
-          <ShieldAlert className="mx-auto h-10 w-10 text-muted-foreground/50" />
-          <p className="mt-2 text-muted-foreground">
-            {search
+        <EmptyState
+          className="mt-6"
+          icon={ShieldAlert}
+          title={
+            search
               ? "No entries match your filter"
-              : "No controlled substance entries yet"}
-          </p>
-        </div>
+              : "No controlled substance entries yet"
+          }
+          description={
+            search
+              ? "Try a different drug name or clear the filter."
+              : "Record each received, administered, wasted, or returned scheduled-drug event here."
+          }
+          action={
+            search
+              ? undefined
+              : {
+                  label: "Log first entry",
+                  onClick: () => {
+                    if (!canRecordControlledSubstance) return;
+                    setShowForm(true);
+                  },
+                  icon: Plus,
+                }
+          }
+        />
       )}
     </div>
   );

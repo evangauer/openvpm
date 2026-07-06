@@ -5,10 +5,10 @@ import { alertOps } from "@/lib/alerts";
 import { stripe } from "@/lib/stripe";
 import {
   STRIPE_PRICE_CLOUD_LEGACY_ENV,
-  STRIPE_PRICE_CLOUD_LOCATION_ENV,
-  STRIPE_PRICE_CLOUD_USER_ENV,
   billingEnforced,
+  cloudCheckoutPriceIds,
   estimatedCloudBaseMonthlyUsd,
+  stripePriceIdFromEnv,
 } from "./plans";
 
 export type BillingSyncStatus = "ok" | "skipped" | "legacy" | "error";
@@ -66,13 +66,15 @@ async function writeBillingSyncState(
   const [practice] = await db
     .select({ settings: practices.settings })
     .from(practices)
-    .where(eq(practices.id, practiceId))
+    .where(and(eq(practices.id, practiceId), isNull(practices.deletedAt)))
     .limit(1);
-  const settings = (practice?.settings ?? {}) as PracticeSettings;
+  if (!practice) return;
+
+  const settings = (practice.settings ?? {}) as PracticeSettings;
   await db
     .update(practices)
     .set({ settings: { ...settings, billingSync: state } })
-    .where(eq(practices.id, practiceId));
+    .where(and(eq(practices.id, practiceId), isNull(practices.deletedAt)));
 }
 
 function buildState(
@@ -95,9 +97,11 @@ export async function readBillingSyncState(
   const [practice] = await db
     .select({ settings: practices.settings })
     .from(practices)
-    .where(eq(practices.id, practiceId))
+    .where(and(eq(practices.id, practiceId), isNull(practices.deletedAt)))
     .limit(1);
-  const settings = (practice?.settings ?? {}) as PracticeSettings;
+  if (!practice) return null;
+
+  const settings = (practice.settings ?? {}) as PracticeSettings;
   return settings.billingSync ?? null;
 }
 
@@ -108,29 +112,36 @@ export async function syncPracticeSubscriptionQuantities(opts: {
   alertOnError?: boolean;
 }): Promise<BillingSyncState> {
   const { db, practiceId } = opts;
+  const [practice] = await db
+    .select({
+      stripeSubscriptionId: practices.stripeSubscriptionId,
+    })
+    .from(practices)
+    .where(and(eq(practices.id, practiceId), isNull(practices.deletedAt)))
+    .limit(1);
+
+  if (!practice) {
+    return buildState(
+      "skipped",
+      "Practice is unavailable for billing sync.",
+      { locationCount: 0, billableSeatCount: 0 }
+    );
+  }
+
   const counts = await countBillableLocationsAndSeats(db, practiceId);
 
   if (!billingEnforced()) {
     return buildState("skipped", "Self-host billing is not enforced.", counts);
   }
 
-  const [practice] = await db
-    .select({
-      stripeSubscriptionId: practices.stripeSubscriptionId,
-    })
-    .from(practices)
-    .where(eq(practices.id, practiceId))
-    .limit(1);
-
-  const subscriptionId = opts.subscriptionId ?? practice?.stripeSubscriptionId ?? null;
+  const subscriptionId = opts.subscriptionId ?? practice.stripeSubscriptionId ?? null;
   if (!subscriptionId) {
     const state = buildState("skipped", "No Stripe subscription to sync yet.", counts);
     await writeBillingSyncState(db, practiceId, state);
     return state;
   }
 
-  const locationPriceId = process.env[STRIPE_PRICE_CLOUD_LOCATION_ENV];
-  const seatPriceId = process.env[STRIPE_PRICE_CLOUD_USER_ENV];
+  const { locationPriceId, seatPriceId } = cloudCheckoutPriceIds();
   if (!locationPriceId) {
     const state = buildState(
       "error",
@@ -156,7 +167,7 @@ export async function syncPracticeSubscriptionQuantities(opts: {
     const seatItem = seatPriceId
       ? items.find((item) => item.price?.id === seatPriceId)
       : undefined;
-    const legacyPriceId = process.env[STRIPE_PRICE_CLOUD_LEGACY_ENV];
+    const legacyPriceId = stripePriceIdFromEnv(STRIPE_PRICE_CLOUD_LEGACY_ENV);
     const hasLegacyItem =
       !!legacyPriceId && items.some((item) => item.price?.id === legacyPriceId);
 

@@ -9,6 +9,7 @@ interface EmptyStateProps {
   action?: {
     label: string;
     onClick: () => void;
+    icon?: LucideIcon;
   };
   className?: string;
 }
@@ -20,6 +21,7 @@ export function EmptyState({
   action,
   className,
 }: EmptyStateProps) {
+  const ActionIcon = action?.icon;
   return (
     <div
       className={cn(
@@ -36,6 +38,7 @@ export function EmptyState({
       )}
       {action && (
         <Button size="sm" className="mt-4" onClick={action.onClick}>
+          {ActionIcon ? <ActionIcon className="mr-2 h-4 w-4" /> : null}
           {action.label}
         </Button>
       )}

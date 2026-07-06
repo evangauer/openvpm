@@ -3,6 +3,7 @@
  * Pure functions so the cron sweep and the manual notifications router apply
  * identical rules (consent, preference, suppression-by-send, quiet hours).
  */
+import { normalizeE164 } from "./phone";
 
 // TCPA quiet hours: no non-urgent texts before 8am or at/after 9pm local.
 const QUIET_END_HOUR = 8; // 8am — sending allowed from here
@@ -17,11 +18,12 @@ export function isQuietHours(
   now: Date,
   timeZone: string | null | undefined
 ): boolean {
-  if (!timeZone) return false;
+  const normalizedTimeZone = timeZone?.trim();
+  if (!normalizedTimeZone) return false;
   let hour: number;
   try {
     const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone,
+      timeZone: normalizedTimeZone,
       hour: "2-digit",
       hour12: false,
     }).formatToParts(now);
@@ -52,7 +54,7 @@ export function pickReminderChannel(opts: {
 }): ReminderChannel {
   const smsEligible =
     opts.preferredContactMethod === "sms" &&
-    Boolean(opts.phone) &&
+    normalizeE164(opts.phone) !== null &&
     opts.smsConsent;
   if (smsEligible && !opts.quietHours) return "sms";
   if (opts.hasEmail) return "email";

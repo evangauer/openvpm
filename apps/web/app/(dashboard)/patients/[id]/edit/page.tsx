@@ -2,11 +2,30 @@
 
 import { useState, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft } from "lucide-react";
+import { useSession } from "next-auth/react";
+import { AlertCircle, ArrowLeft, Loader2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { EmptyState } from "@/components/common/empty-state";
 import { toast } from "sonner";
+import {
+  PATIENT_BREED_MAX_LENGTH,
+  PATIENT_COLOR_MAX_LENGTH,
+  PATIENT_MICROCHIP_NUMBER_MAX_LENGTH,
+  PATIENT_NAME_MAX_LENGTH,
+  isOptionalPatientTextValid,
+  isRequiredPatientTextValid,
+} from "@/lib/patients/policy";
+
+function EditPatientLoadingPanel() {
+  return (
+    <div className="flex items-center justify-center gap-2 rounded-lg border border-border bg-card p-8 text-sm text-muted-foreground">
+      <Loader2 className="h-4 w-4 animate-spin" />
+      Loading patient...
+    </div>
+  );
+}
 
 const speciesOptions = [
   { value: "canine", label: "Canine" },
@@ -34,6 +53,57 @@ const statusOptions = [
 export default function EditPatientPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
+  const { data: session, status } = useSession();
+
+  if (status === "loading") {
+    return (
+      <div className="flex items-center justify-center gap-2 rounded-lg border border-border bg-card p-8 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Checking patient access...
+      </div>
+    );
+  }
+
+  if (!canManagePatientFormRole(session?.user?.role)) {
+    return (
+      <div className="max-w-2xl">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => router.push(`/patients/${params.id}`)}
+          className="mb-4"
+        >
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Back to Patient
+        </Button>
+        <EmptyState
+          icon={AlertCircle}
+          title="Patient actions are read-only"
+          description="Only staff roles with patient write access can edit patients."
+          action={{
+            label: "Back to Patient",
+            onClick: () => router.push(`/patients/${params.id}`),
+          }}
+        />
+      </div>
+    );
+  }
+
+  return <EditPatientForm />;
+}
+
+function canManagePatientFormRole(role?: string | null): boolean {
+  return (
+    role === "admin" ||
+    role === "veterinarian" ||
+    role === "technician" ||
+    role === "front_desk"
+  );
+}
+
+function EditPatientForm() {
+  const params = useParams<{ id: string }>();
+  const router = useRouter();
   const [form, setForm] = useState({
     name: "",
     species: "canine" as string,
@@ -46,7 +116,11 @@ export default function EditPatientPage() {
   });
   const [error, setError] = useState<string | null>(null);
 
-  const { data: patient, isLoading } = trpc.patients.getById.useQuery(
+  const {
+    data: patient,
+    isLoading,
+    error: loadError,
+  } = trpc.patients.getById.useQuery(
     { id: params.id },
     { enabled: !!params.id }
   );
@@ -77,12 +151,29 @@ export default function EditPatientPage() {
     },
   });
 
+  const canSubmit =
+    isRequiredPatientTextValid(form.name, PATIENT_NAME_MAX_LENGTH) &&
+    isOptionalPatientTextValid(form.breed, PATIENT_BREED_MAX_LENGTH) &&
+    isOptionalPatientTextValid(form.color, PATIENT_COLOR_MAX_LENGTH) &&
+    isOptionalPatientTextValid(
+      form.microchipNumber,
+      PATIENT_MICROCHIP_NUMBER_MAX_LENGTH
+    );
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
+    if (!patient) {
+      setError("Load the patient before saving changes.");
+      return;
+    }
     if (!form.name.trim()) {
       setError("Patient name is required.");
+      return;
+    }
+    if (!canSubmit) {
+      setError("Check required fields and field lengths.");
       return;
     }
 
@@ -104,8 +195,24 @@ export default function EditPatientPage() {
   };
 
   if (isLoading) {
+    return <EditPatientLoadingPanel />;
+  }
+
+  if (loadError || !patient) {
     return (
-      <div className="text-center text-muted-foreground py-12">Loading...</div>
+      <EmptyState
+        icon={AlertCircle}
+        title="Unable to load patient"
+        description={
+          loadError?.message ??
+          "Choose a patient from the Patients list before editing."
+        }
+        action={{
+          label: "Back to Patients",
+          onClick: () => router.push("/patients"),
+          icon: ArrowLeft,
+        }}
+      />
     );
   }
 
@@ -143,6 +250,7 @@ export default function EditPatientPage() {
             onChange={(e) => updateField("name", e.target.value)}
             placeholder="Patient name"
             className="mt-1"
+            maxLength={PATIENT_NAME_MAX_LENGTH}
             required
           />
         </div>
@@ -175,6 +283,7 @@ export default function EditPatientPage() {
               onChange={(e) => updateField("breed", e.target.value)}
               placeholder="Breed"
               className="mt-1"
+              maxLength={PATIENT_BREED_MAX_LENGTH}
             />
           </div>
         </div>
@@ -223,6 +332,7 @@ export default function EditPatientPage() {
               onChange={(e) => updateField("color", e.target.value)}
               placeholder="e.g., Black and white"
               className="mt-1"
+              maxLength={PATIENT_COLOR_MAX_LENGTH}
             />
           </div>
           <div>
@@ -235,6 +345,7 @@ export default function EditPatientPage() {
               onChange={(e) => updateField("microchipNumber", e.target.value)}
               placeholder="Microchip ID"
               className="mt-1"
+              maxLength={PATIENT_MICROCHIP_NUMBER_MAX_LENGTH}
             />
           </div>
         </div>
@@ -258,7 +369,7 @@ export default function EditPatientPage() {
         </div>
 
         <div className="flex gap-3 pt-4">
-          <Button type="submit" disabled={updatePatient.isPending}>
+          <Button type="submit" disabled={!canSubmit || updatePatient.isPending}>
             {updatePatient.isPending ? "Saving..." : "Save Changes"}
           </Button>
           <Button

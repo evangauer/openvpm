@@ -1,19 +1,36 @@
 import { z } from "zod";
 import { hash } from "bcryptjs";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, publicProcedure, protectedProcedure } from "../trpc";
 import { users, practices, locations } from "@openpims/db";
 import { rateLimit } from "@/lib/rate-limit";
 import { seedPractice, seedDemoData } from "@/lib/onboarding/defaults";
-import { billingEnforced, TRIAL_DAYS } from "@/lib/billing/plans";
+import {
+  billingEnforced,
+  cloudCheckoutPriceIds,
+  cloudMeteredPriceIds,
+  TRIAL_DAYS,
+} from "@/lib/billing/plans";
 import { createAuthToken, consumeAuthToken } from "@/lib/auth-tokens";
+import { PASSWORD_HASH_COST } from "@/lib/auth-hashing";
+import { authPasswordInput } from "@/lib/auth-password";
 import {
   sendVerificationEmail,
   sendPasswordResetEmail,
   sendWelcomeEmail,
 } from "@/lib/email";
 import { appBaseUrl, exposeAuthLinksForPreview } from "@/lib/app-url";
+import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
+import { createSubscriptionCheckoutSession } from "@/lib/stripe";
+import {
+  AUTH_EMAIL_MAX_LENGTH,
+  AUTH_LOCATION_NAME_MAX_LENGTH,
+  AUTH_NAME_MAX_LENGTH,
+  AUTH_ONBOARDING_LOGO_NAME_MAX_LENGTH,
+  AUTH_ONBOARDING_TEAM_MEMBER_NAME_MAX_LENGTH,
+  AUTH_PRACTICE_NAME_MAX_LENGTH,
+} from "@/lib/auth-input-policy";
 
 /** Display name from explicit input, else derived from the email local-part. */
 function deriveName(name: string | undefined, email: string): string {
@@ -27,17 +44,71 @@ function deriveName(name: string | undefined, email: string): string {
   return words.join(" ") || "Practice Owner";
 }
 
+function normalizeAuthEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+async function assertPreAuthRateLimit(input: {
+  key: string;
+  limit: number;
+  windowMs: number;
+  message: string;
+  logContext: string;
+}) {
+  try {
+    const { success } = await rateLimit({
+      key: input.key,
+      limit: input.limit,
+      windowMs: input.windowMs,
+    });
+    if (success) return;
+  } catch (err) {
+    console.error(`[auth.${input.logContext}] rate limit failed:`, err);
+  }
+
+  throw new TRPCError({
+    code: "TOO_MANY_REQUESTS",
+    message: input.message,
+  });
+}
+
+const authEmailInput = z
+  .string()
+  .trim()
+  .email()
+  .max(AUTH_EMAIL_MAX_LENGTH)
+  .transform((email) => email.toLowerCase());
+
+const authTextInput = (label: string, min: number, max: number) =>
+  z
+    .string()
+    .trim()
+    .min(min, `${label} must be at least ${min} characters.`)
+    .max(max, `${label} must be at most ${max} characters.`);
+
 const onboardingTeamMemberSchema = z.object({
-  name: z.string().min(1).max(80),
-  email: z.string().email().max(255),
+  name: authTextInput(
+    "Team member name",
+    1,
+    AUTH_ONBOARDING_TEAM_MEMBER_NAME_MAX_LENGTH
+  ),
+  email: authEmailInput,
   role: z.enum(["veterinarian", "technician", "front_desk", "viewer"]),
 });
 
 const onboardingDraftSchema = z.object({
-  logoName: z.string().min(1).max(120).optional(),
+  logoName: authTextInput(
+    "Logo name",
+    1,
+    AUTH_ONBOARDING_LOGO_NAME_MAX_LENGTH
+  ).optional(),
   brandColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
   teamMembers: z.array(onboardingTeamMemberSchema).max(8).optional(),
 });
+
+const authTokenSchema = z
+  .string()
+  .regex(/^[a-f0-9]{64}$/i, "Invalid or expired link.");
 
 function cleanOnboardingDraft(
   draft: z.infer<typeof onboardingDraftSchema> | undefined
@@ -65,90 +136,185 @@ export const authRouter = createRouter({
       z.object({
         // Lean signup collects only practice + email + password. `name` is
         // optional and derived from the email when omitted.
-        name: z.string().min(2).optional(),
-        email: z.string().email(),
-        password: z.string().min(8),
-        practiceName: z.string().min(2),
-        locationName: z.string().min(2).max(255).optional(),
+        name: authTextInput("Name", 2, AUTH_NAME_MAX_LENGTH).optional(),
+        email: authEmailInput,
+        password: authPasswordInput,
+        practiceName: authTextInput(
+          "Practice name",
+          2,
+          AUTH_PRACTICE_NAME_MAX_LENGTH
+        ),
+        locationName: authTextInput(
+          "Location name",
+          2,
+          AUTH_LOCATION_NAME_MAX_LENGTH
+        ).optional(),
         onboardingDraft: onboardingDraftSchema.optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
+      const email = normalizeAuthEmail(input.email);
       // Rate limit by email: 5 registrations per hour
-      const { success } = rateLimit({
-        key: `register:${input.email}`,
+      await assertPreAuthRateLimit({
+        key: `register:${email}`,
         limit: 5,
         windowMs: 3600000,
+        message: "Too many registration attempts. Please try again later.",
+        logContext: "register",
       });
-
-      if (!success) {
-        throw new TRPCError({
-          code: "TOO_MANY_REQUESTS",
-          message: "Too many registration attempts. Please try again later.",
-        });
-      }
 
       // Check if email already exists
       const [existing] = await ctx.db
         .select()
         .from(users)
-        .where(eq(users.email, input.email))
+        .where(eq(users.email, email))
         .limit(1);
 
       if (existing) {
-        throw new Error("Email already registered");
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "Email already registered",
+        });
       }
 
-      const passwordHash = await hash(input.password, 10);
       const onboardingDraft = cleanOnboardingDraft(input.onboardingDraft);
+      const hostedBilling = billingEnforced();
+      let hostedCheckoutLineItems:
+        | Array<{
+            priceId: string;
+            quantity?: number;
+            metered?: boolean;
+          }>
+        | undefined;
 
-      // On the hosted service, start a full-featured trial so the new practice
-      // is immediately usable before entering payment. Self-host ignores this.
-      const trial = billingEnforced()
-        ? {
-            billingStatus: "trialing" as const,
-            trialEndsAt: new Date(Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000),
+      if (hostedBilling) {
+        const { locationPriceId } = cloudCheckoutPriceIds();
+        if (!locationPriceId) {
+          throw new TRPCError({
+            code: "SERVICE_UNAVAILABLE",
+            message:
+              "Hosted billing is not configured. Please contact support to finish signup.",
+          });
+        }
+
+        const { aiOveragePriceId, smsOveragePriceId } =
+          cloudMeteredPriceIds();
+        hostedCheckoutLineItems = [{ priceId: locationPriceId, quantity: 1 }];
+        if (aiOveragePriceId) {
+          hostedCheckoutLineItems.push({
+            priceId: aiOveragePriceId,
+            metered: true,
+          });
+        }
+        if (smsOveragePriceId) {
+          hostedCheckoutLineItems.push({
+            priceId: smsOveragePriceId,
+            metered: true,
+          });
+        }
+      }
+
+      const passwordHash = await hash(input.password, PASSWORD_HASH_COST);
+
+      const { practice, location, user, checkoutUrl } =
+        await ctx.db.transaction(async (tx) => {
+          const [createdPractice] = await tx
+            .insert(practices)
+            .values({
+              name: input.practiceName.trim(),
+              email,
+            })
+            .returning();
+
+          if (!createdPractice) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "Account setup failed.",
+            });
           }
-        : {};
 
-      // Create practice
-      const [practice] = await ctx.db
-        .insert(practices)
-        .values({
-          name: input.practiceName.trim(),
-          email: input.email.trim().toLowerCase(),
-          ...trial,
-        })
-        .returning();
+          const [createdLocation] = await tx
+            .insert(locations)
+            .values({
+              practiceId: createdPractice.id,
+              name: input.locationName?.trim() || "Main Location",
+              isPrimary: true,
+            })
+            .returning();
 
-      // Create default location
-      const [location] = await ctx.db
-        .insert(locations)
-        .values({
-          practiceId: practice!.id,
-          name: input.locationName?.trim() || "Main Location",
-          isPrimary: true,
-        })
-        .returning();
+          if (!createdLocation) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "Account setup failed.",
+            });
+          }
 
-      // Create admin user
-      const [user] = await ctx.db
-        .insert(users)
-        .values({
-          email: input.email.trim().toLowerCase(),
-          passwordHash,
-          name: deriveName(input.name, input.email),
-          role: "admin",
-          practiceId: practice!.id,
-        })
-        .returning();
+          const [createdUser] = await tx
+            .insert(users)
+            .values({
+              email,
+              passwordHash,
+              name: deriveName(input.name, email),
+              role: "admin",
+              practiceId: createdPractice.id,
+            })
+            .returning();
+
+          if (!createdUser) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "Account setup failed.",
+            });
+          }
+
+          let createdCheckoutUrl: string | undefined;
+          if (hostedCheckoutLineItems) {
+            try {
+              const base = appBaseUrl();
+              const checkout = await createSubscriptionCheckoutSession({
+                lineItems: hostedCheckoutLineItems,
+                practiceId: createdPractice.id,
+                customerEmail: email,
+                trialPeriodDays: TRIAL_DAYS,
+                successUrl: `${base}/login?checkout=success`,
+                cancelUrl: `${base}/login?checkout=cancelled`,
+              });
+              const checkoutUrl = checkout?.url;
+              createdCheckoutUrl = isSafeCheckoutRedirectUrl(checkoutUrl)
+                ? checkoutUrl
+                : undefined;
+            } catch (err) {
+              console.error("[register] subscription checkout failed:", err);
+              throw new TRPCError({
+                code: "SERVICE_UNAVAILABLE",
+                message:
+                  "Could not start hosted billing checkout. Please try again.",
+              });
+            }
+
+            if (!createdCheckoutUrl) {
+              throw new TRPCError({
+                code: "SERVICE_UNAVAILABLE",
+                message:
+                  "Could not start hosted billing checkout. Please try again.",
+              });
+            }
+          }
+
+          return {
+            practice: createdPractice,
+            location: createdLocation,
+            user: createdUser,
+            checkoutUrl: createdCheckoutUrl,
+          };
+        });
 
       // Seed sensible defaults (appointment types, rooms, starter services) so
       // the new practice is usable immediately. Non-fatal: a seed hiccup must
       // not block signup — the practice still works, just emptier.
       try {
         await seedPractice(ctx.db, {
-          practiceId: practice!.id,
+          practiceId: practice.id,
           locationId: location?.id ?? null,
         });
       } catch (err) {
@@ -161,10 +327,10 @@ export const authRouter = createRouter({
       if (onboardingDraft) {
         practiceSettings.onboardingDraft = onboardingDraft;
       }
-      if (billingEnforced()) {
+      if (hostedBilling) {
         practiceSettings.onboardingCompletedAt = null;
         try {
-          const demoData = await seedDemoData(ctx.db, { practiceId: practice!.id });
+          const demoData = await seedDemoData(ctx.db, { practiceId: practice.id });
           practiceSettings.demoData = demoData;
         } catch (err) {
           console.error("[register] demo seeding failed:", err);
@@ -174,7 +340,7 @@ export const authRouter = createRouter({
         await ctx.db
           .update(practices)
           .set({ settings: practiceSettings })
-          .where(eq(practices.id, practice!.id));
+          .where(eq(practices.id, practice.id));
       }
 
       // On the hosted service, require email verification before login. Issue a
@@ -183,19 +349,19 @@ export const authRouter = createRouter({
       let verificationRequired = false;
       let verificationUrl: string | undefined;
       let verificationEmailSent: boolean | undefined;
-      if (billingEnforced()) {
+      if (hostedBilling) {
         verificationRequired = true;
         try {
           const token = await createAuthToken({
-            userId: user!.id,
-            email: user!.email,
+            userId: user.id,
+            email: user.email,
             type: "email_verify",
             db: ctx.db,
           });
           verificationUrl = `${appBaseUrl()}/verify-email?token=${token}`;
           const result = await sendVerificationEmail({
-            to: user!.email,
-            name: user!.name,
+            to: user.email,
+            name: user.name,
             verifyUrl: verificationUrl,
           });
           verificationEmailSent = result.success;
@@ -207,10 +373,10 @@ export const authRouter = createRouter({
 
       // Send a branded welcome email (hosted only). Non-fatal — signup succeeds
       // regardless of delivery.
-      if (billingEnforced()) {
+      if (hostedBilling) {
         try {
           await sendWelcomeEmail({
-            to: user!.email,
+            to: user.email,
             practiceName: input.practiceName.trim(),
             trialDays: TRIAL_DAYS,
           });
@@ -220,47 +386,54 @@ export const authRouter = createRouter({
       }
 
       return {
-        id: user!.id,
-        email: user!.email,
+        id: user.id,
+        email: user.email,
         verificationRequired,
         verificationEmailSent,
         verificationUrl: exposeAuthLinksForPreview() ? verificationUrl : undefined,
+        checkoutUrl,
       };
     }),
 
   /** Confirm an email-verification token (hosted). */
   verifyEmail: publicProcedure
-    .input(z.object({ token: z.string().min(1) }))
+    .input(z.object({ token: authTokenSchema }))
     .mutation(async ({ ctx, input }) => {
-      const result = await consumeAuthToken(input.token, "email_verify");
+      const result = await consumeAuthToken(input.token, "email_verify", {
+        db: ctx.db,
+      });
       if (!result) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "This verification link is invalid or has expired.",
         });
       }
-      await ctx.db
+      const [updated] = await ctx.db
         .update(users)
         .set({ emailVerifiedAt: new Date() })
-        .where(eq(users.id, result.userId));
+        .where(and(eq(users.id, result.userId), isNull(users.deletedAt)))
+        .returning({ id: users.id });
+      if (!updated) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "This verification link is invalid or has expired.",
+        });
+      }
       return { ok: true };
     }),
 
   /** Resend the email-verification link. Generic response (no enumeration). */
   resendVerification: publicProcedure
-    .input(z.object({ email: z.string().email() }))
+    .input(z.object({ email: authEmailInput }))
     .mutation(async ({ ctx, input }) => {
-      const { success } = rateLimit({
-        key: `verifyresend:${input.email}`,
+      const email = normalizeAuthEmail(input.email);
+      await assertPreAuthRateLimit({
+        key: `verifyresend:${email}`,
         limit: 5,
         windowMs: 3600000,
+        message: "Too many requests. Please try again later.",
+        logContext: "resendVerification",
       });
-      if (!success) {
-        throw new TRPCError({
-          code: "TOO_MANY_REQUESTS",
-          message: "Too many requests. Please try again later.",
-        });
-      }
 
       const [user] = await ctx.db
         .select({
@@ -270,7 +443,7 @@ export const authRouter = createRouter({
           emailVerifiedAt: users.emailVerifiedAt,
         })
         .from(users)
-        .where(eq(users.email, input.email.trim().toLowerCase()))
+        .where(and(eq(users.email, email), isNull(users.deletedAt)))
         .limit(1);
 
       // Only send for an existing, not-yet-verified account. Respond the same
@@ -297,24 +470,21 @@ export const authRouter = createRouter({
 
   /** Request a password-reset email. Always succeeds (no account enumeration). */
   requestPasswordReset: publicProcedure
-    .input(z.object({ email: z.string().email() }))
+    .input(z.object({ email: authEmailInput }))
     .mutation(async ({ ctx, input }) => {
-      const { success } = rateLimit({
-        key: `pwreset:${input.email}`,
+      const email = normalizeAuthEmail(input.email);
+      await assertPreAuthRateLimit({
+        key: `pwreset:${email}`,
         limit: 5,
         windowMs: 3600000,
+        message: "Too many requests. Please try again later.",
+        logContext: "requestPasswordReset",
       });
-      if (!success) {
-        throw new TRPCError({
-          code: "TOO_MANY_REQUESTS",
-          message: "Too many requests. Please try again later.",
-        });
-      }
 
       const [user] = await ctx.db
         .select({ id: users.id, email: users.email, name: users.name })
         .from(users)
-        .where(eq(users.email, input.email))
+        .where(and(eq(users.email, email), isNull(users.deletedAt)))
         .limit(1);
 
       if (user) {
@@ -323,6 +493,7 @@ export const authRouter = createRouter({
             userId: user.id,
             email: user.email,
             type: "password_reset",
+            db: ctx.db,
           });
           await sendPasswordResetEmail({
             to: user.email,
@@ -341,23 +512,32 @@ export const authRouter = createRouter({
   resetPassword: publicProcedure
     .input(
       z.object({
-        token: z.string().min(1),
-        password: z.string().min(8),
+        token: authTokenSchema,
+        password: authPasswordInput,
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const result = await consumeAuthToken(input.token, "password_reset");
+      const result = await consumeAuthToken(input.token, "password_reset", {
+        db: ctx.db,
+      });
       if (!result) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "This reset link is invalid or has expired.",
         });
       }
-      const passwordHash = await hash(input.password, 10);
-      await ctx.db
+      const passwordHash = await hash(input.password, PASSWORD_HASH_COST);
+      const [updated] = await ctx.db
         .update(users)
         .set({ passwordHash })
-        .where(eq(users.id, result.userId));
+        .where(and(eq(users.id, result.userId), isNull(users.deletedAt)))
+        .returning({ id: users.id });
+      if (!updated) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "This reset link is invalid or has expired.",
+        });
+      }
       return { ok: true };
     }),
 
@@ -365,23 +545,32 @@ export const authRouter = createRouter({
   acceptInvite: publicProcedure
     .input(
       z.object({
-        token: z.string().min(1),
-        password: z.string().min(8),
+        token: authTokenSchema,
+        password: authPasswordInput,
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const result = await consumeAuthToken(input.token, "invite");
+      const result = await consumeAuthToken(input.token, "invite", {
+        db: ctx.db,
+      });
       if (!result) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "This invite link is invalid or has expired.",
         });
       }
-      const passwordHash = await hash(input.password, 10);
-      await ctx.db
+      const passwordHash = await hash(input.password, PASSWORD_HASH_COST);
+      const [updated] = await ctx.db
         .update(users)
         .set({ passwordHash, emailVerifiedAt: new Date() })
-        .where(eq(users.id, result.userId));
+        .where(and(eq(users.id, result.userId), isNull(users.deletedAt)))
+        .returning({ id: users.id });
+      if (!updated) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "This invite link is invalid or has expired.",
+        });
+      }
       return { ok: true };
     }),
 

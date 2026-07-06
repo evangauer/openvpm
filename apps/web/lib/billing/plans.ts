@@ -2,15 +2,17 @@
  * Hosted plan model + entitlements.
  *
  * Open-source posture: the OSS / self-host edition is NEVER crippled. Billing is
- * OFF by default (`HOSTED_BILLING_ENABLED` unset) — self-host gets the full
- * product. We monetize hosting + scale (locations) + heavy usage, not by locking
- * the open core.
+ * OFF by default (`HOSTED_BILLING_ENABLED` unset) — self-host runs without
+ * hosted subscription gates. We monetize hosting + scale (locations) + heavy
+ * usage, not by locking the open core.
  *
- * Pricing (managed Cloud): ONE simple self-serve tier — flat $99/mo per active
- * location, unlimited staff. ALL features are included while trialing/active,
- * with generous included SMS / AI allowances and metered overage beyond.
- * Enterprise = custom.
+ * Pricing (managed Cloud): ONE simple self-serve tier — flat $79/mo per active
+ * location, unlimited staff. Hosted entitlements are included while
+ * trialing/active, with generous included SMS / AI allowances and metered
+ * overage beyond. Enterprise = custom.
  */
+
+import { envFlagEnabled } from "@/lib/env-bool";
 
 export type PlanTier = "free" | "cloud" | "enterprise";
 
@@ -39,7 +41,7 @@ export const ALL_FEATURES: Feature[] = [
 ];
 
 /** Managed Cloud list price: flat per active location, unlimited staff. */
-export const CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD = 99;
+export const CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD = 79;
 /** No per-seat charge under the flat model (kept at 0 for type/back-compat). */
 export const CLOUD_SEAT_UNIT_PRICE_MONTHLY_USD = 0;
 
@@ -60,6 +62,15 @@ export const STRIPE_PRICE_CLOUD_USER_ENV = "STRIPE_PRICE_CLOUD_USER";
 export const STRIPE_PRICE_CLOUD_LEGACY_ENV = "STRIPE_PRICE_CLOUD";
 export const STRIPE_PRICE_SMS_OVERAGE_ENV = "STRIPE_PRICE_SMS_OVERAGE";
 export const STRIPE_PRICE_AI_OVERAGE_ENV = "STRIPE_PRICE_AI_OVERAGE";
+
+function nonBlank(value: string | null | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+export function stripePriceIdFromEnv(name: string): string | undefined {
+  return nonBlank(process.env[name]);
+}
 
 export interface PlanDefinition {
   tier: PlanTier;
@@ -93,14 +104,14 @@ export interface PlanDefinition {
 
 export const PLANS: Record<PlanTier, PlanDefinition> = {
   free: {
-    // Self-host (free, full product) gets everything via billingEnforced()=false,
+    // Self-host gets the ungated app via billingEnforced()=false,
     // NOT via this feature list. On hosted, `free` is also the lapsed/unpaid
     // fallback tier — so its entitlements MUST be empty to gate non-payers.
     tier: "free",
     name: "Free (self-host)",
     locationUnitPriceMonthlyUsd: 0,
     seatUnitPriceMonthlyUsd: 0,
-    blurb: "The full product, on your own infrastructure. Free forever, no lock-in.",
+    blurb: "Self-host OpenVPM on your own infrastructure. Free forever, no lock-in.",
     seatLimit: null,
     locationLimit: null,
     features: [],
@@ -116,7 +127,7 @@ export const PLANS: Record<PlanTier, PlanDefinition> = {
     locationUnitPriceMonthlyUsd: CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD,
     seatUnitPriceMonthlyUsd: CLOUD_SEAT_UNIT_PRICE_MONTHLY_USD,
     blurb:
-      "We host it: the full PIMS, managed, with every feature - agent, SMS, reporting, API, multi-location, integrations. $99/mo per location, unlimited staff.",
+      "We host the managed PIMS: agent access, SMS-ready shared inbox, reporting, scoped API/webhooks, multi-location tools, and supported integration hooks. $79/mo per location, unlimited staff.",
     seatLimit: null, // unlimited staff under the flat model
     locationLimit: null, // billed by location quantity, not capped
     features: [...ALL_FEATURES],
@@ -156,14 +167,15 @@ export function getPlan(tier?: string | null): PlanDefinition {
 
 /** Map a Stripe Price ID back to a plan tier (via the configured env vars). */
 export function tierForStripePrice(priceId: string | null | undefined): PlanTier | null {
-  if (!priceId) return null;
+  const normalizedPriceId = nonBlank(priceId);
+  if (!normalizedPriceId) return null;
   const cloudPriceEnvs = [
     STRIPE_PRICE_CLOUD_LOCATION_ENV,
     STRIPE_PRICE_CLOUD_USER_ENV,
     STRIPE_PRICE_CLOUD_LEGACY_ENV,
   ];
   for (const env of cloudPriceEnvs) {
-    if (process.env[env] === priceId) return "cloud";
+    if (stripePriceIdFromEnv(env) === normalizedPriceId) return "cloud";
   }
   return null;
 }
@@ -173,8 +185,8 @@ export function cloudCheckoutPriceIds(): {
   seatPriceId?: string;
 } {
   return {
-    locationPriceId: process.env[STRIPE_PRICE_CLOUD_LOCATION_ENV],
-    seatPriceId: process.env[STRIPE_PRICE_CLOUD_USER_ENV],
+    locationPriceId: stripePriceIdFromEnv(STRIPE_PRICE_CLOUD_LOCATION_ENV),
+    seatPriceId: stripePriceIdFromEnv(STRIPE_PRICE_CLOUD_USER_ENV),
   };
 }
 
@@ -189,8 +201,8 @@ export function cloudMeteredPriceIds(): {
   smsOveragePriceId?: string;
 } {
   return {
-    aiOveragePriceId: process.env[STRIPE_PRICE_AI_OVERAGE_ENV],
-    smsOveragePriceId: process.env[STRIPE_PRICE_SMS_OVERAGE_ENV],
+    aiOveragePriceId: stripePriceIdFromEnv(STRIPE_PRICE_AI_OVERAGE_ENV),
+    smsOveragePriceId: stripePriceIdFromEnv(STRIPE_PRICE_SMS_OVERAGE_ENV),
   };
 }
 
@@ -275,7 +287,7 @@ export function effectiveTier(
  * default so self-host / OSS runs with everything unlocked.
  */
 export function billingEnforced(): boolean {
-  return process.env.HOSTED_BILLING_ENABLED === "true";
+  return envFlagEnabled("HOSTED_BILLING_ENABLED");
 }
 
 /**

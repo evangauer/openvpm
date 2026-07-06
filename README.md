@@ -50,7 +50,7 @@ OpenVPM fills that gap.
 OpenVPM is a modern, cloud-native veterinary practice information management system that is:
 
 - **Beautiful and intuitive** — Practice managers and front desk staff should be productive within a single shift, not a multi-week training program
-- **API-first** — Every feature accessible via a documented REST + WebSocket API so AI tools, voice agents, and integrations can read AND write
+- **API-first** — Dashboard workflows use typed tRPC procedures, while external integrations use scoped `/api/v1` REST endpoints and signed webhooks for supported read/write workflows
 - **Cloud-native but self-hostable** — Run it on our cloud or deploy it on your own infrastructure
 - **Free and open source** — AGPLv3, forever. No per-provider pricing. No vendor lock-in. Your data is yours.
 
@@ -79,10 +79,10 @@ Visual calendar with day/week views and column-per-doctor layout. Configurable a
 SOAP notes with rich text editing. Problem lists (active/resolved/chronic). Vaccination records with reminders and certificate generation. Lab results viewer with reference ranges and trend graphs. Prescription management with dosing calculator and refill tracking. Document and image attachments.
 
 **Billing & Invoicing**
-Treatment-to-invoice flow where charges auto-populate as services are administered. Itemized invoices with tax calculation. Estimates that convert to invoices. Payment tracking and account balances. End-of-day reconciliation and revenue reporting.
+Treatment templates can populate draft invoices, with itemized manual service/product line items, tax calculation, estimates that convert to invoices, payment tracking, account balances, and revenue reporting.
 
 **Inventory Management**
-Product catalog with stock levels and reorder point alerts. Lot/batch tracking with expiration dates. Auto-deduction when dispensed from EMR. Purchase order generation. Multi-location support.
+Product catalog with stock levels, reorder point alerts, lot/batch tracking, and expiration dates. Auto-deduction when products are dispensed from invoices or EMR prescriptions. Supplier contact management for reorder workflows.
 
 **Controlled Substance Tracking**
 DEA-compliant controlled substance logging with full audit trails.
@@ -90,24 +90,24 @@ DEA-compliant controlled substance logging with full audit trails.
 ### Phase 2 — Communication & Intelligence (Implemented)
 
 **Client Communication Hub**
-Unified inbox across calls, texts, emails, and portal messages. SMS/email appointment reminders. Vaccination and wellness reminders. Bulk messaging campaigns. Two-way SMS. Full communication log on every client record.
+Unified inbox across calls, texts, emails, and inbound portal requests. SMS/email appointment reminders. Vaccination reminders and wellness billing workflows. Two-way SMS. Full communication log on every client record.
 
 **Practice Whiteboard**
-Real-time patient status board showing patient name, doctor, room, status, time in, procedure, and notes. WebSocket-powered — updates live across all screens.
+Shared patient status board showing patient name, doctor, room, status, time in, procedure, and notes across clinic workflows.
 
 **Reporting & Analytics**
 Dashboard with KPI cards, revenue trends, appointment utilization, species distribution, and production by doctor. Exportable to CSV/PDF.
 
 **Client Portal**
-Pet owners can view health records, request appointments, submit prescription refill requests, download vaccination certificates, view invoices, and message the clinic securely.
+Pet owners can view health records, request appointments, download vaccination certificates, view invoices, pay online when Stripe checkout is configured, and see active prescriptions.
 
 ### Phase 3 — API & AI (Implemented)
 
 **Open API**
-Full REST API with OpenAPI/Swagger documentation. Webhook system for real-time events (appointment created, patient checked in, invoice paid). API key management with scopes and rate limiting. Audit logging.
+Versioned `/api/v1` REST API for external integrations, with API reference documentation. Webhook system for real-time events (appointment created, patient checked in, invoice paid). API key management with scopes and rate limiting. Audit logging.
 
 **AI-Ready Architecture**
-Structured data models queryable by AI agents. Event stream for agent subscriptions. Integration points for SOAP note generation, triage assistance, differential diagnosis, voice agent booking, and automated form completion.
+Structured data models queryable by AI agents. Signed webhook events for agent subscriptions. Integration points for SOAP note generation, appointment booking, checked-in appointment events, and hosted agent runs.
 
 ## Tech Stack
 
@@ -115,11 +115,11 @@ Structured data models queryable by AI agents. Event stream for agent subscripti
 |-------|-----------|
 | **Frontend** | Next.js 14 (App Router), TypeScript, React 18 |
 | **UI** | shadcn/ui + Radix UI + Tailwind CSS |
-| **API** | tRPC (type-safe) + REST via trpc-openapi |
+| **API** | tRPC dashboard API + versioned `/api/v1` REST |
 | **Database** | PostgreSQL 16 + Drizzle ORM |
 | **Auth** | NextAuth.js (role-based: Admin, Vet, Technician, Front Desk) |
-| **Real-time** | WebSockets for live whiteboard updates |
-| **Email/SMS** | Resend + Twilio |
+| **Events** | Signed webhook delivery for integrations |
+| **Email/SMS** | Resend + Telnyx SMS (Twilio fallback) |
 | **Payments** | Stripe |
 | **File Storage** | S3-compatible (MinIO for self-hosted) |
 | **Monorepo** | Turborepo + pnpm workspaces |
@@ -164,14 +164,14 @@ All clinical data uses typed, relational tables — not JSONB blobs. This means 
 
 `auth` · `patients` · `clients` · `appointments` · `records` · `billing` · `inventory` · `communications` · `reports` · `dashboard` · `whiteboard` · `portal` · `templates` · `controlled-substances` · `insurance` · `notifications` · `webhooks` · `settings` · `data` · `ai`
 
-Every endpoint includes Zod validation, role-based access control, and is also available as a standard REST endpoint via trpc-openapi.
+Dashboard procedures include Zod validation and role-based access control through tRPC. External integrations use the scoped, API-key authenticated `/api/v1` REST surface documented below.
 
 ### Security
 
 - **Multi-tenancy:** Row-level isolation via `practice_id` on every table
 - **RBAC:** Four roles (Admin, Veterinarian, Technician, Front Desk) enforced at the API layer
 - **Auth:** NextAuth.js with bcrypt password hashing and database sessions
-- **Headers:** X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-Policy
+- **Headers:** CSP, HSTS, Permissions-Policy, X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-Policy
 - **Audit:** Full audit logging of all data changes
 
 ## Quick Start
@@ -201,6 +201,10 @@ pnpm install
 # Apply database schema
 pnpm db:push
 
+# Apply and verify row-level security policies
+pnpm db:rls
+pnpm db:rls:test
+
 # Seed with realistic demo data
 pnpm db:seed
 
@@ -219,21 +223,23 @@ Open [http://localhost:3000](http://localhost:3000) and sign in with the demo cr
 
 The seed data creates a complete demo practice — "Neighborhood Veterinary" — with 8 staff, 25 clients, 40 patients, 2 weeks of appointments, SOAP notes, vaccination records, invoices, and 50 inventory products.
 
+The Docker Compose stack includes a one-shot MinIO bootstrap container that creates the `openpims` bucket used by `S3_BUCKET`. When using an external S3-compatible store, create that bucket yourself and grant the app credentials read/write/delete/head access before uploads, backups, or file previews run.
+
 ### Deploy with Docker
 
 ```bash
 docker compose -f docker/docker-compose.yml up -d
 ```
 
-The Docker setup includes PostgreSQL 16 with health checks, MinIO for S3-compatible file storage, and a multi-stage production build of the web application.
+The Docker setup includes PostgreSQL 16 with health checks, MinIO for S3-compatible file storage, automatic MinIO bucket bootstrap, and a multi-stage production build of the web application. For production, run `pnpm db:migrate`, then `OPENPIMS_APP_DB_PASSWORD='<strong>' pnpm db:rls`, verify with `OPENPIMS_APP_DB_PASSWORD='<same>' pnpm db:rls:test`, and point the app at the generated least-privilege `openpims_app` database role before serving traffic.
 
 ## API
 
-OpenVPM is **API-first**. Every action the UI performs goes through the same API available to third-party integrations. This is the killer feature — no other open-source PIMS has a real, well-documented, read-write API.
+OpenVPM is **API-first**: dashboard workflows use typed tRPC procedures, while third-party integrations use scoped `/api/v1` REST endpoints and signed webhooks for supported read/write workflows.
 
 ### REST API (v1)
 
-A versioned, public REST API over the core records, authenticated with scoped API keys — built so integrators (booking, reminders, client comms, AI agents) can read clients/patients and create appointments without touching the internal client. Response shapes are owned by an explicit contract and frozen independently of the database, so internal changes never break integrations.
+A versioned, public REST API over the core records, authenticated with scoped API keys — built so integrators (booking, reminders, client comms, AI agents, and AI scribes) can read clients/patients/appointments, create appointments, create SOAP notes, and run the agent without touching the internal client. Response shapes are owned by an explicit contract and frozen independently of the database, so internal changes never break integrations.
 
 ```bash
 curl https://demo.openvpm.com/api/v1/clients \
@@ -252,6 +258,8 @@ Subscribe to real-time events:
   "events": [
     "appointment.created",
     "appointment.checked_in",
+    "appointment.rescheduled",
+    "appointment.cancelled",
     "patient.created",
     "invoice.paid"
   ]
@@ -266,26 +274,26 @@ Scoped API keys with rate limiting and audit logging. Create keys via the Settin
 
 ### For AI Developers
 
-OpenVPM's structured data models and event streams make it the ideal foundation for veterinary AI:
+OpenVPM's structured data models and signed webhook events make it the ideal foundation for veterinary AI:
 
-- **Voice agents** can book appointments, process refill requests, and complete forms via the API
+- **Automation and voice agents** can create appointments and run the OpenVPM Agent through scoped API-key endpoints
 - **AI scribes** can write SOAP notes directly into the medical record
-- **Diagnostic AI** can read lab results, patient history, and write assessment suggestions
-- **Reminder systems** can query overdue vaccinations, pending follow-ups, and automate outreach
+- **Webhook subscribers** can react to appointment, patient, invoice, and SOAP-note events
+- **Reminder systems** can use current clients/patients/appointments endpoints and signed events, with broader campaign APIs tracked as explicit roadmap work
 
 The PIMS is the system of record. AI agents are first-class citizens.
 
 ### OpenVPM Agent
 
-OpenVPM ships with a built-in AI agent that operates on practice data through a typed tool layer (find clients/patients, pull a clinical summary, list overdue vaccinations, calculate a weight-based drug dose, book appointments). It runs a Claude tool-use loop scoped to a single practice, gates every write behind an explicit opt-in, and degrades gracefully when no model key is set. Bring your own `ANTHROPIC_API_KEY`; the agent is open source and fully inspectable. Available in-app under **Agent** and via the `agent` tRPC router.
+OpenVPM ships with a built-in AI agent that operates on practice data through a typed tool layer (find clients/patients, pull a clinical summary, list overdue vaccinations, calculate a weight-based drug dose, book appointments). It runs a provider-agnostic tool-use loop scoped to a single practice, gates every write behind an explicit opt-in, and degrades gracefully when no matching model key is set. Choose the model with `AI_MODEL` and bring your own `GOOGLE_API_KEY` or legacy `GOOGLE_GENERATIVE_AI_API_KEY` for Gemini, or `ANTHROPIC_API_KEY` for Claude. Available in-app under **Agent** and via the `agent` tRPC router plus `/api/v1/agent`.
 
 ## OpenVPM Cloud
 
 Self-hosting stays fully unlocked and free. Leave `HOSTED_BILLING_ENABLED` unset and OpenVPM runs without Stripe gates, hosted metering, or paid-plan limits.
 
-OpenVPM Cloud is the hosted service for clinics that do not want to run infrastructure. It includes a 14-day no-card trial with all features enabled, then bills one simple plan:
+OpenVPM Cloud is the hosted service for clinics that do not want to run infrastructure. It includes a 14-day card-collected trial with hosted access enabled after secure Stripe checkout, then bills one simple plan:
 
-- $99/month per active, non-deleted location, with unlimited staff (all roles included)
+- $79/month per active, non-deleted location, with unlimited staff (all roles included)
 - Included monthly SMS and AI allowances, with Stripe-metered overages
 - Enterprise deployments are custom/contact-sales
 

@@ -2,7 +2,9 @@
 
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { useSession } from "next-auth/react";
 import {
+  AlertTriangle,
   ArrowRight,
   Building2,
   Check,
@@ -20,6 +22,8 @@ import {
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/common/empty-state";
+import { trialCalendarDaysLeft } from "@/lib/billing/trial-days";
 
 const SETUP_STEPS = [
   {
@@ -63,7 +67,65 @@ function money(value: number | null | undefined) {
   return `$${Number(value ?? 0).toLocaleString("en-US")}`;
 }
 
+function OnboardingLoadError({
+  message,
+  onRetry,
+}: {
+  message: string;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="mx-auto max-w-2xl rounded-lg border border-destructive/30 bg-destructive/5 p-6">
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-destructive/10 text-destructive">
+          <AlertTriangle className="h-5 w-5" />
+        </span>
+        <div className="min-w-0">
+          <h2 className="font-heading text-lg font-semibold">
+            Onboarding details could not load
+          </h2>
+          <p className="mt-1 text-sm text-muted-foreground">{message}</p>
+          <Button variant="outline" size="sm" onClick={onRetry} className="mt-4">
+            Retry
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function OnboardingPage() {
+  const router = useRouter();
+  const { data: session, status: sessionStatus } = useSession();
+
+  if (sessionStatus === "loading") {
+    return (
+      <div className="flex items-center justify-center py-24">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (session?.user?.role !== "admin") {
+    return (
+      <div className="mx-auto max-w-3xl">
+        <EmptyState
+          icon={ShieldCheck}
+          title="Onboarding is admin-only"
+          description="Only admins can change setup, billing, team, and demo data."
+          action={{
+            label: "Back to Dashboard",
+            onClick: () => router.push("/"),
+          }}
+        />
+      </div>
+    );
+  }
+
+  return <AdminOnboardingPage />;
+}
+
+function AdminOnboardingPage() {
   const router = useRouter();
   const utils = trpc.useUtils();
   const status = trpc.settings.onboardingStatus.useQuery(undefined, {
@@ -89,7 +151,19 @@ export default function OnboardingPage() {
     onError: (e) => toast.error(e.message),
   });
 
-  if (status.isLoading) {
+  const loadError = status.error ?? subscription.error;
+  if (loadError) {
+    return (
+      <OnboardingLoadError
+        message={loadError.message}
+        onRetry={() => {
+          void Promise.all([status.refetch(), subscription.refetch()]);
+        }}
+      />
+    );
+  }
+
+  if (status.isLoading || subscription.isLoading) {
     return (
       <div className="flex items-center justify-center py-24">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -97,16 +171,24 @@ export default function OnboardingPage() {
     );
   }
 
-  const trialEndsAt = subscription.data?.trialEndsAt
-    ? new Date(subscription.data.trialEndsAt)
-    : null;
-  const daysLeft = trialEndsAt
-    ? Math.max(
-        0,
-        Math.ceil((trialEndsAt.getTime() - Date.now()) / (24 * 60 * 60 * 1000))
-      )
-    : null;
-  const draft = status.data?.onboardingDraft;
+  if (!status.data || !subscription.data) {
+    return (
+      <OnboardingLoadError
+        message="Onboarding details were unavailable. Retry before reviewing trial, billing, or demo-data setup."
+        onRetry={() => {
+          void Promise.all([status.refetch(), subscription.refetch()]);
+        }}
+      />
+    );
+  }
+
+  const onboardingStatus = status.data;
+  const subscriptionDetails = subscription.data;
+  const daysLeft = trialCalendarDaysLeft(
+    subscriptionDetails.trialEndsAt,
+    subscriptionDetails.timezone
+  );
+  const draft = onboardingStatus.onboardingDraft;
   const draftTeam = draft?.teamMembers ?? [];
   const hasSignupDraft = !!draft?.logoName || !!draft?.brandColor || draftTeam.length > 0;
 
@@ -126,9 +208,9 @@ export default function OnboardingPage() {
                     Your OpenVPM workspace is ready.
                   </h1>
                   <p className="mt-3 text-sm leading-6 text-white/70">
-                    Before payment, walk through the product with a working schedule,
-                    real setup paths, and a clean route to replace demo data with your
-                    clinic data.
+                    Before the first charge, walk through the product with a working
+                    schedule, real setup paths, and a clean route to replace demo data
+                    with your clinic data.
                   </p>
                 </div>
 
@@ -136,13 +218,13 @@ export default function OnboardingPage() {
                   <div className="rounded-md bg-white/10 p-3">
                     <p className="text-xs text-white/55">Locations</p>
                     <p className="mt-1 text-lg font-semibold">
-                      {subscription.data?.locationCount ?? 1}
+                      {subscriptionDetails.locationCount}
                     </p>
                   </div>
                   <div className="rounded-md bg-white/10 p-3">
                     <p className="text-xs text-white/55">Staff</p>
                     <p className="mt-1 text-lg font-semibold">
-                      {subscription.data?.billableSeatCount ?? 1}
+                      {subscriptionDetails.billableSeatCount}
                     </p>
                   </div>
                   <div className="rounded-md bg-white/10 p-3">
@@ -158,15 +240,15 @@ export default function OnboardingPage() {
             <div className="p-7">
               <div className="inline-flex items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1 text-xs font-medium text-primary">
                 <Sparkles className="h-3.5 w-3.5" />
-                Setup before payment
+                Setup before first charge
               </div>
               <h2 className="mt-5 font-heading text-2xl font-bold text-foreground">
-                Start with the workflow, not a checkout wall.
+                Start with the workflow, not a charge.
               </h2>
               <p className="mt-3 text-sm leading-6 text-muted-foreground">
                 Your trial is fully featured. Confirm the basics, invite staff,
-                inspect the demo records, and review billing only when you are ready
-                to keep the hosted workspace.
+                inspect the demo records, and adjust billing from Settings before
+                the trial converts.
               </p>
 
               <div className="mt-6 grid gap-3 sm:grid-cols-2">
@@ -188,22 +270,24 @@ export default function OnboardingPage() {
             </div>
             <div>
               <h2 className="font-semibold">Cloud estimate</h2>
-              <p className="text-xs text-muted-foreground">No card during trial</p>
+              <p className="text-xs text-muted-foreground">
+                Billing secured by Stripe
+              </p>
             </div>
           </div>
 
           <div className="mt-6 space-y-3 text-sm">
             <div className="flex justify-between">
               <span className="text-muted-foreground">
-                {subscription.data?.locationCount ?? 1} active location
+                {subscriptionDetails.locationCount} active location
               </span>
               <span className="font-medium">
-                {money(subscription.data?.locationUnitPriceMonthlyUsd)}/mo each
+                {money(subscriptionDetails.locationUnitPriceMonthlyUsd)}/mo each
               </span>
             </div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">
-                {subscription.data?.billableSeatCount ?? 1} staff
+                {subscriptionDetails.billableSeatCount} staff
               </span>
               <span className="font-medium">unlimited, included</span>
             </div>
@@ -211,7 +295,7 @@ export default function OnboardingPage() {
               <div className="flex items-end justify-between">
                 <span className="text-muted-foreground">Estimated base</span>
                 <span className="font-heading text-2xl font-bold">
-                  {money(subscription.data?.estimatedMonthlyBase)}
+                  {money(subscriptionDetails.estimatedMonthlyBase)}
                 </span>
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
@@ -342,7 +426,7 @@ export default function OnboardingPage() {
               Hosted trials start with sample clients, patients, and appointments
               so the app feels alive. Clear it once your team is ready for real data.
             </p>
-            {status.data?.hasDemoData ? (
+            {onboardingStatus.hasDemoData ? (
               <Button
                 variant="outline"
                 size="sm"

@@ -2,14 +2,77 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft } from "lucide-react";
+import { useSession } from "next-auth/react";
+import { AlertCircle, ArrowLeft, Loader2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
+import { EmptyState } from "@/components/common/empty-state";
 import { toast } from "sonner";
+import {
+  CLIENT_ADDRESS_MAX_LENGTH,
+  CLIENT_CITY_MAX_LENGTH,
+  CLIENT_EMAIL_MAX_LENGTH,
+  CLIENT_NAME_MAX_LENGTH,
+  CLIENT_PHONE_MAX_LENGTH,
+  CLIENT_STATE_MAX_LENGTH,
+  CLIENT_ZIP_MAX_LENGTH,
+  isOptionalClientTextValid,
+  isRequiredClientTextValid,
+} from "@/lib/clients/policy";
+
+function canManageClientFormRole(role?: string | null): boolean {
+  return (
+    role === "admin" ||
+    role === "veterinarian" ||
+    role === "technician" ||
+    role === "front_desk"
+  );
+}
 
 export default function NewClientPage() {
+  const router = useRouter();
+  const { data: session, status } = useSession();
+
+  if (status === "loading") {
+    return (
+      <div className="flex items-center justify-center gap-2 rounded-lg border border-border bg-card p-8 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Checking client access...
+      </div>
+    );
+  }
+
+  if (!canManageClientFormRole(session?.user?.role)) {
+    return (
+      <div className="max-w-2xl">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => router.push("/clients")}
+          className="mb-4"
+        >
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Back to Clients
+        </Button>
+        <EmptyState
+          icon={AlertCircle}
+          title="Client actions are read-only"
+          description="Only staff roles with client write access can create clients."
+          action={{
+            label: "Back to Clients",
+            onClick: () => router.push("/clients"),
+          }}
+        />
+      </div>
+    );
+  }
+
+  return <NewClientForm />;
+}
+
+function NewClientForm() {
   const router = useRouter();
   const [form, setForm] = useState({
     firstName: "",
@@ -35,12 +98,22 @@ export default function NewClientPage() {
     },
   });
 
+  const canSubmit =
+    isRequiredClientTextValid(form.firstName, CLIENT_NAME_MAX_LENGTH) &&
+    isRequiredClientTextValid(form.lastName, CLIENT_NAME_MAX_LENGTH) &&
+    isOptionalClientTextValid(form.email, CLIENT_EMAIL_MAX_LENGTH) &&
+    isOptionalClientTextValid(form.phone, CLIENT_PHONE_MAX_LENGTH) &&
+    isOptionalClientTextValid(form.address, CLIENT_ADDRESS_MAX_LENGTH) &&
+    isOptionalClientTextValid(form.city, CLIENT_CITY_MAX_LENGTH) &&
+    isOptionalClientTextValid(form.state, CLIENT_STATE_MAX_LENGTH) &&
+    isOptionalClientTextValid(form.zip, CLIENT_ZIP_MAX_LENGTH);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
-    if (!form.firstName.trim() || !form.lastName.trim()) {
-      setError("First name and last name are required.");
+    if (!canSubmit) {
+      setError("Check required fields and field lengths.");
       return;
     }
 
@@ -96,6 +169,7 @@ export default function NewClientPage() {
               onChange={(e) => updateField("firstName", e.target.value)}
               placeholder="First name"
               className="mt-1"
+              maxLength={CLIENT_NAME_MAX_LENGTH}
               required
             />
           </div>
@@ -109,6 +183,7 @@ export default function NewClientPage() {
               onChange={(e) => updateField("lastName", e.target.value)}
               placeholder="Last name"
               className="mt-1"
+              maxLength={CLIENT_NAME_MAX_LENGTH}
               required
             />
           </div>
@@ -126,6 +201,7 @@ export default function NewClientPage() {
               onChange={(e) => updateField("email", e.target.value)}
               placeholder="email@example.com"
               className="mt-1"
+              maxLength={CLIENT_EMAIL_MAX_LENGTH}
             />
           </div>
           <div>
@@ -138,6 +214,7 @@ export default function NewClientPage() {
               onChange={(e) => updateField("phone", e.target.value)}
               placeholder="(555) 123-4567"
               className="mt-1"
+              maxLength={CLIENT_PHONE_MAX_LENGTH}
             />
           </div>
         </div>
@@ -169,6 +246,7 @@ export default function NewClientPage() {
             onChange={(e) => updateField("address", e.target.value)}
             placeholder="Street address"
             className="mt-1"
+            maxLength={CLIENT_ADDRESS_MAX_LENGTH}
           />
         </div>
 
@@ -183,6 +261,7 @@ export default function NewClientPage() {
               onChange={(e) => updateField("city", e.target.value)}
               placeholder="City"
               className="mt-1"
+              maxLength={CLIENT_CITY_MAX_LENGTH}
             />
           </div>
           <div>
@@ -195,6 +274,7 @@ export default function NewClientPage() {
               onChange={(e) => updateField("state", e.target.value)}
               placeholder="State"
               className="mt-1"
+              maxLength={CLIENT_STATE_MAX_LENGTH}
             />
           </div>
           <div>
@@ -207,12 +287,13 @@ export default function NewClientPage() {
               onChange={(e) => updateField("zip", e.target.value)}
               placeholder="Zip code"
               className="mt-1"
+              maxLength={CLIENT_ZIP_MAX_LENGTH}
             />
           </div>
         </div>
 
         <div className="flex gap-3 pt-4">
-          <Button type="submit" disabled={createClient.isPending}>
+          <Button type="submit" disabled={!canSubmit || createClient.isPending}>
             {createClient.isPending ? "Creating..." : "Create Client"}
           </Button>
           <Button

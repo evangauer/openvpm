@@ -2,52 +2,78 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { randomUUID } from "crypto";
 import { authOptions } from "@/lib/auth";
-import { uploadFile } from "@/lib/s3";
+import { deleteFile, uploadFile } from "@/lib/s3";
 import { db } from "@openpims/db/client";
-import { files, practices } from "@openpims/db";
-import { eq } from "drizzle-orm";
+import { files, practices, users } from "@openpims/db";
+import { and, eq, isNull } from "drizzle-orm";
 import { withSystem, withTenant } from "@/lib/tenant-db";
+import { hasBlankConfiguredNextAuthSecret } from "@/lib/auth-secret";
 import { billingEnforced, hasHostedFullAccess } from "@/lib/billing/plans";
+import {
+  ALLOWED_UPLOAD_CATEGORIES,
+  ALLOWED_UPLOAD_MIME_TYPES,
+  isAllowedUploadCategory,
+  isAllowedUploadMimeType,
+  uploadBytesMatchMimeType,
+} from "@/lib/upload-security";
+import {
+  UPLOAD_REQUEST_MAX_BYTES,
+  UPLOAD_FILE_MAX_BYTES,
+  uploadRequestContentLengthTooLarge,
+} from "@/lib/upload-limits";
+import { readRequestBytesWithLimit } from "@/lib/request-body";
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
-
-const ALLOWED_CATEGORIES = [
-  "patient-photos",
-  "documents",
-  "lab-results",
-  "branding",
-] as const;
-
-const ALLOWED_MIME_TYPES: Record<string, string> = {
-  "image/jpeg": ".jpg",
-  "image/png": ".png",
-  "image/webp": ".webp",
-  "application/pdf": ".pdf",
-};
+const MAX_FILE_NAME_LENGTH = 255;
 
 export async function POST(req: NextRequest) {
   // ---------- Auth ----------
+  if (hasBlankConfiguredNextAuthSecret()) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const session = await getServerSession(authOptions);
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  if (billingEnforced()) {
-    const [practice] = await withSystem(db, (tx) =>
-      tx
-        .select({
-          tier: practices.subscriptionTier,
-          billingStatus: practices.billingStatus,
-          trialEndsAt: practices.trialEndsAt,
-        })
-        .from(practices)
-        .where(eq(practices.id, session.user.practiceId))
-        .limit(1)
+  if (uploadRequestContentLengthTooLarge(req.headers)) {
+    return NextResponse.json(
+      { error: "Upload exceeds maximum request size" },
+      { status: 413 },
     );
+  }
+
+  const [activeAccount] = await withSystem(db, (tx) =>
+    tx
+      .select({
+        userId: users.id,
+        tier: practices.subscriptionTier,
+        billingStatus: practices.billingStatus,
+        trialEndsAt: practices.trialEndsAt,
+      })
+      .from(users)
+      .innerJoin(
+        practices,
+        and(eq(practices.id, users.practiceId), isNull(practices.deletedAt)),
+      )
+      .where(
+        and(
+          eq(users.id, session.user.id),
+          eq(users.practiceId, session.user.practiceId),
+          isNull(users.deletedAt),
+        ),
+      )
+      .limit(1),
+  );
+  if (!activeAccount) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  if (billingEnforced()) {
     if (
       !hasHostedFullAccess(
-        practice?.tier,
-        practice?.billingStatus,
-        practice?.trialEndsAt
+        activeAccount.tier,
+        activeAccount.billingStatus,
+        activeAccount.trialEndsAt
       )
     ) {
       return NextResponse.json(
@@ -63,7 +89,22 @@ export async function POST(req: NextRequest) {
   // ---------- Parse multipart form data ----------
   let formData: FormData;
   try {
-    formData = await req.formData();
+    const body = await readRequestBytesWithLimit(req, UPLOAD_REQUEST_MAX_BYTES);
+    if (!body.ok) {
+      return NextResponse.json(
+        { error: "Upload exceeds maximum request size" },
+        { status: 413 },
+      );
+    }
+
+    const boundedBody = new ArrayBuffer(body.bytes.byteLength);
+    new Uint8Array(boundedBody).set(body.bytes);
+    const boundedRequest = new Request(req.url, {
+      method: req.method,
+      headers: req.headers,
+      body: boundedBody,
+    });
+    formData = await boundedRequest.formData();
   } catch {
     return NextResponse.json(
       { error: "Invalid form data" },
@@ -72,7 +113,7 @@ export async function POST(req: NextRequest) {
   }
 
   const file = formData.get("file");
-  const category = formData.get("category") as string | null;
+  const category = formData.get("category");
 
   if (!file || !(file instanceof File)) {
     return NextResponse.json(
@@ -80,15 +121,21 @@ export async function POST(req: NextRequest) {
       { status: 400 },
     );
   }
+  if (!file.name || file.name.length > MAX_FILE_NAME_LENGTH) {
+    return NextResponse.json(
+      { error: "File name must be between 1 and 255 characters" },
+      { status: 400 },
+    );
+  }
 
   // ---------- Validate category ----------
   if (
-    !category ||
-    !(ALLOWED_CATEGORIES as readonly string[]).includes(category)
+    typeof category !== "string" ||
+    !isAllowedUploadCategory(category)
   ) {
     return NextResponse.json(
       {
-        error: `Invalid category. Allowed: ${ALLOWED_CATEGORIES.join(", ")}`,
+        error: `Invalid category. Allowed: ${ALLOWED_UPLOAD_CATEGORIES.join(", ")}`,
       },
       { status: 400 },
     );
@@ -96,17 +143,23 @@ export async function POST(req: NextRequest) {
 
   // ---------- Validate MIME type ----------
   const mimeType = file.type;
-  if (!ALLOWED_MIME_TYPES[mimeType]) {
+  if (!isAllowedUploadMimeType(mimeType)) {
     return NextResponse.json(
       {
-        error: `File type not allowed. Accepted: ${Object.keys(ALLOWED_MIME_TYPES).join(", ")}`,
+        error: `File type not allowed. Accepted: ${Object.keys(ALLOWED_UPLOAD_MIME_TYPES).join(", ")}`,
       },
+      { status: 400 },
+    );
+  }
+  if (category === "branding" && !mimeType.startsWith("image/")) {
+    return NextResponse.json(
+      { error: "Branding uploads must be image files" },
       { status: 400 },
     );
   }
 
   // ---------- Validate size ----------
-  if (file.size > MAX_FILE_SIZE) {
+  if (file.size > UPLOAD_FILE_MAX_BYTES) {
     return NextResponse.json(
       { error: "File exceeds maximum size of 10 MB" },
       { status: 400 },
@@ -118,11 +171,20 @@ export async function POST(req: NextRequest) {
   const uuid = randomUUID();
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
   const key = `${practiceId}/${category}/${uuid}-${safeName}`;
+  let uploadedKey: string | null = null;
 
   // ---------- Upload ----------
   try {
     const buffer = Buffer.from(await file.arrayBuffer());
+    if (!uploadBytesMatchMimeType(mimeType, buffer)) {
+      return NextResponse.json(
+        { error: "File contents do not match the declared file type" },
+        { status: 400 },
+      );
+    }
+
     await uploadFile(key, buffer, mimeType);
+    uploadedKey = key;
 
     // Serve through the same-origin proxy (app/api/files/[...path]). The raw
     // R2/S3 URL is private and can't be loaded by an <img> tag.
@@ -145,6 +207,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ url, key }, { status: 201 });
   } catch (err) {
     console.error("Upload failed:", err);
+    if (uploadedKey) {
+      try {
+        await deleteFile(uploadedKey);
+      } catch (cleanupErr) {
+        console.error("Failed to clean up uploaded object:", cleanupErr);
+      }
+    }
     return NextResponse.json(
       { error: "Upload failed" },
       { status: 500 },

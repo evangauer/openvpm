@@ -9,17 +9,29 @@ export function formatOpsAlert(subject: string, detail: string): { text: string 
   return { text: `🚨 OpenVPM ops alert — ${subject}\n${detail}` };
 }
 
+export const OPS_ALERT_TIMEOUT_MS = 5_000;
+
+export function opsAlertWebhookUrl(): string | undefined {
+  const trimmed = process.env.OPS_ALERT_WEBHOOK_URL?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
 export async function alertOps(subject: string, detail: string): Promise<void> {
   console.error(`[ops-alert] ${subject}: ${detail}`);
-  const url = process.env.OPS_ALERT_WEBHOOK_URL;
+  const url = opsAlertWebhookUrl();
   if (!url) return;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), OPS_ALERT_TIMEOUT_MS);
   try {
     await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(formatOpsAlert(subject, detail)),
+      signal: controller.signal,
     });
   } catch (err) {
     console.error("[ops-alert] failed to deliver alert:", err);
+  } finally {
+    clearTimeout(timeout);
   }
 }

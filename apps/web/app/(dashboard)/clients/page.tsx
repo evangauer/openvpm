@@ -2,21 +2,43 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import { Search, Plus, Users } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { EmptyState } from "@/components/common/empty-state";
 import { TableSkeleton } from "@/components/common/loading";
+import { CLIENT_SEARCH_MAX_LENGTH } from "@/lib/clients/policy";
+import { formatClinicalDate } from "@/lib/records/clinical-dates";
+
+function canManageClientsRole(role?: string | null): boolean {
+  return (
+    role === "admin" ||
+    role === "veterinarian" ||
+    role === "technician" ||
+    role === "front_desk"
+  );
+}
 
 export default function ClientsPage() {
   const router = useRouter();
+  const { data: session } = useSession();
   const [search, setSearch] = useState("");
+  const trimmedSearch = search.trim();
+  const hasSearch = trimmedSearch.length > 0;
+  const canManageClients = canManageClientsRole(session?.user?.role);
 
   const { data, isLoading, error } = trpc.clients.list.useQuery({
-    search: search || undefined,
+    search: hasSearch ? trimmedSearch : undefined,
     limit: 25,
     offset: 0,
   });
+  const clientsMissing = !isLoading && !error && !data;
+  const verifiedClientList = error || clientsMissing || !data ? null : data;
+  const clientListTimeZone = verifiedClientList
+    ? verifiedClientList.timezone
+    : null;
 
   return (
     <div>
@@ -27,10 +49,12 @@ export default function ClientsPage() {
             Manage client information
           </p>
         </div>
-        <Button onClick={() => router.push("/clients/new")}>
-          <Plus className="mr-2 h-4 w-4" />
-          New Client
-        </Button>
+        {canManageClients && (
+          <Button onClick={() => router.push("/clients/new")}>
+            <Plus className="mr-2 h-4 w-4" />
+            New Client
+          </Button>
+        )}
       </div>
 
       <div className="mt-6 flex items-center gap-4">
@@ -39,27 +63,27 @@ export default function ClientsPage() {
           <Input
             placeholder="Search clients..."
             value={search}
+            maxLength={CLIENT_SEARCH_MAX_LENGTH}
             onChange={(e) => setSearch(e.target.value)}
             className="pl-9"
           />
         </div>
-        {data && (
+        {verifiedClientList && (
           <p className="text-sm text-muted-foreground">
-            {data.total} client{data.total !== 1 ? "s" : ""}
+            {verifiedClientList.total} client
+            {verifiedClientList.total !== 1 ? "s" : ""}
           </p>
         )}
       </div>
 
-      {error && (
+      {error || clientsMissing ? (
         <div className="mt-6 rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
-          {error.message}
+          {error?.message ?? "Unable to load clients. Please retry."}
         </div>
-      )}
-
-      {isLoading ? (
+      ) : isLoading ? (
         <TableSkeleton rows={8} cols={5} />
-      ) : data && data.items.length > 0 ? (
-        <div className="mt-6 overflow-hidden rounded-lg border border-border">
+      ) : verifiedClientList && verifiedClientList.items.length > 0 ? (
+        <div className="mt-6 overflow-x-auto rounded-lg border border-border">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border bg-muted/50">
@@ -81,7 +105,7 @@ export default function ClientsPage() {
               </tr>
             </thead>
             <tbody>
-              {data.items.map((client) => (
+              {verifiedClientList.items.map((client) => (
                 <tr
                   key={client.id}
                   onClick={() => router.push(`/clients/${client.id}`)}
@@ -100,9 +124,11 @@ export default function ClientsPage() {
                     {client.city || "\u2014"}
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">
-                    {client.createdAt
-                      ? new Date(client.createdAt).toLocaleDateString()
-                      : "\u2014"}
+                    {formatClinicalDate(
+                      client.createdAt,
+                      clientListTimeZone,
+                      "\u2014"
+                    )}
                   </td>
                 </tr>
               ))}
@@ -110,22 +136,25 @@ export default function ClientsPage() {
           </table>
         </div>
       ) : (
-        <div className="mt-6 rounded-lg border border-dashed border-border bg-card p-12 text-center">
-          <Users className="mx-auto h-10 w-10 text-muted-foreground/50" />
-          <p className="mt-2 text-muted-foreground">
-            {search ? "No clients match your search" : "No clients yet"}
-          </p>
-          {!search && (
-            <Button
-              variant="outline"
-              className="mt-4"
-              onClick={() => router.push("/clients/new")}
-            >
-              <Plus className="mr-2 h-4 w-4" />
-              Add your first client
-            </Button>
-          )}
-        </div>
+        <EmptyState
+          className="mt-6"
+          icon={Users}
+          title={hasSearch ? "No clients match your search" : "No clients yet"}
+          description={
+            hasSearch
+              ? "Try a different name, phone number, or email address."
+              : "Create a client record before adding patients, appointments, or invoices."
+          }
+          action={
+            !hasSearch && canManageClients
+              ? {
+                  label: "Add your first client",
+                  onClick: () => router.push("/clients/new"),
+                  icon: Plus,
+                }
+              : undefined
+          }
+        />
       )}
     </div>
   );

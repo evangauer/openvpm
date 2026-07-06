@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import dynamic from "next/dynamic";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import {
@@ -15,13 +16,77 @@ import {
   FlaskConical,
   Scissors,
   Tag,
+  AlertTriangle,
+  CheckCircle2,
+  Loader2,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { formatDateInputForTimeZone } from "@/lib/date-input";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Badge } from "@/components/ui/badge";
+import { EmptyState } from "@/components/common/empty-state";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import { generatePrescriptionLabelPdf } from "@/lib/pdf";
+import {
+  PATIENT_SEARCH_MAX_LENGTH,
+  isPatientSearchInputValid,
+} from "@/lib/patients/policy";
+import type { PrescriptionSafetyWarning } from "@/lib/records/prescription-safety";
+import { buildLabTrends } from "@/lib/records/clinical-trends";
+import {
+  PRESCRIPTION_COUNT_MAX,
+  PRESCRIPTION_DOSAGE_MAX_LENGTH,
+  PRESCRIPTION_FREQUENCY_MAX_LENGTH,
+  PRESCRIPTION_INSTRUCTIONS_MAX_LENGTH,
+  PRESCRIPTION_MEDICATION_NAME_MAX_LENGTH,
+  PRESCRIPTION_QUANTITY_MIN,
+  PRESCRIPTION_REFILLS_MIN,
+  isPrescriptionNonnegativeIntegerInputValid,
+  isPrescriptionOptionalPositiveIntegerInputValid,
+  isPrescriptionOptionalTextInputValid,
+  isPrescriptionPositiveIntegerInputValid,
+  isPrescriptionRequiredTextInputValid,
+} from "@/lib/records/prescription-policy";
+import {
+  LAB_REFERENCE_MAX,
+  LAB_REFERENCE_MIN,
+  LAB_REFERENCE_STEP,
+  LAB_RESULT_VALUE_MAX_LENGTH,
+  LAB_TEST_NAME_MAX_LENGTH,
+  LAB_UNIT_MAX_LENGTH,
+  isLabOptionalReferenceInputValid,
+  isLabOptionalTextInputValid,
+  isLabReferenceRangeOrdered,
+  isLabRequiredTextInputValid,
+} from "@/lib/records/lab-policy";
+import {
+  VACCINATION_LOT_NUMBER_MAX_LENGTH,
+  VACCINATION_MANUFACTURER_MAX_LENGTH,
+  VACCINATION_NAME_MAX_LENGTH,
+  isVaccinationOptionalDateInputValid,
+  isVaccinationOptionalTextInputValid,
+  isVaccinationRequiredTextInputValid,
+} from "@/lib/records/vaccination-policy";
+import {
+  PROBLEM_DESCRIPTION_MAX_LENGTH,
+  PROBLEM_STATUSES,
+  type ProblemStatus,
+  isProblemOptionalDateInputValid,
+  isProblemRequiredTextInputValid,
+} from "@/lib/records/problem-policy";
+import {
+  PROCEDURE_ANESTHESIA_MAX_LENGTH,
+  PROCEDURE_DESCRIPTION_MAX_LENGTH,
+  PROCEDURE_DURATION_MAX_MINUTES,
+  PROCEDURE_DURATION_MIN_MINUTES,
+  PROCEDURE_NAME_MAX_LENGTH,
+  PROCEDURE_NOTES_MAX_LENGTH,
+  isProcedureOptionalDurationInputValid,
+  isProcedureOptionalTextInputValid,
+  isProcedureRequiredTextInputValid,
+} from "@/lib/records/procedure-policy";
 
 type Tab = "soap" | "vaccinations" | "prescriptions" | "problems" | "labResults" | "procedures";
 
@@ -34,16 +99,93 @@ const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: "procedures", label: "Procedures", icon: Scissors },
 ];
 
-function getVaccineDueStatus(nextDueDate: string | null): {
+function RecordsChartChunkLoading() {
+  return (
+    <div className="rounded-lg border border-border bg-card p-4">
+      <div className="mb-3 h-5 w-32 animate-pulse rounded bg-muted" />
+      <div className="h-56 w-full animate-pulse rounded bg-muted" />
+    </div>
+  );
+}
+
+const LabTrendCharts = dynamic(
+  () =>
+    import("@/components/patients/patient-trend-charts").then(
+      (mod) => mod.LabTrendCharts
+    ),
+  {
+    ssr: false,
+    loading: RecordsChartChunkLoading,
+  }
+);
+
+const CLINICAL_DATE_FORMAT: Intl.DateTimeFormatOptions = {
+  year: "numeric",
+  month: "numeric",
+  day: "numeric",
+};
+
+function clinicalDateInputToUtcDate(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  const [, year, month, day] = match;
+  return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+}
+
+function dateInputDayNumber(value: string): number | null {
+  const date = clinicalDateInputToUtcDate(value);
+  if (!date) return null;
+  return Math.floor(date.getTime() / (1000 * 60 * 60 * 24));
+}
+
+function formatClinicalDate(
+  value: Date | string | null | undefined,
+  timeZone?: string | null,
+  fallback = "--"
+): string {
+  if (!value) return fallback;
+
+  if (typeof value === "string") {
+    const dateOnly = clinicalDateInputToUtcDate(value);
+    if (dateOnly) {
+      return dateOnly.toLocaleDateString("en-US", {
+        ...CLINICAL_DATE_FORMAT,
+        timeZone: "UTC",
+      });
+    }
+  }
+
+  const date = value instanceof Date ? value : new Date(value);
+  const options = {
+    ...CLINICAL_DATE_FORMAT,
+    timeZone: timeZone ?? undefined,
+  };
+
+  try {
+    return date.toLocaleDateString("en-US", options);
+  } catch {
+    return date.toLocaleDateString("en-US", {
+      ...options,
+      timeZone: undefined,
+    });
+  }
+}
+
+function getVaccineDueStatus(
+  nextDueDate: string | null,
+  timeZone?: string | null
+): {
   label: string;
   className: string;
 } {
   if (!nextDueDate) return { label: "N/A", className: "text-muted-foreground" };
-  const now = new Date();
-  const due = new Date(nextDueDate);
-  const daysUntilDue = Math.ceil(
-    (due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)
-  );
+  const today = formatDateInputForTimeZone(new Date(), timeZone);
+  const todayDay = dateInputDayNumber(today);
+  const dueDay = dateInputDayNumber(nextDueDate);
+  if (todayDay === null || dueDay === null) {
+    return { label: "N/A", className: "text-muted-foreground" };
+  }
+  const daysUntilDue = dueDay - todayDay;
 
   if (daysUntilDue < 0)
     return {
@@ -112,6 +254,232 @@ function getPrescriptionStatusBadge(status: string | null) {
 // Tabs restricted from front_desk: SOAP Notes, Prescriptions, Lab Results, Procedures
 const frontDeskRestrictedTabs: Tab[] = ["soap", "prescriptions", "labResults", "procedures"];
 
+type LabResultFormState = {
+  testName: string;
+  resultValue: string;
+  unit: string;
+  referenceRangeLow: string;
+  referenceRangeHigh: string;
+};
+
+type VaccinationFormState = {
+  vaccineName: string;
+  lotNumber: string;
+  manufacturer: string;
+  nextDueDate: string;
+};
+
+type ProblemFormState = {
+  description: string;
+  status: ProblemStatus;
+  onsetDate: string;
+};
+
+type ProcedureFormState = {
+  name: string;
+  description: string;
+  anesthesiaUsed: string;
+  durationMinutes: string;
+  notes: string;
+};
+
+type PrescriptionFormState = {
+  medicationName: string;
+  productId: string;
+  dosage: string;
+  frequency: string;
+  quantity: string;
+  refillsRemaining: string;
+  startDate: string;
+  endDate: string;
+  instructions: string;
+  acknowledgeSafetyWarnings: boolean;
+};
+
+function initialLabResultForm(): LabResultFormState {
+  return {
+    testName: "",
+    resultValue: "",
+    unit: "",
+    referenceRangeLow: "",
+    referenceRangeHigh: "",
+  };
+}
+
+function initialVaccinationForm(): VaccinationFormState {
+  return {
+    vaccineName: "",
+    lotNumber: "",
+    manufacturer: "",
+    nextDueDate: "",
+  };
+}
+
+function initialProblemForm(): ProblemFormState {
+  return {
+    description: "",
+    status: "active",
+    onsetDate: "",
+  };
+}
+
+function initialProcedureForm(): ProcedureFormState {
+  return {
+    name: "",
+    description: "",
+    anesthesiaUsed: "",
+    durationMinutes: "",
+    notes: "",
+  };
+}
+
+function dateInputValue(date: Date, timeZone?: string | null): string {
+  return formatDateInputForTimeZone(date, timeZone);
+}
+
+function initialPrescriptionForm(timeZone?: string | null): PrescriptionFormState {
+  return {
+    medicationName: "",
+    productId: "",
+    dosage: "",
+    frequency: "",
+    quantity: "",
+    refillsRemaining: "0",
+    startDate: dateInputValue(new Date(), timeZone),
+    endDate: "",
+    instructions: "",
+    acknowledgeSafetyWarnings: false,
+  };
+}
+
+function optionalNumber(value: string): number | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function safetyBadgeVariant(
+  warning: PrescriptionSafetyWarning
+): "destructive" | "warning" | "secondary" {
+  if (warning.severity === "major") return "destructive";
+  if (warning.severity === "moderate") return "warning";
+  return "secondary";
+}
+
+function PrescriptionSafetyPanel({
+  medicationName,
+  isLoading,
+  errorMessage,
+  warnings,
+}: {
+  medicationName: string;
+  isLoading: boolean;
+  errorMessage?: string;
+  warnings: PrescriptionSafetyWarning[];
+}) {
+  if (medicationName.trim().length < 2) return null;
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        Checking prescription safety
+      </div>
+    );
+  }
+
+  if (errorMessage) {
+    return (
+      <div className="flex items-start gap-2 rounded-md border border-destructive bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+        <span>Unable to check prescription safety. {errorMessage}</span>
+      </div>
+    );
+  }
+
+  if (warnings.length === 0) {
+    return (
+      <div className="flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+        <CheckCircle2 className="h-4 w-4" />
+        No allergy or active-medication warnings found.
+      </div>
+    );
+  }
+
+  const hasBlockingWarning = warnings.some((warning) => warning.requiresOverride);
+
+  return (
+    <div
+      className={cn(
+        "rounded-md border p-3",
+        hasBlockingWarning
+          ? "border-amber-300 bg-amber-50"
+          : "border-border bg-muted/30"
+      )}
+    >
+      <div className="mb-2 flex items-center gap-2 text-sm font-medium">
+        <AlertTriangle
+          className={cn(
+            "h-4 w-4",
+            hasBlockingWarning ? "text-amber-700" : "text-muted-foreground"
+          )}
+        />
+        Prescription safety warnings
+      </div>
+      <div className="space-y-2">
+        {warnings.map((warning, index) => (
+          <div
+            key={`${warning.type}-${warning.title}-${index}`}
+            className="rounded-md border border-border/60 bg-background px-3 py-2"
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-sm font-medium">{warning.title}</p>
+              <Badge variant={safetyBadgeVariant(warning)} className="capitalize">
+                {warning.severity}
+              </Badge>
+              {warning.requiresOverride && (
+                <Badge variant="outline">Override required</Badge>
+              )}
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {warning.message}
+            </p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RecordsErrorPanel({
+  message,
+  className,
+}: {
+  message: string;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive",
+        className
+      )}
+    >
+      {message}
+    </div>
+  );
+}
+
+function RecordsLoadingPanel({ label }: { label: string }) {
+  return (
+    <div className="flex items-center justify-center gap-2 rounded-lg border border-border bg-card p-8 text-sm text-muted-foreground">
+      <Loader2 className="h-4 w-4 animate-spin" />
+      {label}
+    </div>
+  );
+}
+
 export default function RecordsPage() {
   const router = useRouter();
   const { data: session } = useSession();
@@ -127,48 +495,268 @@ export default function RecordsPage() {
   } | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("soap");
   const [expandedNoteId, setExpandedNoteId] = useState<string | null>(null);
+  const [showVaccinationForm, setShowVaccinationForm] = useState(false);
+  const [showProblemForm, setShowProblemForm] = useState(false);
   const [showLabForm, setShowLabForm] = useState(false);
   const [showProcedureForm, setShowProcedureForm] = useState(false);
-
-  const { data: searchResults } = trpc.patients.search.useQuery(
-    { query: searchQuery },
-    { enabled: searchQuery.length >= 1 }
+  const [showPrescriptionForm, setShowPrescriptionForm] = useState(false);
+  const [vaccinationForm, setVaccinationForm] = useState<VaccinationFormState>(
+    () => initialVaccinationForm()
   );
+  const [problemForm, setProblemForm] = useState<ProblemFormState>(() =>
+    initialProblemForm()
+  );
+  const [labForm, setLabForm] = useState<LabResultFormState>(() =>
+    initialLabResultForm()
+  );
+  const [procedureForm, setProcedureForm] = useState<ProcedureFormState>(() =>
+    initialProcedureForm()
+  );
+  const [prescriptionForm, setPrescriptionForm] = useState<PrescriptionFormState>(
+    () => initialPrescriptionForm()
+  );
+  const trimmedSearchQuery = searchQuery.trim();
+  const canSearchPatients = isPatientSearchInputValid(searchQuery);
+
+  const {
+    data: searchResults,
+    isLoading: isSearchingPatients,
+    error: patientSearchError,
+  } = trpc.patients.search.useQuery(
+    { query: trimmedSearchQuery },
+    { enabled: canSearchPatients }
+  );
+  const patientSearchMissing =
+    canSearchPatients &&
+    !selectedPatient &&
+    !isSearchingPatients &&
+    !patientSearchError &&
+    !searchResults;
 
   const patientId = selectedPatient?.id ?? "";
+  const recordsSettings = trpc.records.settings.useQuery(undefined, {
+    staleTime: 5 * 60 * 1000,
+  });
+  const recordsSettingsError = recordsSettings.error;
+  const recordsSettingsLoading = recordsSettings.isLoading;
+  const recordsSettingsMissing =
+    !recordsSettingsLoading && !recordsSettingsError && !recordsSettings.data;
+  const verifiedRecordsSettings =
+    recordsSettingsError || recordsSettingsMissing || !recordsSettings.data
+      ? null
+      : recordsSettings.data;
+  const recordsTimeZone = verifiedRecordsSettings
+    ? verifiedRecordsSettings.timezone
+    : undefined;
+  const recordsPracticeName =
+    verifiedRecordsSettings?.name ?? "Veterinary Practice";
+  const recordsPracticePhone = verifiedRecordsSettings
+    ? verifiedRecordsSettings.phone
+    : undefined;
 
-  const { data: soapNotes } = trpc.records.listSoapNotes.useQuery(
+  const {
+    data: soapNotes,
+    isLoading: isLoadingSoapNotes,
+    error: soapNotesError,
+  } = trpc.records.listSoapNotes.useQuery(
     { patientId },
     { enabled: !!patientId }
   );
-  const { data: vaccinations } = trpc.records.listVaccinations.useQuery(
+  const soapNotesMissing =
+    Boolean(patientId) && !isLoadingSoapNotes && !soapNotesError && !soapNotes;
+  const {
+    data: vaccinations,
+    isLoading: isLoadingVaccinations,
+    error: vaccinationsError,
+    refetch: refetchVaccinations,
+  } = trpc.records.listVaccinations.useQuery(
     { patientId },
     { enabled: !!patientId }
   );
-  const { data: prescriptionsList } = trpc.records.listPrescriptions.useQuery(
+  const vaccinationsMissing =
+    Boolean(patientId) &&
+    !isLoadingVaccinations &&
+    !vaccinationsError &&
+    !vaccinations;
+  const {
+    data: prescriptionsList,
+    isLoading: isLoadingPrescriptions,
+    error: prescriptionsError,
+    refetch: refetchPrescriptions,
+  } =
+    trpc.records.listPrescriptions.useQuery(
+      { patientId },
+      { enabled: !!patientId }
+    );
+  const prescriptionsMissing =
+    Boolean(patientId) &&
+    !isLoadingPrescriptions &&
+    !prescriptionsError &&
+    !prescriptionsList;
+  const {
+    data: problems,
+    isLoading: isLoadingProblems,
+    error: problemsError,
+    refetch: refetchProblems,
+  } = trpc.records.listProblems.useQuery(
     { patientId },
     { enabled: !!patientId }
   );
-  const { data: problems } = trpc.records.listProblems.useQuery(
-    { patientId },
-    { enabled: !!patientId }
-  );
-  const { data: labResultsList, refetch: refetchLabResults } =
+  const problemsMissing =
+    Boolean(patientId) && !isLoadingProblems && !problemsError && !problems;
+  const {
+    data: labResultsList,
+    isLoading: isLoadingLabResults,
+    error: labResultsError,
+    refetch: refetchLabResults,
+  } =
     trpc.records.listLabResults.useQuery(
       { patientId },
       { enabled: !!patientId }
     );
-  const { data: proceduresList, refetch: refetchProcedures } =
+  const labResultsMissing =
+    Boolean(patientId) &&
+    !isLoadingLabResults &&
+    !labResultsError &&
+    !labResultsList;
+  const labTrendGroups = useMemo(
+    () => buildLabTrends(labResultsList ?? [], recordsTimeZone),
+    [labResultsList, recordsTimeZone]
+  );
+  const {
+    data: proceduresList,
+    isLoading: isLoadingProcedures,
+    error: proceduresError,
+    refetch: refetchProcedures,
+  } =
     trpc.records.listProcedures.useQuery(
       { patientId },
       { enabled: !!patientId }
     );
+  const proceduresMissing =
+    Boolean(patientId) &&
+    !isLoadingProcedures &&
+    !proceduresError &&
+    !proceduresList;
+  const canCreateSoapNotes =
+    userRole === "admin" || userRole === "veterinarian";
+  const canPrescribe = userRole === "admin" || userRole === "veterinarian";
+  const canCreateVaccinations =
+    userRole === "admin" ||
+    userRole === "veterinarian" ||
+    userRole === "technician";
+  const canManageProblems =
+    userRole === "admin" ||
+    userRole === "veterinarian" ||
+    userRole === "technician";
+  const canManageLabResults =
+    userRole === "admin" || userRole === "veterinarian";
+  const canCreateProcedures =
+    userRole === "admin" || userRole === "veterinarian";
+  const medicationNameForSafety = prescriptionForm.medicationName.trim();
+  const prescriptionSafetyEnabled =
+    canPrescribe &&
+    showPrescriptionForm &&
+    !!patientId &&
+    medicationNameForSafety.length >= 2;
+  const prescriptionSafety = trpc.records.checkPrescriptionSafety.useQuery(
+    { patientId, medicationName: medicationNameForSafety },
+    {
+      enabled: prescriptionSafetyEnabled,
+    }
+  );
+  const prescriptionSafetyMissing =
+    prescriptionSafetyEnabled &&
+    !prescriptionSafety.isFetching &&
+    !prescriptionSafety.error &&
+    !prescriptionSafety.data;
+  const prescriptionSafetyUnavailable =
+    prescriptionSafetyEnabled &&
+    (prescriptionSafety.isFetching ||
+      Boolean(prescriptionSafety.error) ||
+      prescriptionSafetyMissing ||
+      !prescriptionSafety.data);
+  const verifiedPrescriptionSafety =
+    prescriptionSafetyEnabled &&
+    !prescriptionSafetyUnavailable &&
+    prescriptionSafety.data
+      ? prescriptionSafety.data
+      : null;
+  const inventoryProducts = trpc.inventory.list.useQuery(
+    { limit: 100, offset: 0 },
+    {
+      enabled: canPrescribe && showPrescriptionForm,
+    }
+  );
+  const inventoryProductsMissing =
+    canPrescribe &&
+    showPrescriptionForm &&
+    !inventoryProducts.isLoading &&
+    !inventoryProducts.error &&
+    !inventoryProducts.data;
+  const verifiedInventoryProducts =
+    inventoryProducts.error ||
+    inventoryProductsMissing ||
+    !inventoryProducts.data
+      ? null
+      : inventoryProducts.data;
+  const selectedPrescriptionProduct = verifiedInventoryProducts
+    ? verifiedInventoryProducts.items.find(
+        (product) => product.id === prescriptionForm.productId
+      )
+    : undefined;
+  const prescriptionQuantity = optionalNumber(prescriptionForm.quantity);
+  const hasValidPrescriptionQuantityForInventory =
+    !prescriptionForm.productId ||
+    (isPrescriptionPositiveIntegerInputValid(prescriptionForm.quantity) &&
+      selectedPrescriptionProduct !== undefined &&
+      prescriptionQuantity !== undefined &&
+      prescriptionQuantity <= selectedPrescriptionProduct.stockQuantity);
+  const visibleTabs = tabs.filter(
+    (tab) =>
+      userRole !== "front_desk" || !frontDeskRestrictedTabs.includes(tab.id)
+  );
+  const currentTab = visibleTabs.some((tab) => tab.id === activeTab)
+    ? activeTab
+    : visibleTabs[0]?.id;
 
+  const createVaccination = trpc.records.createVaccination.useMutation({
+    onSuccess: () => {
+      toast.success("Vaccination recorded");
+      refetchVaccinations();
+      setShowVaccinationForm(false);
+      setVaccinationForm(initialVaccinationForm());
+    },
+    onError: (err) => {
+      toast.error(err.message);
+    },
+  });
+  const createProblem = trpc.records.createProblem.useMutation({
+    onSuccess: () => {
+      toast.success("Problem added");
+      refetchProblems();
+      setShowProblemForm(false);
+      setProblemForm(initialProblemForm());
+    },
+    onError: (err) => {
+      toast.error(err.message);
+    },
+  });
+  const updateProblemStatus = trpc.records.updateProblemStatus.useMutation({
+    onSuccess: () => {
+      toast.success("Problem status updated");
+      refetchProblems();
+    },
+    onError: (err) => {
+      toast.error(err.message);
+    },
+  });
   const createLabResult = trpc.records.createLabResult.useMutation({
     onSuccess: () => {
       toast.success("Lab result created");
       refetchLabResults();
       setShowLabForm(false);
+      setLabForm(initialLabResultForm());
     },
     onError: (err) => {
       toast.error(err.message);
@@ -189,11 +777,114 @@ export default function RecordsPage() {
       toast.success("Procedure recorded");
       refetchProcedures();
       setShowProcedureForm(false);
+      setProcedureForm(initialProcedureForm());
     },
     onError: (err) => {
       toast.error(err.message);
     },
   });
+  const createPrescription = trpc.records.createPrescription.useMutation({
+    onSuccess: () => {
+      toast.success("Prescription created");
+      refetchPrescriptions();
+      setShowPrescriptionForm(false);
+      setPrescriptionForm(initialPrescriptionForm(recordsTimeZone));
+    },
+    onError: (err) => {
+      toast.error(err.message);
+    },
+  });
+  const canSubmitVaccination =
+    Boolean(patientId) &&
+    isVaccinationRequiredTextInputValid(
+      vaccinationForm.vaccineName,
+      VACCINATION_NAME_MAX_LENGTH
+    ) &&
+    isVaccinationOptionalTextInputValid(
+      vaccinationForm.lotNumber,
+      VACCINATION_LOT_NUMBER_MAX_LENGTH
+    ) &&
+    isVaccinationOptionalTextInputValid(
+      vaccinationForm.manufacturer,
+      VACCINATION_MANUFACTURER_MAX_LENGTH
+    ) &&
+    isVaccinationOptionalDateInputValid(vaccinationForm.nextDueDate) &&
+    !createVaccination.isPending;
+  const canSubmitProblem =
+    Boolean(patientId) &&
+    isProblemRequiredTextInputValid(
+      problemForm.description,
+      PROBLEM_DESCRIPTION_MAX_LENGTH
+    ) &&
+    PROBLEM_STATUSES.includes(problemForm.status) &&
+    isProblemOptionalDateInputValid(problemForm.onsetDate) &&
+    !createProblem.isPending;
+  const canSubmitLabResult =
+    Boolean(patientId) &&
+    isLabRequiredTextInputValid(labForm.testName, LAB_TEST_NAME_MAX_LENGTH) &&
+    isLabOptionalTextInputValid(
+      labForm.resultValue,
+      LAB_RESULT_VALUE_MAX_LENGTH
+    ) &&
+    isLabOptionalTextInputValid(labForm.unit, LAB_UNIT_MAX_LENGTH) &&
+    isLabOptionalReferenceInputValid(labForm.referenceRangeLow) &&
+    isLabOptionalReferenceInputValid(labForm.referenceRangeHigh) &&
+    isLabReferenceRangeOrdered(
+      labForm.referenceRangeLow,
+      labForm.referenceRangeHigh
+    ) &&
+    !createLabResult.isPending;
+  const canSubmitProcedure =
+    Boolean(patientId) &&
+    isProcedureRequiredTextInputValid(
+      procedureForm.name,
+      PROCEDURE_NAME_MAX_LENGTH
+    ) &&
+    isProcedureOptionalTextInputValid(
+      procedureForm.description,
+      PROCEDURE_DESCRIPTION_MAX_LENGTH
+    ) &&
+    isProcedureOptionalTextInputValid(
+      procedureForm.anesthesiaUsed,
+      PROCEDURE_ANESTHESIA_MAX_LENGTH
+    ) &&
+    isProcedureOptionalDurationInputValid(procedureForm.durationMinutes) &&
+    isProcedureOptionalTextInputValid(
+      procedureForm.notes,
+      PROCEDURE_NOTES_MAX_LENGTH
+    ) &&
+    !createProcedure.isPending;
+  const canSubmitPrescription =
+    isPrescriptionRequiredTextInputValid(
+      prescriptionForm.medicationName,
+      PRESCRIPTION_MEDICATION_NAME_MAX_LENGTH
+    ) &&
+    isPrescriptionRequiredTextInputValid(
+      prescriptionForm.dosage,
+      PRESCRIPTION_DOSAGE_MAX_LENGTH
+    ) &&
+    isPrescriptionRequiredTextInputValid(
+      prescriptionForm.frequency,
+      PRESCRIPTION_FREQUENCY_MAX_LENGTH
+    ) &&
+    isPrescriptionOptionalPositiveIntegerInputValid(
+      prescriptionForm.quantity
+    ) &&
+    isPrescriptionNonnegativeIntegerInputValid(
+      prescriptionForm.refillsRemaining
+    ) &&
+    isPrescriptionOptionalTextInputValid(
+      prescriptionForm.instructions,
+      PRESCRIPTION_INSTRUCTIONS_MAX_LENGTH
+    ) &&
+    Boolean(prescriptionForm.startDate) &&
+    (!prescriptionForm.endDate ||
+      prescriptionForm.endDate >= prescriptionForm.startDate) &&
+    hasValidPrescriptionQuantityForInventory &&
+    !prescriptionSafetyUnavailable &&
+    (!verifiedPrescriptionSafety?.requiresOverride ||
+      prescriptionForm.acknowledgeSafetyWarnings) &&
+    !createPrescription.isPending;
 
   return (
     <div>
@@ -206,7 +897,7 @@ export default function RecordsPage() {
             Clinical documentation and patient history
           </p>
         </div>
-        {selectedPatient && userRole !== "front_desk" && userRole !== "technician" && (
+        {selectedPatient && canCreateSoapNotes && (
           <Button
             onClick={() =>
               router.push(`/records/new-soap/${selectedPatient.id}`)
@@ -225,6 +916,7 @@ export default function RecordsPage() {
           <Input
             placeholder="Search patients by name..."
             value={searchQuery}
+            maxLength={PATIENT_SEARCH_MAX_LENGTH}
             onChange={(e) => {
               setSearchQuery(e.target.value);
               if (!e.target.value) setSelectedPatient(null);
@@ -234,19 +926,44 @@ export default function RecordsPage() {
         </div>
 
         {/* Search Dropdown */}
-        {searchQuery.length >= 1 && !selectedPatient && searchResults && (
+        {canSearchPatients &&
+          !selectedPatient &&
+          (isSearchingPatients ||
+            patientSearchError ||
+            patientSearchMissing ||
+            searchResults) && (
           <div className="absolute z-10 mt-1 w-full rounded-lg border border-border bg-card shadow-lg">
-            {searchResults.length === 0 ? (
+            {patientSearchError || patientSearchMissing ? (
+              <div className="px-4 py-3 text-sm text-destructive">
+                {patientSearchError?.message ??
+                  "Unable to search patients. Please retry."}
+              </div>
+            ) : isSearchingPatients ? (
+              <div className="flex items-center gap-2 px-4 py-3 text-sm text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Searching patients...
+              </div>
+            ) : searchResults && searchResults.length === 0 ? (
               <div className="px-4 py-3 text-sm text-muted-foreground">
                 No patients found
               </div>
             ) : (
-              searchResults.map((patient) => (
+              searchResults?.map((patient) => (
                 <button
                   key={patient.id}
                   onClick={() => {
                     setSelectedPatient(patient);
                     setSearchQuery(patient.name);
+                    setShowVaccinationForm(false);
+                    setVaccinationForm(initialVaccinationForm());
+                    setShowProblemForm(false);
+                    setProblemForm(initialProblemForm());
+                    setShowLabForm(false);
+                    setLabForm(initialLabResultForm());
+                    setShowProcedureForm(false);
+                    setProcedureForm(initialProcedureForm());
+                    setShowPrescriptionForm(false);
+                    setPrescriptionForm(initialPrescriptionForm());
                   }}
                   className="flex w-full items-center justify-between px-4 py-3 text-left text-sm hover:bg-muted/50 first:rounded-t-lg last:rounded-b-lg transition-colors"
                 >
@@ -298,6 +1015,16 @@ export default function RecordsPage() {
             onClick={() => {
               setSelectedPatient(null);
               setSearchQuery("");
+              setShowVaccinationForm(false);
+              setVaccinationForm(initialVaccinationForm());
+              setShowProblemForm(false);
+              setProblemForm(initialProblemForm());
+              setShowLabForm(false);
+              setLabForm(initialLabResultForm());
+              setShowProcedureForm(false);
+              setProcedureForm(initialProcedureForm());
+              setShowPrescriptionForm(false);
+              setPrescriptionForm(initialPrescriptionForm());
             }}
           >
             Change Patient
@@ -310,9 +1037,7 @@ export default function RecordsPage() {
         <>
           <div className="mt-6 border-b border-border">
             <div className="flex gap-0">
-              {tabs
-                .filter((tab) => userRole !== "front_desk" || !frontDeskRestrictedTabs.includes(tab.id))
-                .map((tab) => {
+              {visibleTabs.map((tab) => {
                 const Icon = tab.icon;
                 return (
                   <button
@@ -320,14 +1045,14 @@ export default function RecordsPage() {
                     onClick={() => setActiveTab(tab.id)}
                     className={cn(
                       "relative flex items-center gap-2 px-4 py-2.5 text-sm font-medium transition-colors",
-                      activeTab === tab.id
+                      currentTab === tab.id
                         ? "text-primary"
                         : "text-muted-foreground hover:text-foreground"
                     )}
                   >
                     <Icon className="h-4 w-4" />
                     {tab.label}
-                    {activeTab === tab.id && (
+                    {currentTab === tab.id && (
                       <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
                     )}
                   </button>
@@ -338,10 +1063,32 @@ export default function RecordsPage() {
 
           {/* Tab Content */}
           <div className="mt-6">
+            {recordsSettingsError || recordsSettingsMissing ? (
+              <RecordsErrorPanel
+                message={
+                  recordsSettingsError
+                    ? `Unable to load records settings. ${recordsSettingsError.message}`
+                    : "Unable to load records settings. Please retry."
+                }
+              />
+            ) : recordsSettingsLoading ? (
+              <RecordsLoadingPanel label="Loading records settings..." />
+            ) : (
+              <>
             {/* SOAP Notes Tab */}
-            {activeTab === "soap" && (
+            {currentTab === "soap" && (
               <div>
-                {soapNotes && soapNotes.length > 0 ? (
+                {soapNotesError || soapNotesMissing ? (
+                  <RecordsErrorPanel
+                    message={
+                      soapNotesError
+                        ? `Unable to load SOAP notes. ${soapNotesError.message}`
+                        : "Unable to load SOAP notes. Please retry."
+                    }
+                  />
+                ) : isLoadingSoapNotes ? (
+                  <RecordsLoadingPanel label="Loading SOAP notes..." />
+                ) : soapNotes && soapNotes.length > 0 ? (
                   <div className="space-y-3">
                     {soapNotes.map((note) => {
                       const isExpanded = expandedNoteId === note.id;
@@ -361,9 +1108,10 @@ export default function RecordsPage() {
                               <div>
                                 <p className="text-sm font-medium">
                                   {note.createdAt
-                                    ? new Date(
-                                        note.createdAt
-                                      ).toLocaleDateString()
+                                    ? formatClinicalDate(
+                                        note.createdAt,
+                                        recordsTimeZone
+                                      )
                                     : "No date"}
                                 </p>
                                 <p className="text-xs text-muted-foreground">
@@ -419,34 +1167,175 @@ export default function RecordsPage() {
                     })}
                   </div>
                 ) : (
-                  <div className="rounded-lg border border-dashed border-border bg-card p-8 text-center">
-                    <FileText className="mx-auto h-8 w-8 text-muted-foreground/50" />
-                    <p className="mt-2 text-sm text-muted-foreground">
-                      No SOAP notes yet
-                    </p>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="mt-3"
-                      onClick={() =>
-                        router.push(
-                          `/records/new-soap/${selectedPatient.id}`
-                        )
-                      }
-                    >
-                      <Plus className="mr-2 h-4 w-4" />
-                      Create First Note
-                    </Button>
-                  </div>
+                  <EmptyState
+                    icon={FileText}
+                    title="No SOAP notes yet"
+                    action={
+                      canCreateSoapNotes
+                        ? {
+                            label: "Create first note",
+                            onClick: () =>
+                              router.push(
+                                `/records/new-soap/${selectedPatient.id}`
+                              ),
+                            icon: Plus,
+                          }
+                        : undefined
+                    }
+                  />
                 )}
               </div>
             )}
 
             {/* Vaccinations Tab */}
-            {activeTab === "vaccinations" && (
+            {currentTab === "vaccinations" && (
               <div>
-                {vaccinations && vaccinations.length > 0 ? (
-                  <div className="overflow-hidden rounded-lg border border-border">
+                {canCreateVaccinations && (
+                  <div className="mb-4 flex justify-end">
+                    <Button
+                      size="sm"
+                      variant={showVaccinationForm ? "outline" : "default"}
+                      onClick={() => {
+                        if (showVaccinationForm) {
+                          setVaccinationForm(initialVaccinationForm());
+                        }
+                        setShowVaccinationForm(!showVaccinationForm);
+                      }}
+                    >
+                      <Plus className="mr-2 h-4 w-4" />
+                      Add Vaccination
+                    </Button>
+                  </div>
+                )}
+
+                {canCreateVaccinations && showVaccinationForm && (
+                  <form
+                    className="mb-6 rounded-lg border border-border bg-card p-4 space-y-4"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (!canSubmitVaccination) return;
+                      createVaccination.mutate({
+                        patientId,
+                        vaccineName: vaccinationForm.vaccineName.trim(),
+                        lotNumber:
+                          vaccinationForm.lotNumber.trim() || undefined,
+                        manufacturer:
+                          vaccinationForm.manufacturer.trim() || undefined,
+                        nextDueDate:
+                          vaccinationForm.nextDueDate.trim() || undefined,
+                      });
+                    }}
+                  >
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="col-span-2 sm:col-span-1">
+                        <label className="block text-xs font-medium text-muted-foreground mb-1">
+                          Vaccine *
+                        </label>
+                        <Input
+                          name="vaccineName"
+                          required
+                          value={vaccinationForm.vaccineName}
+                          maxLength={VACCINATION_NAME_MAX_LENGTH}
+                          onChange={(e) =>
+                            setVaccinationForm((form) => ({
+                              ...form,
+                              vaccineName: e.target.value,
+                            }))
+                          }
+                          placeholder="e.g. Rabies"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-muted-foreground mb-1">
+                          Next Due
+                        </label>
+                        <Input
+                          name="nextDueDate"
+                          type="date"
+                          value={vaccinationForm.nextDueDate}
+                          aria-invalid={
+                            !isVaccinationOptionalDateInputValid(
+                              vaccinationForm.nextDueDate
+                            )
+                          }
+                          onChange={(e) =>
+                            setVaccinationForm((form) => ({
+                              ...form,
+                              nextDueDate: e.target.value,
+                            }))
+                          }
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-muted-foreground mb-1">
+                          Lot Number
+                        </label>
+                        <Input
+                          name="lotNumber"
+                          value={vaccinationForm.lotNumber}
+                          maxLength={VACCINATION_LOT_NUMBER_MAX_LENGTH}
+                          onChange={(e) =>
+                            setVaccinationForm((form) => ({
+                              ...form,
+                              lotNumber: e.target.value,
+                            }))
+                          }
+                          placeholder="e.g. RAB-2026-04"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-muted-foreground mb-1">
+                          Manufacturer
+                        </label>
+                        <Input
+                          name="manufacturer"
+                          value={vaccinationForm.manufacturer}
+                          maxLength={VACCINATION_MANUFACTURER_MAX_LENGTH}
+                          onChange={(e) =>
+                            setVaccinationForm((form) => ({
+                              ...form,
+                              manufacturer: e.target.value,
+                            }))
+                          }
+                          placeholder="e.g. Zoetis"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        type="submit"
+                        size="sm"
+                        disabled={!canSubmitVaccination}
+                      >
+                        {createVaccination.isPending ? "Saving..." : "Save"}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setShowVaccinationForm(false);
+                          setVaccinationForm(initialVaccinationForm());
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </form>
+                )}
+
+                {vaccinationsError || vaccinationsMissing ? (
+                  <RecordsErrorPanel
+                    message={
+                      vaccinationsError
+                        ? `Unable to load vaccination records. ${vaccinationsError.message}`
+                        : "Unable to load vaccination records. Please retry."
+                    }
+                  />
+                ) : isLoadingVaccinations ? (
+                  <RecordsLoadingPanel label="Loading vaccinations..." />
+                ) : vaccinations && vaccinations.length > 0 ? (
+                  <div className="overflow-x-auto rounded-lg border border-border">
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b border-border bg-muted/50">
@@ -470,7 +1359,8 @@ export default function RecordsPage() {
                       <tbody>
                         {vaccinations.map((vax) => {
                           const dueStatus = getVaccineDueStatus(
-                            vax.nextDueDate
+                            vax.nextDueDate,
+                            recordsTimeZone
                           );
                           return (
                             <tr
@@ -482,16 +1372,18 @@ export default function RecordsPage() {
                               </td>
                               <td className="px-4 py-3">
                                 {vax.administeredAt
-                                  ? new Date(
-                                      vax.administeredAt
-                                    ).toLocaleDateString()
+                                  ? formatClinicalDate(
+                                      vax.administeredAt,
+                                      recordsTimeZone
+                                    )
                                   : "--"}
                               </td>
                               <td className="px-4 py-3">
                                 {vax.nextDueDate
-                                  ? new Date(
-                                      vax.nextDueDate
-                                    ).toLocaleDateString()
+                                  ? formatClinicalDate(
+                                      vax.nextDueDate,
+                                      recordsTimeZone
+                                    )
                                   : "--"}
                               </td>
                               <td className="px-4 py-3 text-muted-foreground">
@@ -514,21 +1406,355 @@ export default function RecordsPage() {
                     </table>
                   </div>
                 ) : (
-                  <div className="rounded-lg border border-dashed border-border bg-card p-8 text-center">
-                    <Syringe className="mx-auto h-8 w-8 text-muted-foreground/50" />
-                    <p className="mt-2 text-sm text-muted-foreground">
-                      No vaccination records yet
-                    </p>
-                  </div>
+                  <EmptyState
+                    icon={Syringe}
+                    title="No vaccination records yet"
+                  />
                 )}
               </div>
             )}
 
             {/* Prescriptions Tab */}
-            {activeTab === "prescriptions" && (
+            {currentTab === "prescriptions" && (
               <div>
-                {prescriptionsList && prescriptionsList.length > 0 ? (
-                  <div className="overflow-hidden rounded-lg border border-border">
+                {canPrescribe && (
+                  <div className="mb-4 flex justify-end">
+                    <Button
+                      size="sm"
+                      variant={showPrescriptionForm ? "outline" : "default"}
+                      onClick={() => {
+                        if (showPrescriptionForm) {
+                          setShowPrescriptionForm(false);
+                          setPrescriptionForm((current) => ({
+                            ...current,
+                            acknowledgeSafetyWarnings: false,
+                          }));
+                          return;
+                        }
+                        setShowPrescriptionForm(true);
+                        setPrescriptionForm(
+                          initialPrescriptionForm(recordsTimeZone)
+                        );
+                      }}
+                    >
+                      <Plus className="mr-2 h-4 w-4" />
+                      New Prescription
+                    </Button>
+                  </div>
+                )}
+
+                {canPrescribe && showPrescriptionForm && (
+                  <form
+                    className="mb-6 rounded-lg border border-border bg-card p-4"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      const warnings =
+                        verifiedPrescriptionSafety?.warnings ?? [];
+                      const requiresOverride =
+                        verifiedPrescriptionSafety?.requiresOverride ?? false;
+                      if (
+                        requiresOverride &&
+                        !prescriptionForm.acknowledgeSafetyWarnings
+                      ) {
+                        toast.error(
+                          "Acknowledge prescription safety warnings before saving."
+                        );
+                        return;
+                      }
+                      if (!canSubmitPrescription) return;
+
+                      createPrescription.mutate({
+                        patientId,
+                        medicationName:
+                          prescriptionForm.medicationName.trim(),
+                        productId: prescriptionForm.productId || undefined,
+                        dosage: prescriptionForm.dosage.trim(),
+                        frequency: prescriptionForm.frequency.trim(),
+                        quantity: optionalNumber(prescriptionForm.quantity),
+                        refillsRemaining:
+                          optionalNumber(
+                            prescriptionForm.refillsRemaining
+                          ) ?? 0,
+                        startDate: prescriptionForm.startDate,
+                        endDate:
+                          prescriptionForm.endDate.trim() || undefined,
+                        instructions:
+                          prescriptionForm.instructions.trim() || undefined,
+                        acknowledgeSafetyWarnings:
+                          warnings.length > 0 &&
+                          prescriptionForm.acknowledgeSafetyWarnings,
+                      });
+                    }}
+                  >
+                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                      <div>
+                        <label className="block text-xs font-medium text-muted-foreground mb-1">
+                          Medication *
+                        </label>
+                        <Input
+                          required
+                          value={prescriptionForm.medicationName}
+                          maxLength={PRESCRIPTION_MEDICATION_NAME_MAX_LENGTH}
+                          onChange={(e) =>
+                            setPrescriptionForm((current) => ({
+                              ...current,
+                              medicationName: e.target.value,
+                              acknowledgeSafetyWarnings: false,
+                            }))
+                          }
+                          placeholder="e.g. Carprofen"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-muted-foreground mb-1">
+                          Inventory Item
+                        </label>
+                        <select
+                          value={prescriptionForm.productId}
+                          onChange={(e) => {
+                            const productId = e.target.value;
+                            const selectedProduct = verifiedInventoryProducts
+                              ? verifiedInventoryProducts.items.find(
+                                  (product) => product.id === productId
+                                )
+                              : undefined;
+                            setPrescriptionForm((current) => ({
+                              ...current,
+                              productId,
+                              medicationName:
+                                selectedProduct && !current.medicationName.trim()
+                                  ? selectedProduct.name
+                                  : current.medicationName,
+                              acknowledgeSafetyWarnings: false,
+                            }));
+                          }}
+                          className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        >
+                          <option value="">Not dispensed from inventory</option>
+                          {inventoryProducts.isLoading ? (
+                            <option disabled>Loading inventory...</option>
+                          ) : null}
+                          {inventoryProducts.error || inventoryProductsMissing ? (
+                            <option disabled>Inventory unavailable</option>
+                          ) : null}
+                          {verifiedInventoryProducts
+                            ? verifiedInventoryProducts.items.map((product) => (
+                                <option key={product.id} value={product.id}>
+                                  {product.name} ({product.stockQuantity} on
+                                  hand)
+                                </option>
+                              ))
+                            : null}
+                        </select>
+                        {inventoryProducts.error || inventoryProductsMissing ? (
+                          <p className="mt-1 text-xs text-destructive">
+                            {inventoryProducts.error?.message ??
+                              "Unable to load inventory products. Please retry."}
+                          </p>
+                        ) : prescriptionForm.productId &&
+                          selectedPrescriptionProduct ? (
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            Stock will be deducted by the dispensed quantity.
+                          </p>
+                        ) : null}
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-muted-foreground mb-1">
+                          Dosage *
+                        </label>
+                        <Input
+                          required
+                          value={prescriptionForm.dosage}
+                          maxLength={PRESCRIPTION_DOSAGE_MAX_LENGTH}
+                          onChange={(e) =>
+                            setPrescriptionForm((current) => ({
+                              ...current,
+                              dosage: e.target.value,
+                            }))
+                          }
+                          placeholder="e.g. 75 mg"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-muted-foreground mb-1">
+                          Frequency *
+                        </label>
+                        <Input
+                          required
+                          value={prescriptionForm.frequency}
+                          maxLength={PRESCRIPTION_FREQUENCY_MAX_LENGTH}
+                          onChange={(e) =>
+                            setPrescriptionForm((current) => ({
+                              ...current,
+                              frequency: e.target.value,
+                            }))
+                          }
+                          placeholder="e.g. Every 12 hours"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-muted-foreground mb-1">
+                          Quantity
+                        </label>
+                        <Input
+                          type="number"
+                          min={PRESCRIPTION_QUANTITY_MIN}
+                          max={PRESCRIPTION_COUNT_MAX}
+                          step={1}
+                          value={prescriptionForm.quantity}
+                          onChange={(e) =>
+                            setPrescriptionForm((current) => ({
+                              ...current,
+                              quantity: e.target.value,
+                            }))
+                          }
+                          placeholder="e.g. 30"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-muted-foreground mb-1">
+                          Refills
+                        </label>
+                        <Input
+                          type="number"
+                          min={PRESCRIPTION_REFILLS_MIN}
+                          max={PRESCRIPTION_COUNT_MAX}
+                          step={1}
+                          value={prescriptionForm.refillsRemaining}
+                          onChange={(e) =>
+                            setPrescriptionForm((current) => ({
+                              ...current,
+                              refillsRemaining: e.target.value,
+                            }))
+                          }
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-muted-foreground mb-1">
+                          Start Date *
+                        </label>
+                        <Input
+                          type="date"
+                          required
+                          value={prescriptionForm.startDate}
+                          onChange={(e) =>
+                            setPrescriptionForm((current) => ({
+                              ...current,
+                              startDate: e.target.value,
+                            }))
+                          }
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-muted-foreground mb-1">
+                          End Date
+                        </label>
+                        <Input
+                          type="date"
+                          value={prescriptionForm.endDate}
+                          min={prescriptionForm.startDate || undefined}
+                          onChange={(e) =>
+                            setPrescriptionForm((current) => ({
+                              ...current,
+                              endDate: e.target.value,
+                            }))
+                          }
+                        />
+                      </div>
+                      <div className="sm:col-span-2">
+                        <label className="block text-xs font-medium text-muted-foreground mb-1">
+                          Instructions
+                        </label>
+                        <Input
+                          value={prescriptionForm.instructions}
+                          maxLength={PRESCRIPTION_INSTRUCTIONS_MAX_LENGTH}
+                          onChange={(e) =>
+                            setPrescriptionForm((current) => ({
+                              ...current,
+                              instructions: e.target.value,
+                            }))
+                          }
+                          placeholder="Give with food"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="mt-4 space-y-3">
+                      <PrescriptionSafetyPanel
+                        medicationName={medicationNameForSafety}
+                        isLoading={prescriptionSafety.isFetching}
+                        errorMessage={
+                          prescriptionSafety.error?.message ??
+                          (prescriptionSafetyMissing
+                            ? "Please retry."
+                            : undefined)
+                        }
+                        warnings={verifiedPrescriptionSafety?.warnings ?? []}
+                      />
+
+                      {verifiedPrescriptionSafety?.requiresOverride && (
+                        <label className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                          <Checkbox
+                            checked={
+                              prescriptionForm.acknowledgeSafetyWarnings
+                            }
+                            onChange={(e) =>
+                              setPrescriptionForm((current) => ({
+                                ...current,
+                                acknowledgeSafetyWarnings:
+                                  e.currentTarget.checked,
+                              }))
+                            }
+                            className="mt-0.5"
+                          />
+                          <span>
+                            Clinician reviewed and accepts these prescription
+                            safety warnings.
+                          </span>
+                        </label>
+                      )}
+                    </div>
+
+                    <div className="mt-4 flex gap-2">
+                      <Button
+                        type="submit"
+                        size="sm"
+                        disabled={!canSubmitPrescription}
+                      >
+                        {createPrescription.isPending ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : null}
+                        Save Prescription
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setShowPrescriptionForm(false);
+                          setPrescriptionForm(
+                            initialPrescriptionForm(recordsTimeZone)
+                          );
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </form>
+                )}
+
+                {prescriptionsError || prescriptionsMissing ? (
+                  <RecordsErrorPanel
+                    message={
+                      prescriptionsError
+                        ? `Unable to load prescriptions. ${prescriptionsError.message}`
+                        : "Unable to load prescriptions. Please retry."
+                    }
+                  />
+                ) : isLoadingPrescriptions ? (
+                  <RecordsLoadingPanel label="Loading prescriptions..." />
+                ) : prescriptionsList && prescriptionsList.length > 0 ? (
+                  <div className="overflow-x-auto rounded-lg border border-border">
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b border-border bg-muted/50">
@@ -540,6 +1766,9 @@ export default function RecordsPage() {
                           </th>
                           <th className="px-4 py-3 text-left font-medium text-muted-foreground">
                             Frequency
+                          </th>
+                          <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                            Inventory
                           </th>
                           <th className="px-4 py-3 text-left font-medium text-muted-foreground">
                             Status
@@ -565,6 +1794,20 @@ export default function RecordsPage() {
                             <td className="px-4 py-3">
                               {rx.frequency ?? "--"}
                             </td>
+                            <td className="px-4 py-3 text-muted-foreground">
+                              {rx.productName ? (
+                                <span>
+                                  {rx.productName}
+                                  {rx.quantity != null ? (
+                                    <span className="block text-xs">
+                                      Dispensed {rx.quantity}
+                                    </span>
+                                  ) : null}
+                                </span>
+                              ) : (
+                                "--"
+                              )}
+                            </td>
                             <td className="px-4 py-3">
                               <span
                                 className={cn(
@@ -583,15 +1826,19 @@ export default function RecordsPage() {
                                 variant="ghost"
                                 size="sm"
                                 title="Print Label"
-                                onClick={() => {
+                                onClick={async () => {
                                   const clientName = [
                                     selectedPatient?.clientFirstName,
                                     selectedPatient?.clientLastName,
                                   ]
                                     .filter(Boolean)
                                     .join(" ");
+                                  const { generatePrescriptionLabelPdf } =
+                                    await import("@/lib/pdf");
                                   generatePrescriptionLabelPdf({
-                                    practiceName: "",
+                                    practiceName: recordsPracticeName,
+                                    practicePhone:
+                                      recordsPracticePhone ?? undefined,
                                     patientName: selectedPatient?.name ?? "",
                                     clientName,
                                     species: selectedPatient?.species ?? "",
@@ -601,8 +1848,17 @@ export default function RecordsPage() {
                                     instructions: rx.instructions ?? undefined,
                                     prescribedBy: rx.prescriberName ?? "",
                                     startDate: rx.startDate
-                                      ? new Date(rx.startDate).toLocaleDateString()
-                                      : new Date().toLocaleDateString(),
+                                      ? formatClinicalDate(
+                                          rx.startDate,
+                                          recordsTimeZone
+                                        )
+                                      : formatClinicalDate(
+                                          dateInputValue(
+                                            new Date(),
+                                            recordsTimeZone
+                                          ),
+                                          recordsTimeZone
+                                        ),
                                     quantity: rx.quantity != null ? String(rx.quantity) : undefined,
                                     refillsRemaining: rx.refillsRemaining ?? undefined,
                                   }).save(
@@ -620,25 +1876,148 @@ export default function RecordsPage() {
                     </table>
                   </div>
                 ) : (
-                  <div className="rounded-lg border border-dashed border-border bg-card p-8 text-center">
-                    <Pill className="mx-auto h-8 w-8 text-muted-foreground/50" />
-                    <p className="mt-2 text-sm text-muted-foreground">
-                      No prescriptions yet
-                    </p>
-                  </div>
+                  <EmptyState icon={Pill} title="No prescriptions yet" />
                 )}
               </div>
             )}
 
             {/* Problems Tab */}
-            {activeTab === "problems" && (
+            {currentTab === "problems" && (
               <div>
-                {problems && problems.length > 0 ? (
+                {canManageProblems && (
+                  <div className="mb-4 flex justify-end">
+                    <Button
+                      size="sm"
+                      variant={showProblemForm ? "outline" : "default"}
+                      onClick={() => {
+                        if (showProblemForm) {
+                          setProblemForm(initialProblemForm());
+                        }
+                        setShowProblemForm(!showProblemForm);
+                      }}
+                    >
+                      <Plus className="mr-2 h-4 w-4" />
+                      Add Problem
+                    </Button>
+                  </div>
+                )}
+
+                {canManageProblems && showProblemForm && (
+                  <form
+                    className="mb-6 rounded-lg border border-border bg-card p-4 space-y-4"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (!canSubmitProblem) return;
+                      createProblem.mutate({
+                        patientId,
+                        description: problemForm.description.trim(),
+                        status: problemForm.status,
+                        onsetDate: problemForm.onsetDate.trim() || undefined,
+                      });
+                    }}
+                  >
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="col-span-2">
+                        <label className="block text-xs font-medium text-muted-foreground mb-1">
+                          Problem *
+                        </label>
+                        <Input
+                          name="description"
+                          required
+                          value={problemForm.description}
+                          maxLength={PROBLEM_DESCRIPTION_MAX_LENGTH}
+                          onChange={(e) =>
+                            setProblemForm((form) => ({
+                              ...form,
+                              description: e.target.value,
+                            }))
+                          }
+                          placeholder="e.g. Chronic otitis"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-muted-foreground mb-1">
+                          Status
+                        </label>
+                        <select
+                          name="status"
+                          value={problemForm.status}
+                          onChange={(e) =>
+                            setProblemForm((form) => ({
+                              ...form,
+                              status: e.target.value as ProblemStatus,
+                            }))
+                          }
+                          className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        >
+                          {PROBLEM_STATUSES.map((status) => (
+                            <option key={status} value={status}>
+                              {status.charAt(0).toUpperCase() + status.slice(1)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-muted-foreground mb-1">
+                          Onset Date
+                        </label>
+                        <Input
+                          name="onsetDate"
+                          type="date"
+                          value={problemForm.onsetDate}
+                          aria-invalid={
+                            !isProblemOptionalDateInputValid(
+                              problemForm.onsetDate
+                            )
+                          }
+                          onChange={(e) =>
+                            setProblemForm((form) => ({
+                              ...form,
+                              onsetDate: e.target.value,
+                            }))
+                          }
+                        />
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        type="submit"
+                        size="sm"
+                        disabled={!canSubmitProblem}
+                      >
+                        {createProblem.isPending ? "Saving..." : "Save"}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setShowProblemForm(false);
+                          setProblemForm(initialProblemForm());
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </form>
+                )}
+
+                {problemsError || problemsMissing ? (
+                  <RecordsErrorPanel
+                    message={
+                      problemsError
+                        ? `Unable to load problems. ${problemsError.message}`
+                        : "Unable to load problems. Please retry."
+                    }
+                  />
+                ) : isLoadingProblems ? (
+                  <RecordsLoadingPanel label="Loading problems..." />
+                ) : problems && problems.length > 0 ? (
                   <div className="space-y-2">
                     {problems.map((problem) => (
                       <div
                         key={problem.id}
-                        className="flex items-center justify-between rounded-lg border border-border bg-card px-4 py-3"
+                        className="flex flex-col gap-3 rounded-lg border border-border bg-card px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
                       >
                         <div>
                           <p
@@ -654,70 +2033,137 @@ export default function RecordsPage() {
                           {problem.onsetDate && (
                             <p className="text-xs text-muted-foreground mt-0.5">
                               Onset:{" "}
-                              {new Date(
-                                problem.onsetDate
-                              ).toLocaleDateString()}
+                              {formatClinicalDate(
+                                problem.onsetDate,
+                                recordsTimeZone
+                              )}
                             </p>
                           )}
                         </div>
-                        <span
-                          className={cn(
-                            "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize",
-                            problem.status === "active"
-                              ? "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
-                              : problem.status === "chronic"
-                                ? "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400"
-                                : "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400"
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span
+                            className={cn(
+                              "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize",
+                              problem.status === "active"
+                                ? "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
+                                : problem.status === "chronic"
+                                  ? "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400"
+                                  : "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400"
+                            )}
+                          >
+                            {problem.status ?? "active"}
+                          </span>
+                          {canManageProblems && (
+                            <div className="flex flex-wrap gap-1">
+                              {problem.status !== "active" && (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  disabled={updateProblemStatus.isPending}
+                                  onClick={() =>
+                                    updateProblemStatus.mutate({
+                                      id: problem.id,
+                                      status: "active",
+                                    })
+                                  }
+                                >
+                                  Reopen
+                                </Button>
+                              )}
+                              {problem.status !== "chronic" && (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  disabled={updateProblemStatus.isPending}
+                                  onClick={() =>
+                                    updateProblemStatus.mutate({
+                                      id: problem.id,
+                                      status: "chronic",
+                                    })
+                                  }
+                                >
+                                  Chronic
+                                </Button>
+                              )}
+                              {problem.status !== "resolved" && (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  disabled={updateProblemStatus.isPending}
+                                  onClick={() =>
+                                    updateProblemStatus.mutate({
+                                      id: problem.id,
+                                      status: "resolved",
+                                    })
+                                  }
+                                >
+                                  Resolve
+                                </Button>
+                              )}
+                            </div>
                           )}
-                        >
-                          {problem.status ?? "active"}
-                        </span>
+                        </div>
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <div className="rounded-lg border border-dashed border-border bg-card p-8 text-center">
-                    <ClipboardList className="mx-auto h-8 w-8 text-muted-foreground/50" />
-                    <p className="mt-2 text-sm text-muted-foreground">
-                      No problems recorded
-                    </p>
-                  </div>
+                  <EmptyState
+                    icon={ClipboardList}
+                    title="No problems recorded"
+                  />
                 )}
               </div>
             )}
 
             {/* Lab Results Tab */}
-            {activeTab === "labResults" && (
+            {currentTab === "labResults" && (
               <div>
-                <div className="flex justify-end mb-4">
-                  <Button
-                    size="sm"
-                    onClick={() => setShowLabForm(!showLabForm)}
-                  >
-                    <Plus className="mr-2 h-4 w-4" />
-                    Add Lab Result
-                  </Button>
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <div>
+                      <p className="font-medium">
+                        Manual lab entry only
+                      </p>
+                      <p className="mt-1 text-xs leading-5 text-amber-900 dark:text-amber-200">
+                        Reference lab ordering is disabled until IDEXX, Antech,
+                        or Zoetis provider credentials and a real adapter are
+                        connected.
+                      </p>
+                    </div>
+                  </div>
+                  {canManageLabResults && (
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        if (showLabForm) setLabForm(initialLabResultForm());
+                        setShowLabForm(!showLabForm);
+                      }}
+                    >
+                      <Plus className="mr-2 h-4 w-4" />
+                      Add Manual Lab Result
+                    </Button>
+                  )}
                 </div>
 
-                {showLabForm && (
+                {canManageLabResults && showLabForm && (
                   <form
                     className="mb-6 rounded-lg border border-border bg-card p-4 space-y-4"
                     onSubmit={(e) => {
                       e.preventDefault();
-                      const form = e.currentTarget;
-                      const formData = new FormData(form);
+                      if (!canSubmitLabResult) return;
                       createLabResult.mutate({
                         patientId,
-                        testName: formData.get("testName") as string,
-                        resultValue:
-                          (formData.get("resultValue") as string) || undefined,
-                        unit: (formData.get("unit") as string) || undefined,
+                        testName: labForm.testName.trim(),
+                        resultValue: labForm.resultValue.trim() || undefined,
+                        unit: labForm.unit.trim() || undefined,
                         referenceRangeLow:
-                          (formData.get("referenceRangeLow") as string) ||
-                          undefined,
+                          labForm.referenceRangeLow.trim() || undefined,
                         referenceRangeHigh:
-                          (formData.get("referenceRangeHigh") as string) ||
-                          undefined,
+                          labForm.referenceRangeHigh.trim() || undefined,
                       });
                     }}
                   >
@@ -726,7 +2172,19 @@ export default function RecordsPage() {
                         <label className="block text-xs font-medium text-muted-foreground mb-1">
                           Test Name *
                         </label>
-                        <Input name="testName" required placeholder="e.g. CBC" />
+                        <Input
+                          name="testName"
+                          required
+                          value={labForm.testName}
+                          maxLength={LAB_TEST_NAME_MAX_LENGTH}
+                          onChange={(e) =>
+                            setLabForm((form) => ({
+                              ...form,
+                              testName: e.target.value,
+                            }))
+                          }
+                          placeholder="e.g. CBC"
+                        />
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-muted-foreground mb-1">
@@ -734,6 +2192,14 @@ export default function RecordsPage() {
                         </label>
                         <Input
                           name="resultValue"
+                          value={labForm.resultValue}
+                          maxLength={LAB_RESULT_VALUE_MAX_LENGTH}
+                          onChange={(e) =>
+                            setLabForm((form) => ({
+                              ...form,
+                              resultValue: e.target.value,
+                            }))
+                          }
                           placeholder="e.g. 12.5"
                         />
                       </div>
@@ -741,7 +2207,18 @@ export default function RecordsPage() {
                         <label className="block text-xs font-medium text-muted-foreground mb-1">
                           Unit
                         </label>
-                        <Input name="unit" placeholder="e.g. mg/dL" />
+                        <Input
+                          name="unit"
+                          value={labForm.unit}
+                          maxLength={LAB_UNIT_MAX_LENGTH}
+                          onChange={(e) =>
+                            setLabForm((form) => ({
+                              ...form,
+                              unit: e.target.value,
+                            }))
+                          }
+                          placeholder="e.g. mg/dL"
+                        />
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-muted-foreground mb-1">
@@ -749,6 +2226,22 @@ export default function RecordsPage() {
                         </label>
                         <Input
                           name="referenceRangeLow"
+                          type="number"
+                          value={labForm.referenceRangeLow}
+                          min={LAB_REFERENCE_MIN}
+                          max={LAB_REFERENCE_MAX}
+                          step={LAB_REFERENCE_STEP}
+                          aria-invalid={
+                            !isLabOptionalReferenceInputValid(
+                              labForm.referenceRangeLow
+                            )
+                          }
+                          onChange={(e) =>
+                            setLabForm((form) => ({
+                              ...form,
+                              referenceRangeLow: e.target.value,
+                            }))
+                          }
                           placeholder="e.g. 7.0"
                         />
                       </div>
@@ -758,6 +2251,26 @@ export default function RecordsPage() {
                         </label>
                         <Input
                           name="referenceRangeHigh"
+                          type="number"
+                          value={labForm.referenceRangeHigh}
+                          min={LAB_REFERENCE_MIN}
+                          max={LAB_REFERENCE_MAX}
+                          step={LAB_REFERENCE_STEP}
+                          aria-invalid={
+                            !isLabOptionalReferenceInputValid(
+                              labForm.referenceRangeHigh
+                            ) ||
+                            !isLabReferenceRangeOrdered(
+                              labForm.referenceRangeLow,
+                              labForm.referenceRangeHigh
+                            )
+                          }
+                          onChange={(e) =>
+                            setLabForm((form) => ({
+                              ...form,
+                              referenceRangeHigh: e.target.value,
+                            }))
+                          }
                           placeholder="e.g. 27.0"
                         />
                       </div>
@@ -766,7 +2279,7 @@ export default function RecordsPage() {
                       <Button
                         type="submit"
                         size="sm"
-                        disabled={createLabResult.isPending}
+                        disabled={!canSubmitLabResult}
                       >
                         {createLabResult.isPending ? "Saving..." : "Save"}
                       </Button>
@@ -774,7 +2287,10 @@ export default function RecordsPage() {
                         type="button"
                         variant="ghost"
                         size="sm"
-                        onClick={() => setShowLabForm(false)}
+                        onClick={() => {
+                          setShowLabForm(false);
+                          setLabForm(initialLabResultForm());
+                        }}
                       >
                         Cancel
                       </Button>
@@ -782,163 +2298,178 @@ export default function RecordsPage() {
                   </form>
                 )}
 
-                {labResultsList && labResultsList.length > 0 ? (
-                  <div className="overflow-hidden rounded-lg border border-border">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b border-border bg-muted/50">
-                          <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                            Test Name
-                          </th>
-                          <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                            Result
-                          </th>
-                          <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                            Unit
-                          </th>
-                          <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                            Reference Range
-                          </th>
-                          <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                            Status
-                          </th>
-                          <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                            Ordered By
-                          </th>
-                          <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                            Date
-                          </th>
-                          <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                            Actions
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {labResultsList.map((lab) => {
-                          const outOfRange = isOutOfRange(
-                            lab.resultValue,
-                            lab.referenceRangeLow,
-                            lab.referenceRangeHigh
-                          );
-                          return (
-                            <tr
-                              key={lab.id}
-                              className="border-b border-border last:border-0"
-                            >
-                              <td className="px-4 py-3 font-medium">
-                                {lab.testName}
-                              </td>
-                              <td
-                                className={cn(
-                                  "px-4 py-3",
-                                  outOfRange
-                                    ? "text-red-600 font-semibold dark:text-red-400"
-                                    : ""
-                                )}
+                {labResultsError || labResultsMissing ? (
+                  <RecordsErrorPanel
+                    message={
+                      labResultsError
+                        ? `Unable to load lab results. ${labResultsError.message}`
+                        : "Unable to load lab results. Please retry."
+                    }
+                  />
+                ) : isLoadingLabResults ? (
+                  <RecordsLoadingPanel label="Loading lab results..." />
+                ) : labResultsList && labResultsList.length > 0 ? (
+                  <div className="space-y-4">
+                    {labTrendGroups.length > 0 && (
+                      <LabTrendCharts groups={labTrendGroups} />
+                    )}
+                    <div className="overflow-x-auto rounded-lg border border-border">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-border bg-muted/50">
+                            <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                              Test Name
+                            </th>
+                            <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                              Result
+                            </th>
+                            <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                              Unit
+                            </th>
+                            <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                              Reference Range
+                            </th>
+                            <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                              Status
+                            </th>
+                            <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                              Ordered By
+                            </th>
+                            <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                              Date
+                            </th>
+                            <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                              Actions
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {labResultsList.map((lab) => {
+                            const outOfRange = isOutOfRange(
+                              lab.resultValue,
+                              lab.referenceRangeLow,
+                              lab.referenceRangeHigh
+                            );
+                            return (
+                              <tr
+                                key={lab.id}
+                                className="border-b border-border last:border-0"
                               >
-                                {lab.resultValue ?? "--"}
-                              </td>
-                              <td className="px-4 py-3 text-muted-foreground">
-                                {lab.unit ?? "--"}
-                              </td>
-                              <td className="px-4 py-3 text-muted-foreground">
-                                {lab.referenceRangeLow != null &&
-                                lab.referenceRangeHigh != null
-                                  ? `${lab.referenceRangeLow} - ${lab.referenceRangeHigh}`
-                                  : "--"}
-                              </td>
-                              <td className="px-4 py-3">
-                                <span
+                                <td className="px-4 py-3 font-medium">
+                                  {lab.testName}
+                                </td>
+                                <td
                                   className={cn(
-                                    "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize",
-                                    getLabStatusBadge(lab.status)
+                                    "px-4 py-3",
+                                    outOfRange
+                                      ? "text-red-600 font-semibold dark:text-red-400"
+                                      : ""
                                   )}
                                 >
-                                  {lab.status}
-                                </span>
-                              </td>
-                              <td className="px-4 py-3 text-muted-foreground">
-                                {lab.orderedByName ?? "--"}
-                              </td>
-                              <td className="px-4 py-3 text-muted-foreground">
-                                {lab.createdAt
-                                  ? new Date(
-                                      lab.createdAt
-                                    ).toLocaleDateString()
-                                  : "--"}
-                              </td>
-                              <td className="px-4 py-3">
-                                {lab.status === "completed" && (
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() =>
-                                      updateLabResultStatus.mutate({
-                                        id: lab.id,
-                                        status: "reviewed",
-                                      })
-                                    }
-                                    disabled={
-                                      updateLabResultStatus.isPending
-                                    }
+                                  {lab.resultValue ?? "--"}
+                                </td>
+                                <td className="px-4 py-3 text-muted-foreground">
+                                  {lab.unit ?? "--"}
+                                </td>
+                                <td className="px-4 py-3 text-muted-foreground">
+                                  {lab.referenceRangeLow != null &&
+                                  lab.referenceRangeHigh != null
+                                    ? `${lab.referenceRangeLow} - ${lab.referenceRangeHigh}`
+                                    : "--"}
+                                </td>
+                                <td className="px-4 py-3">
+                                  <span
+                                    className={cn(
+                                      "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize",
+                                      getLabStatusBadge(lab.status)
+                                    )}
                                   >
-                                    Mark Reviewed
-                                  </Button>
-                                )}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                                    {lab.status}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 text-muted-foreground">
+                                  {lab.orderedByName ?? "--"}
+                                </td>
+                                <td className="px-4 py-3 text-muted-foreground">
+                                  {lab.createdAt
+                                    ? formatClinicalDate(
+                                        lab.createdAt,
+                                        recordsTimeZone
+                                      )
+                                    : "--"}
+                                </td>
+                                <td className="px-4 py-3">
+                                  {canManageLabResults &&
+                                  lab.status === "completed" ? (
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() =>
+                                        updateLabResultStatus.mutate({
+                                          id: lab.id,
+                                          status: "reviewed",
+                                        })
+                                      }
+                                      disabled={
+                                        updateLabResultStatus.isPending
+                                      }
+                                    >
+                                      Mark Reviewed
+                                    </Button>
+                                  ) : null}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 ) : (
-                  <div className="rounded-lg border border-dashed border-border bg-card p-8 text-center">
-                    <FlaskConical className="mx-auto h-8 w-8 text-muted-foreground/50" />
-                    <p className="mt-2 text-sm text-muted-foreground">
-                      No lab results yet
-                    </p>
-                  </div>
+                  <EmptyState icon={FlaskConical} title="No lab results yet" />
                 )}
               </div>
             )}
 
             {/* Procedures Tab */}
-            {activeTab === "procedures" && (
+            {currentTab === "procedures" && (
               <div>
-                <div className="flex justify-end mb-4">
-                  <Button
-                    size="sm"
-                    onClick={() => setShowProcedureForm(!showProcedureForm)}
-                  >
-                    <Plus className="mr-2 h-4 w-4" />
-                    Add Procedure
-                  </Button>
-                </div>
+                {canCreateProcedures && (
+                  <div className="flex justify-end mb-4">
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        if (showProcedureForm) {
+                          setProcedureForm(initialProcedureForm());
+                        }
+                        setShowProcedureForm(!showProcedureForm);
+                      }}
+                    >
+                      <Plus className="mr-2 h-4 w-4" />
+                      Add Procedure
+                    </Button>
+                  </div>
+                )}
 
-                {showProcedureForm && (
+                {canCreateProcedures && showProcedureForm && (
                   <form
                     className="mb-6 rounded-lg border border-border bg-card p-4 space-y-4"
                     onSubmit={(e) => {
                       e.preventDefault();
-                      const form = e.currentTarget;
-                      const formData = new FormData(form);
-                      const durationStr = formData.get(
-                        "durationMinutes"
-                      ) as string;
+                      if (!canSubmitProcedure) return;
+                      const durationMinutes =
+                        procedureForm.durationMinutes.trim();
                       createProcedure.mutate({
                         patientId,
-                        name: formData.get("name") as string,
+                        name: procedureForm.name.trim(),
                         description:
-                          (formData.get("description") as string) || undefined,
+                          procedureForm.description.trim() || undefined,
                         anesthesiaUsed:
-                          (formData.get("anesthesiaUsed") as string) ||
-                          undefined,
-                        durationMinutes: durationStr
-                          ? parseInt(durationStr, 10)
+                          procedureForm.anesthesiaUsed.trim() || undefined,
+                        durationMinutes: durationMinutes
+                          ? Number(durationMinutes)
                           : undefined,
-                        notes:
-                          (formData.get("notes") as string) || undefined,
+                        notes: procedureForm.notes.trim() || undefined,
                       });
                     }}
                   >
@@ -950,6 +2481,14 @@ export default function RecordsPage() {
                         <Input
                           name="name"
                           required
+                          value={procedureForm.name}
+                          maxLength={PROCEDURE_NAME_MAX_LENGTH}
+                          onChange={(e) =>
+                            setProcedureForm((form) => ({
+                              ...form,
+                              name: e.target.value,
+                            }))
+                          }
                           placeholder="e.g. Dental Prophylaxis"
                         />
                       </div>
@@ -960,6 +2499,21 @@ export default function RecordsPage() {
                         <Input
                           name="durationMinutes"
                           type="number"
+                          value={procedureForm.durationMinutes}
+                          min={PROCEDURE_DURATION_MIN_MINUTES}
+                          max={PROCEDURE_DURATION_MAX_MINUTES}
+                          step={1}
+                          aria-invalid={
+                            !isProcedureOptionalDurationInputValid(
+                              procedureForm.durationMinutes
+                            )
+                          }
+                          onChange={(e) =>
+                            setProcedureForm((form) => ({
+                              ...form,
+                              durationMinutes: e.target.value,
+                            }))
+                          }
                           placeholder="e.g. 45"
                         />
                       </div>
@@ -969,6 +2523,14 @@ export default function RecordsPage() {
                         </label>
                         <Input
                           name="description"
+                          value={procedureForm.description}
+                          maxLength={PROCEDURE_DESCRIPTION_MAX_LENGTH}
+                          onChange={(e) =>
+                            setProcedureForm((form) => ({
+                              ...form,
+                              description: e.target.value,
+                            }))
+                          }
                           placeholder="Brief description of the procedure"
                         />
                       </div>
@@ -978,6 +2540,14 @@ export default function RecordsPage() {
                         </label>
                         <Input
                           name="anesthesiaUsed"
+                          value={procedureForm.anesthesiaUsed}
+                          maxLength={PROCEDURE_ANESTHESIA_MAX_LENGTH}
+                          onChange={(e) =>
+                            setProcedureForm((form) => ({
+                              ...form,
+                              anesthesiaUsed: e.target.value,
+                            }))
+                          }
                           placeholder="e.g. Isoflurane"
                         />
                       </div>
@@ -985,14 +2555,25 @@ export default function RecordsPage() {
                         <label className="block text-xs font-medium text-muted-foreground mb-1">
                           Notes
                         </label>
-                        <Input name="notes" placeholder="Additional notes" />
+                        <Input
+                          name="notes"
+                          value={procedureForm.notes}
+                          maxLength={PROCEDURE_NOTES_MAX_LENGTH}
+                          onChange={(e) =>
+                            setProcedureForm((form) => ({
+                              ...form,
+                              notes: e.target.value,
+                            }))
+                          }
+                          placeholder="Additional notes"
+                        />
                       </div>
                     </div>
                     <div className="flex gap-2">
                       <Button
                         type="submit"
                         size="sm"
-                        disabled={createProcedure.isPending}
+                        disabled={!canSubmitProcedure}
                       >
                         {createProcedure.isPending ? "Saving..." : "Save"}
                       </Button>
@@ -1000,7 +2581,10 @@ export default function RecordsPage() {
                         type="button"
                         variant="ghost"
                         size="sm"
-                        onClick={() => setShowProcedureForm(false)}
+                        onClick={() => {
+                          setShowProcedureForm(false);
+                          setProcedureForm(initialProcedureForm());
+                        }}
                       >
                         Cancel
                       </Button>
@@ -1008,8 +2592,18 @@ export default function RecordsPage() {
                   </form>
                 )}
 
-                {proceduresList && proceduresList.length > 0 ? (
-                  <div className="overflow-hidden rounded-lg border border-border">
+                {proceduresError || proceduresMissing ? (
+                  <RecordsErrorPanel
+                    message={
+                      proceduresError
+                        ? `Unable to load procedures. ${proceduresError.message}`
+                        : "Unable to load procedures. Please retry."
+                    }
+                  />
+                ) : isLoadingProcedures ? (
+                  <RecordsLoadingPanel label="Loading procedures..." />
+                ) : proceduresList && proceduresList.length > 0 ? (
+                  <div className="overflow-x-auto rounded-lg border border-border">
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b border-border bg-muted/50">
@@ -1057,9 +2651,10 @@ export default function RecordsPage() {
                             </td>
                             <td className="px-4 py-3 text-muted-foreground">
                               {proc.createdAt
-                                ? new Date(
-                                    proc.createdAt
-                                  ).toLocaleDateString()
+                                ? formatClinicalDate(
+                                    proc.createdAt,
+                                    recordsTimeZone
+                                  )
                                 : "--"}
                             </td>
                           </tr>
@@ -1068,14 +2663,11 @@ export default function RecordsPage() {
                     </table>
                   </div>
                 ) : (
-                  <div className="rounded-lg border border-dashed border-border bg-card p-8 text-center">
-                    <Scissors className="mx-auto h-8 w-8 text-muted-foreground/50" />
-                    <p className="mt-2 text-sm text-muted-foreground">
-                      No procedures recorded
-                    </p>
-                  </div>
+                  <EmptyState icon={Scissors} title="No procedures recorded" />
                 )}
               </div>
+            )}
+              </>
             )}
           </div>
         </>
@@ -1083,12 +2675,11 @@ export default function RecordsPage() {
 
       {/* Prompt to search if no patient selected */}
       {!selectedPatient && (
-        <div className="mt-6 rounded-lg border border-dashed border-border bg-card p-12 text-center">
-          <Search className="mx-auto h-8 w-8 text-muted-foreground/50" />
-          <p className="mt-2 text-sm text-muted-foreground">
-            Search for a patient above to view their medical records
-          </p>
-        </div>
+        <EmptyState
+          className="mt-6"
+          icon={Search}
+          title="Search for a patient above to view their medical records"
+        />
       )}
     </div>
   );

@@ -1,5 +1,12 @@
-import { eq, and, gte, lte, isNull, sql, desc } from "drizzle-orm";
-import { createRouter, protectedProcedure, requireFeature } from "../trpc";
+import { z } from "zod";
+import { TRPCError } from "@trpc/server";
+import { eq, and, gte, lte, lt, isNull, sql, ne } from "drizzle-orm";
+import {
+  createRouter,
+  protectedProcedure,
+  requireFeature,
+  requireRole,
+} from "../trpc";
 import {
   invoices,
   invoiceItems,
@@ -7,84 +14,185 @@ import {
   products,
   appointments,
   users,
+  practices,
 } from "@openpims/db";
+import type { Database } from "@openpims/db/client";
+import {
+  resolveReportDateRange,
+  validateReportDateRangeInput,
+  type ResolvedReportDateRange,
+} from "@/lib/reports/date-range";
+import { addDaysYmd } from "@/lib/inventory/alerts";
+import { formatDateInputForTimeZone } from "@/lib/date-input";
 
 // Advanced reporting is a Cloud feature on hosted; unrestricted on self-host.
-const reportProcedure = protectedProcedure.use(requireFeature("advancedReporting"));
+const reportProcedure = protectedProcedure
+  .use(requireRole("admin", "veterinarian"))
+  .use(requireFeature("advancedReporting"));
+
+const reportDateRangeInput = z
+  .object({
+    startDate: z.string().optional(),
+    endDate: z.string().optional(),
+  })
+  .optional();
+
+type ReportsContext = {
+  db: Database;
+  practiceId: string;
+};
+
+function activePracticePredicate(practiceId: string) {
+  return sql`exists (
+    select 1
+    from ${practices}
+    where ${practices.id} = ${practiceId}
+      and ${practices.deletedAt} is null
+  )`;
+}
+
+async function practiceTimeZone(ctx: ReportsContext): Promise<string | null> {
+  const [practice] = await ctx.db
+    .select({ timezone: practices.timezone })
+    .from(practices)
+    .where(and(eq(practices.id, ctx.practiceId), isNull(practices.deletedAt)))
+    .limit(1);
+  if (!practice) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "Practice not found",
+    });
+  }
+  return practice.timezone ?? null;
+}
+
+async function getReportDateRange(
+  ctx: ReportsContext,
+  input: z.infer<typeof reportDateRangeInput>
+): Promise<ResolvedReportDateRange> {
+  try {
+    validateReportDateRangeInput(input);
+    return resolveReportDateRange(
+      input,
+      new Date(),
+      await practiceTimeZone(ctx)
+    );
+  } catch (error) {
+    if (error instanceof TRPCError) {
+      throw error;
+    }
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message:
+        error instanceof Error ? error.message : "Invalid report date range",
+    });
+  }
+}
+
+function sqlStringLiteral(value: string) {
+  return sql.raw(`'${value.replace(/'/g, "''")}'`);
+}
 
 export const reportsRouter = createRouter({
-  revenue: reportProcedure.query(async ({ ctx }) => {
-    const now = new Date();
-    const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
-    const thirtyDaysAgo = new Date(now);
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 29);
-    thirtyDaysAgo.setHours(0, 0, 0, 0);
+  settings: reportProcedure.query(async ({ ctx }) => ({
+    timezone: await practiceTimeZone(ctx),
+  })),
 
-    const baseConds = [
-      eq(invoices.practiceId, ctx.practiceId),
-      isNull(invoices.deletedAt),
-      eq(invoices.status, "paid"),
-    ];
+  revenue: reportProcedure
+    .input(reportDateRangeInput)
+    .query(async ({ ctx, input }) => {
+      const range = await getReportDateRange(ctx, input);
+      const reportTimeZone = sqlStringLiteral(range.timeZone ?? "UTC");
+      const reportDay = sql`
+        date_trunc('day', timezone(${reportTimeZone}, ${invoices.createdAt}))
+      `;
+      const baseConds = [
+        eq(invoices.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(invoices.deletedAt),
+        eq(invoices.status, "paid"),
+        eq(invoices.isEstimate, false),
+      ];
 
-    const [thisMonthResult, lastMonthResult, dailyRows] = await Promise.all([
-      // This month revenue
-      ctx.db
-        .select({
-          total: sql<string>`coalesce(sum(${invoices.total}::numeric), 0)`,
-        })
-        .from(invoices)
-        .where(and(...baseConds, gte(invoices.createdAt, thisMonthStart))),
+      const [rangeResult, previousResult, dailyRows] = await Promise.all([
+        ctx.db
+          .select({
+            total: sql<string>`coalesce(sum(${invoices.total}::numeric), 0)`,
+          })
+          .from(invoices)
+          .where(
+            and(
+              ...baseConds,
+              gte(invoices.createdAt, range.start),
+              lt(invoices.createdAt, range.endExclusive)
+            )
+          ),
 
-      // Last month revenue
-      ctx.db
-        .select({
-          total: sql<string>`coalesce(sum(${invoices.total}::numeric), 0)`,
-        })
-        .from(invoices)
-        .where(
-          and(
-            ...baseConds,
-            gte(invoices.createdAt, lastMonthStart),
-            lte(invoices.createdAt, lastMonthEnd)
+        ctx.db
+          .select({
+            total: sql<string>`coalesce(sum(${invoices.total}::numeric), 0)`,
+          })
+          .from(invoices)
+          .where(
+            and(
+              ...baseConds,
+              gte(invoices.createdAt, range.previousStart),
+              lt(invoices.createdAt, range.previousEndExclusive)
+            )
+          ),
+
+        ctx.db
+          .select({
+            date: sql<string>`to_char(${reportDay}, 'YYYY-MM-DD')`,
+            amount: sql<string>`coalesce(sum(${invoices.total}::numeric), 0)`,
+          })
+          .from(invoices)
+          .where(
+            and(
+              ...baseConds,
+              gte(invoices.createdAt, range.start),
+              lt(invoices.createdAt, range.endExclusive)
+            )
           )
-        ),
+          .groupBy(reportDay)
+          .orderBy(sql`min(${invoices.createdAt})`),
+      ]);
 
-      // Daily revenue last 30 days
-      ctx.db
-        .select({
-          date: sql<string>`to_char(date_trunc('day', ${invoices.createdAt}), 'Mon DD')`,
-          amount: sql<string>`coalesce(sum(${invoices.total}::numeric), 0)`,
-        })
-        .from(invoices)
-        .where(and(...baseConds, gte(invoices.createdAt, thirtyDaysAgo)))
-        .groupBy(sql`date_trunc('day', ${invoices.createdAt})`)
-        .orderBy(sql`date_trunc('day', ${invoices.createdAt})`),
-    ]);
+      const total = parseFloat(String(rangeResult[0]?.total ?? "0"));
+      const previousTotal = parseFloat(String(previousResult[0]?.total ?? "0"));
 
-    return {
-      thisMonth: parseFloat(String(thisMonthResult[0]?.total ?? "0")),
-      lastMonth: parseFloat(String(lastMonthResult[0]?.total ?? "0")),
-      daily: dailyRows.map((r) => ({
-        date: r.date,
-        amount: parseFloat(String(r.amount)),
-      })),
-    };
-  }),
+      return {
+        range,
+        total,
+        previousTotal,
+        thisMonth: total,
+        lastMonth: previousTotal,
+        daily: dailyRows.map((r) => ({
+          date: r.date,
+          amount: parseFloat(String(r.amount)),
+        })),
+      };
+    }),
 
-  appointments: reportProcedure.query(async ({ ctx }) => {
-    const now = new Date();
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  appointments: reportProcedure
+    .input(reportDateRangeInput)
+    .query(async ({ ctx, input }) => {
+      const range = await getReportDateRange(ctx, input);
+      const baseConds = [
+        eq(appointments.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(appointments.deletedAt),
+        gte(appointments.startTime, range.start),
+        lt(appointments.startTime, range.endExclusive),
+      ];
 
-    const baseConds = [
-      eq(appointments.practiceId, ctx.practiceId),
-      isNull(appointments.deletedAt),
-      gte(appointments.startTime, monthStart),
-    ];
-
-    const [totalResult, completedResult, noShowResult, cancelledResult, byDoctor] =
-      await Promise.all([
+      const [
+        totalResult,
+        completedResult,
+        noShowResult,
+        cancelledResult,
+        byDoctor,
+      ] = await Promise.all([
         ctx.db
           .select({ count: sql<number>`count(*)::int` })
           .from(appointments)
@@ -113,77 +221,110 @@ export const reportsRouter = createRouter({
             completed: sql<number>`count(*) filter (where ${appointments.status} = 'checked_out')::int`,
           })
           .from(appointments)
-          .leftJoin(users, eq(appointments.doctorId, users.id))
+          .leftJoin(
+            users,
+            and(
+              eq(appointments.doctorId, users.id),
+              eq(users.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(users.deletedAt)
+            )
+          )
           .where(and(...baseConds))
           .groupBy(users.name)
           .orderBy(sql`count(*) desc`),
       ]);
 
-    const total = Number(totalResult[0]?.count ?? 0);
-    const completed = Number(completedResult[0]?.count ?? 0);
-    const noShows = Number(noShowResult[0]?.count ?? 0);
-    const cancelled = Number(cancelledResult[0]?.count ?? 0);
-    const fillRate = total > 0 ? Math.round((completed / total) * 100) : 0;
+      const total = Number(totalResult[0]?.count ?? 0);
+      const completed = Number(completedResult[0]?.count ?? 0);
+      const noShows = Number(noShowResult[0]?.count ?? 0);
+      const cancelled = Number(cancelledResult[0]?.count ?? 0);
+      const fillRate = total > 0 ? Math.round((completed / total) * 100) : 0;
 
-    return {
-      total,
-      completed,
-      noShows,
-      cancelled,
-      fillRate,
-      byDoctor: byDoctor.map((d) => ({
-        doctorName: d.doctorName ?? "Unassigned",
-        total: Number(d.total),
-        completed: Number(d.completed),
-      })),
-    };
-  }),
+      return {
+        range,
+        total,
+        completed,
+        noShows,
+        cancelled,
+        fillRate,
+        byDoctor: byDoctor.map((d) => ({
+          doctorName: d.doctorName ?? "Unassigned",
+          total: Number(d.total),
+          completed: Number(d.completed),
+        })),
+      };
+    }),
 
-  topServices: reportProcedure.query(async ({ ctx }) => {
-    const rows = await ctx.db
-      .select({
-        name: sql<string>`coalesce(${services.name}, ${invoiceItems.description})`,
-        count: sql<number>`count(*)::int`,
-        revenue: sql<string>`coalesce(sum(${invoiceItems.total}::numeric), 0)`,
-      })
-      .from(invoiceItems)
-      .innerJoin(invoices, eq(invoiceItems.invoiceId, invoices.id))
-      .leftJoin(
-        services,
-        and(
-          eq(invoiceItems.itemId, services.id),
-          eq(invoiceItems.itemType, "service")
+  topServices: reportProcedure
+    .input(reportDateRangeInput)
+    .query(async ({ ctx, input }) => {
+      const range = await getReportDateRange(ctx, input);
+      const rows = await ctx.db
+        .select({
+          name: sql<string>`coalesce(${services.name}, ${invoiceItems.description})`,
+          count: sql<number>`count(*)::int`,
+          revenue: sql<string>`coalesce(sum(${invoiceItems.total}::numeric), 0)`,
+        })
+        .from(invoiceItems)
+        .innerJoin(
+          invoices,
+          and(
+            eq(invoiceItems.invoiceId, invoices.id),
+            eq(invoices.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(invoices.deletedAt)
+          )
         )
-      )
-      .where(
-        and(
-          eq(invoices.practiceId, ctx.practiceId),
-          isNull(invoices.deletedAt),
-          eq(invoiceItems.itemType, "service")
+        .leftJoin(
+          services,
+          and(
+            eq(invoiceItems.itemId, services.id),
+            eq(invoiceItems.itemType, "service"),
+            eq(services.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(services.deletedAt)
+          )
         )
-      )
-      .groupBy(services.name, invoiceItems.description)
-      .orderBy(sql`count(*) desc`)
-      .limit(10);
+        .where(
+          and(
+            eq(invoices.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(invoices.deletedAt),
+            isNull(invoiceItems.deletedAt),
+            eq(invoices.isEstimate, false),
+            ne(invoices.status, "void"),
+            eq(invoiceItems.itemType, "service"),
+            gte(invoices.createdAt, range.start),
+            lt(invoices.createdAt, range.endExclusive)
+          )
+        )
+        .groupBy(services.name, invoiceItems.description)
+        .orderBy(sql`count(*) desc`)
+        .limit(10);
 
-    return rows.map((r) => ({
-      name: r.name,
-      count: Number(r.count),
-      revenue: parseFloat(String(r.revenue)),
-    }));
-  }),
+      return {
+        range,
+        items: rows.map((r) => ({
+          name: r.name,
+          count: Number(r.count),
+          revenue: parseFloat(String(r.revenue)),
+        })),
+      };
+    }),
 
   inventoryAlerts: reportProcedure.query(async ({ ctx }) => {
-    const now = new Date();
-    const ninetyDaysFromNow = new Date(now);
-    ninetyDaysFromNow.setDate(ninetyDaysFromNow.getDate() + 90);
+    const timezone = await practiceTimeZone(ctx);
+    const todayYmd = formatDateInputForTimeZone(new Date(), timezone);
+    const soonYmd = addDaysYmd(todayYmd, 90);
 
     const baseConds = [
       eq(products.practiceId, ctx.practiceId),
+      activePracticePredicate(ctx.practiceId),
       isNull(products.deletedAt),
     ];
 
-    const [lowStock, expiring] = await Promise.all([
+    const [lowStock, expired, expiringSoon] = await Promise.all([
       ctx.db
         .select({
           name: products.name,
@@ -212,12 +353,30 @@ export const reportsRouter = createRouter({
           and(
             ...baseConds,
             sql`${products.expirationDate} is not null`,
-            lte(products.expirationDate, ninetyDaysFromNow.toISOString().split("T")[0])
+            lt(products.expirationDate, todayYmd)
+          )
+        )
+        .orderBy(products.expirationDate),
+
+      ctx.db
+        .select({
+          name: products.name,
+          sku: products.sku,
+          expirationDate: products.expirationDate,
+          stockQuantity: products.stockQuantity,
+        })
+        .from(products)
+        .where(
+          and(
+            ...baseConds,
+            sql`${products.expirationDate} is not null`,
+            gte(products.expirationDate, todayYmd),
+            lte(products.expirationDate, soonYmd)
           )
         )
         .orderBy(products.expirationDate),
     ]);
 
-    return { lowStock, expiring };
+    return { lowStock, expired, expiringSoon };
   }),
 });

@@ -18,7 +18,13 @@ export function planClientImport(
   const normalized = new Set([...existingEmails].map((e) => e.toLowerCase()));
   let duplicates = 0;
   for (const r of records) {
-    if (r.email && normalized.has(r.email.toLowerCase())) duplicates++;
+    const email = r.email?.trim().toLowerCase();
+    if (!email) continue;
+    if (normalized.has(email)) {
+      duplicates++;
+      continue;
+    }
+    normalized.add(email);
   }
   return {
     total: records.length,

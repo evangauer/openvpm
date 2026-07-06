@@ -40,6 +40,7 @@ export const adminRouter = createRouter({
         tier: practices.subscriptionTier,
         billingStatus: practices.billingStatus,
         trialEndsAt: practices.trialEndsAt,
+        timezone: practices.timezone,
         country: practices.country,
         createdAt: practices.createdAt,
       })

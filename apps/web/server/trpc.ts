@@ -3,13 +3,16 @@ import type { Session } from "next-auth";
 import { getServerSession } from "next-auth";
 import superjson from "superjson";
 import { ZodError } from "zod";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { authOptions } from "@/lib/auth";
+import { hasBlankConfiguredNextAuthSecret } from "@/lib/auth-secret";
 import { recordAuditLog } from "@/lib/audit";
 import { db } from "@openpims/db/client";
 import type { Database } from "@openpims/db/client";
 import { withTenant, withSystem } from "@/lib/tenant-db";
-import { practices } from "@openpims/db";
+import { assertHostedRlsRoleOnce } from "@/lib/rls-assertion";
+import { clientIpFromRequest } from "@/lib/request-ip";
+import { practices, users } from "@openpims/db";
 import {
   billingEnforced,
   hasHostedFullAccess,
@@ -43,15 +46,50 @@ export type TRPCContext = {
 
 function clientIp(req?: Request): string | null {
   if (!req) return null;
-  const xff = req.headers.get("x-forwarded-for");
-  if (xff) return xff.split(",")[0]!.trim().slice(0, 45);
-  return req.headers.get("x-real-ip")?.slice(0, 45) ?? null;
+  const ip = clientIpFromRequest(req);
+  return ip === "unknown" ? null : ip;
+}
+
+async function activeSessionOrNull(
+  database: Database,
+  session: AppSession | null
+): Promise<AppSession | null> {
+  if (!session?.user?.id || !session.user.practiceId) {
+    return null;
+  }
+
+  const [activeUser] = await withTenant(database, session.user.practiceId, (tx) =>
+    tx
+      .select({ id: users.id })
+      .from(users)
+      .innerJoin(
+        practices,
+        and(
+          eq(practices.id, users.practiceId),
+          isNull(practices.deletedAt)
+        )
+      )
+      .where(
+        and(
+          eq(users.id, session.user.id),
+          eq(users.practiceId, session.user.practiceId),
+          isNull(users.deletedAt)
+        )
+      )
+      .limit(1)
+  );
+
+  return activeUser ? session : null;
 }
 
 export async function createTRPCContext(opts?: {
   req?: Request;
 }): Promise<TRPCContext> {
-  const session = (await getServerSession(authOptions)) as AppSession | null;
+  await assertHostedRlsRoleOnce();
+  const rawSession = hasBlankConfiguredNextAuthSecret()
+    ? null
+    : ((await getServerSession(authOptions)) as AppSession | null);
+  const session = await activeSessionOrNull(db, rawSession);
   return { db, session, ip: clientIp(opts?.req) };
 }
 
@@ -72,9 +110,14 @@ const t = initTRPC.context<TRPCContext>().create({
 export const createRouter = t.router;
 
 const HOSTED_READ_ONLY_MUTATION_ALLOWLIST = new Set([
+  "settings.requestAccountDeletion",
   "subscription.createCheckout",
   "subscription.openBillingPortal",
 ]);
+
+function practiceNotFound(): TRPCError {
+  return new TRPCError({ code: "NOT_FOUND", message: "Practice not found" });
+}
 
 /**
  * Public / pre-auth endpoints (registration, the token-based client portal).
@@ -123,13 +166,18 @@ export const protectedProcedure = t.procedure.use(
             trialEndsAt: practices.trialEndsAt,
           })
           .from(practices)
-          .where(eq(practices.id, user.practiceId))
+          .where(
+            and(eq(practices.id, user.practiceId), isNull(practices.deletedAt))
+          )
           .limit(1);
+        if (!practice) {
+          throw practiceNotFound();
+        }
         if (
           !hasHostedFullAccess(
-            practice?.tier,
-            practice?.billingStatus,
-            practice?.trialEndsAt
+            practice.tier,
+            practice.billingStatus,
+            practice.trialEndsAt
           )
         ) {
           throw new TRPCError({
@@ -186,12 +234,20 @@ export function requireFeature(feature: Feature) {
           trialEndsAt: practices.trialEndsAt,
         })
         .from(practices)
-        .where(eq(practices.id, ctx.session.user.practiceId))
+        .where(
+          and(
+            eq(practices.id, ctx.session.user.practiceId),
+            isNull(practices.deletedAt)
+          )
+        )
         .limit(1);
+      if (!practice) {
+        throw practiceNotFound();
+      }
       const tier = effectiveTier(
-        practice?.tier,
-        practice?.billingStatus,
-        practice?.trialEndsAt
+        practice.tier,
+        practice.billingStatus,
+        practice.trialEndsAt
       );
       if (!isEntitled(tier, feature, true)) {
         throw new TRPCError({

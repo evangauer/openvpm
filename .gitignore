@@ -29,9 +29,6 @@ dist/
 .DS_Store
 Thumbs.db
 
-# Drizzle
-packages/db/drizzle/
-
 # Debug
 npm-debug.log*
 pnpm-debug.log*

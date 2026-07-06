@@ -1,5 +1,19 @@
 import { z } from "zod";
-import { eq, and, isNull, or, ilike, gte, lte, lt, desc, asc, inArray } from "drizzle-orm";
+import {
+  eq,
+  and,
+  isNull,
+  or,
+  ilike,
+  gte,
+  lte,
+  lt,
+  desc,
+  asc,
+  inArray,
+  not,
+  gt,
+} from "drizzle-orm";
 import type { Database } from "@openpims/db/client";
 import {
   clients,
@@ -10,12 +24,43 @@ import {
   problemList,
   treatmentPlans,
   treatmentPlanItems,
+  users,
+  rooms,
+  practices,
+  soapNotes,
 } from "@openpims/db";
 import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
-import { calculateDose } from "@/lib/dosing";
-import { summarizePlanProgress, type PlanItemStatus } from "@/lib/treatment-plans/progress";
+import { appointmentCreatedWebhookPayload } from "@/lib/appointment-webhooks";
+import {
+  dateInputTimeUtcInstant,
+  formatDateInputForTimeZone,
+} from "@/lib/date-input";
+import {
+  FORMULARY,
+  DOSING_WEIGHT_MAX_KG,
+  FORMULARY_DRUG_ID_MAX_LENGTH,
+  calculateDose,
+  isFormularyDrugId,
+} from "@/lib/dosing";
+import {
+  summarizePlanProgress,
+  type PlanItemStatus,
+} from "@/lib/treatment-plans/progress";
 import { findOpenSlots } from "@/lib/scheduling/availability";
-import { not, gt } from "drizzle-orm";
+import {
+  conflictMessage,
+  detectConflicts,
+  type ExistingBooking,
+} from "@/lib/scheduling/conflicts";
+import {
+  clinicalDecimalInput,
+  optionalClinicalTextInput,
+} from "@/lib/records/clinical-inputs";
+import {
+  hasSoapContent,
+  normalizeSoapSection,
+  SOAP_SECTION_MAX_LENGTH,
+} from "@/lib/records/soap-content";
 
 /**
  * The agent's "hands": typed tools that operate the practice's data, always
@@ -37,11 +82,240 @@ export interface AgentTool {
   /** Runtime validation of the model-supplied args. */
   zod: z.ZodTypeAny;
   readOnly: boolean;
+  requiredApiScopes?: AgentWriteApiScope[];
   execute(args: unknown, ctx: AgentToolContext): Promise<unknown>;
+}
+
+export type AgentWriteApiScope = "appointments:write" | "records:write";
+
+export class AgentPracticeNotFoundError extends Error {
+  constructor() {
+    super("Practice not found");
+    this.name = "AgentPracticeNotFoundError";
+  }
+}
+
+export const AGENT_SEARCH_QUERY_MAX_LENGTH = 100;
+export const AGENT_NOTES_MAX_LENGTH = 2000;
+const FORMULARY_DRUG_IDS = FORMULARY.map((drug) => drug.id);
+
+const agentSearchQueryInput = z
+  .string()
+  .trim()
+  .min(1)
+  .max(AGENT_SEARCH_QUERY_MAX_LENGTH);
+
+const agentOptionalNotesInput = z
+  .string()
+  .trim()
+  .max(AGENT_NOTES_MAX_LENGTH)
+  .optional();
+
+const formularyDrugIdInput = z
+  .string()
+  .trim()
+  .min(1)
+  .max(FORMULARY_DRUG_ID_MAX_LENGTH)
+  .refine(isFormularyDrugId, "Drug must be in the formulary.");
+
+const vitalTemperatureInput = clinicalDecimalInput("Temperature", {
+  min: 20,
+  max: 45,
+  scale: 1,
+});
+const vitalWeightInput = clinicalDecimalInput("Weight", { positive: true, max: 200, scale: 3 });
+const vitalCapillaryRefillInput = clinicalDecimalInput("Capillary refill", {
+  min: 0,
+  max: 10,
+  scale: 1,
+});
+
+async function practiceTimeZone(
+  ctx: AgentToolContext
+): Promise<string | null> {
+  const [practice] = await ctx.db
+    .select({ timezone: practices.timezone })
+    .from(practices)
+    .where(and(eq(practices.id, ctx.practiceId), isNull(practices.deletedAt)))
+    .limit(1);
+  if (!practice) {
+    throw new AgentPracticeNotFoundError();
+  }
+  return practice.timezone ?? null;
+}
+
+async function practiceDateInput(ctx: AgentToolContext): Promise<string> {
+  const timezone = await practiceTimeZone(ctx);
+  return formatDateInputForTimeZone(new Date(), timezone);
 }
 
 function clientName(first?: string | null, last?: string | null): string {
   return [first, last].filter(Boolean).join(" ");
+}
+
+async function activeClientExists(
+  ctx: AgentToolContext,
+  clientId: string
+): Promise<boolean> {
+  const [client] = await ctx.db
+    .select({ id: clients.id })
+    .from(clients)
+    .where(
+      and(
+        eq(clients.id, clientId),
+        eq(clients.practiceId, ctx.practiceId),
+        isNull(clients.deletedAt)
+      )
+    )
+    .limit(1);
+  return Boolean(client);
+}
+
+async function activePatient(
+  ctx: AgentToolContext,
+  patientId: string
+): Promise<{ id: string; clientId: string } | null> {
+  const [patient] = await ctx.db
+    .select({ id: patients.id, clientId: patients.clientId })
+    .from(patients)
+    .where(
+      and(
+        eq(patients.id, patientId),
+        eq(patients.practiceId, ctx.practiceId),
+        isNull(patients.deletedAt)
+      )
+    )
+    .limit(1);
+  return patient ?? null;
+}
+
+async function activeAppointmentForPatient(
+  ctx: AgentToolContext,
+  appointmentId: string,
+  patientId: string
+): Promise<boolean> {
+  const [appointment] = await ctx.db
+    .select({ id: appointments.id })
+    .from(appointments)
+    .where(
+      and(
+        eq(appointments.id, appointmentId),
+        eq(appointments.patientId, patientId),
+        eq(appointments.practiceId, ctx.practiceId),
+        isNull(appointments.deletedAt)
+      )
+    )
+    .limit(1);
+  return Boolean(appointment);
+}
+
+async function activeDoctorExists(
+  ctx: AgentToolContext,
+  doctorId: string
+): Promise<boolean> {
+  const [doctor] = await ctx.db
+    .select({ id: users.id })
+    .from(users)
+    .where(
+      and(
+        eq(users.id, doctorId),
+        eq(users.practiceId, ctx.practiceId),
+        eq(users.role, "veterinarian"),
+        isNull(users.deletedAt)
+      )
+    )
+    .limit(1);
+  return Boolean(doctor);
+}
+
+async function activeRoomExists(
+  ctx: AgentToolContext,
+  roomId: string
+): Promise<boolean> {
+  const [room] = await ctx.db
+    .select({ id: rooms.id })
+    .from(rooms)
+    .where(
+      and(
+        eq(rooms.id, roomId),
+        eq(rooms.practiceId, ctx.practiceId),
+        isNull(rooms.deletedAt)
+      )
+    )
+    .limit(1);
+  return Boolean(room);
+}
+
+async function validateScheduleResources(
+  ctx: AgentToolContext,
+  input: { doctorId?: string; roomId?: string }
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (input.doctorId && !(await activeDoctorExists(ctx, input.doctorId))) {
+    return { ok: false, error: "Doctor not found" };
+  }
+
+  if (input.roomId && !(await activeRoomExists(ctx, input.roomId))) {
+    return { ok: false, error: "Room not found" };
+  }
+
+  return { ok: true };
+}
+
+async function validateAppointmentTargets(
+  ctx: AgentToolContext,
+  input: { clientId?: string; patientId?: string; doctorId?: string }
+): Promise<
+  | { ok: true; clientId: string | null }
+  | { ok: false; error: string }
+> {
+  let patientClientId: string | undefined;
+  if (input.patientId) {
+    const patient = await activePatient(ctx, input.patientId);
+    if (!patient) return { ok: false, error: "Patient not found" };
+    patientClientId = patient.clientId;
+  }
+
+  if (input.clientId && patientClientId && input.clientId !== patientClientId) {
+    return { ok: false, error: "Patient not found" };
+  }
+
+  const clientId = input.clientId ?? patientClientId;
+  if (clientId && !(await activeClientExists(ctx, clientId))) {
+    return { ok: false, error: "Client not found" };
+  }
+
+  const resources = await validateScheduleResources(ctx, {
+    doctorId: input.doctorId,
+  });
+  if (!resources.ok) return resources;
+
+  return { ok: true, clientId: clientId ?? null };
+}
+
+async function fetchOverlappingAppointments(
+  ctx: AgentToolContext,
+  startTime: Date,
+  endTime: Date
+): Promise<ExistingBooking[]> {
+  return ctx.db
+    .select({
+      id: appointments.id,
+      startTime: appointments.startTime,
+      endTime: appointments.endTime,
+      doctorId: appointments.doctorId,
+      roomId: appointments.roomId,
+      status: appointments.status,
+    })
+    .from(appointments)
+    .where(
+      and(
+        eq(appointments.practiceId, ctx.practiceId),
+        isNull(appointments.deletedAt),
+        not(inArray(appointments.status, ["cancelled", "no_show"])),
+        lt(appointments.startTime, endTime),
+        gt(appointments.endTime, startTime)
+      )
+    );
 }
 
 const findClient: AgentTool = {
@@ -53,7 +327,7 @@ const findClient: AgentTool = {
     properties: { query: { type: "string", description: "Name, email, or phone fragment" } },
     required: ["query"],
   },
-  zod: z.object({ query: z.string().min(1) }),
+  zod: z.object({ query: agentSearchQueryInput }),
   readOnly: true,
   async execute(args, ctx) {
     const { query } = this.zod.parse(args) as { query: string };
@@ -194,8 +468,23 @@ const listAppointments: AgentTool = {
         clientLast: clients.lastName,
       })
       .from(appointments)
-      .leftJoin(patients, eq(appointments.patientId, patients.id))
-      .leftJoin(clients, eq(appointments.clientId, clients.id))
+      .leftJoin(
+        patients,
+        and(
+          eq(appointments.patientId, patients.id),
+          eq(patients.clientId, appointments.clientId),
+          eq(patients.practiceId, ctx.practiceId),
+          isNull(patients.deletedAt)
+        )
+      )
+      .leftJoin(
+        clients,
+        and(
+          eq(appointments.clientId, clients.id),
+          eq(clients.practiceId, ctx.practiceId),
+          isNull(clients.deletedAt)
+        )
+      )
       .where(
         and(
           eq(appointments.practiceId, ctx.practiceId),
@@ -239,12 +528,13 @@ const bookAppointment: AgentTool = {
       clientId: z.string().uuid().optional(),
       patientId: z.string().uuid().optional(),
       doctorId: z.string().uuid().optional(),
-      notes: z.string().optional(),
+      notes: agentOptionalNotesInput,
     })
     .refine((b) => new Date(b.endTime) > new Date(b.startTime), {
       message: "endTime must be after startTime",
     }),
   readOnly: false,
+  requiredApiScopes: ["appointments:write"],
   async execute(args, ctx) {
     const input = this.zod.parse(args) as {
       startTime: string;
@@ -254,24 +544,38 @@ const bookAppointment: AgentTool = {
       doctorId?: string;
       notes?: string;
     };
+    const targets = await validateAppointmentTargets(ctx, input);
+    if (!targets.ok) return { error: targets.error };
+
+    const startTime = new Date(input.startTime);
+    const endTime = new Date(input.endTime);
+    if (input.doctorId) {
+      const message = conflictMessage(
+        detectConflicts(
+          { startTime, endTime, doctorId: input.doctorId },
+          await fetchOverlappingAppointments(ctx, startTime, endTime)
+        )
+      );
+      if (message) return { error: message };
+    }
+
     const [created] = await ctx.db
       .insert(appointments)
       .values({
         practiceId: ctx.practiceId,
-        startTime: new Date(input.startTime),
-        endTime: new Date(input.endTime),
-        clientId: input.clientId ?? null,
+        startTime,
+        endTime,
+        clientId: targets.clientId,
         patientId: input.patientId ?? null,
         doctorId: input.doctorId ?? null,
         notes: input.notes ?? null,
       })
       .returning();
-    await dispatchWebhookEvent(ctx.practiceId, "appointment.created", {
-      id: created!.id,
-      startTime: created!.startTime,
-      endTime: created!.endTime,
-      source: "agent",
-    });
+    await dispatchWebhookEvent(
+      ctx.practiceId,
+      "appointment.created",
+      appointmentCreatedWebhookPayload(created!, "agent")
+    );
     return { id: created!.id, status: created!.status };
   },
 };
@@ -283,7 +587,7 @@ const listOverdueVaccinations: AgentTool = {
   zod: z.object({}),
   readOnly: true,
   async execute(_args, ctx) {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = await practiceDateInput(ctx);
     const rows = await ctx.db
       .select({
         patientId: patients.id,
@@ -294,8 +598,22 @@ const listOverdueVaccinations: AgentTool = {
         nextDueDate: vaccinationRecords.nextDueDate,
       })
       .from(vaccinationRecords)
-      .innerJoin(patients, eq(vaccinationRecords.patientId, patients.id))
-      .leftJoin(clients, eq(patients.clientId, clients.id))
+      .innerJoin(
+        patients,
+        and(
+          eq(vaccinationRecords.patientId, patients.id),
+          eq(patients.practiceId, ctx.practiceId),
+          isNull(patients.deletedAt)
+        )
+      )
+      .leftJoin(
+        clients,
+        and(
+          eq(patients.clientId, clients.id),
+          eq(clients.practiceId, ctx.practiceId),
+          isNull(clients.deletedAt)
+        )
+      )
       .where(
         and(
           eq(vaccinationRecords.practiceId, ctx.practiceId),
@@ -323,18 +641,27 @@ const calculateDrugDose: AgentTool = {
   inputSchema: {
     type: "object",
     properties: {
-      drugId: { type: "string", description: "Formulary drug id, e.g. 'carprofen'" },
+      drugId: {
+        type: "string",
+        enum: FORMULARY_DRUG_IDS,
+        maxLength: FORMULARY_DRUG_ID_MAX_LENGTH,
+        description: "Formulary drug id, e.g. 'carprofen'",
+      },
       species: { type: "string", enum: ["canine", "feline"] },
-      weightKg: { type: "number" },
-      concentrationMgPerMl: { type: "number" },
+      weightKg: {
+        type: "number",
+        exclusiveMinimum: 0,
+        maximum: DOSING_WEIGHT_MAX_KG,
+      },
+      concentrationMgPerMl: { type: "number", exclusiveMinimum: 0 },
     },
     required: ["drugId", "species", "weightKg"],
   },
   zod: z.object({
-    drugId: z.string().min(1),
+    drugId: formularyDrugIdInput,
     species: z.enum(["canine", "feline"]),
-    weightKg: z.number().positive(),
-    concentrationMgPerMl: z.number().positive().optional(),
+    weightKg: z.number().finite().positive().max(DOSING_WEIGHT_MAX_KG),
+    concentrationMgPerMl: z.number().finite().positive().optional(),
   }),
   readOnly: true,
   async execute(args) {
@@ -409,27 +736,30 @@ const recordVitalSigns: AgentTool = {
     type: "object",
     properties: {
       patientId: { type: "string", description: "Patient UUID" },
-      temperatureC: { type: "number" },
+      temperatureC: { type: "number", description: "Celsius, one decimal place max" },
       heartRateBpm: { type: "number" },
       respiratoryRateBpm: { type: "number" },
-      weightKg: { type: "number" },
+      weightKg: { type: "number", description: "Kilograms, three decimal places max" },
       bodyConditionScore: { type: "number", description: "1-9" },
       painScore: { type: "number", description: "0-10" },
+      capillaryRefillSec: { type: "number", description: "Seconds, one decimal place max" },
       notes: { type: "string" },
     },
     required: ["patientId"],
   },
   zod: z.object({
     patientId: z.string().uuid(),
-    temperatureC: z.number().min(20).max(45).optional(),
+    temperatureC: vitalTemperatureInput.optional(),
     heartRateBpm: z.number().int().min(0).max(400).optional(),
     respiratoryRateBpm: z.number().int().min(0).max(300).optional(),
-    weightKg: z.number().positive().max(200).optional(),
+    weightKg: vitalWeightInput.optional(),
     bodyConditionScore: z.number().int().min(1).max(9).optional(),
     painScore: z.number().int().min(0).max(10).optional(),
-    notes: z.string().optional(),
+    capillaryRefillSec: vitalCapillaryRefillInput.optional(),
+    notes: agentOptionalNotesInput,
   }),
   readOnly: false,
+  requiredApiScopes: ["records:write"],
   async execute(args, ctx) {
     const input = this.zod.parse(args) as {
       patientId: string;
@@ -439,8 +769,13 @@ const recordVitalSigns: AgentTool = {
       weightKg?: number;
       bodyConditionScore?: number;
       painScore?: number;
+      capillaryRefillSec?: number;
       notes?: string;
     };
+    if (!(await activePatient(ctx, input.patientId))) {
+      return { error: "Patient not found" };
+    }
+
     const [row] = await ctx.db
       .insert(vitalSigns)
       .values({
@@ -454,10 +789,109 @@ const recordVitalSigns: AgentTool = {
         weightKg: input.weightKg?.toString(),
         bodyConditionScore: input.bodyConditionScore,
         painScore: input.painScore,
+        capillaryRefillSec: input.capillaryRefillSec?.toString(),
         notes: input.notes ?? null,
       })
       .returning({ id: vitalSigns.id, recordedAt: vitalSigns.recordedAt });
     return { id: row!.id, recordedAt: row!.recordedAt };
+  },
+};
+
+const recordSoapNote: AgentTool = {
+  name: "record_soap_note",
+  description:
+    "Create a SOAP note for a patient. Use only after grounding the note in the chart or staff-provided transcript.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      patientId: { type: "string", description: "Patient UUID" },
+      appointmentId: {
+        type: "string",
+        description: "Optional appointment UUID",
+      },
+      subjective: { type: "string", maxLength: SOAP_SECTION_MAX_LENGTH },
+      objective: { type: "string", maxLength: SOAP_SECTION_MAX_LENGTH },
+      assessment: { type: "string", maxLength: SOAP_SECTION_MAX_LENGTH },
+      plan: { type: "string", maxLength: SOAP_SECTION_MAX_LENGTH },
+    },
+    required: ["patientId"],
+  },
+  zod: z.object({
+    patientId: z.string().uuid(),
+    appointmentId: z.string().uuid().optional(),
+    subjective: optionalClinicalTextInput(
+      "SOAP subjective",
+      SOAP_SECTION_MAX_LENGTH
+    ),
+    objective: optionalClinicalTextInput(
+      "SOAP objective",
+      SOAP_SECTION_MAX_LENGTH
+    ),
+    assessment: optionalClinicalTextInput(
+      "SOAP assessment",
+      SOAP_SECTION_MAX_LENGTH
+    ),
+    plan: optionalClinicalTextInput("SOAP plan", SOAP_SECTION_MAX_LENGTH),
+  }),
+  readOnly: false,
+  requiredApiScopes: ["records:write"],
+  async execute(args, ctx) {
+    const input = this.zod.parse(args) as {
+      patientId: string;
+      appointmentId?: string;
+      subjective?: string;
+      objective?: string;
+      assessment?: string;
+      plan?: string;
+    };
+    if (!(await activePatient(ctx, input.patientId))) {
+      return { error: "Patient not found" };
+    }
+    if (
+      input.appointmentId &&
+      !(await activeAppointmentForPatient(
+        ctx,
+        input.appointmentId,
+        input.patientId
+      ))
+    ) {
+      return { error: "Appointment not found" };
+    }
+
+    const normalizedNote = {
+      subjective: normalizeSoapSection(input.subjective),
+      objective: normalizeSoapSection(input.objective),
+      assessment: normalizeSoapSection(input.assessment),
+      plan: normalizeSoapSection(input.plan),
+    };
+    if (!hasSoapContent(normalizedNote)) {
+      return { error: "SOAP note must include at least one section." };
+    }
+
+    const [note] = await ctx.db
+      .insert(soapNotes)
+      .values({
+        practiceId: ctx.practiceId,
+        patientId: input.patientId,
+        appointmentId: input.appointmentId ?? null,
+        authorId: ctx.userId,
+        ...normalizedNote,
+      })
+      .returning({
+        id: soapNotes.id,
+        patientId: soapNotes.patientId,
+        appointmentId: soapNotes.appointmentId,
+        authorId: soapNotes.authorId,
+      });
+
+    await dispatchWebhookEvent(ctx.practiceId, "soap_note.created", {
+      id: note!.id,
+      patientId: note!.patientId,
+      appointmentId: note!.appointmentId,
+      authorId: note!.authorId,
+      source: "agent",
+    });
+    return { id: note!.id, patientId: note!.patientId };
   },
 };
 
@@ -489,8 +923,20 @@ const findOpenSlotsTool: AgentTool = {
       doctorId?: string;
       roomId?: string;
     };
-    const dayStart = new Date(`${input.date}T08:00:00`);
-    const dayEnd = new Date(`${input.date}T18:00:00`);
+    const resources = await validateScheduleResources(ctx, input);
+    if (!resources.ok) return { error: resources.error };
+
+    const timezone = await practiceTimeZone(ctx);
+    const dayStart = dateInputTimeUtcInstant(
+      input.date,
+      { hour: 8 },
+      timezone
+    );
+    const dayEnd = dateInputTimeUtcInstant(
+      input.date,
+      { hour: 18 },
+      timezone
+    );
 
     const rows = await ctx.db
       .select({
@@ -535,6 +981,7 @@ export const AGENT_TOOLS: AgentTool[] = [
   calculateDrugDose,
   listTreatmentPlans,
   recordVitalSigns,
+  recordSoapNote,
 ];
 
 export function getTool(name: string): AgentTool | undefined {

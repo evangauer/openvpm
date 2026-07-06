@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useSession } from "next-auth/react";
 import { ArrowLeft, ArrowRight, Loader2, PawPrint } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -57,18 +58,24 @@ export function OnboardingJourneyProvider({
 }: {
   children: React.ReactNode;
 }) {
+  const { data: session, status } = useSession();
+  const isAdmin =
+    status === "authenticated" && session?.user?.role === "admin";
   // null = closed; a number is the active step index.
   const [index, setIndex] = useState<number | null>(null);
-  const openJourney = useCallback(() => setIndex(0), []);
+  const openJourney = useCallback(() => {
+    if (!isAdmin) return;
+
+    setIndex(0);
+  }, [isAdmin]);
+  const isOpen = isAdmin && index !== null;
 
   return (
     <OnboardingJourneyContext.Provider
-      value={{ openJourney, isOpen: index !== null }}
+      value={{ openJourney, isOpen }}
     >
       {children}
-      {index !== null ? (
-        <JourneyShell index={index} setIndex={setIndex} />
-      ) : null}
+      {isOpen ? <JourneyShell index={index!} setIndex={setIndex} /> : null}
     </OnboardingJourneyContext.Provider>
   );
 }

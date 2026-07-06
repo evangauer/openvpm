@@ -22,6 +22,17 @@ import { FormField } from "@/components/ui/form-field";
 import { cn, initials, isValidEmail } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
+import {
+  AUTH_PASSWORD_MAX_LENGTH,
+  AUTH_PASSWORD_MIN_LENGTH,
+} from "@/lib/auth-password-policy";
+import {
+  AUTH_EMAIL_MAX_LENGTH,
+  AUTH_PRACTICE_NAME_MAX_LENGTH,
+  isAuthEmailLengthValid,
+  isRequiredAuthTextValid,
+} from "@/lib/auth-input-policy";
+import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
 
 export default function RegisterPage() {
   return (
@@ -48,10 +59,20 @@ function RegisterPageInner() {
   const [loading, setLoading] = useState(false);
 
   const registerMutation = trpc.auth.register.useMutation({
-    onSuccess: async () => {
-      // Sign in immediately so the new practice lands directly in its trial.
-      // Email verification is soft (a nudge banner in-app), not a gate, so we
-      // never block the trial/onboarding on an email round-trip.
+    onSuccess: async (data) => {
+      if (data.checkoutUrl) {
+        if (!isSafeCheckoutRedirectUrl(data.checkoutUrl)) {
+          toast.error("Hosted checkout is unavailable. Please try again.");
+          setLoading(false);
+          return;
+        }
+        window.location.href = data.checkoutUrl;
+        return;
+      }
+
+      // Self-hosted or unconfigured local billing lands directly in the app.
+      // Hosted Cloud signups with Stripe configured are sent to card-collected
+      // checkout first so the trial can convert cleanly at the end.
       const result = await signIn("credentials", {
         email: email.trim().toLowerCase(),
         password,
@@ -77,11 +98,28 @@ function RegisterPageInner() {
   function validate(): string | null {
     if (practiceName.trim().length < 2)
       return "Add your practice name to continue.";
+    if (practiceName.trim().length > AUTH_PRACTICE_NAME_MAX_LENGTH)
+      return `Practice name must be at most ${AUTH_PRACTICE_NAME_MAX_LENGTH} characters.`;
+    if (!isAuthEmailLengthValid(email))
+      return `Email must be at most ${AUTH_EMAIL_MAX_LENGTH} characters.`;
     if (!isValidEmail(email)) return "Add a valid work email.";
-    if (password.length < 8)
-      return "Use at least 8 characters for the password.";
+    if (password.length < AUTH_PASSWORD_MIN_LENGTH)
+      return `Use at least ${AUTH_PASSWORD_MIN_LENGTH} characters for the password.`;
+    if (password.length > AUTH_PASSWORD_MAX_LENGTH)
+      return `Use at most ${AUTH_PASSWORD_MAX_LENGTH} characters for the password.`;
     return null;
   }
+
+  const canSubmit =
+    isRequiredAuthTextValid(
+      practiceName,
+      AUTH_PRACTICE_NAME_MAX_LENGTH,
+      2
+    ) &&
+    isAuthEmailLengthValid(email) &&
+    isValidEmail(email) &&
+    password.length >= AUTH_PASSWORD_MIN_LENGTH &&
+    password.length <= AUTH_PASSWORD_MAX_LENGTH;
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -136,6 +174,7 @@ function RegisterPageInner() {
                 onChange={(e) => setPracticeName(e.target.value)}
                 placeholder="Neighborhood Veterinary"
                 autoFocus
+                maxLength={AUTH_PRACTICE_NAME_MAX_LENGTH}
                 required
               />
             </FormField>
@@ -147,6 +186,7 @@ function RegisterPageInner() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="you@clinic.com"
+                maxLength={AUTH_EMAIL_MAX_LENGTH}
                 required
               />
             </FormField>
@@ -154,7 +194,7 @@ function RegisterPageInner() {
             <FormField
               label="Password"
               htmlFor="password"
-              description="At least 8 characters."
+              description={`At least ${AUTH_PASSWORD_MIN_LENGTH} characters.`}
             >
               <Input
                 id="password"
@@ -162,12 +202,17 @@ function RegisterPageInner() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Create a password"
-                minLength={8}
+                minLength={AUTH_PASSWORD_MIN_LENGTH}
+                maxLength={AUTH_PASSWORD_MAX_LENGTH}
                 required
               />
             </FormField>
 
-            <Button type="submit" disabled={loading} className="mt-1 w-full">
+            <Button
+              type="submit"
+              disabled={!canSubmit || loading || registerMutation.isPending}
+              className="mt-1 w-full"
+            >
               {loading ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -183,7 +228,7 @@ function RegisterPageInner() {
 
             <p className="flex items-center justify-center gap-1.5 text-xs text-slate-500">
               <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
-              Free for 14 days. No card needed.
+              Hosted Cloud trials collect a card securely with Stripe.
             </p>
           </form>
 

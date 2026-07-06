@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import crypto from "node:crypto";
 
+function nonBlank(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
 /**
  * Whether a scheduled-job (cron) invocation is authorized.
  *
@@ -12,14 +17,14 @@ import crypto from "node:crypto";
  * — an unauthenticated cron sweep would be a cross-tenant data risk.
  */
 export function isCronAuthorized(request: Request): boolean {
-  const secret = process.env.CRON_SECRET;
+  const secret = nonBlank(process.env.CRON_SECRET);
   if (!secret) return false;
 
   const authorization = request.headers.get("authorization");
   const bearer = authorization?.toLowerCase().startsWith("bearer ")
-    ? authorization.slice(7).trim()
+    ? nonBlank(authorization.slice(7))
     : null;
-  const provided = bearer ?? request.headers.get("x-cron-secret");
+  const provided = bearer ?? nonBlank(request.headers.get("x-cron-secret"));
 
   return !!provided && safeEqual(provided, secret);
 }

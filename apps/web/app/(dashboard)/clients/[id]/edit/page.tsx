@@ -2,14 +2,87 @@
 
 import { useState, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft } from "lucide-react";
+import { useSession } from "next-auth/react";
+import { AlertCircle, ArrowLeft, Loader2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
+import { EmptyState } from "@/components/common/empty-state";
 import { toast } from "sonner";
+import {
+  CLIENT_ADDRESS_MAX_LENGTH,
+  CLIENT_CITY_MAX_LENGTH,
+  CLIENT_EMAIL_MAX_LENGTH,
+  CLIENT_NAME_MAX_LENGTH,
+  CLIENT_PHONE_MAX_LENGTH,
+  CLIENT_STATE_MAX_LENGTH,
+  CLIENT_ZIP_MAX_LENGTH,
+  isOptionalClientTextValid,
+  isRequiredClientTextValid,
+} from "@/lib/clients/policy";
+
+function EditClientLoadingPanel() {
+  return (
+    <div className="flex items-center justify-center gap-2 rounded-lg border border-border bg-card p-8 text-sm text-muted-foreground">
+      <Loader2 className="h-4 w-4 animate-spin" />
+      Loading client...
+    </div>
+  );
+}
 
 export default function EditClientPage() {
+  const params = useParams<{ id: string }>();
+  const router = useRouter();
+  const { data: session, status } = useSession();
+
+  if (status === "loading") {
+    return (
+      <div className="flex items-center justify-center gap-2 rounded-lg border border-border bg-card p-8 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Checking client access...
+      </div>
+    );
+  }
+
+  if (!canManageClientFormRole(session?.user?.role)) {
+    return (
+      <div className="max-w-2xl">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => router.push(`/clients/${params.id}`)}
+          className="mb-4"
+        >
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Back to Client
+        </Button>
+        <EmptyState
+          icon={AlertCircle}
+          title="Client actions are read-only"
+          description="Only staff roles with client write access can edit clients."
+          action={{
+            label: "Back to Client",
+            onClick: () => router.push(`/clients/${params.id}`),
+          }}
+        />
+      </div>
+    );
+  }
+
+  return <EditClientForm />;
+}
+
+function canManageClientFormRole(role?: string | null): boolean {
+  return (
+    role === "admin" ||
+    role === "veterinarian" ||
+    role === "technician" ||
+    role === "front_desk"
+  );
+}
+
+function EditClientForm() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const [form, setForm] = useState({
@@ -25,7 +98,11 @@ export default function EditClientPage() {
   const [smsConsent, setSmsConsent] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const { data: client, isLoading } = trpc.clients.getById.useQuery(
+  const {
+    data: client,
+    isLoading,
+    error: loadError,
+  } = trpc.clients.getById.useQuery(
     { id: params.id },
     { enabled: !!params.id }
   );
@@ -57,12 +134,26 @@ export default function EditClientPage() {
     },
   });
 
+  const canSubmit =
+    isRequiredClientTextValid(form.firstName, CLIENT_NAME_MAX_LENGTH) &&
+    isRequiredClientTextValid(form.lastName, CLIENT_NAME_MAX_LENGTH) &&
+    isOptionalClientTextValid(form.email, CLIENT_EMAIL_MAX_LENGTH) &&
+    isOptionalClientTextValid(form.phone, CLIENT_PHONE_MAX_LENGTH) &&
+    isOptionalClientTextValid(form.address, CLIENT_ADDRESS_MAX_LENGTH) &&
+    isOptionalClientTextValid(form.city, CLIENT_CITY_MAX_LENGTH) &&
+    isOptionalClientTextValid(form.state, CLIENT_STATE_MAX_LENGTH) &&
+    isOptionalClientTextValid(form.zip, CLIENT_ZIP_MAX_LENGTH);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
-    if (!form.firstName.trim() || !form.lastName.trim()) {
-      setError("First name and last name are required.");
+    if (!client) {
+      setError("Load the client before saving changes.");
+      return;
+    }
+    if (!canSubmit) {
+      setError("Check required fields and field lengths.");
       return;
     }
 
@@ -85,8 +176,24 @@ export default function EditClientPage() {
   };
 
   if (isLoading) {
+    return <EditClientLoadingPanel />;
+  }
+
+  if (loadError || !client) {
     return (
-      <div className="text-center text-muted-foreground py-12">Loading...</div>
+      <EmptyState
+        icon={AlertCircle}
+        title="Unable to load client"
+        description={
+          loadError?.message ??
+          "Choose a client from the Clients list before editing."
+        }
+        action={{
+          label: "Back to Clients",
+          onClick: () => router.push("/clients"),
+          icon: ArrowLeft,
+        }}
+      />
     );
   }
 
@@ -125,6 +232,7 @@ export default function EditClientPage() {
               onChange={(e) => updateField("firstName", e.target.value)}
               placeholder="First name"
               className="mt-1"
+              maxLength={CLIENT_NAME_MAX_LENGTH}
               required
             />
           </div>
@@ -138,6 +246,7 @@ export default function EditClientPage() {
               onChange={(e) => updateField("lastName", e.target.value)}
               placeholder="Last name"
               className="mt-1"
+              maxLength={CLIENT_NAME_MAX_LENGTH}
               required
             />
           </div>
@@ -155,6 +264,7 @@ export default function EditClientPage() {
               onChange={(e) => updateField("email", e.target.value)}
               placeholder="email@example.com"
               className="mt-1"
+              maxLength={CLIENT_EMAIL_MAX_LENGTH}
             />
           </div>
           <div>
@@ -167,6 +277,7 @@ export default function EditClientPage() {
               onChange={(e) => updateField("phone", e.target.value)}
               placeholder="(555) 123-4567"
               className="mt-1"
+              maxLength={CLIENT_PHONE_MAX_LENGTH}
             />
           </div>
         </div>
@@ -198,6 +309,7 @@ export default function EditClientPage() {
             onChange={(e) => updateField("address", e.target.value)}
             placeholder="Street address"
             className="mt-1"
+            maxLength={CLIENT_ADDRESS_MAX_LENGTH}
           />
         </div>
 
@@ -212,6 +324,7 @@ export default function EditClientPage() {
               onChange={(e) => updateField("city", e.target.value)}
               placeholder="City"
               className="mt-1"
+              maxLength={CLIENT_CITY_MAX_LENGTH}
             />
           </div>
           <div>
@@ -224,6 +337,7 @@ export default function EditClientPage() {
               onChange={(e) => updateField("state", e.target.value)}
               placeholder="State"
               className="mt-1"
+              maxLength={CLIENT_STATE_MAX_LENGTH}
             />
           </div>
           <div>
@@ -236,12 +350,13 @@ export default function EditClientPage() {
               onChange={(e) => updateField("zip", e.target.value)}
               placeholder="Zip code"
               className="mt-1"
+              maxLength={CLIENT_ZIP_MAX_LENGTH}
             />
           </div>
         </div>
 
         <div className="flex gap-3 pt-4">
-          <Button type="submit" disabled={updateClient.isPending}>
+          <Button type="submit" disabled={!canSubmit || updateClient.isPending}>
             {updateClient.isPending ? "Saving..." : "Save Changes"}
           </Button>
           <Button

@@ -51,6 +51,10 @@ function ensureSpace(doc: jsPDF, y: number, needed: number): number {
   return y;
 }
 
+function formatGeneratedDateUtc(): string {
+  return new Date().toLocaleDateString("en-US", { timeZone: "UTC" });
+}
+
 // ---------------------------------------------------------------------------
 // 1. Invoice PDF
 // ---------------------------------------------------------------------------
@@ -417,6 +421,7 @@ export interface MedicalSummaryData {
     frequency: string;
     status: string;
   }>;
+  generatedDate?: string;
 }
 
 export function generateMedicalSummaryPdf(data: MedicalSummaryData): jsPDF {
@@ -694,7 +699,7 @@ export function generateMedicalSummaryPdf(data: MedicalSummaryData): jsPDF {
 
   // ---- Footer ---------------------------------------------------------------
   const pageCount = doc.getNumberOfPages();
-  const today = new Date().toLocaleDateString();
+  const generatedDate = data.generatedDate ?? formatGeneratedDateUtc();
   for (let i = 1; i <= pageCount; i++) {
     doc.setPage(i);
     const pageHeight = doc.internal.pageSize.getHeight();
@@ -702,7 +707,7 @@ export function generateMedicalSummaryPdf(data: MedicalSummaryData): jsPDF {
     doc.setFontSize(8);
     setColor(doc, COLOR_GRAY);
     doc.text(
-      `Generated on ${today} — This document is for reference only`,
+      `Generated on ${generatedDate} — This document is for reference only`,
       PAGE_WIDTH / 2,
       pageHeight - 10,
       { align: "center" }
@@ -716,7 +721,249 @@ export function generateMedicalSummaryPdf(data: MedicalSummaryData): jsPDF {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Discharge Instructions
+// 4. Vaccination Certificate
+// ---------------------------------------------------------------------------
+
+export interface VaccinationCertificateData {
+  practiceName: string;
+  practiceAddress?: string;
+  practicePhone?: string;
+  practiceEmail?: string;
+  patientName: string;
+  species: string;
+  breed?: string;
+  sex?: string;
+  dob?: string;
+  color?: string;
+  clientName: string;
+  vaccineName: string;
+  administeredAt: string;
+  nextDueDate?: string;
+  manufacturer?: string;
+  lotNumber?: string;
+  generatedDate?: string;
+}
+
+export function generateVaccinationCertificatePdf(
+  data: VaccinationCertificateData
+): jsPDF {
+  const doc = new jsPDF();
+  let y = PAGE_MARGIN;
+
+  doc.setFont(FONT, "bold");
+  doc.setFontSize(20);
+  setColor(doc, COLOR_TEAL);
+  doc.text(data.practiceName || "Veterinary Practice", PAGE_MARGIN, y);
+  y += 7;
+
+  doc.setFont(FONT, "normal");
+  doc.setFontSize(9);
+  setColor(doc, COLOR_GRAY);
+  if (data.practiceAddress) {
+    doc.text(data.practiceAddress, PAGE_MARGIN, y);
+    y += 4;
+  }
+  if (data.practicePhone) {
+    doc.text(data.practicePhone, PAGE_MARGIN, y);
+    y += 4;
+  }
+  if (data.practiceEmail) {
+    doc.text(data.practiceEmail, PAGE_MARGIN, y);
+    y += 4;
+  }
+
+  doc.setFont(FONT, "bold");
+  doc.setFontSize(16);
+  setColor(doc, COLOR_DARK);
+  doc.text("VACCINATION CERTIFICATE", PAGE_WIDTH - PAGE_MARGIN, PAGE_MARGIN, {
+    align: "right",
+  });
+
+  y = Math.max(y, PAGE_MARGIN + 14) + 4;
+  drawLine(doc, y);
+  y += 10;
+
+  doc.setFont(FONT, "bold");
+  doc.setFontSize(12);
+  setColor(doc, COLOR_TEAL);
+  doc.text("Patient", PAGE_MARGIN, y);
+  doc.text("Owner", PAGE_MARGIN + CONTENT_WIDTH / 2, y);
+  y += 6;
+
+  doc.setFont(FONT, "normal");
+  doc.setFontSize(10);
+  setColor(doc, COLOR_DARK);
+  const patientLines = [
+    data.patientName,
+    [data.breed, data.species].filter(Boolean).join(" / "),
+    data.sex,
+    data.dob ? `DOB: ${data.dob}` : undefined,
+    data.color ? `Color: ${data.color}` : undefined,
+  ].filter(Boolean) as string[];
+  doc.text(patientLines, PAGE_MARGIN, y);
+  doc.text(data.clientName, PAGE_MARGIN + CONTENT_WIDTH / 2, y);
+  y += Math.max(patientLines.length, 1) * 5 + 10;
+
+  doc.setFont(FONT, "bold");
+  doc.setFontSize(12);
+  setColor(doc, COLOR_TEAL);
+  doc.text("Vaccination Record", PAGE_MARGIN, y);
+  y += 6;
+
+  const rows: [string, string | undefined][] = [
+    ["Vaccine", data.vaccineName],
+    ["Administered", data.administeredAt],
+    ["Next due", data.nextDueDate],
+    ["Manufacturer", data.manufacturer],
+    ["Lot number", data.lotNumber],
+  ];
+
+  doc.setFontSize(10);
+  for (const [label, value] of rows) {
+    if (!value) continue;
+    y = ensureSpace(doc, y, 8);
+    doc.setFont(FONT, "bold");
+    setColor(doc, COLOR_DARK);
+    doc.text(`${label}:`, PAGE_MARGIN, y);
+    doc.setFont(FONT, "normal");
+    doc.text(value, PAGE_MARGIN + 36, y);
+    y += 7;
+  }
+
+  y += 8;
+  drawLine(doc, y);
+  y += 8;
+
+  doc.setFont(FONT, "normal");
+  doc.setFontSize(9);
+  setColor(doc, COLOR_GRAY);
+  const note =
+    "This certificate reflects the vaccination record currently available in the client portal.";
+  doc.text(doc.splitTextToSize(note, CONTENT_WIDTH), PAGE_MARGIN, y);
+
+  const generatedDate = data.generatedDate ?? formatGeneratedDateUtc();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  doc.setFont(FONT, "italic");
+  doc.setFontSize(8);
+  setColor(doc, COLOR_GRAY);
+  doc.text(`Generated on ${generatedDate}`, PAGE_WIDTH / 2, pageHeight - 10, {
+    align: "center",
+  });
+
+  return doc;
+}
+
+// ---------------------------------------------------------------------------
+// 5. Generic Report PDF
+// ---------------------------------------------------------------------------
+
+export type ReportPdfCell = string | number | null | undefined;
+
+export interface ReportPdfData {
+  title: string;
+  subtitle?: string;
+  columns: string[];
+  rows: ReportPdfCell[][];
+  emptyMessage?: string;
+  generatedDate?: string;
+}
+
+export function generateReportPdf(data: ReportPdfData): jsPDF {
+  const doc = new jsPDF({
+    orientation: data.columns.length > 4 ? "landscape" : "portrait",
+  });
+  const margin = 16;
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const contentWidth = pageWidth - margin * 2;
+  const colWidth = contentWidth / Math.max(data.columns.length, 1);
+  let y = margin;
+
+  function addPageIfNeeded(needed: number) {
+    if (y + needed <= pageHeight - 18) return;
+    doc.addPage();
+    y = margin;
+    drawTableHeader();
+  }
+
+  function drawTableHeader() {
+    const [r, g, b] = hexToRgb(COLOR_LIGHT_GRAY);
+    doc.setFillColor(r, g, b);
+    doc.rect(margin, y - 4, contentWidth, 8, "F");
+    doc.setFont(FONT, "bold");
+    doc.setFontSize(8);
+    setColor(doc, COLOR_DARK);
+    data.columns.forEach((column, index) => {
+      doc.text(column, margin + index * colWidth + 2, y);
+    });
+    y += 8;
+  }
+
+  doc.setFont(FONT, "bold");
+  doc.setFontSize(18);
+  setColor(doc, COLOR_TEAL);
+  doc.text(data.title, margin, y);
+  y += 7;
+
+  if (data.subtitle) {
+    doc.setFont(FONT, "normal");
+    doc.setFontSize(9);
+    setColor(doc, COLOR_GRAY);
+    doc.text(data.subtitle, margin, y);
+    y += 5;
+  }
+
+  const [reportLineR, reportLineG, reportLineB] = hexToRgb(COLOR_LIGHT_GRAY);
+  doc.setDrawColor(reportLineR, reportLineG, reportLineB);
+  doc.setLineWidth(0.5);
+  doc.line(margin, y, pageWidth - margin, y);
+  y += 8;
+
+  if (data.rows.length === 0) {
+    doc.setFont(FONT, "italic");
+    doc.setFontSize(10);
+    setColor(doc, COLOR_GRAY);
+    doc.text(data.emptyMessage ?? "No report data available.", margin, y);
+  } else {
+    drawTableHeader();
+    doc.setFont(FONT, "normal");
+    doc.setFontSize(8);
+
+    for (const row of data.rows) {
+      const cellLines = data.columns.map((_, index) =>
+        doc.splitTextToSize(String(row[index] ?? ""), colWidth - 4)
+      );
+      const rowHeight =
+        Math.max(...cellLines.map((lines) => lines.length), 1) * 4 + 4;
+      addPageIfNeeded(rowHeight);
+      setColor(doc, COLOR_DARK);
+      cellLines.forEach((lines, index) => {
+        doc.text(lines, margin + index * colWidth + 2, y);
+      });
+      y += rowHeight;
+    }
+  }
+
+  const generatedDate = data.generatedDate ?? formatGeneratedDateUtc();
+  const pageCount = doc.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    doc.setFont(FONT, "italic");
+    doc.setFontSize(8);
+    setColor(doc, COLOR_GRAY);
+    doc.text(`Generated on ${generatedDate}`, pageWidth / 2, pageHeight - 8, {
+      align: "center",
+    });
+    doc.text(`Page ${i} of ${pageCount}`, pageWidth - margin, pageHeight - 8, {
+      align: "right",
+    });
+  }
+
+  return doc;
+}
+
+// ---------------------------------------------------------------------------
+// 6. Discharge Instructions
 // ---------------------------------------------------------------------------
 
 export interface DischargeInstructionsData {

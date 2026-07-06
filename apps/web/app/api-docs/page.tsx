@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { WEBHOOK_EVENT_DEFINITIONS } from "@/lib/webhook-events";
 
 export const metadata: Metadata = {
   title: "OpenVPM API Reference",
@@ -28,7 +29,7 @@ const sections: Section[] = [
     id: "auth",
     title: "Authentication",
     description:
-      "Register practices and retrieve the current user session. All other endpoints require a valid session cookie.",
+      "Register practices and retrieve the current user session. Dashboard procedures use session cookies; portal and REST endpoints use their own token/key flows.",
     endpoints: [
       {
         name: "auth.register",
@@ -98,7 +99,8 @@ const sections: Section[] = [
       {
         name: "clients.create",
         method: "POST",
-        description: "Create a new client record.",
+        description:
+          "Create a new client record and issue a private portal access token.",
         input: `{
   firstName: string,
   lastName: string,
@@ -110,6 +112,17 @@ const sections: Section[] = [
   zip?: string
 }`,
         response: `Client`,
+      },
+      {
+        name: "clients.rotatePortalAccessToken",
+        method: "POST",
+        description:
+          "Create or rotate a client's private portal link. Existing portal URLs stop working immediately after rotation.",
+        input: `{ id: string }`,
+        response: `{
+  id: string,
+  accessToken: string
+}`,
       },
       {
         name: "clients.update",
@@ -285,10 +298,11 @@ const sections: Section[] = [
       {
         name: "appointments.updateStatus",
         method: "POST",
-        description: "Update appointment status (e.g., check-in, complete, cancel).",
+        description:
+          "Update appointment status (e.g., confirm, check in, exam, check out, cancel).",
         input: `{
   id: string,
-  status: "scheduled" | "checked_in" | "in_progress" | "completed" | "cancelled" | "no_show"
+  status: "scheduled" | "confirmed" | "checked_in" | "in_exam" | "checked_out" | "no_show" | "cancelled"
 }`,
         response: `Appointment`,
       },
@@ -451,13 +465,16 @@ const sections: Section[] = [
         description: "Create a prescription.",
         input: `{
   patientId: string,
-  drugName: string,
+  medicationName: string,
   dosage: string,
   frequency: string,
-  duration?: string,
+  startDate: string,
+  endDate?: string,
   quantity?: number,
-  refills?: number,
-  notes?: string
+  productId?: string,
+  refillsRemaining?: number,
+  instructions?: string,
+  acknowledgeSafetyWarnings?: boolean
 }`,
         response: `Prescription`,
       },
@@ -519,7 +536,7 @@ const sections: Section[] = [
         description: "Update invoice status.",
         input: `{
   id: string,
-  status: "draft" | "sent" | "paid" | "overdue" | "cancelled"
+  status: "draft" | "sent" | "paid" | "overdue" | "void"
 }`,
         response: `Invoice`,
       },
@@ -537,11 +554,17 @@ const sections: Section[] = [
         input: `{
   invoiceId: string,
   amount: number,
-  method: "cash" | "credit_card" | "check" | "bank_transfer" | "other",
-  reference?: string,
+  method: "cash" | "credit_card" | "debit_card" | "check" | "online" | "other",
   notes?: string
 }`,
         response: `Payment`,
+      },
+      {
+        name: "billing.createCardPaymentCheckout",
+        method: "POST",
+        description: "Create a Stripe Checkout link for the remaining adjusted invoice balance.",
+        input: `{ invoiceId: string }`,
+        response: `{ url: string }`,
       },
       {
         name: "billing.listPayments",
@@ -549,6 +572,32 @@ const sections: Section[] = [
         description: "List payments for an invoice.",
         input: `{ invoiceId: string }`,
         response: `Payment[]`,
+      },
+      {
+        name: "billing.listAdjustments",
+        method: "GET",
+        description: "List credits and write-offs for an invoice.",
+        input: `{ invoiceId: string }`,
+        response: `InvoiceAdjustment[]`,
+      },
+      {
+        name: "billing.applyInvoiceAdjustment",
+        method: "POST",
+        description: "Apply a credit or write-off to an invoice balance.",
+        input: `{
+  invoiceId: string,
+  type: "credit" | "write_off",
+  amount: number,
+  reason?: string
+}`,
+        response: `InvoiceAdjustment`,
+      },
+      {
+        name: "billing.voidInvoice",
+        method: "POST",
+        description: "Void an invoice with no payment or adjustment history.",
+        input: `{ id: string }`,
+        response: `Invoice`,
       },
       {
         name: "billing.listServices",
@@ -615,18 +664,221 @@ const sections: Section[] = [
         auth: "Portal token",
       },
       {
+        name: "portal.getMessages",
+        method: "GET",
+        description: "List portal messages for the client.",
+        input: `{ token: string }`,
+        response: `{
+  timezone: string | null,
+  items: Array<{
+    id: string,
+    direction: "inbound" | "outbound",
+    subject: string | null,
+    content: string | null,
+    status: string,
+    readAt: Date | null,
+    createdAt: Date | null
+  }>
+}`,
+        auth: "Portal token",
+      },
+      {
+        name: "portal.createMessage",
+        method: "POST",
+        description: "Send a portal message from the client into the shared inbox.",
+        input: `{
+  token: string,
+  content: string
+}`,
+        response: `{ success: true, message: Communication }`,
+        auth: "Portal token",
+      },
+      {
+        name: "portal.markMessagesRead",
+        method: "POST",
+        description: "Mark outbound clinic portal messages as read after the client opens the thread.",
+        input: `{ token: string }`,
+        response: `{ success: true, updated: number }`,
+        auth: "Portal token",
+      },
+      {
+        name: "portal.getAppointmentTypes",
+        method: "GET",
+        description: "List appointment types available for portal booking.",
+        input: `{ token: string }`,
+        response: `Array<{ id: string, name: string, durationMinutes: number }>`,
+        auth: "Portal token",
+      },
+      {
+        name: "portal.availableSlots",
+        method: "GET",
+        description: "List suggested open times for a portal booking date.",
+        input: `{
+  token: string,
+  date: string, // YYYY-MM-DD
+  durationMinutes?: number // 5-480 minutes, defaults to 30
+}`,
+        response: `Array<{ time: string, iso: string }>`,
+        auth: "Portal token",
+      },
+      {
         name: "portal.requestAppointment",
         method: "POST",
-        description: "Submit an appointment request from the portal.",
+        description: "Submit an appointment request from the portal using an exact requested time.",
         input: `{
   token: string,
   patientId: string,
+  typeId?: string,
   reason: string,
-  preferredDate?: string,
-  preferredTime?: string
+  preferredDate: string, // YYYY-MM-DD
+  preferredTime: string // 24-hour HH:MM
 }`,
-        response: `{ success: true }`,
+        response: `{ success: true, appointmentId: string, message: string }`,
         auth: "Portal token",
+      },
+    ],
+  },
+  {
+    id: "apiKeys",
+    title: "API Keys",
+    description:
+      "Admin-only API key management for server-to-server integrations. Raw keys are returned once at creation.",
+    endpoints: [
+      {
+        name: "apiKeys.list",
+        method: "GET",
+        description: "List active API keys for the practice.",
+        response: `Array<{
+  id: string,
+  name: string,
+  keyPrefix: string,
+  scopes: ApiScope[],
+  lastUsedAt: string | null,
+  createdAt: string
+}>`,
+        auth: "Admin only",
+      },
+      {
+        name: "apiKeys.create",
+        method: "POST",
+        description:
+          "Create an API key for REST integrations. The raw key is returned once and is never stored in plaintext. The agent:write scope must be paired with agent:run or *.",
+        input: `{
+  name: string,
+  scopes: Array<"clients:read" | "patients:read" | "appointments:read" | "appointments:write" | "records:write" | "agent:run" | "agent:write" | "*">
+}`,
+        response: `{ ...ApiKey, key: string }`,
+        auth: "Admin only",
+      },
+      {
+        name: "apiKeys.revoke",
+        method: "POST",
+        description: "Revoke an API key.",
+        input: `{ id: string }`,
+        response: `{ success: true }`,
+        auth: "Admin only",
+      },
+    ],
+  },
+  {
+    id: "restApi",
+    title: "REST API",
+    description:
+      "API-key authenticated /api/v1 endpoints for external integrations. Send Authorization: Bearer <api-key>.",
+    endpoints: [
+      {
+        name: "GET /api/v1/clients",
+        method: "GET",
+        description: "List clients for the authenticated practice.",
+        input: `?limit=25&offset=0`,
+        response: `{ data: Client[], pagination: Pagination }`,
+        auth: "API key: clients:read",
+      },
+      {
+        name: "GET /api/v1/clients/:id",
+        method: "GET",
+        description: "Fetch a single client.",
+        response: `{ data: Client }`,
+        auth: "API key: clients:read",
+      },
+      {
+        name: "GET /api/v1/patients",
+        method: "GET",
+        description: "List patients, optionally filtered by client.",
+        input: `?client_id=uuid&limit=25&offset=0`,
+        response: `{ data: Patient[], pagination: Pagination }`,
+        auth: "API key: patients:read",
+      },
+      {
+        name: "GET /api/v1/patients/:id",
+        method: "GET",
+        description: "Fetch a single patient.",
+        response: `{ data: Patient }`,
+        auth: "API key: patients:read",
+      },
+      {
+        name: "GET /api/v1/appointments",
+        method: "GET",
+        description:
+          "List appointments, optionally filtered by client, patient, status, or start-time window. Date-only filters use UTC day bounds.",
+        input: `?client_id=uuid&patient_id=uuid&status=scheduled&from=YYYY-MM-DD-or-ISO-timestamp&to=YYYY-MM-DD-or-ISO-timestamp&limit=25&offset=0`,
+        response: `{ data: Appointment[], pagination: Pagination }`,
+        auth: "API key: appointments:read",
+      },
+      {
+        name: "GET /api/v1/appointments/:id",
+        method: "GET",
+        description: "Fetch a single appointment.",
+        response: `{ data: Appointment }`,
+        auth: "API key: appointments:read",
+      },
+      {
+        name: "POST /api/v1/appointments",
+        method: "POST",
+        description:
+          "Create an appointment and emit the appointment.created webhook with camelCase appointment fields.",
+        input: `{
+  client_id?: string,
+  patient_id?: string,
+  doctor_id?: string,
+  type_id?: string,
+  room_id?: string,
+  start_time: string, // timezone-qualified ISO timestamp
+  end_time: string,   // timezone-qualified ISO timestamp
+  notes?: string
+}`,
+        response: `{ data: Appointment }`,
+        auth: "API key: appointments:write",
+      },
+      {
+        name: "POST /api/v1/soap-notes",
+        method: "POST",
+        description:
+          "Create a SOAP note for an external AI scribe and emit the soap_note.created webhook.",
+        input: `{
+  patient_id: string,
+  appointment_id?: string,
+  author_id?: string,
+  subjective?: string,
+  objective?: string,
+  assessment?: string,
+  plan?: string,
+  source: string
+}`,
+        response: `{ data: SoapNote }`,
+        auth: "API key: records:write",
+      },
+      {
+        name: "POST /api/v1/agent",
+        method: "POST",
+        description:
+          "Run the OpenVPM Agent from an external automation. Instruction text is trimmed and must be nonblank. Write-enabled runs require agent:write plus each write tool's resource scope.",
+        input: `{
+  instruction: string,
+  allow_writes?: boolean
+}`,
+        response: `{ data: AgentRunResult }`,
+        auth: "API key: agent:run; agent:write plus resource write scopes when allow_writes=true",
       },
     ],
   },
@@ -688,13 +940,22 @@ const sections: Section[] = [
         input: `{
   search?: string,
   category?: string,
-  lowStock?: boolean,
+  alert?: "all" | "attention" | "low_stock" | "expired" | "expiring_soon",
   limit?: number,
   offset?: number
 }`,
         response: `{
-  items: InventoryItem[],
-  total: number
+  items: Array<InventoryItem & {
+    stockStatus: "ok" | "low" | "out",
+    expirationStatus: "ok" | "expired" | "expiring_soon"
+  }>,
+  total: number,
+  alertCounts: {
+    attention: number,
+    lowStock: number,
+    expired: number,
+    expiringSoon: number
+  }
 }`,
       },
       {
@@ -705,27 +966,30 @@ const sections: Section[] = [
   name: string,
   sku?: string,
   category?: string,
-  quantity: number,
-  minQuantity?: number,
-  unitCost?: number,
-  unitPrice?: number,
-  supplierId?: string
+  unitPrice: string,
+  costPrice?: string,
+  stockQuantity?: number,
+  reorderPoint?: number,
+  lotNumber?: string,
+  expirationDate?: "YYYY-MM-DD"
 }`,
         response: `InventoryItem`,
       },
       {
         name: "inventory.update",
         method: "POST",
-        description: "Update an inventory item.",
+        description:
+          "Update inventory item metadata. Use inventory.adjustStock for stock quantity changes so every movement has a reason.",
         input: `{
   id: string,
   name?: string,
   sku?: string,
   category?: string,
-  minQuantity?: number,
-  unitCost?: number,
-  unitPrice?: number,
-  supplierId?: string
+  unitPrice?: string,
+  costPrice?: string,
+  reorderPoint?: number,
+  lotNumber?: string,
+  expirationDate?: "YYYY-MM-DD" | null
 }`,
         response: `InventoryItem`,
       },
@@ -736,7 +1000,7 @@ const sections: Section[] = [
         input: `{
   id: string,
   adjustment: number,
-  reason?: string
+  reason: string
 }`,
         response: `InventoryItem`,
       },
@@ -752,11 +1016,156 @@ const sections: Section[] = [
         description: "Add a new supplier.",
         input: `{
   name: string,
-  contactName?: string,
-  email?: string,
-  phone?: string
+  contactEmail?: string,
+  phone?: string,
+  address?: string,
+  notes?: string
 }`,
         response: `Supplier`,
+      },
+      {
+        name: "inventory.updateSupplier",
+        method: "POST",
+        description: "Update supplier contact details.",
+        input: `{
+  id: string,
+  name?: string,
+  contactEmail?: string | null,
+  phone?: string | null,
+  address?: string | null,
+  notes?: string | null
+}`,
+        response: `Supplier`,
+      },
+    ],
+  },
+  {
+    id: "reports",
+    title: "Reports",
+    description: "Run practice analytics over configurable date ranges.",
+    endpoints: [
+      {
+        name: "reports.revenue",
+        method: "GET",
+        description:
+          "Revenue totals, previous-period comparison, and daily revenue for a selected range.",
+        input: `{
+  startDate?: "YYYY-MM-DD",
+  endDate?: "YYYY-MM-DD"
+}`,
+        response: `{
+  range: ReportDateRange,
+  total: number,
+  previousTotal: number,
+  daily: Array<{ date: string, amount: number }>
+}`,
+      },
+      {
+        name: "reports.appointments",
+        method: "GET",
+        description:
+          "Appointment KPIs and doctor breakdown for a selected range.",
+        input: `{
+  startDate?: "YYYY-MM-DD",
+  endDate?: "YYYY-MM-DD"
+}`,
+        response: `{
+  range: ReportDateRange,
+  total: number,
+  completed: number,
+  noShows: number,
+  cancelled: number,
+  fillRate: number,
+  byDoctor: Array<{ doctorName: string, total: number, completed: number }>
+}`,
+      },
+      {
+        name: "reports.topServices",
+        method: "GET",
+        description:
+          "Top billed service items by count and revenue for a selected range.",
+        input: `{
+  startDate?: "YYYY-MM-DD",
+  endDate?: "YYYY-MM-DD"
+}`,
+        response: `{
+  range: ReportDateRange,
+  items: Array<{ name: string, count: number, revenue: number }>
+}`,
+      },
+      {
+        name: "reports.inventoryAlerts",
+        method: "GET",
+        description: "Current low-stock, expired, and expiring-product alerts.",
+        response: `{
+  lowStock: Product[],
+  expired: Product[],
+  expiringSoon: Product[]
+}`,
+      },
+    ],
+  },
+  {
+    id: "settings",
+    title: "Settings",
+    description: "Admin-only practice configuration endpoints.",
+    endpoints: [
+      {
+        name: "settings.listLocations",
+        method: "GET",
+        description: "List active practice locations.",
+        response: `Array<{
+  id: string,
+  name: string,
+  address: string | null,
+  phone: string | null,
+  isPrimary: boolean
+}>`,
+        auth: "Admin only",
+      },
+      {
+        name: "settings.createLocation",
+        method: "POST",
+        description:
+          "Create a practice location and sync hosted billing quantities.",
+        input: `{
+  name: string,
+  address?: string,
+  phone?: string,
+  isPrimary?: boolean
+}`,
+        response: `Location`,
+        auth: "Admin only",
+      },
+      {
+        name: "settings.updateLocation",
+        method: "POST",
+        description: "Update a tenant-scoped location.",
+        input: `{
+  id: string,
+  name?: string,
+  address?: string,
+  phone?: string
+}`,
+        response: `Location`,
+        auth: "Admin only",
+      },
+      {
+        name: "settings.setPrimaryLocation",
+        method: "POST",
+        description: "Make one active tenant location the primary location.",
+        input: `{ id: string }`,
+        response: `Location`,
+        auth: "Admin only",
+      },
+      {
+        name: "settings.deleteLocation",
+        method: "POST",
+        description:
+          "Retire a location, disable its texting setup, preserve at least one active location, and sync hosted billing quantities.",
+        input: `{ id: string }`,
+        response: `{ success: true }`,
+        auth: "Admin only",
       },
     ],
   },
@@ -768,15 +1177,41 @@ const sections: Section[] = [
       {
         name: "communications.list",
         method: "GET",
-        description: "List communications with optional filters.",
+        description:
+          "List communications with optional filters. The sent inbox filter includes sent, delivered, and read outbound messages.",
         input: `{
   clientId?: string,
   status?: string,
+  inboxFilter?: "all" | "unread" | "sent",
   limit?: number,
   offset?: number
 }`,
         response: `{
-  items: Communication[],
+  items: Array<Communication & {
+    readAt: Date | null,
+    providerMessageId: string | null,
+    assignedToName: string | null
+  }>,
+  total: number
+}`,
+      },
+      {
+        name: "communications.listConversations",
+        method: "GET",
+        description:
+          "List one latest message per shared-inbox conversation, with unread counts derived server-side. The sent inbox filter includes sent, delivered, and read outbound conversations.",
+        input: `{
+  inboxFilter?: "all" | "unread" | "sent",
+  limit?: number,
+  offset?: number
+}`,
+        response: `{
+  items: Array<Communication & {
+    readAt: Date | null,
+    providerMessageId: string | null,
+    assignedToName: string | null,
+    unreadCount: number
+  }>,
   total: number
 }`,
       },
@@ -785,12 +1220,58 @@ const sections: Section[] = [
         method: "GET",
         description: "Get all communications for a specific client.",
         input: `{ clientId: string }`,
-        response: `Communication[]`,
+        response: `Array<Communication & {
+  readAt: Date | null,
+  providerMessageId: string | null,
+  assignedToName: string | null
+}>`,
+      },
+      {
+        name: "communications.markClientRead",
+        method: "POST",
+        description: "Mark unread inbound messages for a client thread as read.",
+        input: `{ clientId: string }`,
+        response: `{ ok: true, updated: number }`,
+      },
+      {
+        name: "communications.assignClient",
+        method: "POST",
+        description:
+          "Assign or unassign a client conversation in the shared inbox.",
+        input: `{
+  clientId: string,
+  action: "assign_to_me" | "unassign",
+  expectedAssignedTo: string | null
+}`,
+        response: `{
+  ok: true,
+  assignedTo: string | null,
+  assignedToName: string | null,
+  updated: number
+}`,
+      },
+      {
+        name: "communications.linkCommunicationToClient",
+        method: "POST",
+        description:
+          "Link an unmatched inbound inbox message to a tenant client.",
+        input: `{
+  communicationId: string,
+  clientId: string
+}`,
+        response: `{
+  ok: true,
+  communicationId: string,
+  clientId: string,
+  assignedTo: string | null,
+  assignedToName: string | null
+}`,
       },
       {
         name: "communications.create",
         method: "POST",
-        description: "Log a communication.",
+        description:
+          "Send outbound SMS/email from the inbox, or send/log internal portal communications visible in the client portal.",
         input: `{
   clientId: string,
   channel: "phone" | "sms" | "email" | "portal",
@@ -804,33 +1285,15 @@ const sections: Section[] = [
       {
         name: "communications.updateStatus",
         method: "POST",
-        description: "Update communication status.",
+        description:
+          "Mark one unread inbound communication as read. Delivery lifecycle statuses are managed by send and provider webhook handlers.",
         input: `{
   id: string,
-  status: "pending" | "sent" | "delivered" | "read" | "failed"
+  status: "read"
 }`,
         response: `Communication`,
       },
     ],
-  },
-];
-
-const WEBHOOK_EVENTS = [
-  { event: "appointment.created", description: "New appointment scheduled" },
-  { event: "appointment.updated", description: "Appointment details changed" },
-  {
-    event: "appointment.status_changed",
-    description: "Check-in, completion, cancellation",
-  },
-  { event: "patient.created", description: "New patient record created" },
-  { event: "patient.updated", description: "Patient record modified" },
-  { event: "client.created", description: "New client registered" },
-  { event: "invoice.created", description: "New invoice generated" },
-  { event: "invoice.paid", description: "Invoice fully paid" },
-  { event: "prescription.created", description: "New prescription written" },
-  {
-    event: "vaccination.recorded",
-    description: "Vaccination administered and recorded",
   },
 ];
 
@@ -935,12 +1398,11 @@ export default function ApiDocsPage() {
             Base URL
           </h3>
           <code className="block rounded bg-slate-50 p-2 text-xs text-slate-700 dark:bg-slate-800 dark:text-slate-300">
-            /api/trpc/
+            /api/trpc/ + /api/v1/
           </code>
           <p className="mt-3 text-xs text-slate-500">
-            All endpoints use tRPC. Query procedures use HTTP GET, mutations use
-            HTTP POST. Input is JSON-encoded in the <code>input</code> query
-            parameter (GET) or request body (POST).
+            Dashboard procedures use tRPC under <code>/api/trpc</code>. External
+            integrations use API-key REST endpoints under <code>/api/v1</code>.
           </p>
         </div>
       </nav>
@@ -955,8 +1417,9 @@ export default function ApiDocsPage() {
             </h1>
             <p className="mt-3 text-lg text-slate-600 dark:text-slate-400">
               Complete API documentation for the OpenVPM veterinary practice
-              management system. All endpoints are available via tRPC and return
-              JSON responses.
+              management system. The dashboard API uses tRPC, client portal
+              flows use portal tokens, and external integrations use API keys
+              with REST endpoints under <code>/api/v1</code>.
             </p>
 
             {/* Quick info cards */}
@@ -966,8 +1429,8 @@ export default function ApiDocsPage() {
                   Authentication
                 </h3>
                 <p className="mt-1 text-xs text-slate-500">
-                  Session-based via NextAuth. Include cookies with requests.
-                  Portal endpoints use token-based auth.
+                  Dashboard calls use NextAuth session cookies, portal flows use
+                  client tokens, and REST integrations use API keys.
                 </p>
               </div>
               <div className="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-800">
@@ -984,8 +1447,8 @@ export default function ApiDocsPage() {
                   Real-time Events
                 </h3>
                 <p className="mt-1 text-xs text-slate-500">
-                  Subscribe to webhooks for appointment, patient, billing, and
-                  prescription events.
+                  Subscribe to the live webhook catalog. Events are HMAC signed
+                  with each subscription secret.
                 </p>
               </div>
             </div>
@@ -1034,7 +1497,7 @@ export default function ApiDocsPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 bg-white dark:divide-slate-700 dark:bg-slate-800/50">
-                  {WEBHOOK_EVENTS.map((ev) => (
+                  {WEBHOOK_EVENT_DEFINITIONS.map((ev) => (
                     <tr key={ev.event}>
                       <td className="px-4 py-2">
                         <code className="text-sm font-medium text-teal-600 dark:text-teal-400">
@@ -1058,12 +1521,12 @@ export default function ApiDocsPage() {
               <pre className="overflow-x-auto rounded bg-slate-50 p-3 text-xs text-slate-700 dark:bg-slate-900 dark:text-slate-300">
                 {`POST https://your-server.com/webhook
 Content-Type: application/json
-X-OpenVPM-Signature: sha256=<hmac-sha256-hex>
+X-Webhook-Event: appointment.created
+X-Webhook-Signature: <hmac-sha256-hex>
 
 {
   "event": "appointment.created",
   "timestamp": "2026-03-17T14:30:00Z",
-  "practice_id": "uuid",
   "data": {
     "id": "uuid",
     "patientId": "uuid",
@@ -1094,7 +1557,7 @@ function verifySignature(
     .digest("hex");
   return crypto.timingSafeEqual(
     Buffer.from(signature),
-    Buffer.from("sha256=" + expected)
+    Buffer.from(expected)
   );
 }`}
               </pre>

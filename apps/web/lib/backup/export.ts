@@ -1,6 +1,55 @@
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and, isNull, inArray, sql } from "drizzle-orm";
 import type { Database } from "@openpims/db/client";
-import { clients, patients, appointments, invoices, invoiceItems } from "@openpims/db";
+import { redactSecrets } from "@/lib/audit";
+import {
+  appointmentTypes,
+  appointmentWaitlist,
+  appointments,
+  apiKeys,
+  auditLog,
+  caseEntries,
+  cases,
+  clinicalNotes,
+  clients,
+  communications,
+  controlledSubstanceLog,
+  emailSuppressions,
+  files,
+  invoiceAdjustments,
+  invoiceItems,
+  invoices,
+  insuranceClaims,
+  insurancePolicies,
+  labResults,
+  locationMessaging,
+  locations,
+  patientAllergies,
+  patientWeights,
+  patients,
+  payments,
+  prescriptions,
+  problemList,
+  procedures,
+  products,
+  purchaseOrders,
+  recurringSeries,
+  rooms,
+  services,
+  smsSuppressions,
+  soapNotes,
+  staffSchedules,
+  suppliers,
+  treatmentTemplateItems,
+  treatmentTemplates,
+  treatmentPlanItems,
+  treatmentPlans,
+  users,
+  vaccinationRecords,
+  vitalSigns,
+  webhooks,
+  wellnessEnrollments,
+  wellnessPlans,
+} from "@openpims/db";
 
 /**
  * Full, owned export of a single practice's core data — used by the scheduled
@@ -12,15 +61,423 @@ export function backupKey(practiceId: string, dateYmd: string): string {
   return `backups/${practiceId}/${dateYmd}.json`;
 }
 
-export interface PracticeExport {
+export const PRACTICE_EXPORT_SYSTEM_EXCLUSIONS = {
+  usageRecords:
+    "Hosted billing metering ledger; restoring rows could replay unmetered usage or skew current-period billing.",
+  practicePaymentAccounts:
+    "Stripe Connect account/provider state; reconnect payment processing after restore instead of replaying onboarding state.",
+  stripeEvents: "Global Stripe webhook de-duplication ledger.",
+  rateLimitBuckets: "Transient abuse-control buckets, not clinic-owned data.",
+  sessions: "Transient authentication sessions.",
+  verificationTokens: "Transient authentication verification tokens.",
+  authTokens: "Expiring pre-tenant email verification and password-reset tokens.",
+} as const;
+
+export const PRACTICE_EXPORT_SECRET_REPLACEMENTS = {
+  passwordHash:
+    "$2a$12$HNkF00edpp2mYk2gvvj8ne/PWjlXwgT5YZhAodh0/UVgTgtIPdnWS",
+  apiKeyPrefix: "disabled",
+  apiKeyHash:
+    "$2a$12$HNkF00edpp2mYk2gvvj8ne/PWjlXwgT5YZhAodh0/UVgTgtIPdnWS",
+  webhookSecret: "rotate-after-restore",
+} as const;
+
+export const PRACTICE_EXPORT_SECTIONS = [
+  "locations",
+  "locationMessaging",
+  "smsSuppressions",
+  "emailSuppressions",
+  "webhooks",
+  "apiKeys",
+  "users",
+  "auditLog",
+  "appointmentTypes",
+  "rooms",
+  "recurringSeries",
+  "clients",
+  "patients",
+  "insurancePolicies",
+  "wellnessPlans",
+  "wellnessEnrollments",
+  "patientWeights",
+  "patientAllergies",
+  "appointments",
+  "appointmentWaitlist",
+  "staffSchedules",
+  "services",
+  "products",
+  "treatmentTemplates",
+  "treatmentTemplateItems",
+  "suppliers",
+  "purchaseOrders",
+  "invoices",
+  "invoiceItems",
+  "payments",
+  "invoiceAdjustments",
+  "insuranceClaims",
+  "soapNotes",
+  "vaccinationRecords",
+  "labResults",
+  "procedures",
+  "clinicalNotes",
+  "problemList",
+  "vitalSigns",
+  "cases",
+  "caseEntries",
+  "treatmentPlans",
+  "treatmentPlanItems",
+  "prescriptions",
+  "files",
+  "controlledSubstanceLog",
+  "communications",
+] as const;
+
+export type PracticeExportSection = (typeof PRACTICE_EXPORT_SECTIONS)[number];
+
+const PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS = [
+  "emailSuppressions",
+] as const satisfies readonly PracticeExportSection[];
+
+export type PracticeExport = {
   practiceId: string;
   exportedAt: string;
-  counts: Record<string, number>;
-  clients: unknown[];
-  patients: unknown[];
-  appointments: unknown[];
-  invoices: unknown[];
-  invoiceItems: unknown[];
+  counts: Record<PracticeExportSection, number>;
+} & Record<PracticeExportSection, unknown[]>;
+
+type Row = Record<string, unknown>;
+
+function isRecord(value: unknown): value is Row {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function rowsFor(data: unknown, section: PracticeExportSection): Row[] {
+  if (!isRecord(data)) return [];
+  const value = data[section];
+  if (!Array.isArray(value)) return [];
+  return value.filter(isRecord);
+}
+
+export function sanitizePracticeExportRows(
+  section: PracticeExportSection,
+  rows: Row[]
+): Row[] {
+  return rows.map((row) => {
+    switch (section) {
+      case "users":
+        return {
+          ...row,
+          passwordHash: PRACTICE_EXPORT_SECRET_REPLACEMENTS.passwordHash,
+          emailVerifiedAt: null,
+        };
+      case "clients":
+        return { ...row, accessToken: null };
+      case "apiKeys":
+        return {
+          ...row,
+          keyPrefix: PRACTICE_EXPORT_SECRET_REPLACEMENTS.apiKeyPrefix,
+          keyHash: PRACTICE_EXPORT_SECRET_REPLACEMENTS.apiKeyHash,
+          lastUsedAt: null,
+        };
+      case "webhooks":
+        return {
+          ...row,
+          secret: PRACTICE_EXPORT_SECRET_REPLACEMENTS.webhookSecret,
+          active: false,
+        };
+      case "auditLog":
+        return {
+          ...row,
+          changes: redactSecrets(row.changes),
+        };
+      default:
+        return row;
+    }
+  });
+}
+
+type RestoreReferenceRule = {
+  section: PracticeExportSection;
+  field: string;
+  parentSection: PracticeExportSection;
+  required?: boolean;
+};
+
+const MAX_RESTORE_REFERENCE_ERRORS = 25;
+
+function requiredRef(
+  section: PracticeExportSection,
+  field: string,
+  parentSection: PracticeExportSection
+): RestoreReferenceRule {
+  return { section, field, parentSection, required: true };
+}
+
+function optionalRef(
+  section: PracticeExportSection,
+  field: string,
+  parentSection: PracticeExportSection
+): RestoreReferenceRule {
+  return { section, field, parentSection };
+}
+
+const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
+  requiredRef("locationMessaging", "locationId", "locations"),
+  optionalRef("smsSuppressions", "locationId", "locations"),
+  optionalRef("users", "locationId", "locations"),
+  optionalRef("rooms", "locationId", "locations"),
+  requiredRef("patients", "clientId", "clients"),
+  requiredRef("patientWeights", "patientId", "patients"),
+  optionalRef("patientWeights", "recordedBy", "users"),
+  requiredRef("patientAllergies", "patientId", "patients"),
+  optionalRef("patientAllergies", "notedBy", "users"),
+  optionalRef("appointments", "typeId", "appointmentTypes"),
+  optionalRef("appointments", "patientId", "patients"),
+  optionalRef("appointments", "clientId", "clients"),
+  optionalRef("appointments", "doctorId", "users"),
+  optionalRef("appointments", "roomId", "rooms"),
+  optionalRef("appointments", "recurringSeriesId", "recurringSeries"),
+  requiredRef("appointmentWaitlist", "clientId", "clients"),
+  optionalRef("appointmentWaitlist", "patientId", "patients"),
+  optionalRef("appointmentWaitlist", "typeId", "appointmentTypes"),
+  optionalRef("appointmentWaitlist", "createdBy", "users"),
+  requiredRef("staffSchedules", "userId", "users"),
+  optionalRef("staffSchedules", "locationId", "locations"),
+  optionalRef("products", "locationId", "locations"),
+  requiredRef("purchaseOrders", "supplierId", "suppliers"),
+  requiredRef("invoices", "clientId", "clients"),
+  optionalRef("invoices", "patientId", "patients"),
+  optionalRef("invoices", "appointmentId", "appointments"),
+  requiredRef("invoiceItems", "invoiceId", "invoices"),
+  requiredRef("payments", "invoiceId", "invoices"),
+  optionalRef("payments", "receivedBy", "users"),
+  requiredRef("invoiceAdjustments", "invoiceId", "invoices"),
+  optionalRef("invoiceAdjustments", "createdBy", "users"),
+  requiredRef("insurancePolicies", "clientId", "clients"),
+  requiredRef("insurancePolicies", "patientId", "patients"),
+  requiredRef("insuranceClaims", "policyId", "insurancePolicies"),
+  optionalRef("insuranceClaims", "invoiceId", "invoices"),
+  requiredRef("wellnessEnrollments", "planId", "wellnessPlans"),
+  requiredRef("wellnessEnrollments", "clientId", "clients"),
+  optionalRef("wellnessEnrollments", "patientId", "patients"),
+  requiredRef("treatmentTemplateItems", "templateId", "treatmentTemplates"),
+  requiredRef("soapNotes", "patientId", "patients"),
+  optionalRef("soapNotes", "appointmentId", "appointments"),
+  requiredRef("soapNotes", "authorId", "users"),
+  requiredRef("vaccinationRecords", "patientId", "patients"),
+  optionalRef("vaccinationRecords", "administeredBy", "users"),
+  requiredRef("labResults", "patientId", "patients"),
+  optionalRef("labResults", "appointmentId", "appointments"),
+  optionalRef("labResults", "orderedBy", "users"),
+  optionalRef("labResults", "reviewedBy", "users"),
+  requiredRef("procedures", "patientId", "patients"),
+  optionalRef("procedures", "appointmentId", "appointments"),
+  optionalRef("procedures", "performedBy", "users"),
+  requiredRef("clinicalNotes", "patientId", "patients"),
+  requiredRef("clinicalNotes", "authorId", "users"),
+  requiredRef("problemList", "patientId", "patients"),
+  requiredRef("vitalSigns", "patientId", "patients"),
+  optionalRef("vitalSigns", "appointmentId", "appointments"),
+  optionalRef("vitalSigns", "recordedBy", "users"),
+  requiredRef("cases", "patientId", "patients"),
+  optionalRef("cases", "primaryVetId", "users"),
+  requiredRef("caseEntries", "caseId", "cases"),
+  optionalRef("caseEntries", "appointmentId", "appointments"),
+  requiredRef("treatmentPlans", "patientId", "patients"),
+  optionalRef("treatmentPlans", "problemId", "problemList"),
+  optionalRef("treatmentPlans", "createdBy", "users"),
+  requiredRef("treatmentPlanItems", "planId", "treatmentPlans"),
+  requiredRef("prescriptions", "patientId", "patients"),
+  optionalRef("prescriptions", "productId", "products"),
+  requiredRef("prescriptions", "prescribedBy", "users"),
+  requiredRef("files", "uploadedBy", "users"),
+  optionalRef("controlledSubstanceLog", "patientId", "patients"),
+  requiredRef("controlledSubstanceLog", "performedBy", "users"),
+  optionalRef("controlledSubstanceLog", "witnessedBy", "users"),
+  optionalRef("communications", "clientId", "clients"),
+  optionalRef("communications", "assignedTo", "users"),
+  optionalRef("auditLog", "userId", "users"),
+];
+
+function withPracticeId(rows: Row[], practiceId: string): Row[] {
+  return rows.map((row) => ({ ...row, practiceId }));
+}
+
+function countsFor(sections: Record<PracticeExportSection, unknown[]>): Record<PracticeExportSection, number> {
+  return Object.fromEntries(
+    PRACTICE_EXPORT_SECTIONS.map((section) => [
+      section,
+      sections[section].length,
+    ])
+  ) as Record<PracticeExportSection, number>;
+}
+
+export function summarizePracticeExport(data: unknown): {
+  counts: Record<PracticeExportSection, number>;
+  missingSections: PracticeExportSection[];
+  totalRows: number;
+} {
+  const record = isRecord(data) ? data : {};
+  const missingSections = PRACTICE_EXPORT_SECTIONS.filter(
+    (section) =>
+      !Array.isArray(record[section]) &&
+      !PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS.includes(section as never)
+  );
+  const counts = Object.fromEntries(
+    PRACTICE_EXPORT_SECTIONS.map((section) => [
+      section,
+      rowsFor(record, section).length,
+    ])
+  ) as Record<PracticeExportSection, number>;
+
+  return {
+    counts,
+    missingSections,
+    totalRows: Object.values(counts).reduce((sum, count) => sum + count, 0),
+  };
+}
+
+function rowLabel(row: Row, index: number): string {
+  return typeof row.id === "string" ? row.id : `#${index + 1}`;
+}
+
+function validateRestoreRows(data: unknown, pushError: (message: string) => void) {
+  const record = isRecord(data) ? data : {};
+
+  for (const section of PRACTICE_EXPORT_SECTIONS) {
+    const value = record[section];
+    if (!Array.isArray(value)) continue;
+
+    value.forEach((row, index) => {
+      const label = `#${index + 1}`;
+      if (!isRecord(row)) {
+        pushError(`${section}[${label}] must be an object row.`);
+        return;
+      }
+
+      if (row.id == null || row.id === "") {
+        pushError(`${section}[${label}].id is required.`);
+        return;
+      }
+
+      if (typeof row.id !== "string" || row.id.trim().length === 0) {
+        pushError(`${section}[${label}].id must be a non-empty string.`);
+      }
+    });
+  }
+}
+
+export function validatePracticeExportRestore(data: unknown): {
+  valid: boolean;
+  errors: string[];
+} {
+  const parentIds = new Map<PracticeExportSection, Set<string>>();
+  const errors: string[] = [];
+
+  const idsFor = (section: PracticeExportSection) => {
+    let ids = parentIds.get(section);
+    if (!ids) {
+      ids = new Set(
+        rowsFor(data, section)
+          .map((row) => row.id)
+          .filter((id): id is string => typeof id === "string" && id.length > 0)
+      );
+      parentIds.set(section, ids);
+    }
+    return ids;
+  };
+
+  const pushError = (message: string) => {
+    if (errors.length < MAX_RESTORE_REFERENCE_ERRORS) {
+      errors.push(message);
+    }
+  };
+
+  validateRestoreRows(data, pushError);
+
+  for (const rule of RESTORE_REFERENCE_RULES) {
+    const ids = idsFor(rule.parentSection);
+    rowsFor(data, rule.section).forEach((row, index) => {
+      const value = row[rule.field];
+      if (value == null || value === "") {
+        if (rule.required) {
+          pushError(
+            `${rule.section}[${rowLabel(row, index)}].${rule.field} is required.`
+          );
+        }
+        return;
+      }
+
+      if (typeof value !== "string") {
+        pushError(
+          `${rule.section}[${rowLabel(row, index)}].${rule.field} must be a string id.`
+        );
+        return;
+      }
+
+      if (!ids.has(value)) {
+        pushError(
+          `${rule.section}[${rowLabel(row, index)}].${rule.field} references missing ${rule.parentSection} row "${value}".`
+        );
+      }
+    });
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+
+async function activeRows(db: Database, table: any, practiceId: string) {
+  return db
+    .select()
+    .from(table)
+    .where(and(eq(table.practiceId, practiceId), isNull(table.deletedAt)));
+}
+
+async function tenantParentChildRows(
+  db: Database,
+  table: any,
+  parentColumn: any,
+  parentIds: string[],
+  parentTable: any,
+  parentIdColumn: any,
+  practiceId: string
+) {
+  if (parentIds.length === 0) return [];
+  return db
+    .select()
+    .from(table)
+    .where(
+      and(
+        inArray(parentColumn, parentIds),
+        sql`exists (
+          select 1
+          from ${parentTable}
+          where ${parentIdColumn} = ${parentColumn}
+            and ${parentTable.practiceId} = ${practiceId}
+            and ${parentTable.deletedAt} is null
+        )`,
+        isNull(table.deletedAt)
+      )
+    );
+}
+
+async function restoreRows(
+  db: Database,
+  table: any,
+  section: PracticeExportSection,
+  rows: Row[],
+  opts: { practiceId?: string } = {}
+): Promise<number> {
+  if (rows.length === 0) return 0;
+  const sanitizedRows = sanitizePracticeExportRows(section, rows);
+  const values = opts.practiceId
+    ? withPracticeId(sanitizedRows, opts.practiceId)
+    : sanitizedRows;
+  const restored = await db
+    .insert(table)
+    .values(values)
+    .onConflictDoNothing()
+    .returning({ id: table.id });
+  return restored.length;
 }
 
 export async function exportPracticeData(
@@ -28,39 +485,340 @@ export async function exportPracticeData(
   practiceId: string,
   exportedAt: string
 ): Promise<PracticeExport> {
-  const scope = (table: typeof clients | typeof patients | typeof appointments | typeof invoices) =>
-    and(eq(table.practiceId, practiceId), isNull(table.deletedAt));
-
-  const [clientRows, patientRows, appointmentRows, invoiceRows] = await Promise.all([
-    db.select().from(clients).where(scope(clients)),
-    db.select().from(patients).where(scope(patients)),
-    db.select().from(appointments).where(scope(appointments)),
-    db.select().from(invoices).where(scope(invoices)),
+  const [
+    locationRows,
+    locationMessagingRows,
+    smsSuppressionRows,
+    emailSuppressionRows,
+    webhookRows,
+    apiKeyRows,
+    userRows,
+    auditLogRows,
+    appointmentTypeRows,
+    roomRows,
+    recurringSeriesRows,
+    clientRows,
+    patientRows,
+    appointmentRows,
+    appointmentWaitlistRows,
+    staffScheduleRows,
+    serviceRows,
+    productRows,
+    treatmentTemplateRows,
+    supplierRows,
+    purchaseOrderRows,
+    invoiceRows,
+    insurancePolicyRows,
+    insuranceClaimRows,
+    wellnessPlanRows,
+    wellnessEnrollmentRows,
+    soapNoteRows,
+    vaccinationRows,
+    labRows,
+    procedureRows,
+    clinicalNoteRows,
+    problemRows,
+    vitalRows,
+    caseRows,
+    treatmentPlanRows,
+    prescriptionRows,
+    fileRows,
+    controlledSubstanceRows,
+    communicationRows,
+  ] = await Promise.all([
+    activeRows(db, locations, practiceId),
+    activeRows(db, locationMessaging, practiceId),
+    activeRows(db, smsSuppressions, practiceId),
+    activeRows(db, emailSuppressions, practiceId),
+    activeRows(db, webhooks, practiceId),
+    activeRows(db, apiKeys, practiceId),
+    activeRows(db, users, practiceId),
+    activeRows(db, auditLog, practiceId),
+    activeRows(db, appointmentTypes, practiceId),
+    activeRows(db, rooms, practiceId),
+    activeRows(db, recurringSeries, practiceId),
+    activeRows(db, clients, practiceId),
+    activeRows(db, patients, practiceId),
+    activeRows(db, appointments, practiceId),
+    activeRows(db, appointmentWaitlist, practiceId),
+    activeRows(db, staffSchedules, practiceId),
+    activeRows(db, services, practiceId),
+    activeRows(db, products, practiceId),
+    activeRows(db, treatmentTemplates, practiceId),
+    activeRows(db, suppliers, practiceId),
+    activeRows(db, purchaseOrders, practiceId),
+    activeRows(db, invoices, practiceId),
+    activeRows(db, insurancePolicies, practiceId),
+    activeRows(db, insuranceClaims, practiceId),
+    activeRows(db, wellnessPlans, practiceId),
+    activeRows(db, wellnessEnrollments, practiceId),
+    activeRows(db, soapNotes, practiceId),
+    activeRows(db, vaccinationRecords, practiceId),
+    activeRows(db, labResults, practiceId),
+    activeRows(db, procedures, practiceId),
+    activeRows(db, clinicalNotes, practiceId),
+    activeRows(db, problemList, practiceId),
+    activeRows(db, vitalSigns, practiceId),
+    activeRows(db, cases, practiceId),
+    activeRows(db, treatmentPlans, practiceId),
+    activeRows(db, prescriptions, practiceId),
+    activeRows(db, files, practiceId),
+    activeRows(db, controlledSubstanceLog, practiceId),
+    activeRows(db, communications, practiceId),
   ]);
 
-  // Invoice items are scoped via their parent invoice (no practiceId column).
+  const patientIds = patientRows.map((r) => r.id);
   const invoiceIds = invoiceRows.map((r) => r.id);
-  const itemRows =
-    invoiceIds.length > 0
-      ? (await db.select().from(invoiceItems).where(isNull(invoiceItems.deletedAt))).filter((it) =>
-          invoiceIds.includes(it.invoiceId)
-        )
-      : [];
+  const treatmentTemplateIds = treatmentTemplateRows.map((r) => r.id);
+  const caseIds = caseRows.map((r) => r.id);
+  const treatmentPlanIds = treatmentPlanRows.map((r) => r.id);
+
+  const [
+    patientWeightRows,
+    allergyRows,
+    itemRows,
+    paymentRows,
+    adjustmentRows,
+    treatmentTemplateItemRows,
+    caseEntryRows,
+    treatmentPlanItemRows,
+  ] = await Promise.all([
+    tenantParentChildRows(
+      db,
+      patientWeights,
+      patientWeights.patientId,
+      patientIds,
+      patients,
+      patients.id,
+      practiceId
+    ),
+    tenantParentChildRows(
+      db,
+      patientAllergies,
+      patientAllergies.patientId,
+      patientIds,
+      patients,
+      patients.id,
+      practiceId
+    ),
+    tenantParentChildRows(
+      db,
+      invoiceItems,
+      invoiceItems.invoiceId,
+      invoiceIds,
+      invoices,
+      invoices.id,
+      practiceId
+    ),
+    tenantParentChildRows(
+      db,
+      payments,
+      payments.invoiceId,
+      invoiceIds,
+      invoices,
+      invoices.id,
+      practiceId
+    ),
+    tenantParentChildRows(
+      db,
+      invoiceAdjustments,
+      invoiceAdjustments.invoiceId,
+      invoiceIds,
+      invoices,
+      invoices.id,
+      practiceId
+    ),
+    tenantParentChildRows(
+      db,
+      treatmentTemplateItems,
+      treatmentTemplateItems.templateId,
+      treatmentTemplateIds,
+      treatmentTemplates,
+      treatmentTemplates.id,
+      practiceId
+    ),
+    tenantParentChildRows(
+      db,
+      caseEntries,
+      caseEntries.caseId,
+      caseIds,
+      cases,
+      cases.id,
+      practiceId
+    ),
+    tenantParentChildRows(
+      db,
+      treatmentPlanItems,
+      treatmentPlanItems.planId,
+      treatmentPlanIds,
+      treatmentPlans,
+      treatmentPlans.id,
+      practiceId
+    ),
+  ]);
+
+  const sections: Record<PracticeExportSection, unknown[]> = {
+    locations: locationRows,
+    locationMessaging: locationMessagingRows,
+    smsSuppressions: smsSuppressionRows,
+    emailSuppressions: emailSuppressionRows,
+    webhooks: sanitizePracticeExportRows("webhooks", webhookRows),
+    apiKeys: sanitizePracticeExportRows("apiKeys", apiKeyRows),
+    users: sanitizePracticeExportRows("users", userRows),
+    auditLog: sanitizePracticeExportRows("auditLog", auditLogRows),
+    appointmentTypes: appointmentTypeRows,
+    rooms: roomRows,
+    recurringSeries: recurringSeriesRows,
+    clients: sanitizePracticeExportRows("clients", clientRows),
+    patients: patientRows,
+    insurancePolicies: insurancePolicyRows,
+    wellnessPlans: wellnessPlanRows,
+    wellnessEnrollments: wellnessEnrollmentRows,
+    patientWeights: patientWeightRows,
+    patientAllergies: allergyRows,
+    appointments: appointmentRows,
+    appointmentWaitlist: appointmentWaitlistRows,
+    staffSchedules: staffScheduleRows,
+    services: serviceRows,
+    products: productRows,
+    treatmentTemplates: treatmentTemplateRows,
+    treatmentTemplateItems: treatmentTemplateItemRows,
+    suppliers: supplierRows,
+    purchaseOrders: purchaseOrderRows,
+    invoices: invoiceRows,
+    invoiceItems: itemRows,
+    payments: paymentRows,
+    invoiceAdjustments: adjustmentRows,
+    insuranceClaims: insuranceClaimRows,
+    soapNotes: soapNoteRows,
+    vaccinationRecords: vaccinationRows,
+    labResults: labRows,
+    procedures: procedureRows,
+    clinicalNotes: clinicalNoteRows,
+    problemList: problemRows,
+    vitalSigns: vitalRows,
+    cases: caseRows,
+    caseEntries: caseEntryRows,
+    treatmentPlans: treatmentPlanRows,
+    treatmentPlanItems: treatmentPlanItemRows,
+    prescriptions: prescriptionRows,
+    files: fileRows,
+    controlledSubstanceLog: controlledSubstanceRows,
+    communications: communicationRows,
+  };
 
   return {
     practiceId,
     exportedAt,
-    counts: {
-      clients: clientRows.length,
-      patients: patientRows.length,
-      appointments: appointmentRows.length,
-      invoices: invoiceRows.length,
-      invoiceItems: itemRows.length,
-    },
-    clients: clientRows,
-    patients: patientRows,
-    appointments: appointmentRows,
-    invoices: invoiceRows,
-    invoiceItems: itemRows,
+    counts: countsFor(sections),
+    ...sections,
   };
+}
+
+async function restorePracticeDataRows(
+  db: Database,
+  practiceId: string,
+  data: unknown
+): Promise<{ restored: Record<PracticeExportSection, number>; totalRows: number }> {
+  const summary = summarizePracticeExport(data);
+  if (summary.missingSections.length > 0) {
+    throw new Error(
+      `Backup is missing required sections: ${summary.missingSections.join(", ")}`
+    );
+  }
+  const validation = validatePracticeExportRestore(data);
+  if (!validation.valid) {
+    throw new Error(
+      `Backup contains invalid restore data: ${validation.errors.join("; ")}`
+    );
+  }
+
+  const restored = {} as Record<PracticeExportSection, number>;
+  const restorePracticeRows = async (section: PracticeExportSection, table: any) => {
+    restored[section] = await restoreRows(db, table, section, rowsFor(data, section), {
+      practiceId,
+    });
+  };
+  const restoreChildRows = async (section: PracticeExportSection, table: any) => {
+    restored[section] = await restoreRows(db, table, section, rowsFor(data, section));
+  };
+
+  await restorePracticeRows("locations", locations);
+  await restorePracticeRows("locationMessaging", locationMessaging);
+  await restorePracticeRows("smsSuppressions", smsSuppressions);
+  await restorePracticeRows("emailSuppressions", emailSuppressions);
+  await restorePracticeRows("webhooks", webhooks);
+  await restorePracticeRows("apiKeys", apiKeys);
+  await restorePracticeRows("users", users);
+  await restorePracticeRows("auditLog", auditLog);
+  await restorePracticeRows("appointmentTypes", appointmentTypes);
+  await restorePracticeRows("rooms", rooms);
+  await restorePracticeRows("recurringSeries", recurringSeries);
+  await restorePracticeRows("clients", clients);
+  await restorePracticeRows("patients", patients);
+  await restorePracticeRows("insurancePolicies", insurancePolicies);
+  await restorePracticeRows("wellnessPlans", wellnessPlans);
+  await restorePracticeRows("wellnessEnrollments", wellnessEnrollments);
+  await restoreChildRows("patientWeights", patientWeights);
+  await restoreChildRows("patientAllergies", patientAllergies);
+  await restorePracticeRows("appointments", appointments);
+  await restorePracticeRows("appointmentWaitlist", appointmentWaitlist);
+  await restorePracticeRows("staffSchedules", staffSchedules);
+  await restorePracticeRows("services", services);
+  await restorePracticeRows("products", products);
+  await restorePracticeRows("treatmentTemplates", treatmentTemplates);
+  await restoreChildRows("treatmentTemplateItems", treatmentTemplateItems);
+  await restorePracticeRows("suppliers", suppliers);
+  await restorePracticeRows("purchaseOrders", purchaseOrders);
+  await restorePracticeRows("invoices", invoices);
+  await restoreChildRows("invoiceItems", invoiceItems);
+  await restoreChildRows("payments", payments);
+  await restoreChildRows("invoiceAdjustments", invoiceAdjustments);
+  await restorePracticeRows("insuranceClaims", insuranceClaims);
+  await restorePracticeRows("problemList", problemList);
+  await restorePracticeRows("soapNotes", soapNotes);
+  await restorePracticeRows("vaccinationRecords", vaccinationRecords);
+  await restorePracticeRows("labResults", labResults);
+  await restorePracticeRows("procedures", procedures);
+  await restorePracticeRows("clinicalNotes", clinicalNotes);
+  await restorePracticeRows("vitalSigns", vitalSigns);
+  await restorePracticeRows("cases", cases);
+  await restoreChildRows("caseEntries", caseEntries);
+  await restorePracticeRows("treatmentPlans", treatmentPlans);
+  await restoreChildRows("treatmentPlanItems", treatmentPlanItems);
+  await restorePracticeRows("prescriptions", prescriptions);
+  await restorePracticeRows("files", files);
+  await restorePracticeRows("controlledSubstanceLog", controlledSubstanceLog);
+  await restorePracticeRows("communications", communications);
+
+  return {
+    restored,
+    totalRows: Object.values(restored).reduce((sum, count) => sum + count, 0),
+  };
+}
+
+export async function restorePracticeData(
+  db: Database,
+  practiceId: string,
+  data: unknown
+): Promise<{ restored: Record<PracticeExportSection, number>; totalRows: number }> {
+  const transaction = (db as unknown as {
+    transaction?: (
+      fn: (tx: unknown) => Promise<{
+        restored: Record<PracticeExportSection, number>;
+        totalRows: number;
+      }>
+    ) => Promise<{
+      restored: Record<PracticeExportSection, number>;
+      totalRows: number;
+    }>;
+  }).transaction;
+
+  if (typeof transaction === "function") {
+    return transaction.call(db, (tx) =>
+      restorePracticeDataRows(tx as Database, practiceId, data)
+    );
+  }
+
+  return restorePracticeDataRows(db, practiceId, data);
 }

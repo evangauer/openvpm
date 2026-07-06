@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
+import { useSession } from "next-auth/react";
 import {
   Search,
   Package,
@@ -10,13 +11,42 @@ import {
   Truck,
   X,
   Check,
+  AlertTriangle,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { useCurrencyFormatter } from "@/lib/locale/useCurrency";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/common/empty-state";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { formatClinicalDate } from "@/lib/records/clinical-dates";
+import {
+  INVENTORY_ADJUSTMENT_QUANTITY_MIN,
+  INVENTORY_ADJUSTMENT_REASON_MAX_LENGTH,
+  INVENTORY_MONEY_AMOUNT_MAX,
+  INVENTORY_MONEY_AMOUNT_MIN,
+  INVENTORY_PRODUCT_CATEGORY_MAX_LENGTH,
+  INVENTORY_PRODUCT_LOT_NUMBER_MAX_LENGTH,
+  INVENTORY_PRODUCT_NAME_MAX_LENGTH,
+  INVENTORY_PRODUCT_SEARCH_MAX_LENGTH,
+  INVENTORY_PRODUCT_SKU_MAX_LENGTH,
+  INVENTORY_STOCK_QUANTITY_MAX,
+  INVENTORY_STOCK_QUANTITY_MIN,
+  INVENTORY_SUPPLIER_ADDRESS_MAX_LENGTH,
+  INVENTORY_SUPPLIER_EMAIL_MAX_LENGTH,
+  INVENTORY_SUPPLIER_NAME_MAX_LENGTH,
+  INVENTORY_SUPPLIER_NOTES_MAX_LENGTH,
+  INVENTORY_SUPPLIER_PHONE_MAX_LENGTH,
+  isInventoryCurrencyAmountInputValid,
+  isInventoryNonnegativeIntegerInputValid,
+  isInventoryOptionalCurrencyAmountInputValid,
+  isInventoryOptionalEmailInputValid,
+  isInventoryOptionalExpirationDateInputValid,
+  isInventoryOptionalTextInputValid,
+  isInventoryPositiveIntegerInputValid,
+  isInventoryRequiredTextInputValid,
+} from "@/lib/inventory/policy";
 
 const CATEGORIES = [
   { label: "All Categories", value: "" },
@@ -27,12 +57,53 @@ const CATEGORIES = [
   { label: "Supply", value: "supply" },
 ] as const;
 
-function isExpiringSoon(expirationDate: string | null | undefined): boolean {
-  if (!expirationDate) return false;
-  const expDate = new Date(expirationDate);
-  const now = new Date();
-  const ninetyDays = 90 * 24 * 60 * 60 * 1000;
-  return expDate.getTime() - now.getTime() <= ninetyDays;
+const ALERT_FILTERS = [
+  { label: "All", value: "all" },
+  { label: "Needs Attention", value: "attention" },
+  { label: "Low Stock", value: "low_stock" },
+  { label: "Expired", value: "expired" },
+  { label: "Expiring Soon", value: "expiring_soon" },
+] as const;
+
+type AlertFilter = (typeof ALERT_FILTERS)[number]["value"];
+
+function stockBadge(status: string) {
+  if (status === "out") {
+    return { label: "Out", className: "bg-red-100 text-red-700" };
+  }
+  if (status === "low") {
+    return { label: "Low Stock", className: "bg-amber-100 text-amber-700" };
+  }
+  return { label: "In Stock", className: "bg-green-100 text-green-700" };
+}
+
+function expirationBadge(status: string) {
+  if (status === "expired") {
+    return { label: "Expired", className: "bg-red-100 text-red-700" };
+  }
+  if (status === "expiring_soon") {
+    return { label: "Expiring Soon", className: "bg-orange-100 text-orange-700" };
+  }
+  return null;
+}
+
+const trimmedOrUndefined = (value: string) => value.trim() || undefined;
+const trimmedOrNull = (value: string) => value.trim() || null;
+
+function canManageInventoryRole(role?: string | null): boolean {
+  return (
+    role === "admin" ||
+    role === "veterinarian" ||
+    role === "technician" ||
+    role === "front_desk"
+  );
+}
+
+function formatDateOnly(value: string): string {
+  if (!isInventoryOptionalExpirationDateInputValid(value)) {
+    return value;
+  }
+  return formatClinicalDate(value, "UTC", value);
 }
 
 // --- Add Product Form ---
@@ -62,18 +133,42 @@ function AddProductForm({ onClose }: { onClose: () => void }) {
     expirationDate: "",
   });
 
+  const canSubmit =
+    isInventoryRequiredTextInputValid(
+      form.name,
+      INVENTORY_PRODUCT_NAME_MAX_LENGTH
+    ) &&
+    isInventoryOptionalTextInputValid(
+      form.sku,
+      INVENTORY_PRODUCT_SKU_MAX_LENGTH
+    ) &&
+    isInventoryOptionalTextInputValid(
+      form.category,
+      INVENTORY_PRODUCT_CATEGORY_MAX_LENGTH
+    ) &&
+    isInventoryCurrencyAmountInputValid(form.unitPrice) &&
+    isInventoryOptionalCurrencyAmountInputValid(form.costPrice) &&
+    isInventoryNonnegativeIntegerInputValid(form.stockQuantity) &&
+    isInventoryNonnegativeIntegerInputValid(form.reorderPoint) &&
+    isInventoryOptionalTextInputValid(
+      form.lotNumber,
+      INVENTORY_PRODUCT_LOT_NUMBER_MAX_LENGTH
+    ) &&
+    isInventoryOptionalExpirationDateInputValid(form.expirationDate);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canSubmit) return;
     createMutation.mutate({
-      name: form.name,
-      sku: form.sku || undefined,
-      category: form.category || undefined,
-      unitPrice: form.unitPrice,
-      costPrice: form.costPrice || undefined,
+      name: form.name.trim(),
+      sku: trimmedOrUndefined(form.sku),
+      category: trimmedOrUndefined(form.category),
+      unitPrice: form.unitPrice.trim(),
+      costPrice: trimmedOrUndefined(form.costPrice),
       stockQuantity: form.stockQuantity,
       reorderPoint: form.reorderPoint,
-      lotNumber: form.lotNumber || undefined,
-      expirationDate: form.expirationDate || undefined,
+      lotNumber: trimmedOrUndefined(form.lotNumber),
+      expirationDate: trimmedOrUndefined(form.expirationDate),
     });
   };
 
@@ -87,12 +182,14 @@ function AddProductForm({ onClose }: { onClose: () => void }) {
         <Input
           placeholder="Name *"
           value={form.name}
+          maxLength={INVENTORY_PRODUCT_NAME_MAX_LENGTH}
           onChange={(e) => setForm({ ...form, name: e.target.value })}
           required
         />
         <Input
           placeholder="SKU"
           value={form.sku}
+          maxLength={INVENTORY_PRODUCT_SKU_MAX_LENGTH}
           onChange={(e) => setForm({ ...form, sku: e.target.value })}
         />
         <select
@@ -108,18 +205,29 @@ function AddProductForm({ onClose }: { onClose: () => void }) {
           ))}
         </select>
         <Input
+          type="number"
+          min={INVENTORY_MONEY_AMOUNT_MIN}
+          max={INVENTORY_MONEY_AMOUNT_MAX}
+          step="0.01"
           placeholder="Unit Price *"
           value={form.unitPrice}
           onChange={(e) => setForm({ ...form, unitPrice: e.target.value })}
           required
         />
         <Input
+          type="number"
+          min={INVENTORY_MONEY_AMOUNT_MIN}
+          max={INVENTORY_MONEY_AMOUNT_MAX}
+          step="0.01"
           placeholder="Cost Price"
           value={form.costPrice}
           onChange={(e) => setForm({ ...form, costPrice: e.target.value })}
         />
         <Input
           type="number"
+          min={INVENTORY_STOCK_QUANTITY_MIN}
+          max={INVENTORY_STOCK_QUANTITY_MAX}
+          step={1}
           placeholder="Stock Qty"
           value={form.stockQuantity}
           onChange={(e) =>
@@ -128,6 +236,9 @@ function AddProductForm({ onClose }: { onClose: () => void }) {
         />
         <Input
           type="number"
+          min={INVENTORY_STOCK_QUANTITY_MIN}
+          max={INVENTORY_STOCK_QUANTITY_MAX}
+          step={1}
           placeholder="Reorder Point"
           value={form.reorderPoint}
           onChange={(e) =>
@@ -137,19 +248,28 @@ function AddProductForm({ onClose }: { onClose: () => void }) {
         <Input
           placeholder="Lot Number"
           value={form.lotNumber}
+          maxLength={INVENTORY_PRODUCT_LOT_NUMBER_MAX_LENGTH}
           onChange={(e) => setForm({ ...form, lotNumber: e.target.value })}
         />
         <Input
           type="date"
           placeholder="Expiration Date"
           value={form.expirationDate}
+          aria-invalid={
+            !isInventoryOptionalExpirationDateInputValid(form.expirationDate) ||
+            undefined
+          }
           onChange={(e) =>
             setForm({ ...form, expirationDate: e.target.value })
           }
         />
       </div>
       <div className="flex gap-2">
-        <Button type="submit" size="sm" disabled={createMutation.isPending}>
+        <Button
+          type="submit"
+          size="sm"
+          disabled={!canSubmit || createMutation.isPending}
+        >
           {createMutation.isPending ? "Adding..." : "Add Product"}
         </Button>
         <Button type="button" variant="outline" size="sm" onClick={onClose}>
@@ -208,17 +328,40 @@ function EditProductRow({
     expirationDate: product.expirationDate ?? "",
   });
 
+  const canSave =
+    isInventoryRequiredTextInputValid(
+      form.name,
+      INVENTORY_PRODUCT_NAME_MAX_LENGTH
+    ) &&
+    isInventoryOptionalTextInputValid(
+      form.sku,
+      INVENTORY_PRODUCT_SKU_MAX_LENGTH
+    ) &&
+    isInventoryOptionalTextInputValid(
+      form.category,
+      INVENTORY_PRODUCT_CATEGORY_MAX_LENGTH
+    ) &&
+    isInventoryCurrencyAmountInputValid(form.unitPrice) &&
+    isInventoryOptionalCurrencyAmountInputValid(form.costPrice) &&
+    isInventoryNonnegativeIntegerInputValid(form.reorderPoint) &&
+    isInventoryOptionalTextInputValid(
+      form.lotNumber,
+      INVENTORY_PRODUCT_LOT_NUMBER_MAX_LENGTH
+    ) &&
+    isInventoryOptionalExpirationDateInputValid(form.expirationDate);
+
   const handleSave = () => {
+    if (!canSave) return;
     updateMutation.mutate({
       id: product.id,
-      name: form.name,
-      sku: form.sku || undefined,
-      category: form.category || undefined,
-      unitPrice: form.unitPrice,
-      costPrice: form.costPrice || undefined,
+      name: form.name.trim(),
+      sku: trimmedOrUndefined(form.sku),
+      category: trimmedOrUndefined(form.category),
+      unitPrice: form.unitPrice.trim(),
+      costPrice: trimmedOrUndefined(form.costPrice),
       reorderPoint: form.reorderPoint,
-      lotNumber: form.lotNumber || undefined,
-      expirationDate: form.expirationDate || null,
+      lotNumber: trimmedOrUndefined(form.lotNumber),
+      expirationDate: trimmedOrNull(form.expirationDate),
     });
   };
 
@@ -227,6 +370,7 @@ function EditProductRow({
       <td className="px-4 py-2">
         <Input
           value={form.name}
+          maxLength={INVENTORY_PRODUCT_NAME_MAX_LENGTH}
           onChange={(e) => setForm({ ...form, name: e.target.value })}
           className="h-8 text-sm"
         />
@@ -234,6 +378,7 @@ function EditProductRow({
       <td className="px-4 py-2">
         <Input
           value={form.sku}
+          maxLength={INVENTORY_PRODUCT_SKU_MAX_LENGTH}
           onChange={(e) => setForm({ ...form, sku: e.target.value })}
           className="h-8 text-sm"
         />
@@ -254,6 +399,10 @@ function EditProductRow({
       </td>
       <td className="px-4 py-2">
         <Input
+          type="number"
+          min={INVENTORY_MONEY_AMOUNT_MIN}
+          max={INVENTORY_MONEY_AMOUNT_MAX}
+          step="0.01"
           value={form.unitPrice}
           onChange={(e) => setForm({ ...form, unitPrice: e.target.value })}
           className="h-8 text-sm text-right"
@@ -261,6 +410,10 @@ function EditProductRow({
       </td>
       <td className="px-4 py-2">
         <Input
+          type="number"
+          min={INVENTORY_MONEY_AMOUNT_MIN}
+          max={INVENTORY_MONEY_AMOUNT_MAX}
+          step="0.01"
           value={form.costPrice}
           onChange={(e) => setForm({ ...form, costPrice: e.target.value })}
           className="h-8 text-sm text-right"
@@ -272,12 +425,39 @@ function EditProductRow({
       <td className="px-4 py-2">
         <Input
           type="number"
+          min={INVENTORY_STOCK_QUANTITY_MIN}
+          max={INVENTORY_STOCK_QUANTITY_MAX}
+          step={1}
           value={form.reorderPoint}
           onChange={(e) =>
             setForm({ ...form, reorderPoint: parseInt(e.target.value) || 0 })
           }
           className="h-8 text-sm text-right w-20"
         />
+      </td>
+      <td className="px-4 py-2">
+        <div className="space-y-1">
+          <Input
+            value={form.lotNumber}
+            maxLength={INVENTORY_PRODUCT_LOT_NUMBER_MAX_LENGTH}
+            onChange={(e) => setForm({ ...form, lotNumber: e.target.value })}
+            className="h-8 text-sm"
+            placeholder="Lot"
+          />
+          <Input
+            type="date"
+            value={form.expirationDate}
+            aria-invalid={
+              !isInventoryOptionalExpirationDateInputValid(
+                form.expirationDate
+              ) || undefined
+            }
+            onChange={(e) =>
+              setForm({ ...form, expirationDate: e.target.value })
+            }
+            className="h-8 text-sm"
+          />
+        </div>
       </td>
       <td className="px-4 py-2" />
       <td className="px-4 py-2">
@@ -287,7 +467,7 @@ function EditProductRow({
             variant="ghost"
             className="h-7 w-7 p-0"
             onClick={handleSave}
-            disabled={updateMutation.isPending}
+            disabled={!canSave || updateMutation.isPending}
           >
             <Check className="h-4 w-4" />
           </Button>
@@ -310,10 +490,12 @@ function EditProductRow({
 function StockAdjustPopover({
   productId,
   productName,
+  productStockQuantity,
   onClose,
 }: {
   productId: string;
   productName: string;
+  productStockQuantity: number;
   onClose: () => void;
 }) {
   const utils = trpc.useUtils();
@@ -330,9 +512,28 @@ function StockAdjustPopover({
 
   const [qty, setQty] = useState(1);
   const [reason, setReason] = useState("");
+  const maxAddition = Math.max(
+    0,
+    INVENTORY_STOCK_QUANTITY_MAX - productStockQuantity
+  );
+  const hasValidAdjustmentReason = isInventoryRequiredTextInputValid(
+    reason,
+    INVENTORY_ADJUSTMENT_REASON_MAX_LENGTH
+  );
+  const hasValidAdjustmentQuantity = isInventoryPositiveIntegerInputValid(qty);
+  const canAddStock =
+    hasValidAdjustmentQuantity &&
+    qty <= maxAddition &&
+    hasValidAdjustmentReason &&
+    !adjustMutation.isPending;
+  const canRemoveStock =
+    hasValidAdjustmentQuantity &&
+    qty <= productStockQuantity &&
+    hasValidAdjustmentReason &&
+    !adjustMutation.isPending;
 
   const handleAdjust = (direction: 1 | -1) => {
-    if (!reason.trim()) return;
+    if (direction === 1 ? !canAddStock : !canRemoveStock) return;
     adjustMutation.mutate({
       id: productId,
       adjustment: qty * direction,
@@ -347,14 +548,27 @@ function StockAdjustPopover({
       </p>
       <Input
         type="number"
-        min={1}
+        min={INVENTORY_ADJUSTMENT_QUANTITY_MIN}
+        max={INVENTORY_STOCK_QUANTITY_MAX}
+        step={1}
         value={qty}
-        onChange={(e) => setQty(Math.max(1, parseInt(e.target.value) || 1))}
+        onChange={(e) => {
+          const next = parseInt(e.target.value, 10);
+          setQty(
+            Number.isFinite(next)
+              ? Math.min(
+                  INVENTORY_STOCK_QUANTITY_MAX,
+                  Math.max(INVENTORY_ADJUSTMENT_QUANTITY_MIN, next)
+                )
+              : INVENTORY_ADJUSTMENT_QUANTITY_MIN
+          );
+        }}
         className="h-8 text-sm mb-2"
         placeholder="Quantity"
       />
       <Input
         value={reason}
+        maxLength={INVENTORY_ADJUSTMENT_REASON_MAX_LENGTH}
         onChange={(e) => setReason(e.target.value)}
         className="h-8 text-sm mb-2"
         placeholder="Reason *"
@@ -365,7 +579,7 @@ function StockAdjustPopover({
           variant="outline"
           className="flex-1 h-7 text-xs"
           onClick={() => handleAdjust(1)}
-          disabled={adjustMutation.isPending || !reason.trim()}
+          disabled={!canAddStock}
         >
           <Plus className="h-3 w-3 mr-1" /> Add
         </Button>
@@ -374,7 +588,7 @@ function StockAdjustPopover({
           variant="outline"
           className="flex-1 h-7 text-xs"
           onClick={() => handleAdjust(-1)}
-          disabled={adjustMutation.isPending || !reason.trim()}
+          disabled={!canRemoveStock}
         >
           <Minus className="h-3 w-3 mr-1" /> Remove
         </Button>
@@ -419,14 +633,34 @@ function AddSupplierForm({ onClose }: { onClose: () => void }) {
     notes: "",
   });
 
+  const canSubmit =
+    isInventoryRequiredTextInputValid(
+      form.name,
+      INVENTORY_SUPPLIER_NAME_MAX_LENGTH
+    ) &&
+    isInventoryOptionalEmailInputValid(form.contactEmail) &&
+    isInventoryOptionalTextInputValid(
+      form.phone,
+      INVENTORY_SUPPLIER_PHONE_MAX_LENGTH
+    ) &&
+    isInventoryOptionalTextInputValid(
+      form.address,
+      INVENTORY_SUPPLIER_ADDRESS_MAX_LENGTH
+    ) &&
+    isInventoryOptionalTextInputValid(
+      form.notes,
+      INVENTORY_SUPPLIER_NOTES_MAX_LENGTH
+    );
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canSubmit) return;
     createMutation.mutate({
-      name: form.name,
-      contactEmail: form.contactEmail || undefined,
-      phone: form.phone || undefined,
-      address: form.address || undefined,
-      notes: form.notes || undefined,
+      name: form.name.trim(),
+      contactEmail: trimmedOrUndefined(form.contactEmail)?.toLowerCase(),
+      phone: trimmedOrUndefined(form.phone),
+      address: trimmedOrUndefined(form.address),
+      notes: trimmedOrUndefined(form.notes),
     });
   };
 
@@ -440,6 +674,7 @@ function AddSupplierForm({ onClose }: { onClose: () => void }) {
         <Input
           placeholder="Name *"
           value={form.name}
+          maxLength={INVENTORY_SUPPLIER_NAME_MAX_LENGTH}
           onChange={(e) => setForm({ ...form, name: e.target.value })}
           required
         />
@@ -447,27 +682,35 @@ function AddSupplierForm({ onClose }: { onClose: () => void }) {
           placeholder="Email"
           type="email"
           value={form.contactEmail}
+          maxLength={INVENTORY_SUPPLIER_EMAIL_MAX_LENGTH}
           onChange={(e) => setForm({ ...form, contactEmail: e.target.value })}
         />
         <Input
           placeholder="Phone"
           value={form.phone}
+          maxLength={INVENTORY_SUPPLIER_PHONE_MAX_LENGTH}
           onChange={(e) => setForm({ ...form, phone: e.target.value })}
         />
         <Input
           placeholder="Address"
           value={form.address}
+          maxLength={INVENTORY_SUPPLIER_ADDRESS_MAX_LENGTH}
           onChange={(e) => setForm({ ...form, address: e.target.value })}
           className="col-span-2"
         />
         <Input
           placeholder="Notes"
           value={form.notes}
+          maxLength={INVENTORY_SUPPLIER_NOTES_MAX_LENGTH}
           onChange={(e) => setForm({ ...form, notes: e.target.value })}
         />
       </div>
       <div className="flex gap-2">
-        <Button type="submit" size="sm" disabled={createMutation.isPending}>
+        <Button
+          type="submit"
+          size="sm"
+          disabled={!canSubmit || createMutation.isPending}
+        >
           {createMutation.isPending ? "Adding..." : "Add Supplier"}
         </Button>
         <Button type="button" variant="outline" size="sm" onClick={onClose}>
@@ -483,22 +726,175 @@ function AddSupplierForm({ onClose }: { onClose: () => void }) {
   );
 }
 
+// --- Edit Supplier Form ---
+
+function EditSupplierRow({
+  supplier,
+  onClose,
+}: {
+  supplier: {
+    id: string;
+    name: string;
+    contactEmail: string | null;
+    phone: string | null;
+    address: string | null;
+    notes: string | null;
+  };
+  onClose: () => void;
+}) {
+  const utils = trpc.useUtils();
+  const updateMutation = trpc.inventory.updateSupplier.useMutation({
+    onSuccess: () => {
+      utils.inventory.listSuppliers.invalidate();
+      onClose();
+      toast.success("Supplier updated");
+    },
+    onError: (err) => {
+      toast.error(err.message);
+    },
+  });
+
+  const [form, setForm] = useState({
+    name: supplier.name,
+    contactEmail: supplier.contactEmail ?? "",
+    phone: supplier.phone ?? "",
+    address: supplier.address ?? "",
+    notes: supplier.notes ?? "",
+  });
+
+  const canSave =
+    isInventoryRequiredTextInputValid(
+      form.name,
+      INVENTORY_SUPPLIER_NAME_MAX_LENGTH
+    ) &&
+    isInventoryOptionalEmailInputValid(form.contactEmail) &&
+    isInventoryOptionalTextInputValid(
+      form.phone,
+      INVENTORY_SUPPLIER_PHONE_MAX_LENGTH
+    ) &&
+    isInventoryOptionalTextInputValid(
+      form.address,
+      INVENTORY_SUPPLIER_ADDRESS_MAX_LENGTH
+    ) &&
+    isInventoryOptionalTextInputValid(
+      form.notes,
+      INVENTORY_SUPPLIER_NOTES_MAX_LENGTH
+    );
+
+  const handleSave = () => {
+    if (!canSave) return;
+    const contactEmail = trimmedOrNull(form.contactEmail);
+    updateMutation.mutate({
+      id: supplier.id,
+      name: form.name.trim(),
+      contactEmail: contactEmail ? contactEmail.toLowerCase() : null,
+      phone: trimmedOrNull(form.phone),
+      address: trimmedOrNull(form.address),
+      notes: trimmedOrNull(form.notes),
+    });
+  };
+
+  return (
+    <tr className="border-b border-border bg-muted/20">
+      <td className="px-4 py-2">
+        <Input
+          value={form.name}
+          maxLength={INVENTORY_SUPPLIER_NAME_MAX_LENGTH}
+          onChange={(e) => setForm({ ...form, name: e.target.value })}
+          className="h-8 text-sm"
+        />
+      </td>
+      <td className="px-4 py-2">
+        <Input
+          type="email"
+          value={form.contactEmail}
+          maxLength={INVENTORY_SUPPLIER_EMAIL_MAX_LENGTH}
+          onChange={(e) =>
+            setForm({ ...form, contactEmail: e.target.value })
+          }
+          className="h-8 text-sm"
+        />
+      </td>
+      <td className="px-4 py-2">
+        <Input
+          value={form.phone}
+          maxLength={INVENTORY_SUPPLIER_PHONE_MAX_LENGTH}
+          onChange={(e) => setForm({ ...form, phone: e.target.value })}
+          className="h-8 text-sm"
+        />
+      </td>
+      <td className="px-4 py-2">
+        <Input
+          value={form.address}
+          maxLength={INVENTORY_SUPPLIER_ADDRESS_MAX_LENGTH}
+          onChange={(e) => setForm({ ...form, address: e.target.value })}
+          className="h-8 text-sm"
+        />
+      </td>
+      <td className="px-4 py-2">
+        <Input
+          value={form.notes}
+          maxLength={INVENTORY_SUPPLIER_NOTES_MAX_LENGTH}
+          onChange={(e) => setForm({ ...form, notes: e.target.value })}
+          className="h-8 text-sm"
+        />
+      </td>
+      <td className="px-4 py-2">
+        <div className="flex gap-1">
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 w-7 p-0"
+            onClick={handleSave}
+            disabled={!canSave || updateMutation.isPending}
+            title="Save supplier"
+          >
+            <Check className="h-4 w-4" />
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 w-7 p-0"
+            onClick={onClose}
+            title="Cancel"
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+        {updateMutation.error && (
+          <p className="mt-1 text-xs text-destructive">
+            {updateMutation.error.message}
+          </p>
+        )}
+      </td>
+    </tr>
+  );
+}
+
 // --- Main Page ---
 
 export default function InventoryPage() {
+  const { data: session } = useSession();
   const formatCurrency = useCurrencyFormatter();
   const [tab, setTab] = useState<"products" | "suppliers">("products");
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("");
+  const [alertFilter, setAlertFilter] = useState<AlertFilter>("all");
   const [showAddProduct, setShowAddProduct] = useState(false);
   const [showAddSupplier, setShowAddSupplier] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingSupplierId, setEditingSupplierId] = useState<string | null>(
+    null
+  );
   const [adjustingId, setAdjustingId] = useState<string | null>(null);
+  const searchFilter = search.trim();
+  const canManageInventory = canManageInventoryRole(session?.user?.role);
 
   const productsQuery = trpc.inventory.list.useQuery(
     {
-      search: search || undefined,
+      search: searchFilter || undefined,
       category: category || undefined,
+      alert: alertFilter,
       limit: 100,
       offset: 0,
     },
@@ -508,6 +904,16 @@ export default function InventoryPage() {
   const suppliersQuery = trpc.inventory.listSuppliers.useQuery(undefined, {
     enabled: tab === "suppliers",
   });
+  const productsMissing =
+    tab === "products" &&
+    !productsQuery.isLoading &&
+    !productsQuery.error &&
+    !productsQuery.data;
+  const suppliersMissing =
+    tab === "suppliers" &&
+    !suppliersQuery.isLoading &&
+    !suppliersQuery.error &&
+    !suppliersQuery.data;
 
   return (
     <div>
@@ -557,6 +963,7 @@ export default function InventoryPage() {
               <Input
                 placeholder="Search by name or SKU..."
                 value={search}
+                maxLength={INVENTORY_PRODUCT_SEARCH_MAX_LENGTH}
                 onChange={(e) => setSearch(e.target.value)}
                 className="pl-9"
               />
@@ -572,37 +979,110 @@ export default function InventoryPage() {
                 </option>
               ))}
             </select>
+            <select
+              value={alertFilter}
+              onChange={(e) => setAlertFilter(e.target.value as AlertFilter)}
+              className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            >
+              {ALERT_FILTERS.map((filter) => (
+                <option key={filter.value} value={filter.value}>
+                  {filter.label}
+                </option>
+              ))}
+            </select>
             {productsQuery.data && (
               <p className="text-sm text-muted-foreground">
                 {productsQuery.data.total} product
                 {productsQuery.data.total !== 1 ? "s" : ""}
               </p>
             )}
-            <Button
-              size="sm"
-              onClick={() => setShowAddProduct(true)}
-              className="ml-auto"
-            >
-              <Plus className="h-4 w-4 mr-1" /> Add Product
-            </Button>
+            {canManageInventory && (
+              <Button
+                size="sm"
+                onClick={() => setShowAddProduct(true)}
+                className="ml-auto"
+              >
+                <Plus className="h-4 w-4 mr-1" /> Add Product
+              </Button>
+            )}
           </div>
 
-          {showAddProduct && (
+          {canManageInventory && showAddProduct && (
             <AddProductForm onClose={() => setShowAddProduct(false)} />
           )}
 
-          {productsQuery.error && (
-            <div className="mt-4 rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
-              {productsQuery.error.message}
+          {productsQuery.data && (
+            <div className="mt-4 grid gap-3 sm:grid-cols-4">
+              <button
+                type="button"
+                onClick={() => setAlertFilter("attention")}
+                className={cn(
+                  "rounded-lg border border-border bg-card px-3 py-2 text-left text-sm transition-colors hover:border-primary/40",
+                  alertFilter === "attention" && "border-primary bg-primary/5"
+                )}
+              >
+                <span className="flex items-center gap-2 text-muted-foreground">
+                  <AlertTriangle className="h-4 w-4 text-amber-600" />
+                  Needs attention
+                </span>
+                <span className="mt-1 block text-xl font-semibold">
+                  {productsQuery.data.alertCounts.attention}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setAlertFilter("low_stock")}
+                className={cn(
+                  "rounded-lg border border-border bg-card px-3 py-2 text-left text-sm transition-colors hover:border-primary/40",
+                  alertFilter === "low_stock" && "border-primary bg-primary/5"
+                )}
+              >
+                <span className="text-muted-foreground">Low stock</span>
+                <span className="mt-1 block text-xl font-semibold">
+                  {productsQuery.data.alertCounts.lowStock}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setAlertFilter("expired")}
+                className={cn(
+                  "rounded-lg border border-border bg-card px-3 py-2 text-left text-sm transition-colors hover:border-primary/40",
+                  alertFilter === "expired" && "border-primary bg-primary/5"
+                )}
+              >
+                <span className="text-muted-foreground">Expired</span>
+                <span className="mt-1 block text-xl font-semibold">
+                  {productsQuery.data.alertCounts.expired}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setAlertFilter("expiring_soon")}
+                className={cn(
+                  "rounded-lg border border-border bg-card px-3 py-2 text-left text-sm transition-colors hover:border-primary/40",
+                  alertFilter === "expiring_soon" &&
+                    "border-primary bg-primary/5"
+                )}
+              >
+                <span className="text-muted-foreground">Expiring soon</span>
+                <span className="mt-1 block text-xl font-semibold">
+                  {productsQuery.data.alertCounts.expiringSoon}
+                </span>
+              </button>
             </div>
           )}
 
-          {productsQuery.isLoading ? (
+          {productsQuery.error || productsMissing ? (
+            <div className="mt-4 rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
+              {productsQuery.error?.message ??
+                "Unable to load inventory products. Please retry."}
+            </div>
+          ) : productsQuery.isLoading ? (
             <div className="mt-6 text-center text-muted-foreground">
               Loading...
             </div>
           ) : productsQuery.data && productsQuery.data.items.length > 0 ? (
-            <div className="mt-4 overflow-hidden rounded-lg border border-border">
+            <div className="mt-4 overflow-x-auto rounded-lg border border-border">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border bg-muted/50">
@@ -628,6 +1108,9 @@ export default function InventoryPage() {
                       Reorder Pt
                     </th>
                     <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                      Lot / Expiry
+                    </th>
+                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">
                       Status
                     </th>
                     <th className="px-4 py-3 text-left font-medium text-muted-foreground">
@@ -637,7 +1120,7 @@ export default function InventoryPage() {
                 </thead>
                 <tbody>
                   {productsQuery.data.items.map((product) => {
-                    if (editingId === product.id) {
+                    if (canManageInventory && editingId === product.id) {
                       return (
                         <EditProductRow
                           key={product.id}
@@ -647,8 +1130,10 @@ export default function InventoryPage() {
                       );
                     }
 
-                    const isLowStock = product.stockStatus === "low";
-                    const expiringSoon = isExpiringSoon(product.expirationDate);
+                    const stock = stockBadge(product.stockStatus);
+                    const expiration = expirationBadge(
+                      product.expirationStatus
+                    );
 
                     return (
                       <tr
@@ -678,59 +1163,81 @@ export default function InventoryPage() {
                         <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
                           {product.reorderPoint ?? "\u2014"}
                         </td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          <span className="block">
+                            {product.lotNumber
+                              ? `Lot ${product.lotNumber}`
+                              : "\u2014"}
+                          </span>
+                          {product.expirationDate && (
+                            <span className="block text-xs">
+                              Exp {formatDateOnly(product.expirationDate)}
+                            </span>
+                          )}
+                        </td>
                         <td className="px-4 py-3">
                           <div className="flex flex-wrap gap-1">
                             <span
                               className={cn(
                                 "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
-                                isLowStock
-                                  ? "bg-amber-100 text-amber-700"
-                                  : "bg-green-100 text-green-700"
+                                stock.className
                               )}
                             >
-                              {isLowStock ? "Low Stock" : "In Stock"}
+                              {stock.label}
                             </span>
-                            {expiringSoon && (
-                              <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-red-100 text-red-700">
-                                Expiring Soon
+                            {expiration && (
+                              <span
+                                className={cn(
+                                  "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
+                                  expiration.className
+                                )}
+                              >
+                                {expiration.label}
                               </span>
                             )}
                           </div>
                         </td>
                         <td className="px-4 py-3">
-                          <div className="relative flex gap-1">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-7 w-7 p-0"
-                              onClick={() => setEditingId(product.id)}
-                              title="Edit"
-                            >
-                              <Pencil className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-7 w-7 p-0"
-                              onClick={() =>
-                                setAdjustingId(
-                                  adjustingId === product.id
-                                    ? null
-                                    : product.id
-                                )
-                              }
-                              title="Adjust Stock"
-                            >
-                              <Plus className="h-3.5 w-3.5" />
-                            </Button>
-                            {adjustingId === product.id && (
-                              <StockAdjustPopover
-                                productId={product.id}
-                                productName={product.name}
-                                onClose={() => setAdjustingId(null)}
-                              />
-                            )}
-                          </div>
+                          {canManageInventory ? (
+                            <div className="relative flex gap-1">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 w-7 p-0"
+                                onClick={() => setEditingId(product.id)}
+                                title="Edit"
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 w-7 p-0"
+                                onClick={() =>
+                                  setAdjustingId(
+                                    adjustingId === product.id
+                                      ? null
+                                      : product.id
+                                  )
+                                }
+                                title="Adjust Stock"
+                              >
+                                <Plus className="h-3.5 w-3.5" />
+                              </Button>
+                              {adjustingId === product.id && (
+                                <StockAdjustPopover
+                                  productId={product.id}
+                                  productName={product.name}
+                                  productStockQuantity={product.stockQuantity}
+                                  onClose={() => setAdjustingId(null)}
+                                />
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">
+                              Read-only
+                            </span>
+                          )}
                         </td>
                       </tr>
                     );
@@ -739,14 +1246,36 @@ export default function InventoryPage() {
               </table>
             </div>
           ) : (
-            <div className="mt-6 rounded-lg border border-dashed border-border bg-card p-12 text-center">
-              <Package className="mx-auto h-10 w-10 text-muted-foreground/50" />
-              <p className="mt-2 text-muted-foreground">
-                {search || category
-                  ? "No products match your filters"
-                  : "No products yet"}
-              </p>
-            </div>
+            <EmptyState
+              className="mt-6"
+              icon={Package}
+              title={
+                alertFilter !== "all"
+                  ? "No products match this alert filter"
+                  : search || category
+                    ? "No products match your filters"
+                    : "No products yet"
+              }
+              description={
+                alertFilter !== "all"
+                  ? "Clear the alert filter to see all inventory items."
+                  : search || category
+                    ? "Clear the search or category filter to broaden the list."
+                    : "Add medications, supplies, food, and other inventory before dispensing or invoicing stock-backed items."
+              }
+              action={
+                canManageInventory &&
+                alertFilter === "all" &&
+                !search &&
+                !category
+                  ? {
+                      label: "Add first product",
+                      onClick: () => setShowAddProduct(true),
+                      icon: Plus,
+                    }
+                  : undefined
+              }
+            />
           )}
         </>
       )}
@@ -761,31 +1290,32 @@ export default function InventoryPage() {
                 {suppliersQuery.data.length !== 1 ? "s" : ""}
               </p>
             )}
-            <Button
-              size="sm"
-              onClick={() => setShowAddSupplier(true)}
-              className="ml-auto"
-            >
-              <Plus className="h-4 w-4 mr-1" /> Add Supplier
-            </Button>
+            {canManageInventory && (
+              <Button
+                size="sm"
+                onClick={() => setShowAddSupplier(true)}
+                className="ml-auto"
+              >
+                <Plus className="h-4 w-4 mr-1" /> Add Supplier
+              </Button>
+            )}
           </div>
 
-          {showAddSupplier && (
+          {canManageInventory && showAddSupplier && (
             <AddSupplierForm onClose={() => setShowAddSupplier(false)} />
           )}
 
-          {suppliersQuery.error && (
+          {suppliersQuery.error || suppliersMissing ? (
             <div className="mt-4 rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
-              {suppliersQuery.error.message}
+              {suppliersQuery.error?.message ??
+                "Unable to load inventory suppliers. Please retry."}
             </div>
-          )}
-
-          {suppliersQuery.isLoading ? (
+          ) : suppliersQuery.isLoading ? (
             <div className="mt-6 text-center text-muted-foreground">
               Loading...
             </div>
           ) : suppliersQuery.data && suppliersQuery.data.length > 0 ? (
-            <div className="mt-4 overflow-hidden rounded-lg border border-border">
+            <div className="mt-4 overflow-x-auto rounded-lg border border-border">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border bg-muted/50">
@@ -801,36 +1331,91 @@ export default function InventoryPage() {
                     <th className="px-4 py-3 text-left font-medium text-muted-foreground">
                       Address
                     </th>
+                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                      Notes
+                    </th>
+                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                      Actions
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {suppliersQuery.data.map((supplier) => (
-                    <tr
-                      key={supplier.id}
-                      className="border-b border-border last:border-0 hover:bg-muted/30 transition-colors"
-                    >
-                      <td className="px-4 py-3 font-medium">
-                        {supplier.name}
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground">
-                        {supplier.contactEmail || "\u2014"}
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground">
-                        {supplier.phone || "\u2014"}
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground">
-                        {supplier.address || "\u2014"}
-                      </td>
-                    </tr>
-                  ))}
+                  {suppliersQuery.data.map((supplier) => {
+                    if (
+                      canManageInventory &&
+                      editingSupplierId === supplier.id
+                    ) {
+                      return (
+                        <EditSupplierRow
+                          key={supplier.id}
+                          supplier={supplier}
+                          onClose={() => setEditingSupplierId(null)}
+                        />
+                      );
+                    }
+
+                    return (
+                      <tr
+                        key={supplier.id}
+                        className="border-b border-border last:border-0 hover:bg-muted/30 transition-colors"
+                      >
+                        <td className="px-4 py-3 font-medium">
+                          {supplier.name}
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {supplier.contactEmail || "\u2014"}
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {supplier.phone || "\u2014"}
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {supplier.address || "\u2014"}
+                        </td>
+                        <td
+                          className="max-w-xs truncate px-4 py-3 text-muted-foreground"
+                          title={supplier.notes ?? undefined}
+                        >
+                          {supplier.notes || "\u2014"}
+                        </td>
+                        <td className="px-4 py-3">
+                          {canManageInventory ? (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 w-7 p-0"
+                              onClick={() => setEditingSupplierId(supplier.id)}
+                              title="Edit supplier"
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">
+                              Read-only
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
           ) : (
-            <div className="mt-6 rounded-lg border border-dashed border-border bg-card p-12 text-center">
-              <Truck className="mx-auto h-10 w-10 text-muted-foreground/50" />
-              <p className="mt-2 text-muted-foreground">No suppliers yet</p>
-            </div>
+            <EmptyState
+              className="mt-6"
+              icon={Truck}
+              title="No suppliers yet"
+              description="Add supplier contact details so reorder workflows have the right vendor information at hand."
+              action={
+                canManageInventory
+                  ? {
+                      label: "Add first supplier",
+                      onClick: () => setShowAddSupplier(true),
+                      icon: Plus,
+                    }
+                  : undefined
+              }
+            />
           )}
         </>
       )}

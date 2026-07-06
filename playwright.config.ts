@@ -1,5 +1,9 @@
 import { defineConfig } from "@playwright/test";
 
+const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:3000";
+const webServerCommand =
+  process.env.PLAYWRIGHT_WEB_SERVER_COMMAND ?? "pnpm dev --filter=@openpims/web";
+
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
@@ -8,12 +12,12 @@ export default defineConfig({
   workers: process.env.CI ? 1 : undefined,
   reporter: "html",
   use: {
-    baseURL: "http://localhost:3000",
+    baseURL,
     trace: "on-first-retry",
   },
   webServer: {
-    command: "pnpm dev --filter=@openpims/web",
-    url: "http://localhost:3000",
+    command: webServerCommand,
+    url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 30000,
   },

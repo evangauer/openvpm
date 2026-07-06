@@ -43,7 +43,18 @@ beforeEach(() => {
 
 describe("settings staff billing sync", () => {
   it("syncs subscription quantities after creating staff", async () => {
+    const selectResults = [
+      [{ id: "00000000-0000-0000-0000-0000000000aa" }],
+      [],
+    ];
     const db = baseDb({
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: vi.fn(async () => selectResults.shift() ?? []),
+          })),
+        })),
+      })),
       insert: vi.fn(() => ({
         values: vi.fn(() => ({
           returning: vi.fn(async () => [
@@ -72,10 +83,25 @@ describe("settings staff billing sync", () => {
   });
 
   it("syncs subscription quantities after deactivating staff", async () => {
+    const selectResults = [
+      [{ id: "00000000-0000-0000-0000-000000000002", role: "front_desk" }],
+      [],
+    ];
     const db = baseDb({
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: vi.fn(async () => selectResults.shift() ?? []),
+          })),
+        })),
+      })),
       update: vi.fn(() => ({
         set: vi.fn(() => ({
-          where: vi.fn(async () => undefined),
+          where: vi.fn(() => ({
+            returning: vi.fn(async () => [
+              { id: "00000000-0000-0000-0000-000000000002" },
+            ]),
+          })),
         })),
       })),
     });

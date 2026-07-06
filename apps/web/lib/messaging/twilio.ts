@@ -4,6 +4,7 @@ import type {
   SendMessageInput,
   SendMessageResult,
 } from "./types";
+import { cleanSender, envValue } from "./env";
 
 // Initialised lazily so the module imports cleanly without credentials (local
 // dev / CI), mirroring the prior lib/sms.ts behaviour.
@@ -11,8 +12,8 @@ let twilioClient: Twilio.Twilio | null = null;
 
 function getClient(): Twilio.Twilio | null {
   if (twilioClient) return twilioClient;
-  const sid = process.env.TWILIO_ACCOUNT_SID;
-  const token = process.env.TWILIO_AUTH_TOKEN;
+  const sid = envValue("TWILIO_ACCOUNT_SID");
+  const token = envValue("TWILIO_AUTH_TOKEN");
   if (!sid || !token) return null;
   twilioClient = Twilio(sid, token);
   return twilioClient;
@@ -26,7 +27,7 @@ export const twilioProvider: MessagingProvider = {
   name: "twilio",
 
   isConfigured(): boolean {
-    return Boolean(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN);
+    return Boolean(envValue("TWILIO_ACCOUNT_SID") && envValue("TWILIO_AUTH_TOKEN"));
   },
 
   async send({ to, body, sender }: SendMessageInput): Promise<SendMessageResult> {
@@ -34,7 +35,8 @@ export const twilioProvider: MessagingProvider = {
     if (!client) {
       return { success: false, error: "Twilio is not configured." };
     }
-    if (!sender.messagingServiceId && !sender.from) {
+    const configuredSender = cleanSender(sender);
+    if (!configuredSender.messagingServiceId && !configuredSender.from) {
       return {
         success: false,
         error: "No Twilio sender (Messaging Service SID or from-number) configured.",
@@ -44,9 +46,9 @@ export const twilioProvider: MessagingProvider = {
       const message = await client.messages.create({
         to,
         body,
-        ...(sender.messagingServiceId
-          ? { messagingServiceSid: sender.messagingServiceId }
-          : { from: sender.from }),
+        ...(configuredSender.messagingServiceId
+          ? { messagingServiceSid: configuredSender.messagingServiceId }
+          : { from: configuredSender.from }),
       });
       return { success: true, id: message.sid };
     } catch (err) {

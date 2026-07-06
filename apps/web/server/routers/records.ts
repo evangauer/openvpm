@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { eq, and, isNull, desc } from "drizzle-orm";
+import { eq, and, isNull, desc, sql } from "drizzle-orm";
+import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import {
   soapNotes,
@@ -8,11 +9,469 @@ import {
   procedures,
   problemList,
   prescriptions,
+  drugInteractions,
   patients,
+  patientAllergies,
+  products,
   users,
+  appointments,
+  practices,
 } from "@openpims/db";
+import type { Database } from "@openpims/db/client";
+import { formatDateInputForTimeZone } from "@/lib/date-input";
+import {
+  hasSoapContent,
+  normalizeSoapSection,
+  SOAP_SECTION_MAX_LENGTH,
+} from "@/lib/records/soap-content";
+import {
+  clinicalDateInput,
+  clinicalTextInput,
+  compareClinicalDateInputs,
+  isOrderedLabReferenceRange,
+  labReferenceInput,
+  optionalClinicalTextInput,
+} from "@/lib/records/clinical-inputs";
+import { evaluatePrescriptionSafety } from "@/lib/records/prescription-safety";
+import {
+  PRESCRIPTION_COUNT_MAX,
+  PRESCRIPTION_DOSAGE_MAX_LENGTH,
+  PRESCRIPTION_FREQUENCY_MAX_LENGTH,
+  PRESCRIPTION_INSTRUCTIONS_MAX_LENGTH,
+  PRESCRIPTION_MEDICATION_NAME_MAX_LENGTH,
+  PRESCRIPTION_QUANTITY_MIN,
+  PRESCRIPTION_REFILLS_MIN,
+} from "@/lib/records/prescription-policy";
+import {
+  LAB_RESULT_VALUE_MAX_LENGTH,
+  LAB_TEST_NAME_MAX_LENGTH,
+  LAB_UNIT_MAX_LENGTH,
+} from "@/lib/records/lab-policy";
+import {
+  VACCINATION_LOT_NUMBER_MAX_LENGTH,
+  VACCINATION_MANUFACTURER_MAX_LENGTH,
+  VACCINATION_NAME_MAX_LENGTH,
+} from "@/lib/records/vaccination-policy";
+import {
+  PROBLEM_DESCRIPTION_MAX_LENGTH,
+  PROBLEM_STATUSES,
+} from "@/lib/records/problem-policy";
+import {
+  PROCEDURE_ANESTHESIA_MAX_LENGTH,
+  PROCEDURE_DESCRIPTION_MAX_LENGTH,
+  PROCEDURE_DURATION_MAX_MINUTES,
+  PROCEDURE_NAME_MAX_LENGTH,
+  PROCEDURE_NOTES_MAX_LENGTH,
+} from "@/lib/records/procedure-policy";
+import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
+import { positiveIntegerColumnInput } from "./storage-bounds";
+
+export { PRESCRIPTION_INSTRUCTIONS_MAX_LENGTH } from "@/lib/records/prescription-policy";
+export {
+  PROCEDURE_ANESTHESIA_MAX_LENGTH,
+  PROCEDURE_DESCRIPTION_MAX_LENGTH,
+  PROCEDURE_DURATION_MAX_MINUTES,
+  PROCEDURE_NOTES_MAX_LENGTH,
+} from "@/lib/records/procedure-policy";
+
+type RecordsDb = Pick<Database, "select" | "insert" | "update">;
+
+type RecordsContext = {
+  db: RecordsDb;
+  practiceId: string;
+};
+
+type ProblemStatus = (typeof PROBLEM_STATUSES)[number];
+
+const labStatusValues = ["pending", "completed", "reviewed"] as const;
+type LabStatus = (typeof labStatusValues)[number];
+
+const labStatusTransitions: Record<LabStatus, readonly LabStatus[]> = {
+  pending: ["pending", "completed"],
+  completed: ["completed", "reviewed"],
+  reviewed: ["reviewed"],
+};
+
+function activePracticePredicate(practiceId: string) {
+  return sql`exists (
+    select 1
+    from ${practices}
+    where ${practices.id} = ${practiceId}
+      and ${practices.deletedAt} is null
+  )`;
+}
+
+async function practiceSettings(ctx: RecordsContext): Promise<{
+  name: string;
+  phone: string | null;
+  timezone: string | null;
+}> {
+  const [practice] = await ctx.db
+    .select({
+      name: practices.name,
+      phone: practices.phone,
+      timezone: practices.timezone,
+    })
+    .from(practices)
+    .where(and(eq(practices.id, ctx.practiceId), isNull(practices.deletedAt)))
+    .limit(1);
+
+  if (!practice) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "Practice not found",
+    });
+  }
+
+  return {
+    name: practice.name?.trim() || "Veterinary Practice",
+    phone: practice.phone ?? null,
+    timezone: practice.timezone ?? null,
+  };
+}
+
+async function practiceTimeZone(ctx: RecordsContext): Promise<string | null> {
+  return (await practiceSettings(ctx)).timezone;
+}
+
+async function practiceDateInput(ctx: RecordsContext): Promise<string> {
+  return formatDateInputForTimeZone(new Date(), await practiceTimeZone(ctx));
+}
+
+const createVaccinationInput = z.object({
+  patientId: z.string().uuid(),
+  vaccineName: clinicalTextInput("Vaccine name", VACCINATION_NAME_MAX_LENGTH),
+  lotNumber: optionalClinicalTextInput(
+    "Lot number",
+    VACCINATION_LOT_NUMBER_MAX_LENGTH
+  ),
+  manufacturer: optionalClinicalTextInput(
+    "Manufacturer",
+    VACCINATION_MANUFACTURER_MAX_LENGTH
+  ),
+  nextDueDate: clinicalDateInput("Next due date").optional(),
+});
+
+const createProblemInput = z.object({
+  patientId: z.string().uuid(),
+  description: clinicalTextInput(
+    "Problem description",
+    PROBLEM_DESCRIPTION_MAX_LENGTH
+  ),
+  status: z.enum(PROBLEM_STATUSES).default("active"),
+  onsetDate: clinicalDateInput("Onset date").optional(),
+});
+
+const createPrescriptionInput = z
+  .object({
+    patientId: z.string().uuid(),
+    medicationName: clinicalTextInput(
+      "Medication name",
+      PRESCRIPTION_MEDICATION_NAME_MAX_LENGTH
+    ),
+    dosage: clinicalTextInput("Dosage", PRESCRIPTION_DOSAGE_MAX_LENGTH),
+    frequency: clinicalTextInput(
+      "Frequency",
+      PRESCRIPTION_FREQUENCY_MAX_LENGTH
+    ),
+    quantity: z
+      .number()
+      .int()
+      .min(PRESCRIPTION_QUANTITY_MIN)
+      .max(PRESCRIPTION_COUNT_MAX)
+      .optional(),
+    productId: z.string().uuid().optional(),
+    refillsRemaining: z
+      .number()
+      .int()
+      .min(PRESCRIPTION_REFILLS_MIN)
+      .max(PRESCRIPTION_COUNT_MAX)
+      .default(0),
+    startDate: clinicalDateInput("Start date"),
+    endDate: clinicalDateInput("End date").optional(),
+    instructions: optionalClinicalTextInput(
+      "Prescription instructions",
+      PRESCRIPTION_INSTRUCTIONS_MAX_LENGTH
+    ),
+    acknowledgeSafetyWarnings: z.boolean().default(false),
+  })
+  .superRefine((input, ctx) => {
+    if (
+      input.endDate &&
+      compareClinicalDateInputs(input.endDate, input.startDate) < 0
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["endDate"],
+        message: "End date must be on or after start date.",
+      });
+    }
+  });
+
+const createLabResultInput = z
+  .object({
+    patientId: z.string().uuid(),
+    testName: clinicalTextInput("Test name", LAB_TEST_NAME_MAX_LENGTH),
+    resultValue: optionalClinicalTextInput(
+      "Result value",
+      LAB_RESULT_VALUE_MAX_LENGTH
+    ),
+    unit: optionalClinicalTextInput("Unit", LAB_UNIT_MAX_LENGTH),
+    referenceRangeLow: labReferenceInput("Reference range low").optional(),
+    referenceRangeHigh: labReferenceInput("Reference range high").optional(),
+    status: z.enum(labStatusValues).default("pending"),
+  })
+  .superRefine((input, ctx) => {
+    if (
+      !isOrderedLabReferenceRange(
+        input.referenceRangeLow,
+        input.referenceRangeHigh
+      )
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["referenceRangeHigh"],
+        message: "Reference range high must be greater than or equal to low.",
+      });
+    }
+  });
+
+async function assertPatientBelongsToPractice(
+  ctx: RecordsContext,
+  patientId: string
+) {
+  const [patient] = await ctx.db
+    .select({ id: patients.id })
+    .from(patients)
+    .where(
+      and(
+        eq(patients.id, patientId),
+        eq(patients.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(patients.deletedAt)
+      )
+    )
+    .limit(1);
+
+  if (!patient) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Patient not found" });
+  }
+
+  return patient;
+}
+
+async function assertAppointmentBelongsToPatient(
+  ctx: RecordsContext,
+  appointmentId: string,
+  patientId: string
+) {
+  const [appointment] = await ctx.db
+    .select({ id: appointments.id })
+    .from(appointments)
+    .where(
+      and(
+        eq(appointments.id, appointmentId),
+        eq(appointments.patientId, patientId),
+        eq(appointments.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(appointments.deletedAt)
+      )
+    )
+    .limit(1);
+
+  if (!appointment) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "Appointment not found",
+    });
+  }
+
+  return appointment;
+}
+
+async function assessPrescriptionSafety(
+  ctx: RecordsContext,
+  patientId: string,
+  medicationName: string
+) {
+  const [allergies, activePrescriptions, interactions] = await Promise.all([
+    ctx.db
+      .select({
+        allergen: patientAllergies.allergen,
+        severity: patientAllergies.severity,
+        reaction: patientAllergies.reaction,
+      })
+      .from(patientAllergies)
+      .where(
+        and(
+          eq(patientAllergies.patientId, patientId),
+          activePracticePredicate(ctx.practiceId),
+          sql`exists (
+            select 1
+            from ${patients}
+            where ${patients.id} = ${patientAllergies.patientId}
+              and ${patients.practiceId} = ${ctx.practiceId}
+              and ${patients.deletedAt} is null
+          )`,
+          isNull(patientAllergies.deletedAt)
+        )
+      ),
+    ctx.db
+      .select({
+        medicationName: prescriptions.medicationName,
+      })
+      .from(prescriptions)
+      .where(
+        and(
+          eq(prescriptions.practiceId, ctx.practiceId),
+          eq(prescriptions.patientId, patientId),
+          eq(prescriptions.status, "active"),
+          activePracticePredicate(ctx.practiceId),
+          isNull(prescriptions.deletedAt)
+        )
+      ),
+    ctx.db
+      .select({
+        drugA: drugInteractions.drugA,
+        drugB: drugInteractions.drugB,
+        severity: drugInteractions.severity,
+        description: drugInteractions.description,
+      })
+      .from(drugInteractions)
+      .where(isNull(drugInteractions.deletedAt)),
+  ]);
+
+  return evaluatePrescriptionSafety({
+    medicationName,
+    allergies,
+    activePrescriptions,
+    interactions,
+  });
+}
+
+async function assertDispensedProductBelongsToPractice(
+  ctx: RecordsContext,
+  productId: string
+) {
+  const [product] = await ctx.db
+    .select({
+      id: products.id,
+      name: products.name,
+      stockQuantity: products.stockQuantity,
+    })
+    .from(products)
+    .where(
+      and(
+        eq(products.id, productId),
+        eq(products.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(products.deletedAt)
+      )
+    )
+    .limit(1);
+
+  if (!product) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Product not found" });
+  }
+
+  return product;
+}
+
+async function deductDispensedProductStock(
+  ctx: RecordsContext,
+  productId: string,
+  quantity: number
+) {
+  const [product] = await ctx.db
+    .update(products)
+    .set({
+      stockQuantity: sql`${products.stockQuantity} - ${quantity}`,
+    })
+    .where(
+      and(
+        eq(products.id, productId),
+        eq(products.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(products.deletedAt),
+        sql`${products.stockQuantity} >= ${quantity}`
+      )
+    )
+    .returning({ id: products.id, stockQuantity: products.stockQuantity });
+
+  if (!product) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Insufficient stock for the dispensed prescription quantity.",
+    });
+  }
+}
+
+async function getProblemStatusForUpdate(
+  ctx: RecordsContext,
+  id: string
+): Promise<{ status: ProblemStatus; resolvedDate: string | null }> {
+  const [problem] = await ctx.db
+    .select({
+      status: problemList.status,
+      resolvedDate: problemList.resolvedDate,
+    })
+    .from(problemList)
+    .where(
+      and(
+        eq(problemList.id, id),
+        eq(problemList.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(problemList.deletedAt)
+      )
+    )
+    .limit(1);
+
+  if (!problem) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Problem not found" });
+  }
+
+  return problem;
+}
+
+async function getLabStatusForUpdate(
+  ctx: RecordsContext,
+  id: string
+): Promise<{ status: LabStatus }> {
+  const [result] = await ctx.db
+    .select({ status: labResults.status })
+    .from(labResults)
+    .where(
+      and(
+        eq(labResults.id, id),
+        eq(labResults.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(labResults.deletedAt)
+      )
+    )
+    .limit(1);
+
+  if (!result) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "Lab result not found",
+    });
+  }
+
+  return result;
+}
+
+function assertLabStatusTransition(current: LabStatus, next: LabStatus) {
+  if (labStatusTransitions[current].includes(next)) return;
+
+  throw new TRPCError({
+    code: "BAD_REQUEST",
+    message: `Cannot change lab result status from ${current} to ${next}.`,
+  });
+}
 
 export const recordsRouter = createRouter({
+  settings: protectedProcedure.query(async ({ ctx }) => practiceSettings(ctx)),
+
   // SOAP Notes
   listSoapNotes: protectedProcedure
     .input(z.object({ patientId: z.string().uuid() }))
@@ -28,11 +487,19 @@ export const recordsRouter = createRouter({
           createdAt: soapNotes.createdAt,
         })
         .from(soapNotes)
-        .leftJoin(users, eq(soapNotes.authorId, users.id))
+        .leftJoin(
+          users,
+          and(
+            eq(soapNotes.authorId, users.id),
+            eq(users.practiceId, ctx.practiceId),
+            isNull(users.deletedAt)
+          )
+        )
         .where(
           and(
             eq(soapNotes.patientId, input.patientId),
             eq(soapNotes.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
             isNull(soapNotes.deletedAt)
           )
         )
@@ -45,21 +512,59 @@ export const recordsRouter = createRouter({
       z.object({
         patientId: z.string().uuid(),
         appointmentId: z.string().uuid().optional(),
-        subjective: z.string().optional(),
-        objective: z.string().optional(),
-        assessment: z.string().optional(),
-        plan: z.string().optional(),
+        subjective: optionalClinicalTextInput(
+          "SOAP subjective",
+          SOAP_SECTION_MAX_LENGTH
+        ),
+        objective: optionalClinicalTextInput(
+          "SOAP objective",
+          SOAP_SECTION_MAX_LENGTH
+        ),
+        assessment: optionalClinicalTextInput(
+          "SOAP assessment",
+          SOAP_SECTION_MAX_LENGTH
+        ),
+        plan: optionalClinicalTextInput("SOAP plan", SOAP_SECTION_MAX_LENGTH),
       })
     )
     .mutation(async ({ ctx, input }) => {
+      await assertPatientBelongsToPractice(ctx, input.patientId);
+      if (input.appointmentId) {
+        await assertAppointmentBelongsToPatient(
+          ctx,
+          input.appointmentId,
+          input.patientId
+        );
+      }
+      const normalizedNote = {
+        subjective: normalizeSoapSection(input.subjective),
+        objective: normalizeSoapSection(input.objective),
+        assessment: normalizeSoapSection(input.assessment),
+        plan: normalizeSoapSection(input.plan),
+      };
+      if (!hasSoapContent(normalizedNote)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "SOAP note must include at least one section.",
+        });
+      }
       const [note] = await ctx.db
         .insert(soapNotes)
         .values({
-          ...input,
+          patientId: input.patientId,
+          appointmentId: input.appointmentId,
+          ...normalizedNote,
           authorId: ctx.user.id,
           practiceId: ctx.practiceId,
         })
         .returning();
+      await dispatchWebhookEvent(ctx.practiceId, "soap_note.created", {
+        id: note!.id,
+        patientId: note!.patientId,
+        appointmentId: note!.appointmentId,
+        authorId: note!.authorId,
+        source: "dashboard",
+      });
       return note!;
     }),
 
@@ -78,11 +583,19 @@ export const recordsRouter = createRouter({
           administeredByName: users.name,
         })
         .from(vaccinationRecords)
-        .leftJoin(users, eq(vaccinationRecords.administeredBy, users.id))
+        .leftJoin(
+          users,
+          and(
+            eq(vaccinationRecords.administeredBy, users.id),
+            eq(users.practiceId, ctx.practiceId),
+            isNull(users.deletedAt)
+          )
+        )
         .where(
           and(
             eq(vaccinationRecords.patientId, input.patientId),
             eq(vaccinationRecords.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
             isNull(vaccinationRecords.deletedAt)
           )
         )
@@ -91,16 +604,9 @@ export const recordsRouter = createRouter({
 
   createVaccination: protectedProcedure
     .use(requireRole("admin", "veterinarian", "technician"))
-    .input(
-      z.object({
-        patientId: z.string().uuid(),
-        vaccineName: z.string().min(1),
-        lotNumber: z.string().optional(),
-        manufacturer: z.string().optional(),
-        nextDueDate: z.string().optional(),
-      })
-    )
+    .input(createVaccinationInput)
     .mutation(async ({ ctx, input }) => {
+      await assertPatientBelongsToPractice(ctx, input.patientId);
       const [record] = await ctx.db
         .insert(vaccinationRecords)
         .values({
@@ -109,6 +615,13 @@ export const recordsRouter = createRouter({
           practiceId: ctx.practiceId,
         })
         .returning();
+      await dispatchWebhookEvent(ctx.practiceId, "vaccination.recorded", {
+        id: record!.id,
+        patientId: record!.patientId,
+        vaccineName: record!.vaccineName,
+        administeredBy: record!.administeredBy,
+        source: "dashboard",
+      });
       return record!;
     }),
 
@@ -123,6 +636,7 @@ export const recordsRouter = createRouter({
           and(
             eq(problemList.patientId, input.patientId),
             eq(problemList.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
             isNull(problemList.deletedAt)
           )
         )
@@ -131,15 +645,9 @@ export const recordsRouter = createRouter({
 
   createProblem: protectedProcedure
     .use(requireRole("admin", "veterinarian", "technician"))
-    .input(
-      z.object({
-        patientId: z.string().uuid(),
-        description: z.string().min(1),
-        status: z.enum(["active", "resolved", "chronic"]).default("active"),
-        onsetDate: z.string().optional(),
-      })
-    )
+    .input(createProblemInput)
     .mutation(async ({ ctx, input }) => {
+      await assertPatientBelongsToPractice(ctx, input.patientId);
       const [problem] = await ctx.db
         .insert(problemList)
         .values({
@@ -147,28 +655,55 @@ export const recordsRouter = createRouter({
           practiceId: ctx.practiceId,
         })
         .returning();
+      await dispatchWebhookEvent(ctx.practiceId, "problem.created", {
+        id: problem!.id,
+        patientId: problem!.patientId,
+        status: problem!.status,
+        source: "dashboard",
+      });
       return problem!;
     }),
 
   updateProblemStatus: protectedProcedure
+    .use(requireRole("admin", "veterinarian", "technician"))
     .input(
       z.object({
         id: z.string().uuid(),
-        status: z.enum(["active", "resolved", "chronic"]),
+        status: z.enum(PROBLEM_STATUSES),
       })
     )
     .mutation(async ({ ctx, input }) => {
+      const existing = await getProblemStatusForUpdate(ctx, input.id);
+      const resolvedDate =
+        input.status === "resolved"
+          ? existing.status === "resolved"
+            ? existing.resolvedDate
+            : await practiceDateInput(ctx)
+          : null;
       const [problem] = await ctx.db
         .update(problemList)
         .set({
           status: input.status,
-          resolvedDate:
-            input.status === "resolved"
-              ? new Date().toISOString().slice(0, 10)
-              : null,
+          resolvedDate,
         })
+        .where(
+          and(
+            eq(problemList.id, input.id),
+            eq(problemList.practiceId, ctx.practiceId),
+            eq(problemList.status, existing.status),
+            activePracticePredicate(ctx.practiceId),
+            sql`${problemList.resolvedDate} is not distinct from ${existing.resolvedDate}`,
+            isNull(problemList.deletedAt)
+          )
+        )
         .returning();
-      return problem!;
+      if (!problem) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Problem changed while updating. Refresh and try again.",
+        });
+      }
+      return problem;
     }),
 
   // Prescriptions
@@ -183,6 +718,9 @@ export const recordsRouter = createRouter({
           frequency: prescriptions.frequency,
           quantity: prescriptions.quantity,
           refillsRemaining: prescriptions.refillsRemaining,
+          productId: prescriptions.productId,
+          productName: products.name,
+          productStockQuantity: products.stockQuantity,
           startDate: prescriptions.startDate,
           endDate: prescriptions.endDate,
           status: prescriptions.status,
@@ -191,42 +729,133 @@ export const recordsRouter = createRouter({
           createdAt: prescriptions.createdAt,
         })
         .from(prescriptions)
-        .leftJoin(users, eq(prescriptions.prescribedBy, users.id))
+        .leftJoin(
+          users,
+          and(
+            eq(prescriptions.prescribedBy, users.id),
+            eq(users.practiceId, ctx.practiceId),
+            isNull(users.deletedAt)
+          )
+        )
+        .leftJoin(
+          products,
+          and(
+            eq(prescriptions.productId, products.id),
+            eq(products.practiceId, ctx.practiceId),
+            isNull(products.deletedAt)
+          )
+        )
         .where(
           and(
             eq(prescriptions.patientId, input.patientId),
             eq(prescriptions.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
             isNull(prescriptions.deletedAt)
           )
         )
         .orderBy(desc(prescriptions.createdAt));
     }),
 
-  createPrescription: protectedProcedure
+  checkPrescriptionSafety: protectedProcedure
     .use(requireRole("admin", "veterinarian"))
     .input(
       z.object({
         patientId: z.string().uuid(),
-        medicationName: z.string().min(1),
-        dosage: z.string().min(1),
-        frequency: z.string().min(1),
-        quantity: z.number().optional(),
-        refillsRemaining: z.number().default(0),
-        startDate: z.string(),
-        endDate: z.string().optional(),
-        instructions: z.string().optional(),
+        medicationName: clinicalTextInput(
+          "Medication name",
+          PRESCRIPTION_MEDICATION_NAME_MAX_LENGTH
+        ),
       })
     )
+    .query(async ({ ctx, input }) => {
+      await assertPatientBelongsToPractice(ctx, input.patientId);
+      return assessPrescriptionSafety(
+        ctx,
+        input.patientId,
+        input.medicationName
+      );
+    }),
+
+  createPrescription: protectedProcedure
+    .use(requireRole("admin", "veterinarian"))
+    .input(createPrescriptionInput)
     .mutation(async ({ ctx, input }) => {
-      const [rx] = await ctx.db
-        .insert(prescriptions)
-        .values({
-          ...input,
-          prescribedBy: ctx.user.id,
-          practiceId: ctx.practiceId,
-        })
-        .returning();
-      return rx!;
+      await assertPatientBelongsToPractice(ctx, input.patientId);
+      const safety = await assessPrescriptionSafety(
+        ctx,
+        input.patientId,
+        input.medicationName
+      );
+      if (input.productId) {
+        const product = await assertDispensedProductBelongsToPractice(
+          ctx,
+          input.productId
+        );
+        if (!input.quantity || input.quantity <= 0) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "Enter a dispensed quantity before linking inventory stock.",
+          });
+        }
+        if (product.stockQuantity < input.quantity) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "Insufficient stock for the dispensed prescription quantity.",
+          });
+        }
+      }
+
+      if (safety.requiresOverride && !input.acknowledgeSafetyWarnings) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Prescription has allergy or interaction warnings that require clinician acknowledgement.",
+        });
+      }
+
+      const prescriptionInput = {
+        patientId: input.patientId,
+        medicationName: input.medicationName,
+        dosage: input.dosage,
+        frequency: input.frequency,
+        quantity: input.quantity,
+        productId: input.productId,
+        refillsRemaining: input.refillsRemaining,
+        startDate: input.startDate,
+        endDate: input.endDate,
+        instructions: input.instructions,
+      };
+      const rx = await ctx.db.transaction(async (tx) => {
+        const txCtx: RecordsContext = { db: tx, practiceId: ctx.practiceId };
+        if (input.productId && input.quantity && input.quantity > 0) {
+          await deductDispensedProductStock(
+            txCtx,
+            input.productId,
+            input.quantity
+          );
+        }
+
+        const [rx] = await tx
+          .insert(prescriptions)
+          .values({
+            ...prescriptionInput,
+            prescribedBy: ctx.user.id,
+            practiceId: ctx.practiceId,
+          })
+          .returning();
+        return rx!;
+      });
+      await dispatchWebhookEvent(ctx.practiceId, "prescription.created", {
+        id: rx.id,
+        patientId: rx.patientId,
+        medicationName: rx.medicationName,
+        prescribedBy: rx.prescribedBy,
+        productId: rx.productId,
+        source: "dashboard",
+      });
+      return rx;
     }),
 
   // Lab Results
@@ -246,11 +875,19 @@ export const recordsRouter = createRouter({
           createdAt: labResults.createdAt,
         })
         .from(labResults)
-        .leftJoin(users, eq(labResults.orderedBy, users.id))
+        .leftJoin(
+          users,
+          and(
+            eq(labResults.orderedBy, users.id),
+            eq(users.practiceId, ctx.practiceId),
+            isNull(users.deletedAt)
+          )
+        )
         .where(
           and(
             eq(labResults.patientId, input.patientId),
             eq(labResults.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
             isNull(labResults.deletedAt)
           )
         )
@@ -260,18 +897,9 @@ export const recordsRouter = createRouter({
 
   createLabResult: protectedProcedure
     .use(requireRole("admin", "veterinarian"))
-    .input(
-      z.object({
-        patientId: z.string().uuid(),
-        testName: z.string().min(1),
-        resultValue: z.string().optional(),
-        unit: z.string().optional(),
-        referenceRangeLow: z.string().optional(),
-        referenceRangeHigh: z.string().optional(),
-        status: z.enum(["pending", "completed", "reviewed"]).default("pending"),
-      })
-    )
+    .input(createLabResultInput)
     .mutation(async ({ ctx, input }) => {
+      await assertPatientBelongsToPractice(ctx, input.patientId);
       const [result] = await ctx.db
         .insert(labResults)
         .values({
@@ -280,6 +908,14 @@ export const recordsRouter = createRouter({
           practiceId: ctx.practiceId,
         })
         .returning();
+      await dispatchWebhookEvent(ctx.practiceId, "lab_result.created", {
+        id: result!.id,
+        patientId: result!.patientId,
+        testName: result!.testName,
+        status: result!.status,
+        orderedBy: result!.orderedBy,
+        source: "dashboard",
+      });
       return result!;
     }),
 
@@ -288,10 +924,12 @@ export const recordsRouter = createRouter({
     .input(
       z.object({
         id: z.string().uuid(),
-        status: z.enum(["pending", "completed", "reviewed"]),
+        status: z.enum(labStatusValues),
       })
     )
     .mutation(async ({ ctx, input }) => {
+      const existing = await getLabStatusForUpdate(ctx, input.id);
+      assertLabStatusTransition(existing.status, input.status);
       const [result] = await ctx.db
         .update(labResults)
         .set({
@@ -303,11 +941,20 @@ export const recordsRouter = createRouter({
         .where(
           and(
             eq(labResults.id, input.id),
-            eq(labResults.practiceId, ctx.practiceId)
+            eq(labResults.practiceId, ctx.practiceId),
+            eq(labResults.status, existing.status),
+            activePracticePredicate(ctx.practiceId),
+            isNull(labResults.deletedAt)
           )
         )
         .returning();
-      return result!;
+      if (!result) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Lab result changed while updating. Refresh and try again.",
+        });
+      }
+      return result;
     }),
 
   // Procedures
@@ -326,11 +973,19 @@ export const recordsRouter = createRouter({
           createdAt: procedures.createdAt,
         })
         .from(procedures)
-        .leftJoin(users, eq(procedures.performedBy, users.id))
+        .leftJoin(
+          users,
+          and(
+            eq(procedures.performedBy, users.id),
+            eq(users.practiceId, ctx.practiceId),
+            isNull(users.deletedAt)
+          )
+        )
         .where(
           and(
             eq(procedures.patientId, input.patientId),
             eq(procedures.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
             isNull(procedures.deletedAt)
           )
         )
@@ -343,14 +998,33 @@ export const recordsRouter = createRouter({
       z.object({
         patientId: z.string().uuid(),
         appointmentId: z.string().uuid().optional(),
-        name: z.string().min(1),
-        description: z.string().optional(),
-        anesthesiaUsed: z.string().optional(),
-        durationMinutes: z.number().int().positive().optional(),
-        notes: z.string().optional(),
+        name: clinicalTextInput("Procedure name", PROCEDURE_NAME_MAX_LENGTH),
+        description: optionalClinicalTextInput(
+          "Procedure description",
+          PROCEDURE_DESCRIPTION_MAX_LENGTH
+        ),
+        anesthesiaUsed: optionalClinicalTextInput(
+          "Anesthesia used",
+          PROCEDURE_ANESTHESIA_MAX_LENGTH
+        ),
+        durationMinutes: positiveIntegerColumnInput
+          .max(PROCEDURE_DURATION_MAX_MINUTES)
+          .optional(),
+        notes: optionalClinicalTextInput(
+          "Procedure notes",
+          PROCEDURE_NOTES_MAX_LENGTH
+        ),
       })
     )
     .mutation(async ({ ctx, input }) => {
+      await assertPatientBelongsToPractice(ctx, input.patientId);
+      if (input.appointmentId) {
+        await assertAppointmentBelongsToPatient(
+          ctx,
+          input.appointmentId,
+          input.patientId
+        );
+      }
       const [procedure] = await ctx.db
         .insert(procedures)
         .values({
@@ -359,6 +1033,14 @@ export const recordsRouter = createRouter({
           practiceId: ctx.practiceId,
         })
         .returning();
+      await dispatchWebhookEvent(ctx.practiceId, "procedure.created", {
+        id: procedure!.id,
+        patientId: procedure!.patientId,
+        appointmentId: procedure!.appointmentId,
+        name: procedure!.name,
+        performedBy: procedure!.performedBy,
+        source: "dashboard",
+      });
       return procedure!;
     }),
 });

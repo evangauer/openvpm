@@ -9,6 +9,9 @@
  * flow is wired up.
  */
 
+import { fetchTelnyx } from "./telnyx-http";
+import { envValue } from "./env";
+
 const TELNYX_BASE = "https://api.telnyx.com/v2";
 
 export class TelnyxError extends Error {
@@ -29,7 +32,7 @@ export class TelnyxNotConfiguredError extends Error {
 }
 
 function apiKey(): string {
-  const key = process.env.TELNYX_API_KEY;
+  const key = envValue("TELNYX_API_KEY");
   if (!key) throw new TelnyxNotConfiguredError();
   return key;
 }
@@ -40,7 +43,7 @@ async function telnyxRequest<T = unknown>(
   path: string,
   body?: unknown
 ): Promise<T> {
-  const res = await fetch(`${TELNYX_BASE}${path}`, {
+  const res = await fetchTelnyx(`${TELNYX_BASE}${path}`, {
     method,
     headers: {
       Authorization: `Bearer ${apiKey()}`,

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import { practices } from "@openpims/db";
@@ -7,6 +7,7 @@ import {
   createSubscriptionCheckoutSession,
   createBillingPortalSession,
 } from "@/lib/stripe";
+import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
 import {
   PLANS,
   PLAN_ORDER,
@@ -23,18 +24,26 @@ import { usageForPractice, currentPeriodMonth } from "@/lib/billing/usage";
 import {
   countBillableLocationsAndSeats,
   readBillingSyncState,
-  syncPracticeSubscriptionQuantities,
   type BillingSyncState,
 } from "@/lib/billing/subscription-sync";
 import { appBaseUrl } from "@/lib/app-url";
+import { billingContactEmail } from "@/lib/billing/contact";
 
 const adminProcedure = protectedProcedure.use(requireRole("admin"));
+
+function activePracticeWhere(practiceId: string) {
+  return and(eq(practices.id, practiceId), isNull(practices.deletedAt));
+}
+
+function practiceNotFound(): TRPCError {
+  return new TRPCError({ code: "NOT_FOUND", message: "Practice not found" });
+}
 
 /** Whether a tier can be bought self-serve (Stripe price configured). */
 function purchasable(tier: keyof typeof PLANS): boolean {
   if (tier !== "cloud") return false;
-  const { locationPriceId, seatPriceId } = cloudCheckoutPriceIds();
-  return !!(locationPriceId && seatPriceId);
+  const { locationPriceId } = cloudCheckoutPriceIds();
+  return !!locationPriceId;
 }
 
 export const subscriptionRouter = createRouter({
@@ -45,12 +54,17 @@ export const subscriptionRouter = createRouter({
         tier: practices.subscriptionTier,
         billingStatus: practices.billingStatus,
         trialEndsAt: practices.trialEndsAt,
+        timezone: practices.timezone,
         stripeCustomerId: practices.stripeCustomerId,
         stripeSubscriptionId: practices.stripeSubscriptionId,
       })
       .from(practices)
-      .where(eq(practices.id, ctx.practiceId))
+      .where(activePracticeWhere(ctx.practiceId))
       .limit(1);
+
+    if (!practice) {
+      throw practiceNotFound();
+    }
 
     const enforced = billingEnforced();
     let counts = await countBillableLocationsAndSeats(ctx.db, ctx.practiceId);
@@ -58,18 +72,6 @@ export const subscriptionRouter = createRouter({
       ctx.db,
       ctx.practiceId
     );
-    if (enforced && practice?.stripeSubscriptionId) {
-      billingSync = await syncPracticeSubscriptionQuantities({
-        db: ctx.db,
-        practiceId: ctx.practiceId,
-        subscriptionId: practice.stripeSubscriptionId,
-        alertOnError: false,
-      });
-      counts = {
-        locationCount: billingSync.locationCount,
-        billableSeatCount: billingSync.billableSeatCount,
-      };
-    }
     const period = currentPeriodMonth();
     const [smsUsed, aiUsed] = enforced
       ? await Promise.all([
@@ -79,15 +81,16 @@ export const subscriptionRouter = createRouter({
       : [0, 0];
 
     return {
-      tier: practice?.tier ?? "free",
-      billingStatus: practice?.billingStatus ?? "none",
-      trialEndsAt: practice?.trialEndsAt ?? null,
-      hasBillingAccount: !!practice?.stripeCustomerId,
+      tier: practice.tier ?? "free",
+      billingStatus: practice.billingStatus ?? "none",
+      trialEndsAt: practice.trialEndsAt ?? null,
+      timezone: practice.timezone ?? null,
+      hasBillingAccount: !!practice.stripeCustomerId,
       billingEnforced: enforced,
       hasFullAccess: hasHostedFullAccess(
-        practice?.tier,
-        practice?.billingStatus,
-        practice?.trialEndsAt
+        practice.tier,
+        practice.billingStatus,
+        practice.trialEndsAt
       ),
       locationCount: counts.locationCount,
       billableSeatCount: counts.billableSeatCount,
@@ -142,14 +145,18 @@ export const subscriptionRouter = createRouter({
           trialEndsAt: practices.trialEndsAt,
         })
         .from(practices)
-        .where(eq(practices.id, ctx.practiceId))
+        .where(activePracticeWhere(ctx.practiceId))
         .limit(1);
+
+      if (!practice) {
+        throw practiceNotFound();
+      }
 
       const counts = await countBillableLocationsAndSeats(ctx.db, ctx.practiceId);
 
       const base = appBaseUrl();
       const activeTrialEnd =
-        practice?.billingStatus === "trialing" &&
+        practice.billingStatus === "trialing" &&
         practice.trialEndsAt &&
         new Date(practice.trialEndsAt).getTime() > Date.now()
           ? practice.trialEndsAt
@@ -164,23 +171,27 @@ export const subscriptionRouter = createRouter({
       }> = [{ priceId: locationPriceId, quantity: counts.locationCount }];
       if (aiOveragePriceId) lineItems.push({ priceId: aiOveragePriceId, metered: true });
       if (smsOveragePriceId) lineItems.push({ priceId: smsOveragePriceId, metered: true });
+      const customerEmail =
+        billingContactEmail(practice.email) ??
+        billingContactEmail(ctx.session.user.email);
       const result = await createSubscriptionCheckoutSession({
         lineItems,
         practiceId: ctx.practiceId,
-        customerId: practice?.stripeCustomerId ?? undefined,
-        customerEmail: practice?.email ?? ctx.session.user.email,
+        customerId: practice.stripeCustomerId ?? undefined,
+        customerEmail,
         trialEnd: activeTrialEnd,
-        trialPeriodDays: activeTrialEnd || practice?.trialEndsAt ? undefined : TRIAL_DAYS,
+        trialPeriodDays: activeTrialEnd || practice.trialEndsAt ? undefined : TRIAL_DAYS,
         successUrl: `${base}/settings?tab=billing&checkout=success`,
         cancelUrl: `${base}/settings?tab=billing&checkout=cancelled`,
       });
-      if (!result) {
+      const checkoutUrl = result?.url;
+      if (!isSafeCheckoutRedirectUrl(checkoutUrl)) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
           message: "Billing is not configured on this server.",
         });
       }
-      return { url: result.url };
+      return { url: checkoutUrl };
     }),
 
   /** Open the Stripe Billing Portal to manage/cancel an existing subscription. */
@@ -188,10 +199,14 @@ export const subscriptionRouter = createRouter({
     const [practice] = await ctx.db
       .select({ stripeCustomerId: practices.stripeCustomerId })
       .from(practices)
-      .where(eq(practices.id, ctx.practiceId))
+      .where(activePracticeWhere(ctx.practiceId))
       .limit(1);
 
-    if (!practice?.stripeCustomerId) {
+    if (!practice) {
+      throw practiceNotFound();
+    }
+
+    if (!practice.stripeCustomerId) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: "No billing account yet — start a plan first.",
@@ -202,12 +217,13 @@ export const subscriptionRouter = createRouter({
       customerId: practice.stripeCustomerId,
       returnUrl: `${appBaseUrl()}/settings?tab=billing`,
     });
-    if (!result) {
+    const portalUrl = result?.url;
+    if (!isSafeCheckoutRedirectUrl(portalUrl)) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: "Billing is not configured on this server.",
       });
     }
-    return { url: result.url };
+    return { url: portalUrl };
   }),
 });

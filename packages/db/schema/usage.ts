@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, integer, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, varchar, integer, timestamp, index } from "drizzle-orm/pg-core";
 import { baseColumns } from "./common";
 import { practices } from "./practices";
 
@@ -20,11 +20,51 @@ export const usageRecords = pgTable(
     quantity: integer("quantity").notNull().default(1),
     /** Billing period as YYYY-MM (UTC). */
     periodMonth: varchar("period_month", { length: 7 }).notNull(),
+    /** Stable Stripe meter-event identifier, derived from this row id. */
+    stripeMeterIdentifier: varchar("stripe_meter_identifier", { length: 128 }),
+    /** Set after the matching Stripe meter event is accepted. */
+    stripeMeteredAt: timestamp("stripe_metered_at", { withTimezone: true }),
   },
   (t) => ({
     practicePeriodIdx: index("usage_practice_period_idx").on(
       t.practiceId,
       t.periodMonth
     ),
+    meterRetryIdx: index("usage_meter_retry_idx").on(t.stripeMeteredAt),
+  })
+);
+
+/**
+ * Durable de-dup ledger for Stripe webhooks. Cross-tenant/system table: webhook
+ * handlers insert an event id inside the same transaction as side effects; a
+ * duplicate insert means the event has already been processed.
+ */
+export const stripeEvents = pgTable("stripe_events", {
+  eventId: varchar("event_id", { length: 128 }).primaryKey(),
+  endpoint: varchar("endpoint", { length: 64 }).notNull(),
+  eventType: varchar("event_type", { length: 128 }).notNull(),
+  processedAt: timestamp("processed_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+/**
+ * Durable fixed-window rate-limit buckets. Global/system state because many
+ * protected surfaces are pre-auth or cross-tenant (login, registration, API key
+ * auth, portal booking).
+ */
+export const rateLimitBuckets = pgTable(
+  "rate_limit_buckets",
+  {
+    key: varchar("key", { length: 255 }).primaryKey(),
+    count: integer("count").notNull().default(0),
+    resetAt: timestamp("reset_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (table) => ({
+    resetAtIdx: index("rate_limit_buckets_reset_at_idx").on(table.resetAt),
   })
 );

@@ -1,7 +1,9 @@
 "use client";
 
-import { useState, useRef } from "react";
+import dynamic from "next/dynamic";
+import { useMemo, useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import {
   ArrowLeft,
   AlertTriangle,
@@ -10,12 +12,96 @@ import {
   Shield,
   Camera,
   FileDown,
+  Loader2,
+  Plus,
 } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
+import { EmptyState } from "@/components/common/empty-state";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { generateMedicalSummaryPdf } from "@/lib/pdf";
+import {
+  CLIENT_UPLOAD_TIMEOUT_MS,
+  fetchWithClientTimeout,
+} from "@/lib/client-fetch";
+import {
+  IMAGE_UPLOAD_POLICY_MESSAGE,
+  isImageUploadFileValid,
+} from "@/lib/upload-policy";
+import {
+  buildVitalTrend,
+  buildWeightTrend,
+} from "@/lib/records/clinical-trends";
+import {
+  formatClinicalDate,
+  formatClinicalDateTime,
+} from "@/lib/records/clinical-dates";
+import {
+  PATIENT_WEIGHT_MAX_KG,
+  PATIENT_WEIGHT_MIN_KG,
+  PATIENT_WEIGHT_STEP,
+  isPatientWeightInputValid,
+} from "@/lib/records/patient-weight-policy";
+import {
+  VITALS_BODY_CONDITION_MAX,
+  VITALS_BODY_CONDITION_MIN,
+  VITALS_CAPILLARY_REFILL_MAX_SEC,
+  VITALS_CAPILLARY_REFILL_MIN_SEC,
+  VITALS_CAPILLARY_REFILL_STEP,
+  VITALS_HEART_RATE_MAX_BPM,
+  VITALS_HEART_RATE_MIN_BPM,
+  VITALS_MUCOUS_MEMBRANE_MAX_LENGTH,
+  VITALS_NOTES_MAX_LENGTH,
+  VITALS_PAIN_SCORE_MAX,
+  VITALS_PAIN_SCORE_MIN,
+  VITALS_RESPIRATORY_RATE_MAX_BPM,
+  VITALS_RESPIRATORY_RATE_MIN_BPM,
+  VITALS_TEMPERATURE_MAX_C,
+  VITALS_TEMPERATURE_MIN_C,
+  VITALS_TEMPERATURE_STEP,
+  VITALS_WEIGHT_MAX_KG,
+  VITALS_WEIGHT_MIN_KG,
+  VITALS_WEIGHT_STEP,
+  isVitalsOptionalBodyConditionInputValid,
+  isVitalsOptionalCapillaryRefillInputValid,
+  isVitalsOptionalHeartRateInputValid,
+  isVitalsOptionalPainScoreInputValid,
+  isVitalsOptionalRespiratoryRateInputValid,
+  isVitalsOptionalTemperatureInputValid,
+  isVitalsOptionalTextInputValid,
+  isVitalsOptionalWeightInputValid,
+} from "@/lib/records/vitals-policy";
+
+function PatientChartChunkLoading() {
+  return (
+    <div className="rounded-lg border border-border bg-card p-4">
+      <div className="mb-3 h-5 w-32 animate-pulse rounded bg-muted" />
+      <div className="h-64 w-full animate-pulse rounded bg-muted" />
+    </div>
+  );
+}
+
+const WeightTrendChart = dynamic(
+  () =>
+    import("@/components/patients/patient-trend-charts").then(
+      (mod) => mod.WeightTrendChart
+    ),
+  {
+    ssr: false,
+    loading: PatientChartChunkLoading,
+  }
+);
+
+const VitalsTrendChart = dynamic(
+  () =>
+    import("@/components/patients/patient-trend-charts").then(
+      (mod) => mod.VitalsTrendChart
+    ),
+  {
+    ssr: false,
+    loading: PatientChartChunkLoading,
+  }
+);
 
 const speciesEmoji: Record<string, string> = {
   canine: "\uD83D\uDC36",
@@ -65,18 +151,86 @@ const tabs: { id: Tab; label: string }[] = [
   { id: "vaccinations", label: "Vaccinations" },
 ];
 
+function canManagePatientDetailRole(role?: string | null): boolean {
+  return (
+    role === "admin" ||
+    role === "veterinarian" ||
+    role === "technician" ||
+    role === "front_desk"
+  );
+}
+
+function canRecordVitalsRole(role?: string | null): boolean {
+  return (
+    role === "admin" || role === "veterinarian" || role === "technician"
+  );
+}
+
+type VitalsFormState = {
+  temperatureC: string;
+  heartRateBpm: string;
+  respiratoryRateBpm: string;
+  weightKg: string;
+  bodyConditionScore: string;
+  painScore: string;
+  mucousMembrane: string;
+  capillaryRefillSec: string;
+  notes: string;
+};
+
+function initialVitalsForm(): VitalsFormState {
+  return {
+    temperatureC: "",
+    heartRateBpm: "",
+    respiratoryRateBpm: "",
+    weightKg: "",
+    bodyConditionScore: "",
+    painScore: "",
+    mucousMembrane: "",
+    capillaryRefillSec: "",
+    notes: "",
+  };
+}
+
+function PatientDetailErrorPanel({ message }: { message: string }) {
+  return (
+    <div className="rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
+      {message}
+    </div>
+  );
+}
+
+function PatientDetailLoadingPanel({ label }: { label: string }) {
+  return (
+    <div className="flex items-center justify-center gap-2 rounded-lg border border-border bg-card p-8 text-sm text-muted-foreground">
+      <Loader2 className="h-4 w-4 animate-spin" />
+      {label}
+    </div>
+  );
+}
+
 export default function PatientDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
+  const { data: session } = useSession();
   const [activeTab, setActiveTab] = useState<Tab>("overview");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const utils = trpc.useUtils();
+  const canManagePatientDetail = canManagePatientDetailRole(
+    session?.user?.role
+  );
+  const canRecordVitals = canRecordVitalsRole(session?.user?.role);
 
   const { data: patient, isLoading, error } = trpc.patients.getById.useQuery(
     { id: params.id },
     { enabled: !!params.id }
   );
+  const {
+    data: recordsSettings,
+    isLoading: recordsSettingsLoading,
+    error: recordsSettingsError,
+  } = trpc.records.settings.useQuery();
 
   const updatePhotoMutation = trpc.patients.update.useMutation({
     onSuccess: () => {
@@ -89,18 +243,32 @@ export default function PatientDetailPage() {
   });
 
   async function handlePhotoUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    if (!canManagePatientDetail) {
+      e.currentTarget.value = "";
+      return;
+    }
     const file = e.target.files?.[0];
     if (!file) return;
+
+    if (!isImageUploadFileValid(file)) {
+      toast.error(IMAGE_UPLOAD_POLICY_MESSAGE);
+      e.currentTarget.value = "";
+      return;
+    }
 
     const formData = new FormData();
     formData.append("file", file);
     formData.append("category", "patient-photos");
 
     try {
-      const res = await fetch("/api/upload", {
-        method: "POST",
-        body: formData,
-      });
+      const res = await fetchWithClientTimeout(
+        "/api/upload",
+        {
+          method: "POST",
+          body: formData,
+        },
+        CLIENT_UPLOAD_TIMEOUT_MS
+      );
 
       if (!res.ok) {
         throw new Error("Upload failed");
@@ -135,10 +303,80 @@ export default function PatientDetailPage() {
     { patientId: params.id },
     { enabled: false }
   );
+  const recordsSettingsMissing =
+    !recordsSettingsLoading && !recordsSettingsError && !recordsSettings;
+  const verifiedRecordsSettings =
+    recordsSettingsError || recordsSettingsMissing || !recordsSettings
+      ? null
+      : recordsSettings;
+  const recordsSettingsTimeZone = verifiedRecordsSettings
+    ? verifiedRecordsSettings.timezone
+    : undefined;
+  const weightTrend = useMemo(
+    () => buildWeightTrend(patient?.weights ?? [], recordsSettingsTimeZone),
+    [patient?.weights, recordsSettingsTimeZone]
+  );
+  const [weightKg, setWeightKg] = useState("");
+  const addWeight = trpc.patients.addWeight.useMutation({
+    onSuccess: () => {
+      toast.success("Weight recorded");
+      utils.patients.getById.invalidate({ id: params.id });
+      setWeightKg("");
+    },
+    onError: (err) => toast.error(err.message),
+  });
+  const canSubmitWeight =
+    canManagePatientDetail &&
+    isPatientWeightInputValid(weightKg) && !addWeight.isPending;
+
+  function handleRecordWeight(e: React.FormEvent) {
+    e.preventDefault();
+    if (!canSubmitWeight || !patient) return;
+    addWeight.mutate({
+      patientId: patient.id,
+      weightKg: weightKg.trim(),
+    });
+  }
+
+  const loadError = error ?? recordsSettingsError;
+  const isPageLoading = !loadError && (isLoading || recordsSettingsLoading);
+
+  if (isPageLoading) {
+    return <PatientDetailLoadingPanel label="Loading patient..." />;
+  }
+
+  if (
+    loadError ||
+    recordsSettingsMissing ||
+    !verifiedRecordsSettings ||
+    !patient
+  ) {
+    return (
+      <EmptyState
+        icon={AlertTriangle}
+        title="Unable to load patient"
+        description={
+          loadError?.message ??
+          (recordsSettingsMissing || !verifiedRecordsSettings
+            ? "Unable to load clinical settings. Please retry."
+            : "Choose a patient from the Patients list before opening the detail page.")
+        }
+        action={{
+          label: "Back to Patients",
+          onClick: () => router.push("/patients"),
+          icon: ArrowLeft,
+        }}
+      />
+    );
+  }
+
+  const patientData = patient;
+  const recordsTimeZone = verifiedRecordsSettings.timezone;
+  const recordsPracticeName =
+    verifiedRecordsSettings.name ?? "Veterinary Practice";
+  const recordsPracticePhone = verifiedRecordsSettings.phone;
 
   async function handleDownloadSummary() {
-    if (!patient) return;
-
     try {
       const [problemsResult, vaccinationsResult, soapNotesResult, prescriptionsResult] =
         await Promise.all([
@@ -148,24 +386,45 @@ export default function PatientDetailPage() {
           prescriptionsQuery.refetch(),
         ]);
 
-      const problems = problemsResult.data ?? [];
-      const vaccinations = vaccinationsResult.data ?? [];
-      const soapNotes = soapNotesResult.data ?? [];
-      const prescriptions = prescriptionsResult.data ?? [];
+      const summaryError =
+        problemsResult.error ??
+        vaccinationsResult.error ??
+        soapNotesResult.error ??
+        prescriptionsResult.error;
+      if (summaryError) {
+        throw summaryError;
+      }
+      if (
+        !problemsResult.data ||
+        !vaccinationsResult.data ||
+        !soapNotesResult.data ||
+        !prescriptionsResult.data
+      ) {
+        throw new Error(
+          "Unable to load complete medical summary data. Please retry."
+        );
+      }
+
+      const problems = problemsResult.data;
+      const vaccinations = vaccinationsResult.data;
+      const soapNotes = soapNotesResult.data;
+      const prescriptions = prescriptionsResult.data;
+      const { generateMedicalSummaryPdf } = await import("@/lib/pdf");
 
       generateMedicalSummaryPdf({
-        practiceName: "",
-        patientName: patient.name,
-        species: patient.species ?? "Unknown",
-        breed: patient.breed ?? undefined,
-        sex: patient.sex ?? undefined,
-        dob: patient.dob ?? undefined,
-        color: patient.color ?? undefined,
-        microchip: patient.microchipNumber ?? undefined,
-        clientName: [patient.clientFirstName, patient.clientLastName]
+        practiceName: recordsPracticeName,
+        practicePhone: recordsPracticePhone ?? undefined,
+        patientName: patientData.name,
+        species: patientData.species ?? "Unknown",
+        breed: patientData.breed ?? undefined,
+        sex: patientData.sex ?? undefined,
+        dob: patientData.dob ?? undefined,
+        color: patientData.color ?? undefined,
+        microchip: patientData.microchipNumber ?? undefined,
+        clientName: [patientData.clientFirstName, patientData.clientLastName]
           .filter(Boolean)
           .join(" "),
-        allergies: (patient.allergies ?? []).map((a) => ({
+        allergies: (patientData.allergies ?? []).map((a) => ({
           allergen: a.allergen,
           severity: a.severity ?? "unknown",
         })),
@@ -177,15 +436,15 @@ export default function PatientDetailPage() {
         vaccinations: vaccinations.map((v) => ({
           name: v.vaccineName,
           date: v.administeredAt
-            ? new Date(v.administeredAt).toLocaleDateString()
+            ? formatClinicalDate(v.administeredAt, recordsTimeZone, "Unknown")
             : "Unknown",
           nextDue: v.nextDueDate
-            ? new Date(v.nextDueDate).toLocaleDateString()
+            ? formatClinicalDate(v.nextDueDate, recordsTimeZone)
             : undefined,
         })),
         recentNotes: soapNotes.slice(0, 5).map((n) => ({
           date: n.createdAt
-            ? new Date(n.createdAt).toLocaleDateString()
+            ? formatClinicalDate(n.createdAt, recordsTimeZone, "Unknown")
             : "Unknown",
           subjective: n.subjective ?? undefined,
           objective: n.objective ?? undefined,
@@ -198,29 +457,16 @@ export default function PatientDetailPage() {
           frequency: rx.frequency ?? "",
           status: rx.status ?? "active",
         })),
-      }).save(`${patient.name.replace(/\s+/g, "_")}_medical_summary.pdf`);
+        generatedDate: formatClinicalDate(new Date(), recordsTimeZone),
+      }).save(`${patientData.name.replace(/\s+/g, "_")}_medical_summary.pdf`);
 
       toast.success("Medical summary downloaded");
-    } catch {
-      toast.error("Failed to generate medical summary");
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to generate medical summary"
+      );
     }
   }
-
-  if (isLoading) {
-    return (
-      <div className="text-center text-muted-foreground py-12">Loading...</div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
-        {error.message}
-      </div>
-    );
-  }
-
-  if (!patient) return null;
 
   const statusColor =
     patient.status === "active"
@@ -257,21 +503,25 @@ export default function PatientDetailPage() {
                   {speciesEmoji[patient.species ?? "other"] ?? "\uD83D\uDC3E"}
                 </div>
               )}
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="absolute inset-0 flex items-center justify-center rounded-full bg-black/50 opacity-0 transition-opacity group-hover:opacity-100"
-                title="Upload photo"
-              >
-                <Camera className="h-5 w-5 text-white" />
-              </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                onChange={handlePhotoUpload}
-                className="hidden"
-              />
+              {canManagePatientDetail && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="absolute inset-0 flex items-center justify-center rounded-full bg-black/50 opacity-0 transition-opacity group-hover:opacity-100"
+                    title="Upload photo"
+                  >
+                    <Camera className="h-5 w-5 text-white" />
+                  </button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    onChange={handlePhotoUpload}
+                    className="hidden"
+                  />
+                </>
+              )}
             </div>
             <div>
               <div className="flex items-center gap-2">
@@ -322,13 +572,15 @@ export default function PatientDetailPage() {
               <FileDown className="mr-2 h-4 w-4" />
               Download Summary
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => router.push(`/patients/${patient.id}/edit`)}
-            >
-              Edit
-            </Button>
+            {canManagePatientDetail && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => router.push(`/patients/${patient.id}/edit`)}
+              >
+                Edit
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -422,9 +674,7 @@ export default function PatientDetailPage() {
               <div>
                 <dt className="text-sm text-muted-foreground">Date of Birth</dt>
                 <dd className="mt-0.5 text-sm font-medium">
-                  {patient.dob
-                    ? new Date(patient.dob).toLocaleDateString()
-                    : "\u2014"}
+                  {formatClinicalDate(patient.dob, recordsTimeZone, "\u2014")}
                 </dd>
               </div>
               <div>
@@ -466,89 +716,166 @@ export default function PatientDetailPage() {
         )}
 
         {activeTab === "weight" && (
-          <div>
+          <div className="space-y-6">
+            {canManagePatientDetail && (
+              <form
+                onSubmit={handleRecordWeight}
+                className="rounded-lg border border-border bg-card p-4"
+              >
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                  <div className="w-full sm:max-w-xs">
+                    <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                      Weight (kg)
+                    </label>
+                    <input
+                      type="number"
+                      min={PATIENT_WEIGHT_MIN_KG}
+                      max={PATIENT_WEIGHT_MAX_KG}
+                      step={PATIENT_WEIGHT_STEP}
+                      value={weightKg}
+                      required
+                      aria-invalid={
+                        weightKg.trim().length > 0 &&
+                        !isPatientWeightInputValid(weightKg)
+                      }
+                      onChange={(event) => setWeightKg(event.target.value)}
+                      className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                    />
+                  </div>
+                  <Button type="submit" disabled={!canSubmitWeight}>
+                    {addWeight.isPending ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Plus className="mr-2 h-4 w-4" />
+                    )}
+                    {addWeight.isPending ? "Saving..." : "Record weight"}
+                  </Button>
+                </div>
+              </form>
+            )}
+
             {patient.weights && patient.weights.length > 0 ? (
-              <div className="overflow-hidden rounded-lg border border-border">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-border bg-muted/50">
-                      <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                        Date
-                      </th>
-                      <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                        Weight (kg)
-                      </th>
-                      <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                        Recorded By
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {patient.weights.map((weight) => (
-                      <tr
-                        key={weight.id}
-                        className="border-b border-border last:border-0"
-                      >
-                        <td className="px-4 py-3">
-                          {weight.recordedAt
-                            ? new Date(weight.recordedAt).toLocaleDateString()
-                            : "\u2014"}
-                        </td>
-                        <td className="px-4 py-3 font-medium">
-                          {weight.weightKg} kg
-                        </td>
-                        <td className="px-4 py-3 text-muted-foreground">
-                          {weight.recordedBy ?? "\u2014"}
-                        </td>
+              <>
+                <WeightTrendChart data={weightTrend} />
+                <div className="overflow-x-auto rounded-lg border border-border">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-border bg-muted/50">
+                        <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                          Date
+                        </th>
+                        <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                          Weight (kg)
+                        </th>
+                        <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                          Recorded By
+                        </th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {patient.weights.map((weight) => (
+                        <tr
+                          key={weight.id}
+                          className="border-b border-border last:border-0"
+                        >
+                          <td className="px-4 py-3">
+                            {formatClinicalDate(
+                              weight.recordedAt,
+                              recordsTimeZone,
+                              "\u2014"
+                            )}
+                          </td>
+                          <td className="px-4 py-3 font-medium">
+                            {weight.weightKg} kg
+                          </td>
+                          <td className="px-4 py-3 text-muted-foreground">
+                            {weight.recordedBy ?? "\u2014"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             ) : (
-              <div className="rounded-lg border border-dashed border-border bg-card p-8 text-center">
-                <Activity className="mx-auto h-8 w-8 text-muted-foreground/50" />
-                <p className="mt-2 text-sm text-muted-foreground">
-                  No weight records yet
-                </p>
-              </div>
+              <EmptyState icon={Activity} title="No weight records yet" />
             )}
           </div>
         )}
 
-        {activeTab === "vitals" && <VitalsTab patientId={patient.id} />}
+        {activeTab === "vitals" && (
+          <VitalsTab
+            patientId={patient.id}
+            timeZone={recordsTimeZone}
+            canRecordVitals={canRecordVitals}
+          />
+        )}
 
         {activeTab === "vaccinations" && (
-          <VaccinationsTab patientId={patient.id} />
+          <VaccinationsTab patientId={patient.id} timeZone={recordsTimeZone} />
         )}
       </div>
     </div>
   );
 }
 
-function VitalsTab({ patientId }: { patientId: string }) {
+function VitalsTab({
+  patientId,
+  timeZone,
+  canRecordVitals,
+}: {
+  patientId: string;
+  timeZone?: string | null;
+  canRecordVitals: boolean;
+}) {
   const utils = trpc.useUtils();
-  const { data: vitals, isLoading } = trpc.vitals.listByPatient.useQuery({ patientId });
+  const { data: vitals, isLoading, error } =
+    trpc.vitals.listByPatient.useQuery({ patientId });
+  const vitalsMissing = !isLoading && !error && !vitals;
+  const vitalTrend = useMemo(
+    () => buildVitalTrend(vitals ?? [], timeZone),
+    [vitals, timeZone]
+  );
   const record = trpc.vitals.record.useMutation({
     onSuccess: () => {
       toast.success("Vitals recorded");
       utils.vitals.listByPatient.invalidate({ patientId });
-      setForm({});
+      setForm(initialVitalsForm());
     },
     onError: (err) => toast.error(err.message),
   });
 
-  const [form, setForm] = useState<Record<string, string>>({});
-  const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement>) =>
+  const [form, setForm] = useState<VitalsFormState>(() => initialVitalsForm());
+  const set = (k: keyof VitalsFormState) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm((f) => ({ ...f, [k]: e.target.value }));
   const num = (v?: string) => {
     if (v === undefined || v.trim() === "") return undefined;
     const n = Number(v);
     return Number.isFinite(n) ? n : undefined;
   };
+  const hasVitalsFormContent = Object.values(form).some(
+    (value) => value.trim().length > 0
+  );
+  const canSubmitVitals =
+    canRecordVitals &&
+    hasVitalsFormContent &&
+    isVitalsOptionalTemperatureInputValid(form.temperatureC) &&
+    isVitalsOptionalHeartRateInputValid(form.heartRateBpm) &&
+    isVitalsOptionalRespiratoryRateInputValid(form.respiratoryRateBpm) &&
+    isVitalsOptionalWeightInputValid(form.weightKg) &&
+    isVitalsOptionalBodyConditionInputValid(form.bodyConditionScore) &&
+    isVitalsOptionalPainScoreInputValid(form.painScore) &&
+    isVitalsOptionalTextInputValid(
+      form.mucousMembrane,
+      VITALS_MUCOUS_MEMBRANE_MAX_LENGTH
+    ) &&
+    isVitalsOptionalCapillaryRefillInputValid(form.capillaryRefillSec) &&
+    isVitalsOptionalTextInputValid(form.notes, VITALS_NOTES_MAX_LENGTH) &&
+    !record.isPending;
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (!canSubmitVitals) return;
     record.mutate({
       patientId,
       temperatureC: num(form.temperatureC),
@@ -557,118 +884,252 @@ function VitalsTab({ patientId }: { patientId: string }) {
       weightKg: num(form.weightKg),
       bodyConditionScore: num(form.bodyConditionScore),
       painScore: num(form.painScore),
+      mucousMembrane: form.mucousMembrane.trim() || undefined,
+      capillaryRefillSec: num(form.capillaryRefillSec),
       notes: form.notes?.trim() || undefined,
     });
   }
 
-  const fields: { key: string; label: string; placeholder?: string }[] = [
-    { key: "temperatureC", label: "Temp (°C)" },
-    { key: "heartRateBpm", label: "HR (bpm)" },
-    { key: "respiratoryRateBpm", label: "RR (bpm)" },
-    { key: "weightKg", label: "Weight (kg)" },
-    { key: "bodyConditionScore", label: "BCS (1-9)" },
-    { key: "painScore", label: "Pain (0-10)" },
-  ];
-
   return (
     <div className="space-y-6">
-      <form onSubmit={submit} className="rounded-lg border border-border bg-card p-4">
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-          {fields.map((f) => (
-            <div key={f.key}>
+      {canRecordVitals && (
+        <form onSubmit={submit} className="rounded-lg border border-border bg-card p-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                {f.label}
+                Temp (C)
               </label>
               <input
                 type="number"
-                step="any"
-                value={form[f.key] ?? ""}
-                onChange={set(f.key)}
+                min={VITALS_TEMPERATURE_MIN_C}
+                max={VITALS_TEMPERATURE_MAX_C}
+                step={VITALS_TEMPERATURE_STEP}
+                value={form.temperatureC}
+                aria-invalid={!isVitalsOptionalTemperatureInputValid(form.temperatureC)}
+                onChange={set("temperatureC")}
                 className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
               />
             </div>
-          ))}
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">
+              HR (bpm)
+            </label>
+            <input
+              type="number"
+              min={VITALS_HEART_RATE_MIN_BPM}
+              max={VITALS_HEART_RATE_MAX_BPM}
+              step={1}
+              value={form.heartRateBpm}
+              aria-invalid={!isVitalsOptionalHeartRateInputValid(form.heartRateBpm)}
+              onChange={set("heartRateBpm")}
+              className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">
+              RR (bpm)
+            </label>
+            <input
+              type="number"
+              min={VITALS_RESPIRATORY_RATE_MIN_BPM}
+              max={VITALS_RESPIRATORY_RATE_MAX_BPM}
+              step={1}
+              value={form.respiratoryRateBpm}
+              aria-invalid={
+                !isVitalsOptionalRespiratoryRateInputValid(
+                  form.respiratoryRateBpm
+                )
+              }
+              onChange={set("respiratoryRateBpm")}
+              className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">
+              Weight (kg)
+            </label>
+            <input
+              type="number"
+              min={VITALS_WEIGHT_MIN_KG}
+              max={VITALS_WEIGHT_MAX_KG}
+              step={VITALS_WEIGHT_STEP}
+              value={form.weightKg}
+              aria-invalid={!isVitalsOptionalWeightInputValid(form.weightKg)}
+              onChange={set("weightKg")}
+              className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">
+              BCS (1-9)
+            </label>
+            <input
+              type="number"
+              min={VITALS_BODY_CONDITION_MIN}
+              max={VITALS_BODY_CONDITION_MAX}
+              step={1}
+              value={form.bodyConditionScore}
+              aria-invalid={
+                !isVitalsOptionalBodyConditionInputValid(
+                  form.bodyConditionScore
+                )
+              }
+              onChange={set("bodyConditionScore")}
+              className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">
+              Pain (0-10)
+            </label>
+            <input
+              type="number"
+              min={VITALS_PAIN_SCORE_MIN}
+              max={VITALS_PAIN_SCORE_MAX}
+              step={1}
+              value={form.painScore}
+              aria-invalid={!isVitalsOptionalPainScoreInputValid(form.painScore)}
+              onChange={set("painScore")}
+              className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">
+              CRT (sec)
+            </label>
+            <input
+              type="number"
+              min={VITALS_CAPILLARY_REFILL_MIN_SEC}
+              max={VITALS_CAPILLARY_REFILL_MAX_SEC}
+              step={VITALS_CAPILLARY_REFILL_STEP}
+              value={form.capillaryRefillSec}
+              aria-invalid={
+                !isVitalsOptionalCapillaryRefillInputValid(
+                  form.capillaryRefillSec
+                )
+              }
+              onChange={set("capillaryRefillSec")}
+              className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+            />
+          </div>
+          <div className="col-span-2">
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">
+              Mucous Membrane
+            </label>
+            <input
+              type="text"
+              value={form.mucousMembrane}
+              maxLength={VITALS_MUCOUS_MEMBRANE_MAX_LENGTH}
+              onChange={set("mucousMembrane")}
+              placeholder="e.g. Pink and moist"
+              className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+            />
+          </div>
         </div>
         <input
           type="text"
           value={form.notes ?? ""}
+          maxLength={VITALS_NOTES_MAX_LENGTH}
           onChange={set("notes")}
           placeholder="Notes (optional)"
           className="mt-3 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
         />
-        <div className="mt-3 flex justify-end">
-          <Button type="submit" disabled={record.isPending}>
-            {record.isPending ? "Saving…" : "Record vitals"}
-          </Button>
-        </div>
-      </form>
+          <div className="mt-3 flex justify-end">
+            <Button type="submit" disabled={!canSubmitVitals}>
+              {record.isPending ? "Saving..." : "Record vitals"}
+            </Button>
+          </div>
+        </form>
+      )}
 
-      {isLoading ? (
-        <div className="py-8 text-center text-muted-foreground">Loading...</div>
+      {error ? (
+        <PatientDetailErrorPanel
+          message={`Unable to load vitals. ${error.message}`}
+        />
+      ) : vitalsMissing ? (
+        <PatientDetailErrorPanel message="Unable to load vitals. Please retry." />
+      ) : isLoading ? (
+        <PatientDetailLoadingPanel label="Loading vitals..." />
       ) : !vitals || vitals.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-border bg-card p-8 text-center">
-          <Activity className="mx-auto h-8 w-8 text-muted-foreground/50" />
-          <p className="mt-2 text-sm text-muted-foreground">No vitals recorded yet</p>
-        </div>
+        <EmptyState icon={Activity} title="No vitals recorded yet" />
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-border">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border bg-muted/50 text-left text-muted-foreground">
-                <th className="px-3 py-2 font-medium">Date</th>
-                <th className="px-3 py-2 font-medium">Temp</th>
-                <th className="px-3 py-2 font-medium">HR</th>
-                <th className="px-3 py-2 font-medium">RR</th>
-                <th className="px-3 py-2 font-medium">Weight</th>
-                <th className="px-3 py-2 font-medium">BCS</th>
-                <th className="px-3 py-2 font-medium">Pain</th>
-              </tr>
-            </thead>
-            <tbody>
-              {vitals.map((v) => (
-                <tr key={v.id} className="border-b border-border last:border-0">
-                  <td className="px-3 py-2">
-                    {v.recordedAt ? new Date(v.recordedAt).toLocaleString() : "—"}
-                  </td>
-                  <td className="px-3 py-2">{v.temperatureC ?? "—"}</td>
-                  <td className="px-3 py-2">{v.heartRateBpm ?? "—"}</td>
-                  <td className="px-3 py-2">{v.respiratoryRateBpm ?? "—"}</td>
-                  <td className="px-3 py-2">{v.weightKg ?? "—"}</td>
-                  <td className="px-3 py-2">{v.bodyConditionScore ?? "—"}</td>
-                  <td className="px-3 py-2">{v.painScore ?? "—"}</td>
+        <>
+          <VitalsTrendChart data={vitalTrend} />
+          <div className="overflow-x-auto rounded-lg border border-border">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border bg-muted/50 text-left text-muted-foreground">
+                  <th className="px-3 py-2 font-medium">Date</th>
+                  <th className="px-3 py-2 font-medium">Temp</th>
+                  <th className="px-3 py-2 font-medium">HR</th>
+                  <th className="px-3 py-2 font-medium">RR</th>
+                  <th className="px-3 py-2 font-medium">Weight</th>
+                  <th className="px-3 py-2 font-medium">BCS</th>
+                  <th className="px-3 py-2 font-medium">Pain</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {vitals.map((v) => (
+                  <tr key={v.id} className="border-b border-border last:border-0">
+                    <td className="px-3 py-2">
+                      {formatClinicalDateTime(v.recordedAt, timeZone, "—")}
+                    </td>
+                    <td className="px-3 py-2">{v.temperatureC ?? "—"}</td>
+                    <td className="px-3 py-2">{v.heartRateBpm ?? "—"}</td>
+                    <td className="px-3 py-2">{v.respiratoryRateBpm ?? "—"}</td>
+                    <td className="px-3 py-2">{v.weightKg ?? "—"}</td>
+                    <td className="px-3 py-2">{v.bodyConditionScore ?? "—"}</td>
+                    <td className="px-3 py-2">{v.painScore ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </div>
   );
 }
 
-function VaccinationsTab({ patientId }: { patientId: string }) {
-  const { data: vaccinations, isLoading } =
+function VaccinationsTab({
+  patientId,
+  timeZone,
+}: {
+  patientId: string;
+  timeZone?: string | null;
+}) {
+  const { data: vaccinations, isLoading, error } =
     trpc.records.listVaccinations.useQuery({ patientId });
+  const vaccinationsMissing = !isLoading && !error && !vaccinations;
+
+  if (error) {
+    return (
+      <PatientDetailErrorPanel
+        message={`Unable to load vaccination records. ${error.message}`}
+      />
+    );
+  }
+
+  if (vaccinationsMissing) {
+    return (
+      <PatientDetailErrorPanel
+        message="Unable to load vaccination records. Please retry."
+      />
+    );
+  }
 
   if (isLoading) {
-    return (
-      <div className="text-center text-muted-foreground py-8">Loading...</div>
-    );
+    return <PatientDetailLoadingPanel label="Loading vaccinations..." />;
   }
 
   if (!vaccinations || vaccinations.length === 0) {
     return (
-      <div className="rounded-lg border border-dashed border-border bg-card p-8 text-center">
-        <Shield className="mx-auto h-8 w-8 text-muted-foreground/50" />
-        <p className="mt-2 text-sm text-muted-foreground">
-          No vaccination records yet
-        </p>
-      </div>
+      <EmptyState icon={Shield} title="No vaccination records yet" />
     );
   }
 
   return (
-    <div className="overflow-hidden rounded-lg border border-border">
+    <div className="overflow-x-auto rounded-lg border border-border">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-border bg-muted/50">
@@ -697,14 +1158,10 @@ function VaccinationsTab({ patientId }: { patientId: string }) {
             >
               <td className="px-4 py-3 font-medium">{vax.vaccineName}</td>
               <td className="px-4 py-3">
-                {vax.administeredAt
-                  ? new Date(vax.administeredAt).toLocaleDateString()
-                  : "\u2014"}
+                {formatClinicalDate(vax.administeredAt, timeZone, "\u2014")}
               </td>
               <td className="px-4 py-3">
-                {vax.nextDueDate
-                  ? new Date(vax.nextDueDate).toLocaleDateString()
-                  : "\u2014"}
+                {formatClinicalDate(vax.nextDueDate, timeZone, "\u2014")}
               </td>
               <td className="px-4 py-3">{vax.lotNumber ?? "\u2014"}</td>
               <td className="px-4 py-3 text-muted-foreground">

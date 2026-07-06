@@ -48,19 +48,24 @@ without any risk to the default configuration.
 # Set a strong password for the app role; the script creates the role if missing
 # (no credential is stored in the repo) and applies the policies + grants.
 OPENPIMS_APP_DB_PASSWORD='<strong-password>' pnpm db:rls   # run as the DB owner
-pnpm db:rls:test   # live verification: proves cross-tenant isolation
+OPENPIMS_APP_DB_PASSWORD='<same-password>' pnpm db:rls:test   # live verification
 ```
 
 `db:rls:test` checks, against a real database as `openpims_app`: a tenant sees
 only its own rows, cross-tenant INSERT is rejected, no-context queries return
 nothing, and the system bypass sees everything.
+Both scripts trim `OPENPIMS_APP_DB_PASSWORD`; whitespace-only values are treated
+as missing, and `db:rls:test` uses the same password that was used to create or
+rotate the app role.
 
 ## Activating enforcement in production
 
 1. `OPENPIMS_APP_DB_PASSWORD='<strong>' pnpm db:rls` against the production database
    (creates the `openpims_app` role with that password — or rotates it if it
    already exists — then applies policies + grants).
-2. Point the hosted `DATABASE_URL` at the `openpims_app` role.
+2. Run `OPENPIMS_APP_DB_PASSWORD='<same-password>' pnpm db:rls:test` against the
+   same database to prove isolation with that credential.
+3. Point the hosted `DATABASE_URL` at the `openpims_app` role.
 
 ### Entrypoint coverage (all wired)
 
@@ -78,6 +83,7 @@ correctly under the enforcing `openpims_app` role:
   `app/api/portal/checkout` → `withSystem`.
 
 These are no-ops on the owner connection (dev/self-host). To activate enforcement
-in production: run `OPENPIMS_APP_DB_PASSWORD='<strong>' pnpm db:rls` and point
-`DATABASE_URL` at the `openpims_app` role (Phase 5 infra). Re-run `pnpm db:rls:test` against
+in production: run `OPENPIMS_APP_DB_PASSWORD='<strong>' pnpm db:rls`, verify with
+`OPENPIMS_APP_DB_PASSWORD='<same>' pnpm db:rls:test`, and point `DATABASE_URL` at
+the `openpims_app` role (Phase 5 infra). Re-run the same verification against
 staging to confirm isolation under the restricted role.

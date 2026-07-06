@@ -1,10 +1,52 @@
 import type { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import { compare } from "bcryptjs";
+import { z } from "zod";
 import { db } from "@openpims/db/client";
 import { users } from "@openpims/db";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { withSystem } from "@/lib/tenant-db";
+import { clearRateLimit, rateLimit } from "@/lib/rate-limit";
+import { clientIpFromRequest } from "@/lib/request-ip";
+import { AUTH_PASSWORD_MAX_LENGTH } from "@/lib/auth-password";
+import { AUTH_EMAIL_MAX_LENGTH } from "@/lib/auth-input-policy";
+import { nextAuthSecret } from "@/lib/auth-secret";
+
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_EMAIL_LIMIT = 8;
+const LOGIN_IP_LIMIT = 40;
+export const LOGIN_EMAIL_MAX_LENGTH = AUTH_EMAIL_MAX_LENGTH;
+const DUMMY_PASSWORD_HASH =
+  "$2a$12$952CXRCtzm0M4qmcFoZkteQvA5Tdh.CIhvCabrgb5qUbk.VcE35va";
+
+const loginCredentialsInput = z.object({
+  email: z
+    .string()
+    .trim()
+    .email()
+    .max(LOGIN_EMAIL_MAX_LENGTH)
+    .transform((value) => value.toLowerCase()),
+  password: z.string().min(1).max(AUTH_PASSWORD_MAX_LENGTH),
+});
+
+export function parseLoginCredentials(
+  credentials: Record<"email" | "password", string> | undefined
+): { email: string; password: string } | null {
+  const parsed = loginCredentialsInput.safeParse(credentials);
+  return parsed.success ? parsed.data : null;
+}
+
+export const clientIpFromAuthRequest = clientIpFromRequest;
+
+export function loginRateLimitKeys(email: string, ip: string): {
+  emailKey: string;
+  ipKey: string;
+} {
+  return {
+    emailKey: `login:email:${email.trim().toLowerCase()}`,
+    ipKey: `login:ip:${ip || "unknown"}`,
+  };
+}
 
 declare module "next-auth" {
   interface Session {
@@ -41,8 +83,36 @@ export const authOptions: NextAuthOptions = {
         email: { label: "Email", type: "email" },
         password: { label: "Password", type: "password" },
       },
-      async authorize(credentials) {
-        if (!credentials?.email || !credentials?.password) {
+      async authorize(credentials, req) {
+        const parsedCredentials = parseLoginCredentials(credentials);
+        if (!parsedCredentials) {
+          return null;
+        }
+        const { email, password } = parsedCredentials;
+        const ip = clientIpFromAuthRequest(req);
+        const { emailKey, ipKey } = loginRateLimitKeys(email, ip);
+
+        let emailLimit: Awaited<ReturnType<typeof rateLimit>>;
+        let ipLimit: Awaited<ReturnType<typeof rateLimit>>;
+        try {
+          [emailLimit, ipLimit] = await Promise.all([
+            rateLimit({
+              key: emailKey,
+              limit: LOGIN_EMAIL_LIMIT,
+              windowMs: LOGIN_WINDOW_MS,
+            }),
+            rateLimit({
+              key: ipKey,
+              limit: LOGIN_IP_LIMIT,
+              windowMs: LOGIN_WINDOW_MS,
+            }),
+          ]);
+        } catch (err) {
+          console.error("[auth] login rate limit failed:", err);
+          return null;
+        }
+
+        if (!emailLimit.success || !ipLimit.success) {
           return null;
         }
 
@@ -51,14 +121,19 @@ export const authOptions: NextAuthOptions = {
           tx
             .select()
             .from(users)
-            .where(eq(users.email, credentials.email))
+            .where(and(eq(users.email, email), isNull(users.deletedAt)))
             .limit(1)
         );
 
-        if (!user) return null;
+        if (!user) {
+          await compare(password, DUMMY_PASSWORD_HASH);
+          return null;
+        }
 
-        const isValid = await compare(credentials.password, user.passwordHash);
+        const isValid = await compare(password, user.passwordHash);
         if (!isValid) return null;
+
+        await clearRateLimit(emailKey).catch(() => undefined);
 
         // Email verification is a SOFT requirement on hosted: new users sign in
         // immediately after signup (so the trial + onboarding aren't blocked by
@@ -95,5 +170,5 @@ export const authOptions: NextAuthOptions = {
   session: {
     strategy: "jwt",
   },
-  secret: process.env.NEXTAUTH_SECRET,
+  secret: nextAuthSecret(),
 };

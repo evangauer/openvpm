@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Mail, X, Loader2, Check } from "lucide-react";
+import { AlertTriangle, Mail, X, Loader2, Check } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 
 const DISMISS_KEY = "ovpm_verify_email_dismissed";
@@ -14,7 +14,7 @@ const DISMISS_KEY = "ovpm_verify_email_dismissed";
  */
 export function VerifyEmailBanner() {
   const [dismissed, setDismissed] = useState(true); // assume dismissed until we read storage
-  const { data } = trpc.auth.me.useQuery(undefined, {
+  const { data, isLoading, error, refetch } = trpc.auth.me.useQuery(undefined, {
     staleTime: 5 * 60 * 1000,
   });
   const resend = trpc.auth.resendVerification.useMutation();
@@ -23,13 +23,55 @@ export function VerifyEmailBanner() {
     setDismissed(sessionStorage.getItem(DISMISS_KEY) === "1");
   }, []);
 
-  if (dismissed) return null;
-  if (!data?.verificationEnabled || data.emailVerified) return null;
-
   function dismiss() {
     sessionStorage.setItem(DISMISS_KEY, "1");
     setDismissed(true);
   }
+
+  if (dismissed) return null;
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center gap-3 border-b border-amber-200 bg-amber-50 px-6 py-2.5 text-sm text-amber-900">
+        <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+        <p className="flex-1">Checking email verification status...</p>
+        <button
+          type="button"
+          onClick={dismiss}
+          aria-label="Dismiss"
+          className="rounded p-1 text-amber-700 hover:bg-amber-100"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+    );
+  }
+
+  if (error || !data) {
+    return (
+      <div className="flex items-center gap-3 border-b border-destructive/30 bg-destructive/5 px-6 py-2.5 text-sm text-destructive">
+        <AlertTriangle className="h-4 w-4 shrink-0" />
+        <p className="flex-1">Unable to check email verification status.</p>
+        <button
+          type="button"
+          onClick={() => void refetch()}
+          className="inline-flex items-center gap-1.5 rounded-md border border-destructive/30 bg-background px-2.5 py-1 text-xs font-medium hover:bg-destructive/10"
+        >
+          Retry
+        </button>
+        <button
+          type="button"
+          onClick={dismiss}
+          aria-label="Dismiss"
+          className="rounded p-1 hover:bg-destructive/10"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+    );
+  }
+
+  if (!data.verificationEnabled || data.emailVerified) return null;
 
   return (
     <div className="flex items-center gap-3 border-b border-amber-200 bg-amber-50 px-6 py-2.5 text-sm text-amber-900">

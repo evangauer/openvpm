@@ -1,35 +1,76 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
+import { applySecurityHeaders } from "./lib/security-headers";
+import { nextAuthSecret } from "./lib/auth-secret";
 
-function setSecurityHeaders(response: NextResponse): NextResponse {
-  response.headers.set("X-Content-Type-Options", "nosniff");
-  response.headers.set("X-Frame-Options", "DENY");
-  response.headers.set("X-XSS-Protection", "1; mode=block");
-  response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
-  return response;
+const PUBLIC_PATH_PREFIXES = [
+  "/accept-invite",
+  "/api",
+  "/api-docs",
+  "/forgot-password",
+  "/login",
+  "/portal",
+  "/register",
+  "/reset-password",
+  "/verify-email",
+];
+
+const PUBLIC_FILE_PATTERN =
+  /\.(?:avif|css|gif|ico|jpg|jpeg|js|json|map|png|svg|txt|webp|xml)$/i;
+
+function isPublicPath(pathname: string): boolean {
+  return (
+    PUBLIC_FILE_PATTERN.test(pathname) ||
+    PUBLIC_PATH_PREFIXES.some(
+      (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
+    )
+  );
+}
+
+function isVercelObservabilityPath(pathname: string): boolean {
+  if (pathname.startsWith("/_vercel/insights/")) return true;
+
+  // Vercel may proxy Web Analytics through a deployment-specific base path,
+  // e.g. /5691167a7e0cfa40/view or /5691167a7e0cfa40/event.
+  return /^\/[a-f0-9]{16}\/(?:script\.js|view|event|session)$/i.test(
+    pathname
+  );
 }
 
 export async function middleware(request: NextRequest) {
-  const token = await getToken({
-    req: request,
-    secret: process.env.NEXTAUTH_SECRET,
-  });
+  const requestUrl = new URL(request.url);
+  const pathname = requestUrl.pathname;
+
+  if (isVercelObservabilityPath(pathname)) {
+    return applySecurityHeaders(NextResponse.next());
+  }
+
+  if (isPublicPath(pathname)) {
+    return applySecurityHeaders(NextResponse.next());
+  }
+
+  const secret = nextAuthSecret();
+  const token = secret ? await getToken({ req: request, secret }) : null;
 
   // Unauthenticated visitors go to the demo login, which offers one-click
   // demo access. (Previously the root path bounced to the marketing site,
   // which dead-ended anyone who came straight to demo.openvpm.com to try it.)
   if (!token) {
     const loginUrl = new URL("/login", request.url);
-    return NextResponse.redirect(loginUrl);
+    const nextPath = `${pathname}${requestUrl.search}`;
+    if (nextPath !== "/") {
+      loginUrl.searchParams.set("next", nextPath);
+    }
+    return applySecurityHeaders(NextResponse.redirect(loginUrl));
   }
 
   const response = NextResponse.next();
-  return setSecurityHeaders(response);
+  return applySecurityHeaders(response);
 }
 
 export const config = {
   matcher: [
-    "/((?!login|register|verify-email|forgot-password|reset-password|api/auth|_next|favicon.ico|api/trpc|portal|api-docs|api/portal|api/webhooks|api/cron|api/health).*)",
+    "/((?!_next).*)",
   ],
 };

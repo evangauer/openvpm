@@ -1,7 +1,16 @@
 "use client";
 
-import { ShieldAlert, Loader2, Building2, DollarSign, Clock, CheckCircle, AlertTriangle } from "lucide-react";
+import {
+  ShieldAlert,
+  Building2,
+  DollarSign,
+  Clock,
+  CheckCircle,
+  AlertTriangle,
+} from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { EmptyState } from "@/components/common/empty-state";
+import { PageLoading } from "@/components/common/loading";
 
 function formatUsd(n: number) {
   return new Intl.NumberFormat("en-US", {
@@ -12,13 +21,21 @@ function formatUsd(n: number) {
   }).format(n);
 }
 
-function formatDate(d: Date | string | null) {
+function formatDate(d: Date | string | null, timeZone?: string | null) {
   if (!d) return "—";
-  return new Date(d).toLocaleDateString("en-US", {
+  const date = new Date(d);
+  if (Number.isNaN(date.getTime())) return "—";
+  const options: Intl.DateTimeFormatOptions = {
+    timeZone: timeZone?.trim() || "UTC",
     month: "short",
     day: "numeric",
     year: "numeric",
-  });
+  };
+  try {
+    return date.toLocaleDateString("en-US", options);
+  } catch {
+    return date.toLocaleDateString("en-US", { ...options, timeZone: "UTC" });
+  }
 }
 
 const statusStyles: Record<string, string> = {
@@ -30,11 +47,12 @@ const statusStyles: Record<string, string> = {
 };
 
 export default function AdminPage() {
-  const { data, isLoading, error } = trpc.admin.overview.useQuery(undefined, {
-    retry: false,
-  });
+  const { data, isLoading, error, refetch } =
+    trpc.admin.overview.useQuery(undefined, {
+      retry: false,
+    });
 
-  if (error) {
+  if (error?.data?.code === "FORBIDDEN") {
     return (
       <div className="flex flex-col items-center justify-center py-24 text-center">
         <ShieldAlert className="h-12 w-12 text-muted-foreground mb-4" />
@@ -46,11 +64,29 @@ export default function AdminPage() {
     );
   }
 
-  if (isLoading || !data) {
+  if (error) {
     return (
-      <div className="flex items-center justify-center py-24">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-      </div>
+      <EmptyState
+        icon={AlertTriangle}
+        title="Unable to load platform admin"
+        description={error.message}
+        action={{ label: "Retry", onClick: () => refetch() }}
+        className="border-destructive/30 bg-destructive/5"
+      />
+    );
+  }
+
+  if (isLoading) return <PageLoading className="py-24" />;
+
+  if (!data) {
+    return (
+      <EmptyState
+        icon={AlertTriangle}
+        title="Unable to load platform admin"
+        description="The admin overview finished without returning data. Try loading it again."
+        action={{ label: "Retry", onClick: () => refetch() }}
+        className="border-destructive/30 bg-destructive/5"
+      />
     );
   }
 
@@ -119,14 +155,18 @@ export default function AdminPage() {
                     {p.billingStatus.replace("_", " ")}
                   </span>
                 </td>
-                <td className="px-4 py-2.5 text-muted-foreground">{formatDate(p.trialEndsAt)}</td>
+                <td className="px-4 py-2.5 text-muted-foreground">
+                  {formatDate(p.trialEndsAt, p.timezone)}
+                </td>
                 <td className="px-4 py-2.5 text-right tabular-nums">{p.locationCount}</td>
                 <td className="px-4 py-2.5 text-right tabular-nums">{p.userCount}</td>
                 <td className="px-4 py-2.5 text-right tabular-nums">{formatUsd(p.estimatedMrr)}</td>
                 <td className="px-4 py-2.5 text-right tabular-nums">{p.clientCount}</td>
                 <td className="px-4 py-2.5 text-right tabular-nums">{p.patientCount}</td>
                 <td className="px-4 py-2.5 text-muted-foreground">{p.country}</td>
-                <td className="px-4 py-2.5 text-muted-foreground">{formatDate(p.createdAt)}</td>
+                <td className="px-4 py-2.5 text-muted-foreground">
+                  {formatDate(p.createdAt, p.timezone)}
+                </td>
               </tr>
             ))}
             {data.practices.length === 0 && (

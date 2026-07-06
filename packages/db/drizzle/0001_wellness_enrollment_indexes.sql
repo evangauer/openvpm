@@ -1,0 +1,2 @@
+CREATE INDEX "wellness_enrollments_billing_due_idx" ON "wellness_enrollments" USING btree ("practice_id","status","next_billing_date","deleted_at");--> statement-breakpoint
+CREATE INDEX "wellness_enrollments_target_idx" ON "wellness_enrollments" USING btree ("practice_id","plan_id","client_id","patient_id","status","deleted_at");

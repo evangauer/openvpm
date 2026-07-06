@@ -70,6 +70,7 @@ export const locationMessaging = pgTable(
   },
   (t) => ({
     practiceIdx: index("location_messaging_practice_idx").on(t.practiceId),
+    senderIdx: index("location_messaging_sender_idx").on(t.senderE164),
   })
 );
 
@@ -79,6 +80,13 @@ export const smsSuppressionReasonEnum = pgEnum("sms_suppression_reason", [
   "manual", // staff added it
   "bounce", // hard delivery failure
   "complaint",
+]);
+
+export const emailSuppressionReasonEnum = pgEnum("email_suppression_reason", [
+  "manual",
+  "bounce",
+  "complaint",
+  "suppressed",
 ]);
 
 /**
@@ -104,6 +112,38 @@ export const smsSuppressions = pgTable(
       t.practiceId,
       t.phone
     ),
+    practiceIdx: index("sms_suppressions_practice_idx").on(
+      t.practiceId,
+      t.deletedAt
+    ),
+  })
+);
+
+/**
+ * Do-not-email list populated by provider bounce/complaint webhooks and future
+ * manual suppressions. Checked before client email sends so OpenVPM fails closed
+ * instead of repeatedly mailing bad or complained addresses.
+ */
+export const emailSuppressions = pgTable(
+  "email_suppressions",
+  {
+    ...baseColumns(),
+    practiceId: uuid("practice_id")
+      .notNull()
+      .references(() => practices.id),
+    email: varchar("email", { length: 255 }).notNull(),
+    reason: emailSuppressionReasonEnum("reason").notNull().default("bounce"),
+    detail: text("detail"),
+  },
+  (t) => ({
+    practiceEmailUq: uniqueIndex("email_suppressions_practice_email_uq").on(
+      t.practiceId,
+      t.email
+    ),
+    practiceIdx: index("email_suppressions_practice_idx").on(
+      t.practiceId,
+      t.deletedAt
+    ),
   })
 );
 
@@ -127,3 +167,13 @@ export const smsSuppressionsRelations = relations(smsSuppressions, ({ one }) => 
     references: [practices.id],
   }),
 }));
+
+export const emailSuppressionsRelations = relations(
+  emailSuppressions,
+  ({ one }) => ({
+    practice: one(practices, {
+      fields: [emailSuppressions.practiceId],
+      references: [practices.id],
+    }),
+  })
+);

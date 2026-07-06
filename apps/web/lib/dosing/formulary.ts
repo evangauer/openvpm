@@ -40,6 +40,8 @@ export const DOSING_DISCLAIMER =
   "Reference ranges only. Verify every dose against a current veterinary drug " +
   "reference and the patient's full clinical picture before prescribing.";
 
+export const FORMULARY_DRUG_ID_MAX_LENGTH = 64;
+
 export const FORMULARY: FormularyDrug[] = [
   {
     id: "maropitant",
@@ -129,4 +131,8 @@ export const FORMULARY: FormularyDrug[] = [
 
 export function findDrug(drugId: string): FormularyDrug | undefined {
   return FORMULARY.find((d) => d.id === drugId);
+}
+
+export function isFormularyDrugId(drugId: string): boolean {
+  return Boolean(findDrug(drugId));
 }

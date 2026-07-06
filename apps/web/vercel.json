@@ -12,6 +12,26 @@
     {
       "path": "/api/cron/backup",
       "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/cron/usage-reconcile",
+      "schedule": "15 * * * *"
+    },
+    {
+      "path": "/api/cron/billing-lifecycle",
+      "schedule": "0 14 * * *"
+    },
+    {
+      "path": "/api/cron/wellness-billing",
+      "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/cron/rate-limit-cleanup",
+      "schedule": "30 4 * * *"
+    },
+    {
+      "path": "/api/cron/auth-cleanup",
+      "schedule": "45 4 * * *"
     }
   ]
 }

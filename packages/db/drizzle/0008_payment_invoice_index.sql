@@ -1,0 +1,1 @@
+CREATE INDEX "payments_invoice_idx" ON "payments" USING btree ("invoice_id","deleted_at","received_at");

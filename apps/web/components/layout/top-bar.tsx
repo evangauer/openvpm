@@ -3,7 +3,16 @@
 import { useState, useRef, useEffect } from "react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
-import { Search, Plus, Users, PawPrint, Calendar, Receipt } from "lucide-react";
+import { useSession } from "next-auth/react";
+import {
+  Search,
+  Plus,
+  Users,
+  PawPrint,
+  Calendar,
+  Receipt,
+  Menu,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TrialBadge } from "@/components/layout/trial-badge";
 
@@ -17,25 +26,68 @@ const routeLabels: Record<string, string> = {
   "/inventory": "Inventory",
   "/inbox": "Inbox",
   "/whiteboard": "Whiteboard",
+  "/agent": "Agent",
+  "/controlled-substances": "Controlled Substances",
   "/reports": "Reports",
   "/settings": "Settings",
 };
 
-const NEW_ACTIONS = [
-  { label: "New Client", href: "/clients/new", Icon: Users },
-  { label: "New Patient", href: "/patients/new", Icon: PawPrint },
-  { label: "New Appointment", href: "/schedule", Icon: Calendar },
-  { label: "New Invoice", href: "/billing/new", Icon: Receipt },
+type UserRole =
+  | "admin"
+  | "veterinarian"
+  | "technician"
+  | "front_desk"
+  | "viewer";
+
+type NewAction = {
+  label: string;
+  href: string;
+  Icon: React.ElementType;
+  roles: UserRole[];
+};
+
+const NEW_ACTIONS: NewAction[] = [
+  {
+    label: "New Client",
+    href: "/clients/new",
+    Icon: Users,
+    roles: ["admin", "veterinarian", "technician", "front_desk"],
+  },
+  {
+    label: "New Patient",
+    href: "/patients/new",
+    Icon: PawPrint,
+    roles: ["admin", "veterinarian", "technician", "front_desk"],
+  },
+  {
+    label: "New Appointment",
+    href: "/schedule",
+    Icon: Calendar,
+    roles: ["admin", "veterinarian", "front_desk"],
+  },
+  {
+    label: "New Invoice",
+    href: "/billing/new",
+    Icon: Receipt,
+    roles: ["admin", "front_desk"],
+  },
 ];
 
 export function TopBar({
+  onMenuOpen,
   onSearchOpen,
 }: {
+  onMenuOpen?: () => void;
   onSearchOpen?: () => void;
 }) {
   const pathname = usePathname();
   const basePath = "/" + (pathname.split("/")[1] ?? "");
   const label = routeLabels[basePath] ?? "OpenVPM";
+  const { data: session } = useSession();
+  const role = session?.user?.role as UserRole | undefined;
+  const availableNewActions = role
+    ? NEW_ACTIONS.filter((action) => action.roles.includes(role))
+    : [];
 
   const [newMenuOpen, setNewMenuOpen] = useState(false);
   const newMenuRef = useRef<HTMLDivElement>(null);
@@ -59,53 +111,69 @@ export function TopBar({
   }, [newMenuOpen]);
 
   return (
-    <header className="flex h-14 items-center justify-between border-b border-border bg-background px-6">
-      <h1 className="font-heading text-lg font-semibold">{label}</h1>
+    <header className="flex h-14 items-center justify-between gap-2 border-b border-border bg-background px-3 sm:px-6">
+      <div className="flex min-w-0 items-center gap-2">
+        <button
+          type="button"
+          onClick={onMenuOpen}
+          aria-label="Open navigation"
+          className="inline-flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground lg:hidden"
+        >
+          <Menu className="h-5 w-5" />
+        </button>
+        <h1 className="truncate font-heading text-lg font-semibold">{label}</h1>
+      </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex shrink-0 items-center gap-2">
         <TrialBadge />
         <button
+          type="button"
           onClick={onSearchOpen}
-          className="flex items-center gap-2 rounded-md border border-input bg-background px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent"
+          aria-label="Open search"
+          className="flex h-9 items-center gap-2 rounded-md border border-input bg-background px-2 text-sm text-muted-foreground transition-colors hover:bg-accent sm:px-3"
         >
           <Search className="h-4 w-4" />
-          <span>Search...</span>
-          <kbd className="ml-2 rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium">
+          <span className="hidden sm:inline">Search...</span>
+          <kbd className="ml-2 hidden rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium md:inline">
             ⌘K
           </kbd>
         </button>
 
-        <div className="relative" ref={newMenuRef}>
-          <Button
-            size="sm"
-            className="gap-1"
-            onClick={() => setNewMenuOpen((v) => !v)}
-            aria-haspopup="menu"
-            aria-expanded={newMenuOpen}
-          >
-            <Plus className="h-4 w-4" />
-            New
-          </Button>
-          {newMenuOpen && (
-            <div
-              role="menu"
-              className="absolute right-0 top-full z-50 mt-1 w-52 overflow-hidden rounded-md border border-border bg-popover shadow-md"
+        {availableNewActions.length > 0 && (
+          <div className="relative" ref={newMenuRef}>
+            <Button
+              size="sm"
+              className="gap-1"
+              onClick={() => setNewMenuOpen((v) => !v)}
+              aria-haspopup="menu"
+              aria-expanded={newMenuOpen}
             >
-              {NEW_ACTIONS.map(({ label: actionLabel, href, Icon }) => (
-                <Link
-                  key={href}
-                  href={href}
-                  role="menuitem"
-                  onClick={() => setNewMenuOpen(false)}
-                  className="flex items-center gap-2 px-3 py-2 text-sm text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-                >
-                  <Icon className="h-4 w-4 text-muted-foreground" />
-                  {actionLabel}
-                </Link>
-              ))}
-            </div>
-          )}
-        </div>
+              <Plus className="h-4 w-4" />
+              <span className="hidden sm:inline">New</span>
+            </Button>
+            {newMenuOpen && (
+              <div
+                role="menu"
+                className="absolute right-0 top-full z-50 mt-1 w-52 overflow-hidden rounded-md border border-border bg-popover shadow-md"
+              >
+                {availableNewActions.map(
+                  ({ label: actionLabel, href, Icon }) => (
+                    <Link
+                      key={href}
+                      href={href}
+                      role="menuitem"
+                      onClick={() => setNewMenuOpen(false)}
+                      className="flex items-center gap-2 px-3 py-2 text-sm text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                    >
+                      <Icon className="h-4 w-4 text-muted-foreground" />
+                      {actionLabel}
+                    </Link>
+                  )
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </header>
   );

@@ -4,9 +4,11 @@ import { db } from "@openpims/db/client";
 import { patients } from "@openpims/db";
 import { authenticateApiKey } from "@/lib/api-auth";
 import { withTenant } from "@/lib/tenant-db";
-import { withErrorHandling } from "@/lib/compat/shared/errors";
+import { apiError, withErrorHandling } from "@/lib/compat/shared/errors";
 import { parsePagination, paginated } from "@/lib/compat/shared/pagination";
+import { isUuid } from "@/lib/compat/shared/validation";
 import { toApiPatient } from "@/lib/compat/openvpm";
+import { assertActivePractice } from "@/lib/compat/shared/active-practice";
 
 export const dynamic = "force-dynamic";
 
@@ -15,11 +17,17 @@ export async function GET(req: Request) {
   const auth = await authenticateApiKey(req, "patients:read");
   if (!auth.ok) return auth.response;
 
-  return withErrorHandling(() =>
-    withTenant(db, auth.ctx.practiceId, async (tx) => {
-      const { searchParams } = new URL(req.url);
-      const { limit, offset } = parsePagination(searchParams);
-      const clientId = searchParams.get("client_id");
+  return withErrorHandling(async () => {
+    const { searchParams } = new URL(req.url);
+    const { limit, offset } = parsePagination(searchParams);
+    const clientId = searchParams.get("client_id");
+    if (clientId && !isUuid(clientId)) {
+      return apiError("client_id must be a valid UUID", 400);
+    }
+
+    return withTenant(db, auth.ctx.practiceId, async (tx) => {
+      const activePractice = await assertActivePractice(tx, auth.ctx.practiceId);
+      if (!activePractice.ok) return activePractice.response;
 
       const conditions = [
         eq(patients.practiceId, auth.ctx.practiceId),
@@ -43,6 +51,6 @@ export async function GET(req: Request) {
       return NextResponse.json(
         paginated(rows.map(toApiPatient), { limit, offset }, total)
       );
-    })
-  );
+    });
+  });
 }

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { eq, and, isNull, asc } from "drizzle-orm";
+import { eq, and, isNull, asc, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import {
@@ -8,10 +8,215 @@ import {
   invoices,
   invoiceItems,
   practices,
+  products,
+  services,
 } from "@openpims/db";
+import type { Database } from "@openpims/db/client";
+import {
+  clinicalTextInput,
+  optionalClinicalTextInput,
+} from "@/lib/records/clinical-inputs";
+import { centsToMoney, moneyToCents } from "@/lib/billing/invoice-balance";
+import { computeStockDeductions } from "@/lib/inventory/dispense";
+import {
+  TREATMENT_TEMPLATE_CATEGORY_MAX_LENGTH,
+  TREATMENT_TEMPLATE_DESCRIPTION_MAX_LENGTH,
+  TREATMENT_TEMPLATE_ITEM_DESCRIPTION_MAX_LENGTH,
+  TREATMENT_TEMPLATE_ITEM_QUANTITY_MAX,
+  TREATMENT_TEMPLATE_ITEM_QUANTITY_MIN,
+  TREATMENT_TEMPLATE_ITEM_SORT_ORDER_MAX,
+  TREATMENT_TEMPLATE_ITEM_SORT_ORDER_MIN,
+  TREATMENT_TEMPLATE_MAX_ITEMS,
+  TREATMENT_TEMPLATE_MAX_MONEY_CENTS,
+  TREATMENT_TEMPLATE_NAME_MAX_LENGTH,
+  TREATMENT_TEMPLATE_UNIT_PRICE_PATTERN,
+} from "@/lib/templates/policy";
+
+type TemplatesDb = Pick<Database, "select" | "update">;
+
+type TemplatesContext = {
+  db: TemplatesDb;
+  practiceId: string;
+};
+
+type TemplateInvoiceItem = {
+  itemType: "service" | "product";
+  itemId?: string | null;
+  quantity: number;
+};
+
+const moneyInput = z.string().trim().refine((value) => {
+  return TREATMENT_TEMPLATE_UNIT_PRICE_PATTERN.test(value);
+}, "Amount must be a valid currency amount.");
+
+const templateItemBaseInput = z.object({
+  itemType: z.enum(["service", "product"]),
+  itemId: z.string().uuid().optional(),
+  description: clinicalTextInput(
+    "Template item description",
+    TREATMENT_TEMPLATE_ITEM_DESCRIPTION_MAX_LENGTH
+  ),
+  defaultQuantity: z
+    .number()
+    .int()
+    .min(TREATMENT_TEMPLATE_ITEM_QUANTITY_MIN)
+    .max(TREATMENT_TEMPLATE_ITEM_QUANTITY_MAX)
+    .default(1),
+  defaultUnitPrice: moneyInput,
+  sortOrder: z
+    .number()
+    .int()
+    .min(TREATMENT_TEMPLATE_ITEM_SORT_ORDER_MIN)
+    .max(TREATMENT_TEMPLATE_ITEM_SORT_ORDER_MAX)
+    .default(0),
+});
+
+function refineTemplateItemTotal(
+  item: z.infer<typeof templateItemBaseInput>,
+  ctx: z.RefinementCtx
+) {
+  const totalCents = moneyToCents(item.defaultUnitPrice) * item.defaultQuantity;
+  if (totalCents > TREATMENT_TEMPLATE_MAX_MONEY_CENTS) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["defaultUnitPrice"],
+      message: "Template item total must fit a currency amount.",
+    });
+  }
+}
+
+const templateItemInput = templateItemBaseInput.superRefine(
+  refineTemplateItemTotal
+);
+
+const addTemplateItemInput = templateItemBaseInput
+  .extend({ templateId: z.string().uuid() })
+  .superRefine(refineTemplateItemTotal);
+
+const templateMutableInput = {
+  name: clinicalTextInput("Template name", TREATMENT_TEMPLATE_NAME_MAX_LENGTH),
+  description: optionalClinicalTextInput(
+    "Template description",
+    TREATMENT_TEMPLATE_DESCRIPTION_MAX_LENGTH
+  ),
+  category: optionalClinicalTextInput(
+    "Template category",
+    TREATMENT_TEMPLATE_CATEGORY_MAX_LENGTH
+  ),
+};
+
+const createTemplateInput = z.object({
+  ...templateMutableInput,
+  items: z
+    .array(templateItemInput)
+    .max(
+      TREATMENT_TEMPLATE_MAX_ITEMS,
+      `Templates can include at most ${TREATMENT_TEMPLATE_MAX_ITEMS} items.`
+    ),
+});
+
+function activePracticeWhere(practiceId: string) {
+  return and(eq(practices.id, practiceId), isNull(practices.deletedAt));
+}
+
+function activePracticePredicate(practiceId: string) {
+  return sql`exists (
+    select 1
+    from ${practices}
+    where ${practices.id} = ${practiceId}
+      and ${practices.deletedAt} is null
+  )`;
+}
+
+function practiceNotFound(): TRPCError {
+  return new TRPCError({ code: "NOT_FOUND", message: "Practice not found" });
+}
+
+async function assertActivePractice(ctx: TemplatesContext) {
+  const [practice] = await ctx.db
+    .select({ id: practices.id })
+    .from(practices)
+    .where(activePracticeWhere(ctx.practiceId))
+    .limit(1);
+
+  if (!practice) {
+    throw practiceNotFound();
+  }
+}
+
+async function assertCatalogItemBelongsToPractice(
+  ctx: TemplatesContext,
+  itemType: "service" | "product",
+  itemId: string | undefined
+) {
+  if (!itemId) return;
+
+  const table = itemType === "service" ? services : products;
+  const [item] = await ctx.db
+    .select({ id: table.id })
+    .from(table)
+    .where(
+      and(
+        eq(table.id, itemId),
+        eq(table.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(table.deletedAt)
+      )
+    )
+    .limit(1);
+
+  if (!item) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message:
+        itemType === "service" ? "Service not found" : "Product not found",
+    });
+  }
+}
+
+async function assertTemplateItemsBelongToPractice(
+  ctx: TemplatesContext,
+  items: Array<{ itemType: "service" | "product"; itemId?: string }>
+) {
+  for (const item of items) {
+    await assertCatalogItemBelongsToPractice(ctx, item.itemType, item.itemId);
+  }
+}
+
+async function deductTemplateProductStock(
+  ctx: TemplatesContext,
+  items: readonly TemplateInvoiceItem[]
+) {
+  const deductions = computeStockDeductions([...items]);
+  for (const deduction of deductions) {
+    const [product] = await ctx.db
+      .update(products)
+      .set({
+        stockQuantity: sql`${products.stockQuantity} - ${deduction.quantity}`,
+      })
+      .where(
+        and(
+          eq(products.id, deduction.productId),
+          eq(products.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
+          isNull(products.deletedAt),
+          sql`${products.stockQuantity} >= ${deduction.quantity}`
+        )
+      )
+      .returning({ id: products.id, stockQuantity: products.stockQuantity });
+
+    if (!product) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "Insufficient stock for one or more product template items.",
+      });
+    }
+  }
+}
 
 export const templatesRouter = createRouter({
   list: protectedProcedure.query(async ({ ctx }) => {
+    await assertActivePractice(ctx);
     return ctx.db
       .select()
       .from(treatmentTemplates)
@@ -27,6 +232,7 @@ export const templatesRouter = createRouter({
   getById: protectedProcedure
     .input(z.object({ id: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
       const [template] = await ctx.db
         .select()
         .from(treatmentTemplates)
@@ -34,6 +240,7 @@ export const templatesRouter = createRouter({
           and(
             eq(treatmentTemplates.id, input.id),
             eq(treatmentTemplates.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
             isNull(treatmentTemplates.deletedAt)
           )
         )
@@ -62,52 +269,38 @@ export const templatesRouter = createRouter({
 
   create: protectedProcedure
     .use(requireRole("admin"))
-    .input(
-      z.object({
-        name: z.string().min(1).max(255),
-        description: z.string().optional(),
-        category: z.string().max(128).optional(),
-        items: z.array(
-          z.object({
-            itemType: z.enum(["service", "product"]),
-            itemId: z.string().uuid().optional(),
-            description: z.string().min(1).max(500),
-            defaultQuantity: z.number().int().min(1).default(1),
-            defaultUnitPrice: z.string().refine(
-              (v) => !isNaN(parseFloat(v)) && parseFloat(v) >= 0,
-              "Must be a valid non-negative number"
-            ),
-            sortOrder: z.number().int().min(0).default(0),
-          })
-        ),
-      })
-    )
+    .input(createTemplateInput)
     .mutation(async ({ ctx, input }) => {
-      const [template] = await ctx.db
-        .insert(treatmentTemplates)
-        .values({
-          practiceId: ctx.practiceId,
-          name: input.name,
-          description: input.description ?? null,
-          category: input.category ?? null,
-        })
-        .returning();
+      await assertActivePractice(ctx);
+      await assertTemplateItemsBelongToPractice(ctx, input.items);
 
-      if (input.items.length > 0) {
-        await ctx.db.insert(treatmentTemplateItems).values(
-          input.items.map((item) => ({
-            templateId: template!.id,
-            itemType: item.itemType as "service" | "product",
-            itemId: item.itemId ?? null,
-            description: item.description,
-            defaultQuantity: item.defaultQuantity,
-            defaultUnitPrice: item.defaultUnitPrice,
-            sortOrder: item.sortOrder,
-          }))
-        );
-      }
+      return ctx.db.transaction(async (tx) => {
+        const [template] = await tx
+          .insert(treatmentTemplates)
+          .values({
+            practiceId: ctx.practiceId,
+            name: input.name,
+            description: input.description ?? null,
+            category: input.category ?? null,
+          })
+          .returning();
 
-      return template!;
+        if (input.items.length > 0) {
+          await tx.insert(treatmentTemplateItems).values(
+            input.items.map((item) => ({
+              templateId: template!.id,
+              itemType: item.itemType as "service" | "product",
+              itemId: item.itemId ?? null,
+              description: item.description,
+              defaultQuantity: item.defaultQuantity,
+              defaultUnitPrice: item.defaultUnitPrice,
+              sortOrder: item.sortOrder,
+            }))
+          );
+        }
+
+        return template!;
+      });
     }),
 
   update: protectedProcedure
@@ -115,13 +308,14 @@ export const templatesRouter = createRouter({
     .input(
       z.object({
         id: z.string().uuid(),
-        name: z.string().min(1).max(255).optional(),
-        description: z.string().optional(),
-        category: z.string().max(128).optional(),
+        name: templateMutableInput.name.optional(),
+        description: templateMutableInput.description,
+        category: templateMutableInput.category,
         isActive: z.boolean().optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
       const { id, ...updates } = input;
       const [template] = await ctx.db
         .update(treatmentTemplates)
@@ -130,6 +324,7 @@ export const templatesRouter = createRouter({
           and(
             eq(treatmentTemplates.id, id),
             eq(treatmentTemplates.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
             isNull(treatmentTemplates.deletedAt)
           )
         )
@@ -149,6 +344,7 @@ export const templatesRouter = createRouter({
     .use(requireRole("admin"))
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
       const [template] = await ctx.db
         .update(treatmentTemplates)
         .set({ deletedAt: new Date() })
@@ -156,6 +352,7 @@ export const templatesRouter = createRouter({
           and(
             eq(treatmentTemplates.id, input.id),
             eq(treatmentTemplates.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
             isNull(treatmentTemplates.deletedAt)
           )
         )
@@ -173,21 +370,9 @@ export const templatesRouter = createRouter({
 
   addItem: protectedProcedure
     .use(requireRole("admin"))
-    .input(
-      z.object({
-        templateId: z.string().uuid(),
-        itemType: z.enum(["service", "product"]),
-        itemId: z.string().uuid().optional(),
-        description: z.string().min(1).max(500),
-        defaultQuantity: z.number().int().min(1).default(1),
-        defaultUnitPrice: z.string().refine(
-          (v) => !isNaN(parseFloat(v)) && parseFloat(v) >= 0,
-          "Must be a valid non-negative number"
-        ),
-        sortOrder: z.number().int().min(0).default(0),
-      })
-    )
+    .input(addTemplateItemInput)
     .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
       // Verify the template belongs to this practice
       const [template] = await ctx.db
         .select({ id: treatmentTemplates.id })
@@ -196,6 +381,7 @@ export const templatesRouter = createRouter({
           and(
             eq(treatmentTemplates.id, input.templateId),
             eq(treatmentTemplates.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
             isNull(treatmentTemplates.deletedAt)
           )
         )
@@ -207,6 +393,12 @@ export const templatesRouter = createRouter({
           message: "Treatment template not found",
         });
       }
+
+      await assertCatalogItemBelongsToPractice(
+        ctx,
+        input.itemType,
+        input.itemId
+      );
 
       const [item] = await ctx.db
         .insert(treatmentTemplateItems)
@@ -228,6 +420,7 @@ export const templatesRouter = createRouter({
     .use(requireRole("admin"))
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
       // Verify item belongs to a template owned by this practice
       const itemRows = await ctx.db
         .select({
@@ -242,6 +435,9 @@ export const templatesRouter = createRouter({
         .where(
           and(
             eq(treatmentTemplateItems.id, input.id),
+            eq(treatmentTemplates.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(treatmentTemplates.deletedAt),
             isNull(treatmentTemplateItems.deletedAt)
           )
         )
@@ -257,10 +453,23 @@ export const templatesRouter = createRouter({
       const [removed] = await ctx.db
         .update(treatmentTemplateItems)
         .set({ deletedAt: new Date() })
-        .where(eq(treatmentTemplateItems.id, input.id))
+        .where(
+          and(
+            eq(treatmentTemplateItems.id, input.id),
+            activePracticePredicate(ctx.practiceId),
+            isNull(treatmentTemplateItems.deletedAt)
+          )
+        )
         .returning();
 
-      return removed!;
+      if (!removed) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Template item not found",
+        });
+      }
+
+      return removed;
     }),
 
   applyToInvoice: protectedProcedure
@@ -272,6 +481,7 @@ export const templatesRouter = createRouter({
       })
     )
     .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
       // Verify template belongs to this practice
       const [template] = await ctx.db
         .select({ id: treatmentTemplates.id })
@@ -280,6 +490,7 @@ export const templatesRouter = createRouter({
           and(
             eq(treatmentTemplates.id, input.templateId),
             eq(treatmentTemplates.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
             isNull(treatmentTemplates.deletedAt),
             eq(treatmentTemplates.isActive, true)
           )
@@ -295,12 +506,18 @@ export const templatesRouter = createRouter({
 
       // Verify invoice belongs to this practice
       const [invoice] = await ctx.db
-        .select({ id: invoices.id })
+        .select({
+          id: invoices.id,
+          status: invoices.status,
+          paidAmount: invoices.paidAmount,
+          isEstimate: invoices.isEstimate,
+        })
         .from(invoices)
         .where(
           and(
             eq(invoices.id, input.invoiceId),
             eq(invoices.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
             isNull(invoices.deletedAt)
           )
         )
@@ -312,73 +529,139 @@ export const templatesRouter = createRouter({
           message: "Invoice not found",
         });
       }
-
-      // Fetch template items
-      const items = await ctx.db
-        .select()
-        .from(treatmentTemplateItems)
-        .where(
-          and(
-            eq(treatmentTemplateItems.templateId, input.templateId),
-            isNull(treatmentTemplateItems.deletedAt)
-          )
-        )
-        .orderBy(asc(treatmentTemplateItems.sortOrder));
-
-      if (items.length === 0) {
+      if (invoice.status !== "draft") {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "Template has no items",
+          message: "Apply treatment templates before sending the invoice.",
+        });
+      }
+      if (moneyToCents(invoice.paidAmount) > 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Cannot apply treatment templates to invoices with payments.",
         });
       }
 
-      // Insert template items as invoice items
-      await ctx.db.insert(invoiceItems).values(
-        items.map((item) => ({
-          invoiceId: input.invoiceId,
-          description: item.description,
-          quantity: item.defaultQuantity,
-          unitPrice: item.defaultUnitPrice,
-          total: (
-            item.defaultQuantity * parseFloat(item.defaultUnitPrice)
-          ).toFixed(2),
-          itemType: item.itemType,
-          itemId: item.itemId,
-        }))
-      );
+      return ctx.db.transaction(async (tx) => {
+        // Fetch template items
+        const items = await tx
+          .select()
+          .from(treatmentTemplateItems)
+          .where(
+            and(
+              eq(treatmentTemplateItems.templateId, input.templateId),
+              isNull(treatmentTemplateItems.deletedAt)
+            )
+          )
+          .orderBy(asc(treatmentTemplateItems.sortOrder));
 
-      // Recalculate invoice totals (fetch ALL items for this invoice)
-      const allItems = await ctx.db
-        .select({
-          quantity: invoiceItems.quantity,
-          unitPrice: invoiceItems.unitPrice,
-        })
-        .from(invoiceItems)
-        .where(eq(invoiceItems.invoiceId, input.invoiceId));
+        if (items.length === 0) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Template has no items",
+          });
+        }
 
-      const subtotal = allItems.reduce((sum, row) => {
-        return sum + row.quantity * parseFloat(row.unitPrice);
-      }, 0);
-      // Tax rate is configured per practice (region-aware), not hardcoded.
-      const [practice] = await ctx.db
-        .select({ taxRatePercent: practices.taxRatePercent })
-        .from(practices)
-        .where(eq(practices.id, ctx.practiceId))
-        .limit(1);
-      const taxRate = parseFloat(practice?.taxRatePercent ?? "8.00") / 100;
-      const tax = Math.round(subtotal * taxRate * 100) / 100;
-      const total = Math.round((subtotal + tax) * 100) / 100;
+        const invoiceItemRows = items.map((item) => {
+          const totalCents =
+            item.defaultQuantity * moneyToCents(item.defaultUnitPrice);
+          if (totalCents > TREATMENT_TEMPLATE_MAX_MONEY_CENTS) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "Template item total must fit a currency amount.",
+            });
+          }
+          return {
+            invoiceId: input.invoiceId,
+            description: item.description,
+            quantity: item.defaultQuantity,
+            unitPrice: item.defaultUnitPrice,
+            total: centsToMoney(totalCents),
+            itemType: item.itemType,
+            itemId: item.itemId,
+          };
+        });
 
-      const [updatedInvoice] = await ctx.db
-        .update(invoices)
-        .set({
-          subtotal: subtotal.toFixed(2),
-          tax: tax.toFixed(2),
-          total: total.toFixed(2),
-        })
-        .where(eq(invoices.id, input.invoiceId))
-        .returning();
+        if (!invoice.isEstimate) {
+          await deductTemplateProductStock(
+            { db: tx, practiceId: ctx.practiceId },
+            invoiceItemRows
+          );
+        }
 
-      return updatedInvoice!;
+        // Insert template items as invoice items
+        await tx.insert(invoiceItems).values(invoiceItemRows);
+
+        // Recalculate invoice totals (fetch ALL items for this invoice)
+        const allItems = await tx
+          .select({
+            quantity: invoiceItems.quantity,
+            unitPrice: invoiceItems.unitPrice,
+          })
+          .from(invoiceItems)
+          .where(
+            and(
+              eq(invoiceItems.invoiceId, input.invoiceId),
+              isNull(invoiceItems.deletedAt)
+            )
+          );
+
+        const subtotalCents = allItems.reduce((sum, row) => {
+          return sum + row.quantity * moneyToCents(row.unitPrice);
+        }, 0);
+        // Tax rate is configured per practice (region-aware), not hardcoded.
+        const [practice] = await tx
+          .select({ taxRatePercent: practices.taxRatePercent })
+          .from(practices)
+          .where(activePracticeWhere(ctx.practiceId))
+          .limit(1);
+        if (!practice) {
+          throw practiceNotFound();
+        }
+        const taxRate = parseFloat(practice.taxRatePercent ?? "8.00") / 100;
+        const taxCents = Math.round(subtotalCents * taxRate);
+        const totalCents = subtotalCents + taxCents;
+
+        if (
+          subtotalCents > TREATMENT_TEMPLATE_MAX_MONEY_CENTS ||
+          taxCents > TREATMENT_TEMPLATE_MAX_MONEY_CENTS ||
+          totalCents > TREATMENT_TEMPLATE_MAX_MONEY_CENTS
+        ) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Invoice totals must fit a currency amount.",
+          });
+        }
+
+        const [updatedInvoice] = await tx
+          .update(invoices)
+          .set({
+            subtotal: centsToMoney(subtotalCents),
+            tax: centsToMoney(taxCents),
+            total: centsToMoney(totalCents),
+          })
+          .where(
+            and(
+              eq(invoices.id, input.invoiceId),
+              eq(invoices.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              eq(invoices.status, invoice.status),
+              eq(invoices.paidAmount, invoice.paidAmount ?? "0"),
+              eq(invoices.isEstimate, invoice.isEstimate),
+              isNull(invoices.deletedAt)
+            )
+          )
+          .returning();
+
+        if (!updatedInvoice) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "Invoice changed while applying the template. Refresh and try again.",
+          });
+        }
+
+        return updatedInvoice;
+      });
     }),
 });

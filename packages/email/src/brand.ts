@@ -23,14 +23,19 @@ export interface Brand {
   logoUrl?: string;
 }
 
+function nonBlankEnv(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value ? value : undefined;
+}
+
 export function openvpmBrand(): Brand {
   return {
     name: "OpenVPM",
-    companyName: process.env.EMAIL_COMPANY_NAME || "OpenVPM",
-    supportEmail: process.env.EMAIL_SUPPORT_ADDRESS || "evan@openvpm.com",
-    companyAddress: process.env.EMAIL_COMPANY_ADDRESS || undefined,
-    appUrl: process.env.NEXT_PUBLIC_APP_URL || "https://app.openvpm.com",
+    companyName: nonBlankEnv("EMAIL_COMPANY_NAME") ?? "OpenVPM",
+    supportEmail: nonBlankEnv("EMAIL_SUPPORT_ADDRESS") ?? "support@openvpm.com",
+    companyAddress: nonBlankEnv("EMAIL_COMPANY_ADDRESS"),
+    appUrl: nonBlankEnv("NEXT_PUBLIC_APP_URL") ?? "https://app.openvpm.com",
     marketingUrl: "https://openvpm.com",
-    logoUrl: process.env.EMAIL_LOGO_URL || undefined,
+    logoUrl: nonBlankEnv("EMAIL_LOGO_URL"),
   };
 }

@@ -38,21 +38,25 @@ practice — a key can only ever read or write its own practice's data.
 |---|---|
 | `clients:read` | List/read clients |
 | `patients:read` | List/read patients |
-| `appointments:read` | List/read appointments *(reserved for upcoming reads)* |
+| `appointments:read` | List/read appointments |
 | `appointments:write` | Create appointments |
+| `records:write` | Create clinical record entries such as SOAP notes |
 | `agent:run` | Run the OpenVPM Agent over the API |
+| `agent:write` | Allow write-enabled agent runs when paired with `agent:run`; write tools still require their resource scopes |
 | `*` | All of the above |
 
 A request missing the required scope returns `403`.
+API key creation rejects `agent:write` unless the key also includes `agent:run`
+or `*`, because `agent:write` only enables write mode for agent runs.
 
 ## Rate limits
 
 Each key is limited to **600 requests/minute**. Over the limit returns `429`
 with `Retry-After` and `X-RateLimit-*` headers.
 
-> Note: the limiter is currently in-memory and per-instance, so on multi-instance
-> deployments the effective limit is per instance. A shared (Redis) limiter is on
-> the roadmap.
+Rate limits are enforced through the shared `rate_limit_buckets` table, so the
+budget follows the key across serverless instances and process restarts. Expired
+buckets are removed by the scheduled cleanup job.
 
 ## Error format
 
@@ -111,6 +115,40 @@ Species are normalized to integrator-friendly values (`dog`, `cat`, `bird`,
 ### `GET /api/v1/patients/:id`
 Scope `patients:read`. Returns `{ data: <patient> }` or `404`.
 
+### `GET /api/v1/appointments`
+Scope `appointments:read`. Query: `limit`, `offset`, optional `client_id`,
+`patient_id`, `status`, `from`, and `to`. `status` must be one of `scheduled`,
+`confirmed`, `checked_in`, `in_exam`, `checked_out`, `no_show`, or `cancelled`.
+Date filters must be valid ISO dates (`YYYY-MM-DD`) or timezone-qualified ISO
+timestamps and match appointment `start_time`. Date-only filters are interpreted
+as UTC calendar-day bounds (`from` starts at `00:00:00.000Z`; `to` ends at
+`23:59:59.999Z`).
+
+```json
+{
+  "data": [
+    {
+      "id": "…",
+      "start_time": "2026-03-01T09:00:00.000Z",
+      "end_time": "2026-03-01T09:30:00.000Z",
+      "status": "scheduled",
+      "client_id": "…",
+      "patient_id": "…",
+      "doctor_id": "…",
+      "type_id": "…",
+      "room_id": "…",
+      "notes": "Annual exam",
+      "created_at": "2026-01-02T03:04:05.000Z",
+      "updated_at": "2026-01-02T03:04:05.000Z"
+    }
+  ],
+  "pagination": { "limit": 25, "offset": 0, "total": 1 }
+}
+```
+
+### `GET /api/v1/appointments/:id`
+Scope `appointments:read`. Returns `{ data: <appointment> }` or `404`.
+
 ### `POST /api/v1/appointments`
 Scope `appointments:write`. Body:
 
@@ -127,10 +165,34 @@ Scope `appointments:write`. Body:
 }
 ```
 
-`start_time`/`end_time` are required ISO-8601 timestamps (`end_time` must be
-after `start_time`); all ids and `notes` are optional. Returns `201` with
+`start_time`/`end_time` are required timezone-qualified ISO-8601 timestamps
+(`end_time` must be after `start_time`); all ids and `notes` are optional. Returns `201` with
 `{ data: <appointment> }` and fires the `appointment.created` webhook to any
-subscribed endpoints (see the [Webhooks](../../README.md#webhooks) section).
+subscribed endpoints with camelCase appointment fields (see the
+[Webhooks](../../README.md#webhooks) section).
+
+### `POST /api/v1/soap-notes`
+Scope `records:write`. Create a SOAP note from an external AI scribe. Body:
+
+```json
+{
+  "patient_id": "…",
+  "appointment_id": "…",
+  "author_id": "…",
+  "subjective": "Owner reports decreased appetite x3 days.",
+  "objective": "T: 101.5F, HR: 120, RR: 24. Mild dehydration.",
+  "assessment": "Suspect early-stage renal disease.",
+  "plan": "CBC/Chem panel, urinalysis. Recheck in 2 weeks.",
+  "source": "scribenote"
+}
+```
+
+`patient_id` and `source` are required. `appointment_id` is optional and must
+belong to the same patient/practice. `author_id` is optional when the linked
+appointment has an assigned doctor; otherwise it must identify an active admin
+or veterinarian in the authenticated practice. At least one SOAP section must
+contain clinical text. Returns `201` with `{ data: <soap_note> }` and fires the
+`soap_note.created` webhook.
 
 ### `POST /api/v1/agent`
 Scope `agent:run`. Run the OpenVPM Agent over the API, scoped to the key's
@@ -140,8 +202,13 @@ practice. Body:
 { "instruction": "Which patients are overdue for vaccinations?", "allow_writes": false }
 ```
 
-`allow_writes` (default `false`) gates write tools such as booking. Returns
+`instruction` must contain non-whitespace text and is trimmed before the agent
+runs. `allow_writes` (default `false`) gates write tools such as booking
+appointments, recording vitals, and drafting SOAP notes. Requests with
+`allow_writes: true` also require `agent:write`; when the agent invokes a write
+tool, the key must also carry that tool's resource scope, such as
+`appointments:write` for booking or `records:write` for vitals/SOAP notes. Returns
 `{ data: { text, toolCalls, iterations, stopReason } }`, where `toolCalls`
-traces every tool the agent invoked. Returns `503` if the server has no
-`ANTHROPIC_API_KEY` configured.
-
+traces every tool the agent invoked. Returns `503` if the configured model
+provider is missing its key (`GOOGLE_API_KEY` or legacy
+`GOOGLE_GENERATIVE_AI_API_KEY` for Gemini, or `ANTHROPIC_API_KEY` for Claude).

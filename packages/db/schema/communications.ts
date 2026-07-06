@@ -50,6 +50,8 @@ export const communications = pgTable(
     content: text("content"),
     status: commStatusEnum("status").notNull().default("pending"),
     assignedTo: uuid("assigned_to").references(() => users.id),
+    readAt: timestamp("read_at", { withTimezone: true }),
+    providerMessageId: varchar("provider_message_id", { length: 255 }),
     // Idempotency key for system-sent lifecycle emails (welcome, receipt,
     // dunning, trial-ending, usage). Null for ordinary client comms — Postgres
     // treats NULLs as distinct, so the unique index only constrains real keys
@@ -57,22 +59,60 @@ export const communications = pgTable(
     dedupeKey: varchar("dedupe_key", { length: 160 }),
   },
   (table) => ({
+    practiceListIdx: index("communications_practice_list_idx").on(
+      table.practiceId,
+      table.deletedAt,
+      table.createdAt
+    ),
+    clientTimelineIdx: index("communications_client_timeline_idx").on(
+      table.practiceId,
+      table.clientId,
+      table.deletedAt,
+      table.createdAt
+    ),
+    inboxStatusIdx: index("communications_inbox_status_idx").on(
+      table.practiceId,
+      table.direction,
+      table.status,
+      table.deletedAt
+    ),
+    assignedIdx: index("communications_assigned_idx").on(
+      table.practiceId,
+      table.assignedTo,
+      table.deletedAt
+    ),
     dedupeKeyIdx: uniqueIndex("communications_dedupe_key_idx").on(
       table.dedupeKey
+    ),
+    providerMessageIdx: index("communications_provider_message_idx").on(
+      table.practiceId,
+      table.providerMessageId,
+      table.channel,
+      table.direction
     ),
   })
 );
 
-export const webhooks = pgTable("webhooks", {
-  ...baseColumns(),
-  practiceId: uuid("practice_id")
-    .notNull()
-    .references(() => practices.id),
-  url: varchar("url", { length: 512 }).notNull(),
-  events: jsonb("events").notNull().default([]),
-  secret: varchar("secret", { length: 255 }).notNull(),
-  active: boolean("active").notNull().default(true),
-});
+export const webhooks = pgTable(
+  "webhooks",
+  {
+    ...baseColumns(),
+    practiceId: uuid("practice_id")
+      .notNull()
+      .references(() => practices.id),
+    url: varchar("url", { length: 512 }).notNull(),
+    events: jsonb("events").notNull().default([]),
+    secret: varchar("secret", { length: 255 }).notNull(),
+    active: boolean("active").notNull().default(true),
+  },
+  (table) => ({
+    practiceActiveIdx: index("webhooks_practice_active_idx").on(
+      table.practiceId,
+      table.deletedAt,
+      table.active
+    ),
+  })
+);
 
 export const apiKeys = pgTable(
   "api_keys",
@@ -91,6 +131,11 @@ export const apiKeys = pgTable(
   },
   (table) => ({
     prefixIdx: index("api_keys_prefix_idx").on(table.keyPrefix),
+    practiceCreatedIdx: index("api_keys_practice_created_idx").on(
+      table.practiceId,
+      table.deletedAt,
+      table.createdAt
+    ),
   })
 );
 

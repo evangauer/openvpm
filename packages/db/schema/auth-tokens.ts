@@ -25,5 +25,6 @@ export const authTokens = pgTable(
   },
   (t) => ({
     tokenHashIdx: index("auth_tokens_hash_idx").on(t.tokenHash),
+    expiresIdx: index("auth_tokens_expires_idx").on(t.expiresAt),
   })
 );

@@ -1,4 +1,13 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
+
+vi.mock("@/lib/alerts", () => ({
+  alertOps: vi.fn(async () => undefined),
+}));
+
+vi.mock("@/lib/audit", () => ({
+  recordAuditLog: vi.fn(async () => undefined),
+}));
+
 import { appRouter } from "../routers/_app";
 
 // Build a tRPC caller with a fake session. The db is a throwing proxy: any
@@ -80,5 +89,92 @@ describe("viewer read-only guard", () => {
     await expect(
       caller.clients.create({ firstName: "A", lastName: "B" })
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("fails closed when hosted mutation guard cannot find the active practice", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    const tx: Record<string, unknown> = {
+      execute: async () => undefined,
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => [],
+          }),
+        }),
+      }),
+    };
+    const db: Record<string, unknown> = {
+      transaction: async (fn: (t: unknown) => unknown) => fn(tx),
+      execute: async () => undefined,
+    };
+    const caller = callerFor("front_desk", db);
+
+    await expect(
+      caller.clients.create({ firstName: "A", lastName: "B" })
+    ).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      message: "Practice not found",
+    });
+  });
+
+  it("allows hosted lapsed admins to request account deletion review", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+
+    const selectResults = [
+      [
+        {
+          tier: "cloud",
+          billingStatus: "past_due",
+          trialEndsAt: null,
+        },
+      ],
+      [
+        {
+          name: "Neighborhood Veterinary",
+          settings: {},
+        },
+      ],
+    ];
+    const select = vi.fn(() => {
+      const result = selectResults.shift() ?? [];
+      return {
+        from: () => ({
+          where: () => ({
+            limit: async () => result,
+          }),
+        }),
+      };
+    });
+    const updateSet = vi.fn(() => ({
+      where: () => ({
+        then: (resolve: (value: undefined) => unknown) =>
+          Promise.resolve(undefined).then(resolve),
+      }),
+    }));
+    const tx: Record<string, unknown> = {
+      execute: async () => undefined,
+      select,
+      update: () => ({ set: updateSet }),
+    };
+    const db: Record<string, unknown> = {
+      transaction: async (fn: (t: unknown) => unknown) => fn(tx),
+      execute: async () => undefined,
+    };
+
+    const caller = callerFor("admin", db);
+
+    await expect(
+      caller.settings.requestAccountDeletion({
+        contactEmail: "owner@example.com",
+        confirmExportDownloaded: true,
+        confirmManualReview: true,
+      })
+    ).resolves.toMatchObject({
+      status: "requested",
+      contactEmail: "owner@example.com",
+      retentionReviewRequired: true,
+    });
+
+    expect(updateSet).toHaveBeenCalled();
   });
 });

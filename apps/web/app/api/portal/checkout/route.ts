@@ -1,20 +1,119 @@
 import { NextRequest, NextResponse } from "next/server";
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and, isNull, sql } from "drizzle-orm";
+import { z } from "zod";
 import { db } from "@openpims/db/client";
-import { clients, invoices, patients, practices } from "@openpims/db";
+import {
+  clients,
+  invoiceAdjustments,
+  invoices,
+  patients,
+  practices,
+} from "@openpims/db";
 import { createCheckoutSession } from "@/lib/stripe";
 import { withSystem } from "@/lib/tenant-db";
 import { billingEnforced, hasHostedFullAccess } from "@/lib/billing/plans";
+import {
+  invoiceBalanceCents,
+  moneyToCents,
+} from "@/lib/billing/invoice-balance";
+import {
+  buildPortalPaymentReturnUrl,
+  isSafePortalCheckoutRedirectUrl,
+} from "@/lib/portal/payments";
+import {
+  PORTAL_ACCESS_TOKEN_MAX_LENGTH,
+  portalRateLimitKey,
+} from "@/lib/portal/tokens";
+import { rateLimit, rateLimitResponseHeaders } from "@/lib/rate-limit";
+import { clientIpFromRequest } from "@/lib/request-ip";
+import { readJsonRequestBody } from "@/lib/request-json";
+
+const portalCheckoutInput = z.object({
+  token: z.string().trim().min(1).max(PORTAL_ACCESS_TOKEN_MAX_LENGTH),
+  invoiceId: z.string().uuid(),
+});
+const PORTAL_CHECKOUT_RATE_LIMIT_MESSAGE =
+  "Too many payment attempts. Please try again later or call the clinic.";
+
+function portalCheckoutRateLimitResponse(
+  limit: number,
+  result: { remaining: number; resetAt: Date }
+) {
+  return NextResponse.json(
+    {
+      error: PORTAL_CHECKOUT_RATE_LIMIT_MESSAGE,
+    },
+    {
+      status: 429,
+      headers: rateLimitResponseHeaders(limit, result),
+    },
+  );
+}
+
+async function enforcePortalCheckoutRateLimit(input: {
+  key: string;
+  limit: number;
+  windowMs: number;
+}) {
+  try {
+    const result = await rateLimit({
+      key: input.key,
+      limit: input.limit,
+      windowMs: input.windowMs,
+    });
+    if (result.success) return null;
+    return portalCheckoutRateLimitResponse(input.limit, result);
+  } catch (err) {
+    console.error("[portal-checkout] rate limit failed:", err);
+    return portalCheckoutRateLimitResponse(input.limit, {
+      remaining: 0,
+      resetAt: new Date(Date.now() + input.windowMs),
+    });
+  }
+}
 
 export async function POST(req: NextRequest) {
-  try {
-    const { token, invoiceId } = await req.json();
+  const body = await readJsonRequestBody(req);
+  if (!body.ok) {
+    return NextResponse.json(
+      {
+        error:
+          body.reason === "too_large"
+            ? "Request body too large"
+            : "Invalid request body",
+      },
+      { status: body.reason === "too_large" ? 413 : 400 },
+    );
+  }
 
-    if (!token || !invoiceId) {
-      return NextResponse.json(
-        { error: "Missing token or invoiceId" },
-        { status: 400 },
-      );
+  const parsed = portalCheckoutInput.safeParse(body.data);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: "Invalid token or invoiceId" },
+      { status: 400 },
+    );
+  }
+
+  const { token, invoiceId } = parsed.data;
+
+  try {
+    const clientIp = clientIpFromRequest(req);
+    const ipRateLimitResponse = await enforcePortalCheckoutRateLimit({
+      key: `portal-checkout:ip:${clientIp}`,
+      limit: 30,
+      windowMs: 15 * 60 * 1000,
+    });
+    if (ipRateLimitResponse) {
+      return ipRateLimitResponse;
+    }
+
+    const tokenRateLimitResponse = await enforcePortalCheckoutRateLimit({
+      key: portalRateLimitKey("portal-checkout", token),
+      limit: 10,
+      windowMs: 60 * 60 * 1000,
+    });
+    if (tokenRateLimitResponse) {
+      return tokenRateLimitResponse;
     }
 
     // Public token flow → run cross-tenant lookups in system context (RLS bypass).
@@ -40,6 +139,7 @@ export async function POST(req: NextRequest) {
           total: invoices.total,
           paidAmount: invoices.paidAmount,
           status: invoices.status,
+          isEstimate: invoices.isEstimate,
           clientId: invoices.clientId,
           patientId: invoices.patientId,
           practiceId: invoices.practiceId,
@@ -49,6 +149,7 @@ export async function POST(req: NextRequest) {
           and(
             eq(invoices.id, invoiceId),
             eq(invoices.clientId, client.id),
+            eq(invoices.practiceId, client.practiceId),
             isNull(invoices.deletedAt),
           ),
         )
@@ -67,19 +168,60 @@ export async function POST(req: NextRequest) {
           { status: 400 },
         );
       }
+      if (invoice.status === "draft") {
+        return NextResponse.json(
+          { error: "Invoice has not been sent yet" },
+          { status: 400 },
+        );
+      }
+      if (invoice.status === "void") {
+        return NextResponse.json(
+          { error: "Cannot pay a void invoice" },
+          { status: 400 },
+        );
+      }
+      if (invoice.isEstimate) {
+        return NextResponse.json(
+          { error: "Convert the estimate before accepting payment" },
+          { status: 400 },
+        );
+      }
+      if (invoice.status !== "sent" && invoice.status !== "overdue") {
+        return NextResponse.json(
+          { error: "Invoice is not ready for online payment" },
+          { status: 400 },
+        );
+      }
 
-      // Calculate remaining balance (in cents for Stripe)
-      const remainingDollars =
-        parseFloat(invoice.total) - parseFloat(invoice.paidAmount);
+      const adjustmentRows = await tx
+        .select({ amount: invoiceAdjustments.amount })
+        .from(invoiceAdjustments)
+        .where(
+          and(
+            eq(invoiceAdjustments.invoiceId, invoice.id),
+            sql`exists (
+              select 1
+              from ${invoices}
+              where ${invoices.id} = ${invoiceAdjustments.invoiceId}
+                and ${invoices.clientId} = ${client.id}
+                and ${invoices.practiceId} = ${client.practiceId}
+                and ${invoices.deletedAt} is null
+            )`,
+            isNull(invoiceAdjustments.deletedAt),
+          ),
+        );
+      const adjustedCents = adjustmentRows.reduce(
+        (sum, row) => sum + moneyToCents(row.amount),
+        0,
+      );
+      const amountCents = invoiceBalanceCents(invoice, adjustedCents);
 
-      if (remainingDollars <= 0) {
+      if (amountCents <= 0) {
         return NextResponse.json(
           { error: "No balance remaining" },
           { status: 400 },
         );
       }
-
-      const amountCents = Math.round(remainingDollars * 100);
 
       // Build description
       let description = `Invoice payment`;
@@ -87,7 +229,14 @@ export async function POST(req: NextRequest) {
         const [patient] = await tx
           .select({ name: patients.name })
           .from(patients)
-          .where(eq(patients.id, invoice.patientId))
+          .where(
+            and(
+              eq(patients.id, invoice.patientId),
+              eq(patients.clientId, invoice.clientId),
+              eq(patients.practiceId, invoice.practiceId),
+              isNull(patients.deletedAt),
+            ),
+          )
           .limit(1);
         if (patient) {
           description = `Invoice payment for ${patient.name}`;
@@ -103,15 +252,24 @@ export async function POST(req: NextRequest) {
           trialEndsAt: practices.trialEndsAt,
         })
         .from(practices)
-        .where(eq(practices.id, invoice.practiceId))
+        .where(
+          and(eq(practices.id, invoice.practiceId), isNull(practices.deletedAt)),
+        )
         .limit(1);
+
+      if (!practice) {
+        return NextResponse.json(
+          { error: "Invalid portal link" },
+          { status: 404 },
+        );
+      }
 
       if (
         billingEnforced() &&
         !hasHostedFullAccess(
-          practice?.tier,
-          practice?.billingStatus,
-          practice?.trialEndsAt,
+          practice.tier,
+          practice.billingStatus,
+          practice.trialEndsAt,
         )
       ) {
         return NextResponse.json(
@@ -130,12 +288,22 @@ export async function POST(req: NextRequest) {
         clientEmail: client.email ?? "",
         clientName: `${client.firstName} ${client.lastName}`,
         description,
-        currency: practice?.currency ?? "usd",
-        successUrl: `${origin}/portal/${token}?payment=success`,
-        cancelUrl: `${origin}/portal/${token}?payment=cancelled`,
+        currency: practice.currency ?? "usd",
+        successUrl: buildPortalPaymentReturnUrl({
+          origin,
+          token,
+          status: "success",
+          invoiceId: invoice.id,
+        }),
+        cancelUrl: buildPortalPaymentReturnUrl({
+          origin,
+          token,
+          status: "cancelled",
+          invoiceId: invoice.id,
+        }),
       });
 
-      if (!result) {
+      if (!isSafePortalCheckoutRedirectUrl(result?.url)) {
         return NextResponse.json(
           { error: "Payment processing is not configured" },
           { status: 503 },

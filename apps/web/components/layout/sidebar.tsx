@@ -53,6 +53,10 @@ const allRoles: UserRole[] = [
   "viewer",
 ];
 
+function isUserRole(role?: string | null): role is UserRole {
+  return allRoles.includes(role as UserRole);
+}
+
 const navItems: {
   href: string;
   label: string;
@@ -74,20 +78,47 @@ const navItems: {
   { href: "/settings", label: "Settings", icon: Settings, roles: ["admin"] },
 ];
 
-export function Sidebar() {
+type SidebarProps = {
+  className?: string;
+  collapsible?: boolean;
+  onNavigate?: () => void;
+  width?: "fixed" | "full";
+};
+
+export function Sidebar({
+  className,
+  collapsible = true,
+  onNavigate,
+  width = "fixed",
+}: SidebarProps = {}) {
   const [collapsed, setCollapsed] = useState(false);
   const pathname = usePathname();
-  const { data: session } = useSession();
-  const role = (session?.user?.role ?? "front_desk") as UserRole;
+  const { data: session, status } = useSession();
+  const role = isUserRole(session?.user?.role) ? session.user.role : undefined;
   const { data: branding } = trpc.settings.getBranding.useQuery();
-
-  const visibleNavItems = navItems.filter((item) => item.roles.includes(role));
+  const isCollapsed = collapsible && collapsed;
+  const canShowNav = status === "authenticated" && role !== undefined;
+  const { data: unreadInbox } = trpc.communications.listConversations.useQuery(
+    { inboxFilter: "unread", limit: 1, offset: 0 },
+    {
+      enabled: canShowNav,
+      refetchInterval: 30000,
+      retry: false,
+    }
+  );
+  const visibleNavItems = canShowNav
+    ? navItems.filter((item) => item.roles.includes(role))
+    : [];
+  const unreadInboxCount = Math.max(0, Number(unreadInbox?.total ?? 0));
+  const unreadInboxLabel =
+    unreadInboxCount > 99 ? "99+" : String(unreadInboxCount);
 
   return (
     <aside
       className={cn(
         "flex h-screen flex-col border-r border-border bg-surface transition-all duration-150",
-        collapsed ? "w-16" : "w-60"
+        width === "full" ? "w-full" : isCollapsed ? "w-16" : "w-60",
+        className
       )}
     >
       {/* Logo */}
@@ -105,7 +136,7 @@ export function Sidebar() {
               <PawMark className="h-4 w-4 text-primary-foreground" />
             </div>
           )}
-          {!collapsed && (
+          {!isCollapsed && (
             <span className="font-heading text-lg font-semibold">
               OpenVPM
             </span>
@@ -128,6 +159,7 @@ export function Sidebar() {
                   href={item.href}
                   data-tour={`nav-${item.href}`}
                   aria-current={isActive ? "page" : undefined}
+                  onClick={onNavigate}
                   className={cn(
                     "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
                     isActive
@@ -135,8 +167,28 @@ export function Sidebar() {
                       : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                   )}
                 >
-                  <item.icon className="h-4 w-4 shrink-0" />
-                  {!collapsed && <span>{item.label}</span>}
+                  <span className="relative shrink-0">
+                    <item.icon className="h-4 w-4" />
+                    {isCollapsed &&
+                    item.href === "/inbox" &&
+                    unreadInboxCount > 0 ? (
+                      <span
+                        aria-label={`${unreadInboxCount} unread inbox conversations`}
+                        className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-primary ring-2 ring-surface"
+                      />
+                    ) : null}
+                  </span>
+                  {!isCollapsed && <span className="truncate">{item.label}</span>}
+                  {!isCollapsed &&
+                  item.href === "/inbox" &&
+                  unreadInboxCount > 0 ? (
+                    <span
+                      aria-label={`${unreadInboxCount} unread inbox conversations`}
+                      className="ml-auto rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-semibold leading-none text-primary-foreground"
+                    >
+                      {unreadInboxLabel}
+                    </span>
+                  ) : null}
                 </Link>
               </li>
             );
@@ -146,7 +198,7 @@ export function Sidebar() {
 
       {/* User & Collapse */}
       <div className="border-t border-border p-2">
-        {session?.user && !collapsed && (
+        {session?.user && !isCollapsed && (
           <div className="mb-2 flex items-center gap-3 rounded-md px-3 py-2">
             <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-xs font-medium text-primary">
               {session.user.name
@@ -172,17 +224,19 @@ export function Sidebar() {
             </button>
           </div>
         )}
-        <button
-          onClick={() => setCollapsed(!collapsed)}
-          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          className="flex w-full items-center justify-center rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
-        >
-          {collapsed ? (
-            <ChevronRight className="h-4 w-4" />
-          ) : (
-            <ChevronLeft className="h-4 w-4" />
-          )}
-        </button>
+        {collapsible && (
+          <button
+            onClick={() => setCollapsed(!collapsed)}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            className="flex w-full items-center justify-center rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            {collapsed ? (
+              <ChevronRight className="h-4 w-4" />
+            ) : (
+              <ChevronLeft className="h-4 w-4" />
+            )}
+          </button>
+        )}
       </div>
     </aside>
   );

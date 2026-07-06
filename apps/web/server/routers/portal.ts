@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { eq, and, isNull, desc } from "drizzle-orm";
+import { eq, and, isNull, desc, sql, ne } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, publicProcedure } from "../trpc";
 import {
@@ -11,6 +11,7 @@ import {
   prescriptions,
   appointments,
   appointmentTypes,
+  invoiceAdjustments,
   invoices,
   communications,
   practices,
@@ -18,10 +19,146 @@ import {
 import { users } from "@openpims/db";
 import { rateLimit } from "@/lib/rate-limit";
 import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
-import { buildRequestedSlot } from "@/lib/portal/booking";
+import { appointmentCreatedWebhookPayload } from "@/lib/appointment-webhooks";
+import {
+  assertSlotWithinPortalBookingHours,
+  buildRequestedSlot,
+  filterFutureOpenSlots,
+  PORTAL_BOOKING_MAX_DURATION_MINUTES,
+  PORTAL_BOOKING_MIN_DURATION_MINUTES,
+  PORTAL_BOOKING_REASON_MAX_LENGTH,
+  portalBookingWindow,
+} from "@/lib/portal/booking";
 import { findOpenSlots } from "@/lib/scheduling/availability";
 import { billingEnforced, hasHostedFullAccess } from "@/lib/billing/plans";
+import { clinicalDateInput } from "@/lib/records/clinical-inputs";
+import {
+  PORTAL_ACCESS_TOKEN_MAX_LENGTH,
+  portalRateLimitKey,
+} from "@/lib/portal/tokens";
+import {
+  centsToMoney,
+  invoiceBalanceCents,
+  moneyToCents,
+} from "@/lib/billing/invoice-balance";
+import { COMMUNICATION_CONTENT_MAX_LENGTH } from "@/lib/communications/policy";
+import { latestAssignedToForClient } from "@/lib/communications/assignment";
+import { stripeConfigured } from "@/lib/stripe-config";
 import { not, inArray, lt, gt } from "drizzle-orm";
+
+const portalBookingDateInput = clinicalDateInput("Booking date");
+const portalBookingTimeInput = z
+  .string()
+  .regex(/^([01]\d|2[0-3]):[0-5]\d$/, {
+    message: "Booking time must be in 24-hour HH:MM format.",
+  });
+const portalTokenInput = z
+  .string()
+  .trim()
+  .min(1)
+  .max(PORTAL_ACCESS_TOKEN_MAX_LENGTH);
+const portalMessageContentInput = z
+  .string()
+  .trim()
+  .min(1, "Message content is required")
+  .max(
+    COMMUNICATION_CONTENT_MAX_LENGTH,
+    `Message content must be at most ${COMMUNICATION_CONTENT_MAX_LENGTH} characters.`
+  );
+const PORTAL_READ_RATE_LIMIT = {
+  limit: 120,
+  windowMs: 15 * 60 * 1000,
+  message:
+    "Too many portal requests. Please try again later or call the clinic.",
+};
+const PORTAL_READ_IP_RATE_LIMIT = {
+  limit: 300,
+  windowMs: 15 * 60 * 1000,
+  message:
+    "Too many portal requests. Please try again later or call the clinic.",
+};
+const PORTAL_SLOTS_IP_RATE_LIMIT = {
+  limit: 120,
+  windowMs: 15 * 60 * 1000,
+  message:
+    "Too many availability requests. Please try again later or call the clinic.",
+};
+const PORTAL_BOOK_IP_RATE_LIMIT = {
+  limit: 20,
+  windowMs: 60 * 60 * 1000,
+  message: "Too many requests. Please try again later or call the clinic.",
+};
+const PORTAL_MESSAGE_IP_RATE_LIMIT = {
+  limit: 30,
+  windowMs: 60 * 60 * 1000,
+  message:
+    "Too many portal messages. Please try again later or call the clinic.",
+};
+const PORTAL_MESSAGE_TOKEN_RATE_LIMIT = {
+  limit: 10,
+  windowMs: 60 * 60 * 1000,
+  message:
+    "Too many portal messages. Please try again later or call the clinic.",
+};
+
+function activePracticeWhere(practiceId: string) {
+  return and(eq(practices.id, practiceId), isNull(practices.deletedAt));
+}
+
+function invalidPortalLink(): TRPCError {
+  return new TRPCError({
+    code: "NOT_FOUND",
+    message: "Invalid portal link",
+  });
+}
+
+async function assertPortalRateLimit(input: {
+  key: string;
+  limit: number;
+  windowMs: number;
+  message: string;
+}) {
+  try {
+    const { success } = await rateLimit({
+      key: input.key,
+      limit: input.limit,
+      windowMs: input.windowMs,
+    });
+    if (success) return;
+  } catch (err) {
+    console.error("[portal] rate limit failed:", err);
+  }
+
+  throw new TRPCError({
+    code: "TOO_MANY_REQUESTS",
+    message: input.message,
+  });
+}
+
+async function assertPortalReadRateLimit(token: string) {
+  await assertPortalRateLimit({
+    key: portalRateLimitKey("portal-read", token),
+    ...PORTAL_READ_RATE_LIMIT,
+  });
+}
+
+async function assertPortalIpRateLimit(
+  ip: string | null | undefined,
+  input: {
+    keyPrefix: string;
+    limit: number;
+    windowMs: number;
+    message: string;
+  }
+) {
+  const clientIp = ip || "unknown";
+  await assertPortalRateLimit({
+    key: `${input.keyPrefix}:ip:${clientIp}`,
+    limit: input.limit,
+    windowMs: input.windowMs,
+    message: input.message,
+  });
+}
 
 async function getClientByToken(db: any, token: string) {
   const [client] = await db
@@ -31,17 +168,98 @@ async function getClientByToken(db: any, token: string) {
     .limit(1);
 
   if (!client) {
-    throw new TRPCError({
-      code: "NOT_FOUND",
-      message: "Invalid portal link",
-    });
+    throw invalidPortalLink();
+  }
+
+  const [practice] = await db
+    .select({ id: practices.id })
+    .from(practices)
+    .where(activePracticeWhere(client.practiceId))
+    .limit(1);
+
+  if (!practice) {
+    throw invalidPortalLink();
   }
 
   return client;
 }
 
-async function assertPortalWriteAccess(db: any, practiceId: string) {
-  if (!billingEnforced()) return;
+async function practiceTimeZone(
+  db: any,
+  practiceId: string
+): Promise<string | null> {
+  const [practice] = await db
+    .select({ timezone: practices.timezone })
+    .from(practices)
+    .where(activePracticeWhere(practiceId))
+    .limit(1);
+  if (!practice) {
+    throw invalidPortalLink();
+  }
+  return practice.timezone ?? null;
+}
+
+async function practicePortalProfile(db: any, practiceId: string) {
+  const [practice] = await db
+    .select({
+      name: practices.name,
+      address: practices.address,
+      phone: practices.phone,
+      email: practices.email,
+      timezone: practices.timezone,
+    })
+    .from(practices)
+    .where(activePracticeWhere(practiceId))
+    .limit(1);
+
+  if (!practice) {
+    throw invalidPortalLink();
+  }
+
+  return {
+    name: practice.name?.trim() || "Veterinary Practice",
+    address: practice.address ?? null,
+    phone: practice.phone ?? null,
+    email: practice.email ?? null,
+    timezone: practice.timezone ?? null,
+  };
+}
+
+function formatPortalSlotTime(date: Date, timeZone?: string | null): string {
+  if (timeZone) {
+    try {
+      const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone,
+        hourCycle: "h23",
+        hour: "2-digit",
+        minute: "2-digit",
+      }).formatToParts(date);
+      const hour = parts.find((part) => part.type === "hour")?.value;
+      const minute = parts.find((part) => part.type === "minute")?.value;
+      if (hour && minute) return `${hour}:${minute}`;
+    } catch {
+      // Fall back to the runtime's local time if a saved timezone is invalid.
+    }
+  }
+
+  return `${String(date.getHours()).padStart(2, "0")}:${String(
+    date.getMinutes()
+  ).padStart(2, "0")}`;
+}
+
+function formatPortalRequestDateTime(
+  date: string,
+  time: string,
+  timeZone?: string | null
+): string {
+  return timeZone ? `${date} ${time} (${timeZone})` : `${date} ${time}`;
+}
+
+async function assertPortalWriteAccess(
+  db: any,
+  practiceId: string,
+  action: "booking" | "messaging" = "booking"
+) {
   const [practice] = await db
     .select({
       tier: practices.subscriptionTier,
@@ -49,28 +267,40 @@ async function assertPortalWriteAccess(db: any, practiceId: string) {
       trialEndsAt: practices.trialEndsAt,
     })
     .from(practices)
-    .where(eq(practices.id, practiceId))
+    .where(activePracticeWhere(practiceId))
     .limit(1);
+  if (!practice) {
+    throw invalidPortalLink();
+  }
+  if (!billingEnforced()) return;
   if (
     !hasHostedFullAccess(
-      practice?.tier,
-      practice?.billingStatus,
-      practice?.trialEndsAt
+      practice.tier,
+      practice.billingStatus,
+      practice.trialEndsAt
     )
   ) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message:
-        "Online booking is unavailable until this practice's Cloud subscription is active.",
+        action === "messaging"
+          ? "Portal messaging is unavailable until this practice's Cloud subscription is active."
+          : "Online booking is unavailable until this practice's Cloud subscription is active.",
     });
   }
 }
 
 export const portalRouter = createRouter({
   getClient: publicProcedure
-    .input(z.object({ token: z.string().min(1) }))
+    .input(z.object({ token: portalTokenInput }))
     .query(async ({ ctx, input }) => {
+      await assertPortalIpRateLimit(ctx.ip, {
+        keyPrefix: "portal-read",
+        ...PORTAL_READ_IP_RATE_LIMIT,
+      });
+      await assertPortalReadRateLimit(input.token);
       const client = await getClientByToken(ctx.db, input.token);
+      const timezone = await practiceTimeZone(ctx.db, client.practiceId);
 
       const clientPatients = await ctx.db
         .select({
@@ -88,6 +318,7 @@ export const portalRouter = createRouter({
         .where(
           and(
             eq(patients.clientId, client.id),
+            eq(patients.practiceId, client.practiceId),
             isNull(patients.deletedAt),
             eq(patients.status, "active")
           )
@@ -99,6 +330,7 @@ export const portalRouter = createRouter({
         lastName: client.lastName,
         email: client.email,
         phone: client.phone,
+        timezone,
         patients: clientPatients,
       };
     }),
@@ -106,12 +338,18 @@ export const portalRouter = createRouter({
   getPetDetail: publicProcedure
     .input(
       z.object({
-        token: z.string().min(1),
+        token: portalTokenInput,
         patientId: z.string().uuid(),
       })
     )
     .query(async ({ ctx, input }) => {
+      await assertPortalIpRateLimit(ctx.ip, {
+        keyPrefix: "portal-read",
+        ...PORTAL_READ_IP_RATE_LIMIT,
+      });
+      await assertPortalReadRateLimit(input.token);
       const client = await getClientByToken(ctx.db, input.token);
+      const practice = await practicePortalProfile(ctx.db, client.practiceId);
 
       const [patient] = await ctx.db
         .select()
@@ -120,6 +358,8 @@ export const portalRouter = createRouter({
           and(
             eq(patients.id, input.patientId),
             eq(patients.clientId, client.id),
+            eq(patients.practiceId, client.practiceId),
+            eq(patients.status, "active"),
             isNull(patients.deletedAt)
           )
         )
@@ -140,7 +380,23 @@ export const portalRouter = createRouter({
             recordedAt: patientWeights.recordedAt,
           })
           .from(patientWeights)
-          .where(eq(patientWeights.patientId, input.patientId))
+          .innerJoin(
+            patients,
+            and(
+              eq(patientWeights.patientId, patients.id),
+              eq(patients.id, input.patientId),
+              eq(patients.clientId, client.id),
+              eq(patients.practiceId, client.practiceId),
+              eq(patients.status, "active"),
+              isNull(patients.deletedAt)
+            )
+          )
+          .where(
+            and(
+              eq(patientWeights.patientId, input.patientId),
+              isNull(patientWeights.deletedAt)
+            )
+          )
           .orderBy(desc(patientWeights.recordedAt)),
 
         ctx.db
@@ -151,17 +407,52 @@ export const portalRouter = createRouter({
             severity: patientAllergies.severity,
           })
           .from(patientAllergies)
-          .where(eq(patientAllergies.patientId, input.patientId)),
+          .innerJoin(
+            patients,
+            and(
+              eq(patientAllergies.patientId, patients.id),
+              eq(patients.id, input.patientId),
+              eq(patients.clientId, client.id),
+              eq(patients.practiceId, client.practiceId),
+              eq(patients.status, "active"),
+              isNull(patients.deletedAt)
+            )
+          )
+          .where(
+            and(
+              eq(patientAllergies.patientId, input.patientId),
+              isNull(patientAllergies.deletedAt)
+            )
+          ),
 
         ctx.db
           .select({
             id: vaccinationRecords.id,
             vaccineName: vaccinationRecords.vaccineName,
+            lotNumber: vaccinationRecords.lotNumber,
+            manufacturer: vaccinationRecords.manufacturer,
             administeredAt: vaccinationRecords.administeredAt,
             nextDueDate: vaccinationRecords.nextDueDate,
           })
           .from(vaccinationRecords)
-          .where(eq(vaccinationRecords.patientId, input.patientId))
+          .innerJoin(
+            patients,
+            and(
+              eq(vaccinationRecords.patientId, patients.id),
+              eq(patients.id, input.patientId),
+              eq(patients.clientId, client.id),
+              eq(patients.practiceId, client.practiceId),
+              eq(patients.status, "active"),
+              isNull(patients.deletedAt)
+            )
+          )
+          .where(
+            and(
+              eq(vaccinationRecords.patientId, input.patientId),
+              eq(vaccinationRecords.practiceId, client.practiceId),
+              isNull(vaccinationRecords.deletedAt)
+            )
+          )
           .orderBy(desc(vaccinationRecords.administeredAt)),
 
         ctx.db
@@ -177,16 +468,32 @@ export const portalRouter = createRouter({
             refillsRemaining: prescriptions.refillsRemaining,
           })
           .from(prescriptions)
+          .innerJoin(
+            patients,
+            and(
+              eq(prescriptions.patientId, patients.id),
+              eq(patients.id, input.patientId),
+              eq(patients.clientId, client.id),
+              eq(patients.practiceId, client.practiceId),
+              eq(patients.status, "active"),
+              isNull(patients.deletedAt)
+            )
+          )
           .where(
             and(
               eq(prescriptions.patientId, input.patientId),
-              eq(prescriptions.status, "active")
+              eq(prescriptions.practiceId, client.practiceId),
+              eq(prescriptions.status, "active"),
+              isNull(prescriptions.deletedAt)
             )
           ),
       ]);
 
       return {
         ...patient,
+        clientName: `${client.firstName} ${client.lastName}`,
+        timezone: practice.timezone,
+        practice,
         weights,
         allergies,
         vaccinations,
@@ -195,9 +502,15 @@ export const portalRouter = createRouter({
     }),
 
   getAppointments: publicProcedure
-    .input(z.object({ token: z.string().min(1) }))
+    .input(z.object({ token: portalTokenInput }))
     .query(async ({ ctx, input }) => {
+      await assertPortalIpRateLimit(ctx.ip, {
+        keyPrefix: "portal-read",
+        ...PORTAL_READ_IP_RATE_LIMIT,
+      });
+      await assertPortalReadRateLimit(input.token);
       const client = await getClientByToken(ctx.db, input.token);
+      const timezone = await practiceTimeZone(ctx.db, client.practiceId);
 
       const rows = await ctx.db
         .select({
@@ -212,28 +525,210 @@ export const portalRouter = createRouter({
           typeName: appointmentTypes.name,
         })
         .from(appointments)
-        .leftJoin(patients, eq(appointments.patientId, patients.id))
-        .leftJoin(users, eq(appointments.doctorId, users.id))
-        .leftJoin(appointmentTypes, eq(appointments.typeId, appointmentTypes.id))
-        .where(eq(appointments.clientId, client.id))
+        .leftJoin(
+          patients,
+          and(
+            eq(appointments.patientId, patients.id),
+            eq(patients.clientId, client.id),
+            eq(patients.practiceId, client.practiceId),
+            isNull(patients.deletedAt)
+          )
+        )
+        .leftJoin(
+          users,
+          and(
+            eq(appointments.doctorId, users.id),
+            eq(users.practiceId, client.practiceId),
+            isNull(users.deletedAt)
+          )
+        )
+        .leftJoin(
+          appointmentTypes,
+          and(
+            eq(appointments.typeId, appointmentTypes.id),
+            eq(appointmentTypes.practiceId, client.practiceId),
+            isNull(appointmentTypes.deletedAt)
+          )
+        )
+        .where(
+          and(
+            eq(appointments.clientId, client.id),
+            eq(appointments.practiceId, client.practiceId),
+            isNull(appointments.deletedAt)
+          )
+        )
         .orderBy(desc(appointments.startTime));
 
-      return rows;
+      return rows.map((row) => ({
+        ...row,
+        timezone,
+      }));
+    }),
+
+  getMessages: publicProcedure
+    .input(z.object({ token: portalTokenInput }))
+    .query(async ({ ctx, input }) => {
+      await assertPortalIpRateLimit(ctx.ip, {
+        keyPrefix: "portal-read",
+        ...PORTAL_READ_IP_RATE_LIMIT,
+      });
+      await assertPortalReadRateLimit(input.token);
+      const client = await getClientByToken(ctx.db, input.token);
+      const timezone = await practiceTimeZone(ctx.db, client.practiceId);
+
+      const items = await ctx.db
+        .select({
+          id: communications.id,
+          direction: communications.direction,
+          subject: communications.subject,
+          content: communications.content,
+          status: communications.status,
+          readAt: communications.readAt,
+          createdAt: communications.createdAt,
+        })
+        .from(communications)
+        .where(
+          and(
+            eq(communications.clientId, client.id),
+            eq(communications.practiceId, client.practiceId),
+            eq(communications.channel, "portal"),
+            isNull(communications.deletedAt)
+          )
+        )
+        .orderBy(desc(communications.createdAt));
+
+      return {
+        timezone,
+        items,
+      };
+    }),
+
+  createMessage: publicProcedure
+    .input(
+      z.object({
+        token: portalTokenInput,
+        content: portalMessageContentInput,
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      await assertPortalIpRateLimit(ctx.ip, {
+        keyPrefix: "portal-message",
+        ...PORTAL_MESSAGE_IP_RATE_LIMIT,
+      });
+      await assertPortalRateLimit({
+        key: portalRateLimitKey("portal-message", input.token),
+        ...PORTAL_MESSAGE_TOKEN_RATE_LIMIT,
+      });
+
+      const client = await getClientByToken(ctx.db, input.token);
+      await assertPortalWriteAccess(ctx.db, client.practiceId, "messaging");
+
+      const [message] = await ctx.db
+        .insert(communications)
+        .values({
+          practiceId: client.practiceId,
+          clientId: client.id,
+          channel: "portal",
+          direction: "inbound",
+          subject: `Portal message from ${client.firstName} ${client.lastName}`,
+          content: input.content,
+          status: "pending",
+          assignedTo: latestAssignedToForClient(client.practiceId, client.id),
+        })
+        .returning({
+          id: communications.id,
+          direction: communications.direction,
+          subject: communications.subject,
+          content: communications.content,
+          status: communications.status,
+          createdAt: communications.createdAt,
+        });
+
+      if (!message) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Could not send portal message",
+        });
+      }
+
+      return {
+        success: true,
+        message,
+      };
+    }),
+
+  markMessagesRead: publicProcedure
+    .input(z.object({ token: portalTokenInput }))
+    .mutation(async ({ ctx, input }) => {
+      await assertPortalIpRateLimit(ctx.ip, {
+        keyPrefix: "portal-read",
+        ...PORTAL_READ_IP_RATE_LIMIT,
+      });
+      await assertPortalReadRateLimit(input.token);
+
+      const client = await getClientByToken(ctx.db, input.token);
+      const updated = await ctx.db
+        .update(communications)
+        .set({ status: "read", readAt: new Date() })
+        .where(
+          and(
+            eq(communications.clientId, client.id),
+            eq(communications.practiceId, client.practiceId),
+            eq(communications.channel, "portal"),
+            eq(communications.direction, "outbound"),
+            isNull(communications.readAt),
+            ne(communications.status, "read"),
+            isNull(communications.deletedAt)
+          )
+        )
+        .returning({ id: communications.id });
+
+      return {
+        success: true,
+        updated: updated.length,
+      };
     }),
 
   getInvoices: publicProcedure
-    .input(z.object({ token: z.string().min(1) }))
+    .input(z.object({ token: portalTokenInput }))
     .query(async ({ ctx, input }) => {
+      await assertPortalIpRateLimit(ctx.ip, {
+        keyPrefix: "portal-read",
+        ...PORTAL_READ_IP_RATE_LIMIT,
+      });
+      await assertPortalReadRateLimit(input.token);
       const client = await getClientByToken(ctx.db, input.token);
 
       // Practice currency so the portal renders amounts in the right currency.
       const [practice] = await ctx.db
-        .select({ currency: practices.currency, country: practices.country })
+        .select({
+          currency: practices.currency,
+          country: practices.country,
+          timezone: practices.timezone,
+          tier: practices.subscriptionTier,
+          billingStatus: practices.billingStatus,
+          trialEndsAt: practices.trialEndsAt,
+        })
         .from(practices)
-        .where(eq(practices.id, client.practiceId))
+        .where(activePracticeWhere(client.practiceId))
         .limit(1);
-      const currency = practice?.currency ?? "usd";
-      const country = practice?.country ?? "US";
+      if (!practice) {
+        throw invalidPortalLink();
+      }
+      const currency = practice.currency ?? "usd";
+      const country = practice.country ?? "US";
+      const timezone = practice.timezone ?? null;
+      const hostedBillingEnforced = billingEnforced();
+      const onlinePaymentsEnabled =
+        stripeConfigured() &&
+        (!hostedBillingEnforced ||
+          hasHostedFullAccess(
+            practice.tier,
+            practice.billingStatus,
+            practice.trialEndsAt,
+            new Date(),
+            hostedBillingEnforced
+          ));
 
       const rows = await ctx.db
         .select({
@@ -243,22 +738,68 @@ export const portalRouter = createRouter({
           tax: invoices.tax,
           total: invoices.total,
           paidAmount: invoices.paidAmount,
+          adjustedAmount: sql<string>`coalesce((
+            select sum(${invoiceAdjustments.amount})
+            from ${invoiceAdjustments}
+            where ${invoiceAdjustments.invoiceId} = ${invoices.id}
+              and exists (
+                select 1
+                from ${invoices}
+                where ${invoices.id} = ${invoiceAdjustments.invoiceId}
+                  and ${invoices.clientId} = ${client.id}
+                  and ${invoices.practiceId} = ${client.practiceId}
+                  and ${invoices.deletedAt} is null
+              )
+              and ${invoiceAdjustments.deletedAt} is null
+          ), 0)`,
           dueDate: invoices.dueDate,
           createdAt: invoices.createdAt,
+          isEstimate: invoices.isEstimate,
           patientName: patients.name,
         })
         .from(invoices)
-        .leftJoin(patients, eq(invoices.patientId, patients.id))
-        .where(and(eq(invoices.clientId, client.id), isNull(invoices.deletedAt)))
+        .leftJoin(
+          patients,
+          and(
+            eq(invoices.patientId, patients.id),
+            eq(patients.clientId, client.id),
+            eq(patients.practiceId, client.practiceId),
+            isNull(patients.deletedAt)
+          )
+        )
+        .where(
+          and(
+            eq(invoices.clientId, client.id),
+            eq(invoices.practiceId, client.practiceId),
+            ne(invoices.status, "draft"),
+            isNull(invoices.deletedAt)
+          )
+        )
         .orderBy(desc(invoices.createdAt));
 
-      return rows.map((r) => ({ ...r, currency, country }));
+      return rows.map((r) => {
+        const adjustedCents = moneyToCents(r.adjustedAmount);
+        return {
+          ...r,
+          adjustedAmount: centsToMoney(adjustedCents),
+          balanceDue: centsToMoney(invoiceBalanceCents(r, adjustedCents)),
+          currency,
+          country,
+          timezone,
+          onlinePaymentsEnabled,
+        };
+      });
     }),
 
   /** Appointment types a client can choose from when booking. */
   getAppointmentTypes: publicProcedure
-    .input(z.object({ token: z.string().min(1) }))
+    .input(z.object({ token: portalTokenInput }))
     .query(async ({ ctx, input }) => {
+      await assertPortalIpRateLimit(ctx.ip, {
+        keyPrefix: "portal-read",
+        ...PORTAL_READ_IP_RATE_LIMIT,
+      });
+      await assertPortalReadRateLimit(input.token);
       const client = await getClientByToken(ctx.db, input.token);
       return ctx.db
         .select({
@@ -280,15 +821,32 @@ export const portalRouter = createRouter({
   availableSlots: publicProcedure
     .input(
       z.object({
-        token: z.string().min(1),
-        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-        durationMinutes: z.number().int().min(10).max(120).default(30),
+        token: portalTokenInput,
+        date: portalBookingDateInput,
+        durationMinutes: z
+          .number()
+          .int()
+          .min(PORTAL_BOOKING_MIN_DURATION_MINUTES)
+          .max(PORTAL_BOOKING_MAX_DURATION_MINUTES)
+          .default(30),
       })
     )
     .query(async ({ ctx, input }) => {
+      await assertPortalIpRateLimit(ctx.ip, {
+        keyPrefix: "portal-slots",
+        ...PORTAL_SLOTS_IP_RATE_LIMIT,
+      });
+      await assertPortalRateLimit({
+        key: portalRateLimitKey("portal-slots", input.token),
+        limit: 60,
+        windowMs: 15 * 60 * 1000,
+        message:
+          "Too many availability requests. Please try again later or call the clinic.",
+      });
+
       const client = await getClientByToken(ctx.db, input.token);
-      const dayStart = new Date(`${input.date}T08:00:00`);
-      const dayEnd = new Date(`${input.date}T18:00:00`);
+      const timezone = await practiceTimeZone(ctx.db, client.practiceId);
+      const { dayStart, dayEnd } = portalBookingWindow(input.date, timezone);
 
       const busy = await ctx.db
         .select({
@@ -306,14 +864,16 @@ export const portalRouter = createRouter({
           )
         );
 
-      return findOpenSlots({
-        dayStart,
-        dayEnd,
-        slotMinutes: input.durationMinutes,
-        busy,
-      }).map((s) => ({
-        // 24h HH:MM in the server's local time, matching the booking form input.
-        time: `${String(s.start.getHours()).padStart(2, "0")}:${String(s.start.getMinutes()).padStart(2, "0")}`,
+      return filterFutureOpenSlots(
+        findOpenSlots({
+          dayStart,
+          dayEnd,
+          slotMinutes: input.durationMinutes,
+          busy,
+        })
+      ).map((s) => ({
+        // 24h HH:MM in the practice timezone, matching the booking form input.
+        time: formatPortalSlotTime(s.start, timezone),
         iso: s.start.toISOString(),
       }));
     }),
@@ -321,30 +881,30 @@ export const portalRouter = createRouter({
   requestAppointment: publicProcedure
     .input(
       z.object({
-        token: z.string().min(1),
+        token: portalTokenInput,
         patientId: z.string().uuid(),
         typeId: z.string().uuid().optional(),
-        preferredDate: z.string(),
-        preferredTime: z.string(),
-        reason: z.string().min(1).max(1000),
+        preferredDate: portalBookingDateInput,
+        preferredTime: portalBookingTimeInput,
+        reason: z.string().trim().min(1).max(PORTAL_BOOKING_REASON_MAX_LENGTH),
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const client = await getClientByToken(ctx.db, input.token);
-      await assertPortalWriteAccess(ctx.db, client.practiceId);
-
       // Throttle public booking per portal link to deter abuse.
-      const { success } = rateLimit({
-        key: `portal-book:${input.token}`,
+      await assertPortalIpRateLimit(ctx.ip, {
+        keyPrefix: "portal-book",
+        ...PORTAL_BOOK_IP_RATE_LIMIT,
+      });
+      await assertPortalRateLimit({
+        key: portalRateLimitKey("portal-book", input.token),
         limit: 5,
         windowMs: 60 * 60 * 1000,
+        message: "Too many requests. Please try again later or call the clinic.",
       });
-      if (!success) {
-        throw new TRPCError({
-          code: "TOO_MANY_REQUESTS",
-          message: "Too many requests. Please try again later or call the clinic.",
-        });
-      }
+
+      const client = await getClientByToken(ctx.db, input.token);
+      await assertPortalWriteAccess(ctx.db, client.practiceId, "booking");
+      const timezone = await practiceTimeZone(ctx.db, client.practiceId);
 
       // Verify the patient belongs to this client.
       const [patient] = await ctx.db
@@ -354,6 +914,8 @@ export const portalRouter = createRouter({
           and(
             eq(patients.id, input.patientId),
             eq(patients.clientId, client.id),
+            eq(patients.practiceId, client.practiceId),
+            eq(patients.status, "active"),
             isNull(patients.deletedAt)
           )
         )
@@ -391,11 +953,39 @@ export const portalRouter = createRouter({
           preferredDate: input.preferredDate,
           preferredTime: input.preferredTime,
           durationMinutes,
+          timeZone: timezone,
         });
+        assertSlotWithinPortalBookingHours(
+          slot,
+          input.preferredDate,
+          timezone
+        );
       } catch (e) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: e instanceof Error ? e.message : "Invalid date or time",
+        });
+      }
+
+      const [conflict] = await ctx.db
+        .select({ id: appointments.id })
+        .from(appointments)
+        .where(
+          and(
+            eq(appointments.practiceId, client.practiceId),
+            isNull(appointments.deletedAt),
+            not(inArray(appointments.status, ["cancelled", "no_show"])),
+            lt(appointments.startTime, slot.endTime),
+            gt(appointments.endTime, slot.startTime)
+          )
+        )
+        .limit(1);
+
+      if (conflict) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message:
+            "That time is no longer available. Please choose another time.",
         });
       }
 
@@ -424,19 +1014,22 @@ export const portalRouter = createRouter({
         subject: `Appointment request for ${patient.name}`,
         content: [
           `Pet: ${patient.name}`,
-          `Requested: ${slot.startTime.toISOString()}`,
+          `Requested: ${formatPortalRequestDateTime(
+            input.preferredDate,
+            input.preferredTime,
+            timezone
+          )}`,
           `Reason: ${input.reason}`,
         ].join("\n"),
         status: "pending",
+        assignedTo: latestAssignedToForClient(client.practiceId, client.id),
       });
 
-      await dispatchWebhookEvent(client.practiceId, "appointment.created", {
-        id: appt!.id,
-        startTime: appt!.startTime,
-        endTime: appt!.endTime,
-        status: appt!.status,
-        source: "portal",
-      });
+      await dispatchWebhookEvent(
+        client.practiceId,
+        "appointment.created",
+        appointmentCreatedWebhookPayload(appt!, "portal")
+      );
 
       return {
         success: true,

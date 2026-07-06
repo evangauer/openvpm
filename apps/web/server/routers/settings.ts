@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { randomUUID } from "crypto";
-import { eq, and, isNull, inArray } from "drizzle-orm";
+import { eq, and, isNull, inArray, ne, sql } from "drizzle-orm";
 import { hash } from "bcryptjs";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
@@ -9,6 +9,8 @@ import {
   users,
   appointmentTypes,
   rooms,
+  staffSchedules,
+  appointmentWaitlist,
   clients,
   patients,
   appointments,
@@ -17,16 +19,156 @@ import {
   problemList,
   invoices,
   invoiceItems,
+  products,
+  locations,
+  locationMessaging,
 } from "@openpims/db";
+import type { Database } from "@openpims/db/client";
 import { regionDefaults } from "@/lib/locale/format";
 import { alertOps } from "@/lib/alerts";
 import { syncPracticeSubscriptionQuantities } from "@/lib/billing/subscription-sync";
 import { seedDemoData } from "@/lib/onboarding/defaults";
 import { createAuthToken } from "@/lib/auth-tokens";
+import { PASSWORD_HASH_COST } from "@/lib/auth-hashing";
+import { authPasswordInput } from "@/lib/auth-password";
+import {
+  ACCOUNT_DELETION_REASON_MAX_LENGTH,
+  APPOINTMENT_TYPE_DURATION_MAX_MINUTES,
+  APPOINTMENT_TYPE_DURATION_MIN_MINUTES,
+  APPOINTMENT_TYPE_NAME_MAX_LENGTH,
+  LOCATION_NAME_MAX_LENGTH,
+  PRACTICE_NAME_MAX_LENGTH,
+  ROOM_NAME_MAX_LENGTH,
+  SETTINGS_ADDRESS_MAX_LENGTH,
+  SETTINGS_EMAIL_MAX_LENGTH,
+  SETTINGS_PHONE_MAX_LENGTH,
+  SETTINGS_TAX_RATE_PATTERN,
+  SETTINGS_TIMEZONE_MAX_LENGTH,
+  SETTINGS_VAT_NUMBER_MAX_LENGTH,
+  SETTINGS_WEBSITE_MAX_LENGTH,
+  STAFF_LICENSE_NUMBER_MAX_LENGTH,
+  STAFF_NAME_MAX_LENGTH,
+  isSupportedPracticeTimezone,
+} from "@/lib/settings-policy";
 import { sendStaffInviteEmail } from "@/lib/email";
 import { appBaseUrl, exposeAuthLinksForPreview } from "@/lib/app-url";
 
 const adminProcedure = protectedProcedure.use(requireRole("admin"));
+
+const requiredTrimmedString = (label: string, max: number) =>
+  z
+    .string()
+    .trim()
+    .min(1, `${label} is required`)
+    .max(max, `${label} must be at most ${max} characters`);
+const optionalTrimmedString = (label: string, max: number) =>
+  z
+    .string()
+    .trim()
+    .max(max, `${label} must be at most ${max} characters`)
+    .optional();
+const emailInput = z
+  .string()
+  .trim()
+  .email()
+  .max(SETTINGS_EMAIL_MAX_LENGTH)
+  .transform((value) => value.toLowerCase());
+const optionalEmailInput = emailInput.optional();
+const countryInput = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z]{2}$/, "Country must be a two-letter ISO country code")
+  .transform((value) => value.toUpperCase());
+const currencyInput = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z]{3}$/, "Currency must be a three-letter ISO currency code")
+  .transform((value) => value.toLowerCase());
+const phoneInput = optionalTrimmedString("Phone", SETTINGS_PHONE_MAX_LENGTH);
+const addressInput = optionalTrimmedString(
+  "Address",
+  SETTINGS_ADDRESS_MAX_LENGTH
+);
+const timezoneInput = z
+  .string()
+  .trim()
+  .min(1, "Timezone is required")
+  .max(
+    SETTINGS_TIMEZONE_MAX_LENGTH,
+    `Timezone must be at most ${SETTINGS_TIMEZONE_MAX_LENGTH} characters`
+  )
+  .refine(
+    isSupportedPracticeTimezone,
+    "Timezone must be a valid IANA timezone"
+  );
+const practiceNameInput = requiredTrimmedString(
+  "Practice name",
+  PRACTICE_NAME_MAX_LENGTH
+);
+const locationNameInput = requiredTrimmedString(
+  "Location name",
+  LOCATION_NAME_MAX_LENGTH
+);
+const staffNameInput = requiredTrimmedString(
+  "Staff name",
+  STAFF_NAME_MAX_LENGTH
+);
+const licenseNumberInput = optionalTrimmedString(
+  "License number",
+  STAFF_LICENSE_NUMBER_MAX_LENGTH
+);
+const appointmentTypeNameInput = requiredTrimmedString(
+  "Appointment type name",
+  APPOINTMENT_TYPE_NAME_MAX_LENGTH
+);
+const roomNameInput = requiredTrimmedString("Room name", ROOM_NAME_MAX_LENGTH);
+const activeSchedulingStatuses = [
+  "scheduled",
+  "confirmed",
+  "checked_in",
+  "in_exam",
+] as const;
+const tourStepIdInput = z
+  .string()
+  .trim()
+  .max(128, "Tour step must be at most 128 characters")
+  .nullish();
+
+function staffAdminRosterLockKey(practiceId: string) {
+  return `settings:staff-admin-roster:${practiceId}`;
+}
+
+function activePracticeWhere(practiceId: string) {
+  return and(eq(practices.id, practiceId), isNull(practices.deletedAt));
+}
+
+function activePracticePredicate(practiceId: string) {
+  return sql`exists (
+    select 1
+    from ${practices}
+    where ${practices.id} = ${practiceId}
+      and ${practices.deletedAt} is null
+  )`;
+}
+
+function practiceNotFound(): TRPCError {
+  return new TRPCError({ code: "NOT_FOUND", message: "Practice not found" });
+}
+
+async function assertActivePractice(ctx: {
+  db: Pick<Database, "select">;
+  practiceId: string;
+}) {
+  const [practice] = await ctx.db
+    .select({ id: practices.id })
+    .from(practices)
+    .where(activePracticeWhere(ctx.practiceId))
+    .limit(1);
+
+  if (!practice) {
+    throw practiceNotFound();
+  }
+}
 
 async function syncBillingAfterStaffChange(
   db: Parameters<typeof syncPracticeSubscriptionQuantities>[0]["db"],
@@ -37,6 +179,20 @@ async function syncBillingAfterStaffChange(
   } catch (err) {
     await alertOps(
       "Staff billing sync crashed",
+      `practice=${practiceId}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
+async function syncBillingAfterLocationChange(
+  db: Parameters<typeof syncPracticeSubscriptionQuantities>[0]["db"],
+  practiceId: string
+): Promise<void> {
+  try {
+    await syncPracticeSubscriptionQuantities({ db, practiceId });
+  } catch (err) {
+    await alertOps(
+      "Location billing sync crashed",
       `practice=${practiceId}: ${err instanceof Error ? err.message : String(err)}`
     );
   }
@@ -71,6 +227,16 @@ interface PracticeSettings {
     lastStepId?: string | null;
     setupDismissed?: boolean;
   };
+  accountDeletionRequest?: {
+    status: "requested";
+    requestedAt: string;
+    requestedByUserId: string;
+    requestedByEmail: string;
+    requestedByName?: string | null;
+    contactEmail: string;
+    reason?: string | null;
+    retentionReviewRequired: true;
+  } | null;
   [k: string]: unknown;
 }
 
@@ -81,31 +247,41 @@ export const settingsRouter = createRouter({
     const [practice] = await ctx.db
       .select()
       .from(practices)
-      .where(eq(practices.id, ctx.practiceId))
+      .where(activePracticeWhere(ctx.practiceId))
       .limit(1);
-    return practice ?? null;
+    if (!practice) {
+      throw practiceNotFound();
+    }
+    return practice;
   }),
 
   updatePractice: adminProcedure
     .input(
       z.object({
-        name: z.string().min(1).optional(),
-        address: z.string().optional(),
-        phone: z.string().optional(),
-        email: z.string().email().optional(),
-        website: z.string().optional(),
-        timezone: z.string().optional(),
+        name: practiceNameInput.optional(),
+        address: addressInput,
+        phone: phoneInput,
+        email: optionalEmailInput,
+        website: optionalTrimmedString("Website", SETTINGS_WEBSITE_MAX_LENGTH),
+        timezone: timezoneInput.optional(),
         // Region/locale (Phase 2). country is ISO 3166-1 alpha-2; currency is
         // ISO 4217 lowercase; taxRatePercent is a percent string e.g. "20.00".
-        country: z.string().length(2).optional(),
-        currency: z.string().min(3).max(3).optional(),
+        country: countryInput.optional(),
+        currency: currencyInput.optional(),
         taxRatePercent: z
           .string()
-          .regex(/^\d{1,3}(\.\d{1,2})?$/, "Tax rate must be a number like 20 or 20.00")
+          .trim()
+          .regex(
+            SETTINGS_TAX_RATE_PATTERN,
+            "Tax rate must be a number like 20 or 20.00"
+          )
           .optional(),
-        vatNumber: z.string().max(32).optional(),
+        vatNumber: optionalTrimmedString(
+          "VAT number",
+          SETTINGS_VAT_NUMBER_MAX_LENGTH
+        ),
         // Branding. logoUrl is a real column; brandColor lives in settings.
-        logoUrl: z.string().optional(),
+        logoUrl: optionalTrimmedString("Logo URL", 512),
         brandColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
       })
     )
@@ -130,17 +306,98 @@ export const settingsRouter = createRouter({
         const [practice] = await ctx.db
           .select({ settings: practices.settings })
           .from(practices)
-          .where(eq(practices.id, ctx.practiceId))
+          .where(activePracticeWhere(ctx.practiceId))
           .limit(1);
-        const settings = (practice?.settings ?? {}) as PracticeSettings;
+        if (!practice) {
+          throw practiceNotFound();
+        }
+        const settings = (practice.settings ?? {}) as PracticeSettings;
         patch.settings = { ...settings, brandColor: brandColor.toLowerCase() };
       }
       const [updated] = await ctx.db
         .update(practices)
         .set(patch)
-        .where(eq(practices.id, ctx.practiceId))
+        .where(activePracticeWhere(ctx.practiceId))
         .returning();
+      if (!updated) {
+        throw practiceNotFound();
+      }
       return updated!;
+    }),
+
+  // ── Account Lifecycle ─────────────────────────────────────
+
+  getAccountDeletionRequest: adminProcedure.query(async ({ ctx }) => {
+    const [practice] = await ctx.db
+      .select({ settings: practices.settings })
+      .from(practices)
+      .where(activePracticeWhere(ctx.practiceId))
+      .limit(1);
+    if (!practice) {
+      throw practiceNotFound();
+    }
+    const settings = (practice.settings ?? {}) as PracticeSettings;
+    return settings.accountDeletionRequest ?? null;
+  }),
+
+  requestAccountDeletion: adminProcedure
+    .input(
+      z.object({
+        contactEmail: emailInput,
+        reason: optionalTrimmedString(
+          "Deletion reason",
+          ACCOUNT_DELETION_REASON_MAX_LENGTH
+        ),
+        confirmExportDownloaded: z.literal(true),
+        confirmManualReview: z.literal(true),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [practice] = await ctx.db
+        .select({ name: practices.name, settings: practices.settings })
+        .from(practices)
+        .where(activePracticeWhere(ctx.practiceId))
+        .limit(1);
+      if (!practice) {
+        throw practiceNotFound();
+      }
+
+      const settings = (practice.settings ?? {}) as PracticeSettings;
+      if (settings.accountDeletionRequest?.status === "requested") {
+        return settings.accountDeletionRequest;
+      }
+
+      const reason = input.reason?.trim();
+      const request = {
+        status: "requested" as const,
+        requestedAt: new Date().toISOString(),
+        requestedByUserId: ctx.user.id,
+        requestedByEmail: ctx.user.email,
+        requestedByName: ctx.user.name ?? null,
+        contactEmail: input.contactEmail,
+        reason: reason ? reason : null,
+        retentionReviewRequired: true as const,
+      };
+
+      await ctx.db
+        .update(practices)
+        .set({
+          settings: { ...settings, accountDeletionRequest: request },
+        })
+        .where(activePracticeWhere(ctx.practiceId));
+
+      await alertOps(
+        "Account deletion requested",
+        [
+          `practice=${ctx.practiceId}`,
+          `practiceName=${practice.name}`,
+          `requestedBy=${ctx.user.email}`,
+          `contact=${request.contactEmail}`,
+          "manualRetentionReviewRequired=true",
+        ].join(" ")
+      );
+
+      return request;
     }),
 
   // ── Branding ──────────────────────────────────────────────
@@ -154,15 +411,327 @@ export const settingsRouter = createRouter({
         settings: practices.settings,
       })
       .from(practices)
-      .where(eq(practices.id, ctx.practiceId))
+      .where(activePracticeWhere(ctx.practiceId))
       .limit(1);
-    const settings = (practice?.settings ?? {}) as PracticeSettings;
+    if (!practice) {
+      throw practiceNotFound();
+    }
+    const settings = (practice.settings ?? {}) as PracticeSettings;
     return {
-      name: practice?.name ?? null,
-      logoUrl: practice?.logoUrl ?? null,
+      name: practice.name,
+      logoUrl: practice.logoUrl ?? null,
       brandColor: settings.brandColor ?? null,
     };
   }),
+
+  // ── Locations ─────────────────────────────────────────────
+
+  listLocations: adminProcedure.query(async ({ ctx }) => {
+    await assertActivePractice(ctx);
+    return ctx.db
+      .select({
+        id: locations.id,
+        name: locations.name,
+        address: locations.address,
+        phone: locations.phone,
+        isPrimary: locations.isPrimary,
+        createdAt: locations.createdAt,
+      })
+      .from(locations)
+      .where(
+        and(
+          eq(locations.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
+          isNull(locations.deletedAt)
+        )
+      );
+  }),
+
+  createLocation: adminProcedure
+    .input(
+      z.object({
+        name: locationNameInput,
+        address: addressInput,
+        phone: phoneInput,
+        isPrimary: z.boolean().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
+      if (input.isPrimary) {
+        await ctx.db
+          .update(locations)
+          .set({ isPrimary: false })
+          .where(
+            and(
+              eq(locations.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(locations.deletedAt)
+            )
+          );
+      }
+
+      const [created] = await ctx.db
+        .insert(locations)
+        .values({
+          practiceId: ctx.practiceId,
+          name: input.name,
+          address: input.address,
+          phone: input.phone,
+          isPrimary: input.isPrimary ?? false,
+        })
+        .returning();
+
+      await syncBillingAfterLocationChange(ctx.db, ctx.practiceId);
+      return created!;
+    }),
+
+  updateLocation: adminProcedure
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        name: locationNameInput.optional(),
+        address: addressInput,
+        phone: phoneInput,
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { id, ...data } = input;
+      const [updated] = await ctx.db
+        .update(locations)
+        .set(data)
+        .where(
+          and(
+            eq(locations.id, id),
+            eq(locations.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(locations.deletedAt)
+          )
+        )
+        .returning();
+
+      if (!updated) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Location not found",
+        });
+      }
+
+      return updated;
+    }),
+
+  setPrimaryLocation: adminProcedure
+    .input(z.object({ id: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      const updated = await ctx.db.transaction(async (tx) => {
+        const [target] = await tx
+          .update(locations)
+          .set({ isPrimary: true })
+          .where(
+            and(
+              eq(locations.id, input.id),
+              eq(locations.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(locations.deletedAt)
+            )
+          )
+          .returning();
+
+        if (!target) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Location not found",
+          });
+        }
+
+        await tx
+          .update(locations)
+          .set({ isPrimary: false })
+          .where(
+            and(
+              eq(locations.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(locations.deletedAt),
+              ne(locations.id, input.id)
+            )
+          );
+
+        return target;
+      });
+
+      return updated;
+    }),
+
+  deleteLocation: adminProcedure
+    .input(z.object({ id: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      const activeLocations = await ctx.db
+        .select({ id: locations.id, isPrimary: locations.isPrimary })
+        .from(locations)
+        .where(
+          and(
+            eq(locations.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(locations.deletedAt)
+          )
+        );
+      const target = activeLocations.find((loc) => loc.id === input.id);
+
+      if (!target) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Location not found",
+        });
+      }
+
+      if (activeLocations.length <= 1) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "A practice must keep at least one active location",
+        });
+      }
+
+      const [activeRoom] = await ctx.db
+        .select({ id: rooms.id })
+        .from(rooms)
+        .where(
+          and(
+            eq(rooms.locationId, input.id),
+            eq(rooms.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(rooms.deletedAt)
+          )
+        )
+        .limit(1);
+
+      if (activeRoom) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Cannot delete a location with active rooms.",
+        });
+      }
+
+      const [activeUser] = await ctx.db
+        .select({ id: users.id })
+        .from(users)
+        .where(
+          and(
+            eq(users.locationId, input.id),
+            eq(users.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(users.deletedAt)
+          )
+        )
+        .limit(1);
+
+      if (activeUser) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Cannot delete a location assigned to active staff.",
+        });
+      }
+
+      const [activeProduct] = await ctx.db
+        .select({ id: products.id })
+        .from(products)
+        .where(
+          and(
+            eq(products.locationId, input.id),
+            eq(products.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(products.deletedAt)
+          )
+        )
+        .limit(1);
+
+      if (activeProduct) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Cannot delete a location with active inventory products.",
+        });
+      }
+
+      const [activeSchedule] = await ctx.db
+        .select({ id: staffSchedules.id })
+        .from(staffSchedules)
+        .where(
+          and(
+            eq(staffSchedules.locationId, input.id),
+            eq(staffSchedules.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(staffSchedules.deletedAt)
+          )
+        )
+        .limit(1);
+
+      if (activeSchedule) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Cannot delete a location with active staff schedules.",
+        });
+      }
+
+      await ctx.db.transaction(async (tx) => {
+        const [deleted] = await tx
+          .update(locations)
+          .set({ deletedAt: new Date(), isPrimary: false })
+          .where(
+            and(
+              eq(locations.id, input.id),
+              eq(locations.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(locations.deletedAt)
+            )
+          )
+          .returning({ id: locations.id });
+
+        if (!deleted) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Location not found",
+          });
+        }
+
+        await tx
+          .update(locationMessaging)
+          .set({ enabled: false })
+          .where(
+            and(
+              eq(locationMessaging.locationId, input.id),
+              eq(locationMessaging.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId)
+            )
+          );
+
+        if (target.isPrimary) {
+          const replacement = activeLocations.find((loc) => loc.id !== input.id);
+          if (replacement) {
+            const [promoted] = await tx
+              .update(locations)
+              .set({ isPrimary: true })
+              .where(
+                and(
+                  eq(locations.id, replacement.id),
+                  eq(locations.practiceId, ctx.practiceId),
+                  activePracticePredicate(ctx.practiceId),
+                  isNull(locations.deletedAt)
+                )
+              )
+              .returning({ id: locations.id });
+
+            if (!promoted) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: "Location state changed; try again.",
+              });
+            }
+          }
+        }
+      });
+
+      await syncBillingAfterLocationChange(ctx.db, ctx.practiceId);
+      return { success: true };
+    }),
 
   // ── Onboarding ────────────────────────────────────────────
 
@@ -171,9 +740,12 @@ export const settingsRouter = createRouter({
     const [practice] = await ctx.db
       .select({ settings: practices.settings })
       .from(practices)
-      .where(eq(practices.id, ctx.practiceId))
+      .where(activePracticeWhere(ctx.practiceId))
       .limit(1);
-    const settings = (practice?.settings ?? {}) as PracticeSettings;
+    if (!practice) {
+      throw practiceNotFound();
+    }
+    const settings = (practice.settings ?? {}) as PracticeSettings;
     return {
       completedAt: settings.onboardingCompletedAt ?? null,
       hasDemoData: !!settings.demoData,
@@ -186,13 +758,16 @@ export const settingsRouter = createRouter({
     const [practice] = await ctx.db
       .select({ settings: practices.settings })
       .from(practices)
-      .where(eq(practices.id, ctx.practiceId))
+      .where(activePracticeWhere(ctx.practiceId))
       .limit(1);
-    const settings = (practice?.settings ?? {}) as PracticeSettings;
+    if (!practice) {
+      throw practiceNotFound();
+    }
+    const settings = (practice.settings ?? {}) as PracticeSettings;
     await ctx.db
       .update(practices)
       .set({ settings: { ...settings, onboardingCompletedAt: new Date().toISOString() } })
-      .where(eq(practices.id, ctx.practiceId));
+      .where(activePracticeWhere(ctx.practiceId));
     return { ok: true };
   }),
 
@@ -201,9 +776,12 @@ export const settingsRouter = createRouter({
     const [practice] = await ctx.db
       .select({ settings: practices.settings })
       .from(practices)
-      .where(eq(practices.id, ctx.practiceId))
+      .where(activePracticeWhere(ctx.practiceId))
       .limit(1);
-    const settings = (practice?.settings ?? {}) as PracticeSettings;
+    if (!practice) {
+      throw practiceNotFound();
+    }
+    const settings = (practice.settings ?? {}) as PracticeSettings;
     return (
       settings.onboardingState ?? {
         tourStatus: "not_started" as const,
@@ -218,16 +796,19 @@ export const settingsRouter = createRouter({
     .input(
       z.object({
         status: z.enum(["not_started", "in_progress", "completed", "skipped"]),
-        lastStepId: z.string().nullish(),
+        lastStepId: tourStepIdInput,
       })
     )
     .mutation(async ({ ctx, input }) => {
       const [practice] = await ctx.db
         .select({ settings: practices.settings })
         .from(practices)
-        .where(eq(practices.id, ctx.practiceId))
+        .where(activePracticeWhere(ctx.practiceId))
         .limit(1);
-      const settings = (practice?.settings ?? {}) as PracticeSettings;
+      if (!practice) {
+        throw practiceNotFound();
+      }
+      const settings = (practice.settings ?? {}) as PracticeSettings;
       const onboardingState = {
         ...(settings.onboardingState ?? {}),
         tourStatus: input.status,
@@ -237,7 +818,7 @@ export const settingsRouter = createRouter({
       await ctx.db
         .update(practices)
         .set({ settings: { ...settings, onboardingState } })
-        .where(eq(practices.id, ctx.practiceId));
+        .where(activePracticeWhere(ctx.practiceId));
       return { ok: true };
     }),
 
@@ -246,9 +827,12 @@ export const settingsRouter = createRouter({
     const [practice] = await ctx.db
       .select({ settings: practices.settings })
       .from(practices)
-      .where(eq(practices.id, ctx.practiceId))
+      .where(activePracticeWhere(ctx.practiceId))
       .limit(1);
-    const settings = (practice?.settings ?? {}) as PracticeSettings;
+    if (!practice) {
+      throw practiceNotFound();
+    }
+    const settings = (practice.settings ?? {}) as PracticeSettings;
     const onboardingState = {
       ...(settings.onboardingState ?? {}),
       setupDismissed: true,
@@ -256,7 +840,7 @@ export const settingsRouter = createRouter({
     await ctx.db
       .update(practices)
       .set({ settings: { ...settings, onboardingState } })
-      .where(eq(practices.id, ctx.practiceId));
+      .where(activePracticeWhere(ctx.practiceId));
     return { ok: true };
   }),
 
@@ -265,9 +849,12 @@ export const settingsRouter = createRouter({
     const [practice] = await ctx.db
       .select({ settings: practices.settings })
       .from(practices)
-      .where(eq(practices.id, ctx.practiceId))
+      .where(activePracticeWhere(ctx.practiceId))
       .limit(1);
-    const settings = (practice?.settings ?? {}) as PracticeSettings;
+    if (!practice) {
+      throw practiceNotFound();
+    }
+    const settings = (practice.settings ?? {}) as PracticeSettings;
     const demo = settings.demoData;
     if (demo) {
       const now = new Date();
@@ -277,7 +864,17 @@ export const settingsRouter = createRouter({
         await ctx.db
           .update(invoiceItems)
           .set({ deletedAt: now })
-          .where(inArray(invoiceItems.id, demo.invoiceItemIds));
+          .where(
+            and(
+              inArray(invoiceItems.id, demo.invoiceItemIds),
+              sql`exists (
+                select 1
+                from ${invoices}
+                where ${invoices.id} = ${invoiceItems.invoiceId}
+                  and ${invoices.practiceId} = ${ctx.practiceId}
+              )`
+            )
+          );
       }
       if (demo.invoiceIds?.length) {
         await ctx.db
@@ -361,7 +958,7 @@ export const settingsRouter = createRouter({
     await ctx.db
       .update(practices)
       .set({ settings: rest })
-      .where(eq(practices.id, ctx.practiceId));
+      .where(activePracticeWhere(ctx.practiceId));
     return { ok: true };
   }),
 
@@ -370,21 +967,25 @@ export const settingsRouter = createRouter({
     const [practice] = await ctx.db
       .select({ settings: practices.settings })
       .from(practices)
-      .where(eq(practices.id, ctx.practiceId))
+      .where(activePracticeWhere(ctx.practiceId))
       .limit(1);
-    const settings = (practice?.settings ?? {}) as PracticeSettings;
+    if (!practice) {
+      throw practiceNotFound();
+    }
+    const settings = (practice.settings ?? {}) as PracticeSettings;
     if (settings.demoData) return { ok: true, alreadyPresent: true };
     const demoData = await seedDemoData(ctx.db, { practiceId: ctx.practiceId });
     await ctx.db
       .update(practices)
       .set({ settings: { ...settings, demoData } })
-      .where(eq(practices.id, ctx.practiceId));
+      .where(activePracticeWhere(ctx.practiceId));
     return { ok: true, alreadyPresent: false };
   }),
 
   // ── Staff / Users ─────────────────────────────────────────
 
   listUsers: adminProcedure.query(async ({ ctx }) => {
+    await assertActivePractice(ctx);
     return ctx.db
       .select({
         id: users.id,
@@ -398,24 +999,41 @@ export const settingsRouter = createRouter({
       })
       .from(users)
       .where(
-        and(eq(users.practiceId, ctx.practiceId), isNull(users.deletedAt))
+        and(
+          eq(users.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
+          isNull(users.deletedAt)
+        )
       );
   }),
 
   createUser: adminProcedure
     .input(
       z.object({
-        name: z.string().min(1),
-        email: z.string().email(),
-        password: z.string().min(6),
+        name: staffNameInput,
+        email: emailInput,
+        password: authPasswordInput,
         role: z.enum(["admin", "veterinarian", "technician", "front_desk", "viewer"]),
-        phone: z.string().optional(),
-        licenseNumber: z.string().optional(),
+        phone: phoneInput,
+        licenseNumber: licenseNumberInput,
       })
     )
     .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
       const { password, ...rest } = input;
-      const passwordHash = await hash(password, 12);
+      const [existing] = await ctx.db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, rest.email))
+        .limit(1);
+      if (existing) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "A user with that email already exists.",
+        });
+      }
+
+      const passwordHash = await hash(password, PASSWORD_HASH_COST);
       const [user] = await ctx.db
         .insert(users)
         .values({
@@ -441,8 +1059,8 @@ export const settingsRouter = createRouter({
   inviteStaff: adminProcedure
     .input(
       z.object({
-        email: z.string().email(),
-        name: z.string().optional(),
+        email: emailInput,
+        name: optionalTrimmedString("Staff name", STAFF_NAME_MAX_LENGTH),
         role: z.enum([
           "admin",
           "veterinarian",
@@ -454,6 +1072,16 @@ export const settingsRouter = createRouter({
     )
     .mutation(async ({ ctx, input }) => {
       const email = input.email.trim().toLowerCase();
+
+      const [practice] = await ctx.db
+        .select({ name: practices.name })
+        .from(practices)
+        .where(activePracticeWhere(ctx.practiceId))
+        .limit(1);
+
+      if (!practice) {
+        throw practiceNotFound();
+      }
 
       const [existing] = await ctx.db
         .select({ id: users.id })
@@ -480,7 +1108,10 @@ export const settingsRouter = createRouter({
         })();
 
       // Unguessable placeholder — replaced when the invite is accepted.
-      const passwordHash = await hash(`invite:${randomUUID()}:${randomUUID()}`, 10);
+      const passwordHash = await hash(
+        `invite:${randomUUID()}:${randomUUID()}`,
+        PASSWORD_HASH_COST
+      );
 
       const [user] = await ctx.db
         .insert(users)
@@ -507,17 +1138,11 @@ export const settingsRouter = createRouter({
       });
       const inviteUrl = `${appBaseUrl()}/accept-invite?token=${token}`;
 
-      const [practice] = await ctx.db
-        .select({ name: practices.name })
-        .from(practices)
-        .where(eq(practices.id, ctx.practiceId))
-        .limit(1);
-
       try {
         await sendStaffInviteEmail({
           to: user!.email,
           inviterName: ctx.user.name,
-          practiceName: practice?.name ?? "OpenVPM",
+          practiceName: practice.name,
           inviteUrl,
         });
       } catch (err) {
@@ -536,38 +1161,227 @@ export const settingsRouter = createRouter({
     .input(
       z.object({
         id: z.string().uuid(),
-        name: z.string().min(1).optional(),
+        name: staffNameInput.optional(),
         role: z
           .enum(["admin", "veterinarian", "technician", "front_desk", "viewer"])
           .optional(),
-        phone: z.string().optional(),
-        licenseNumber: z.string().optional(),
+        phone: phoneInput,
+        licenseNumber: licenseNumberInput,
       })
     )
     .mutation(async ({ ctx, input }) => {
       const { id, ...data } = input;
+      if (data.role !== undefined && data.role !== "admin") {
+        return ctx.db.transaction(async (tx) => {
+          await tx.execute(
+            sql`select pg_advisory_xact_lock(hashtext(${staffAdminRosterLockKey(
+              ctx.practiceId
+            )}::text))`
+          );
+
+          const [targetUser] = await tx
+            .select({ id: users.id, role: users.role })
+            .from(users)
+            .where(
+              and(
+                eq(users.id, id),
+                eq(users.practiceId, ctx.practiceId),
+                activePracticePredicate(ctx.practiceId),
+                isNull(users.deletedAt)
+              )
+            )
+            .limit(1);
+
+          if (!targetUser) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+          }
+
+          if (targetUser.role === "admin") {
+            const [otherAdmin] = await tx
+              .select({ id: users.id })
+              .from(users)
+              .where(
+                and(
+                  eq(users.practiceId, ctx.practiceId),
+                  eq(users.role, "admin"),
+                  ne(users.id, id),
+                  activePracticePredicate(ctx.practiceId),
+                  isNull(users.deletedAt)
+                )
+              )
+              .limit(1);
+
+            if (!otherAdmin) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: "A practice must keep at least one active admin user.",
+              });
+            }
+          }
+
+          const [updated] = await tx
+            .update(users)
+            .set(data)
+            .where(
+              and(
+                eq(users.id, id),
+                eq(users.practiceId, ctx.practiceId),
+                eq(users.role, targetUser.role),
+                activePracticePredicate(ctx.practiceId),
+                isNull(users.deletedAt)
+              )
+            )
+            .returning();
+
+          if (!updated) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "Staff member changed. Refresh and try again.",
+            });
+          }
+
+          return updated;
+        });
+      }
+
       const [updated] = await ctx.db
         .update(users)
         .set(data)
         .where(
-          and(eq(users.id, id), eq(users.practiceId, ctx.practiceId))
+          and(
+            eq(users.id, id),
+            eq(users.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(users.deletedAt)
+          )
         )
         .returning();
-      return updated!;
+      if (!updated) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+      }
+      return updated;
     }),
 
   deactivateUser: adminProcedure
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
-      await ctx.db
-        .update(users)
-        .set({ deletedAt: new Date() })
-        .where(
-          and(
-            eq(users.id, input.id),
-            eq(users.practiceId, ctx.practiceId)
-          )
+      if (input.id === ctx.user.id) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "You cannot deactivate your own user account.",
+        });
+      }
+
+      await ctx.db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${staffAdminRosterLockKey(
+            ctx.practiceId
+          )}::text))`
         );
+
+        const [targetUser] = await tx
+          .select({ id: users.id, role: users.role })
+          .from(users)
+          .where(
+            and(
+              eq(users.id, input.id),
+              eq(users.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(users.deletedAt)
+            )
+          )
+          .limit(1);
+
+        if (!targetUser) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+        }
+
+        if (targetUser.role === "admin") {
+          const [otherAdmin] = await tx
+            .select({ id: users.id })
+            .from(users)
+            .where(
+              and(
+                eq(users.practiceId, ctx.practiceId),
+                eq(users.role, "admin"),
+                ne(users.id, input.id),
+                activePracticePredicate(ctx.practiceId),
+                isNull(users.deletedAt)
+              )
+            )
+            .limit(1);
+
+          if (!otherAdmin) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "A practice must keep at least one active admin user.",
+            });
+          }
+        }
+
+        const [activeAppointment] = await tx
+          .select({ id: appointments.id })
+          .from(appointments)
+          .where(
+            and(
+              eq(appointments.doctorId, input.id),
+              eq(appointments.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(appointments.deletedAt),
+              inArray(appointments.status, activeSchedulingStatuses)
+            )
+          )
+          .limit(1);
+
+        if (activeAppointment) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "Cannot deactivate a staff member assigned to active appointments.",
+          });
+        }
+
+        const [activeSchedule] = await tx
+          .select({ id: staffSchedules.id })
+          .from(staffSchedules)
+          .where(
+            and(
+              eq(staffSchedules.userId, input.id),
+              eq(staffSchedules.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(staffSchedules.deletedAt)
+            )
+          )
+          .limit(1);
+
+        if (activeSchedule) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "Cannot deactivate a staff member with an active staff schedule.",
+          });
+        }
+
+        const [updated] = await tx
+          .update(users)
+          .set({ deletedAt: new Date() })
+          .where(
+            and(
+              eq(users.id, input.id),
+              eq(users.practiceId, ctx.practiceId),
+              eq(users.role, targetUser.role),
+              activePracticePredicate(ctx.practiceId),
+              isNull(users.deletedAt)
+            )
+          )
+          .returning({ id: users.id });
+        if (!updated) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Staff member changed. Refresh and try again.",
+          });
+        }
+      });
       await syncBillingAfterStaffChange(ctx.db, ctx.practiceId);
       return { success: true };
     }),
@@ -575,10 +1389,20 @@ export const settingsRouter = createRouter({
   restoreUser: adminProcedure
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
-      await ctx.db
+      const [updated] = await ctx.db
         .update(users)
         .set({ deletedAt: null })
-        .where(and(eq(users.id, input.id), eq(users.practiceId, ctx.practiceId)));
+        .where(
+          and(
+            eq(users.id, input.id),
+            eq(users.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId)
+          )
+        )
+        .returning({ id: users.id });
+      if (!updated) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+      }
       await syncBillingAfterStaffChange(ctx.db, ctx.practiceId);
       return { success: true };
     }),
@@ -586,12 +1410,14 @@ export const settingsRouter = createRouter({
   // ── Appointment Types ─────────────────────────────────────
 
   listAppointmentTypes: adminProcedure.query(async ({ ctx }) => {
+    await assertActivePractice(ctx);
     return ctx.db
       .select()
       .from(appointmentTypes)
       .where(
         and(
           eq(appointmentTypes.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
           isNull(appointmentTypes.deletedAt)
         )
       );
@@ -600,8 +1426,12 @@ export const settingsRouter = createRouter({
   createAppointmentType: adminProcedure
     .input(
       z.object({
-        name: z.string().min(1),
-        durationMinutes: z.number().int().min(5).max(480),
+        name: appointmentTypeNameInput,
+        durationMinutes: z
+          .number()
+          .int()
+          .min(APPOINTMENT_TYPE_DURATION_MIN_MINUTES)
+          .max(APPOINTMENT_TYPE_DURATION_MAX_MINUTES),
         color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
         requiresDoctor: z.number().int().min(0).max(1).default(1),
         defaultRoomType: z
@@ -610,6 +1440,7 @@ export const settingsRouter = createRouter({
       })
     )
     .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
       const [type] = await ctx.db
         .insert(appointmentTypes)
         .values({ ...input, practiceId: ctx.practiceId })
@@ -621,8 +1452,13 @@ export const settingsRouter = createRouter({
     .input(
       z.object({
         id: z.string().uuid(),
-        name: z.string().min(1).optional(),
-        durationMinutes: z.number().int().min(5).max(480).optional(),
+        name: appointmentTypeNameInput.optional(),
+        durationMinutes: z
+          .number()
+          .int()
+          .min(APPOINTMENT_TYPE_DURATION_MIN_MINUTES)
+          .max(APPOINTMENT_TYPE_DURATION_MAX_MINUTES)
+          .optional(),
         color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
         requiresDoctor: z.number().int().min(0).max(1).optional(),
         defaultRoomType: z
@@ -638,37 +1474,122 @@ export const settingsRouter = createRouter({
         .where(
           and(
             eq(appointmentTypes.id, id),
-            eq(appointmentTypes.practiceId, ctx.practiceId)
+            eq(appointmentTypes.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(appointmentTypes.deletedAt)
           )
         )
         .returning();
-      return updated!;
+      if (!updated) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Appointment type not found",
+        });
+      }
+      return updated;
     }),
 
   deleteAppointmentType: adminProcedure
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
-      await ctx.db
-        .update(appointmentTypes)
-        .set({ deletedAt: new Date() })
-        .where(
-          and(
-            eq(appointmentTypes.id, input.id),
-            eq(appointmentTypes.practiceId, ctx.practiceId)
+      await ctx.db.transaction(async (tx) => {
+        const [type] = await tx
+          .select({ id: appointmentTypes.id })
+          .from(appointmentTypes)
+          .where(
+            and(
+              eq(appointmentTypes.id, input.id),
+              eq(appointmentTypes.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(appointmentTypes.deletedAt)
+            )
           )
-        );
+          .limit(1);
+
+        if (!type) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Appointment type not found",
+          });
+        }
+
+        const [activeAppointment] = await tx
+          .select({ id: appointments.id })
+          .from(appointments)
+          .where(
+            and(
+              eq(appointments.typeId, input.id),
+              eq(appointments.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(appointments.deletedAt),
+              inArray(appointments.status, activeSchedulingStatuses)
+            )
+          )
+          .limit(1);
+
+        if (activeAppointment) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "Cannot delete an appointment type used by active appointments.",
+          });
+        }
+
+        const [waitingEntry] = await tx
+          .select({ id: appointmentWaitlist.id })
+          .from(appointmentWaitlist)
+          .where(
+            and(
+              eq(appointmentWaitlist.typeId, input.id),
+              eq(appointmentWaitlist.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              eq(appointmentWaitlist.status, "waiting"),
+              isNull(appointmentWaitlist.deletedAt)
+            )
+          )
+          .limit(1);
+
+        if (waitingEntry) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "Cannot delete an appointment type used by waiting appointment requests.",
+          });
+        }
+
+        const [deleted] = await tx
+          .update(appointmentTypes)
+          .set({ deletedAt: new Date() })
+          .where(
+            and(
+              eq(appointmentTypes.id, input.id),
+              eq(appointmentTypes.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(appointmentTypes.deletedAt)
+            )
+          )
+          .returning({ id: appointmentTypes.id });
+        if (!deleted) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Appointment type not found",
+          });
+        }
+      });
       return { success: true };
     }),
 
   // ── Rooms ─────────────────────────────────────────────────
 
   listRooms: adminProcedure.query(async ({ ctx }) => {
+    await assertActivePractice(ctx);
     return ctx.db
       .select()
       .from(rooms)
       .where(
         and(
           eq(rooms.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
           isNull(rooms.deletedAt)
         )
       );
@@ -677,11 +1598,12 @@ export const settingsRouter = createRouter({
   createRoom: adminProcedure
     .input(
       z.object({
-        name: z.string().min(1),
+        name: roomNameInput,
         type: z.enum(["exam", "surgery", "treatment", "boarding"]),
       })
     )
     .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
       const [room] = await ctx.db
         .insert(rooms)
         .values({ ...input, practiceId: ctx.practiceId })
@@ -692,15 +1614,61 @@ export const settingsRouter = createRouter({
   deleteRoom: adminProcedure
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
-      await ctx.db
-        .update(rooms)
-        .set({ deletedAt: new Date() })
-        .where(
-          and(
-            eq(rooms.id, input.id),
-            eq(rooms.practiceId, ctx.practiceId)
+      await ctx.db.transaction(async (tx) => {
+        const [room] = await tx
+          .select({ id: rooms.id })
+          .from(rooms)
+          .where(
+            and(
+              eq(rooms.id, input.id),
+              eq(rooms.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(rooms.deletedAt)
+            )
           )
-        );
+          .limit(1);
+
+        if (!room) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Room not found" });
+        }
+
+        const [activeAppointment] = await tx
+          .select({ id: appointments.id })
+          .from(appointments)
+          .where(
+            and(
+              eq(appointments.roomId, input.id),
+              eq(appointments.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(appointments.deletedAt),
+              inArray(appointments.status, activeSchedulingStatuses)
+            )
+          )
+          .limit(1);
+
+        if (activeAppointment) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Cannot delete a room used by active appointments.",
+          });
+        }
+
+        const [deleted] = await tx
+          .update(rooms)
+          .set({ deletedAt: new Date() })
+          .where(
+            and(
+              eq(rooms.id, input.id),
+              eq(rooms.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(rooms.deletedAt)
+            )
+          )
+          .returning({ id: rooms.id });
+        if (!deleted) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Room not found" });
+        }
+      });
       return { success: true };
     }),
 });

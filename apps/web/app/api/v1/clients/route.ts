@@ -7,6 +7,7 @@ import { withTenant } from "@/lib/tenant-db";
 import { withErrorHandling } from "@/lib/compat/shared/errors";
 import { parsePagination, paginated } from "@/lib/compat/shared/pagination";
 import { toApiClient } from "@/lib/compat/openvpm";
+import { assertActivePractice } from "@/lib/compat/shared/active-practice";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,9 @@ export async function GET(req: Request) {
 
   return withErrorHandling(() =>
     withTenant(db, auth.ctx.practiceId, async (tx) => {
+      const activePractice = await assertActivePractice(tx, auth.ctx.practiceId);
+      if (!activePractice.ok) return activePractice.response;
+
       const { searchParams } = new URL(req.url);
       const { limit, offset } = parsePagination(searchParams);
 

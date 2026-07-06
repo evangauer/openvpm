@@ -6,6 +6,9 @@ describe("isQuietHours", () => {
   it("is quiet at 9:30pm local", () => {
     expect(isQuietHours(new Date("2026-01-16T02:30:00Z"), "America/New_York")).toBe(true); // 21:30 EST
   });
+  it("trims saved timezone values before checking quiet hours", () => {
+    expect(isQuietHours(new Date("2026-01-16T02:30:00Z"), " America/New_York ")).toBe(true); // 21:30 EST
+  });
   it("is quiet at 7:30am local", () => {
     expect(isQuietHours(new Date("2026-01-15T12:30:00Z"), "America/New_York")).toBe(true); // 07:30 EST
   });
@@ -39,6 +42,9 @@ describe("pickReminderChannel", () => {
   it("falls back to email when no phone", () => {
     expect(pickReminderChannel({ ...base, phone: null })).toBe("email");
   });
+  it("falls back to email when the stored phone is not SMS-capable", () => {
+    expect(pickReminderChannel({ ...base, phone: "12345" })).toBe("email");
+  });
   it("falls back to email when contact method is not sms", () => {
     expect(pickReminderChannel({ ...base, preferredContactMethod: "email" })).toBe("email");
   });
@@ -56,6 +62,16 @@ describe("pickReminderChannel", () => {
         smsConsent: false,
         hasEmail: false,
         quietHours: false,
+      })
+    ).toBe("none");
+  });
+  it("returns none instead of deferring quiet-hours SMS when the phone is invalid and no email exists", () => {
+    expect(
+      pickReminderChannel({
+        ...base,
+        phone: "not-a-phone",
+        hasEmail: false,
+        quietHours: true,
       })
     ).toBe("none");
   });

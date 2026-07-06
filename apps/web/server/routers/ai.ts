@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { eq, and, isNull, lt, gte, lte, sql, desc } from "drizzle-orm";
+import { eq, and, isNull, lt, gte, lte, sql, desc, inArray } from "drizzle-orm";
+import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure } from "../trpc";
 import {
   soapNotes,
@@ -8,7 +9,133 @@ import {
   clients,
   appointments,
   invoices,
+  practices,
 } from "@openpims/db";
+import type { Database } from "@openpims/db/client";
+import {
+  dateInputUtcRangeForTimeZone,
+  formatDateInputForTimeZone,
+} from "@/lib/date-input";
+import {
+  hasSoapContent,
+  normalizeSoapSection,
+  SOAP_SECTION_MAX_LENGTH,
+} from "@/lib/records/soap-content";
+import { optionalClinicalTextInput } from "@/lib/records/clinical-inputs";
+import { AI_SOURCE_MAX_LENGTH } from "@/lib/ai/soap";
+
+export { AI_SOURCE_MAX_LENGTH };
+
+type AIContext = {
+  db: Database;
+  practiceId: string;
+};
+
+function activePracticeWhere(practiceId: string) {
+  return and(eq(practices.id, practiceId), isNull(practices.deletedAt));
+}
+
+function activePracticePredicate(practiceId: string) {
+  return sql`exists (
+    select 1
+    from ${practices}
+    where ${practices.id} = ${practiceId}
+      and ${practices.deletedAt} is null
+  )`;
+}
+
+function practiceNotFound(): TRPCError {
+  return new TRPCError({ code: "NOT_FOUND", message: "Practice not found" });
+}
+
+async function assertActivePractice(ctx: AIContext) {
+  const [practice] = await ctx.db
+    .select({ id: practices.id })
+    .from(practices)
+    .where(activePracticeWhere(ctx.practiceId))
+    .limit(1);
+
+  if (!practice) {
+    throw practiceNotFound();
+  }
+}
+
+async function practiceTimeZone(ctx: AIContext): Promise<string | null> {
+  const [practice] = await ctx.db
+    .select({ timezone: practices.timezone })
+    .from(practices)
+    .where(activePracticeWhere(ctx.practiceId))
+    .limit(1);
+
+  if (!practice) {
+    throw practiceNotFound();
+  }
+
+  return practice.timezone ?? null;
+}
+
+async function practiceDateInput(ctx: AIContext): Promise<string> {
+  return formatDateInputForTimeZone(new Date(), await practiceTimeZone(ctx));
+}
+
+async function practiceDayRange(
+  ctx: AIContext
+): Promise<{ date: string; start: Date; end: Date }> {
+  return dateInputUtcRangeForTimeZone(new Date(), await practiceTimeZone(ctx));
+}
+
+async function assertPatientBelongsToPractice(
+  ctx: AIContext,
+  patientId: string
+) {
+  const [patient] = await ctx.db
+    .select({ id: patients.id })
+    .from(patients)
+    .where(
+      and(
+        eq(patients.id, patientId),
+        eq(patients.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(patients.deletedAt)
+      )
+    )
+    .limit(1);
+
+  if (!patient) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Patient not found" });
+  }
+
+  return patient;
+}
+
+async function assertAppointmentBelongsToPatient(
+  ctx: AIContext,
+  appointmentId: string,
+  patientId: string
+) {
+  const [appointment] = await ctx.db
+    .select({ id: appointments.id })
+    .from(appointments)
+    .where(
+      and(
+        eq(appointments.id, appointmentId),
+        eq(appointments.patientId, patientId),
+        eq(appointments.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(appointments.deletedAt)
+      )
+    )
+    .limit(1);
+
+  if (!appointment) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "Appointment not found",
+    });
+  }
+
+  return appointment;
+}
 
 export const aiRouter = createRouter({
   /**
@@ -21,19 +148,55 @@ export const aiRouter = createRouter({
       z.object({
         patientId: z.string().uuid(),
         appointmentId: z.string().uuid().optional(),
-        subjective: z.string().optional(),
-        objective: z.string().optional(),
-        assessment: z.string().optional(),
-        plan: z.string().optional(),
-        source: z.string().min(1),
+        subjective: optionalClinicalTextInput(
+          "SOAP subjective",
+          SOAP_SECTION_MAX_LENGTH
+        ),
+        objective: optionalClinicalTextInput(
+          "SOAP objective",
+          SOAP_SECTION_MAX_LENGTH
+        ),
+        assessment: optionalClinicalTextInput(
+          "SOAP assessment",
+          SOAP_SECTION_MAX_LENGTH
+        ),
+        plan: optionalClinicalTextInput("SOAP plan", SOAP_SECTION_MAX_LENGTH),
+        source: z
+          .string()
+          .trim()
+          .min(1)
+          .max(AI_SOURCE_MAX_LENGTH),
       })
     )
     .mutation(async ({ ctx, input }) => {
       const { source, ...noteData } = input;
+      await assertActivePractice(ctx);
+      await assertPatientBelongsToPractice(ctx, input.patientId);
+      if (input.appointmentId) {
+        await assertAppointmentBelongsToPatient(
+          ctx,
+          input.appointmentId,
+          input.patientId
+        );
+      }
+      const normalizedNote = {
+        subjective: normalizeSoapSection(input.subjective),
+        objective: normalizeSoapSection(input.objective),
+        assessment: normalizeSoapSection(input.assessment),
+        plan: normalizeSoapSection(input.plan),
+      };
+      if (!hasSoapContent(normalizedNote)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "SOAP note must include at least one section.",
+        });
+      }
       const [note] = await ctx.db
         .insert(soapNotes)
         .values({
-          ...noteData,
+          patientId: noteData.patientId,
+          appointmentId: noteData.appointmentId,
+          ...normalizedNote,
           authorId: ctx.user.id,
           practiceId: ctx.practiceId,
         })
@@ -46,7 +209,7 @@ export const aiRouter = createRouter({
    * Returns patients whose most recent vaccination nextDueDate has passed.
    */
   patientsOverdueVaccinations: protectedProcedure.query(async ({ ctx }) => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = await practiceDateInput(ctx);
 
     const rows = await ctx.db
       .select({
@@ -59,13 +222,33 @@ export const aiRouter = createRouter({
         nextDueDate: vaccinationRecords.nextDueDate,
       })
       .from(vaccinationRecords)
-      .innerJoin(patients, eq(vaccinationRecords.patientId, patients.id))
-      .leftJoin(clients, eq(patients.clientId, clients.id))
+      .innerJoin(
+        patients,
+        and(
+          eq(vaccinationRecords.patientId, patients.id),
+          eq(patients.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
+          isNull(patients.deletedAt)
+        )
+      )
+      .leftJoin(
+        clients,
+        and(
+          eq(patients.clientId, clients.id),
+          eq(clients.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
+          isNull(clients.deletedAt)
+        )
+      )
       .where(
         and(
           eq(vaccinationRecords.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
           isNull(vaccinationRecords.deletedAt),
+          eq(patients.practiceId, ctx.practiceId),
           isNull(patients.deletedAt),
+          eq(clients.practiceId, ctx.practiceId),
+          isNull(clients.deletedAt),
           lt(vaccinationRecords.nextDueDate, today)
         )
       )
@@ -92,6 +275,7 @@ export const aiRouter = createRouter({
    * that have no future appointment for the same patient.
    */
   patientsNeedingFollowUp: protectedProcedure.query(async ({ ctx }) => {
+    await assertActivePractice(ctx);
     const now = new Date();
     const sevenDaysAgo = new Date(now);
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
@@ -108,12 +292,34 @@ export const aiRouter = createRouter({
         checkedOutAt: appointments.endTime,
       })
       .from(appointments)
-      .innerJoin(patients, eq(appointments.patientId, patients.id))
-      .leftJoin(clients, eq(appointments.clientId, clients.id))
+      .innerJoin(
+        patients,
+        and(
+          eq(appointments.patientId, patients.id),
+          eq(patients.clientId, appointments.clientId),
+          eq(patients.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
+          isNull(patients.deletedAt)
+        )
+      )
+      .leftJoin(
+        clients,
+        and(
+          eq(appointments.clientId, clients.id),
+          eq(clients.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
+          isNull(clients.deletedAt)
+        )
+      )
       .where(
         and(
           eq(appointments.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
           isNull(appointments.deletedAt),
+          eq(patients.practiceId, ctx.practiceId),
+          isNull(patients.deletedAt),
+          eq(clients.practiceId, ctx.practiceId),
+          isNull(clients.deletedAt),
           eq(appointments.status, "checked_out"),
           gte(appointments.startTime, sevenDaysAgo),
           lte(appointments.startTime, now)
@@ -123,7 +329,11 @@ export const aiRouter = createRouter({
 
     // For each patient, check if there is a future appointment
     const patientIds = [
-      ...new Set(recentCheckedOut.map((a) => a.patientId).filter(Boolean)),
+      ...new Set(
+        recentCheckedOut
+          .map((a) => a.patientId)
+          .filter((patientId): patientId is string => Boolean(patientId))
+      ),
     ];
 
     if (patientIds.length === 0) return [];
@@ -137,9 +347,10 @@ export const aiRouter = createRouter({
       .where(
         and(
           eq(appointments.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
           isNull(appointments.deletedAt),
           gte(appointments.startTime, now),
-          sql`${appointments.patientId} = ANY(${patientIds})`
+          inArray(appointments.patientId, patientIds)
         )
       )
       .groupBy(appointments.patientId);
@@ -167,14 +378,7 @@ export const aiRouter = createRouter({
    * Aggregate view of today's activity for AI dashboard assistants.
    */
   dailySummary: protectedProcedure.query(async ({ ctx }) => {
-    const now = new Date();
-    const todayStart = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate()
-    );
-    const todayEnd = new Date(todayStart);
-    todayEnd.setDate(todayEnd.getDate() + 1);
+    const today = await practiceDayRange(ctx);
 
     const [
       appointmentsByStatus,
@@ -191,9 +395,10 @@ export const aiRouter = createRouter({
         .where(
           and(
             eq(appointments.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
             isNull(appointments.deletedAt),
-            gte(appointments.startTime, todayStart),
-            lte(appointments.startTime, todayEnd)
+            gte(appointments.startTime, today.start),
+            lt(appointments.startTime, today.end)
           )
         )
         .groupBy(appointments.status),
@@ -205,9 +410,10 @@ export const aiRouter = createRouter({
         .where(
           and(
             eq(soapNotes.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
             isNull(soapNotes.deletedAt),
-            gte(soapNotes.createdAt, todayStart),
-            lte(soapNotes.createdAt, todayEnd)
+            gte(soapNotes.createdAt, today.start),
+            lt(soapNotes.createdAt, today.end)
           )
         ),
 
@@ -218,10 +424,11 @@ export const aiRouter = createRouter({
         .where(
           and(
             eq(invoices.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
             isNull(invoices.deletedAt),
             eq(invoices.status, "paid"),
-            gte(invoices.updatedAt, todayStart),
-            lte(invoices.updatedAt, todayEnd)
+            gte(invoices.updatedAt, today.start),
+            lt(invoices.updatedAt, today.end)
           )
         ),
     ]);
@@ -237,7 +444,7 @@ export const aiRouter = createRouter({
     const patientsSeen = (statusMap["checked_out"] ?? 0) + (statusMap["in_exam"] ?? 0);
 
     return {
-      date: todayStart.toISOString().slice(0, 10),
+      date: today.date,
       appointments: {
         total: totalAppointments,
         byStatus: statusMap,

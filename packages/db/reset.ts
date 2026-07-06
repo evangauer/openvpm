@@ -8,6 +8,9 @@ import { db } from "./client";
 const TABLES = [
   // Core / leaf tables first (purely defensive — CASCADE handles it)
   "audit_log",
+  "rate_limit_buckets",
+  "stripe_events",
+  "usage_records",
   "controlled_substance_log",
   "payments",
   "communications",

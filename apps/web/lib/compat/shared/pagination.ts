@@ -3,13 +3,14 @@ export interface Pagination {
   offset: number;
 }
 
-const DEFAULT_LIMIT = 25;
-const MAX_LIMIT = 100;
+export const DEFAULT_LIMIT = 25;
+export const MAX_LIMIT = 100;
+export const MAX_OFFSET = 100_000;
 
 /**
- * Parse `limit`/`offset` query params with safe bounds. Invalid or out-of-range
- * values fall back to defaults rather than erroring — lenient by design for a
- * public REST surface.
+ * Parse `limit`/`offset` query params with safe bounds. Invalid values fall
+ * back to defaults, while oversized positive values are capped rather than
+ * erroring — lenient by design for a public REST surface.
  */
 export function parsePagination(searchParams: URLSearchParams): Pagination {
   const rawLimit = Number(searchParams.get("limit"));
@@ -20,7 +21,9 @@ export function parsePagination(searchParams: URLSearchParams): Pagination {
       ? Math.min(Math.floor(rawLimit), MAX_LIMIT)
       : DEFAULT_LIMIT;
   const offset =
-    Number.isFinite(rawOffset) && rawOffset > 0 ? Math.floor(rawOffset) : 0;
+    Number.isFinite(rawOffset) && rawOffset > 0
+      ? Math.min(Math.floor(rawOffset), MAX_OFFSET)
+      : 0;
 
   return { limit, offset };
 }

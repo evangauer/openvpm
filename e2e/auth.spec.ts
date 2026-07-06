@@ -8,24 +8,26 @@ test.describe("Authentication", () => {
 
   test("login page renders correctly", async ({ page }) => {
     await page.goto("/login");
-    await expect(page.getByRole("heading", { name: /sign in/i })).toBeVisible();
-    await expect(page.getByPlaceholder(/email/i)).toBeVisible();
-    await expect(page.getByPlaceholder(/password/i)).toBeVisible();
+    await expect(page.getByRole("heading", { name: "OpenVPM" })).toBeVisible();
+    await expect(page.getByText(/sign in to your practice/i)).toBeVisible();
+    await expect(page.getByLabel(/email/i)).toBeVisible();
+    await expect(page.getByLabel(/password/i)).toBeVisible();
   });
 
   test("register page renders correctly", async ({ page }) => {
     await page.goto("/register");
     await expect(
-      page.getByRole("heading", { name: /create.*account/i })
+      page.getByRole("heading", { name: /create your workspace/i })
     ).toBeVisible();
-    await expect(page.getByPlaceholder(/practice name/i)).toBeVisible();
+    await expect(page.getByLabel(/practice name/i)).toBeVisible();
   });
 
   test("shows validation error on empty login", async ({ page }) => {
     await page.goto("/login");
-    await page.getByRole("button", { name: /sign in/i }).click();
-    // HTML5 validation should prevent submission, or an error message should appear
-    const emailInput = page.getByPlaceholder(/email/i);
+    // Client-side validation keeps the submit button disabled until required
+    // credentials are present.
+    await expect(page.getByRole("button", { name: /sign in/i })).toBeDisabled();
+    const emailInput = page.getByLabel(/email/i);
     await expect(emailInput).toBeVisible();
   });
 });

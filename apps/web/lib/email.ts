@@ -6,6 +6,13 @@ import {
   renderPaymentReceiptEmail,
   renderPaymentFailedEmail,
 } from "@openpims/email";
+import { billingEnforced } from "@/lib/billing/plans";
+import {
+  defaultEmailFrom,
+  emailDemoMode,
+  emailEnv,
+  nonBlankEmailValue,
+} from "@/lib/email-env";
 
 // ---------------------------------------------------------------------------
 // Resend client – initialised lazily so the module can be imported even when
@@ -15,13 +22,23 @@ let resend: Resend | null = null;
 
 function getResend(): Resend | null {
   if (resend) return resend;
-  const apiKey = process.env.RESEND_API_KEY;
+  const apiKey = emailEnv("RESEND_API_KEY");
   if (!apiKey) return null;
   resend = new Resend(apiKey);
   return resend;
 }
 
-const DEFAULT_FROM = process.env.EMAIL_FROM || "OpenVPM <noreply@mail.openvpm.com>";
+export const EMAIL_SEND_TIMEOUT_MS = 10_000;
+
+type ResendEmailSendOptions = NonNullable<
+  Parameters<Resend["emails"]["send"]>[1]
+> & {
+  signal?: AbortSignal;
+};
+
+function emailSendTimeoutMessage(): string {
+  return `Email send timed out after ${EMAIL_SEND_TIMEOUT_MS}ms`;
+}
 
 // ---------------------------------------------------------------------------
 // Shared layout helpers
@@ -97,39 +114,65 @@ export async function sendEmail(options: {
   headers?: Record<string, string>;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   const client = getResend();
+  const from = defaultEmailFrom(options.from);
+  const replyTo = nonBlankEmailValue(options.replyTo);
 
   if (!client) {
+    if (billingEnforced() && !emailDemoMode()) {
+      return {
+        success: false,
+        error: "Email provider is not configured for hosted sending.",
+      };
+    }
+
     // Development fallback – log to console instead of sending
     console.log("──────────────────────────────────────────");
     console.log("[Email] No RESEND_API_KEY configured – logging email to console");
     console.log(`  To:      ${options.to}`);
-    console.log(`  From:    ${options.from || DEFAULT_FROM}`);
+    console.log(`  From:    ${from}`);
     console.log(`  Subject: ${options.subject}`);
     console.log("  HTML:    (omitted – check server logs for full content)");
     console.log("──────────────────────────────────────────");
     return { success: true, id: "dev-console" };
   }
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), EMAIL_SEND_TIMEOUT_MS);
+
   try {
+    const sendOptions: ResendEmailSendOptions = {
+      signal: controller.signal,
+    };
     const { data, error } = await client.emails.send({
-      from: options.from || DEFAULT_FROM,
+      from,
       to: options.to,
       subject: options.subject,
       html: options.html,
-      ...(options.replyTo ? { replyTo: options.replyTo } : {}),
+      ...(replyTo ? { replyTo } : {}),
       ...(options.headers ? { headers: options.headers } : {}),
-    });
+    }, sendOptions);
 
     if (error) {
       console.error("[Email] Resend error:", error);
-      return { success: false, error: error.message };
+      return {
+        success: false,
+        error: controller.signal.aborted
+          ? emailSendTimeoutMessage()
+          : error.message,
+      };
     }
 
     return { success: true, id: data?.id };
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown email error";
+    const message = controller.signal.aborted
+      ? emailSendTimeoutMessage()
+      : err instanceof Error
+        ? err.message
+        : "Unknown email error";
     console.error("[Email] Exception:", message);
     return { success: false, error: message };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -146,7 +189,7 @@ export async function sendAppointmentReminder(data: {
   practiceName: string;
   practicePhone?: string;
   practiceAddress?: string;
-}): Promise<{ success: boolean }> {
+}): Promise<{ success: boolean; id?: string; error?: string }> {
   const body = `
     <p style="margin:0 0 16px;color:#111827;font-size:15px;line-height:1.6;">Hi ${data.clientName},</p>
     <p style="margin:0 0 24px;color:#111827;font-size:15px;line-height:1.6;">This is a friendly reminder about an upcoming appointment for <strong>${data.patientName}</strong>.</p>
@@ -178,7 +221,7 @@ export async function sendAppointmentReminder(data: {
     html,
   });
 
-  return { success: result.success };
+  return { success: result.success, id: result.id, error: result.error };
 }
 
 // ---------------------------------------------------------------------------
@@ -193,7 +236,7 @@ export async function sendVaccinationReminder(data: {
   dueDate: string;
   practiceName: string;
   practicePhone?: string;
-}): Promise<{ success: boolean }> {
+}): Promise<{ success: boolean; id?: string; error?: string }> {
   const body = `
     <p style="margin:0 0 16px;color:#111827;font-size:15px;line-height:1.6;">Hi ${data.clientName},</p>
     <p style="margin:0 0 24px;color:#111827;font-size:15px;line-height:1.6;">It's time to schedule <strong>${data.patientName}</strong>'s <strong>${data.vaccineName}</strong> vaccination.</p>
@@ -225,7 +268,7 @@ export async function sendVaccinationReminder(data: {
     html,
   });
 
-  return { success: result.success };
+  return { success: result.success, id: result.id, error: result.error };
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +284,7 @@ export async function sendInvoiceEmail(data: {
   portalUrl?: string;
   practiceName: string;
   practicePhone?: string;
-}): Promise<{ success: boolean }> {
+}): Promise<{ success: boolean; id?: string; error?: string }> {
   const patientLine = data.patientName
     ? ` for <strong>${data.patientName}</strong>`
     : "";
@@ -280,7 +323,7 @@ export async function sendInvoiceEmail(data: {
     html,
   });
 
-  return { success: result.success };
+  return { success: result.success, id: result.id, error: result.error };
 }
 
 // ---------------------------------------------------------------------------
@@ -352,9 +395,6 @@ export async function sendStaffInviteEmail(data: {
 // Lifecycle emails (branded via @openpims/email — React Email)
 // ---------------------------------------------------------------------------
 
-const SUPPORT_ADDRESS =
-  process.env.EMAIL_SUPPORT_ADDRESS || "evan@openvpm.com";
-
 /** Welcome email sent when a practice signs up (hosted trial). */
 export async function sendWelcomeEmail(data: {
   to: string;
@@ -367,7 +407,7 @@ export async function sendWelcomeEmail(data: {
     practiceName: data.practiceName,
     trialDays: data.trialDays ?? 14,
   });
-  return sendEmail({ to: data.to, subject, html, replyTo: SUPPORT_ADDRESS });
+  return sendEmail({ to: data.to, subject, html, replyTo: brand.supportEmail });
 }
 
 /** Trial-ending nudge (T-7 / T-3 / T-1). Promotional → carries unsubscribe. */
@@ -386,7 +426,7 @@ export async function sendTrialEndingEmail(data: {
     practiceName: data.practiceName,
     daysLeft: data.daysLeft,
     trialEndDate: data.trialEndDate,
-    monthlyPrice: data.monthlyPrice ?? "$99",
+    monthlyPrice: data.monthlyPrice ?? "$79",
     billingUrl,
     unsubscribeUrl: billingUrl,
   });
@@ -394,7 +434,7 @@ export async function sendTrialEndingEmail(data: {
     to: data.to,
     subject,
     html,
-    replyTo: SUPPORT_ADDRESS,
+    replyTo: brand.supportEmail,
     headers: { "List-Unsubscribe": `<${billingUrl}>` },
   });
 }
@@ -415,7 +455,7 @@ export async function sendPaymentReceiptEmail(data: {
     periodLabel: data.periodLabel,
     invoiceUrl: data.invoiceUrl,
   });
-  return sendEmail({ to: data.to, subject, html, replyTo: SUPPORT_ADDRESS });
+  return sendEmail({ to: data.to, subject, html, replyTo: brand.supportEmail });
 }
 
 /** Dunning email sent on a failed subscription payment. */
@@ -435,5 +475,5 @@ export async function sendPaymentFailedEmail(data: {
     nextRetryDate: data.nextRetryDate,
     billingUrl,
   });
-  return sendEmail({ to: data.to, subject, html, replyTo: SUPPORT_ADDRESS });
+  return sendEmail({ to: data.to, subject, html, replyTo: brand.supportEmail });
 }

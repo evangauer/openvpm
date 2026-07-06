@@ -10,13 +10,25 @@ config({ path: "../../.env" });
 import postgres from "postgres";
 import { randomUUID } from "crypto";
 
-const ownerUrl = process.env.DATABASE_URL;
+function nonBlankEnv(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value ? value : undefined;
+}
+
+function appRoleUrl(ownerUrl: string): string {
+  const url = new URL(ownerUrl);
+  url.username = "openpims_app";
+  url.password = nonBlankEnv("OPENPIMS_APP_DB_PASSWORD") ?? "openpims_app";
+  return url.toString();
+}
+
+const ownerUrl = nonBlankEnv("DATABASE_URL");
 if (!ownerUrl) {
   console.error("DATABASE_URL not set");
   process.exit(1);
 }
-// Derive the restricted-role URL by swapping the credentials.
-const appUrl = ownerUrl.replace(/\/\/[^:]+:[^@]+@/, "//openpims_app:openpims_app@");
+// Derive the restricted-role URL by swapping in the app-role credentials.
+const appUrl = appRoleUrl(ownerUrl);
 
 const owner = postgres(ownerUrl, { max: 1 });
 const app = postgres(appUrl, { max: 1 });
@@ -24,6 +36,13 @@ const app = postgres(appUrl, { max: 1 });
 const aId = randomUUID();
 const bId = randomUUID();
 let failures = 0;
+
+async function appTransaction<T>(
+  fn: (tx: typeof app) => Promise<T>,
+): Promise<T> {
+  return app.begin((tx) => fn(tx as unknown as typeof app)) as Promise<T>;
+}
+
 function check(name: string, ok: boolean) {
   console.log(`  ${ok ? "✓" : "✗"} ${name}`);
   if (!ok) failures++;
@@ -36,14 +55,14 @@ try {
     (${aId}, 'Alice', 'A'), (${bId}, 'Bob', 'B')`;
 
   // Tenant A context sees only A's rows.
-  const aRows = await app.begin(async (tx) => {
+  const aRows = await appTransaction(async (tx) => {
     await tx`select set_config('app.current_practice_id', ${aId}, true)`;
     return tx`select practice_id from clients where practice_id in (${aId}, ${bId})`;
   });
   check("tenant A sees only A's clients", aRows.length === 1 && aRows[0]!.practice_id === aId);
 
   // Tenant B context sees only B's rows.
-  const bRows = await app.begin(async (tx) => {
+  const bRows = await appTransaction(async (tx) => {
     await tx`select set_config('app.current_practice_id', ${bId}, true)`;
     return tx`select practice_id from clients where practice_id in (${aId}, ${bId})`;
   });
@@ -52,7 +71,7 @@ try {
   // Cross-tenant WRITE is rejected by the WITH CHECK clause.
   let writeBlocked = false;
   try {
-    await app.begin(async (tx) => {
+    await appTransaction(async (tx) => {
       await tx`select set_config('app.current_practice_id', ${aId}, true)`;
       await tx`insert into clients (practice_id, first_name, last_name) values (${bId}, 'Evil', 'X')`;
     });
@@ -66,7 +85,7 @@ try {
   check("no tenant context → zero rows", noneRows.length === 0);
 
   // System bypass sees both (for cron / platform admin).
-  const allRows = await app.begin(async (tx) => {
+  const allRows = await appTransaction(async (tx) => {
     await tx`select set_config('app.rls_bypass', 'on', true)`;
     return tx`select practice_id from clients where practice_id in (${aId}, ${bId})`;
   });

@@ -1,13 +1,31 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, Trash2, ArrowLeft } from "lucide-react";
+import { useSession } from "next-auth/react";
+import { Plus, Trash2, ArrowLeft, Loader2, FileText } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { EmptyState } from "@/components/common/empty-state";
 import { toast } from "sonner";
+import { formatDateInputForTimeZone } from "@/lib/date-input";
 import { formatCurrency } from "@/lib/locale/format";
+import {
+  CLIENT_SEARCH_MAX_LENGTH,
+  isClientSearchInputValid,
+} from "@/lib/clients/policy";
+import {
+  BILLING_INVOICE_LINE_DESCRIPTION_MAX_LENGTH,
+  BILLING_INVOICE_LINE_QUANTITY_MAX,
+  BILLING_INVOICE_LINE_QUANTITY_MIN,
+  BILLING_INVOICE_MAX_ITEMS,
+  BILLING_UNIT_PRICE_MAX,
+  isBillingCurrencyAmountInputValid,
+  isBillingInvoiceLineQuantityValid,
+  isBillingInvoiceLineTotalValid,
+  isBillingInvoiceSubtotalValid,
+} from "@/lib/billing/policy";
 
 interface LineItem {
   id: string;
@@ -18,13 +36,92 @@ interface LineItem {
   itemId?: string;
 }
 
-function defaultDueDate(): string {
-  const d = new Date();
-  d.setDate(d.getDate() + 30);
-  return d.toISOString().split("T")[0];
+function canManageBillingRole(role?: string | null): boolean {
+  return role === "admin" || role === "front_desk";
+}
+
+function InlineQueryMessage({
+  kind,
+  children,
+}: {
+  kind: "error" | "loading" | "muted";
+  children: ReactNode;
+}) {
+  return (
+    <div
+      className={
+        kind === "error"
+          ? "rounded-md border border-destructive bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          : "flex items-center gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground"
+      }
+    >
+      {kind === "loading" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+      {children}
+    </div>
+  );
+}
+
+function addDateInputDays(dateInput: string, days: number): string {
+  const [year, month, day] = dateInput.split("-").map(Number) as [
+    number,
+    number,
+    number,
+  ];
+  const date = new Date(Date.UTC(year, month - 1, day + days));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(
+    2,
+    "0"
+  )}-${String(date.getUTCDate()).padStart(2, "0")}`;
+}
+
+function defaultDueDate(timeZone?: string | null): string {
+  const today = formatDateInputForTimeZone(new Date(), timeZone);
+  return addDateInputDays(today, 30);
 }
 
 export default function NewInvoicePage() {
+  const router = useRouter();
+  const { data: session, status } = useSession();
+
+  if (status === "loading") {
+    return (
+      <div className="mx-auto max-w-3xl">
+        <InlineQueryMessage kind="loading">
+          Checking billing access...
+        </InlineQueryMessage>
+      </div>
+    );
+  }
+
+  if (!canManageBillingRole(session?.user?.role)) {
+    return (
+      <div className="mx-auto max-w-3xl">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="mb-4"
+          onClick={() => router.push("/billing")}
+        >
+          <ArrowLeft className="mr-1 h-4 w-4" />
+          Back to Billing
+        </Button>
+        <EmptyState
+          icon={FileText}
+          title="Billing actions are read-only"
+          description="Only admins and front desk staff can create invoices or estimates."
+          action={{
+            label: "Back to Billing",
+            onClick: () => router.push("/billing"),
+          }}
+        />
+      </div>
+    );
+  }
+
+  return <NewInvoiceForm />;
+}
+
+function NewInvoiceForm() {
   const router = useRouter();
 
   // Client search
@@ -49,21 +146,59 @@ export default function NewInvoicePage() {
   const [isEstimate, setIsEstimate] = useState(false);
 
   // Due date
-  const [dueDate, setDueDate] = useState(defaultDueDate());
+  const [dueDate, setDueDate] = useState("");
+  const [dueDateTouched, setDueDateTouched] = useState(false);
+  const trimmedClientSearch = clientSearch.trim();
+  const canSearchClients = isClientSearchInputValid(clientSearch);
 
   // Queries
   const clientResults = trpc.clients.search.useQuery(
-    { query: clientSearch },
-    { enabled: clientSearch.length >= 1 }
+    { query: trimmedClientSearch },
+    { enabled: canSearchClients }
   );
+  const clientResultsMissing =
+    canSearchClients &&
+    !selectedClient &&
+    !clientResults.isLoading &&
+    !clientResults.error &&
+    !clientResults.data;
+  const clientOptions =
+    clientResults.data && !clientResults.error && !clientResultsMissing
+      ? clientResults.data
+      : [];
 
   const patientResults = trpc.billing.patientsByClient.useQuery(
     { clientId: selectedClient?.id ?? "" },
     { enabled: !!selectedClient }
   );
+  const patientResultsMissing =
+    Boolean(selectedClient) &&
+    !patientResults.isLoading &&
+    !patientResults.error &&
+    !patientResults.data;
+  const patientOptions =
+    patientResults.data && !patientResults.error && !patientResultsMissing
+      ? patientResults.data
+      : [];
 
   const servicesQuery = trpc.billing.listServices.useQuery();
+  const servicesMissing =
+    !servicesQuery.isLoading && !servicesQuery.error && !servicesQuery.data;
+  const serviceOptions =
+    servicesQuery.data && !servicesQuery.error && !servicesMissing
+      ? servicesQuery.data
+      : [];
   const taxConfigQuery = trpc.billing.getTaxConfig.useQuery();
+  const taxConfig = taxConfigQuery.data;
+  const taxConfigMissing =
+    !taxConfigQuery.isLoading && !taxConfigQuery.error && !taxConfig;
+  const taxConfigReady = taxConfig !== undefined && !taxConfigQuery.error;
+
+  useEffect(() => {
+    if (!dueDateTouched && taxConfigReady && taxConfig) {
+      setDueDate(defaultDueDate(taxConfig.timezone));
+    }
+  }, [dueDateTouched, taxConfig, taxConfigReady]);
 
   // Mutation
   const utils = trpc.useUtils();
@@ -80,10 +215,11 @@ export default function NewInvoicePage() {
 
   // Calculations — preview only; the server recomputes tax authoritatively
   // from the practice's configured (region-aware) rate.
-  const taxPercent = taxConfigQuery.data?.taxRatePercent ?? "8.00";
+  const taxPercent =
+    taxConfigReady && taxConfig ? taxConfig.taxRatePercent : "0.00";
   const taxRate = parseFloat(taxPercent) / 100;
-  const currency = taxConfigQuery.data?.currency ?? "usd";
-  const country = taxConfigQuery.data?.country ?? "US";
+  const currency = taxConfigReady && taxConfig ? taxConfig.currency : "usd";
+  const country = taxConfigReady && taxConfig ? taxConfig.country : "US";
   const fmt = (v: number | string | null | undefined) =>
     formatCurrency(v, currency, country);
   const { subtotal, tax, total } = useMemo(() => {
@@ -98,10 +234,31 @@ export default function NewInvoicePage() {
       total: Math.round((sub + t) * 100) / 100,
     };
   }, [items, taxRate]);
+  const trimmedItemDescription = itemDescription.trim();
+  const isDraftLineItemValid =
+    trimmedItemDescription.length > 0 &&
+    trimmedItemDescription.length <=
+      BILLING_INVOICE_LINE_DESCRIPTION_MAX_LENGTH &&
+    isBillingInvoiceLineQuantityValid(itemQuantity) &&
+    isBillingCurrencyAmountInputValid(itemUnitPrice) &&
+    isBillingInvoiceLineTotalValid(itemUnitPrice, itemQuantity);
+  const canAddItem =
+    isDraftLineItemValid &&
+    items.length < BILLING_INVOICE_MAX_ITEMS &&
+    !servicesQuery.isLoading &&
+    !servicesQuery.error &&
+    !servicesMissing;
+  const canSubmitInvoice =
+    Boolean(selectedClient) &&
+    dueDate.trim().length > 0 &&
+    items.length > 0 &&
+    items.length <= BILLING_INVOICE_MAX_ITEMS &&
+    isBillingInvoiceSubtotalValid(items) &&
+    !createInvoice.isPending;
 
   function handleServiceSelect(serviceId: string) {
     setSelectedServiceId(serviceId);
-    const service = servicesQuery.data?.find((s) => s.id === serviceId);
+    const service = serviceOptions.find((s) => s.id === serviceId);
     if (service) {
       setItemDescription(service.name);
       setItemUnitPrice(service.defaultPrice);
@@ -109,17 +266,15 @@ export default function NewInvoicePage() {
   }
 
   function handleAddItem() {
-    if (!itemDescription || !itemUnitPrice) return;
-    const service = servicesQuery.data?.find(
-      (s) => s.id === selectedServiceId
-    );
+    if (!canAddItem) return;
+    const service = serviceOptions.find((s) => s.id === selectedServiceId);
     setItems((prev) => [
       ...prev,
       {
         id: crypto.randomUUID(),
-        description: itemDescription,
+        description: trimmedItemDescription,
         quantity: itemQuantity,
-        unitPrice: itemUnitPrice,
+        unitPrice: itemUnitPrice.trim(),
         itemType: "service",
         itemId: service?.id,
       },
@@ -140,9 +295,9 @@ export default function NewInvoicePage() {
       clientId: selectedClient.id,
       patientId: selectedPatientId || undefined,
       items: items.map((item) => ({
-        description: item.description,
+        description: item.description.trim(),
         quantity: item.quantity,
-        unitPrice: item.unitPrice,
+        unitPrice: item.unitPrice.trim(),
         itemType: item.itemType,
         itemId: item.itemId,
       })),
@@ -211,16 +366,31 @@ export default function NewInvoicePage() {
               <Input
                 placeholder="Search clients..."
                 value={clientSearch}
+                maxLength={CLIENT_SEARCH_MAX_LENGTH}
                 onChange={(e) => setClientSearch(e.target.value)}
               />
-              {clientSearch.length >= 1 && clientResults.data && (
+              {canSearchClients &&
+                (clientResults.isLoading ||
+                  clientResults.error ||
+                  clientResultsMissing ||
+                  clientResults.data) && (
                 <div className="absolute z-10 mt-1 w-full rounded-md border border-border bg-background shadow-lg">
-                  {clientResults.data.length === 0 ? (
+                  {clientResults.error || clientResultsMissing ? (
+                    <div className="px-4 py-3 text-sm text-destructive">
+                      {clientResults.error?.message ??
+                        "Unable to search clients. Please retry."}
+                    </div>
+                  ) : clientResults.isLoading ? (
+                    <div className="flex items-center gap-2 px-4 py-3 text-sm text-muted-foreground">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      Searching clients...
+                    </div>
+                  ) : clientOptions.length === 0 ? (
                     <div className="px-4 py-3 text-sm text-muted-foreground">
                       No clients found
                     </div>
                   ) : (
-                    clientResults.data.map((client) => (
+                    clientOptions.map((client) => (
                       <button
                         key={client.id}
                         type="button"
@@ -263,12 +433,25 @@ export default function NewInvoicePage() {
               onChange={(e) => setSelectedPatientId(e.target.value)}
             >
               <option value="">-- No patient --</option>
-              {patientResults.data?.map((patient) => (
+              {patientOptions.map((patient) => (
                 <option key={patient.id} value={patient.id}>
                   {patient.name} ({patient.species})
                 </option>
               ))}
             </select>
+            {patientResults.error || patientResultsMissing ? (
+              <InlineQueryMessage kind="error">
+                {patientResults.error
+                  ? `Unable to load client patients. ${patientResults.error.message}`
+                  : "Unable to load client patients. Please retry."}
+              </InlineQueryMessage>
+            ) : patientResults.isLoading ? (
+              <div className="mt-2">
+                <InlineQueryMessage kind="loading">
+                  Loading client patients...
+                </InlineQueryMessage>
+              </div>
+            ) : null}
           </div>
         )}
 
@@ -276,15 +459,31 @@ export default function NewInvoicePage() {
         <div>
           <label className="block text-sm font-medium mb-1">Line Items</label>
           <div className="rounded-lg border border-border p-4 space-y-3">
+            {servicesQuery.error || servicesMissing ? (
+              <InlineQueryMessage kind="error">
+                {servicesQuery.error
+                  ? `Unable to load billing services. ${servicesQuery.error.message}`
+                  : "Unable to load billing services. Please retry."}
+              </InlineQueryMessage>
+            ) : servicesQuery.isLoading ? (
+              <InlineQueryMessage kind="loading">
+                Loading billing services...
+              </InlineQueryMessage>
+            ) : null}
             <div className="grid grid-cols-12 gap-2">
               <div className="col-span-4">
                 <select
                   className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                   value={selectedServiceId}
                   onChange={(e) => handleServiceSelect(e.target.value)}
+                  disabled={
+                    servicesQuery.isLoading ||
+                    !!servicesQuery.error ||
+                    servicesMissing
+                  }
                 >
                   <option value="">Select a service...</option>
-                  {servicesQuery.data?.map((service) => (
+                  {serviceOptions.map((service) => (
                     <option key={service.id} value={service.id}>
                       {service.name} - ${service.defaultPrice}
                     </option>
@@ -295,13 +494,16 @@ export default function NewInvoicePage() {
                 <Input
                   placeholder="Description"
                   value={itemDescription}
+                  maxLength={BILLING_INVOICE_LINE_DESCRIPTION_MAX_LENGTH}
                   onChange={(e) => setItemDescription(e.target.value)}
                 />
               </div>
               <div className="col-span-1">
                 <Input
                   type="number"
-                  min={1}
+                  min={BILLING_INVOICE_LINE_QUANTITY_MIN}
+                  max={BILLING_INVOICE_LINE_QUANTITY_MAX}
+                  step={1}
                   placeholder="Qty"
                   value={itemQuantity}
                   onChange={(e) =>
@@ -313,7 +515,8 @@ export default function NewInvoicePage() {
                 <Input
                   type="number"
                   step="0.01"
-                  min="0"
+                  min={0}
+                  max={BILLING_UNIT_PRICE_MAX}
                   placeholder="Unit Price"
                   value={itemUnitPrice}
                   onChange={(e) => setItemUnitPrice(e.target.value)}
@@ -325,7 +528,7 @@ export default function NewInvoicePage() {
                   variant="outline"
                   className="w-full"
                   onClick={handleAddItem}
-                  disabled={!itemDescription || !itemUnitPrice}
+                  disabled={!canAddItem}
                 >
                   <Plus className="mr-1 h-4 w-4" />
                   Add
@@ -335,53 +538,55 @@ export default function NewInvoicePage() {
 
             {/* Item list */}
             {items.length > 0 && (
-              <table className="w-full text-sm mt-3">
-                <thead>
-                  <tr className="border-b border-border">
-                    <th className="py-2 text-left font-medium text-muted-foreground">
-                      Description
-                    </th>
-                    <th className="py-2 text-right font-medium text-muted-foreground">
-                      Qty
-                    </th>
-                    <th className="py-2 text-right font-medium text-muted-foreground">
-                      Unit Price
-                    </th>
-                    <th className="py-2 text-right font-medium text-muted-foreground">
-                      Total
-                    </th>
-                    <th className="py-2 w-10" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {items.map((item) => (
-                    <tr
-                      key={item.id}
-                      className="border-b border-border/50 last:border-0"
-                    >
-                      <td className="py-2">{item.description}</td>
-                      <td className="py-2 text-right tabular-nums">
-                        {item.quantity}
-                      </td>
-                      <td className="py-2 text-right tabular-nums">
-                        {fmt(item.unitPrice)}
-                      </td>
-                      <td className="py-2 text-right tabular-nums">
-                        {fmt(item.quantity * parseFloat(item.unitPrice))}
-                      </td>
-                      <td className="py-2 text-right">
-                        <button
-                          type="button"
-                          className="text-muted-foreground hover:text-destructive transition-colors"
-                          onClick={() => handleRemoveItem(item.id)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      </td>
+              <div className="mt-3 overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border">
+                      <th className="py-2 text-left font-medium text-muted-foreground">
+                        Description
+                      </th>
+                      <th className="py-2 text-right font-medium text-muted-foreground">
+                        Qty
+                      </th>
+                      <th className="py-2 text-right font-medium text-muted-foreground">
+                        Unit Price
+                      </th>
+                      <th className="py-2 text-right font-medium text-muted-foreground">
+                        Total
+                      </th>
+                      <th className="py-2 w-10" />
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {items.map((item) => (
+                      <tr
+                        key={item.id}
+                        className="border-b border-border/50 last:border-0"
+                      >
+                        <td className="py-2">{item.description}</td>
+                        <td className="py-2 text-right tabular-nums">
+                          {item.quantity}
+                        </td>
+                        <td className="py-2 text-right tabular-nums">
+                          {fmt(item.unitPrice)}
+                        </td>
+                        <td className="py-2 text-right tabular-nums">
+                          {fmt(item.quantity * parseFloat(item.unitPrice))}
+                        </td>
+                        <td className="py-2 text-right">
+                          <button
+                            type="button"
+                            className="text-muted-foreground hover:text-destructive transition-colors"
+                            onClick={() => handleRemoveItem(item.id)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         </div>
@@ -389,6 +594,20 @@ export default function NewInvoicePage() {
         {/* Totals */}
         {items.length > 0 && (
           <div className="rounded-lg border border-border p-4 space-y-1 text-sm">
+            {taxConfigQuery.error || taxConfigMissing ? (
+              <div className="mb-3">
+                <InlineQueryMessage kind="error">
+                  Unable to load practice tax settings. Preview totals omit tax
+                  until settings load.
+                </InlineQueryMessage>
+              </div>
+            ) : taxConfigQuery.isLoading ? (
+              <div className="mb-3">
+                <InlineQueryMessage kind="loading">
+                  Loading practice tax settings...
+                </InlineQueryMessage>
+              </div>
+            ) : null}
             <div className="flex justify-between">
               <span className="text-muted-foreground">Subtotal</span>
               <span className="tabular-nums">{fmt(subtotal)}</span>
@@ -410,8 +629,21 @@ export default function NewInvoicePage() {
           <Input
             type="date"
             value={dueDate}
-            onChange={(e) => setDueDate(e.target.value)}
+            onChange={(e) => {
+              setDueDateTouched(true);
+              setDueDate(e.target.value);
+            }}
           />
+          {!dueDate && taxConfigQuery.isLoading ? (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Loading practice date settings...
+            </p>
+          ) : null}
+          {!dueDate && (taxConfigQuery.error || taxConfigMissing) ? (
+            <p className="mt-1 text-xs text-destructive">
+              Choose a due date manually. Practice settings could not load.
+            </p>
+          ) : null}
         </div>
 
         {/* Actions */}
@@ -419,9 +651,7 @@ export default function NewInvoicePage() {
           <Button
             onClick={handleSubmit}
             disabled={
-              !selectedClient ||
-              items.length === 0 ||
-              createInvoice.isPending
+              !canSubmitInvoice
             }
           >
             {createInvoice.isPending

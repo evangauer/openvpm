@@ -13,6 +13,7 @@
     "db:seed": "pnpm --filter @openpims/db db:seed",
     "db:reset": "pnpm --filter @openpims/db db:reset",
     "db:rls": "pnpm --filter @openpims/db db:rls",
+    "db:rls:test": "pnpm --filter @openpims/db db:rls:test",
     "db:studio": "pnpm --filter @openpims/db db:studio",
     "clean": "turbo clean",
     "test:e2e": "playwright test",

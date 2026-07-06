@@ -4,10 +4,19 @@ import {
   ApiClientSchema,
   ApiPatientSchema,
   ApiAppointmentSchema,
+  ApiSoapNoteSchema,
   AppointmentCreateSchema,
+  SoapNoteCreateSchema,
+  APPOINTMENT_NOTES_MAX_LENGTH,
+  TIMEZONE_QUALIFIED_TIMESTAMP_MESSAGE,
 } from "../schema";
-import { toApiClient, toApiPatient, toApiAppointment } from "../mappers";
-import { clientRow, patientRow, appointmentRow } from "./fixtures";
+import {
+  toApiClient,
+  toApiPatient,
+  toApiAppointment,
+  toApiSoapNote,
+} from "../mappers";
+import { clientRow, patientRow, appointmentRow, soapNoteRow } from "./fixtures";
 
 type PatientRow = typeof patients.$inferSelect;
 
@@ -46,6 +55,12 @@ describe("mapper output satisfies the public contract", () => {
   it("toApiAppointment -> ApiAppointmentSchema", () => {
     expect(() => ApiAppointmentSchema.parse(toApiAppointment(appointmentRow()))).not.toThrow();
   });
+
+  it("toApiSoapNote -> ApiSoapNoteSchema", () => {
+    expect(() =>
+      ApiSoapNoteSchema.parse(toApiSoapNote(soapNoteRow(), "scribenote"))
+    ).not.toThrow();
+  });
 });
 
 describe("AppointmentCreateSchema validation", () => {
@@ -73,11 +88,70 @@ describe("AppointmentCreateSchema validation", () => {
     expect(r.success).toBe(false);
   });
 
+  it("rejects appointment timestamps without timezone offsets", () => {
+    const r = AppointmentCreateSchema.safeParse({
+      start_time: "2026-03-01T09:00:00",
+      end_time: "2026-03-01T09:30:00",
+    });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.flatten().fieldErrors).toMatchObject({
+        start_time: [TIMEZONE_QUALIFIED_TIMESTAMP_MESSAGE],
+        end_time: [TIMEZONE_QUALIFIED_TIMESTAMP_MESSAGE],
+      });
+    }
+  });
+
+  it("rejects impossible appointment calendar dates", () => {
+    const r = AppointmentCreateSchema.safeParse({
+      start_time: "2026-02-31T09:00:00.000Z",
+      end_time: "2026-02-31T09:30:00.000Z",
+    });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.flatten().fieldErrors).toMatchObject({
+        start_time: [TIMEZONE_QUALIFIED_TIMESTAMP_MESSAGE],
+        end_time: [TIMEZONE_QUALIFIED_TIMESTAMP_MESSAGE],
+      });
+    }
+  });
+
   it("rejects a non-uuid client_id", () => {
     const r = AppointmentCreateSchema.safeParse({
       start_time: "2026-03-01T09:00:00.000Z",
       end_time: "2026-03-01T09:30:00.000Z",
       client_id: "not-a-uuid",
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects oversized notes", () => {
+    const r = AppointmentCreateSchema.safeParse({
+      start_time: "2026-03-01T09:00:00.000Z",
+      end_time: "2026-03-01T09:30:00.000Z",
+      notes: "x".repeat(APPOINTMENT_NOTES_MAX_LENGTH + 1),
+    });
+    expect(r.success).toBe(false);
+  });
+});
+
+describe("SoapNoteCreateSchema validation", () => {
+  it("accepts a valid AI scribe body", () => {
+    const r = SoapNoteCreateSchema.safeParse({
+      patient_id: "22222222-2222-2222-2222-222222222222",
+      appointment_id: "33333333-3333-3333-3333-333333333333",
+      subjective: "Eating well",
+      source: "scribenote",
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it("rejects non-uuid clinical references", () => {
+    const r = SoapNoteCreateSchema.safeParse({
+      patient_id: "not-a-uuid",
+      author_id: "55555555-5555-5555-5555-555555555555",
+      subjective: "Eating well",
+      source: "scribenote",
     });
     expect(r.success).toBe(false);
   });

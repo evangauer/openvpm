@@ -6,11 +6,13 @@
 export interface ParsedCsv {
   headers: string[];
   rows: Record<string, string>[];
+  errors: string[];
 }
 
 export function parseCsv(text: string): ParsedCsv {
   const s = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const records: string[][] = [];
+  const errors: string[] = [];
   let field = "";
   let row: string[] = [];
   let inQuotes = false;
@@ -55,6 +57,13 @@ export function parseCsv(text: string): ParsedCsv {
     field += c;
     i++;
   }
+  if (inQuotes) {
+    return {
+      headers: [],
+      rows: [],
+      errors: ["CSV has an unterminated quoted field."],
+    };
+  }
   if (field.length > 0 || row.length > 0) {
     row.push(field);
     records.push(row);
@@ -64,7 +73,7 @@ export function parseCsv(text: string): ParsedCsv {
   const nonEmpty = records.filter(
     (r) => !(r.length === 1 && r[0].trim() === "")
   );
-  if (nonEmpty.length === 0) return { headers: [], rows: [] };
+  if (nonEmpty.length === 0) return { headers: [], rows: [], errors };
 
   const headers = nonEmpty[0]!.map((h) => h.trim());
   const rows = nonEmpty.slice(1).map((r) => {
@@ -75,7 +84,7 @@ export function parseCsv(text: string): ParsedCsv {
     return obj;
   });
 
-  return { headers, rows };
+  return { headers, rows, errors };
 }
 
 /** Normalize a header to a comparison key: lowercase, alphanumerics only. */

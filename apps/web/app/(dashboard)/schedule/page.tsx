@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
+import { useSession } from "next-auth/react";
 import {
   ChevronLeft,
   ChevronRight,
@@ -12,12 +13,44 @@ import {
   Loader2,
   Plus,
   Mail,
+  Repeat2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { EmptyState } from "@/components/common/empty-state";
 import { cn } from "@/lib/utils";
+import { dateInputTimeUtcInstant } from "@/lib/date-input";
+import {
+  addCalendarDays,
+  addCalendarMonths,
+  buildMonthGrid,
+  buildWeekDays,
+  groupByCalendarDate,
+  startOfCalendarDay,
+  toISODate,
+  type CalendarDay,
+  type CalendarView,
+} from "@/lib/scheduling/calendar-views";
+import {
+  APPOINTMENT_DURATION_MAX_MINUTES,
+  APPOINTMENT_DURATION_MIN_MINUTES,
+  APPOINTMENT_DURATION_STEP_MINUTES,
+  APPOINTMENT_NOTES_MAX_LENGTH,
+  APPOINTMENT_PATIENT_SEARCH_MAX_LENGTH,
+  APPOINTMENT_RECURRENCE_INTERVAL_MAX,
+  APPOINTMENT_RECURRENCE_INTERVAL_MIN,
+  APPOINTMENT_RECURRENCE_OCCURRENCES_MAX,
+  APPOINTMENT_RECURRENCE_OCCURRENCES_MIN,
+  isAppointmentDateInputValid,
+  isAppointmentDurationInputValid,
+  isAppointmentNotesInputValid,
+  isAppointmentPatientSearchInputValid,
+  isAppointmentRecurrenceIntervalInputValid,
+  isAppointmentRecurrenceOccurrencesInputValid,
+} from "@/lib/scheduling/appointment-policy";
 
 // --- Constants ---
 
@@ -25,6 +58,8 @@ const START_HOUR = 8;
 const END_HOUR = 18;
 const HOUR_HEIGHT = 60; // px per hour
 const TOTAL_HOURS = END_HOUR - START_HOUR;
+const CALENDAR_HEIGHT = TOTAL_HOURS * HOUR_HEIGHT;
+const DEFAULT_APPOINTMENT_COLOR = "#0d9488";
 
 type AppointmentStatus =
   | "scheduled"
@@ -34,6 +69,8 @@ type AppointmentStatus =
   | "checked_out"
   | "no_show"
   | "cancelled";
+
+type RecurrenceFrequency = "weekly" | "monthly" | "annual";
 
 const STATUS_COLORS: Record<AppointmentStatus, string> = {
   scheduled: "bg-blue-500",
@@ -55,6 +92,23 @@ const STATUS_LABELS: Record<AppointmentStatus, string> = {
   cancelled: "Cancelled",
 };
 
+function canCreateAppointmentsRole(role?: string | null): boolean {
+  return role === "admin" || role === "veterinarian" || role === "front_desk";
+}
+
+function canUpdateAppointmentStatusRole(role?: string | null): boolean {
+  return (
+    role === "admin" ||
+    role === "veterinarian" ||
+    role === "technician" ||
+    role === "front_desk"
+  );
+}
+
+function canSendAppointmentRemindersRole(role?: string | null): boolean {
+  return role === "admin" || role === "front_desk";
+}
+
 // --- Helpers ---
 
 function formatDate(date: Date): string {
@@ -66,48 +120,137 @@ function formatDate(date: Date): string {
   });
 }
 
-function formatTime(date: Date): string {
+function formatTime(date: Date, timeZone?: string | null): string {
   return date.toLocaleTimeString("en-US", {
     hour: "numeric",
     minute: "2-digit",
     hour12: true,
+    timeZone: timeZone ?? undefined,
   });
 }
 
-function toISODate(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
+function getZonedHourMinute(
+  date: Date,
+  timeZone?: string | null
+): { hour: number; minute: number } {
+  if (!timeZone) return { hour: date.getHours(), minute: date.getMinutes() };
+
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hourCycle: "h23",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).formatToParts(date);
+    const hour = Number(parts.find((part) => part.type === "hour")?.value);
+    const minute = Number(parts.find((part) => part.type === "minute")?.value);
+    if (Number.isFinite(hour) && Number.isFinite(minute)) {
+      return { hour, minute };
+    }
+  } catch {
+    // Fall back to browser-local positioning if the saved timezone is invalid.
+  }
+
+  return { hour: date.getHours(), minute: date.getMinutes() };
 }
 
-function addDays(date: Date, days: number): Date {
-  const d = new Date(date);
-  d.setDate(d.getDate() + days);
-  return d;
+function formatTimeInput(date: Date, timeZone?: string | null): string {
+  const { hour, minute } = getZonedHourMinute(date, timeZone);
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
-function startOfDay(date: Date): Date {
-  const d = new Date(date);
-  d.setHours(0, 0, 0, 0);
-  return d;
+function appointmentDurationMinutes(start: Date, end: Date): number {
+  const minutes = Math.round((end.getTime() - start.getTime()) / 60000);
+  return isAppointmentDurationInputValid(minutes) ? minutes : 30;
 }
 
-function endOfDay(date: Date): Date {
-  const d = new Date(date);
-  d.setHours(23, 59, 59, 999);
-  return d;
-}
-
-function getTopOffset(time: Date): number {
-  const hours = time.getHours() + time.getMinutes() / 60;
+function getTopOffset(time: Date, timeZone?: string | null): number {
+  const { hour, minute } = getZonedHourMinute(time, timeZone);
+  const hours = hour + minute / 60;
   return (hours - START_HOUR) * HOUR_HEIGHT;
 }
 
-function getBlockHeight(start: Date, end: Date): number {
-  const diffMs = end.getTime() - start.getTime();
-  const diffHours = diffMs / (1000 * 60 * 60);
-  return Math.max(diffHours * HOUR_HEIGHT, 20); // min 20px
+function getAppointmentLayout(
+  start: Date,
+  end: Date,
+  timeZone?: string | null
+): {
+  top: number;
+  height: number;
+} {
+  const rawTop = getTopOffset(start, timeZone);
+  const rawBottom = getTopOffset(end, timeZone);
+  const top = Math.min(Math.max(rawTop, 0), CALENDAR_HEIGHT - 20);
+  const bottom = Math.min(Math.max(rawBottom, top + 20), CALENDAR_HEIGHT);
+  return { top, height: bottom - top };
+}
+
+function getAppointmentColor(appointment: Appointment): string {
+  return appointment.typeColor || DEFAULT_APPOINTMENT_COLOR;
+}
+
+function sortAppointments(appointments: Appointment[]): Appointment[] {
+  return [...appointments].sort(
+    (a, b) =>
+      new Date(a.startTime).getTime() - new Date(b.startTime).getTime()
+  );
+}
+
+function formatToolbarDate(date: Date, view: CalendarView): string {
+  if (view === "month") {
+    return date.toLocaleDateString("en-US", {
+      month: "long",
+      year: "numeric",
+    });
+  }
+
+  if (view === "week") {
+    const days = buildWeekDays(date);
+    const start = days[0]!;
+    const end = days[6]!;
+    const sameMonth =
+      start.getMonth() === end.getMonth() &&
+      start.getFullYear() === end.getFullYear();
+
+    if (sameMonth) {
+      return `${start.toLocaleDateString("en-US", {
+        month: "short",
+      })} ${start.getDate()}-${end.getDate()}, ${end.getFullYear()}`;
+    }
+
+    return `${start.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+    })} - ${end.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    })}`;
+  }
+
+  return formatDate(date);
+}
+
+function getSnappedTimeFromY(y: number): string {
+  const hoursFromTop = y / HOUR_HEIGHT;
+  const totalMinutes = Math.round((START_HOUR + hoursFromTop) * 60);
+  const snapped = Math.round(totalMinutes / 30) * 30;
+  const clamped = Math.min(
+    Math.max(snapped, START_HOUR * 60),
+    (END_HOUR - 0.5) * 60
+  );
+  const hour = Math.floor(clamped / 60);
+  const min = clamped % 60;
+  return `${String(hour).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+}
+
+function appointmentInstantFromDateAndTime(
+  date: string,
+  time: string,
+  timeZone?: string | null
+): Date {
+  const [hour = 0, minute = 0] = time.split(":").map(Number);
+  return dateInputTimeUtcInstant(date, { hour, minute }, timeZone);
 }
 
 // --- Types for appointment from API ---
@@ -118,6 +261,7 @@ type Appointment = {
   endTime: Date | string;
   status: string;
   notes: string | null;
+  recurringSeriesId: string | null;
   patientName: string | null;
   patientSpecies: string | null;
   patientId: string | null;
@@ -201,18 +345,17 @@ function GridLines() {
 
 function AppointmentBlock({
   appointment,
+  timeZone,
   onClick,
 }: {
   appointment: Appointment;
+  timeZone?: string | null;
   onClick: () => void;
 }) {
   const start = new Date(appointment.startTime);
   const end = new Date(appointment.endTime);
-  const top = getTopOffset(start);
-  const height = getBlockHeight(start, end);
-
-  // Use the type color or a default
-  const bgColor = appointment.typeColor || "#3b82f6";
+  const { top, height } = getAppointmentLayout(start, end, timeZone);
+  const bgColor = getAppointmentColor(appointment);
 
   return (
     <button
@@ -233,27 +376,390 @@ function AppointmentBlock({
       {height >= 36 && (
         <div className="text-muted-foreground truncate mt-0.5">
           {appointment.typeName || "Appointment"} &middot;{" "}
-          {formatTime(start)} - {formatTime(end)}
+          {formatTime(start, timeZone)} - {formatTime(end, timeZone)}
         </div>
       )}
     </button>
   );
 }
 
-function AppointmentDetailPopover({
+function DayCalendar({
+  appointments,
+  timeZone,
+  showNowLine,
+  nowTop,
+  onSlotClick,
+  onAppointmentClick,
+}: {
+  appointments: Appointment[];
+  timeZone?: string | null;
+  showNowLine: boolean;
+  nowTop: number;
+  onSlotClick?: (y: number) => void;
+  onAppointmentClick: (appointment: Appointment) => void;
+}) {
+  return (
+    <div className="mt-4 overflow-hidden rounded-lg border border-border bg-card">
+      <div className="flex overflow-auto" style={{ maxHeight: "calc(100vh - 220px)" }}>
+        <TimeSlots />
+
+        <div
+          className={cn(
+            "relative flex-1 border-l border-border",
+            onSlotClick && "cursor-pointer"
+          )}
+          style={{ height: CALENDAR_HEIGHT }}
+          onClick={(e) => {
+            if (!onSlotClick) return;
+            if ((e.target as HTMLElement).closest("button")) return;
+            const rect = e.currentTarget.getBoundingClientRect();
+            onSlotClick(e.clientY - rect.top);
+          }}
+        >
+          <GridLines />
+
+          {showNowLine && (
+            <div
+              className="absolute left-0 right-0 z-10 flex items-center"
+              style={{ top: nowTop }}
+            >
+              <div className="h-2.5 w-2.5 rounded-full bg-red-500 -ml-1" />
+              <div className="flex-1 border-t-2 border-red-500" />
+            </div>
+          )}
+
+          {appointments.length > 0 ? (
+            appointments.map((appt) => (
+              <AppointmentBlock
+                key={appt.id}
+                appointment={appt}
+                timeZone={timeZone}
+                onClick={() => onAppointmentClick(appt)}
+              />
+            ))
+          ) : (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div className="text-center">
+                <Calendar className="mx-auto h-8 w-8 text-muted-foreground/40" />
+                <p className="mt-2 text-sm text-muted-foreground">
+                  No appointments for this day
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {appointments.length > 0 && (
+        <div className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
+          {appointments.length} appointment{appointments.length !== 1 ? "s" : ""}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WeekCalendar({
+  days,
+  appointmentsByDate,
+  timeZone,
+  todayKey,
+  showNowLine,
+  nowTop,
+  onSlotClick,
+  onAppointmentClick,
+}: {
+  days: Date[];
+  appointmentsByDate: Record<string, Appointment[]>;
+  timeZone?: string | null;
+  todayKey: string;
+  showNowLine: boolean;
+  nowTop: number;
+  onSlotClick?: (date: Date, y: number) => void;
+  onAppointmentClick: (appointment: Appointment) => void;
+}) {
+  return (
+    <div className="mt-4 overflow-hidden rounded-lg border border-border bg-card">
+      <div className="overflow-auto">
+        <div className="min-w-[920px]">
+          <div className="flex border-b border-border bg-muted/30">
+            <div className="w-16 shrink-0" />
+            <div className="grid flex-1 grid-cols-7">
+              {days.map((day) => {
+                const key = toISODate(day);
+                const dayAppointments = appointmentsByDate[key] ?? [];
+                const isToday = key === todayKey;
+
+                return (
+                  <div
+                    key={key}
+                    className={cn(
+                      "border-l border-border px-3 py-2",
+                      isToday && "bg-primary/5"
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-medium uppercase text-muted-foreground">
+                          {day.toLocaleDateString("en-US", { weekday: "short" })}
+                        </p>
+                        <p
+                          className={cn(
+                            "text-lg font-semibold",
+                            isToday && "text-primary"
+                          )}
+                        >
+                          {day.getDate()}
+                        </p>
+                      </div>
+                      <span className="rounded-full bg-background px-2 py-0.5 text-xs text-muted-foreground">
+                        {dayAppointments.length}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="flex overflow-auto" style={{ maxHeight: "calc(100vh - 270px)" }}>
+            <TimeSlots />
+            <div className="grid flex-1 grid-cols-7" style={{ height: CALENDAR_HEIGHT }}>
+              {days.map((day) => {
+                const key = toISODate(day);
+                const isToday = key === todayKey;
+                const dayAppointments = sortAppointments(appointmentsByDate[key] ?? []);
+
+                return (
+                  <div
+                    key={key}
+                    className={cn(
+                      "relative border-l border-border",
+                      onSlotClick && "cursor-pointer",
+                      isToday && "bg-primary/5"
+                    )}
+                    onClick={(e) => {
+                      if (!onSlotClick) return;
+                      if ((e.target as HTMLElement).closest("button")) return;
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      onSlotClick(day, e.clientY - rect.top);
+                    }}
+                  >
+                    <GridLines />
+                    {showNowLine && isToday && (
+                      <div
+                        className="absolute left-0 right-0 z-10 flex items-center"
+                        style={{ top: nowTop }}
+                      >
+                        <div className="h-2.5 w-2.5 rounded-full bg-red-500 -ml-1" />
+                        <div className="flex-1 border-t-2 border-red-500" />
+                      </div>
+                    )}
+                    {dayAppointments.map((appt) => (
+                      <AppointmentBlock
+                        key={appt.id}
+                        appointment={appt}
+                        timeZone={timeZone}
+                        onClick={() => onAppointmentClick(appt)}
+                      />
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AppointmentChip({
   appointment,
-  onClose,
-  onStatusChange,
-  isUpdating,
+  timeZone,
+  onClick,
 }: {
   appointment: Appointment;
+  timeZone?: string | null;
+  onClick: () => void;
+}) {
+  const start = new Date(appointment.startTime);
+  const color = getAppointmentColor(appointment);
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex min-h-6 w-full items-center gap-1.5 rounded-md border px-2 py-1 text-left text-[11px] leading-tight transition-opacity hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
+      style={{
+        backgroundColor: `${color}18`,
+        borderColor: `${color}55`,
+      }}
+    >
+      <span
+        className="h-1.5 w-1.5 shrink-0 rounded-full"
+        style={{ backgroundColor: color }}
+      />
+      <span className="min-w-0 flex-1 truncate">
+        {formatTime(start, timeZone)} {appointment.patientName || "Unknown"}
+      </span>
+    </button>
+  );
+}
+
+function MonthCalendar({
+  days,
+  appointmentsByDate,
+  currentDate,
+  timeZone,
+  todayKey,
+  canCreateAppointments,
+  onCreateClick,
+  onDayOpen,
+  onAppointmentClick,
+}: {
+  days: CalendarDay[];
+  appointmentsByDate: Record<string, Appointment[]>;
+  currentDate: Date;
+  timeZone?: string | null;
+  todayKey: string;
+  canCreateAppointments: boolean;
+  onCreateClick: (date: Date) => void;
+  onDayOpen: (date: Date) => void;
+  onAppointmentClick: (appointment: Appointment) => void;
+}) {
+  const weekLabels = buildWeekDays(currentDate).map((day) =>
+    day.toLocaleDateString("en-US", { weekday: "short" })
+  );
+
+  return (
+    <div className="mt-4 overflow-hidden rounded-lg border border-border bg-card">
+      <div className="grid grid-cols-7 border-b border-border bg-muted/30">
+        {weekLabels.map((label) => (
+          <div
+            key={label}
+            className="border-l border-border px-3 py-2 first:border-l-0"
+          >
+            <p className="text-xs font-medium uppercase text-muted-foreground">
+              {label}
+            </p>
+          </div>
+        ))}
+      </div>
+      <div className="grid grid-cols-7">
+        {days.map((day) => {
+          const appointments = sortAppointments(
+            appointmentsByDate[day.dateKey] ?? []
+          );
+          const isToday = day.dateKey === todayKey;
+          const visibleAppointments = appointments.slice(0, 3);
+          const hiddenCount = appointments.length - visibleAppointments.length;
+
+          return (
+            <div
+              key={day.dateKey}
+              className={cn(
+                "min-h-[8.5rem] border-l border-t border-border p-2 first:border-l-0",
+                !day.isCurrentMonth && "bg-muted/20 text-muted-foreground",
+                isToday && "bg-primary/5"
+              )}
+            >
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  className={cn(
+                    "h-7 min-w-7 rounded-md px-2 text-sm font-medium hover:bg-muted focus:outline-none focus:ring-2 focus:ring-ring",
+                    isToday && "bg-primary text-primary-foreground hover:bg-primary/90"
+                  )}
+                  onClick={() => onDayOpen(day.date)}
+                >
+                  {day.date.getDate()}
+                </button>
+                {canCreateAppointments && (
+                  <button
+                    type="button"
+                    className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    onClick={() => onCreateClick(day.date)}
+                    aria-label={`Create appointment on ${day.date.toLocaleDateString(
+                      "en-US"
+                    )}`}
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+
+              <div className="space-y-1">
+                {visibleAppointments.map((appt) => (
+                  <AppointmentChip
+                    key={appt.id}
+                    appointment={appt}
+                    timeZone={timeZone}
+                    onClick={() => onAppointmentClick(appt)}
+                  />
+                ))}
+                {hiddenCount > 0 && (
+                  <button
+                    type="button"
+                    className="w-full rounded-md px-2 py-1 text-left text-[11px] font-medium text-muted-foreground hover:bg-muted focus:outline-none focus:ring-2 focus:ring-ring"
+                    onClick={() => onDayOpen(day.date)}
+                  >
+                    +{hiddenCount} more
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function AppointmentDetailPopover({
+  appointment,
+  timeZone,
+  onClose,
+  onStatusChange,
+  onReschedule,
+  onCancelRecurringSeries,
+  canUpdateStatus,
+  canManageSchedule,
+  canSendReminders,
+  isUpdating,
+  isRescheduling,
+  isCancellingSeries,
+}: {
+  appointment: Appointment;
+  timeZone?: string | null;
   onClose: () => void;
   onStatusChange: (id: string, status: AppointmentStatus) => void;
+  onReschedule: (input: {
+    id: string;
+    startTime: string;
+    endTime: string;
+  }) => void;
+  onCancelRecurringSeries: (seriesId: string) => void;
+  canUpdateStatus: boolean;
+  canManageSchedule: boolean;
+  canSendReminders: boolean;
   isUpdating: boolean;
+  isRescheduling: boolean;
+  isCancellingSeries: boolean;
 }) {
   const popoverRef = useRef<HTMLDivElement>(null);
   const start = new Date(appointment.startTime);
   const end = new Date(appointment.endTime);
+  const [showRescheduleForm, setShowRescheduleForm] = useState(false);
+  const [rescheduleDate, setRescheduleDate] = useState(() =>
+    toISODate(start, timeZone)
+  );
+  const [rescheduleTime, setRescheduleTime] = useState(() =>
+    formatTimeInput(start, timeZone)
+  );
+  const [rescheduleDuration, setRescheduleDuration] = useState(() =>
+    appointmentDurationMinutes(start, end)
+  );
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -272,12 +778,20 @@ function AppointmentDetailPopover({
     };
   }, [onClose]);
 
+  useEffect(() => {
+    setShowRescheduleForm(false);
+    setRescheduleDate(toISODate(start, timeZone));
+    setRescheduleTime(formatTimeInput(start, timeZone));
+    setRescheduleDuration(appointmentDurationMinutes(start, end));
+  }, [appointment.id, appointment.startTime, appointment.endTime, timeZone]);
+
   const clientName = [appointment.clientFirstName, appointment.clientLastName]
     .filter(Boolean)
     .join(" ") || "Unknown Client";
 
   const statusActions: { label: string; status: AppointmentStatus; variant: "default" | "outline" | "destructive" }[] = [];
   const current = appointment.status as AppointmentStatus;
+  const canMoveAppointment = current === "scheduled" || current === "confirmed";
 
   if (current === "scheduled" || current === "confirmed") {
     statusActions.push({ label: "Check In", status: "checked_in", variant: "default" });
@@ -290,8 +804,28 @@ function AppointmentDetailPopover({
     }
     statusActions.push({ label: "No Show", status: "no_show", variant: "outline" });
   } else if (current === "no_show" || current === "cancelled") {
-    statusActions.push({ label: "Reschedule", status: "scheduled", variant: "outline" });
+    statusActions.push({ label: "Reopen", status: "scheduled", variant: "outline" });
   }
+  const visibleStatusActions = canUpdateStatus ? statusActions : [];
+  const canSubmitReschedule =
+    isAppointmentDateInputValid(rescheduleDate) &&
+    isAppointmentDurationInputValid(rescheduleDuration) &&
+    !isRescheduling;
+
+  const handleReschedule = () => {
+    if (!canSubmitReschedule) return;
+    const startDt = appointmentInstantFromDateAndTime(
+      rescheduleDate,
+      rescheduleTime,
+      timeZone
+    );
+    const endDt = new Date(startDt.getTime() + rescheduleDuration * 60 * 1000);
+    onReschedule({
+      id: appointment.id,
+      startTime: startDt.toISOString(),
+      endTime: endDt.toISOString(),
+    });
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
@@ -335,7 +869,7 @@ function AppointmentDetailPopover({
             <div className="flex items-center gap-2 text-muted-foreground">
               <Clock className="h-3.5 w-3.5" />
               <span>
-                {formatTime(start)} - {formatTime(end)}
+                {formatTime(start, timeZone)} - {formatTime(end, timeZone)}
               </span>
             </div>
             {appointment.doctorName && (
@@ -348,6 +882,12 @@ function AppointmentDetailPopover({
               <div className="flex items-center gap-2 text-muted-foreground">
                 <Calendar className="h-3.5 w-3.5" />
                 <span>{appointment.typeName}</span>
+              </div>
+            )}
+            {appointment.recurringSeriesId && (
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Repeat2 className="h-3.5 w-3.5" />
+                <span>Recurring series</span>
               </div>
             )}
             {appointment.roomName && (
@@ -364,13 +904,113 @@ function AppointmentDetailPopover({
           </div>
         </div>
 
+        {showRescheduleForm && (
+          <div className="border-t border-border px-4 py-3">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">
+                  Date
+                </label>
+                <Input
+                  type="date"
+                  value={rescheduleDate}
+                  aria-invalid={!isAppointmentDateInputValid(rescheduleDate)}
+                  onChange={(e) => setRescheduleDate(e.target.value)}
+                  className="mt-1 h-9 text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">
+                  Time
+                </label>
+                <select
+                  value={rescheduleTime}
+                  onChange={(e) => setRescheduleTime(e.target.value)}
+                  className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                >
+                  {TIME_SLOTS.map((slot) => (
+                    <option key={slot.value} value={slot.value}>
+                      {slot.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">
+                  Duration
+                </label>
+                <Input
+                  type="number"
+                  min={APPOINTMENT_DURATION_MIN_MINUTES}
+                  max={APPOINTMENT_DURATION_MAX_MINUTES}
+                  step={APPOINTMENT_DURATION_STEP_MINUTES}
+                  value={rescheduleDuration}
+                  aria-invalid={!isAppointmentDurationInputValid(rescheduleDuration)}
+                  onChange={(e) => setRescheduleDuration(Number(e.target.value))}
+                  className="mt-1 h-9 text-sm"
+                />
+              </div>
+            </div>
+            <div className="mt-3 flex justify-end gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setShowRescheduleForm(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                disabled={!canSubmitReschedule}
+                onClick={handleReschedule}
+              >
+                {isRescheduling && (
+                  <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
+                )}
+                Move Appointment
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* Actions */}
-        {(statusActions.length > 0 || current === "scheduled" || current === "confirmed") && (
+        {(visibleStatusActions.length > 0 ||
+          (canManageSchedule && canMoveAppointment) ||
+          (canManageSchedule && appointment.recurringSeriesId) ||
+          (canSendReminders &&
+            (current === "scheduled" || current === "confirmed"))) && (
           <div className="flex flex-wrap gap-2 border-t border-border px-4 py-3">
-            {(current === "scheduled" || current === "confirmed") && (
+            {canManageSchedule && canMoveAppointment && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={isRescheduling}
+                onClick={() => setShowRescheduleForm((show) => !show)}
+              >
+                <Clock className="mr-1.5 h-3 w-3" />
+                Reschedule
+              </Button>
+            )}
+            {canSendReminders &&
+              (current === "scheduled" || current === "confirmed") && (
               <SendReminderButton appointmentId={appointment.id} />
             )}
-            {statusActions.map((action) => (
+            {canManageSchedule && appointment.recurringSeriesId && (
+              <Button
+                size="sm"
+                variant="destructive"
+                disabled={isCancellingSeries}
+                onClick={() => onCancelRecurringSeries(appointment.recurringSeriesId!)}
+              >
+                {isCancellingSeries ? (
+                  <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
+                ) : (
+                  <Repeat2 className="mr-1.5 h-3 w-3" />
+                )}
+                Cancel Future Series
+              </Button>
+            )}
+            {visibleStatusActions.map((action) => (
               <Button
                 key={action.status}
                 size="sm"
@@ -450,10 +1090,12 @@ function BookingForm({
   onClose,
   defaultDate,
   defaultTime,
+  timeZone,
 }: {
   onClose: () => void;
   defaultDate: Date;
   defaultTime?: string;
+  timeZone?: string | null;
 }) {
   const modalRef = useRef<HTMLDivElement>(null);
   const utils = trpc.useUtils();
@@ -475,17 +1117,65 @@ function BookingForm({
   const [startTime, setStartTime] = useState(defaultTime || "09:00");
   const [duration, setDuration] = useState(30);
   const [notes, setNotes] = useState("");
+  const [isRecurring, setIsRecurring] = useState(false);
+  const [recurrenceFrequency, setRecurrenceFrequency] =
+    useState<RecurrenceFrequency>("weekly");
+  const [recurrenceInterval, setRecurrenceInterval] = useState(1);
+  const [recurrenceOccurrences, setRecurrenceOccurrences] = useState(4);
 
   const debouncedSearch = useDebounce(patientSearch, 300);
+  const canSearchPatients = isAppointmentPatientSearchInputValid(patientSearch);
+  const canRunPatientSearch =
+    debouncedSearch.trim().length >= 1 &&
+    isAppointmentPatientSearchInputValid(debouncedSearch);
+  const hasPatientSearch = patientSearch.trim().length > 0;
+  const hasValidDate = isAppointmentDateInputValid(date);
+  const hasValidDuration = isAppointmentDurationInputValid(duration);
+  const hasValidNotes = isAppointmentNotesInputValid(notes);
+  const hasValidRecurrenceInterval =
+    isAppointmentRecurrenceIntervalInputValid(recurrenceInterval);
+  const hasValidRecurrenceOccurrences =
+    isAppointmentRecurrenceOccurrencesInputValid(recurrenceOccurrences);
+  const hasRecurringPatient = !isRecurring || Boolean(selectedPatient?.id);
 
   // Queries
-  const { data: searchResults } = trpc.patients.search.useQuery(
+  const {
+    data: searchResults,
+    isLoading: isSearchingPatients,
+    error: patientSearchError,
+  } = trpc.patients.search.useQuery(
     { query: debouncedSearch },
-    { enabled: debouncedSearch.length >= 1 }
+    {
+      enabled: canRunPatientSearch,
+    }
   );
-  const { data: appointmentTypes } = trpc.appointments.listTypes.useQuery();
-  const { data: doctors } = trpc.appointments.listDoctors.useQuery();
-  const { data: roomsList } = trpc.appointments.listRooms.useQuery();
+  const patientSearchMissing =
+    canRunPatientSearch &&
+    !selectedPatient &&
+    !isSearchingPatients &&
+    !patientSearchError &&
+    !searchResults;
+  const appointmentTypesQuery = trpc.appointments.listTypes.useQuery();
+  const doctorsQuery = trpc.appointments.listDoctors.useQuery();
+  const roomsQuery = trpc.appointments.listRooms.useQuery();
+  const appointmentTypes = appointmentTypesQuery.data;
+  const doctors = doctorsQuery.data;
+  const roomsList = roomsQuery.data;
+  const appointmentTypesMissing =
+    !appointmentTypesQuery.isLoading &&
+    !appointmentTypesQuery.error &&
+    !appointmentTypes;
+  const doctorsMissing =
+    !doctorsQuery.isLoading && !doctorsQuery.error && !doctors;
+  const roomsMissing = !roomsQuery.isLoading && !roomsQuery.error && !roomsList;
+  const appointmentTypesUnavailable =
+    appointmentTypesQuery.isLoading ||
+    Boolean(appointmentTypesQuery.error) ||
+    appointmentTypesMissing;
+  const doctorsUnavailable =
+    doctorsQuery.isLoading || Boolean(doctorsQuery.error) || doctorsMissing;
+  const roomsUnavailable =
+    roomsQuery.isLoading || Boolean(roomsQuery.error) || roomsMissing;
 
   const createAppointment = trpc.appointments.create.useMutation({
     onSuccess: () => {
@@ -497,6 +1187,31 @@ function BookingForm({
       toast.error(err.message);
     },
   });
+
+  const createRecurringAppointment = trpc.appointments.createRecurring.useMutation({
+    onSuccess: (result) => {
+      const skippedMessage =
+        result.skipped > 0 ? `; skipped ${result.skipped} conflicts` : "";
+      toast.success(
+        `Created ${result.created} recurring appointments${skippedMessage}`
+      );
+      utils.appointments.list.invalidate();
+      onClose();
+    },
+    onError: (err) => {
+      toast.error(err.message);
+    },
+  });
+
+  const canSaveAppointment =
+    hasValidDate &&
+    hasValidDuration &&
+    hasValidNotes &&
+    hasRecurringPatient &&
+    (!isRecurring ||
+      (hasValidRecurrenceInterval && hasValidRecurrenceOccurrences)) &&
+    !createAppointment.isPending &&
+    !createRecurringAppointment.isPending;
 
   // When appointment type changes, update duration
   useEffect(() => {
@@ -527,8 +1242,30 @@ function BookingForm({
   }, [onClose]);
 
   const handleSave = () => {
-    const startDt = new Date(`${date}T${startTime}:00`);
+    if (!canSaveAppointment) return;
+    const startDt = appointmentInstantFromDateAndTime(
+      date,
+      startTime,
+      timeZone
+    );
     const endDt = new Date(startDt.getTime() + duration * 60 * 1000);
+
+    if (isRecurring) {
+      if (!selectedPatient?.id) return;
+      createRecurringAppointment.mutate({
+        patientId: selectedPatient.id,
+        startTime: startDt.toISOString(),
+        endTime: endDt.toISOString(),
+        frequency: recurrenceFrequency,
+        interval: recurrenceInterval,
+        occurrences: recurrenceOccurrences,
+        typeId: typeId || undefined,
+        doctorId: doctorId || undefined,
+        roomId: roomId || undefined,
+        notes: notes.trim() || undefined,
+      });
+      return;
+    }
 
     createAppointment.mutate({
       startTime: startDt.toISOString(),
@@ -537,7 +1274,7 @@ function BookingForm({
       typeId: typeId || undefined,
       doctorId: doctorId || undefined,
       roomId: roomId || undefined,
-      notes: notes || undefined,
+      notes: notes.trim() || undefined,
     });
   };
 
@@ -594,6 +1331,8 @@ function BookingForm({
                 <Input
                   placeholder="Search patients..."
                   value={patientSearch}
+                  maxLength={APPOINTMENT_PATIENT_SEARCH_MAX_LENGTH}
+                  aria-invalid={!canSearchPatients}
                   onChange={(e) => {
                     setPatientSearch(e.target.value);
                     setShowPatientDropdown(true);
@@ -601,28 +1340,49 @@ function BookingForm({
                   onFocus={() => setShowPatientDropdown(true)}
                   className="h-9 text-sm"
                 />
-                {showPatientDropdown && searchResults && searchResults.length > 0 && (
+                {showPatientDropdown &&
+                  hasPatientSearch &&
+                  canSearchPatients &&
+                  (isSearchingPatients ||
+                    patientSearchError ||
+                    patientSearchMissing ||
+                    searchResults) && (
                   <div className="absolute z-10 mt-1 w-full rounded-md border border-border bg-popover shadow-md max-h-48 overflow-y-auto">
-                    {searchResults.map((p) => (
-                      <button
-                        key={p.id}
-                        type="button"
-                        className="w-full px-3 py-2 text-left text-sm hover:bg-muted transition-colors"
-                        onClick={() => {
-                          setSelectedPatient(p);
-                          setShowPatientDropdown(false);
-                          setPatientSearch("");
-                        }}
-                      >
-                        <div className="font-medium">{p.name}</div>
-                        <div className="text-xs text-muted-foreground">
-                          {p.species}
-                          {(p.clientFirstName || p.clientLastName) && (
-                            <> &middot; Owner: {[p.clientFirstName, p.clientLastName].filter(Boolean).join(" ")}</>
-                          )}
-                        </div>
-                      </button>
-                    ))}
+                    {patientSearchError || patientSearchMissing ? (
+                      <div className="px-3 py-2 text-sm text-destructive">
+                        {patientSearchError?.message ??
+                          "Unable to search patients. Please retry."}
+                      </div>
+                    ) : isSearchingPatients ? (
+                      <div className="px-3 py-2 text-sm text-muted-foreground">
+                        Searching patients...
+                      </div>
+                    ) : searchResults && searchResults.length > 0 ? (
+                      searchResults.map((p) => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          className="w-full px-3 py-2 text-left text-sm hover:bg-muted transition-colors"
+                          onClick={() => {
+                            setSelectedPatient(p);
+                            setShowPatientDropdown(false);
+                            setPatientSearch("");
+                          }}
+                        >
+                          <div className="font-medium">{p.name}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {p.species}
+                            {(p.clientFirstName || p.clientLastName) && (
+                              <> &middot; Owner: {[p.clientFirstName, p.clientLastName].filter(Boolean).join(" ")}</>
+                            )}
+                          </div>
+                        </button>
+                      ))
+                    ) : (
+                      <div className="px-3 py-2 text-sm text-muted-foreground">
+                        No patients found
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -638,15 +1398,30 @@ function BookingForm({
             <select
               value={typeId}
               onChange={(e) => setTypeId(e.target.value)}
+              disabled={appointmentTypesUnavailable}
               className="mt-1 h-9 w-full appearance-none rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             >
-              <option value="">Select type...</option>
+              <option value="">
+                {appointmentTypesUnavailable
+                  ? "Appointment types unavailable"
+                  : "Select type..."}
+              </option>
               {appointmentTypes?.map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.name} ({t.durationMinutes} min)
                 </option>
               ))}
             </select>
+            {appointmentTypesQuery.error || appointmentTypesMissing ? (
+              <p className="mt-1 text-xs text-destructive">
+                {appointmentTypesQuery.error?.message ??
+                  "Unable to load appointment types. Please retry."}
+              </p>
+            ) : appointmentTypesQuery.isLoading ? (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Loading appointment types...
+              </p>
+            ) : null}
           </div>
 
           {/* Doctor */}
@@ -655,15 +1430,28 @@ function BookingForm({
             <select
               value={doctorId}
               onChange={(e) => setDoctorId(e.target.value)}
+              disabled={doctorsUnavailable}
               className="mt-1 h-9 w-full appearance-none rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             >
-              <option value="">Select doctor...</option>
+              <option value="">
+                {doctorsUnavailable ? "Doctors unavailable" : "Select doctor..."}
+              </option>
               {doctors?.map((doc) => (
                 <option key={doc.id} value={doc.id}>
                   Dr. {doc.name}
                 </option>
               ))}
             </select>
+            {doctorsQuery.error || doctorsMissing ? (
+              <p className="mt-1 text-xs text-destructive">
+                {doctorsQuery.error?.message ??
+                  "Unable to load doctors. Please retry."}
+              </p>
+            ) : doctorsQuery.isLoading ? (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Loading doctors...
+              </p>
+            ) : null}
           </div>
 
           {/* Room */}
@@ -672,15 +1460,28 @@ function BookingForm({
             <select
               value={roomId}
               onChange={(e) => setRoomId(e.target.value)}
+              disabled={roomsUnavailable}
               className="mt-1 h-9 w-full appearance-none rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             >
-              <option value="">Select room...</option>
+              <option value="">
+                {roomsUnavailable ? "Rooms unavailable" : "Select room..."}
+              </option>
               {roomsList?.map((r) => (
                 <option key={r.id} value={r.id}>
                   {r.name}
                 </option>
               ))}
             </select>
+            {roomsQuery.error || roomsMissing ? (
+              <p className="mt-1 text-xs text-destructive">
+                {roomsQuery.error?.message ??
+                  "Unable to load rooms. Please retry."}
+              </p>
+            ) : roomsQuery.isLoading ? (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Loading rooms...
+              </p>
+            ) : null}
           </div>
 
           {/* Date */}
@@ -689,6 +1490,7 @@ function BookingForm({
             <Input
               type="date"
               value={date}
+              aria-invalid={!hasValidDate}
               onChange={(e) => setDate(e.target.value)}
               className="mt-1 h-9 text-sm"
             />
@@ -715,12 +1517,83 @@ function BookingForm({
             <label className="text-xs font-medium text-muted-foreground">Duration (minutes)</label>
             <Input
               type="number"
-              min={5}
-              step={5}
+              min={APPOINTMENT_DURATION_MIN_MINUTES}
+              max={APPOINTMENT_DURATION_MAX_MINUTES}
+              step={APPOINTMENT_DURATION_STEP_MINUTES}
               value={duration}
+              aria-invalid={!hasValidDuration}
               onChange={(e) => setDuration(Number(e.target.value))}
               className="mt-1 h-9 text-sm"
             />
+          </div>
+
+          {/* Recurrence */}
+          <div className="rounded-md border border-border bg-muted/30 p-3">
+            <label className="flex items-center gap-2 text-sm font-medium">
+              <Checkbox
+                checked={isRecurring}
+                onChange={(e) => setIsRecurring(e.target.checked)}
+              />
+              <Repeat2 className="h-3.5 w-3.5 text-muted-foreground" />
+              Repeat appointment
+            </label>
+            {isRecurring && (
+              <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">
+                    Frequency
+                  </label>
+                  <select
+                    value={recurrenceFrequency}
+                    onChange={(e) =>
+                      setRecurrenceFrequency(e.target.value as RecurrenceFrequency)
+                    }
+                    className="mt-1 h-9 w-full appearance-none rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    <option value="weekly">Weekly</option>
+                    <option value="monthly">Monthly</option>
+                    <option value="annual">Annual</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">
+                    Every
+                  </label>
+                  <Input
+                    type="number"
+                    min={APPOINTMENT_RECURRENCE_INTERVAL_MIN}
+                    max={APPOINTMENT_RECURRENCE_INTERVAL_MAX}
+                    step={1}
+                    value={recurrenceInterval}
+                    aria-invalid={!hasValidRecurrenceInterval}
+                    onChange={(e) => setRecurrenceInterval(Number(e.target.value))}
+                    className="mt-1 h-9 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">
+                    Occurrences
+                  </label>
+                  <Input
+                    type="number"
+                    min={APPOINTMENT_RECURRENCE_OCCURRENCES_MIN}
+                    max={APPOINTMENT_RECURRENCE_OCCURRENCES_MAX}
+                    step={1}
+                    value={recurrenceOccurrences}
+                    aria-invalid={!hasValidRecurrenceOccurrences}
+                    onChange={(e) =>
+                      setRecurrenceOccurrences(Number(e.target.value))
+                    }
+                    className="mt-1 h-9 text-sm"
+                  />
+                </div>
+                {!hasRecurringPatient && (
+                  <p className="sm:col-span-3 text-xs text-destructive">
+                    Select a patient for recurring appointments.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Notes */}
@@ -728,6 +1601,8 @@ function BookingForm({
             <label className="text-xs font-medium text-muted-foreground">Notes</label>
             <textarea
               value={notes}
+              maxLength={APPOINTMENT_NOTES_MAX_LENGTH}
+              aria-invalid={!hasValidNotes}
               onChange={(e) => setNotes(e.target.value)}
               rows={3}
               className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none"
@@ -744,9 +1619,10 @@ function BookingForm({
           <Button
             size="sm"
             onClick={handleSave}
-            disabled={createAppointment.isPending}
+            disabled={!canSaveAppointment}
           >
-            {createAppointment.isPending && (
+            {(createAppointment.isPending ||
+              createRecurringAppointment.isPending) && (
               <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
             )}
             Save
@@ -760,20 +1636,104 @@ function BookingForm({
 // --- Main Page ---
 
 export default function SchedulePage() {
-  const [currentDate, setCurrentDate] = useState(() => startOfDay(new Date()));
-  const [view, setView] = useState<"day" | "week">("day");
+  const { data: session } = useSession();
+  const userRole = session?.user?.role;
+  const canCreateAppointments = canCreateAppointmentsRole(userRole);
+  const canUpdateAppointmentStatus = canUpdateAppointmentStatusRole(userRole);
+  const canSendAppointmentReminders =
+    canSendAppointmentRemindersRole(userRole);
+  const [currentDate, setCurrentDate] = useState(() =>
+    startOfCalendarDay(new Date())
+  );
+  const [view, setView] = useState<CalendarView>("day");
   const [doctorFilter, setDoctorFilter] = useState<string>("all");
   const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null);
   const [showBookingForm, setShowBookingForm] = useState(false);
+  const [bookingDefaultDate, setBookingDefaultDate] = useState(() =>
+    startOfCalendarDay(new Date())
+  );
   const [bookingDefaultTime, setBookingDefaultTime] = useState<string | undefined>(undefined);
 
-  const { data: appointments, isLoading, error } = trpc.appointments.list.useQuery({
-    startDate: startOfDay(currentDate).toISOString(),
-    endDate: endOfDay(currentDate).toISOString(),
-    doctorId: doctorFilter !== "all" ? doctorFilter : undefined,
-  });
+  const weekDays = useMemo(() => buildWeekDays(currentDate), [currentDate]);
+  const monthDays = useMemo(() => buildMonthGrid(currentDate), [currentDate]);
+  const calendarSettingsQuery = trpc.appointments.calendarSettings.useQuery();
+  const calendarSettings = calendarSettingsQuery.data;
+  const calendarSettingsMissing =
+    !calendarSettingsQuery.isLoading &&
+    !calendarSettingsQuery.error &&
+    !calendarSettings;
+  const verifiedCalendarSettings =
+    calendarSettingsQuery.error || calendarSettingsMissing || !calendarSettings
+      ? null
+      : calendarSettings;
+  const calendarTimeZone = verifiedCalendarSettings
+    ? verifiedCalendarSettings.timezone
+    : null;
+  const queryRangeInput = useMemo(() => {
+    if (view === "week") {
+      return {
+        startDate: toISODate(weekDays[0]!),
+        endDate: toISODate(weekDays[6]!),
+      };
+    }
+
+    if (view === "month") {
+      return {
+        startDate: monthDays[0]!.dateKey,
+        endDate: monthDays[monthDays.length - 1]!.dateKey,
+      };
+    }
+
+    const dateKey = toISODate(currentDate);
+    return { startDate: dateKey, endDate: dateKey };
+  }, [currentDate, monthDays, view, weekDays]);
+
+  const { data: appointmentsData, isLoading, error } =
+    trpc.appointments.list.useQuery(
+      {
+        startDate: queryRangeInput.startDate,
+        endDate: queryRangeInput.endDate,
+        doctorId: doctorFilter !== "all" ? doctorFilter : undefined,
+      },
+      {
+        enabled: verifiedCalendarSettings !== null,
+      }
+    );
+  const scheduleError = calendarSettingsQuery.error ?? error;
+  const isScheduleLoading = calendarSettingsQuery.isLoading || isLoading;
+  const appointmentsMissing =
+    verifiedCalendarSettings !== null &&
+    !isLoading &&
+    !error &&
+    !appointmentsData;
+  const scheduleMissing = calendarSettingsMissing || appointmentsMissing;
+  const verifiedAppointmentsData =
+    error || appointmentsMissing || !appointmentsData ? null : appointmentsData;
 
   const { data: doctors } = trpc.appointments.listDoctors.useQuery();
+  const appointments = useMemo(
+    () => sortAppointments(verifiedAppointmentsData ?? []),
+    [verifiedAppointmentsData]
+  );
+  const scheduleReady =
+    !scheduleError &&
+    !isScheduleLoading &&
+    !scheduleMissing &&
+    Boolean(verifiedCalendarSettings && verifiedAppointmentsData);
+  const canUseScheduleInteractions = canCreateAppointments && scheduleReady;
+  const selectedAppointmentFromList = selectedAppointment
+    ? appointments.find((appt) => appt.id === selectedAppointment.id) ?? null
+    : null;
+  const selectedAppointmentStillListed = Boolean(selectedAppointmentFromList);
+  const appointmentsByDate = useMemo(
+    () =>
+      groupByCalendarDate(
+        appointments,
+        (appt) => appt.startTime,
+        calendarTimeZone
+      ),
+    [appointments, calendarTimeZone]
+  );
 
   const updateStatus = trpc.appointments.updateStatus.useMutation({
     onSuccess: () => {
@@ -787,6 +1747,34 @@ export default function SchedulePage() {
 
   const utils = trpc.useUtils();
 
+  const rescheduleAppointment = trpc.appointments.reschedule.useMutation({
+    onSuccess: () => {
+      toast.success("Appointment rescheduled");
+      setSelectedAppointment(null);
+      utils.appointments.list.invalidate();
+    },
+    onError: (err) => {
+      toast.error(err.message);
+    },
+  });
+
+  const cancelRecurringSeries = trpc.appointments.cancelRecurringSeries.useMutation({
+    onSuccess: (result) => {
+      const message =
+        result.cancelledCount === 0
+          ? "Recurring series ended; no future appointments needed cancellation"
+          : result.cancelledCount === 1
+            ? "Cancelled 1 future appointment in the recurring series"
+            : `Cancelled ${result.cancelledCount} future appointments in the recurring series`;
+      toast.success(message);
+      setSelectedAppointment(null);
+      utils.appointments.list.invalidate();
+    },
+    onError: (err) => {
+      toast.error(err.message);
+    },
+  });
+
   const handleStatusChange = (id: string, status: AppointmentStatus) => {
     updateStatus.mutate(
       { id, status },
@@ -798,18 +1786,83 @@ export default function SchedulePage() {
     );
   };
 
-  const goToday = () => setCurrentDate(startOfDay(new Date()));
-  const goPrev = () => setCurrentDate((d) => addDays(d, -1));
-  const goNext = () => setCurrentDate((d) => addDays(d, 1));
+  const handleRescheduleAppointment = (input: {
+    id: string;
+    startTime: string;
+    endTime: string;
+  }) => {
+    rescheduleAppointment.mutate(input);
+  };
 
-  const isToday =
-    toISODate(currentDate) === toISODate(new Date());
+  const handleCancelRecurringSeries = (seriesId: string) => {
+    if (
+      !window.confirm(
+        "Cancel future appointments in this recurring series? Past, completed, and in-progress appointments will stay unchanged."
+      )
+    ) {
+      return;
+    }
+
+    cancelRecurringSeries.mutate({ seriesId });
+  };
+
+  const openBookingForm = (date: Date, time?: string) => {
+    if (!canUseScheduleInteractions) return;
+    setBookingDefaultDate(startOfCalendarDay(date));
+    setBookingDefaultTime(time);
+    setShowBookingForm(true);
+  };
+
+  const goToday = () => setCurrentDate(startOfCalendarDay(new Date()));
+  const goPrev = () =>
+    setCurrentDate((d) =>
+      view === "month"
+        ? addCalendarMonths(d, -1)
+        : addCalendarDays(d, view === "week" ? -7 : -1)
+    );
+  const goNext = () =>
+    setCurrentDate((d) =>
+      view === "month"
+        ? addCalendarMonths(d, 1)
+        : addCalendarDays(d, view === "week" ? 7 : 1)
+    );
+
+  useEffect(() => {
+    if (scheduleError || scheduleMissing) {
+      setSelectedAppointment(null);
+      setShowBookingForm(false);
+      return;
+    }
+    if (
+      verifiedAppointmentsData &&
+      selectedAppointment &&
+      !selectedAppointmentStillListed
+    ) {
+      setSelectedAppointment(null);
+    }
+  }, [
+    scheduleError,
+    scheduleMissing,
+    selectedAppointment,
+    selectedAppointmentStillListed,
+    verifiedAppointmentsData,
+  ]);
+
+  const viewOptions: { id: CalendarView; label: string }[] = [
+    { id: "day", label: "Day" },
+    { id: "week", label: "Week" },
+    { id: "month", label: "Month" },
+  ];
 
   // Current time indicator position
   const now = new Date();
-  const showNowLine =
-    isToday && now.getHours() >= START_HOUR && now.getHours() < END_HOUR;
-  const nowTop = getTopOffset(now);
+  const todayKey = toISODate(now, calendarTimeZone);
+  const currentDateKey = toISODate(currentDate);
+  const isToday = currentDateKey === todayKey;
+  const nowParts = getZonedHourMinute(now, calendarTimeZone);
+  const showNowLine = nowParts.hour >= START_HOUR && nowParts.hour < END_HOUR;
+  const showDayNowLine = isToday && showNowLine;
+  const nowTop = getTopOffset(now, calendarTimeZone);
 
   return (
     <div>
@@ -840,35 +1893,29 @@ export default function SchedulePage() {
           </Button>
         </div>
 
-        <h3 className="text-sm font-medium">{formatDate(currentDate)}</h3>
+        <h3 className="text-sm font-medium">{formatToolbarDate(currentDate, view)}</h3>
 
         <div className="ml-auto flex items-center gap-2">
           {/* View toggle */}
           <div className="flex rounded-md border border-border">
-            <button
-              type="button"
-              onClick={() => setView("day")}
-              className={cn(
-                "px-3 py-1.5 text-xs font-medium transition-colors rounded-l-md",
-                view === "day"
-                  ? "bg-primary text-primary-foreground"
-                  : "hover:bg-muted text-muted-foreground"
-              )}
-            >
-              Day
-            </button>
-            <button
-              type="button"
-              onClick={() => setView("week")}
-              className={cn(
-                "px-3 py-1.5 text-xs font-medium transition-colors rounded-r-md border-l border-border",
-                view === "week"
-                  ? "bg-primary text-primary-foreground"
-                  : "hover:bg-muted text-muted-foreground"
-              )}
-            >
-              Week
-            </button>
+            {viewOptions.map((option, index) => (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => setView(option.id)}
+                className={cn(
+                  "px-3 py-1.5 text-xs font-medium transition-colors",
+                  index > 0 && "border-l border-border",
+                  index === 0 && "rounded-l-md",
+                  index === viewOptions.length - 1 && "rounded-r-md",
+                  view === option.id
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted"
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
           </div>
 
           {/* Doctor filter */}
@@ -889,126 +1936,158 @@ export default function SchedulePage() {
           </div>
 
           {/* New Appointment button */}
-          <Button
-            size="sm"
-            onClick={() => {
-              setBookingDefaultTime(undefined);
-              setShowBookingForm(true);
-            }}
-          >
-            <Plus className="mr-1.5 h-3.5 w-3.5" />
-            New Appointment
-          </Button>
+          {canCreateAppointments && (
+            <Button
+              size="sm"
+              disabled={!canUseScheduleInteractions}
+              onClick={() => {
+                openBookingForm(currentDate);
+              }}
+            >
+              <Plus className="mr-1.5 h-3.5 w-3.5" />
+              New Appointment
+            </Button>
+          )}
         </div>
       </div>
 
       {/* Error */}
-      {error && (
+      {scheduleError || scheduleMissing ? (
         <div className="mt-4 rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
-          {error.message}
+          {scheduleError?.message ?? "Unable to load schedule. Please retry."}
         </div>
-      )}
-
-      {/* Calendar body */}
-      {view === "week" ? (
-        <div className="mt-4 rounded-lg border border-dashed border-border bg-card p-12 text-center">
-          <Calendar className="mx-auto h-10 w-10 text-muted-foreground/50" />
-          <p className="mt-2 text-muted-foreground">Week view coming soon</p>
-        </div>
-      ) : isLoading ? (
+      ) : isScheduleLoading ? (
         <div className="mt-6 flex items-center justify-center gap-2 text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />
           Loading appointments...
         </div>
-      ) : (
-        <div className="mt-4 overflow-hidden rounded-lg border border-border bg-card">
-          {/* Day grid */}
-          <div className="flex overflow-auto" style={{ maxHeight: "calc(100vh - 220px)" }}>
-            {/* Time labels */}
-            <TimeSlots />
-
-            {/* Appointment area */}
-            <div
-              className="relative flex-1 border-l border-border cursor-pointer"
-              style={{ height: TOTAL_HOURS * HOUR_HEIGHT }}
-              onClick={(e) => {
-                // Only handle clicks on the background, not on appointment blocks
-                if ((e.target as HTMLElement).closest("button")) return;
-                const rect = e.currentTarget.getBoundingClientRect();
-                const y = e.clientY - rect.top;
-                const hoursFromTop = y / HOUR_HEIGHT;
-                const totalMinutes = Math.round((START_HOUR + hoursFromTop) * 60);
-                // Snap to nearest 30 min
-                const snapped = Math.round(totalMinutes / 30) * 30;
-                const hour = Math.floor(snapped / 60);
-                const min = snapped % 60;
-                const timeStr = `${String(hour).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
-                setBookingDefaultTime(timeStr);
-                setShowBookingForm(true);
+      ) : view === "week" ? (
+        appointments.length > 0 ? (
+          <WeekCalendar
+            days={weekDays}
+            appointmentsByDate={appointmentsByDate}
+            timeZone={calendarTimeZone}
+            todayKey={todayKey}
+            showNowLine={showNowLine}
+            nowTop={nowTop}
+            onSlotClick={
+              canUseScheduleInteractions
+                ? (date, y) => openBookingForm(date, getSnappedTimeFromY(y))
+                : undefined
+            }
+            onAppointmentClick={setSelectedAppointment}
+          />
+        ) : (
+          <>
+            <EmptyState
+              icon={Calendar}
+              title="No appointments this week"
+              description="The selected schedule is clear for this week."
+              className="mt-4"
+            />
+            <WeekCalendar
+              days={weekDays}
+              appointmentsByDate={appointmentsByDate}
+              timeZone={calendarTimeZone}
+              todayKey={todayKey}
+              showNowLine={showNowLine}
+              nowTop={nowTop}
+              onSlotClick={
+                canUseScheduleInteractions
+                  ? (date, y) => openBookingForm(date, getSnappedTimeFromY(y))
+                  : undefined
+              }
+              onAppointmentClick={setSelectedAppointment}
+            />
+          </>
+        )
+      ) : view === "month" ? (
+        appointments.length > 0 ? (
+          <MonthCalendar
+            days={monthDays}
+            appointmentsByDate={appointmentsByDate}
+            currentDate={currentDate}
+            timeZone={calendarTimeZone}
+            todayKey={todayKey}
+            canCreateAppointments={canUseScheduleInteractions}
+            onCreateClick={(date) => openBookingForm(date)}
+            onDayOpen={(date) => {
+              setCurrentDate(startOfCalendarDay(date));
+              setView("day");
+            }}
+            onAppointmentClick={setSelectedAppointment}
+          />
+        ) : (
+          <>
+            <EmptyState
+              icon={Calendar}
+              title="No appointments in this month"
+              description="The selected schedule is clear for this month."
+              className="mt-4"
+            />
+            <MonthCalendar
+              days={monthDays}
+              appointmentsByDate={appointmentsByDate}
+              currentDate={currentDate}
+              timeZone={calendarTimeZone}
+              todayKey={todayKey}
+              canCreateAppointments={canUseScheduleInteractions}
+              onCreateClick={(date) => openBookingForm(date)}
+              onDayOpen={(date) => {
+                setCurrentDate(startOfCalendarDay(date));
+                setView("day");
               }}
-            >
-              <GridLines />
-
-              {/* Current time indicator */}
-              {showNowLine && (
-                <div
-                  className="absolute left-0 right-0 z-10 flex items-center"
-                  style={{ top: nowTop }}
-                >
-                  <div className="h-2.5 w-2.5 rounded-full bg-red-500 -ml-1" />
-                  <div className="flex-1 border-t-2 border-red-500" />
-                </div>
-              )}
-
-              {/* Appointment blocks */}
-              {appointments && appointments.length > 0 ? (
-                appointments.map((appt) => (
-                  <AppointmentBlock
-                    key={appt.id}
-                    appointment={appt}
-                    onClick={() => setSelectedAppointment(appt)}
-                  />
-                ))
-              ) : (
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="text-center">
-                    <Calendar className="mx-auto h-8 w-8 text-muted-foreground/40" />
-                    <p className="mt-2 text-sm text-muted-foreground">
-                      No appointments for this day
-                    </p>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Footer with count */}
-          {appointments && appointments.length > 0 && (
-            <div className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
-              {appointments.length} appointment{appointments.length !== 1 ? "s" : ""}
-            </div>
-          )}
-        </div>
+              onAppointmentClick={setSelectedAppointment}
+            />
+          </>
+        )
+      ) : (
+        <DayCalendar
+          appointments={appointments}
+          timeZone={calendarTimeZone}
+          showNowLine={showDayNowLine}
+          nowTop={nowTop}
+          onSlotClick={
+            canUseScheduleInteractions
+              ? (y) => openBookingForm(currentDate, getSnappedTimeFromY(y))
+              : undefined
+          }
+          onAppointmentClick={setSelectedAppointment}
+        />
       )}
 
       {/* Detail popover */}
-      {selectedAppointment && (
-        <AppointmentDetailPopover
-          appointment={selectedAppointment}
-          onClose={() => setSelectedAppointment(null)}
-          onStatusChange={handleStatusChange}
-          isUpdating={updateStatus.isPending}
-        />
-      )}
+      {selectedAppointmentFromList &&
+        verifiedCalendarSettings &&
+        scheduleReady &&
+        selectedAppointmentStillListed && (
+          <AppointmentDetailPopover
+            appointment={selectedAppointmentFromList}
+            timeZone={verifiedCalendarSettings.timezone}
+            onClose={() => setSelectedAppointment(null)}
+            onStatusChange={handleStatusChange}
+            onReschedule={handleRescheduleAppointment}
+            onCancelRecurringSeries={handleCancelRecurringSeries}
+            canUpdateStatus={canUpdateAppointmentStatus}
+            canManageSchedule={canCreateAppointments}
+            canSendReminders={canSendAppointmentReminders}
+            isUpdating={updateStatus.isPending}
+            isRescheduling={rescheduleAppointment.isPending}
+            isCancellingSeries={cancelRecurringSeries.isPending}
+          />
+        )}
 
       {/* Booking form */}
-      {showBookingForm && (
-        <BookingForm
-          onClose={() => setShowBookingForm(false)}
-          defaultDate={currentDate}
-          defaultTime={bookingDefaultTime}
-        />
-      )}
+      {canUseScheduleInteractions &&
+        showBookingForm &&
+        verifiedCalendarSettings && (
+          <BookingForm
+            onClose={() => setShowBookingForm(false)}
+            defaultDate={bookingDefaultDate}
+            defaultTime={bookingDefaultTime}
+            timeZone={verifiedCalendarSettings.timezone}
+          />
+        )}
     </div>
   );
 }

@@ -5,6 +5,7 @@ import {
   varchar,
   text,
   timestamp,
+  index,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { baseColumns } from "./common";
@@ -21,21 +22,36 @@ export const userRoleEnum = pgEnum("user_role", [
   "viewer",
 ]);
 
-export const users = pgTable("users", {
-  ...baseColumns(),
-  email: varchar("email", { length: 255 }).notNull().unique(),
-  passwordHash: varchar("password_hash", { length: 255 }).notNull(),
-  name: varchar("name", { length: 255 }).notNull(),
-  role: userRoleEnum("role").notNull().default("front_desk"),
-  practiceId: uuid("practice_id")
-    .notNull()
-    .references(() => practices.id),
-  locationId: uuid("location_id").references(() => locations.id),
-  avatarUrl: varchar("avatar_url", { length: 512 }),
-  licenseNumber: varchar("license_number", { length: 64 }),
-  phone: varchar("phone", { length: 32 }),
-  emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
-});
+export const users = pgTable(
+  "users",
+  {
+    ...baseColumns(),
+    email: varchar("email", { length: 255 }).notNull().unique(),
+    passwordHash: varchar("password_hash", { length: 255 }).notNull(),
+    name: varchar("name", { length: 255 }).notNull(),
+    role: userRoleEnum("role").notNull().default("front_desk"),
+    practiceId: uuid("practice_id")
+      .notNull()
+      .references(() => practices.id),
+    locationId: uuid("location_id").references(() => locations.id),
+    avatarUrl: varchar("avatar_url", { length: 512 }),
+    licenseNumber: varchar("license_number", { length: 64 }),
+    phone: varchar("phone", { length: 32 }),
+    emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
+  },
+  (table) => ({
+    practiceIdx: index("users_practice_idx").on(
+      table.practiceId,
+      table.deletedAt
+    ),
+    locationIdx: index("users_location_idx").on(
+      table.practiceId,
+      table.locationId,
+      table.deletedAt
+    ),
+    roleIdx: index("users_role_idx").on(table.practiceId, table.role),
+  })
+);
 
 export const usersRelations = relations(users, ({ one }) => ({
   practice: one(practices, {

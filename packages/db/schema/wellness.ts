@@ -27,17 +27,27 @@ export const enrollmentStatusEnum = pgEnum("enrollment_status", [
 ]);
 
 /** A wellness/membership plan a practice offers (e.g. "Puppy Wellness"). */
-export const wellnessPlans = pgTable("wellness_plans", {
-  ...baseColumns(),
-  practiceId: uuid("practice_id")
-    .notNull()
-    .references(() => practices.id),
-  name: varchar("name", { length: 255 }).notNull(),
-  description: text("description"),
-  price: numeric("price", { precision: 10, scale: 2 }).notNull(),
-  billingInterval: billingIntervalEnum("billing_interval").notNull().default("monthly"),
-  active: boolean("active").notNull().default(true),
-});
+export const wellnessPlans = pgTable(
+  "wellness_plans",
+  {
+    ...baseColumns(),
+    practiceId: uuid("practice_id")
+      .notNull()
+      .references(() => practices.id),
+    name: varchar("name", { length: 255 }).notNull(),
+    description: text("description"),
+    price: numeric("price", { precision: 10, scale: 2 }).notNull(),
+    billingInterval: billingIntervalEnum("billing_interval").notNull().default("monthly"),
+    active: boolean("active").notNull().default(true),
+  },
+  (table) => ({
+    practiceCreatedIdx: index("wellness_plans_practice_created_idx").on(
+      table.practiceId,
+      table.deletedAt,
+      table.createdAt
+    ),
+  })
+);
 
 /** A client/patient enrolled in a plan, with the next billing date. */
 export const wellnessEnrollments = pgTable(
@@ -65,6 +75,20 @@ export const wellnessEnrollments = pgTable(
       table.status
     ),
     dueIdx: index("wellness_enrollments_due_idx").on(table.nextBillingDate),
+    billingDueIdx: index("wellness_enrollments_billing_due_idx").on(
+      table.practiceId,
+      table.status,
+      table.nextBillingDate,
+      table.deletedAt
+    ),
+    targetIdx: index("wellness_enrollments_target_idx").on(
+      table.practiceId,
+      table.planId,
+      table.clientId,
+      table.patientId,
+      table.status,
+      table.deletedAt
+    ),
   })
 );
 

@@ -6,7 +6,12 @@ import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import postgres from "postgres";
 
-const url = process.env.DATABASE_URL;
+function nonBlankEnv(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value ? value : undefined;
+}
+
+const url = nonBlankEnv("DATABASE_URL");
 if (!url) {
   console.error("DATABASE_URL not set");
   process.exit(1);
@@ -20,7 +25,7 @@ try {
   // Ensure the least-privilege app role exists BEFORE the grants run. No
   // credential is committed: the password comes from OPENPIMS_APP_DB_PASSWORD.
   const [exists] = await sql`select 1 from pg_roles where rolname = 'openpims_app'`;
-  const appPw = process.env.OPENPIMS_APP_DB_PASSWORD;
+  const appPw = nonBlankEnv("OPENPIMS_APP_DB_PASSWORD");
   if (!exists) {
     if (!appPw) {
       console.error(

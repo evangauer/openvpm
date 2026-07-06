@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { useSession } from "next-auth/react";
-import { Clock } from "lucide-react";
+import { AlertTriangle, Clock, Loader2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
+import { trialCalendarDaysLeft } from "@/lib/billing/trial-days";
 
 /**
  * Trial countdown / read-only indicator in the TopBar. Admin-only and hidden on
@@ -15,21 +16,47 @@ export function TrialBadge() {
   const isAdmin =
     status === "authenticated" && session?.user?.role === "admin";
 
-  const { data } = trpc.subscription.get.useQuery(undefined, {
+  const { data, isLoading, error } = trpc.subscription.get.useQuery(undefined, {
     enabled: isAdmin,
     staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
     retry: false,
   });
 
-  if (!data || !data.billingEnforced || data.billingStatus === "active") {
+  if (!isAdmin) return null;
+
+  if (isLoading) {
+    return (
+      <span
+        aria-label="Checking billing status"
+        className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted px-3 py-1 text-xs font-medium text-muted-foreground"
+      >
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        Billing
+      </span>
+    );
+  }
+
+  if (error || !data) {
+    return (
+      <Link
+        href="/settings?tab=billing"
+        className="inline-flex items-center gap-1.5 rounded-full border border-destructive/30 bg-destructive/10 px-3 py-1 text-xs font-medium text-destructive transition-colors hover:bg-destructive/20"
+      >
+        <AlertTriangle className="h-3.5 w-3.5" />
+        Billing status unavailable
+      </Link>
+    );
+  }
+
+  if (!data.billingEnforced || data.billingStatus === "active") {
     return null;
   }
 
   const trialing = data.billingStatus === "trialing" && data.trialEndsAt;
   if (trialing) {
-    const ms = new Date(data.trialEndsAt!).getTime() - Date.now();
-    const days = Math.max(0, Math.ceil(ms / (24 * 60 * 60 * 1000)));
+    const days =
+      trialCalendarDaysLeft(data.trialEndsAt, data.timezone) ?? 0;
     const urgent = days <= 3;
     return (
       <Link

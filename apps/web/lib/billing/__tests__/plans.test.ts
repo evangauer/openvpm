@@ -9,9 +9,12 @@ import {
   isTrialActive,
   effectiveTier,
   hasHostedFullAccess,
+  billingEnforced,
   estimatedCloudBaseMonthlyUsd,
   tierForStripePrice,
+  cloudCheckoutPriceIds,
   cloudMeteredPriceIds,
+  stripePriceIdFromEnv,
   STRIPE_PRICE_CLOUD_LOCATION_ENV,
   STRIPE_PRICE_CLOUD_USER_ENV,
   STRIPE_PRICE_CLOUD_LEGACY_ENV,
@@ -115,8 +118,17 @@ describe("PLANS pricing", () => {
 
   it("estimates base Cloud subscription from locations (flat, unlimited staff)", () => {
     // Flat per-location model: staff count does not affect the base.
-    expect(estimatedCloudBaseMonthlyUsd(2, 5)).toBe(198);
-    expect(estimatedCloudBaseMonthlyUsd(0, 0)).toBe(99);
+    expect(estimatedCloudBaseMonthlyUsd(2, 5)).toBe(158);
+    expect(estimatedCloudBaseMonthlyUsd(0, 0)).toBe(79);
+  });
+
+  it("keeps customer-facing plan blurbs scoped to shipped hosted capabilities", () => {
+    expect(PLANS.free.blurb).toContain("Self-host OpenVPM");
+    expect(PLANS.free.blurb.toLowerCase()).not.toContain("full product");
+
+    expect(PLANS.cloud.blurb).toContain("supported integration hooks");
+    expect(PLANS.cloud.blurb.toLowerCase()).not.toContain("every feature");
+    expect(PLANS.cloud.blurb.toLowerCase()).not.toContain("full pims");
   });
 });
 
@@ -142,6 +154,24 @@ describe("hosted full access", () => {
   });
 });
 
+describe("hosted billing enforcement flag", () => {
+  it("trims the hosted billing env flag before enforcing SaaS gates", () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", " true ");
+
+    expect(billingEnforced()).toBe(true);
+  });
+
+  it("keeps hosted billing disabled for missing, blank, or non-true values", () => {
+    expect(billingEnforced()).toBe(false);
+
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "   ");
+    expect(billingEnforced()).toBe(false);
+
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "TRUE");
+    expect(billingEnforced()).toBe(false);
+  });
+});
+
 describe("metered overage", () => {
   it("cloud carries included allowances + overage prices; free/enterprise do not bill overage", () => {
     expect(PLANS.cloud.includedAiRunsPerMonth).toBe(1000);
@@ -157,24 +187,59 @@ describe("metered overage", () => {
       aiOveragePriceId: undefined,
       smsOveragePriceId: undefined,
     });
-    vi.stubEnv(STRIPE_PRICE_AI_OVERAGE_ENV, "price_ai");
+    vi.stubEnv(STRIPE_PRICE_AI_OVERAGE_ENV, " price_ai ");
     vi.stubEnv(STRIPE_PRICE_SMS_OVERAGE_ENV, "price_sms");
     expect(cloudMeteredPriceIds()).toEqual({
       aiOveragePriceId: "price_ai",
       smsOveragePriceId: "price_sms",
     });
   });
+
+  it("ignores blank configured overage price envs", () => {
+    vi.stubEnv(STRIPE_PRICE_AI_OVERAGE_ENV, "   ");
+    vi.stubEnv(STRIPE_PRICE_SMS_OVERAGE_ENV, "\n");
+
+    expect(cloudMeteredPriceIds()).toEqual({
+      aiOveragePriceId: undefined,
+      smsOveragePriceId: undefined,
+    });
+  });
 });
 
 describe("Stripe price mapping", () => {
+  it("normalizes checkout price envs before billing line items use them", () => {
+    vi.stubEnv(STRIPE_PRICE_CLOUD_LOCATION_ENV, " price_location ");
+    vi.stubEnv(STRIPE_PRICE_CLOUD_USER_ENV, "   ");
+
+    expect(cloudCheckoutPriceIds()).toEqual({
+      locationPriceId: "price_location",
+      seatPriceId: undefined,
+    });
+  });
+
+  it("returns undefined for blank Stripe price envs", () => {
+    vi.stubEnv(STRIPE_PRICE_CLOUD_LOCATION_ENV, "   ");
+
+    expect(stripePriceIdFromEnv(STRIPE_PRICE_CLOUD_LOCATION_ENV)).toBeUndefined();
+  });
+
   it("maps split Cloud prices and legacy Cloud price to the cloud tier", () => {
-    vi.stubEnv(STRIPE_PRICE_CLOUD_LOCATION_ENV, "price_location");
+    vi.stubEnv(STRIPE_PRICE_CLOUD_LOCATION_ENV, " price_location ");
     vi.stubEnv(STRIPE_PRICE_CLOUD_USER_ENV, "price_user");
     vi.stubEnv(STRIPE_PRICE_CLOUD_LEGACY_ENV, "price_legacy");
 
     expect(tierForStripePrice("price_location")).toBe("cloud");
+    expect(tierForStripePrice(" price_location ")).toBe("cloud");
     expect(tierForStripePrice("price_user")).toBe("cloud");
     expect(tierForStripePrice("price_legacy")).toBe("cloud");
     expect(tierForStripePrice("price_other")).toBeNull();
+  });
+
+  it("does not map blank Stripe price envs or blank input", () => {
+    vi.stubEnv(STRIPE_PRICE_CLOUD_LOCATION_ENV, "   ");
+
+    expect(tierForStripePrice("")).toBeNull();
+    expect(tierForStripePrice("   ")).toBeNull();
+    expect(tierForStripePrice("price_location")).toBeNull();
   });
 });

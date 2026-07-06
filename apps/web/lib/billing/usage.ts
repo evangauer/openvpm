@@ -1,5 +1,4 @@
-import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { db } from "@openpims/db/client";
 import { usageRecords, practices } from "@openpims/db";
 import { withSystem } from "@/lib/tenant-db";
@@ -8,6 +7,13 @@ import { billingEnforced } from "./plans";
 import { recordMeterEvent } from "./stripe-meters";
 
 export type UsageKind = "sms" | "ai_run";
+type MeterUsageResult = "metered" | "skipped" | "failed";
+
+export interface UsageReconciliationResult {
+  attempted: number;
+  metered: number;
+  skipped: number;
+}
 
 /**
  * Soft abuse thresholds. Overage past the included allowance (1,000/mo) now
@@ -35,9 +41,13 @@ export function currentPeriodMonth(now: Date = new Date()): string {
   return now.toISOString().slice(0, 7);
 }
 
+export function meterIdentifierForUsageRecord(usageRecordId: string): string {
+  return `usage:${usageRecordId}`;
+}
+
 /**
  * Record a metered usage event. No-op on self-host (billing not enforced).
- * Fire-and-forget safe: never throws into the caller.
+ * Caller-safe: logs failures internally and never throws into the user workflow.
  */
 export async function recordUsage(opts: {
   practiceId: string;
@@ -49,16 +59,36 @@ export async function recordUsage(opts: {
   const quantity = opts.quantity ?? 1;
   const periodMonth = currentPeriodMonth(opts.now);
   try {
-    await withSystem(db, (tx) =>
+    const [activePractice] = await withSystem(db, (tx) =>
+      tx
+        .select({ id: practices.id })
+        .from(practices)
+        .where(
+          and(
+            eq(practices.id, opts.practiceId),
+            isNull(practices.deletedAt)
+          )
+        )
+        .limit(1)
+    );
+    if (!activePractice) return;
+
+    const [usageRecord] = await withSystem(db, (tx) =>
       tx.insert(usageRecords).values({
         practiceId: opts.practiceId,
         kind: opts.kind,
         quantity,
         periodMonth,
-      })
+      }).returning({ id: usageRecords.id })
     );
+    if (!usageRecord) return;
     await maybeAlertOnSpike(opts.practiceId, opts.kind, periodMonth, quantity);
-    await maybeMeterToStripe(opts.practiceId, opts.kind, quantity);
+    await maybeMeterToStripe({
+      usageRecordId: usageRecord.id,
+      practiceId: opts.practiceId,
+      kind: opts.kind,
+      quantity,
+    });
   } catch (e) {
     console.error("[usage] failed to record", opts.kind, e);
   }
@@ -67,32 +97,106 @@ export async function recordUsage(opts: {
 /**
  * Report the event to Stripe's meter so overage bills automatically. Only fires
  * once the practice has a Stripe customer (i.e. a subscription exists) — usage
- * during the pre-checkout no-card trial has no customer and stays free. The
- * local `usageRecords` row remains the source of truth for display/reconcile.
+ * before the card-collected hosted checkout completes has no customer and stays
+ * local. The local `usageRecords` row remains the source of truth for
+ * display/reconcile.
  */
-async function maybeMeterToStripe(
-  practiceId: string,
-  kind: UsageKind,
-  quantity: number
-): Promise<void> {
+async function maybeMeterToStripe(opts: {
+  usageRecordId: string;
+  practiceId: string;
+  kind: UsageKind;
+  quantity: number;
+}): Promise<MeterUsageResult> {
   try {
     const [practice] = await withSystem(db, (tx) =>
       tx
         .select({ stripeCustomerId: practices.stripeCustomerId })
         .from(practices)
-        .where(eq(practices.id, practiceId))
+        .where(
+          and(
+            eq(practices.id, opts.practiceId),
+            isNull(practices.deletedAt)
+          )
+        )
         .limit(1)
     );
-    if (!practice?.stripeCustomerId) return;
-    await recordMeterEvent({
-      kind,
+    if (!practice?.stripeCustomerId) return "skipped";
+    const identifier = meterIdentifierForUsageRecord(opts.usageRecordId);
+    const metered = await recordMeterEvent({
+      kind: opts.kind,
       stripeCustomerId: practice.stripeCustomerId,
-      value: quantity,
-      identifier: randomUUID(),
+      value: opts.quantity,
+      identifier,
     });
+    if (metered) {
+      await withSystem(db, (tx) =>
+        tx
+          .update(usageRecords)
+          .set({
+            stripeMeterIdentifier: identifier,
+            stripeMeteredAt: new Date(),
+          })
+          .where(
+            and(
+              eq(usageRecords.id, opts.usageRecordId),
+              isNull(usageRecords.deletedAt)
+            )
+          )
+      );
+      return "metered";
+    }
+    return "failed";
   } catch (e) {
-    console.error("[usage] meter event failed", kind, e);
+    console.error("[usage] meter event failed", opts.kind, e);
+    return "failed";
   }
+}
+
+export async function reconcileUnmeteredUsage(opts: {
+  limit?: number;
+} = {}): Promise<UsageReconciliationResult> {
+  if (!billingEnforced()) return { attempted: 0, metered: 0, skipped: 0 };
+  const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
+  const rows = await withSystem(db, (tx) =>
+    tx
+      .select({
+        id: usageRecords.id,
+        practiceId: usageRecords.practiceId,
+        kind: usageRecords.kind,
+        quantity: usageRecords.quantity,
+      })
+      .from(usageRecords)
+      .innerJoin(
+        practices,
+        and(
+          eq(practices.id, usageRecords.practiceId),
+          isNull(practices.deletedAt),
+          isNotNull(practices.stripeCustomerId)
+        )
+      )
+      .where(
+        and(
+          isNull(usageRecords.stripeMeteredAt),
+          isNull(usageRecords.deletedAt)
+        )
+      )
+      .limit(limit)
+  );
+
+  let metered = 0;
+  let skipped = 0;
+  for (const row of rows) {
+    const result = await maybeMeterToStripe({
+      usageRecordId: row.id,
+      practiceId: row.practiceId,
+      kind: row.kind as UsageKind,
+      quantity: row.quantity,
+    });
+    if (result === "metered") metered++;
+    if (result === "skipped") skipped++;
+  }
+
+  return { attempted: rows.length, metered, skipped };
 }
 
 /**
@@ -135,7 +239,8 @@ export async function usageForPractice(
         and(
           eq(usageRecords.practiceId, practiceId),
           eq(usageRecords.kind, kind),
-          eq(usageRecords.periodMonth, periodMonth)
+          eq(usageRecords.periodMonth, periodMonth),
+          isNull(usageRecords.deletedAt)
         )
       )
   );

@@ -3,20 +3,40 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
+  HeadBucketCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl as awsGetSignedUrl } from "@aws-sdk/s3-request-presigner";
 
-const s3 = new S3Client({
-  endpoint: process.env.S3_ENDPOINT,
-  region: process.env.S3_REGION ?? "us-east-1",
-  credentials: {
-    accessKeyId: process.env.S3_ACCESS_KEY ?? "",
-    secretAccessKey: process.env.S3_SECRET_KEY ?? "",
-  },
-  forcePathStyle: true, // Required for MinIO / S3-compatible stores
-});
+function storageEnv(name: string): string | undefined {
+  const trimmed = process.env[name]?.trim();
+  return trimmed ? trimmed : undefined;
+}
 
-const bucket = process.env.S3_BUCKET ?? "openpims";
+function bucketName(): string {
+  return storageEnv("S3_BUCKET") ?? "openpims";
+}
+
+function storageEndpoint(): string | undefined {
+  return storageEnv("S3_ENDPOINT");
+}
+
+function publicStorageEndpoint(): string {
+  return storageEndpoint() ?? "https://s3.amazonaws.com";
+}
+
+function s3Client(): S3Client {
+  return new S3Client({
+    endpoint: storageEndpoint(),
+    region: storageEnv("S3_REGION") ?? "us-east-1",
+    credentials: {
+      accessKeyId: storageEnv("S3_ACCESS_KEY") ?? "",
+      secretAccessKey: storageEnv("S3_SECRET_KEY") ?? "",
+    },
+    forcePathStyle: true, // Required for MinIO / S3-compatible stores
+  });
+}
+
+export const OBJECT_STORAGE_HEALTH_TIMEOUT_MS = 5_000;
 
 /**
  * Upload a file to S3/MinIO.
@@ -31,7 +51,8 @@ export async function uploadFile(
   body: Buffer,
   contentType: string,
 ): Promise<string> {
-  await s3.send(
+  const bucket = bucketName();
+  await s3Client().send(
     new PutObjectCommand({
       Bucket: bucket,
       Key: key,
@@ -41,8 +62,7 @@ export async function uploadFile(
   );
 
   // Build the URL from the endpoint so it works for both AWS S3 and MinIO
-  const endpoint = process.env.S3_ENDPOINT ?? "https://s3.amazonaws.com";
-  return `${endpoint}/${bucket}/${key}`;
+  return `${publicStorageEndpoint()}/${bucket}/${key}`;
 }
 
 /**
@@ -51,17 +71,33 @@ export async function uploadFile(
  * private R2/S3 API endpoint (which rejects unauthenticated <img> requests).
  *
  * @param key Object key in S3
+ * @param options.maxBytes Optional byte cap for callers that proxy object bytes
  * @returns The object bytes + content type, or null if it does not exist.
  */
 export async function getObject(
   key: string,
+  options: { maxBytes?: number } = {},
 ): Promise<{ body: Uint8Array; contentType?: string } | null> {
   try {
-    const res = await s3.send(
-      new GetObjectCommand({ Bucket: bucket, Key: key }),
+    const res = await s3Client().send(
+      new GetObjectCommand({ Bucket: bucketName(), Key: key }),
     );
+    if (
+      typeof options.maxBytes === "number" &&
+      typeof res.ContentLength === "number" &&
+      res.ContentLength > options.maxBytes
+    ) {
+      return null;
+    }
+
     const body = await res.Body?.transformToByteArray();
     if (!body) return null;
+    if (
+      typeof options.maxBytes === "number" &&
+      body.byteLength > options.maxBytes
+    ) {
+      return null;
+    }
     return { body, contentType: res.ContentType };
   } catch {
     return null;
@@ -80,11 +116,11 @@ export async function getSignedUrl(
   expiresIn = 3600,
 ): Promise<string> {
   const command = new GetObjectCommand({
-    Bucket: bucket,
+    Bucket: bucketName(),
     Key: key,
   });
 
-  return awsGetSignedUrl(s3, command, { expiresIn });
+  return awsGetSignedUrl(s3Client(), command, { expiresIn });
 }
 
 /**
@@ -93,10 +129,35 @@ export async function getSignedUrl(
  * @param key Object key to delete
  */
 export async function deleteFile(key: string): Promise<void> {
-  await s3.send(
+  await s3Client().send(
     new DeleteObjectCommand({
-      Bucket: bucket,
+      Bucket: bucketName(),
       Key: key,
     }),
   );
+}
+
+export async function checkObjectStorageHealth(
+  options: { timeoutMs?: number } = {},
+): Promise<{ ok: boolean; detail: string }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    options.timeoutMs ?? OBJECT_STORAGE_HEALTH_TIMEOUT_MS,
+  );
+
+  try {
+    await s3Client().send(
+      new HeadBucketCommand({
+        Bucket: bucketName(),
+      }),
+      { abortSignal: controller.signal },
+    );
+    return { ok: true, detail: "Object storage bucket reachable" };
+  } catch (err) {
+    void err;
+    return { ok: false, detail: "Object storage check failed" };
+  } finally {
+    clearTimeout(timeout);
+  }
 }

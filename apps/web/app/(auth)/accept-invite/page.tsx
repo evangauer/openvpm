@@ -5,6 +5,10 @@ import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
+import {
+  AUTH_PASSWORD_MAX_LENGTH,
+  AUTH_PASSWORD_MIN_LENGTH,
+} from "@/lib/auth-password-policy";
 
 function AcceptInviteInner() {
   const params = useSearchParams();
@@ -17,6 +21,10 @@ function AcceptInviteInner() {
     onSuccess: () => setDone(true),
     onError: (err) => toast.error(err.message),
   });
+  const passwordMeetsPolicy =
+    password.length >= AUTH_PASSWORD_MIN_LENGTH &&
+    password.length <= AUTH_PASSWORD_MAX_LENGTH;
+  const canSubmit = passwordMeetsPolicy && password === confirm;
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-surface">
@@ -46,6 +54,12 @@ function AcceptInviteInner() {
           <form
             onSubmit={(e) => {
               e.preventDefault();
+              if (!passwordMeetsPolicy) {
+                toast.error(
+                  `Use ${AUTH_PASSWORD_MIN_LENGTH}-${AUTH_PASSWORD_MAX_LENGTH} characters.`
+                );
+                return;
+              }
               if (password !== confirm) {
                 toast.error("Passwords don't match");
                 return;
@@ -64,9 +78,10 @@ function AcceptInviteInner() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
-                minLength={8}
+                minLength={AUTH_PASSWORD_MIN_LENGTH}
+                maxLength={AUTH_PASSWORD_MAX_LENGTH}
                 className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                placeholder="At least 8 characters"
+                placeholder={`At least ${AUTH_PASSWORD_MIN_LENGTH} characters`}
               />
             </div>
             <div>
@@ -79,14 +94,15 @@ function AcceptInviteInner() {
                 value={confirm}
                 onChange={(e) => setConfirm(e.target.value)}
                 required
-                minLength={8}
+                minLength={AUTH_PASSWORD_MIN_LENGTH}
+                maxLength={AUTH_PASSWORD_MAX_LENGTH}
                 className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
                 placeholder="Re-enter your password"
               />
             </div>
             <button
               type="submit"
-              disabled={accept.isPending}
+              disabled={!canSubmit || accept.isPending}
               className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
             >
               {accept.isPending ? "Activating…" : "Activate account"}

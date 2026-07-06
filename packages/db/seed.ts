@@ -432,9 +432,13 @@ async function seed() {
       for (const slot of daySlots) {
         const apptType = pickRandom(insertedApptTypes);
         const patient = pickRandom(insertedPatients);
-        const clientForPatient = insertedClients[
-          patientsData.findIndex((p) => insertedPatients.indexOf(patient) === patientsData.indexOf(p))
-        ];
+        // The appointment's client MUST be the patient's actual owner. The
+        // schedule/dashboard patient-name join requires
+        // patient.clientId === appointment.clientId, so a mismatched client
+        // makes the name resolve to null and render as "Unknown Patient".
+        // Map by the patient's own clientIdx, not its position in the array.
+        const patientIdx = insertedPatients.indexOf(patient);
+        const clientForPatient = insertedClients[patientsData[patientIdx]!.clientIdx];
         const startTime = setTime(day, slot.hour, slot.min);
         const endTime = addMinutes(startTime, apptType.durationMinutes);
 

@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import {
   FileText,
   ChevronDown,
@@ -14,14 +16,26 @@ import {
   ArrowRightLeft,
   Download,
   Mail,
+  Ban,
+  CreditCard,
+  CalendarClock,
 } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { useCurrencyFormatter } from "@/lib/locale/useCurrency";
-import { generateInvoicePdf } from "@/lib/pdf";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { EmptyState } from "@/components/common/empty-state";
 import { TableSkeleton } from "@/components/common/loading";
+import {
+  BILLING_ADJUSTMENT_REASON_MAX_LENGTH,
+  BILLING_NOTES_MAX_LENGTH,
+  BILLING_PAYMENT_AMOUNT_MIN,
+  BILLING_UNIT_PRICE_MAX,
+  isBillingAmountWithinBalance,
+} from "@/lib/billing/policy";
+import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
 
 const STATUS_TABS = [
   { label: "All", value: undefined, isEstimate: false as const },
@@ -29,6 +43,7 @@ const STATUS_TABS = [
   { label: "Sent", value: "sent", isEstimate: false as const },
   { label: "Paid", value: "paid", isEstimate: false as const },
   { label: "Overdue", value: "overdue", isEstimate: false as const },
+  { label: "Void", value: "void", isEstimate: false as const },
   { label: "Estimates", value: undefined, isEstimate: true as const },
 ] as const;
 
@@ -39,6 +54,7 @@ const STATUS_STYLES: Record<string, string> = {
   overdue: "bg-red-100 text-red-700",
   void: "bg-gray-100 text-gray-500",
   partial: "bg-amber-100 text-amber-700",
+  settled: "bg-teal-100 text-teal-700",
   estimate: "bg-purple-100 text-purple-700",
 };
 
@@ -51,9 +67,52 @@ const PAYMENT_METHODS = [
   { label: "Other", value: "other" },
 ] as const;
 
+function canManageBillingRole(role?: string | null): boolean {
+  return role === "admin" || role === "front_desk";
+}
+
+function formatBillingDateInput(
+  value: Date | string,
+  timeZone?: string | null
+) {
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [year, month, day] = value.split("-").map(Number) as [
+      number,
+      number,
+      number,
+    ];
+    return new Date(Date.UTC(year, month - 1, day)).toLocaleDateString(
+      "en-US",
+      { timeZone: "UTC" }
+    );
+  }
+
+  return formatBillingInstantDate(value, timeZone);
+}
+
+function formatBillingInstantDate(
+  value: Date | string,
+  timeZone?: string | null
+) {
+  const options: Intl.DateTimeFormatOptions = {
+    dateStyle: "short",
+    timeZone: timeZone ?? undefined,
+  };
+
+  try {
+    return new Date(value).toLocaleDateString("en-US", options);
+  } catch {
+    return new Date(value).toLocaleDateString("en-US", {
+      ...options,
+      timeZone: undefined,
+    });
+  }
+}
+
 function getDisplayStatus(invoice: {
   status: string;
   paidAmount: string | null;
+  adjustedAmount?: string | null;
   total: string | null;
   isEstimate: boolean;
 }): { label: string; style: string } {
@@ -61,8 +120,18 @@ function getDisplayStatus(invoice: {
     return { label: "estimate", style: STATUS_STYLES.estimate };
   }
   const paid = Number(invoice.paidAmount ?? 0);
+  const adjusted = Number(invoice.adjustedAmount ?? 0);
   const total = Number(invoice.total ?? 0);
-  if (paid > 0 && paid < total && invoice.status !== "paid") {
+  if (
+    total > 0 &&
+    adjusted > 0 &&
+    paid + adjusted >= total &&
+    invoice.status !== "paid" &&
+    invoice.status !== "void"
+  ) {
+    return { label: "settled", style: STATUS_STYLES.settled };
+  }
+  if (paid + adjusted > 0 && paid + adjusted < total && invoice.status !== "paid") {
     return { label: "partial", style: STATUS_STYLES.partial };
   }
   return {
@@ -72,6 +141,9 @@ function getDisplayStatus(invoice: {
 }
 
 export default function BillingPage() {
+  const router = useRouter();
+  const { data: session } = useSession();
+  const canManageBilling = canManageBillingRole(session?.user?.role);
   const [activeTab, setActiveTab] = useState(0);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
@@ -81,12 +153,27 @@ export default function BillingPage() {
   const statusFilter = tab.isEstimate ? undefined : tab.value;
   const isEstimateFilter = tab.isEstimate ? true : false;
 
+  const billingConfig = trpc.billing.getTaxConfig.useQuery(undefined, {
+    staleTime: 5 * 60 * 1000,
+  });
   const { data, isLoading, error } = trpc.billing.listInvoices.useQuery({
     status: statusFilter,
     isEstimate: isEstimateFilter,
     limit,
     offset,
   });
+  const listError = billingConfig.error ?? error;
+  const isListLoading = billingConfig.isLoading || isLoading;
+  const billingConfigMissing =
+    !billingConfig.isLoading && !billingConfig.error && !billingConfig.data;
+  const verifiedBillingConfig =
+    billingConfig.error || !billingConfig.data ? null : billingConfig.data;
+  const billingSettingsReady = verifiedBillingConfig !== null;
+  const billingTimeZone = verifiedBillingConfig
+    ? verifiedBillingConfig.timezone
+    : null;
+  const invoiceListMissing = !isLoading && !error && !data;
+  const billingListMissing = billingConfigMissing || invoiceListMissing;
 
   const utils = trpc.useUtils();
 
@@ -111,6 +198,17 @@ export default function BillingPage() {
     },
   });
 
+  const voidInvoice = trpc.billing.voidInvoice.useMutation({
+    onSuccess: () => {
+      toast.success("Invoice voided");
+      utils.billing.listInvoices.invalidate();
+      utils.billing.getInvoice.invalidate();
+    },
+    onError: (err) => {
+      toast.error(err.message);
+    },
+  });
+
   const handleStatusChange = (
     e: React.MouseEvent,
     id: string,
@@ -125,6 +223,12 @@ export default function BillingPage() {
     convertEstimate.mutate({ id });
   };
 
+  const handleVoidInvoice = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    if (!window.confirm("Void this invoice?")) return;
+    voidInvoice.mutate({ id });
+  };
+
   return (
     <div>
       <div className="flex items-center justify-between">
@@ -134,13 +238,21 @@ export default function BillingPage() {
             Invoices and payments
           </p>
         </div>
-        <Button asChild>
-          <Link href="/billing/new">
-            <Plus className="mr-1 h-4 w-4" />
-            New Invoice
-          </Link>
-        </Button>
+        {canManageBilling && (
+          <Button asChild>
+            <Link href="/billing/new">
+              <Plus className="mr-1 h-4 w-4" />
+              New Invoice
+            </Link>
+          </Button>
+        )}
       </div>
+
+      <WellnessBillingPanel
+        billingTimeZone={billingTimeZone}
+        settingsReady={billingSettingsReady}
+        canManageBilling={canManageBilling}
+      />
 
       {/* Status filter tabs */}
       <div className="mt-6 flex items-center gap-1 border-b border-border">
@@ -162,17 +274,15 @@ export default function BillingPage() {
         ))}
       </div>
 
-      {error && (
+      {listError || billingListMissing ? (
         <div className="mt-6 rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
-          {error.message}
+          {listError?.message ?? "Unable to load invoices. Please retry."}
         </div>
-      )}
-
-      {isLoading ? (
+      ) : isListLoading ? (
         <TableSkeleton rows={8} cols={7} />
       ) : data && data.items.length > 0 ? (
         <>
-          <div className="mt-6 overflow-hidden rounded-lg border border-border">
+          <div className="mt-6 overflow-x-auto rounded-lg border border-border">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border bg-muted/50">
@@ -216,8 +326,13 @@ export default function BillingPage() {
                     }
                     onStatusChange={handleStatusChange}
                     onConvertEstimate={handleConvertEstimate}
+                    onVoidInvoice={handleVoidInvoice}
+                    billingTimeZone={billingTimeZone}
+                    canManageBilling={canManageBilling}
                     isMutating={
-                      updateStatus.isPending || convertEstimate.isPending
+                      updateStatus.isPending ||
+                      convertEstimate.isPending ||
+                      voidInvoice.isPending
                     }
                   />
                 ))}
@@ -252,15 +367,206 @@ export default function BillingPage() {
           </div>
         </>
       ) : (
-        <div className="mt-6 rounded-lg border border-dashed border-border bg-card p-12 text-center">
-          <FileText className="mx-auto h-10 w-10 text-muted-foreground/50" />
-          <p className="mt-2 text-muted-foreground">
-            {tab.isEstimate
+        <EmptyState
+          className="mt-6"
+          icon={FileText}
+          title={
+            tab.isEstimate
               ? "No estimates yet"
               : statusFilter
-              ? "No invoices with this status"
-              : "No invoices yet"}
-          </p>
+                ? "No invoices with this status"
+                : "No invoices yet"
+          }
+          description={
+            tab.isEstimate
+              ? "Create an estimate when a client needs approval before services are performed."
+              : statusFilter
+                ? "Choose another status tab or create a new invoice."
+                : "Create invoices from services, products, or treatment templates before recording payments."
+          }
+          action={
+            canManageBilling
+              ? {
+                  label: tab.isEstimate ? "Create estimate" : "Create invoice",
+                  onClick: () => router.push("/billing/new"),
+                  icon: Plus,
+                }
+              : undefined
+          }
+        />
+      )}
+    </div>
+  );
+}
+
+function WellnessBillingPanel({
+  billingTimeZone,
+  settingsReady,
+  canManageBilling,
+}: {
+  billingTimeZone?: string | null;
+  settingsReady: boolean;
+  canManageBilling: boolean;
+}) {
+  const formatCurrency = useCurrencyFormatter();
+  const utils = trpc.useUtils();
+  const dueQuery = trpc.wellness.listDue.useQuery(undefined, {
+    enabled: settingsReady,
+    refetchOnWindowFocus: false,
+  });
+  const dueMembershipsMissing =
+    settingsReady && !dueQuery.isLoading && !dueQuery.error && !dueQuery.data;
+  const dueMembershipsUnavailable =
+    !!dueQuery.error || dueMembershipsMissing;
+  const verifiedDueMemberships =
+    dueQuery.isLoading || dueMembershipsUnavailable || !dueQuery.data
+      ? null
+      : dueQuery.data;
+  const dueMemberships = verifiedDueMemberships ?? [];
+  const totalDue = verifiedDueMemberships
+    ? verifiedDueMemberships.reduce(
+        (sum, row) => sum + Number(row.price ?? 0),
+        0
+      )
+    : 0;
+
+  const generateInvoices = trpc.wellness.generateDueInvoices.useMutation({
+    onSuccess: (result) => {
+      const label = result.generated === 1 ? "invoice" : "invoices";
+      toast.success(`${result.generated} wellness ${label} generated`);
+      utils.wellness.listDue.invalidate();
+      utils.billing.listInvoices.invalidate();
+    },
+    onError: (err) => {
+      toast.error(err.message);
+    },
+  });
+
+  if (
+    !settingsReady ||
+    (!dueQuery.isLoading &&
+      !dueQuery.error &&
+      !dueMembershipsMissing &&
+      dueMemberships.length === 0)
+  ) {
+    return null;
+  }
+
+  return (
+    <div
+      className={`mt-6 rounded-lg border ${
+        dueMembershipsUnavailable
+          ? "border-destructive bg-destructive/5"
+          : "border-border bg-card"
+      }`}
+    >
+      <div className="flex flex-col gap-3 border-b border-border p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-start gap-3">
+          <CalendarClock className="mt-0.5 h-5 w-5 text-primary" />
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="font-medium">Wellness invoices due</h3>
+              <Badge variant="secondary">Invoice schedule</Badge>
+            </div>
+            <p
+              className={`text-sm ${
+                dueMembershipsUnavailable
+                  ? "text-destructive"
+                  : "text-muted-foreground"
+              }`}
+            >
+              {dueQuery.isLoading
+                ? "Checking due memberships..."
+                : dueQuery.error
+                ? dueQuery.error.message
+                : dueMembershipsMissing
+                ? "Unable to load due wellness memberships. Please retry."
+                : `${dueMemberships.length} scheduled invoice${
+                    dueMemberships.length === 1 ? "" : "s"
+                  } due, ${formatCurrency(totalDue)} before tax`}
+            </p>
+            {!dueMembershipsUnavailable && !dueQuery.isLoading && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                OpenVPM generates invoices for each billing date; staff still
+                collect payment on each invoice.
+              </p>
+            )}
+          </div>
+        </div>
+        {canManageBilling && (
+          <Button
+            size="sm"
+            disabled={
+              dueQuery.isLoading ||
+              dueMembershipsUnavailable ||
+              dueMemberships.length === 0 ||
+              generateInvoices.isPending
+            }
+            onClick={() =>
+              generateInvoices.mutate({
+                enrollmentIds: dueMemberships.map((row) => row.enrollmentId),
+              })
+            }
+          >
+            {generateInvoices.isPending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <FileText className="mr-2 h-4 w-4" />
+            )}
+            Generate invoices
+          </Button>
+        )}
+      </div>
+      {dueMemberships.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border bg-muted/40">
+                <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                  Client
+                </th>
+                <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                  Patient
+                </th>
+                <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                  Plan
+                </th>
+                <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                  Due
+                </th>
+                <th className="px-4 py-3 text-right font-medium text-muted-foreground">
+                  Amount
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {dueMemberships.map((row) => (
+                <tr
+                  key={row.enrollmentId}
+                  className="border-b border-border last:border-0"
+                >
+                  <td className="px-4 py-3 font-medium">
+                    {row.clientFirstName} {row.clientLastName}
+                  </td>
+                  <td className="px-4 py-3 text-muted-foreground">
+                    {row.patientName || "\u2014"}
+                  </td>
+                  <td className="px-4 py-3 text-muted-foreground">
+                    {row.planName}
+                  </td>
+                  <td className="px-4 py-3 text-muted-foreground">
+                    {formatBillingDateInput(
+                      row.nextBillingDate,
+                      billingTimeZone
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums">
+                    {formatCurrency(row.price)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
@@ -273,6 +579,9 @@ function InvoiceRow({
   onToggle,
   onStatusChange,
   onConvertEstimate,
+  onVoidInvoice,
+  billingTimeZone,
+  canManageBilling,
   isMutating,
 }: {
   invoice: {
@@ -282,6 +591,7 @@ function InvoiceRow({
     tax: string | null;
     total: string | null;
     paidAmount: string | null;
+    adjustedAmount?: string | null;
     dueDate: string | null;
     createdAt: Date | string | null;
     isEstimate: boolean;
@@ -297,6 +607,9 @@ function InvoiceRow({
     status: "sent" | "paid"
   ) => void;
   onConvertEstimate: (e: React.MouseEvent, id: string) => void;
+  onVoidInvoice: (e: React.MouseEvent, id: string) => void;
+  billingTimeZone?: string | null;
+  canManageBilling: boolean;
   isMutating: boolean;
 }) {
   const formatCurrency = useCurrencyFormatter();
@@ -306,6 +619,7 @@ function InvoiceRow({
   );
 
   const displayStatus = getDisplayStatus(invoice);
+  const adjustedAmount = Number(invoice.adjustedAmount ?? 0);
 
   return (
     <>
@@ -337,21 +651,26 @@ function InvoiceRow({
           {formatCurrency(invoice.total)}
         </td>
         <td className="px-4 py-3 text-right tabular-nums">
-          {formatCurrency(invoice.paidAmount)}
+          <span>{formatCurrency(invoice.paidAmount)}</span>
+          {adjustedAmount > 0 && (
+            <span className="block text-xs text-muted-foreground">
+              Adj {formatCurrency(adjustedAmount)}
+            </span>
+          )}
         </td>
         <td className="px-4 py-3 text-muted-foreground">
           {invoice.dueDate
-            ? new Date(invoice.dueDate).toLocaleDateString()
+            ? formatBillingDateInput(invoice.dueDate, billingTimeZone)
             : "\u2014"}
         </td>
         <td className="px-4 py-3 text-muted-foreground">
           {invoice.createdAt
-            ? new Date(invoice.createdAt).toLocaleDateString()
+            ? formatBillingInstantDate(invoice.createdAt, billingTimeZone)
             : "\u2014"}
         </td>
         <td className="px-4 py-3 text-right">
           <div className="flex items-center justify-end gap-1">
-            {invoice.isEstimate && (
+            {canManageBilling && invoice.isEstimate && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -362,7 +681,9 @@ function InvoiceRow({
                 <ArrowRightLeft className="h-3.5 w-3.5" />
               </Button>
             )}
-            {!invoice.isEstimate && invoice.status === "draft" && (
+            {canManageBilling &&
+              !invoice.isEstimate &&
+              invoice.status === "draft" && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -373,7 +694,8 @@ function InvoiceRow({
                 <Send className="h-3.5 w-3.5" />
               </Button>
             )}
-            {!invoice.isEstimate &&
+            {canManageBilling &&
+              !invoice.isEstimate &&
               (invoice.status === "sent" || invoice.status === "overdue") && (
                 <>
                   {invoice.status === "sent" ? null : (
@@ -397,6 +719,19 @@ function InvoiceRow({
                     <CheckCircle className="h-3.5 w-3.5" />
                   </Button>
                 </>
+              )}
+            {canManageBilling &&
+              invoice.status !== "paid" &&
+              invoice.status !== "void" && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={isMutating}
+                  onClick={(e) => onVoidInvoice(e, invoice.id)}
+                  title="Void Invoice"
+                >
+                  <Ban className="h-3.5 w-3.5" />
+                </Button>
               )}
           </div>
         </td>
@@ -424,22 +759,32 @@ function InvoiceRow({
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={(e) => {
+                        onClick={async (e) => {
                           e.stopPropagation();
                           const d = detail.data!;
                           const clientName = [d.clientFirstName, d.clientLastName]
                             .filter(Boolean)
                             .join(" ");
+                          const { generateInvoicePdf } = await import("@/lib/pdf");
                           generateInvoicePdf({
                             practiceName: "Your Practice",
                             clientName,
                             clientEmail: d.clientEmail ?? undefined,
                             patientName: d.patientName ?? undefined,
                             invoiceDate: d.createdAt
-                              ? new Date(d.createdAt).toLocaleDateString()
-                              : new Date().toLocaleDateString(),
+                              ? formatBillingInstantDate(
+                                  d.createdAt,
+                                  billingTimeZone
+                                )
+                              : formatBillingInstantDate(
+                                  new Date(),
+                                  billingTimeZone
+                                ),
                             dueDate: d.dueDate
-                              ? new Date(d.dueDate).toLocaleDateString()
+                              ? formatBillingDateInput(
+                                  d.dueDate,
+                                  billingTimeZone
+                                )
                               : undefined,
                             status: "estimate",
                             items: d.items.map((item) => ({
@@ -452,24 +797,23 @@ function InvoiceRow({
                             tax: formatCurrency(d.tax),
                             total: formatCurrency(d.total),
                             paidAmount: formatCurrency(d.paidAmount),
-                            balanceDue: formatCurrency(
-                              parseFloat(String(d.total)) -
-                                parseFloat(String(d.paidAmount))
-                            ),
+                            balanceDue: formatCurrency(d.balanceDue),
                           }).save(`estimate-${clientName || "unknown"}.pdf`);
                         }}
                       >
                         <Download className="mr-1 h-3.5 w-3.5" />
                         Present to Client
                       </Button>
-                      <Button
-                        size="sm"
-                        disabled={isMutating}
-                        onClick={(e) => onConvertEstimate(e, invoice.id)}
-                      >
-                        <CheckCircle className="mr-1 h-3.5 w-3.5" />
-                        Approve &amp; Convert
-                      </Button>
+                      {canManageBilling && (
+                        <Button
+                          size="sm"
+                          disabled={isMutating}
+                          onClick={(e) => onConvertEstimate(e, invoice.id)}
+                        >
+                          <CheckCircle className="mr-1 h-3.5 w-3.5" />
+                          Approve &amp; Convert
+                        </Button>
+                      )}
                     </div>
                   </div>
                 )}
@@ -489,7 +833,8 @@ function InvoiceRow({
                   )}
                 </div>
                 {detail.data.items.length > 0 ? (
-                  <table className="w-full text-sm">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-border">
                         <th className="py-2 text-left font-medium text-muted-foreground">
@@ -557,7 +902,8 @@ function InvoiceRow({
                         </td>
                       </tr>
                     </tfoot>
-                  </table>
+                    </table>
+                  </div>
                 ) : (
                   <p className="text-sm text-muted-foreground">
                     No line items on this invoice.
@@ -569,18 +915,29 @@ function InvoiceRow({
                   <div className="flex items-center justify-between rounded-lg border border-border bg-background p-3 text-sm">
                     <div className="flex items-center gap-6">
                       <span>
-                        Total: <span className="font-semibold">{formatCurrency(detail.data.total)}</span>
+                        Total:{" "}
+                        <span className="font-semibold">
+                          {formatCurrency(detail.data.total)}
+                        </span>
                       </span>
                       <span>
-                        Paid: <span className="font-semibold text-green-600">{formatCurrency(detail.data.paidAmount)}</span>
+                        Paid:{" "}
+                        <span className="font-semibold text-green-600">
+                          {formatCurrency(detail.data.paidAmount)}
+                        </span>
                       </span>
+                      {Number(detail.data.adjustedAmount ?? 0) > 0 && (
+                        <span>
+                          Adjusted:{" "}
+                          <span className="font-semibold text-teal-600">
+                            {formatCurrency(detail.data.adjustedAmount)}
+                          </span>
+                        </span>
+                      )}
                       <span>
                         Balance:{" "}
                         <span className="font-semibold text-red-600">
-                          {formatCurrency(
-                            Number(detail.data.total ?? 0) -
-                              Number(detail.data.paidAmount ?? 0)
-                          )}
+                          {formatCurrency(detail.data.balanceDue)}
                         </span>
                       </span>
                     </div>
@@ -588,22 +945,32 @@ function InvoiceRow({
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={(e) => {
+                        onClick={async (e) => {
                           e.stopPropagation();
                           const d = detail.data!;
                           const clientName = [d.clientFirstName, d.clientLastName]
                             .filter(Boolean)
                             .join(" ");
+                          const { generateInvoicePdf } = await import("@/lib/pdf");
                           generateInvoicePdf({
                             practiceName: "Your Practice",
                             clientName,
                             clientEmail: d.clientEmail ?? undefined,
                             patientName: d.patientName ?? undefined,
                             invoiceDate: d.createdAt
-                              ? new Date(d.createdAt).toLocaleDateString()
-                              : new Date().toLocaleDateString(),
+                              ? formatBillingInstantDate(
+                                  d.createdAt,
+                                  billingTimeZone
+                                )
+                              : formatBillingInstantDate(
+                                  new Date(),
+                                  billingTimeZone
+                                ),
                             dueDate: d.dueDate
-                              ? new Date(d.dueDate).toLocaleDateString()
+                              ? formatBillingDateInput(
+                                  d.dueDate,
+                                  billingTimeZone
+                                )
                               : undefined,
                             status: d.status,
                             items: d.items.map((item) => ({
@@ -616,17 +983,16 @@ function InvoiceRow({
                             tax: formatCurrency(d.tax),
                             total: formatCurrency(d.total),
                             paidAmount: formatCurrency(d.paidAmount),
-                            balanceDue: formatCurrency(
-                              parseFloat(String(d.total)) -
-                                parseFloat(String(d.paidAmount))
-                            ),
+                            balanceDue: formatCurrency(d.balanceDue),
                           }).save(`invoice-${clientName || "unknown"}.pdf`);
                         }}
                       >
                         <Download className="mr-1 h-3.5 w-3.5" />
                         Download PDF
                       </Button>
-                      <EmailInvoiceButton invoiceId={invoice.id} />
+                      {canManageBilling && (
+                        <EmailInvoiceButton invoiceId={invoice.id} />
+                      )}
                     </div>
                   </div>
                 )}
@@ -635,9 +1001,12 @@ function InvoiceRow({
                 {!invoice.isEstimate && (
                   <PaymentSection
                     invoiceId={invoice.id}
-                    invoiceTotal={detail.data.total}
                     invoicePaidAmount={detail.data.paidAmount}
+                    invoiceAdjustedAmount={detail.data.adjustedAmount}
+                    invoiceBalanceDue={detail.data.balanceDue}
                     invoiceStatus={invoice.status}
+                    billingTimeZone={billingTimeZone}
+                    canManageBilling={canManageBilling}
                   />
                 )}
               </div>
@@ -685,24 +1054,41 @@ function EmailInvoiceButton({ invoiceId }: { invoiceId: string }) {
 
 function PaymentSection({
   invoiceId,
-  invoiceTotal,
   invoicePaidAmount,
+  invoiceAdjustedAmount,
+  invoiceBalanceDue,
   invoiceStatus,
+  billingTimeZone,
+  canManageBilling,
 }: {
   invoiceId: string;
-  invoiceTotal: string | null;
   invoicePaidAmount: string | null;
+  invoiceAdjustedAmount: string | null;
+  invoiceBalanceDue: string | null;
   invoiceStatus: string;
+  billingTimeZone?: string | null;
+  canManageBilling: boolean;
 }) {
   const formatCurrency = useCurrencyFormatter();
   const [showPaymentForm, setShowPaymentForm] = useState(false);
+  const [showAdjustmentForm, setShowAdjustmentForm] = useState(false);
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<string>("cash");
   const [paymentNotes, setPaymentNotes] = useState("");
+  const [adjustmentType, setAdjustmentType] = useState<"credit" | "write_off">(
+    "credit"
+  );
+  const [adjustmentAmount, setAdjustmentAmount] = useState("");
+  const [adjustmentReason, setAdjustmentReason] = useState("");
 
   const utils = trpc.useUtils();
 
   const paymentsQuery = trpc.billing.listPayments.useQuery({ invoiceId });
+  const adjustmentsQuery = trpc.billing.listAdjustments.useQuery({ invoiceId });
+  const cardPaymentStatus = trpc.billing.cardPaymentStatus.useQuery(undefined, {
+    enabled: canManageBilling,
+    staleTime: 60_000,
+  });
 
   const recordPayment = trpc.billing.recordPayment.useMutation({
     onSuccess: () => {
@@ -720,40 +1106,155 @@ function PaymentSection({
     },
   });
 
-  const remaining = Math.max(
-    0,
-    Number(invoiceTotal ?? 0) - Number(invoicePaidAmount ?? 0)
-  );
+  const applyAdjustment = trpc.billing.applyInvoiceAdjustment.useMutation({
+    onSuccess: () => {
+      toast.success("Invoice adjustment applied");
+      utils.billing.listAdjustments.invalidate({ invoiceId });
+      utils.billing.listInvoices.invalidate();
+      utils.billing.getInvoice.invalidate({ id: invoiceId });
+      setShowAdjustmentForm(false);
+      setAdjustmentType("credit");
+      setAdjustmentAmount("");
+      setAdjustmentReason("");
+    },
+    onError: (err) => {
+      toast.error(err.message);
+    },
+  });
+
+  const cardCheckout = trpc.billing.createCardPaymentCheckout.useMutation({
+    onSuccess: ({ url }) => {
+      if (!isSafeCheckoutRedirectUrl(url)) {
+        toast.error("Card checkout is unavailable. Please try again.");
+        return;
+      }
+      window.location.href = url;
+    },
+    onError: (err) => {
+      toast.error(err.message);
+    },
+  });
+
+  const remaining = Math.max(0, Number(invoiceBalanceDue ?? 0));
+  const amountInputMax = Math.min(remaining, BILLING_UNIT_PRICE_MAX);
+  const canCollect =
+    canManageBilling &&
+    (invoiceStatus === "sent" || invoiceStatus === "overdue") &&
+    remaining > 0;
+  const cardPaymentStatusMissing =
+    canManageBilling &&
+    !cardPaymentStatus.isLoading &&
+    !cardPaymentStatus.error &&
+    !cardPaymentStatus.data;
+  const verifiedCardPaymentStatus =
+    cardPaymentStatus.isLoading ||
+    cardPaymentStatus.error ||
+    cardPaymentStatusMissing ||
+    !cardPaymentStatus.data
+      ? null
+      : cardPaymentStatus.data;
+  const cardPaymentsEnabled = verifiedCardPaymentStatus
+    ? verifiedCardPaymentStatus.enabled === true
+    : false;
+  const cardPaymentsUnavailable =
+    cardPaymentStatus.isError ||
+    cardPaymentStatusMissing ||
+    (verifiedCardPaymentStatus ? !verifiedCardPaymentStatus.enabled : false);
+  const canRecordPayment =
+    canManageBilling &&
+    isBillingAmountWithinBalance(paymentAmount, invoiceBalanceDue) &&
+    paymentNotes.trim().length <= BILLING_NOTES_MAX_LENGTH &&
+    !recordPayment.isPending;
+  const canApplyAdjustment =
+    canManageBilling &&
+    isBillingAmountWithinBalance(adjustmentAmount, invoiceBalanceDue) &&
+    adjustmentReason.trim().length <= BILLING_ADJUSTMENT_REASON_MAX_LENGTH &&
+    !applyAdjustment.isPending;
 
   const handleOpenForm = () => {
     setPaymentAmount(remaining.toFixed(2));
     setShowPaymentForm(true);
   };
 
+  const handleOpenAdjustmentForm = () => {
+    setAdjustmentAmount(remaining.toFixed(2));
+    setShowAdjustmentForm(true);
+  };
+
   const handleRecordPayment = () => {
-    if (!paymentAmount || parseFloat(paymentAmount) <= 0) return;
+    if (!canRecordPayment) return;
     recordPayment.mutate({
       invoiceId,
-      amount: paymentAmount,
+      amount: paymentAmount.trim(),
       method: paymentMethod as any,
-      notes: paymentNotes || undefined,
+      notes: paymentNotes.trim() || undefined,
+    });
+  };
+
+  const handleApplyAdjustment = () => {
+    if (!canApplyAdjustment) return;
+    applyAdjustment.mutate({
+      invoiceId,
+      type: adjustmentType,
+      amount: adjustmentAmount.trim(),
+      reason: adjustmentReason.trim() || undefined,
     });
   };
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <h4 className="text-sm font-medium">Payment History</h4>
-        {invoiceStatus !== "paid" && remaining > 0 && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleOpenForm}
-          >
-            <DollarSign className="mr-1 h-3.5 w-3.5" />
-            Record Payment
-          </Button>
+        <h4 className="text-sm font-medium">Payments &amp; Adjustments</h4>
+        {canCollect && (
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={handleOpenForm}>
+              <DollarSign className="mr-1 h-3.5 w-3.5" />
+              Record Payment
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={
+                cardCheckout.isPending ||
+                cardPaymentStatus.isLoading ||
+                !cardPaymentsEnabled
+              }
+              onClick={() => cardCheckout.mutate({ invoiceId })}
+              title={
+                cardPaymentsUnavailable
+                  ? "Card payments are not configured"
+                  : "Take card payment"
+              }
+            >
+              {cardCheckout.isPending ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <CreditCard className="mr-1 h-3.5 w-3.5" />
+              )}
+              Take Card
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleOpenAdjustmentForm}
+            >
+              <DollarSign className="mr-1 h-3.5 w-3.5" />
+              Credit / Write Off
+            </Button>
+          </div>
         )}
+      </div>
+
+      {canCollect && cardPaymentsUnavailable && (
+        <p className="text-xs text-muted-foreground">
+          Card payments are not configured.
+        </p>
+      )}
+
+      <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+        <span>Paid {formatCurrency(invoicePaidAmount)}</span>
+        <span>Adjusted {formatCurrency(invoiceAdjustedAmount)}</span>
+        <span>Balance {formatCurrency(invoiceBalanceDue)}</span>
       </div>
 
       {/* Payment form */}
@@ -767,8 +1268,8 @@ function PaymentSection({
               <Input
                 type="number"
                 step="0.01"
-                min="0.01"
-                max={remaining.toString()}
+                min={BILLING_PAYMENT_AMOUNT_MIN}
+                max={amountInputMax}
                 value={paymentAmount}
                 onChange={(e) => setPaymentAmount(e.target.value)}
                 placeholder="0.00"
@@ -796,6 +1297,7 @@ function PaymentSection({
               </label>
               <Input
                 value={paymentNotes}
+                maxLength={BILLING_NOTES_MAX_LENGTH}
                 onChange={(e) => setPaymentNotes(e.target.value)}
                 placeholder="Reference, check #, etc."
               />
@@ -805,11 +1307,7 @@ function PaymentSection({
             <Button
               size="sm"
               onClick={handleRecordPayment}
-              disabled={
-                !paymentAmount ||
-                parseFloat(paymentAmount) <= 0 ||
-                recordPayment.isPending
-              }
+              disabled={!canRecordPayment}
             >
               {recordPayment.isPending ? "Recording..." : "Record Payment"}
             </Button>
@@ -829,11 +1327,80 @@ function PaymentSection({
         </div>
       )}
 
+      {showAdjustmentForm && (
+        <div className="space-y-3 rounded-lg border border-border bg-background p-4">
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">
+                Type
+              </label>
+              <select
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                value={adjustmentType}
+                onChange={(e) =>
+                  setAdjustmentType(e.target.value as "credit" | "write_off")
+                }
+              >
+                <option value="credit">Credit</option>
+                <option value="write_off">Write-off</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">
+                Amount
+              </label>
+              <Input
+                type="number"
+                step="0.01"
+                min={BILLING_PAYMENT_AMOUNT_MIN}
+                max={amountInputMax}
+                value={adjustmentAmount}
+                onChange={(e) => setAdjustmentAmount(e.target.value)}
+                placeholder="0.00"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">
+                Reason
+              </label>
+              <Input
+                value={adjustmentReason}
+                maxLength={BILLING_ADJUSTMENT_REASON_MAX_LENGTH}
+                onChange={(e) => setAdjustmentReason(e.target.value)}
+                placeholder="Discount, courtesy, bad debt"
+              />
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              onClick={handleApplyAdjustment}
+              disabled={!canApplyAdjustment}
+            >
+              {applyAdjustment.isPending ? "Applying..." : "Apply Adjustment"}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowAdjustmentForm(false)}
+            >
+              Cancel
+            </Button>
+          </div>
+          {applyAdjustment.isError && (
+            <p className="text-xs text-destructive">
+              {applyAdjustment.error.message}
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Payment list */}
       {paymentsQuery.isLoading ? (
         <p className="text-xs text-muted-foreground">Loading payments...</p>
       ) : paymentsQuery.data && paymentsQuery.data.length > 0 ? (
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border">
               <th className="py-2 text-left font-medium text-muted-foreground">
@@ -861,7 +1428,10 @@ function PaymentSection({
               >
                 <td className="py-2 text-muted-foreground">
                   {payment.receivedAt
-                    ? new Date(payment.receivedAt).toLocaleDateString()
+                    ? formatBillingInstantDate(
+                        payment.receivedAt,
+                        billingTimeZone
+                      )
                     : "\u2014"}
                 </td>
                 <td className="py-2 text-right tabular-nums font-medium text-green-600">
@@ -879,9 +1449,71 @@ function PaymentSection({
               </tr>
             ))}
           </tbody>
-        </table>
+          </table>
+        </div>
       ) : (
         <p className="text-xs text-muted-foreground">No payments recorded.</p>
+      )}
+
+      {adjustmentsQuery.isLoading ? (
+        <p className="text-xs text-muted-foreground">Loading adjustments...</p>
+      ) : adjustmentsQuery.data && adjustmentsQuery.data.length > 0 ? (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border">
+              <th className="py-2 text-left font-medium text-muted-foreground">
+                Date
+              </th>
+              <th className="py-2 text-left font-medium text-muted-foreground">
+                Type
+              </th>
+              <th className="py-2 text-right font-medium text-muted-foreground">
+                Amount
+              </th>
+              <th className="py-2 text-left font-medium text-muted-foreground">
+                Created By
+              </th>
+              <th className="py-2 text-left font-medium text-muted-foreground">
+                Reason
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {adjustmentsQuery.data.map((adjustment) => (
+              <tr
+                key={adjustment.id}
+                className="border-b border-border/50 last:border-0"
+              >
+                <td className="py-2 text-muted-foreground">
+                  {adjustment.createdAt
+                    ? formatBillingInstantDate(
+                        adjustment.createdAt,
+                        billingTimeZone
+                      )
+                    : "\u2014"}
+                </td>
+                <td className="py-2 capitalize text-muted-foreground">
+                  {adjustment.type.replace(/_/g, " ")}
+                </td>
+                <td className="py-2 text-right tabular-nums font-medium text-teal-600">
+                  {formatCurrency(adjustment.amount)}
+                </td>
+                <td className="py-2 text-muted-foreground">
+                  {adjustment.createdByName ?? "\u2014"}
+                </td>
+                <td className="py-2 text-muted-foreground">
+                  {adjustment.reason || "\u2014"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+          </table>
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          No credits or write-offs recorded.
+        </p>
       )}
     </div>
   );

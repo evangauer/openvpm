@@ -27,27 +27,107 @@ import {
   Mail,
   Copy,
   MessageSquare,
+  MapPin,
+  Star,
+  HeartPulse,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import { EmptyState } from "@/components/common/empty-state";
 import { AccentColorPicker } from "@/components/brand/accent-color-picker";
 import { MessagingTab } from "@/components/settings/messaging-tab";
 import { cn, isValidEmail } from "@/lib/utils";
 import { toast } from "sonner";
 import { regionDefaults } from "@/lib/locale/format";
 import { useCurrencyFormatter } from "@/lib/locale/useCurrency";
+import { formatDateInputForTimeZone } from "@/lib/date-input";
+import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
+import { trialCalendarDaysLeft } from "@/lib/billing/trial-days";
+import {
+  PRACTICE_BACKUP_JSON_MAX_BYTES,
+  PRACTICE_BACKUP_JSON_SIZE_MESSAGE,
+  isPracticeBackupJsonSizeValid,
+} from "@/lib/backup/policy";
+import {
+  isWellnessPlanPriceInputValid,
+  WELLNESS_PLAN_DESCRIPTION_MAX_LENGTH,
+  WELLNESS_PLAN_NAME_MAX_LENGTH,
+  WELLNESS_PLAN_PRICE_MAX,
+  WELLNESS_PLAN_PRICE_MIN,
+  WELLNESS_PLAN_PRICE_SCALE,
+} from "@/lib/wellness/policy";
+import {
+  isTreatmentTemplateItemTotalValid,
+  isTreatmentTemplateQuantityValid,
+  isTreatmentTemplateUnitPriceInputValid,
+  TREATMENT_TEMPLATE_DESCRIPTION_MAX_LENGTH,
+  TREATMENT_TEMPLATE_ITEM_DESCRIPTION_MAX_LENGTH,
+  TREATMENT_TEMPLATE_ITEM_QUANTITY_MAX,
+  TREATMENT_TEMPLATE_ITEM_QUANTITY_MIN,
+  TREATMENT_TEMPLATE_MAX_ITEMS,
+  TREATMENT_TEMPLATE_NAME_MAX_LENGTH,
+  TREATMENT_TEMPLATE_UNIT_PRICE_MAX,
+} from "@/lib/templates/policy";
+import {
+  CLIENT_UPLOAD_TIMEOUT_MS,
+  fetchWithClientTimeout,
+} from "@/lib/client-fetch";
+import {
+  IMAGE_UPLOAD_POLICY_MESSAGE,
+  isImageUploadFileValid,
+} from "@/lib/upload-policy";
+import {
+  IMPORT_CSV_MAX_BYTES,
+  isImportCsvSizeValid,
+} from "@/lib/import/policy";
+import {
+  AUTH_PASSWORD_MAX_LENGTH,
+  AUTH_PASSWORD_MIN_LENGTH,
+} from "@/lib/auth-password-policy";
+import {
+  ACCOUNT_DELETION_REASON_MAX_LENGTH,
+  APPOINTMENT_TYPE_DURATION_MAX_MINUTES,
+  APPOINTMENT_TYPE_DURATION_MIN_MINUTES,
+  APPOINTMENT_TYPE_NAME_MAX_LENGTH,
+  LOCATION_NAME_MAX_LENGTH,
+  PRACTICE_NAME_MAX_LENGTH,
+  ROOM_NAME_MAX_LENGTH,
+  SETTINGS_ADDRESS_MAX_LENGTH,
+  SETTINGS_EMAIL_MAX_LENGTH,
+  SETTINGS_PHONE_MAX_LENGTH,
+  SETTINGS_TAX_RATE_PATTERN,
+  SETTINGS_VAT_NUMBER_MAX_LENGTH,
+  SETTINGS_WEBSITE_MAX_LENGTH,
+  STAFF_LICENSE_NUMBER_MAX_LENGTH,
+  STAFF_NAME_MAX_LENGTH,
+  isSupportedPracticeTimezone,
+} from "@/lib/settings-policy";
 
 // ── Types ───────────────────────────────────────────────────
-type Tab = "practice" | "staff" | "appointmentTypes" | "rooms" | "data" | "templates" | "messaging" | "billing";
+type Tab =
+  | "practice"
+  | "locations"
+  | "staff"
+  | "appointmentTypes"
+  | "rooms"
+  | "data"
+  | "templates"
+  | "wellness"
+  | "messaging"
+  | "billing";
 
 const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: "practice", label: "Practice Info", icon: Settings },
+  { id: "locations", label: "Locations", icon: MapPin },
   { id: "staff", label: "Staff", icon: Users },
   { id: "appointmentTypes", label: "Appointment Types", icon: Calendar },
   { id: "rooms", label: "Rooms", icon: DoorOpen },
   { id: "data", label: "Data", icon: Database },
   { id: "templates", label: "Templates", icon: Layers },
+  { id: "wellness", label: "Wellness Plans", icon: HeartPulse },
   { id: "messaging", label: "Messaging", icon: MessageSquare },
   { id: "billing", label: "Plan & Billing", icon: CreditCard },
 ];
@@ -101,6 +181,96 @@ const ROLE_BADGE: Record<string, string> = {
 
 const ROOM_TYPES = ["exam", "surgery", "treatment", "boarding"] as const;
 
+type PracticeInfoForm = {
+  name: string;
+  address: string;
+  phone: string;
+  email: string;
+  website: string;
+  timezone: string;
+  country: string;
+  currency: string;
+  taxRatePercent: string;
+  vatNumber: string;
+};
+
+function formatSettingsDateTime(
+  value: Date | string | null | undefined,
+  timeZone?: string | null
+): string {
+  if (!value) return "";
+
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+
+  const options: Intl.DateTimeFormatOptions = {
+    dateStyle: "medium",
+    timeStyle: "short",
+  };
+  const resolvedTimeZone = timeZone?.trim() || "UTC";
+
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      ...options,
+      timeZone: resolvedTimeZone,
+    }).format(date);
+  } catch {
+    return new Intl.DateTimeFormat("en-US", {
+      ...options,
+      timeZone: "UTC",
+    }).format(date);
+  }
+}
+
+function formatSettingsDateInput(
+  value: Date = new Date(),
+  timeZone?: string | null
+): string {
+  return formatDateInputForTimeZone(value, timeZone?.trim() || "UTC");
+}
+
+function requireSettingsExportData<T>(
+  result: { data?: T; error?: { message?: string } | null },
+  fallbackMessage: string
+): T {
+  if (result.error) {
+    throw new Error(result.error.message || fallbackMessage);
+  }
+
+  if (result.data === undefined) {
+    throw new Error(fallbackMessage);
+  }
+
+  return result.data;
+}
+
+function SettingsLoadError({
+  message,
+  title = "Could not load settings",
+  onRetry,
+}: {
+  message: string;
+  title?: string;
+  onRetry?: () => void;
+}) {
+  return (
+    <div className="rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
+      <div className="flex items-start gap-2">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+        <div>
+          <p className="font-medium">{title}</p>
+          <p className="mt-1">{message}</p>
+          {onRetry ? (
+            <Button variant="outline" size="sm" onClick={onRetry} className="mt-3">
+              Retry
+            </Button>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main Page ───────────────────────────────────────────────
 export default function SettingsPage() {
   return (
@@ -117,12 +287,21 @@ export default function SettingsPage() {
 }
 
 function SettingsPageInner() {
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const searchParams = useSearchParams();
   const initialTab = (searchParams.get("tab") as Tab) || "practice";
   const [activeTab, setActiveTab] = useState<Tab>(
     tabs.some((t) => t.id === initialTab) ? initialTab : "practice"
   );
+
+  if (status === "loading") {
+    return (
+      <div className="flex items-center justify-center gap-2 py-24 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Checking settings access...
+      </div>
+    );
+  }
 
   if (session?.user?.role !== "admin") {
     return (
@@ -148,7 +327,7 @@ function SettingsPageInner() {
       </div>
 
       {/* Tabs */}
-      <div className="mt-6 flex gap-1 border-b border-border">
+      <div className="mt-6 flex flex-wrap gap-1 border-b border-border">
         {tabs.map((tab) => {
           const Icon = tab.icon;
           return (
@@ -172,11 +351,13 @@ function SettingsPageInner() {
       {/* Tab content */}
       <div className="mt-6">
         {activeTab === "practice" && <PracticeInfoTab />}
+        {activeTab === "locations" && <LocationsTab />}
         {activeTab === "staff" && <StaffTab />}
         {activeTab === "appointmentTypes" && <AppointmentTypesTab />}
         {activeTab === "rooms" && <RoomsTab />}
         {activeTab === "data" && <DataTab />}
         {activeTab === "templates" && <TemplatesTab />}
+        {activeTab === "wellness" && <WellnessPlansTab />}
         {activeTab === "messaging" && <MessagingTab />}
         {activeTab === "billing" && <BillingTab />}
       </div>
@@ -187,7 +368,11 @@ function SettingsPageInner() {
 // ── Practice Info ───────────────────────────────────────────
 function PracticeInfoTab() {
   const utils = trpc.useUtils();
-  const { data: practice, isLoading } = trpc.settings.getPractice.useQuery();
+  const {
+    data: practice,
+    isLoading,
+    error: practiceError,
+  } = trpc.settings.getPractice.useQuery();
   const updateMutation = trpc.settings.updatePractice.useMutation({
     onSuccess: () => {
       utils.settings.getPractice.invalidate();
@@ -215,12 +400,21 @@ function PracticeInfoTab() {
   const logoInputRef = useRef<HTMLInputElement>(null);
 
   const handleLogoUpload = async (file: File) => {
+    if (!isImageUploadFileValid(file)) {
+      toast.error(IMAGE_UPLOAD_POLICY_MESSAGE);
+      return;
+    }
+
     setUploadingLogo(true);
     try {
       const body = new FormData();
       body.append("file", file);
       body.append("category", "branding");
-      const res = await fetch("/api/upload", { method: "POST", body });
+      const res = await fetchWithClientTimeout(
+        "/api/upload",
+        { method: "POST", body },
+        CLIENT_UPLOAD_TIMEOUT_MS
+      );
       const json = await res.json();
       if (!res.ok) {
         throw new Error(json.error ?? "Upload failed");
@@ -233,35 +427,21 @@ function PracticeInfoTab() {
     }
   };
 
-  const currentBrandColor =
-    (practice?.settings as { brandColor?: string } | null)?.brandColor ?? null;
-
-  const [form, setForm] = useState<{
-    name: string;
-    address: string;
-    phone: string;
-    email: string;
-    website: string;
-    timezone: string;
-    country: string;
-    currency: string;
-    taxRatePercent: string;
-    vatNumber: string;
-  } | null>(null);
-
-  // Initialize form when data loads
-  const current = form ?? {
-    name: practice?.name ?? "",
-    address: practice?.address ?? "",
-    phone: practice?.phone ?? "",
-    email: practice?.email ?? "",
-    website: practice?.website ?? "",
-    timezone: practice?.timezone ?? "America/New_York",
-    country: practice?.country ?? "US",
-    currency: practice?.currency ?? "usd",
-    taxRatePercent: practice?.taxRatePercent ?? "8.00",
-    vatNumber: practice?.vatNumber ?? "",
-  };
+  const [form, setForm] = useState<PracticeInfoForm | null>(null);
+  const isOptionalSettingsEmailValid = (email: string) =>
+    email.trim().length === 0 ||
+    (email.trim().length <= SETTINGS_EMAIL_MAX_LENGTH &&
+      isValidEmail(email.trim()));
+  const isPracticeInfoFormValid = (practiceForm: PracticeInfoForm) =>
+    practiceForm.name.trim().length > 0 &&
+    practiceForm.name.trim().length <= PRACTICE_NAME_MAX_LENGTH &&
+    practiceForm.address.trim().length <= SETTINGS_ADDRESS_MAX_LENGTH &&
+    practiceForm.phone.trim().length <= SETTINGS_PHONE_MAX_LENGTH &&
+    isOptionalSettingsEmailValid(practiceForm.email) &&
+    practiceForm.website.trim().length <= SETTINGS_WEBSITE_MAX_LENGTH &&
+    isSupportedPracticeTimezone(practiceForm.timezone) &&
+    SETTINGS_TAX_RATE_PATTERN.test(practiceForm.taxRatePercent.trim()) &&
+    practiceForm.vatNumber.trim().length <= SETTINGS_VAT_NUMBER_MAX_LENGTH;
 
   if (isLoading) {
     return (
@@ -270,6 +450,37 @@ function PracticeInfoTab() {
       </div>
     );
   }
+  if (practiceError) {
+    return <SettingsLoadError message={practiceError.message} />;
+  }
+  if (!practice) {
+    return (
+      <EmptyState
+        icon={Settings}
+        title="Practice settings unavailable"
+        description="The practice profile could not be found for this account."
+      />
+    );
+  }
+
+  const currentBrandColor =
+    (practice.settings as { brandColor?: string } | null)?.brandColor ?? null;
+
+  // Initialize form from the verified practice profile. Nullable profile fields
+  // still get editable display defaults, but a missing profile never builds a
+  // blank form.
+  const current: PracticeInfoForm = form ?? {
+    name: practice.name ?? "",
+    address: practice.address ?? "",
+    phone: practice.phone ?? "",
+    email: practice.email ?? "",
+    website: practice.website ?? "",
+    timezone: practice.timezone ?? "America/New_York",
+    country: practice.country ?? "US",
+    currency: practice.currency ?? "usd",
+    taxRatePercent: practice.taxRatePercent ?? "8.00",
+    vatNumber: practice.vatNumber ?? "",
+  };
 
   const handleChange = (field: string, value: string) => {
     setForm({ ...current, [field]: value });
@@ -294,6 +505,7 @@ function PracticeInfoTab() {
         <label className="space-y-1.5">
           <span className="text-sm font-medium">Practice Name</span>
           <Input
+            maxLength={PRACTICE_NAME_MAX_LENGTH}
             value={current.name}
             onChange={(e) => handleChange("name", e.target.value)}
           />
@@ -301,6 +513,7 @@ function PracticeInfoTab() {
         <label className="space-y-1.5">
           <span className="text-sm font-medium">Address</span>
           <Input
+            maxLength={SETTINGS_ADDRESS_MAX_LENGTH}
             value={current.address}
             onChange={(e) => handleChange("address", e.target.value)}
           />
@@ -309,6 +522,7 @@ function PracticeInfoTab() {
           <label className="space-y-1.5">
             <span className="text-sm font-medium">Phone</span>
             <Input
+              maxLength={SETTINGS_PHONE_MAX_LENGTH}
               value={current.phone}
               onChange={(e) => handleChange("phone", e.target.value)}
             />
@@ -317,6 +531,7 @@ function PracticeInfoTab() {
             <span className="text-sm font-medium">Email</span>
             <Input
               type="email"
+              maxLength={SETTINGS_EMAIL_MAX_LENGTH}
               value={current.email}
               onChange={(e) => handleChange("email", e.target.value)}
             />
@@ -325,6 +540,7 @@ function PracticeInfoTab() {
         <label className="space-y-1.5">
           <span className="text-sm font-medium">Website</span>
           <Input
+            maxLength={SETTINGS_WEBSITE_MAX_LENGTH}
             value={current.website}
             onChange={(e) => handleChange("website", e.target.value)}
           />
@@ -391,7 +607,7 @@ function PracticeInfoTab() {
               type="number"
               step="0.01"
               min="0"
-              max="100"
+              max="999.99"
               value={current.taxRatePercent}
               onChange={(e) => handleChange("taxRatePercent", e.target.value)}
             />
@@ -399,6 +615,7 @@ function PracticeInfoTab() {
           <label className="space-y-1.5">
             <span className="text-sm font-medium">VAT number (optional)</span>
             <Input
+              maxLength={SETTINGS_VAT_NUMBER_MAX_LENGTH}
               value={current.vatNumber}
               onChange={(e) => handleChange("vatNumber", e.target.value)}
             />
@@ -419,7 +636,7 @@ function PracticeInfoTab() {
         <div className="space-y-2">
           <span className="text-sm font-medium">Logo</span>
           <div className="flex items-center gap-4">
-            {practice?.logoUrl ? (
+            {practice.logoUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={practice.logoUrl}
@@ -454,7 +671,7 @@ function PracticeInfoTab() {
                 ) : (
                   <Upload className="mr-2 h-4 w-4" />
                 )}
-                {practice?.logoUrl ? "Replace logo" : "Upload logo"}
+                {practice.logoUrl ? "Replace logo" : "Upload logo"}
               </Button>
               <p className="mt-1.5 text-xs text-muted-foreground">
                 PNG, JPG, or WebP. Square images work best.
@@ -476,9 +693,12 @@ function PracticeInfoTab() {
 
       <Button
         onClick={() => {
-          updateMutation.mutate(current);
+          updateMutation.mutate({
+            ...current,
+            email: current.email.trim() || undefined,
+          });
         }}
-        disabled={updateMutation.isPending}
+        disabled={!isPracticeInfoFormValid(current) || updateMutation.isPending}
       >
         {updateMutation.isPending ? (
           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -491,6 +711,390 @@ function PracticeInfoTab() {
   );
 }
 
+// ── Locations ───────────────────────────────────────────────
+type LocationForm = {
+  name: string;
+  address: string;
+  phone: string;
+  isPrimary: boolean;
+};
+
+function LocationsTab() {
+  const utils = trpc.useUtils();
+  const {
+    data: locationList,
+    isLoading,
+    error: locationsError,
+    refetch: refetchLocations,
+  } = trpc.settings.listLocations.useQuery();
+
+  const invalidateLocationState = () => {
+    utils.settings.listLocations.invalidate();
+    utils.messaging.getStatus.invalidate();
+    utils.messaging.getInboxStatus.invalidate();
+    utils.subscription.get.invalidate();
+  };
+
+  const createMutation = trpc.settings.createLocation.useMutation({
+    onSuccess: () => {
+      invalidateLocationState();
+      setShowAdd(false);
+      setAddForm({ name: "", address: "", phone: "", isPrimary: false });
+      toast.success("Location created");
+    },
+    onError: (err) => toast.error(err.message),
+  });
+  const updateMutation = trpc.settings.updateLocation.useMutation({
+    onSuccess: () => {
+      invalidateLocationState();
+      setEditingId(null);
+      toast.success("Location updated");
+    },
+    onError: (err) => toast.error(err.message),
+  });
+  const setPrimaryMutation = trpc.settings.setPrimaryLocation.useMutation({
+    onSuccess: () => {
+      invalidateLocationState();
+      toast.success("Primary location updated");
+    },
+    onError: (err) => toast.error(err.message),
+  });
+  const deleteMutation = trpc.settings.deleteLocation.useMutation({
+    onSuccess: () => {
+      invalidateLocationState();
+      setConfirmDelete(null);
+      toast.success("Location retired");
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const [showAdd, setShowAdd] = useState(false);
+  const [addForm, setAddForm] = useState<LocationForm>({
+    name: "",
+    address: "",
+    phone: "",
+    isPrimary: false,
+  });
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<LocationForm>({
+    name: "",
+    address: "",
+    phone: "",
+    isPrimary: false,
+  });
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+
+  const locationsMissing = !isLoading && !locationsError && !locationList;
+  const activeLocationCount = locationList?.length ?? 0;
+  const isLocationFormValid = (form: {
+    name: string;
+    address: string;
+    phone: string;
+  }) =>
+    form.name.trim().length > 0 &&
+    form.name.trim().length <= LOCATION_NAME_MAX_LENGTH &&
+    form.phone.trim().length <= SETTINGS_PHONE_MAX_LENGTH &&
+    form.address.trim().length <= SETTINGS_ADDRESS_MAX_LENGTH;
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+  if (locationsError) {
+    return <SettingsLoadError message={locationsError.message} />;
+  }
+  if (locationsMissing) {
+    return (
+      <SettingsLoadError
+        title="Could not load locations"
+        message="The locations request finished without returning data. Try loading it again before editing practice locations."
+        onRetry={() => void refetchLocations()}
+      />
+    );
+  }
+
+  const startEditing = (location: {
+    id: string;
+    name: string;
+    address: string | null;
+    phone: string | null;
+    isPrimary: boolean;
+  }) => {
+    setEditingId(location.id);
+    setEditForm({
+      name: location.name,
+      address: location.address ?? "",
+      phone: location.phone ?? "",
+      isPrimary: location.isPrimary,
+    });
+    setConfirmDelete(null);
+  };
+
+  const saveLocation = (id: string) => {
+    updateMutation.mutate({
+      id,
+      name: editForm.name,
+      address: editForm.address,
+      phone: editForm.phone,
+    });
+  };
+
+  return (
+    <div className="max-w-4xl space-y-4">
+      <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h3 className="text-sm font-semibold">Practice Locations</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Locations power texting setup, room assignment, reminders, and
+            hosted billing quantity.
+          </p>
+        </div>
+        <Button
+          onClick={() => {
+            setShowAdd(!showAdd);
+            setEditingId(null);
+            setConfirmDelete(null);
+          }}
+          size="sm"
+          className="gap-2"
+        >
+          <Plus className="h-4 w-4" />
+          Add Location
+        </Button>
+      </div>
+
+      {showAdd ? (
+        <div className="rounded-lg border border-border bg-card p-4">
+          <h3 className="text-sm font-semibold">New Location</h3>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <Input
+              placeholder="Location name"
+              maxLength={LOCATION_NAME_MAX_LENGTH}
+              value={addForm.name}
+              onChange={(e) => setAddForm({ ...addForm, name: e.target.value })}
+            />
+            <Input
+              placeholder="Phone"
+              maxLength={SETTINGS_PHONE_MAX_LENGTH}
+              value={addForm.phone}
+              onChange={(e) => setAddForm({ ...addForm, phone: e.target.value })}
+            />
+            <Input
+              placeholder="Address"
+              maxLength={SETTINGS_ADDRESS_MAX_LENGTH}
+              value={addForm.address}
+              onChange={(e) =>
+                setAddForm({ ...addForm, address: e.target.value })
+              }
+              className="sm:col-span-2"
+            />
+          </div>
+          <label className="mt-3 flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={addForm.isPrimary}
+              onChange={(e) =>
+                setAddForm({ ...addForm, isPrimary: e.target.checked })
+              }
+            />
+            Make this the primary location
+          </label>
+          <div className="mt-4 flex gap-2">
+            <Button
+              size="sm"
+              disabled={
+                !isLocationFormValid(addForm) || createMutation.isPending
+              }
+              onClick={() => createMutation.mutate(addForm)}
+            >
+              {createMutation.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Save className="mr-2 h-4 w-4" />
+              )}
+              Create
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setShowAdd(false)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="overflow-x-auto rounded-lg border border-border">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border bg-muted/50">
+              <th className="px-4 py-3 text-left font-medium">Location</th>
+              <th className="px-4 py-3 text-left font-medium">Contact</th>
+              <th className="px-4 py-3 text-right font-medium">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {locationList?.map((location) => {
+              const isEditing = editingId === location.id;
+              const isConfirmingDelete = confirmDelete === location.id;
+
+              return (
+                <tr
+                  key={location.id}
+                  className="border-b border-border last:border-0"
+                >
+                  <td className="px-4 py-3 align-top">
+                    {isEditing ? (
+                      <div className="space-y-2">
+                        <Input
+                          maxLength={LOCATION_NAME_MAX_LENGTH}
+                          value={editForm.name}
+                          onChange={(e) =>
+                            setEditForm({ ...editForm, name: e.target.value })
+                          }
+                        />
+                        <Input
+                          value={editForm.address}
+                          placeholder="Address"
+                          maxLength={SETTINGS_ADDRESS_MAX_LENGTH}
+                          onChange={(e) =>
+                            setEditForm({
+                              ...editForm,
+                              address: e.target.value,
+                            })
+                          }
+                        />
+                      </div>
+                    ) : (
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-medium">{location.name}</span>
+                          {location.isPrimary ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                              <Star className="h-3 w-3" />
+                              Primary
+                            </span>
+                          ) : null}
+                        </div>
+                        <p className="mt-1 text-muted-foreground">
+                          {location.address || "No address on file"}
+                        </p>
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 align-top text-muted-foreground">
+                    {isEditing ? (
+                      <Input
+                        value={editForm.phone}
+                        placeholder="Phone"
+                        maxLength={SETTINGS_PHONE_MAX_LENGTH}
+                        onChange={(e) =>
+                          setEditForm({ ...editForm, phone: e.target.value })
+                        }
+                      />
+                    ) : (
+                      location.phone || "No phone"
+                    )}
+                  </td>
+                  <td className="px-4 py-3 align-top">
+                    <div className="flex justify-end gap-1">
+                      {isEditing ? (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={
+                              !isLocationFormValid(editForm) ||
+                              updateMutation.isPending
+                            }
+                            onClick={() => saveLocation(location.id)}
+                          >
+                            <Check className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => setEditingId(null)}
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          {!location.isPrimary ? (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              disabled={setPrimaryMutation.isPending}
+                              onClick={() =>
+                                setPrimaryMutation.mutate({ id: location.id })
+                              }
+                            >
+                              <Star className="h-4 w-4" />
+                            </Button>
+                          ) : null}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => startEditing(location)}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          {isConfirmingDelete ? (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              disabled={
+                                deleteMutation.isPending ||
+                                activeLocationCount <= 1
+                              }
+                              onClick={() =>
+                                deleteMutation.mutate({ id: location.id })
+                              }
+                            >
+                              <Check className="h-4 w-4 text-destructive" />
+                            </Button>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              disabled={activeLocationCount <= 1}
+                              onClick={() => setConfirmDelete(location.id)}
+                            >
+                              <Trash2 className="h-4 w-4 text-destructive" />
+                            </Button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+            {locationList?.length === 0 ? (
+              <tr>
+                <td colSpan={3} className="p-0">
+                  <EmptyState
+                    className="border-0 bg-transparent p-8"
+                    icon={MapPin}
+                    title="No active locations configured"
+                    description="Add a location to power rooms, reminders, texting setup, and hosted billing quantities."
+                  />
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+      {activeLocationCount <= 1 ? (
+        <p className="text-xs text-muted-foreground">
+          A practice must keep at least one active location.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 // ── Plan & Billing ──────────────────────────────────────────
 const FEATURE_LABELS: Record<string, string> = {
   agent: "OpenVPM Agent (AI)",
@@ -498,29 +1102,97 @@ const FEATURE_LABELS: Record<string, string> = {
   advancedReporting: "Advanced reporting",
   apiAccess: "API access + webhooks",
   multiLocation: "Multi-location",
-  integrations: "Integrations",
+  integrations: "Supported integrations",
 };
 
+function redirectToHostedBillingUrl(url: unknown) {
+  if (!isSafeCheckoutRedirectUrl(url)) {
+    toast.error("Billing checkout is unavailable. Please try again.");
+    return;
+  }
+
+  window.location.href = url;
+}
+
+function redirectToClientPaymentUrl(url: unknown) {
+  if (!isSafeCheckoutRedirectUrl(url)) {
+    toast.error("Client payment setup is unavailable. Please try again.");
+    return;
+  }
+
+  window.location.href = url;
+}
+
 function BillingTab() {
-  const { data, isLoading } = trpc.subscription.get.useQuery();
+  const utils = trpc.useUtils();
+  const {
+    data,
+    isLoading,
+    error: billingError,
+    refetch: refetchBilling,
+  } = trpc.subscription.get.useQuery();
+  const paymentAccount = trpc.billing.paymentAccountStatus.useQuery(undefined, {
+    staleTime: 60_000,
+  });
   const checkout = trpc.subscription.createCheckout.useMutation({
     onSuccess: (r) => {
-      if (r.url) window.location.href = r.url;
+      redirectToHostedBillingUrl(r.url);
     },
     onError: (e) => toast.error(e.message),
   });
+  const setupPaymentAccount =
+    trpc.billing.createPaymentAccountOnboarding.useMutation({
+      onSuccess: (r) => {
+        redirectToClientPaymentUrl(r.url);
+      },
+      onError: (e) => toast.error(e.message),
+    });
+  const refreshPaymentAccount = trpc.billing.refreshPaymentAccount.useMutation({
+    onSuccess: () => {
+      utils.billing.paymentAccountStatus.invalidate();
+      toast.success("Client payment status refreshed");
+    },
+    onError: (e) => toast.error(e.message),
+  });
+  const openPaymentAccountDashboard =
+    trpc.billing.openPaymentAccountDashboard.useMutation({
+      onSuccess: (r) => {
+        redirectToClientPaymentUrl(r.url);
+      },
+      onError: (e) => toast.error(e.message),
+    });
   const portal = trpc.subscription.openBillingPortal.useMutation({
     onSuccess: (r) => {
-      if (r.url) window.location.href = r.url;
+      redirectToHostedBillingUrl(r.url);
     },
     onError: (e) => toast.error(e.message),
   });
 
-  if (isLoading || !data) {
+  if (billingError) {
+    return (
+      <SettingsLoadError
+        title="Could not load billing details"
+        message={billingError.message}
+        onRetry={() => void refetchBilling()}
+      />
+    );
+  }
+
+  if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <SettingsLoadError
+        title="Could not load billing details"
+        message="The billing details request finished without returning data. Try loading it again."
+        onRetry={() => void refetchBilling()}
+      />
     );
   }
 
@@ -541,15 +1213,23 @@ function BillingTab() {
             below are how the managed OpenVPM Cloud is priced, for reference.
           </p>
         </div>
+        <ClientPaymentProcessingSection
+          data={paymentAccount.data}
+          isLoading={paymentAccount.isLoading}
+          error={paymentAccount.error?.message}
+          setupPending={setupPaymentAccount.isPending}
+          refreshPending={refreshPaymentAccount.isPending}
+          dashboardPending={openPaymentAccountDashboard.isPending}
+          onSetup={() => setupPaymentAccount.mutate()}
+          onRefresh={() => refreshPaymentAccount.mutate()}
+          onDashboard={() => openPaymentAccountDashboard.mutate()}
+        />
         <PlanGrid plans={data.plans} currentTier={data.tier} enforced={false} onChoose={() => {}} busyTier={null} />
       </div>
     );
   }
 
-  const trialEnds = data.trialEndsAt ? new Date(data.trialEndsAt) : null;
-  const daysLeft = trialEnds
-    ? Math.max(0, Math.ceil((trialEnds.getTime() - Date.now()) / (24 * 60 * 60 * 1000)))
-    : 0;
+  const daysLeft = trialCalendarDaysLeft(data.trialEndsAt, data.timezone) ?? 0;
   const currentPlan = data.plans.find((p) => p.tier === data.tier);
   const showReadOnlyNotice = !data.hasFullAccess;
 
@@ -670,6 +1350,18 @@ function BillingTab() {
         )}
       </div>
 
+      <ClientPaymentProcessingSection
+        data={paymentAccount.data}
+        isLoading={paymentAccount.isLoading}
+        error={paymentAccount.error?.message}
+        setupPending={setupPaymentAccount.isPending}
+        refreshPending={refreshPaymentAccount.isPending}
+        dashboardPending={openPaymentAccountDashboard.isPending}
+        onSetup={() => setupPaymentAccount.mutate()}
+        onRefresh={() => refreshPaymentAccount.mutate()}
+        onDashboard={() => openPaymentAccountDashboard.mutate()}
+      />
+
       <PlanGrid
         plans={data.plans}
         currentTier={data.tier}
@@ -677,6 +1369,195 @@ function BillingTab() {
         onChoose={(tier) => checkout.mutate({ tier })}
         busyTier={checkout.isPending ? checkout.variables?.tier ?? null : null}
       />
+    </div>
+  );
+}
+
+function ClientPaymentProcessingSection({
+  data,
+  isLoading,
+  error,
+  setupPending,
+  refreshPending,
+  dashboardPending,
+  onSetup,
+  onRefresh,
+  onDashboard,
+}: {
+  data:
+    | {
+        stripeConfigured: boolean;
+        connectRequired: boolean;
+        status:
+          | "not_started"
+          | "pending"
+          | "active"
+          | "action_required"
+          | "disabled"
+          | "not_configured"
+          | "not_required";
+        enabled: boolean;
+        chargesEnabled?: boolean;
+        payoutsEnabled?: boolean;
+        detailsSubmitted?: boolean;
+        requirementsCurrentlyDue?: string[];
+        requirementsDisabledReason?: string | null;
+        lastSyncedAt?: Date | string | null;
+      }
+    | undefined;
+  isLoading: boolean;
+  error?: string;
+  setupPending: boolean;
+  refreshPending: boolean;
+  dashboardPending: boolean;
+  onSetup: () => void;
+  onRefresh: () => void;
+  onDashboard: () => void;
+}) {
+  const status = data?.enabled
+    ? "ready"
+    : data?.status === "action_required" || data?.status === "disabled"
+      ? "action required"
+      : data?.connectRequired
+        ? "setup needed"
+        : data?.stripeConfigured
+          ? "configured"
+          : "not configured";
+  const statusClass = data?.enabled
+    ? "bg-green-100 text-green-700"
+    : data?.status === "action_required" || data?.status === "disabled"
+      ? "bg-amber-100 text-amber-800"
+      : data?.stripeConfigured
+        ? "bg-blue-100 text-blue-700"
+        : "bg-gray-100 text-gray-600";
+  const canOpenDashboard = Boolean(
+    data?.connectRequired && data.status !== "not_started"
+  );
+  const canShowSetup =
+    Boolean(data?.connectRequired && data.stripeConfigured) &&
+    data?.status !== "active";
+
+  return (
+    <div className="rounded-lg border border-border bg-card p-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="font-heading text-lg font-semibold">
+              Client payment processing
+            </h3>
+            <span
+              className={cn(
+                "rounded-full px-3 py-1 text-xs font-medium capitalize",
+                statusClass
+              )}
+            >
+              {status}
+            </span>
+          </div>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {data?.connectRequired
+              ? "Stripe Connect lets the clinic collect card payments from pet owners into its own Stripe account."
+              : "This installation can use its configured Stripe key for client invoice payments. Stripe Connect is required for hosted OpenVPM Cloud clinics."}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {canShowSetup && (
+            <Button
+              size="sm"
+              disabled={setupPending}
+              onClick={onSetup}
+            >
+              {setupPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <CreditCard className="mr-2 h-4 w-4" />
+              )}
+              {data?.status === "not_started" ? "Set up" : "Resume setup"}
+            </Button>
+          )}
+          {data?.connectRequired && (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={refreshPending || !data.stripeConfigured}
+              onClick={onRefresh}
+            >
+              {refreshPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Check className="mr-2 h-4 w-4" />
+              )}
+              Refresh
+            </Button>
+          )}
+          {canOpenDashboard && (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={dashboardPending}
+              onClick={onDashboard}
+            >
+              {dashboardPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <CreditCard className="mr-2 h-4 w-4" />
+              )}
+              Open Stripe
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {isLoading && (
+        <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading client payment status
+        </div>
+      )}
+      {error && (
+        <p className="mt-4 text-sm text-destructive">
+          {error}
+        </p>
+      )}
+      {!isLoading && !error && data && (
+        <div className="mt-4 grid gap-3 border-t border-border pt-4 text-sm sm:grid-cols-3">
+          <div>
+            <p className="text-muted-foreground">Stripe API</p>
+            <p className="font-medium">
+              {data.stripeConfigured ? "Configured" : "Missing"}
+            </p>
+          </div>
+          <div>
+            <p className="text-muted-foreground">Card payments</p>
+            <p className="font-medium">
+              {data.enabled || data.status === "not_required"
+                ? "Enabled"
+                : "Disabled"}
+            </p>
+          </div>
+          <div>
+            <p className="text-muted-foreground">Payouts</p>
+            <p className="font-medium">
+              {data.payoutsEnabled ? "Enabled" : data.connectRequired ? "Pending" : "N/A"}
+            </p>
+          </div>
+          {data.requirementsCurrentlyDue?.length ? (
+            <div className="sm:col-span-3">
+              <p className="text-muted-foreground">Stripe requirements</p>
+              <p className="font-medium">
+                {data.requirementsCurrentlyDue.length} item
+                {data.requirementsCurrentlyDue.length === 1 ? "" : "s"} due
+              </p>
+            </div>
+          ) : null}
+          {data.requirementsDisabledReason ? (
+            <div className="sm:col-span-3">
+              <p className="text-muted-foreground">Disabled reason</p>
+              <p className="font-medium">{data.requirementsDisabledReason}</p>
+            </div>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }
@@ -791,7 +1672,7 @@ function PlanGrid({
                 </Button>
               ) : !p.selfServe ? (
                 <a
-                  href="mailto:evan@openvpm.com?subject=OpenVPM%20Enterprise"
+                  href="mailto:support@openvpm.com?subject=OpenVPM%20Enterprise"
                   className="text-xs font-medium text-primary hover:underline"
                 >
                   Contact sales
@@ -808,7 +1689,12 @@ function PlanGrid({
 // ── Staff ───────────────────────────────────────────────────
 function StaffTab() {
   const utils = trpc.useUtils();
-  const { data: staffList, isLoading } = trpc.settings.listUsers.useQuery();
+  const {
+    data: staffList,
+    isLoading,
+    error: staffError,
+    refetch: refetchStaff,
+  } = trpc.settings.listUsers.useQuery();
   const createMutation = trpc.settings.createUser.useMutation({
     onSuccess: () => {
       utils.settings.listUsers.invalidate();
@@ -896,12 +1782,50 @@ function StaffTab() {
       phone: "",
       licenseNumber: "",
     });
+  const isStaffNameValid = (name: string) =>
+    name.trim().length > 0 && name.trim().length <= STAFF_NAME_MAX_LENGTH;
+  const isOptionalStaffNameValid = (name: string) =>
+    name.trim().length <= STAFF_NAME_MAX_LENGTH;
+  const isSettingsEmailInputValid = (email: string) =>
+    email.trim().length <= SETTINGS_EMAIL_MAX_LENGTH &&
+    isValidEmail(email.trim());
+  const isStaffContactFieldsValid = (form: {
+    phone: string;
+    licenseNumber: string;
+  }) =>
+    form.phone.trim().length <= SETTINGS_PHONE_MAX_LENGTH &&
+    form.licenseNumber.trim().length <= STAFF_LICENSE_NUMBER_MAX_LENGTH;
+  const isStaffPasswordValid = (password: string) =>
+    password.length >= AUTH_PASSWORD_MIN_LENGTH &&
+    password.length <= AUTH_PASSWORD_MAX_LENGTH;
+  const isStaffCreateFormValid = (form: typeof addForm) =>
+    isStaffNameValid(form.name) &&
+    isSettingsEmailInputValid(form.email) &&
+    isStaffPasswordValid(form.password) &&
+    isStaffContactFieldsValid(form);
+  const isStaffInviteFormValid = (form: typeof inviteForm) =>
+    isSettingsEmailInputValid(form.email) && isOptionalStaffNameValid(form.name);
+  const isStaffEditFormValid = (form: typeof editForm) =>
+    isStaffNameValid(form.name) && isStaffContactFieldsValid(form);
+  const staffMissing = !isLoading && !staffError && !staffList;
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
+    );
+  }
+  if (staffError) {
+    return <SettingsLoadError message={staffError.message} />;
+  }
+  if (staffMissing) {
+    return (
+      <SettingsLoadError
+        title="Could not load staff"
+        message="The staff list request finished without returning data. Try loading it again before adding or editing staff."
+        onRetry={() => void refetchStaff()}
+      />
     );
   }
 
@@ -944,6 +1868,7 @@ function StaffTab() {
             <Input
               placeholder="Email"
               type="email"
+              maxLength={SETTINGS_EMAIL_MAX_LENGTH}
               value={inviteForm.email}
               onChange={(e) =>
                 setInviteForm({ ...inviteForm, email: e.target.value })
@@ -951,6 +1876,7 @@ function StaffTab() {
             />
             <Input
               placeholder="Name (optional)"
+              maxLength={STAFF_NAME_MAX_LENGTH}
               value={inviteForm.name}
               onChange={(e) =>
                 setInviteForm({ ...inviteForm, name: e.target.value })
@@ -976,7 +1902,9 @@ function StaffTab() {
           <div className="flex gap-2">
             <Button
               size="sm"
-              disabled={!isValidEmail(inviteForm.email) || inviteMutation.isPending}
+              disabled={
+                !isStaffInviteFormValid(inviteForm) || inviteMutation.isPending
+              }
               onClick={() =>
                 inviteMutation.mutate({
                   email: inviteForm.email,
@@ -1030,6 +1958,7 @@ function StaffTab() {
           <div className="grid grid-cols-2 gap-3">
             <Input
               placeholder="Full name"
+              maxLength={STAFF_NAME_MAX_LENGTH}
               value={addForm.name}
               onChange={(e) =>
                 setAddForm({ ...addForm, name: e.target.value })
@@ -1038,14 +1967,16 @@ function StaffTab() {
             <Input
               placeholder="Email"
               type="email"
+              maxLength={SETTINGS_EMAIL_MAX_LENGTH}
               value={addForm.email}
               onChange={(e) =>
                 setAddForm({ ...addForm, email: e.target.value })
               }
             />
             <Input
-              placeholder="Password (min 6 chars)"
+              placeholder={`Password (min ${AUTH_PASSWORD_MIN_LENGTH} chars)`}
               type="password"
+              maxLength={AUTH_PASSWORD_MAX_LENGTH}
               value={addForm.password}
               onChange={(e) =>
                 setAddForm({ ...addForm, password: e.target.value })
@@ -1069,6 +2000,7 @@ function StaffTab() {
             </select>
             <Input
               placeholder="Phone (optional)"
+              maxLength={SETTINGS_PHONE_MAX_LENGTH}
               value={addForm.phone}
               onChange={(e) =>
                 setAddForm({ ...addForm, phone: e.target.value })
@@ -1076,6 +2008,7 @@ function StaffTab() {
             />
             <Input
               placeholder="License # (optional)"
+              maxLength={STAFF_LICENSE_NUMBER_MAX_LENGTH}
               value={addForm.licenseNumber}
               onChange={(e) =>
                 setAddForm({ ...addForm, licenseNumber: e.target.value })
@@ -1086,10 +2019,7 @@ function StaffTab() {
             <Button
               size="sm"
               disabled={
-                !addForm.name ||
-                !addForm.email ||
-                addForm.password.length < 6 ||
-                createMutation.isPending
+                !isStaffCreateFormValid(addForm) || createMutation.isPending
               }
               onClick={() =>
                 createMutation.mutate({
@@ -1140,6 +2070,7 @@ function StaffTab() {
                     <td className="px-4 py-2">
                       <Input
                         className="h-8"
+                        maxLength={STAFF_NAME_MAX_LENGTH}
                         value={editForm.name}
                         onChange={(e) =>
                           setEditForm({ ...editForm, name: e.target.value })
@@ -1161,7 +2092,7 @@ function StaffTab() {
                         }
                       >
                         <option value="front_desk">Front Desk</option>
-              <option value="viewer">Viewer (read-only)</option>
+                        <option value="viewer">Viewer (read-only)</option>
                         <option value="technician">Technician</option>
                         <option value="veterinarian">Veterinarian</option>
                         <option value="admin">Admin</option>
@@ -1170,6 +2101,7 @@ function StaffTab() {
                     <td className="px-4 py-2">
                       <Input
                         className="h-8"
+                        maxLength={SETTINGS_PHONE_MAX_LENGTH}
                         value={editForm.phone}
                         onChange={(e) =>
                           setEditForm({ ...editForm, phone: e.target.value })
@@ -1179,6 +2111,7 @@ function StaffTab() {
                     <td className="px-4 py-2">
                       <Input
                         className="h-8"
+                        maxLength={STAFF_LICENSE_NUMBER_MAX_LENGTH}
                         value={editForm.licenseNumber}
                         onChange={(e) =>
                           setEditForm({
@@ -1193,7 +2126,10 @@ function StaffTab() {
                         <Button
                           size="sm"
                           variant="ghost"
-                          disabled={updateMutation.isPending}
+                          disabled={
+                            !isStaffEditFormValid(editForm) ||
+                            updateMutation.isPending
+                          }
                           onClick={() =>
                             updateMutation.mutate({
                               id: user.id,
@@ -1297,11 +2233,13 @@ function StaffTab() {
             ))}
             {staffList?.length === 0 && (
               <tr>
-                <td
-                  colSpan={6}
-                  className="px-4 py-8 text-center text-muted-foreground"
-                >
-                  No staff members found.
+                <td colSpan={6} className="p-0">
+                  <EmptyState
+                    className="border-0 bg-transparent p-8"
+                    icon={Users}
+                    title="No staff members found"
+                    description="Invite teammates or create a staff login to finish practice setup."
+                  />
                 </td>
               </tr>
             )}
@@ -1315,8 +2253,12 @@ function StaffTab() {
 // ── Appointment Types ───────────────────────────────────────
 function AppointmentTypesTab() {
   const utils = trpc.useUtils();
-  const { data: types, isLoading } =
-    trpc.settings.listAppointmentTypes.useQuery();
+  const {
+    data: types,
+    isLoading,
+    error: appointmentTypesError,
+    refetch: refetchAppointmentTypes,
+  } = trpc.settings.listAppointmentTypes.useQuery();
   const createMutation = trpc.settings.createAppointmentType.useMutation({
     onSuccess: () => {
       utils.settings.listAppointmentTypes.invalidate();
@@ -1358,6 +2300,13 @@ function AppointmentTypesTab() {
   });
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({ ...addForm });
+  const isDurationValid = (duration: number) =>
+    Number.isInteger(duration) &&
+    duration >= APPOINTMENT_TYPE_DURATION_MIN_MINUTES &&
+    duration <= APPOINTMENT_TYPE_DURATION_MAX_MINUTES;
+  const isAppointmentTypeNameValid = (name: string) =>
+    name.trim().length > 0 &&
+    name.trim().length <= APPOINTMENT_TYPE_NAME_MAX_LENGTH;
 
   const resetAddForm = () =>
     setAddForm({
@@ -1367,12 +2316,26 @@ function AppointmentTypesTab() {
       requiresDoctor: 1,
       defaultRoomType: "exam",
     });
+  const appointmentTypesMissing =
+    !isLoading && !appointmentTypesError && !types;
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
+    );
+  }
+  if (appointmentTypesError) {
+    return <SettingsLoadError message={appointmentTypesError.message} />;
+  }
+  if (appointmentTypesMissing) {
+    return (
+      <SettingsLoadError
+        title="Could not load appointment types"
+        message="The appointment type request finished without returning data. Try loading it again before editing scheduling defaults."
+        onRetry={() => void refetchAppointmentTypes()}
+      />
     );
   }
 
@@ -1397,6 +2360,7 @@ function AppointmentTypesTab() {
           <div className="grid grid-cols-2 gap-3">
             <Input
               placeholder="Type name"
+              maxLength={APPOINTMENT_TYPE_NAME_MAX_LENGTH}
               value={addForm.name}
               onChange={(e) =>
                 setAddForm({ ...addForm, name: e.target.value })
@@ -1405,6 +2369,8 @@ function AppointmentTypesTab() {
             <Input
               type="number"
               placeholder="Duration (minutes)"
+              min={APPOINTMENT_TYPE_DURATION_MIN_MINUTES}
+              max={APPOINTMENT_TYPE_DURATION_MAX_MINUTES}
               value={addForm.durationMinutes}
               onChange={(e) =>
                 setAddForm({
@@ -1451,7 +2417,11 @@ function AppointmentTypesTab() {
           <div className="flex gap-2">
             <Button
               size="sm"
-              disabled={!addForm.name || createMutation.isPending}
+              disabled={
+                !isAppointmentTypeNameValid(addForm.name) ||
+                !isDurationValid(addForm.durationMinutes) ||
+                createMutation.isPending
+              }
               onClick={() => createMutation.mutate(addForm)}
             >
               {createMutation.isPending && (
@@ -1492,6 +2462,7 @@ function AppointmentTypesTab() {
                     <td className="px-4 py-2">
                       <Input
                         className="h-8"
+                        maxLength={APPOINTMENT_TYPE_NAME_MAX_LENGTH}
                         value={editForm.name}
                         onChange={(e) =>
                           setEditForm({ ...editForm, name: e.target.value })
@@ -1502,6 +2473,8 @@ function AppointmentTypesTab() {
                       <Input
                         className="h-8 w-20"
                         type="number"
+                        min={APPOINTMENT_TYPE_DURATION_MIN_MINUTES}
+                        max={APPOINTMENT_TYPE_DURATION_MAX_MINUTES}
                         value={editForm.durationMinutes}
                         onChange={(e) =>
                           setEditForm({
@@ -1554,7 +2527,11 @@ function AppointmentTypesTab() {
                         <Button
                           size="sm"
                           variant="ghost"
-                          disabled={updateMutation.isPending}
+                          disabled={
+                            !isAppointmentTypeNameValid(editForm.name) ||
+                            !isDurationValid(editForm.durationMinutes) ||
+                            updateMutation.isPending
+                          }
                           onClick={() =>
                             updateMutation.mutate({
                               id: type.id,
@@ -1625,11 +2602,13 @@ function AppointmentTypesTab() {
             ))}
             {types?.length === 0 && (
               <tr>
-                <td
-                  colSpan={5}
-                  className="px-4 py-8 text-center text-muted-foreground"
-                >
-                  No appointment types configured.
+                <td colSpan={5} className="p-0">
+                  <EmptyState
+                    className="border-0 bg-transparent p-8"
+                    icon={Calendar}
+                    title="No appointment types configured"
+                    description="Add appointment types so scheduling can use default durations, colors, and room types."
+                  />
                 </td>
               </tr>
             )}
@@ -1666,47 +2645,156 @@ function downloadCSV(data: Record<string, unknown>[], filename: string) {
   URL.revokeObjectURL(url);
 }
 
-function parseCSV(text: string): Record<string, string>[] {
-  const lines = text.trim().split("\n");
-  if (lines.length < 2) return [];
-  const headers = lines[0].split(",").map((h) => h.trim());
-  return lines.slice(1).map((line) => {
-    const values = line.split(",").map((v) => v.trim());
-    return Object.fromEntries(headers.map((h, i) => [h, values[i] ?? ""]));
+function downloadJSON(data: unknown, filename: string) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], {
+    type: "application/json",
   });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
+
+type ImportPreview = {
+  total: number;
+  willInsert: number;
+  duplicates?: number;
+  unmatchedClient?: number;
+  errors: string[];
+};
+const IMPORT_CSV_SIZE_MESSAGE = "CSV imports must be 5 MB or less.";
 
 // ── Data Tab ─────────────────────────────────────────────────
 function DataTab() {
   const [exportingType, setExportingType] = useState<string | null>(null);
   const [importMode, setImportMode] = useState<"clients" | "patients" | null>(null);
-  const [csvData, setCsvData] = useState<Record<string, string>[] | null>(null);
+  const [csvText, setCsvText] = useState("");
+  const [csvFileName, setCsvFileName] = useState("");
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [importResult, setImportResult] = useState<{
     imported: number;
     errors?: string[];
   } | null>(null);
+  const [backupFileName, setBackupFileName] = useState("");
+  const [backupPayload, setBackupPayload] = useState<Record<string, unknown> | null>(null);
+  const [backupSummary, setBackupSummary] = useState<{
+    counts: Record<string, number>;
+    missingSections: string[];
+    restoreErrors: string[];
+    totalRows: number;
+  } | null>(null);
+  const [restoreResult, setRestoreResult] = useState<{
+    restored: Record<string, number>;
+    totalRows: number;
+  } | null>(null);
+  const [confirmFreshPractice, setConfirmFreshPractice] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [deletionContactEmail, setDeletionContactEmail] = useState("");
+  const [deletionReason, setDeletionReason] = useState("");
+  const [confirmExportDownloaded, setConfirmExportDownloaded] = useState(false);
+  const [confirmManualReview, setConfirmManualReview] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const backupFileInputRef = useRef<HTMLInputElement>(null);
 
+  const utils = trpc.useUtils();
   const exportClients = trpc.data.exportClients.useQuery(undefined, { enabled: false });
   const exportPatients = trpc.data.exportPatients.useQuery(undefined, { enabled: false });
   const exportAppointments = trpc.data.exportAppointments.useQuery(undefined, { enabled: false });
   const exportInvoices = trpc.data.exportInvoices.useQuery(undefined, { enabled: false });
-
-  const importClientsMutation = trpc.data.importClients.useMutation({
+  const exportFullBackup = trpc.data.exportFullBackup.useQuery(undefined, { enabled: false });
+  const restoreBackup = trpc.data.restoreBackup.useMutation({
     onSuccess: (data) => {
-      setImportResult({ imported: data.imported });
-      setCsvData(null);
+      if (data.dryRun) {
+        setBackupSummary({
+          counts: data.counts,
+          missingSections: data.missingSections,
+          restoreErrors: data.restoreErrors,
+          totalRows: data.totalRows,
+        });
+        setRestoreResult(null);
+        if (data.missingSections.length > 0) {
+          toast.error("Backup is missing required sections");
+        } else if (data.restoreErrors.length > 0) {
+          toast.error("Backup has invalid restore data");
+        } else {
+          toast.success("Backup verified");
+        }
+        return;
+      }
+
+      setRestoreResult({
+        restored: data.restored,
+        totalRows: data.totalRows,
+      });
+      setConfirmFreshPractice(false);
+      toast.success(`Restored ${data.totalRows} rows`);
+    },
+    onError: (err) => {
+      toast.error(err.message);
+    },
+  });
+  const accountDeletionRequest =
+    trpc.settings.getAccountDeletionRequest.useQuery();
+  const {
+    data: practiceSettings,
+    isLoading: practiceSettingsLoading,
+    error: practiceSettingsError,
+  } = trpc.settings.getPractice.useQuery();
+  const practiceSettingsMissing =
+    !practiceSettingsLoading && !practiceSettingsError && !practiceSettings;
+  const verifiedPracticeSettings =
+    practiceSettingsError || practiceSettingsMissing || !practiceSettings
+      ? null
+      : practiceSettings;
+  const settingsTimeZone = verifiedPracticeSettings
+    ? verifiedPracticeSettings.timezone
+    : null;
+
+  const importClientsCsv = trpc.data.importClientsCsv.useMutation({
+    onSuccess: (data) => {
+      if ("dryRun" in data && data.dryRun) {
+        setImportPreview({
+          total: data.total,
+          willInsert: data.willInsert,
+          duplicates: data.duplicates,
+          errors: data.errors,
+        });
+        setImportResult(null);
+        toast.success("Client CSV checked");
+        return;
+      }
+
+      setImportResult({ imported: data.imported ?? 0, errors: data.errors });
+      setImportPreview(null);
+      setCsvText("");
+      setCsvFileName("");
       toast.success("Clients imported");
     },
     onError: (err) => {
       toast.error(err.message);
     },
   });
-  const importPatientsMutation = trpc.data.importPatients.useMutation({
+  const importPatientsCsv = trpc.data.importPatientsCsv.useMutation({
     onSuccess: (data) => {
-      setImportResult({ imported: data.imported, errors: data.errors });
-      setCsvData(null);
+      if ("dryRun" in data && data.dryRun) {
+        setImportPreview({
+          total: data.total,
+          willInsert: data.willInsert,
+          duplicates: data.duplicates,
+          unmatchedClient: data.unmatchedClient,
+          errors: data.errors,
+        });
+        setImportResult(null);
+        toast.success("Patient CSV checked");
+        return;
+      }
+
+      setImportResult({ imported: data.imported ?? 0, errors: data.errors });
+      setImportPreview(null);
+      setCsvText("");
+      setCsvFileName("");
       toast.success("Patients imported");
     },
     onError: (err) => {
@@ -1714,9 +2802,27 @@ function DataTab() {
     },
   });
 
-  const utils = trpc.useUtils();
+  const requestAccountDeletion =
+    trpc.settings.requestAccountDeletion.useMutation({
+      onSuccess: () => {
+        utils.settings.getAccountDeletionRequest.invalidate();
+        setConfirmExportDownloaded(false);
+        setConfirmManualReview(false);
+        toast.success("Account deletion request sent");
+      },
+      onError: (err) => toast.error(err.message),
+    });
+
   const onboarding = trpc.settings.onboardingStatus.useQuery();
-  const hasDemo = onboarding.data?.hasDemoData ?? false;
+  const onboardingMissing =
+    !onboarding.isLoading && !onboarding.error && !onboarding.data;
+  const verifiedOnboardingStatus =
+    onboarding.error || onboardingMissing || !onboarding.data
+      ? null
+      : onboarding.data;
+  const hasDemo = verifiedOnboardingStatus
+    ? verifiedOnboardingStatus.hasDemoData
+    : false;
   const clearDemo = trpc.settings.clearDemoData.useMutation({
     onSuccess: () => {
       utils.settings.onboardingStatus.invalidate();
@@ -1739,17 +2845,29 @@ function DataTab() {
         let data: Record<string, unknown>[] = [];
         if (type === "clients") {
           const result = await exportClients.refetch();
-          data = (result.data ?? []) as Record<string, unknown>[];
+          data = requireSettingsExportData(
+            result,
+            "Could not export clients"
+          ) as Record<string, unknown>[];
         } else if (type === "patients") {
           const result = await exportPatients.refetch();
-          data = (result.data ?? []) as Record<string, unknown>[];
+          data = requireSettingsExportData(
+            result,
+            "Could not export patients"
+          ) as Record<string, unknown>[];
         } else if (type === "appointments") {
           const result = await exportAppointments.refetch();
-          data = (result.data ?? []) as Record<string, unknown>[];
+          data = requireSettingsExportData(
+            result,
+            "Could not export appointments"
+          ) as Record<string, unknown>[];
         } else if (type === "invoices") {
           const result = await exportInvoices.refetch();
           // Flatten items for CSV
-          const raw = result.data ?? [];
+          const raw = requireSettingsExportData(
+            result,
+            "Could not export invoices"
+          );
           data = raw.map((inv) => {
             const { items, ...rest } = inv;
             return {
@@ -1759,6 +2877,10 @@ function DataTab() {
           });
         }
         downloadCSV(data, `${type}-export.csv`);
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Could not export data"
+        );
       } finally {
         setExportingType(null);
       }
@@ -1766,18 +2888,160 @@ function DataTab() {
     [exportClients, exportPatients, exportAppointments, exportInvoices]
   );
 
-  const handleFileSelect = useCallback(
+  const handleFullBackupExport = useCallback(async () => {
+    setExportingType("full-backup");
+    try {
+      if (!verifiedPracticeSettings) {
+        throw new Error("Could not load practice settings for backup export");
+      }
+      const result = await exportFullBackup.refetch();
+      const backup = requireSettingsExportData(
+        result,
+        "Could not export full backup"
+      );
+      const date = formatSettingsDateInput(new Date(), settingsTimeZone);
+      downloadJSON(backup, `openvpm-full-backup-${date}.json`);
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Could not export full backup"
+      );
+    } finally {
+      setExportingType(null);
+    }
+  }, [exportFullBackup, settingsTimeZone, verifiedPracticeSettings]);
+
+  const handleBackupFileSelect = useCallback(
     (file: File) => {
-      setImportResult(null);
+      function clearBackupFile() {
+        setBackupFileName("");
+        setBackupPayload(null);
+        setBackupSummary(null);
+        setRestoreResult(null);
+        setConfirmFreshPractice(false);
+      }
+
+      if (file.size > PRACTICE_BACKUP_JSON_MAX_BYTES) {
+        clearBackupFile();
+        toast.error(PRACTICE_BACKUP_JSON_SIZE_MESSAGE);
+        return;
+      }
+
+      setBackupFileName(file.name);
+      setBackupPayload(null);
+      setBackupSummary(null);
+      setRestoreResult(null);
+      setConfirmFreshPractice(false);
+
       const reader = new FileReader();
       reader.onload = (e) => {
-        const text = e.target?.result as string;
-        const parsed = parseCSV(text);
-        setCsvData(parsed);
+        try {
+          const text = String(e.target?.result ?? "");
+          if (!isPracticeBackupJsonSizeValid(text)) {
+            clearBackupFile();
+            toast.error(PRACTICE_BACKUP_JSON_SIZE_MESSAGE);
+            return;
+          }
+          const parsed = JSON.parse(text);
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            throw new Error("Backup JSON must be an object");
+          }
+          const backup = parsed as Record<string, unknown>;
+          setBackupPayload(backup);
+          restoreBackup.mutate({ backup, dryRun: true });
+        } catch (err) {
+          setBackupFileName("");
+          setBackupPayload(null);
+          toast.error(
+            err instanceof Error ? err.message : "Could not read backup JSON"
+          );
+        }
+      };
+      reader.onerror = () => {
+        clearBackupFile();
+        toast.error("Could not read backup JSON");
       };
       reader.readAsText(file);
     },
-    []
+    [restoreBackup]
+  );
+
+  const handleBackupRestore = useCallback(() => {
+    if (!backupPayload || !confirmFreshPractice) return;
+    if (!isPracticeBackupJsonSizeValid(backupPayload)) {
+      toast.error(PRACTICE_BACKUP_JSON_SIZE_MESSAGE);
+      return;
+    }
+    restoreBackup.mutate({
+      backup: backupPayload,
+      dryRun: false,
+      confirmFreshPractice: true,
+    });
+  }, [backupPayload, confirmFreshPractice, restoreBackup]);
+
+  const handleDeletionRequest = useCallback(() => {
+    if (!confirmExportDownloaded || !confirmManualReview) return;
+    requestAccountDeletion.mutate({
+      contactEmail: deletionContactEmail.trim(),
+      reason: deletionReason.trim() || undefined,
+      confirmExportDownloaded: true,
+      confirmManualReview: true,
+    });
+  }, [
+    confirmExportDownloaded,
+    confirmManualReview,
+    deletionContactEmail,
+    deletionReason,
+    requestAccountDeletion,
+  ]);
+
+  const handleFileSelect = useCallback(
+    (file: File) => {
+      if (!importMode) return;
+      function clearImportFile() {
+        setCsvFileName("");
+        setCsvText("");
+        setImportPreview(null);
+        setImportResult(null);
+      }
+
+      if (file.size > IMPORT_CSV_MAX_BYTES) {
+        clearImportFile();
+        toast.error(IMPORT_CSV_SIZE_MESSAGE);
+        return;
+      }
+
+      setCsvFileName(file.name);
+      setCsvText("");
+      setImportPreview(null);
+      setImportResult(null);
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const text = String(e.target?.result ?? "");
+        if (!text.trim()) {
+          setCsvFileName("");
+          toast.error("CSV file is empty");
+          return;
+        }
+        if (!isImportCsvSizeValid(text)) {
+          clearImportFile();
+          toast.error(IMPORT_CSV_SIZE_MESSAGE);
+          return;
+        }
+
+        setCsvText(text);
+        if (importMode === "clients") {
+          importClientsCsv.mutate({ csv: text, dryRun: true });
+        } else {
+          importPatientsCsv.mutate({ csv: text, dryRun: true });
+        }
+      };
+      reader.onerror = () => {
+        setCsvFileName("");
+        toast.error("Could not read CSV file");
+      };
+      reader.readAsText(file);
+    },
+    [importClientsCsv, importMode, importPatientsCsv]
   );
 
   const handleDrop = useCallback(
@@ -1793,37 +3057,53 @@ function DataTab() {
   );
 
   const handleImportConfirm = useCallback(() => {
-    if (!csvData || !importMode) return;
-    if (importMode === "clients") {
-      importClientsMutation.mutate({
-        clients: csvData.map((row) => ({
-          firstName: row.firstName || row.first_name || "",
-          lastName: row.lastName || row.last_name || "",
-          email: row.email || undefined,
-          phone: row.phone || undefined,
-          address: row.address || undefined,
-          city: row.city || undefined,
-          state: row.state || undefined,
-          zip: row.zip || undefined,
-        })),
-      });
-    } else {
-      importPatientsMutation.mutate({
-        patients: csvData.map((row) => ({
-          clientEmail: row.clientEmail || row.client_email || "",
-          name: row.name || "",
-          species: (row.species as "canine" | "feline" | "avian" | "rabbit" | "reptile" | "equine" | "other") || "other",
-          breed: row.breed || undefined,
-          sex: (row.sex as "male" | "female" | "male_neutered" | "female_spayed") || undefined,
-          dob: row.dob || undefined,
-          color: row.color || undefined,
-          microchipNumber: row.microchipNumber || row.microchip_number || undefined,
-        })),
-      });
+    if (!csvText || !importMode || !importPreview) return;
+    if (!isImportCsvSizeValid(csvText)) {
+      toast.error(IMPORT_CSV_SIZE_MESSAGE);
+      return;
     }
-  }, [csvData, importMode, importClientsMutation, importPatientsMutation]);
+    if (importMode === "clients") {
+      importClientsCsv.mutate({ csv: csvText, dryRun: false });
+    } else {
+      importPatientsCsv.mutate({ csv: csvText, dryRun: false });
+    }
+  }, [csvText, importMode, importPreview, importClientsCsv, importPatientsCsv]);
 
-  const isPending = importClientsMutation.isPending || importPatientsMutation.isPending;
+  const isImportPending = importClientsCsv.isPending || importPatientsCsv.isPending;
+  const canRestoreBackup =
+    Boolean(backupPayload) &&
+    Boolean(backupSummary) &&
+    backupSummary?.missingSections.length === 0 &&
+    backupSummary?.restoreErrors.length === 0 &&
+    confirmFreshPractice &&
+    !restoreBackup.isPending;
+  const deletionRequest = accountDeletionRequest.data;
+  const deletionSettingsMissing =
+    Boolean(deletionRequest?.requestedAt) &&
+    (practiceSettingsMissing || !verifiedPracticeSettings);
+  const deletionRequestedAt = deletionRequest?.requestedAt
+    ? formatSettingsDateTime(deletionRequest.requestedAt, settingsTimeZone)
+    : null;
+  const isDeletionStatusLoading =
+    accountDeletionRequest.isLoading ||
+    (Boolean(deletionRequest?.requestedAt) && practiceSettingsLoading);
+  const deletionStatusError =
+    accountDeletionRequest.error ??
+    (deletionRequest?.requestedAt ? practiceSettingsError : null) ??
+    (deletionSettingsMissing
+      ? new Error("Could not load practice settings. Please retry.")
+      : null);
+  const isDeletionContactEmailValid = (email: string) =>
+    email.trim().length <= SETTINGS_EMAIL_MAX_LENGTH &&
+    isValidEmail(email.trim());
+  const isDeletionReasonValid = (reason: string) =>
+    reason.trim().length <= ACCOUNT_DELETION_REASON_MAX_LENGTH;
+  const canSubmitDeletion =
+    isDeletionContactEmailValid(deletionContactEmail) &&
+    isDeletionReasonValid(deletionReason) &&
+    confirmExportDownloaded &&
+    confirmManualReview &&
+    !requestAccountDeletion.isPending;
 
   return (
     <div className="space-y-8">
@@ -1836,21 +3116,67 @@ function DataTab() {
         </p>
         <Button
           variant="outline"
-          onClick={() => (hasDemo ? clearDemo.mutate() : reseedDemo.mutate())}
+          onClick={() => {
+            if (!verifiedOnboardingStatus) return;
+            if (hasDemo) {
+              clearDemo.mutate();
+            } else {
+              reseedDemo.mutate();
+            }
+          }}
           disabled={
-            onboarding.isLoading || clearDemo.isPending || reseedDemo.isPending
+            onboarding.isLoading ||
+            Boolean(onboarding.error) ||
+            onboardingMissing ||
+            !verifiedOnboardingStatus ||
+            clearDemo.isPending ||
+            reseedDemo.isPending
           }
         >
           {hasDemo ? "Remove sample data" : "Add sample data"}
         </Button>
+        {onboarding.error || onboardingMissing ? (
+          <p className="mt-2 text-xs text-destructive">
+            {onboarding.error?.message ??
+              "Unable to load sample data status. Please retry."}
+          </p>
+        ) : null}
       </div>
 
       {/* Export Section */}
       <div>
         <h3 className="text-sm font-semibold mb-1">Export Data</h3>
         <p className="text-sm text-muted-foreground mb-4">
-          Download your practice data as CSV files.
+          Download your practice data.
         </p>
+        <div className="mb-3 max-w-2xl">
+          <Button
+            variant="outline"
+            className="w-full justify-start gap-2"
+            disabled={
+              exportingType !== null ||
+              practiceSettingsLoading ||
+              Boolean(practiceSettingsError) ||
+              practiceSettingsMissing ||
+              !verifiedPracticeSettings
+            }
+            onClick={handleFullBackupExport}
+          >
+            {exportingType === "full-backup" ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Download className="h-4 w-4" />
+            )}
+            <Database className="h-4 w-4" />
+            Export Full Backup
+          </Button>
+          {practiceSettingsError || practiceSettingsMissing ? (
+            <p className="mt-2 text-xs text-destructive">
+              {practiceSettingsError?.message ??
+                "Unable to load practice settings for backup export."}
+            </p>
+          ) : null}
+        </div>
         <div className="grid grid-cols-2 gap-3 max-w-2xl">
           {(
             [
@@ -1879,11 +3205,285 @@ function DataTab() {
         </div>
       </div>
 
+      {/* Full backup restore */}
+      <div>
+        <h3 className="text-sm font-semibold mb-1">Restore Full Backup</h3>
+        <p className="text-sm text-muted-foreground mb-4">
+          Restore a full backup into a fresh practice. Existing clients,
+          patients, appointments, or invoices block the restore.
+        </p>
+        <div className="max-w-2xl rounded-lg border border-amber-300 bg-amber-50 p-4 text-amber-950 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div className="min-w-0 flex-1 space-y-4">
+              <div>
+                <p className="text-sm font-medium">Fresh-practice restore</p>
+                <p className="mt-1 text-xs leading-5 text-amber-900 dark:text-amber-200">
+                  OpenVPM first checks the backup sections, row counts, and
+                  internal record links. Restores are non-destructive and only
+                  insert rows that do not already exist.{" "}
+                  {PRACTICE_BACKUP_JSON_SIZE_MESSAGE}
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="gap-2 bg-background"
+                  disabled={restoreBackup.isPending}
+                  onClick={() => backupFileInputRef.current?.click()}
+                >
+                  {restoreBackup.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Upload className="h-4 w-4" />
+                  )}
+                  Choose Backup JSON
+                </Button>
+                {backupFileName && (
+                  <span className="truncate text-xs text-amber-900 dark:text-amber-200">
+                    {backupFileName}
+                  </span>
+                )}
+                <input
+                  ref={backupFileInputRef}
+                  type="file"
+                  accept="application/json,.json"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) handleBackupFileSelect(file);
+                    e.currentTarget.value = "";
+                  }}
+                />
+              </div>
+
+              {backupSummary && (
+                <div className="rounded-md border border-amber-200 bg-background/80 p-3 text-sm text-foreground dark:border-amber-900/60 dark:bg-background/60">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge
+                      variant={
+                        backupSummary.missingSections.length > 0 ||
+                        backupSummary.restoreErrors.length > 0
+                          ? "destructive"
+                          : "success"
+                      }
+                    >
+                      {backupSummary.missingSections.length > 0
+                        ? "Missing sections"
+                        : backupSummary.restoreErrors.length > 0
+                          ? "Invalid backup data"
+                        : "Verified"}
+                    </Badge>
+                    <span className="text-muted-foreground">
+                      {backupSummary.totalRows.toLocaleString()} rows detected
+                    </span>
+                  </div>
+
+                  {backupSummary.missingSections.length > 0 ? (
+                    <p className="mt-2 text-xs text-destructive">
+                      Missing: {backupSummary.missingSections.join(", ")}
+                    </p>
+                  ) : backupSummary.restoreErrors.length > 0 ? (
+                    <div className="mt-2 space-y-1 text-xs text-destructive">
+                      {backupSummary.restoreErrors.slice(0, 3).map((error) => (
+                        <p key={error}>{error}</p>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                      {Object.entries(backupSummary.counts)
+                        .filter(([, count]) => count > 0)
+                        .slice(0, 8)
+                        .map(([section, count]) => (
+                          <div
+                            key={section}
+                            className="rounded-md bg-muted/60 px-2 py-1"
+                          >
+                            <p className="truncate text-[11px] text-muted-foreground">
+                              {section}
+                            </p>
+                            <p className="text-sm font-semibold">
+                              {count.toLocaleString()}
+                            </p>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {restoreResult && (
+                <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-100">
+                  <div className="flex items-center gap-2 font-medium">
+                    <Check className="h-4 w-4" />
+                    Restored {restoreResult.totalRows.toLocaleString()} rows
+                  </div>
+                </div>
+              )}
+
+              <label className="flex items-start gap-2 text-sm">
+                <Checkbox
+                  checked={confirmFreshPractice}
+                  disabled={
+                    !backupSummary ||
+                    backupSummary.missingSections.length > 0 ||
+                    backupSummary.restoreErrors.length > 0 ||
+                    restoreBackup.isPending
+                  }
+                  onChange={(e) =>
+                    setConfirmFreshPractice(e.currentTarget.checked)
+                  }
+                  className="mt-0.5"
+                />
+                <span>
+                  I confirm this practice has no live clients, patients,
+                  appointments, or invoices.
+                </span>
+              </label>
+
+              <Button
+                type="button"
+                className="gap-2"
+                disabled={!canRestoreBackup}
+                onClick={handleBackupRestore}
+              >
+                {restoreBackup.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Database className="h-4 w-4" />
+                )}
+                Restore into Fresh Practice
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Account deletion */}
+      <div>
+        <h3 className="text-sm font-semibold mb-1">Account Deletion</h3>
+        <p className="text-sm text-muted-foreground mb-4">
+          Start a deletion review after exporting the full backup.
+        </p>
+        <div className="max-w-2xl rounded-lg border border-destructive/30 bg-destructive/5 p-4">
+          {isDeletionStatusLoading ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading deletion status
+            </div>
+          ) : deletionStatusError ? (
+            <div className="flex items-start gap-2 text-sm text-destructive">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div>
+                <p className="font-medium">Could not load deletion status</p>
+                <p className="mt-1 text-xs">{deletionStatusError.message}</p>
+              </div>
+            </div>
+          ) : deletionRequest ? (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="warning">Review requested</Badge>
+                {deletionRequestedAt && (
+                  <span className="text-sm text-muted-foreground">
+                    {deletionRequestedAt}
+                  </span>
+                )}
+              </div>
+              <div className="grid gap-1 text-sm">
+                <div>
+                  <span className="font-medium">Contact:</span>{" "}
+                  {deletionRequest.contactEmail}
+                </div>
+                <div>
+                  <span className="font-medium">Requested by:</span>{" "}
+                  {deletionRequest.requestedByEmail}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div>
+                <label
+                  htmlFor="account-deletion-contact"
+                  className="mb-1 block text-sm font-medium"
+                >
+                  Contact email
+                </label>
+                <Input
+                  id="account-deletion-contact"
+                  type="email"
+                  value={deletionContactEmail}
+                  maxLength={SETTINGS_EMAIL_MAX_LENGTH}
+                  onChange={(e) => setDeletionContactEmail(e.target.value)}
+                  placeholder="owner@example.com"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="account-deletion-reason"
+                  className="mb-1 block text-sm font-medium"
+                >
+                  Notes
+                </label>
+                <textarea
+                  id="account-deletion-reason"
+                  value={deletionReason}
+                  onChange={(e) => setDeletionReason(e.target.value)}
+                  maxLength={ACCOUNT_DELETION_REASON_MAX_LENGTH}
+                  rows={3}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+                  placeholder="Optional context for the ops review"
+                />
+              </div>
+              <label className="flex items-start gap-2 text-sm">
+                <Checkbox
+                  checked={confirmExportDownloaded}
+                  onChange={(e) =>
+                    setConfirmExportDownloaded(e.currentTarget.checked)
+                  }
+                  className="mt-0.5"
+                />
+                <span>I downloaded the full backup before requesting deletion.</span>
+              </label>
+              <label className="flex items-start gap-2 text-sm">
+                <Checkbox
+                  checked={confirmManualReview}
+                  onChange={(e) =>
+                    setConfirmManualReview(e.currentTarget.checked)
+                  }
+                  className="mt-0.5"
+                />
+                <span>
+                  I understand deletion needs manual retention review before
+                  records are erased.
+                </span>
+              </label>
+              <Button
+                variant="destructive"
+                className="gap-2"
+                disabled={!canSubmitDeletion}
+                onClick={handleDeletionRequest}
+              >
+                {requestAccountDeletion.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Trash2 className="h-4 w-4" />
+                )}
+                Request Deletion Review
+              </Button>
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* Import Section */}
       <div>
         <h3 className="text-sm font-semibold mb-1">Import Data</h3>
         <p className="text-sm text-muted-foreground mb-4">
-          Upload a CSV file to import clients or patients.
+          Upload a CSV file to check for parser errors, duplicates, and missing
+          owner matches before importing.
         </p>
 
         {/* Import mode selector */}
@@ -1893,7 +3493,9 @@ function DataTab() {
             size="sm"
             onClick={() => {
               setImportMode("clients");
-              setCsvData(null);
+              setCsvText("");
+              setCsvFileName("");
+              setImportPreview(null);
               setImportResult(null);
             }}
           >
@@ -1905,7 +3507,9 @@ function DataTab() {
             size="sm"
             onClick={() => {
               setImportMode("patients");
-              setCsvData(null);
+              setCsvText("");
+              setCsvFileName("");
+              setImportPreview(null);
               setImportResult(null);
             }}
           >
@@ -1943,6 +3547,10 @@ function DataTab() {
               <p className="text-sm text-muted-foreground">
                 Drag and drop a CSV file here, or click to select
               </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                CSV files must be 5 MB or less. The file is dry-run first; no
+                rows import until you confirm.
+              </p>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -1951,66 +3559,91 @@ function DataTab() {
                 onChange={(e) => {
                   const file = e.target.files?.[0];
                   if (file) handleFileSelect(file);
+                  e.currentTarget.value = "";
                 }}
               />
             </div>
 
-            {/* Preview table */}
-            {csvData && csvData.length > 0 && (
+            {/* Server dry-run preview */}
+            {csvFileName && (
+              <p className="text-xs text-muted-foreground">
+                Selected file: <span className="font-medium">{csvFileName}</span>
+              </p>
+            )}
+
+            {importPreview && (
               <div className="space-y-3">
-                <p className="text-sm font-medium">
-                  Preview ({csvData.length} rows total, showing first 5)
-                </p>
-                <div className="overflow-x-auto rounded-lg border border-border">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-border bg-muted/50">
-                        {Object.keys(csvData[0]).map((header) => (
-                          <th
-                            key={header}
-                            className="px-3 py-2 text-left font-medium whitespace-nowrap"
-                          >
-                            {header}
-                          </th>
+                <div className="rounded-lg border border-border bg-card p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge
+                      variant={
+                        importPreview.willInsert > 0 ? "success" : "warning"
+                      }
+                    >
+                      Dry run complete
+                    </Badge>
+                    <span className="text-sm text-muted-foreground">
+                      No data has been imported yet.
+                    </span>
+                  </div>
+                  <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                    <ImportStat label="Rows parsed" value={importPreview.total} />
+                    <ImportStat
+                      label="Will import"
+                      value={importPreview.willInsert}
+                    />
+                    {typeof importPreview.duplicates === "number" && (
+                      <ImportStat
+                        label="Duplicates"
+                        value={importPreview.duplicates ?? 0}
+                      />
+                    )}
+                    {importMode === "patients" && (
+                      <ImportStat
+                        label="Missing owners"
+                        value={importPreview.unmatchedClient ?? 0}
+                      />
+                    )}
+                    <ImportStat
+                      label="Row issues"
+                      value={importPreview.errors.length}
+                    />
+                  </div>
+
+                  {importPreview.errors.length > 0 && (
+                    <div className="mt-4 space-y-1">
+                      <p className="text-sm font-medium text-destructive">
+                        {importPreview.errors.length} row issue(s):
+                      </p>
+                      <ul className="max-h-40 space-y-0.5 overflow-y-auto text-xs text-destructive">
+                        {importPreview.errors.map((err, i) => (
+                          <li key={i}>{err}</li>
                         ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {csvData.slice(0, 5).map((row, i) => (
-                        <tr
-                          key={i}
-                          className="border-b border-border last:border-0"
-                        >
-                          {Object.values(row).map((val, j) => (
-                            <td
-                              key={j}
-                              className="px-3 py-2 text-muted-foreground whitespace-nowrap"
-                            >
-                              {val || "-"}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </ul>
+                    </div>
+                  )}
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <Button
                     size="sm"
-                    disabled={isPending}
+                    disabled={isImportPending || importPreview.willInsert === 0}
                     onClick={handleImportConfirm}
                   >
-                    {isPending ? (
+                    {isImportPending ? (
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     ) : (
                       <Check className="mr-2 h-4 w-4" />
                     )}
-                    Confirm Import ({csvData.length} rows)
+                    Confirm Import ({importPreview.willInsert} rows)
                   </Button>
                   <Button
                     size="sm"
                     variant="ghost"
-                    onClick={() => setCsvData(null)}
+                    onClick={() => {
+                      setCsvText("");
+                      setCsvFileName("");
+                      setImportPreview(null);
+                    }}
                   >
                     Cancel
                   </Button>
@@ -2041,10 +3674,10 @@ function DataTab() {
             )}
 
             {/* Mutation error */}
-            {(importClientsMutation.error || importPatientsMutation.error) && (
+            {(importClientsCsv.error || importPatientsCsv.error) && (
               <p className="text-sm text-destructive">
-                {importClientsMutation.error?.message ??
-                  importPatientsMutation.error?.message}
+                {importClientsCsv.error?.message ??
+                  importPatientsCsv.error?.message}
               </p>
             )}
           </div>
@@ -2054,10 +3687,24 @@ function DataTab() {
   );
 }
 
+function ImportStat({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-md bg-muted/60 px-3 py-2">
+      <p className="text-[11px] text-muted-foreground">{label}</p>
+      <p className="text-lg font-semibold">{value.toLocaleString()}</p>
+    </div>
+  );
+}
+
 // ── Rooms ───────────────────────────────────────────────────
 function RoomsTab() {
   const utils = trpc.useUtils();
-  const { data: roomList, isLoading } = trpc.settings.listRooms.useQuery();
+  const {
+    data: roomList,
+    isLoading,
+    error: roomsError,
+    refetch: refetchRooms,
+  } = trpc.settings.listRooms.useQuery();
   const createMutation = trpc.settings.createRoom.useMutation({
     onSuccess: () => {
       utils.settings.listRooms.invalidate();
@@ -2084,12 +3731,27 @@ function RoomsTab() {
     name: "",
     type: "exam" as "exam" | "surgery" | "treatment" | "boarding",
   });
+  const isRoomNameValid = (name: string) =>
+    name.trim().length > 0 && name.trim().length <= ROOM_NAME_MAX_LENGTH;
+  const roomsMissing = !isLoading && !roomsError && !roomList;
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
+    );
+  }
+  if (roomsError) {
+    return <SettingsLoadError message={roomsError.message} />;
+  }
+  if (roomsMissing) {
+    return (
+      <SettingsLoadError
+        title="Could not load rooms"
+        message="The room list request finished without returning data. Try loading it again before editing rooms."
+        onRetry={() => void refetchRooms()}
+      />
     );
   }
 
@@ -2111,6 +3773,7 @@ function RoomsTab() {
           <div className="grid grid-cols-2 gap-3">
             <Input
               placeholder="Room name"
+              maxLength={ROOM_NAME_MAX_LENGTH}
               value={addForm.name}
               onChange={(e) =>
                 setAddForm({ ...addForm, name: e.target.value })
@@ -2136,7 +3799,9 @@ function RoomsTab() {
           <div className="flex gap-2">
             <Button
               size="sm"
-              disabled={!addForm.name || createMutation.isPending}
+              disabled={
+                !isRoomNameValid(addForm.name) || createMutation.isPending
+              }
               onClick={() => createMutation.mutate(addForm)}
             >
               {createMutation.isPending && (
@@ -2187,11 +3852,266 @@ function RoomsTab() {
             ))}
             {roomList?.length === 0 && (
               <tr>
-                <td
-                  colSpan={3}
-                  className="px-4 py-8 text-center text-muted-foreground"
-                >
-                  No rooms configured.
+                <td colSpan={3} className="p-0">
+                  <EmptyState
+                    className="border-0 bg-transparent p-8"
+                    icon={DoorOpen}
+                    title="No rooms configured"
+                    description="Add rooms so appointments can reserve exam, treatment, surgery, or boarding spaces."
+                  />
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── Wellness Plans ──────────────────────────────────────────
+function WellnessPlansTab() {
+  const formatCurrency = useCurrencyFormatter();
+  const utils = trpc.useUtils();
+  const {
+    data: plans,
+    isLoading,
+    error: wellnessError,
+    refetch: refetchWellnessPlans,
+  } = trpc.wellness.listPlans.useQuery();
+  const createMutation = trpc.wellness.createPlan.useMutation({
+    onSuccess: () => {
+      utils.wellness.listPlans.invalidate();
+      setShowAdd(false);
+      setAddForm({
+        name: "",
+        description: "",
+        price: "",
+        billingInterval: "monthly",
+      });
+      toast.success("Wellness plan created");
+    },
+    onError: (err) => {
+      toast.error(err.message);
+    },
+  });
+  const setPlanActive = trpc.wellness.setPlanActive.useMutation({
+    onSuccess: (_plan, variables) => {
+      utils.wellness.listPlans.invalidate();
+      utils.wellness.listDue.invalidate();
+      toast.success(
+        variables.active
+          ? "Wellness plan reactivated"
+          : "Wellness plan deactivated"
+      );
+    },
+    onError: (err) => {
+      toast.error(err.message);
+    },
+  });
+
+  const [showAdd, setShowAdd] = useState(false);
+  const [addForm, setAddForm] = useState<{
+    name: string;
+    description: string;
+    price: string;
+    billingInterval: "monthly" | "annual";
+  }>({
+    name: "",
+    description: "",
+    price: "",
+    billingInterval: "monthly",
+  });
+  const priceValue = Number(addForm.price);
+  const canCreate =
+    addForm.name.trim().length > 0 &&
+    addForm.name.trim().length <= WELLNESS_PLAN_NAME_MAX_LENGTH &&
+    addForm.description.trim().length <=
+      WELLNESS_PLAN_DESCRIPTION_MAX_LENGTH &&
+    isWellnessPlanPriceInputValid(addForm.price) &&
+    !createMutation.isPending;
+  const wellnessPlansMissing = !isLoading && !wellnessError && !plans;
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+  if (wellnessError) {
+    return <SettingsLoadError message={wellnessError.message} />;
+  }
+  if (wellnessPlansMissing) {
+    return (
+      <SettingsLoadError
+        title="Could not load wellness plans"
+        message="The wellness plan request finished without returning data. Try loading it again before editing membership plans."
+        onRetry={() => void refetchWellnessPlans()}
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 rounded-lg border border-border bg-muted/30 p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-sm font-semibold">Scheduled invoice billing</h3>
+            <Badge variant="secondary">No auto-charge</Badge>
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Wellness plans generate due invoices by cadence; Stripe checkout is
+            collected on each invoice.
+          </p>
+        </div>
+        <Button size="sm" onClick={() => setShowAdd(!showAdd)}>
+          <Plus className="mr-2 h-4 w-4" />
+          Add Plan
+        </Button>
+      </div>
+
+      {showAdd && (
+        <div className="space-y-3 rounded-lg border border-border bg-card p-4">
+          <h3 className="text-sm font-semibold">New Wellness Plan</h3>
+          <div className="grid gap-3 md:grid-cols-[1fr_9rem_9rem]">
+            <Input
+              placeholder="Plan name"
+              maxLength={WELLNESS_PLAN_NAME_MAX_LENGTH}
+              value={addForm.name}
+              onChange={(e) =>
+                setAddForm({ ...addForm, name: e.target.value })
+              }
+            />
+            <Input
+              type="number"
+              min={WELLNESS_PLAN_PRICE_MIN}
+              max={WELLNESS_PLAN_PRICE_MAX}
+              step={10 ** -WELLNESS_PLAN_PRICE_SCALE}
+              placeholder="Price"
+              value={addForm.price}
+              onChange={(e) =>
+                setAddForm({ ...addForm, price: e.target.value })
+              }
+            />
+            <select
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              value={addForm.billingInterval}
+              onChange={(e) =>
+                setAddForm({
+                  ...addForm,
+                  billingInterval: e.target.value as typeof addForm.billingInterval,
+                })
+              }
+            >
+              <option value="monthly">Monthly</option>
+              <option value="annual">Annual</option>
+            </select>
+          </div>
+          <Input
+            placeholder="Description (optional)"
+            maxLength={WELLNESS_PLAN_DESCRIPTION_MAX_LENGTH}
+            value={addForm.description}
+            onChange={(e) =>
+              setAddForm({ ...addForm, description: e.target.value })
+            }
+          />
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              disabled={!canCreate}
+              onClick={() =>
+                createMutation.mutate({
+                  name: addForm.name.trim(),
+                  description: addForm.description.trim() || undefined,
+                  price: priceValue,
+                  billingInterval: addForm.billingInterval,
+                })
+              }
+            >
+              {createMutation.isPending && (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              )}
+              Create
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setShowAdd(false)}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+
+      <div className="overflow-x-auto rounded-lg border border-border">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border bg-muted/50">
+              <th className="px-4 py-3 text-left font-medium">Name</th>
+              <th className="px-4 py-3 text-left font-medium">Interval</th>
+              <th className="px-4 py-3 text-right font-medium">Price</th>
+              <th className="px-4 py-3 text-left font-medium">Status</th>
+              <th className="px-4 py-3 text-right font-medium">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {plans?.map((plan) => (
+              <tr
+                key={plan.id}
+                className="border-b border-border last:border-0"
+              >
+                <td className="px-4 py-3">
+                  <div className="font-medium">{plan.name}</div>
+                  {plan.description && (
+                    <div className="text-sm text-muted-foreground">
+                      {plan.description}
+                    </div>
+                  )}
+                </td>
+                <td className="px-4 py-3">
+                  <div className="capitalize text-muted-foreground">
+                    {plan.billingInterval}
+                  </div>
+                  <Badge variant="outline" className="mt-1">
+                    Invoice schedule
+                  </Badge>
+                </td>
+                <td className="px-4 py-3 text-right tabular-nums">
+                  {formatCurrency(plan.price)}
+                </td>
+                <td className="px-4 py-3">
+                  <Badge variant={plan.active ? "default" : "secondary"}>
+                    {plan.active ? "Active" : "Inactive"}
+                  </Badge>
+                </td>
+                <td className="px-4 py-3 text-right">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={setPlanActive.isPending}
+                    onClick={() =>
+                      setPlanActive.mutate({
+                        planId: plan.id,
+                        active: !plan.active,
+                      })
+                    }
+                  >
+                    {plan.active ? "Deactivate" : "Reactivate"}
+                  </Button>
+                </td>
+              </tr>
+            ))}
+            {plans?.length === 0 && (
+              <tr>
+                <td colSpan={5} className="p-0">
+                  <EmptyState
+                    className="border-0 bg-transparent p-8"
+                    icon={HeartPulse}
+                    title="No wellness plans configured"
+                    description="Create a plan to package preventive care into scheduled invoice memberships."
+                  />
                 </td>
               </tr>
             )}
@@ -2234,7 +4154,12 @@ interface TemplateItem {
 function TemplatesTab() {
   const formatCurrency = useCurrencyFormatter();
   const utils = trpc.useUtils();
-  const { data: templateList, isLoading } = trpc.templates.list.useQuery();
+  const {
+    data: templateList,
+    isLoading,
+    error: templatesError,
+    refetch: refetchTemplates,
+  } = trpc.templates.list.useQuery();
   const createMutation = trpc.templates.create.useMutation({
     onSuccess: () => {
       utils.templates.list.invalidate();
@@ -2263,7 +4188,13 @@ function TemplatesTab() {
     category: "other" as TemplateCategory,
   });
   const [addItems, setAddItems] = useState<TemplateItem[]>([
-    { itemType: "service", description: "", defaultQuantity: 1, defaultUnitPrice: "0", sortOrder: 0 },
+    {
+      itemType: "service",
+      description: "",
+      defaultQuantity: 1,
+      defaultUnitPrice: "0",
+      sortOrder: 0,
+    },
   ]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(
     null
@@ -2271,13 +4202,27 @@ function TemplatesTab() {
 
   const resetAddForm = () => {
     setAddForm({ name: "", description: "", category: "other" });
-    setAddItems([{ itemType: "service", description: "", defaultQuantity: 1, defaultUnitPrice: "0", sortOrder: 0 }]);
+    setAddItems([
+      {
+        itemType: "service",
+        description: "",
+        defaultQuantity: 1,
+        defaultUnitPrice: "0",
+        sortOrder: 0,
+      },
+    ]);
   };
 
   const addItemRow = () => {
     setAddItems([
       ...addItems,
-      { itemType: "service", description: "", defaultQuantity: 1, defaultUnitPrice: "0", sortOrder: addItems.length },
+      {
+        itemType: "service",
+        description: "",
+        defaultQuantity: 1,
+        defaultUnitPrice: "0",
+        sortOrder: addItems.length,
+      },
     ]);
   };
 
@@ -2285,27 +4230,81 @@ function TemplatesTab() {
     setAddItems(addItems.filter((_, i) => i !== index));
   };
 
-  const updateItem = (index: number, field: keyof TemplateItem, value: string | number) => {
+  const updateItem = (
+    index: number,
+    field: keyof TemplateItem,
+    value: string | number
+  ) => {
     setAddItems(
       addItems.map((item, i) =>
         i === index ? { ...item, [field]: value } : item
       )
     );
   };
+  const templateItemsToCreate = addItems
+    .map((item, index) => ({
+      ...item,
+      description: item.description.trim(),
+      defaultUnitPrice: item.defaultUnitPrice.trim(),
+      sortOrder: index,
+    }))
+    .filter((item) => item.description.length > 0);
+  const isTemplateItemFormValid = (item: TemplateItem) =>
+    item.description.trim().length > 0 &&
+    item.description.trim().length <=
+      TREATMENT_TEMPLATE_ITEM_DESCRIPTION_MAX_LENGTH &&
+    isTreatmentTemplateQuantityValid(item.defaultQuantity) &&
+    isTreatmentTemplateUnitPriceInputValid(item.defaultUnitPrice) &&
+    isTreatmentTemplateItemTotalValid(
+      item.defaultUnitPrice,
+      item.defaultQuantity
+    );
+  const canCreateTemplate =
+    addForm.name.trim().length > 0 &&
+    addForm.name.trim().length <= TREATMENT_TEMPLATE_NAME_MAX_LENGTH &&
+    addForm.description.trim().length <=
+      TREATMENT_TEMPLATE_DESCRIPTION_MAX_LENGTH &&
+    templateItemsToCreate.length > 0 &&
+    templateItemsToCreate.length <= TREATMENT_TEMPLATE_MAX_ITEMS &&
+    templateItemsToCreate.every(isTemplateItemFormValid) &&
+    !createMutation.isPending;
 
   const selectedTemplate = templateList?.find(
     (t) => t.id === selectedTemplateId
   );
-  const { data: selectedTemplateDetail } = trpc.templates.getById.useQuery(
+  const {
+    data: selectedTemplateDetail,
+    isLoading: selectedTemplateLoading,
+    error: selectedTemplateError,
+    refetch: refetchSelectedTemplate,
+  } = trpc.templates.getById.useQuery(
     { id: selectedTemplateId! },
     { enabled: !!selectedTemplateId }
   );
+  const templatesMissing = !isLoading && !templatesError && !templateList;
+  const selectedTemplateMissing =
+    !!selectedTemplate &&
+    !selectedTemplateLoading &&
+    !selectedTemplateError &&
+    !selectedTemplateDetail;
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
+    );
+  }
+  if (templatesError) {
+    return <SettingsLoadError message={templatesError.message} />;
+  }
+  if (templatesMissing) {
+    return (
+      <SettingsLoadError
+        title="Could not load templates"
+        message="The template list request finished without returning data. Try loading it again before editing treatment templates."
+        onRetry={() => void refetchTemplates()}
+      />
     );
   }
 
@@ -2368,30 +4367,56 @@ function TemplatesTab() {
               </tr>
             </thead>
             <tbody>
-              {selectedTemplateDetail?.items?.map((item: any, i: number) => (
-                <tr
-                  key={i}
-                  className="border-b border-border last:border-0"
-                >
-                  <td className="px-4 py-3 font-medium">{item.description}</td>
-                  <td className="px-4 py-3 text-muted-foreground capitalize">
-                    {item.itemType}
-                  </td>
-                  <td className="px-4 py-3 text-muted-foreground">
-                    {item.defaultQuantity}
-                  </td>
-                  <td className="px-4 py-3 text-right text-muted-foreground">
-                    {formatCurrency(item.defaultUnitPrice)}
+              {selectedTemplateError ? (
+                <tr>
+                  <td colSpan={4} className="p-4">
+                    <SettingsLoadError message={selectedTemplateError.message} />
                   </td>
                 </tr>
-              ))}
-              {(!selectedTemplateDetail?.items || selectedTemplateDetail.items.length === 0) && (
+              ) : selectedTemplateLoading ? (
                 <tr>
-                  <td
-                    colSpan={4}
-                    className="px-4 py-8 text-center text-muted-foreground"
+                  <td colSpan={4} className="px-4 py-8 text-center text-muted-foreground">
+                    <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
+                    Loading template items...
+                  </td>
+                </tr>
+              ) : selectedTemplateMissing ? (
+                <tr>
+                  <td colSpan={4} className="p-4">
+                    <SettingsLoadError
+                      title="Could not load template items"
+                      message="The template detail request finished without returning data. Try loading it again before using this treatment template."
+                      onRetry={() => void refetchSelectedTemplate()}
+                    />
+                  </td>
+                </tr>
+              ) : selectedTemplateDetail?.items?.length ? (
+                selectedTemplateDetail.items.map((item: any, i: number) => (
+                  <tr
+                    key={i}
+                    className="border-b border-border last:border-0"
                   >
-                    No items in this template.
+                    <td className="px-4 py-3 font-medium">{item.description}</td>
+                    <td className="px-4 py-3 text-muted-foreground capitalize">
+                      {item.itemType}
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {item.defaultQuantity}
+                    </td>
+                    <td className="px-4 py-3 text-right text-muted-foreground">
+                      {formatCurrency(item.defaultUnitPrice)}
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={4} className="p-0">
+                    <EmptyState
+                      className="border-0 bg-transparent p-8"
+                      icon={Layers}
+                      title="No items in this template"
+                      description="Add default services or products when creating a new treatment template."
+                    />
                   </td>
                 </tr>
               )}
@@ -2423,6 +4448,7 @@ function TemplatesTab() {
           <div className="grid grid-cols-2 gap-3">
             <Input
               placeholder="Template name"
+              maxLength={TREATMENT_TEMPLATE_NAME_MAX_LENGTH}
               value={addForm.name}
               onChange={(e) =>
                 setAddForm({ ...addForm, name: e.target.value })
@@ -2447,6 +4473,7 @@ function TemplatesTab() {
           </div>
           <Input
             placeholder="Description (optional)"
+            maxLength={TREATMENT_TEMPLATE_DESCRIPTION_MAX_LENGTH}
             value={addForm.description}
             onChange={(e) =>
               setAddForm({ ...addForm, description: e.target.value })
@@ -2457,9 +4484,13 @@ function TemplatesTab() {
           <div className="space-y-2">
             <h4 className="text-sm font-medium">Items</h4>
             {addItems.map((item, index) => (
-              <div key={index} className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-2 items-center">
+              <div
+                key={index}
+                className="grid grid-cols-[1fr_auto_auto_auto_auto] items-center gap-2"
+              >
                 <Input
                   placeholder="Item description"
+                  maxLength={TREATMENT_TEMPLATE_ITEM_DESCRIPTION_MAX_LENGTH}
                   value={item.description}
                   onChange={(e) =>
                     updateItem(index, "description", e.target.value)
@@ -2478,6 +4509,9 @@ function TemplatesTab() {
                 <Input
                   type="number"
                   placeholder="Qty"
+                  min={TREATMENT_TEMPLATE_ITEM_QUANTITY_MIN}
+                  max={TREATMENT_TEMPLATE_ITEM_QUANTITY_MAX}
+                  step={1}
                   className="w-20"
                   value={item.defaultQuantity}
                   onChange={(e) =>
@@ -2491,6 +4525,9 @@ function TemplatesTab() {
                 <Input
                   type="number"
                   placeholder="Price"
+                  min={0}
+                  max={TREATMENT_TEMPLATE_UNIT_PRICE_MAX}
+                  step="0.01"
                   className="w-28"
                   value={item.defaultUnitPrice}
                   onChange={(e) =>
@@ -2511,7 +4548,12 @@ function TemplatesTab() {
                 </Button>
               </div>
             ))}
-            <Button size="sm" variant="outline" onClick={addItemRow}>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={addItems.length >= TREATMENT_TEMPLATE_MAX_ITEMS}
+              onClick={addItemRow}
+            >
               <Plus className="mr-2 h-4 w-4" />
               Add Item
             </Button>
@@ -2520,16 +4562,13 @@ function TemplatesTab() {
           <div className="flex gap-2">
             <Button
               size="sm"
-              disabled={
-                !addForm.name ||
-                addItems.every((i) => !i.description) ||
-                createMutation.isPending
-              }
+              disabled={!canCreateTemplate}
               onClick={() =>
                 createMutation.mutate({
-                  ...addForm,
-                  description: addForm.description || undefined,
-                  items: addItems.filter((i) => i.description),
+                  name: addForm.name.trim(),
+                  description: addForm.description.trim() || undefined,
+                  category: addForm.category,
+                  items: templateItemsToCreate,
                 })
               }
             >
@@ -2621,11 +4660,13 @@ function TemplatesTab() {
             ))}
             {templateList?.length === 0 && (
               <tr>
-                <td
-                  colSpan={5}
-                  className="px-4 py-8 text-center text-muted-foreground"
-                >
-                  No templates configured.
+                <td colSpan={5} className="p-0">
+                  <EmptyState
+                    className="border-0 bg-transparent p-8"
+                    icon={Layers}
+                    title="No templates configured"
+                    description="Create reusable treatment templates for common service and product bundles."
+                  />
                 </td>
               </tr>
             )}

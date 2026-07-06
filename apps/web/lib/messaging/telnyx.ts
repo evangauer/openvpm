@@ -3,13 +3,15 @@ import type {
   SendMessageInput,
   SendMessageResult,
 } from "./types";
+import { cleanSender, envValue } from "./env";
+import { fetchTelnyx } from "./telnyx-http";
 
 // Telnyx v2 REST — used directly (no SDK dependency) so the adapter stays a thin
 // wrapper. https://developers.telnyx.com/api/messaging/send-message
 const TELNYX_MESSAGES_URL = "https://api.telnyx.com/v2/messages";
 
 function apiKey(): string | undefined {
-  return process.env.TELNYX_API_KEY;
+  return envValue("TELNYX_API_KEY");
 }
 
 /**
@@ -31,11 +33,12 @@ export const telnyxProvider: MessagingProvider = {
       return { success: false, error: "Telnyx is not configured (TELNYX_API_KEY missing)." };
     }
 
+    const configuredSender = cleanSender(sender);
     const payload: Record<string, string> = { to, text: body };
-    if (sender.messagingServiceId) {
-      payload.messaging_profile_id = sender.messagingServiceId;
-    } else if (sender.from) {
-      payload.from = sender.from;
+    if (configuredSender.messagingServiceId) {
+      payload.messaging_profile_id = configuredSender.messagingServiceId;
+    } else if (configuredSender.from) {
+      payload.from = configuredSender.from;
     } else {
       return {
         success: false,
@@ -44,7 +47,7 @@ export const telnyxProvider: MessagingProvider = {
     }
 
     try {
-      const res = await fetch(TELNYX_MESSAGES_URL, {
+      const res = await fetchTelnyx(TELNYX_MESSAGES_URL, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${key}`,

@@ -4,6 +4,12 @@ import { Suspense, useState } from "react";
 import { signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
+import {
+  AUTH_EMAIL_MAX_LENGTH,
+  isAuthEmailLengthValid,
+} from "@/lib/auth-input-policy";
+import { AUTH_PASSWORD_MAX_LENGTH } from "@/lib/auth-password-policy";
+import { isValidEmail } from "@/lib/utils";
 
 const DEMO_ROLES = [
   {
@@ -32,7 +38,7 @@ const DEMO_ROLES = [
   },
 ];
 
-const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
+const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE?.trim() === "true";
 
 export default function LoginPage() {
   return (
@@ -68,6 +74,10 @@ function LoginPageInner() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const passwordMeetsPolicy =
+    password.length > 0 && password.length <= AUTH_PASSWORD_MAX_LENGTH;
+  const canSubmit =
+    isAuthEmailLengthValid(email) && isValidEmail(email) && passwordMeetsPolicy;
 
   async function signInWith(emailValue: string, passwordValue: string) {
     setError("");
@@ -93,7 +103,8 @@ function LoginPageInner() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    await signInWith(email, password);
+    if (!canSubmit) return;
+    await signInWith(email.trim().toLowerCase(), password);
   }
 
   return (
@@ -172,6 +183,7 @@ function LoginPageInner() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
+              maxLength={AUTH_EMAIL_MAX_LENGTH}
               className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
               placeholder="you@clinic.com"
             />
@@ -190,6 +202,7 @@ function LoginPageInner() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
+              maxLength={AUTH_PASSWORD_MAX_LENGTH}
               className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
               placeholder="Enter your password"
             />
@@ -197,7 +210,7 @@ function LoginPageInner() {
 
           <button
             type="submit"
-            disabled={loading}
+            disabled={!canSubmit || loading}
             className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
           >
             {loading ? "Signing in..." : "Sign in"}

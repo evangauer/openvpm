@@ -29,6 +29,19 @@ services:
       - minio_data:/data
     command: server /data --console-address ":9001"
 
+  minio-bootstrap:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 openpims openpims123; do
+        sleep 1;
+      done;
+      mc mb --ignore-existing local/openpims;
+      "
+
   web:
     build:
       context: ..
@@ -48,6 +61,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      minio-bootstrap:
+        condition: service_completed_successfully
 
 volumes:
   postgres_data:

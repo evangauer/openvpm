@@ -1,22 +1,83 @@
 import { z } from "zod";
-import { eq, and, isNull, gte, lte, inArray } from "drizzle-orm";
-import { createRouter, protectedProcedure } from "../trpc";
+import { eq, and, isNull, gte, lt, inArray, sql } from "drizzle-orm";
+import { TRPCError } from "@trpc/server";
+import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import {
   appointments,
+  practices,
   patients,
   clients,
   users,
   appointmentTypes,
   rooms,
 } from "@openpims/db";
+import type { Database } from "@openpims/db/client";
+import { dateInputUtcRangeForTimeZone } from "@/lib/date-input";
+import {
+  appointmentStatusValues,
+  canTransitionAppointmentStatus,
+} from "@/lib/scheduling/appointment-status";
+import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
+
+type WhiteboardContext = {
+  db: Database;
+  practiceId: string;
+};
+
+function activePracticePredicate(practiceId: string) {
+  return sql`exists (
+    select 1
+    from ${practices}
+    where ${practices.id} = ${practiceId}
+      and ${practices.deletedAt} is null
+  )`;
+}
+
+function practiceNotFound(): TRPCError {
+  return new TRPCError({ code: "NOT_FOUND", message: "Practice not found" });
+}
+
+async function practiceSettings(ctx: WhiteboardContext): Promise<{
+  name: string;
+  phone: string | null;
+  timezone: string | null;
+}> {
+  const [practice] = await ctx.db
+    .select({
+      name: practices.name,
+      phone: practices.phone,
+      timezone: practices.timezone,
+    })
+    .from(practices)
+    .where(and(eq(practices.id, ctx.practiceId), isNull(practices.deletedAt)))
+    .limit(1);
+
+  if (!practice) {
+    throw practiceNotFound();
+  }
+
+  return {
+    name: practice.name.trim() || "Veterinary Practice",
+    phone: practice.phone ?? null,
+    timezone: practice.timezone ?? null,
+  };
+}
+
+async function practiceTimeZone(ctx: WhiteboardContext): Promise<string | null> {
+  return (await practiceSettings(ctx)).timezone;
+}
+
+async function practiceDayRange(
+  ctx: WhiteboardContext
+): Promise<{ date: string; start: Date; end: Date }> {
+  return dateInputUtcRangeForTimeZone(new Date(), await practiceTimeZone(ctx));
+}
 
 export const whiteboardRouter = createRouter({
+  settings: protectedProcedure.query(async ({ ctx }) => practiceSettings(ctx)),
+
   getActive: protectedProcedure.query(async ({ ctx }) => {
-    const now = new Date();
-    const startOfDay = new Date(now);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(now);
-    endOfDay.setHours(23, 59, 59, 999);
+    const today = await practiceDayRange(ctx);
 
     return ctx.db
       .select({
@@ -35,17 +96,59 @@ export const whiteboardRouter = createRouter({
         typeColor: appointmentTypes.color,
       })
       .from(appointments)
-      .leftJoin(patients, eq(appointments.patientId, patients.id))
-      .leftJoin(clients, eq(appointments.clientId, clients.id))
-      .leftJoin(users, eq(appointments.doctorId, users.id))
-      .leftJoin(appointmentTypes, eq(appointments.typeId, appointmentTypes.id))
-      .leftJoin(rooms, eq(appointments.roomId, rooms.id))
+      .leftJoin(
+        patients,
+        and(
+          eq(appointments.patientId, patients.id),
+          eq(patients.clientId, appointments.clientId),
+          eq(patients.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
+          isNull(patients.deletedAt)
+        )
+      )
+      .leftJoin(
+        clients,
+        and(
+          eq(appointments.clientId, clients.id),
+          eq(clients.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
+          isNull(clients.deletedAt)
+        )
+      )
+      .leftJoin(
+        users,
+        and(
+          eq(appointments.doctorId, users.id),
+          eq(users.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
+          isNull(users.deletedAt)
+        )
+      )
+      .leftJoin(
+        appointmentTypes,
+        and(
+          eq(appointments.typeId, appointmentTypes.id),
+          eq(appointmentTypes.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
+          isNull(appointmentTypes.deletedAt)
+        )
+      )
+      .leftJoin(
+        rooms,
+        and(
+          eq(appointments.roomId, rooms.id),
+          eq(rooms.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
+          isNull(rooms.deletedAt)
+        )
+      )
       .where(
         and(
           eq(appointments.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
           isNull(appointments.deletedAt),
-          gte(appointments.startTime, startOfDay),
-          lte(appointments.startTime, endOfDay),
+          gte(appointments.startTime, today.start),
+          lt(appointments.startTime, today.end),
           inArray(appointments.status, [
             "confirmed",
             "checked_in",
@@ -58,31 +161,93 @@ export const whiteboardRouter = createRouter({
   }),
 
   updateStatus: protectedProcedure
+    .use(requireRole("admin", "veterinarian", "technician", "front_desk"))
     .input(
       z.object({
         id: z.string().uuid(),
-        status: z.enum([
-          "scheduled",
-          "confirmed",
-          "checked_in",
-          "in_exam",
-          "checked_out",
-          "no_show",
-          "cancelled",
-        ]),
+        status: z.enum(appointmentStatusValues),
       })
     )
     .mutation(async ({ ctx, input }) => {
+      const [current] = await ctx.db
+        .select({
+          id: appointments.id,
+          status: appointments.status,
+        })
+        .from(appointments)
+        .where(
+          and(
+            eq(appointments.id, input.id),
+            eq(appointments.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(appointments.deletedAt)
+          )
+        )
+        .limit(1);
+
+      if (!current) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Appointment not found",
+        });
+      }
+
+      if (!canTransitionAppointmentStatus(current.status, input.status)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Cannot change appointment status from ${current.status} to ${input.status}.`,
+        });
+      }
+
       const [appt] = await ctx.db
         .update(appointments)
         .set({ status: input.status })
         .where(
           and(
             eq(appointments.id, input.id),
-            eq(appointments.practiceId, ctx.practiceId)
+            eq(appointments.practiceId, ctx.practiceId),
+            eq(appointments.status, current.status),
+            activePracticePredicate(ctx.practiceId),
+            isNull(appointments.deletedAt)
           )
         )
         .returning();
-      return appt!;
+      if (!appt) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "Appointment status changed; try again.",
+        });
+      }
+      if (appt.status === "checked_in") {
+        await dispatchWebhookEvent(ctx.practiceId, "appointment.checked_in", {
+          id: appt.id,
+          appointmentId: appt.id,
+          startTime: appt.startTime,
+          endTime: appt.endTime,
+          status: appt.status,
+          previousStatus: current.status,
+          patientId: appt.patientId,
+          clientId: appt.clientId,
+          doctorId: appt.doctorId,
+          typeId: appt.typeId,
+          source: "dashboard",
+        });
+      }
+      if (appt.status === "cancelled") {
+        await dispatchWebhookEvent(ctx.practiceId, "appointment.cancelled", {
+          id: appt.id,
+          appointmentId: appt.id,
+          startTime: appt.startTime,
+          endTime: appt.endTime,
+          status: appt.status,
+          previousStatus: current.status,
+          patientId: appt.patientId,
+          clientId: appt.clientId,
+          doctorId: appt.doctorId,
+          typeId: appt.typeId,
+          source: "dashboard",
+        });
+      }
+      return appt;
     }),
 });

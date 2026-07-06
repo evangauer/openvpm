@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   currentPeriodMonth,
   crossesAbuseThreshold,
   ABUSE_ALERT_THRESHOLDS,
+  meterIdentifierForUsageRecord,
 } from "../usage";
 
 describe("currentPeriodMonth", () => {
@@ -10,6 +12,39 @@ describe("currentPeriodMonth", () => {
     expect(currentPeriodMonth(new Date("2026-06-07T12:00:00Z"))).toBe("2026-06");
     expect(currentPeriodMonth(new Date("2026-01-31T23:59:59Z"))).toBe("2026-01");
     expect(currentPeriodMonth(new Date("2026-12-01T00:00:00Z"))).toBe("2026-12");
+  });
+});
+
+describe("usage query scoping", () => {
+  const source = readFileSync(new URL("../usage.ts", import.meta.url), "utf8");
+
+  it("keeps metering and reconciliation scoped to active rows", () => {
+    const activePracticeGuard = source.indexOf("const [activePractice]");
+    const usageInsert = source.indexOf("tx.insert(usageRecords)");
+    expect(activePracticeGuard).toBeGreaterThanOrEqual(0);
+    expect(usageInsert).toBeGreaterThan(activePracticeGuard);
+    expect(source).toMatch(
+      /select\(\{ id: practices\.id \}\)[\s\S]+?where\(\s*and\(\s*eq\(practices\.id, opts\.practiceId\),\s*isNull\(practices\.deletedAt\)\s*\)\s*\)/s
+    );
+    expect(source).toContain("if (!activePractice) return;");
+    expect(source).toMatch(
+      /eq\(practices\.id, opts\.practiceId\),\s*isNull\(practices\.deletedAt\)/s
+    );
+    expect(source).toMatch(
+      /eq\(usageRecords\.id, opts\.usageRecordId\),\s*isNull\(usageRecords\.deletedAt\)/s
+    );
+    expect(source).toMatch(
+      /isNull\(usageRecords\.stripeMeteredAt\),\s*isNull\(usageRecords\.deletedAt\)/s
+    );
+    expect(source).toMatch(
+      /eq\(usageRecords\.periodMonth, periodMonth\),\s*isNull\(usageRecords\.deletedAt\)/s
+    );
+  });
+});
+
+describe("meterIdentifierForUsageRecord", () => {
+  it("uses a stable identifier derived from the usage row id", () => {
+    expect(meterIdentifierForUsageRecord("usage-row-1")).toBe("usage:usage-row-1");
   });
 });
 

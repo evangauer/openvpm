@@ -4,8 +4,14 @@ import { db } from "@openpims/db/client";
 import { clients } from "@openpims/db";
 import { authenticateApiKey } from "@/lib/api-auth";
 import { withTenant } from "@/lib/tenant-db";
-import { withErrorHandling, notFound } from "@/lib/compat/shared/errors";
+import {
+  apiError,
+  withErrorHandling,
+  notFound,
+} from "@/lib/compat/shared/errors";
+import { isUuid } from "@/lib/compat/shared/validation";
 import { toApiClient } from "@/lib/compat/openvpm";
+import { assertActivePractice } from "@/lib/compat/shared/active-practice";
 
 export const dynamic = "force-dynamic";
 
@@ -16,9 +22,13 @@ export async function GET(
 ) {
   const auth = await authenticateApiKey(req, "clients:read");
   if (!auth.ok) return auth.response;
+  if (!isUuid(params.id)) return apiError("Client id must be a valid UUID", 400);
 
   return withErrorHandling(() =>
     withTenant(db, auth.ctx.practiceId, async (tx) => {
+      const activePractice = await assertActivePractice(tx, auth.ctx.practiceId);
+      if (!activePractice.ok) return activePractice.response;
+
       const [row] = await tx
         .select()
         .from(clients)

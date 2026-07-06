@@ -27,6 +27,15 @@ export interface LabProvider {
   getResults(externalOrderId: string): Promise<LabResultItem[]>;
 }
 
+export class LabProviderNotConfiguredError extends Error {
+  constructor(providerName: string) {
+    super(
+      `${providerName} lab integration is not configured. Use in-house/manual lab results or connect a real provider adapter before submitting external lab orders.`
+    );
+    this.name = "LabProviderNotConfiguredError";
+  }
+}
+
 // In-house lab provider (for manual result entry)
 export const inHouseProvider: LabProvider = {
   name: "In-House Lab",
@@ -50,8 +59,10 @@ export const inHouseProvider: LabProvider = {
   },
 };
 
-// Stub providers that log to console (ready for real API integration)
-function createStubProvider(
+// External reference-lab providers are deliberately fail-closed until a real
+// adapter and credentials are wired. Returning fake success here would create
+// silent lab-order data loss in production.
+function createUnconfiguredProvider(
   name: string,
   id: "idexx" | "antech" | "zoetis"
 ): LabProvider {
@@ -59,32 +70,24 @@ function createStubProvider(
     name,
     id,
     async submitOrder(order) {
-      console.log(`[${name}] Order submitted:`, order.testCodes);
-      return { success: true, externalOrderId: `${id}-${Date.now()}` };
+      void order;
+      throw new LabProviderNotConfiguredError(name);
     },
     async checkStatus(externalOrderId) {
-      console.log(`[${name}] Checking status:`, externalOrderId);
-      return {
-        orderId: externalOrderId,
-        patientId: "",
-        practiceId: "",
-        provider: id,
-        testCodes: [],
-        status: "pending",
-        orderedAt: new Date().toISOString(),
-      };
+      void externalOrderId;
+      throw new LabProviderNotConfiguredError(name);
     },
     async getResults(externalOrderId) {
-      console.log(`[${name}] Getting results:`, externalOrderId);
-      return [];
+      void externalOrderId;
+      throw new LabProviderNotConfiguredError(name);
     },
   };
 }
 
 export const labProviders: Record<string, LabProvider> = {
-  idexx: createStubProvider("IDEXX VetConnect", "idexx"),
-  antech: createStubProvider("Antech Diagnostics", "antech"),
-  zoetis: createStubProvider("Zoetis Reference Labs", "zoetis"),
+  idexx: createUnconfiguredProvider("IDEXX VetConnect", "idexx"),
+  antech: createUnconfiguredProvider("Antech Diagnostics", "antech"),
+  zoetis: createUnconfiguredProvider("Zoetis Reference Labs", "zoetis"),
   in_house: inHouseProvider,
 };
 

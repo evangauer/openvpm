@@ -1,10 +1,16 @@
 import { recordUsage } from "@/lib/billing/usage";
 import { db } from "@openpims/db/client";
 import { practices } from "@openpims/db";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { withSystem } from "@/lib/tenant-db";
 import { billingEnforced, hasHostedFullAccess } from "@/lib/billing/plans";
-import { getMessagingProvider, resolveSender, isSuppressed } from "@/lib/messaging";
+import {
+  getMessagingProvider,
+  normalizeE164,
+  resolveSender,
+  isSuppressed,
+} from "@/lib/messaging";
+import { envFlagEnabled } from "@/lib/env-bool";
 
 // ---------------------------------------------------------------------------
 // Core send function
@@ -23,7 +29,29 @@ export async function sendSms(options: {
   /** Future: selects the location's own number/messaging profile (P1). */
   locationId?: string;
 }): Promise<{ success: boolean; sid?: string; error?: string }> {
-  if (options.practiceId && billingEnforced()) {
+  const provider = getMessagingProvider();
+  const hostedBilling = billingEnforced();
+  const recipient = normalizeE164(options.to);
+
+  if (!recipient) {
+    return {
+      success: false,
+      error: "SMS recipient phone number must be a valid E.164 or US/CA number.",
+    };
+  }
+
+  if (
+    provider.name === "console" &&
+    hostedBilling &&
+    !envFlagEnabled("NEXT_PUBLIC_DEMO_MODE")
+  ) {
+    return {
+      success: false,
+      error: "SMS provider is not configured for hosted sending.",
+    };
+  }
+
+  if (options.practiceId && hostedBilling) {
     const [practice] = await withSystem(db, (tx) =>
       tx
         .select({
@@ -32,14 +60,22 @@ export async function sendSms(options: {
           trialEndsAt: practices.trialEndsAt,
         })
         .from(practices)
-        .where(eq(practices.id, options.practiceId!))
+        .where(
+          and(
+            eq(practices.id, options.practiceId!),
+            isNull(practices.deletedAt)
+          )
+        )
         .limit(1)
     );
+    if (!practice) {
+      return { success: false, error: "Practice not found" };
+    }
     if (
       !hasHostedFullAccess(
-        practice?.tier,
-        practice?.billingStatus,
-        practice?.trialEndsAt
+        practice.tier,
+        practice.billingStatus,
+        practice.trialEndsAt
       )
     ) {
       return {
@@ -54,7 +90,7 @@ export async function sendSms(options: {
   // Fail closed — if we can't verify opt-out status, block rather than risk it.
   if (options.practiceId) {
     try {
-      if (await isSuppressed(options.practiceId, options.to)) {
+      if (await isSuppressed(options.practiceId, recipient)) {
         return { success: false, error: "Recipient has opted out of SMS (STOP)." };
       }
     } catch {
@@ -65,20 +101,30 @@ export async function sendSms(options: {
     }
   }
 
-  const provider = getMessagingProvider();
   const sender = await resolveSender({
     practiceId: options.practiceId,
     locationId: options.locationId,
   });
+  if (
+    options.locationId &&
+    !sender.messagingServiceId &&
+    !sender.from
+  ) {
+    return {
+      success: false,
+      error: "No active texting sender is configured for this location.",
+    };
+  }
+
   const result = await provider.send({
-    to: options.to,
+    to: recipient,
     body: options.body,
     sender,
   });
 
   // Meter only real sends (not the dev-console fallback); no-op on self-host.
   if (result.success && provider.name !== "console" && options.practiceId) {
-    void recordUsage({ practiceId: options.practiceId, kind: "sms" });
+    await recordUsage({ practiceId: options.practiceId, kind: "sms" });
   }
 
   return { success: result.success, sid: result.id, error: result.error };
@@ -97,7 +143,7 @@ export async function sendAppointmentReminderSms(data: {
   practicePhone?: string;
   practiceId?: string;
   locationId?: string;
-}): Promise<{ success: boolean; error?: string }> {
+}): Promise<{ success: boolean; sid?: string; error?: string }> {
   const phoneInfo = data.practicePhone
     ? `Call ${data.practicePhone} to reschedule.`
     : "Contact us to reschedule.";
@@ -110,7 +156,7 @@ export async function sendAppointmentReminderSms(data: {
     practiceId: data.practiceId,
     locationId: data.locationId,
   });
-  return { success: result.success, error: result.error };
+  return { success: result.success, sid: result.sid, error: result.error };
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +171,7 @@ export async function sendVaccinationReminderSms(data: {
   practicePhone?: string;
   practiceId?: string;
   locationId?: string;
-}): Promise<{ success: boolean; error?: string }> {
+}): Promise<{ success: boolean; sid?: string; error?: string }> {
   const phoneInfo = data.practicePhone
     ? `Call ${data.practicePhone} to schedule.`
     : "Contact us to schedule.";
@@ -138,5 +184,5 @@ export async function sendVaccinationReminderSms(data: {
     practiceId: data.practiceId,
     locationId: data.locationId,
   });
-  return { success: result.success, error: result.error };
+  return { success: result.success, sid: result.sid, error: result.error };
 }

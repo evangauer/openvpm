@@ -1,10 +1,21 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Clock, User, X, Loader2, MapPin, FileText } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
+import {
+  CalendarPlus,
+  ClipboardList,
+  Clock,
+  FileText,
+  Loader2,
+  MapPin,
+  User,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
-import { generateDischargeInstructions } from "@/lib/pdf";
+import { EmptyState } from "@/components/common/empty-state";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -92,6 +103,15 @@ const SPECIES_EMOJI: Record<string, string> = {
   reptile: "\uD83E\uDD8E",
 };
 
+function canUpdateWhiteboardStatusRole(role?: string | null): boolean {
+  return (
+    role === "admin" ||
+    role === "veterinarian" ||
+    role === "technician" ||
+    role === "front_desk"
+  );
+}
+
 // --- Helpers ---
 
 function getSpeciesEmoji(species: string | null): string {
@@ -119,22 +139,67 @@ function getTimeAgo(startTime: Date | string): string {
   return `${hours}h ${mins}m ago`;
 }
 
-function formatCurrentTime(date: Date): string {
-  return date.toLocaleTimeString("en-US", {
+function formatCurrentTime(date: Date, timeZone?: string | null): string {
+  const options: Intl.DateTimeFormatOptions = {
     hour: "numeric",
     minute: "2-digit",
     second: "2-digit",
     hour12: true,
-  });
+    timeZone: timeZone ?? undefined,
+  };
+  try {
+    return date.toLocaleTimeString("en-US", options);
+  } catch {
+    return date.toLocaleTimeString("en-US", {
+      ...options,
+      timeZone: undefined,
+    });
+  }
 }
 
-function formatCurrentDate(date: Date): string {
-  return date.toLocaleDateString("en-US", {
+function formatCurrentDate(date: Date, timeZone?: string | null): string {
+  const options: Intl.DateTimeFormatOptions = {
     weekday: "long",
     year: "numeric",
     month: "long",
     day: "numeric",
-  });
+    timeZone: timeZone ?? undefined,
+  };
+  try {
+    return date.toLocaleDateString("en-US", options);
+  } catch {
+    return date.toLocaleDateString("en-US", {
+      ...options,
+      timeZone: undefined,
+    });
+  }
+}
+
+function formatAppointmentTime(date: Date, timeZone?: string | null): string {
+  const options: Intl.DateTimeFormatOptions = {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: timeZone ?? undefined,
+  };
+  try {
+    return date.toLocaleTimeString("en-US", options);
+  } catch {
+    return date.toLocaleTimeString("en-US", {
+      ...options,
+      timeZone: undefined,
+    });
+  }
+}
+
+function formatVisitDate(date: Date, timeZone?: string | null): string {
+  try {
+    return date.toLocaleDateString("en-US", {
+      timeZone: timeZone ?? undefined,
+    });
+  } catch {
+    return date.toLocaleDateString("en-US");
+  }
 }
 
 // --- Components ---
@@ -237,13 +302,21 @@ function WhiteboardCard({
 
 function AppointmentDetailModal({
   appointment,
+  timeZone,
+  practiceName,
+  practicePhone,
   onClose,
   onStatusChange,
+  canUpdateStatus,
   isUpdating,
 }: {
   appointment: WhiteboardAppointment;
+  timeZone?: string | null;
+  practiceName: string;
+  practicePhone?: string | null;
   onClose: () => void;
   onStatusChange: (id: string, status: AppointmentStatus) => void;
+  canUpdateStatus: boolean;
   isUpdating: boolean;
 }) {
   const modalRef = useRef<HTMLDivElement>(null);
@@ -288,35 +361,36 @@ function AppointmentDetailModal({
     statusActions.push({ label: "Check Out", status: "checked_out", variant: "outline" });
   } else if (current === "in_exam") {
     statusActions.push({ label: "Check Out", status: "checked_out", variant: "default" });
-  } else if (current === "checked_out") {
-    statusActions.push({
-      label: "Back to Exam",
-      status: "in_exam",
-      variant: "outline",
-    });
   }
+  const visibleStatusActions = canUpdateStatus ? statusActions : [];
 
-  const handlePrintDischarge = () => {
-    generateDischargeInstructions({
-      practiceName: "",
-      patientName: appointment.patientName || "Unknown",
-      species: appointment.patientSpecies || "unknown",
-      clientName: clientName,
-      visitDate: new Date(appointment.startTime).toLocaleDateString(),
-      doctorName: appointment.doctorName || undefined,
-      medications: [],
-      instructions: [
-        "Monitor your pet for any changes in behavior or appetite",
-        "Administer all prescribed medications as directed",
-        "Keep the follow-up appointment if one was scheduled",
-        "Ensure fresh water is available at all times",
-      ],
-      emergencyNotes:
-        "If your pet shows signs of difficulty breathing, excessive bleeding, seizures, collapse, or inability to urinate, seek emergency veterinary care immediately.",
-    }).save(
-      `discharge_${(appointment.patientName || "patient").replace(/\s+/g, "_")}.pdf`
-    );
-    toast.success("Discharge instructions downloaded");
+  const handlePrintDischarge = async () => {
+    try {
+      const { generateDischargeInstructions } = await import("@/lib/pdf");
+      generateDischargeInstructions({
+        practiceName,
+        practicePhone: practicePhone ?? undefined,
+        patientName: appointment.patientName || "Unknown",
+        species: appointment.patientSpecies || "unknown",
+        clientName: clientName,
+        visitDate: formatVisitDate(new Date(appointment.startTime), timeZone),
+        doctorName: appointment.doctorName || undefined,
+        medications: [],
+        instructions: [
+          "Monitor your pet for any changes in behavior or appetite",
+          "Administer all prescribed medications as directed",
+          "Keep the follow-up appointment if one was scheduled",
+          "Ensure fresh water is available at all times",
+        ],
+        emergencyNotes:
+          "If your pet shows signs of difficulty breathing, excessive bleeding, seizures, collapse, or inability to urinate, seek emergency veterinary care immediately.",
+      }).save(
+        `discharge_${(appointment.patientName || "patient").replace(/\s+/g, "_")}.pdf`
+      );
+      toast.success("Discharge instructions downloaded");
+    } catch {
+      toast.error("Failed to generate discharge instructions");
+    }
   };
 
   return (
@@ -368,11 +442,7 @@ function AppointmentDetailModal({
             <div className="flex items-center gap-2 text-muted-foreground">
               <Clock className="h-3.5 w-3.5" />
               <span>
-                {start.toLocaleTimeString("en-US", {
-                  hour: "numeric",
-                  minute: "2-digit",
-                  hour12: true,
-                })}{" "}
+                {formatAppointmentTime(start, timeZone)}{" "}
                 ({getTimeAgo(appointment.startTime)})
               </span>
             </div>
@@ -408,9 +478,9 @@ function AppointmentDetailModal({
         </div>
 
         {/* Actions */}
-        {(statusActions.length > 0 || current === "checked_out") && (
+        {(visibleStatusActions.length > 0 || current === "checked_out") && (
           <div className="flex flex-wrap gap-2 border-t border-border px-4 py-3">
-            {statusActions.map((action) => (
+            {visibleStatusActions.map((action) => (
               <Button
                 key={action.status}
                 size="sm"
@@ -444,6 +514,9 @@ function AppointmentDetailModal({
 // --- Main Page ---
 
 export default function WhiteboardPage() {
+  const router = useRouter();
+  const { data: session } = useSession();
+  const canUpdateStatus = canUpdateWhiteboardStatusRole(session?.user?.role);
   const [selectedAppointment, setSelectedAppointment] =
     useState<WhiteboardAppointment | null>(null);
   const [currentTime, setCurrentTime] = useState<Date | null>(null);
@@ -463,6 +536,30 @@ export default function WhiteboardPage() {
   } = trpc.whiteboard.getActive.useQuery(undefined, {
     refetchInterval: 5000,
   });
+  const settingsQuery = trpc.whiteboard.settings.useQuery();
+  const practiceSettings = settingsQuery.data;
+  const pageError = error ?? settingsQuery.error;
+  const isPageLoading = isLoading || settingsQuery.isLoading;
+  const activeAppointmentsMissing = !isLoading && !error && !activeAppointments;
+  const settingsMissing =
+    !settingsQuery.isLoading && !settingsQuery.error && !settingsQuery.data;
+  const pageMissing = activeAppointmentsMissing || settingsMissing;
+  const verifiedActiveAppointments =
+    error || activeAppointmentsMissing || !activeAppointments
+      ? null
+      : activeAppointments;
+  const verifiedPracticeSettings =
+    settingsQuery.error || settingsMissing || !practiceSettings
+      ? null
+      : practiceSettings;
+  const pageReady =
+    !pageError &&
+    !isPageLoading &&
+    !pageMissing &&
+    Boolean(verifiedActiveAppointments && verifiedPracticeSettings);
+  const practiceClockReady = Boolean(
+    currentTime && verifiedPracticeSettings && !pageError
+  );
 
   const utils = trpc.useUtils();
   const updateStatus = trpc.whiteboard.updateStatus.useMutation({
@@ -480,13 +577,38 @@ export default function WhiteboardPage() {
     updateStatus.mutate({ id, status });
   };
 
+  const selectedAppointmentFromList = selectedAppointment
+    ? verifiedActiveAppointments?.find(
+        (appt) => appt.id === selectedAppointment.id
+      ) ?? null
+    : null;
+  const selectedAppointmentStillActive = Boolean(selectedAppointmentFromList);
+
+  useEffect(() => {
+    if (!selectedAppointment) return;
+    if (pageError || pageMissing) {
+      setSelectedAppointment(null);
+      return;
+    }
+    if (verifiedActiveAppointments && !selectedAppointmentStillActive) {
+      setSelectedAppointment(null);
+    }
+  }, [
+    pageError,
+    pageMissing,
+    selectedAppointment,
+    selectedAppointmentStillActive,
+    verifiedActiveAppointments,
+  ]);
+
   // Group appointments into columns
   const columnData = COLUMNS.map((col) => {
-    const items = (activeAppointments || []).filter((appt) =>
+    const items = (verifiedActiveAppointments ?? []).filter((appt) =>
       (col.statuses as readonly string[]).includes(appt.status as string)
     );
     return { ...col, items };
   });
+  const hasWhiteboardPatients = columnData.some((col) => col.items.length > 0);
 
   return (
     <div>
@@ -505,28 +627,28 @@ export default function WhiteboardPage() {
         </div>
         <div className="text-right">
           <p className="text-sm font-medium">
-            {currentTime ? formatCurrentTime(currentTime) : "\u00A0"}
+            {practiceClockReady && currentTime && verifiedPracticeSettings
+              ? formatCurrentTime(currentTime, verifiedPracticeSettings.timezone)
+              : "\u00A0"}
           </p>
           <p className="text-xs text-muted-foreground">
-            {currentTime ? formatCurrentDate(currentTime) : "\u00A0"}
+            {practiceClockReady && currentTime && verifiedPracticeSettings
+              ? formatCurrentDate(currentTime, verifiedPracticeSettings.timezone)
+              : "\u00A0"}
           </p>
         </div>
       </div>
 
-      {/* Error */}
-      {error && (
+      {pageError || pageMissing ? (
         <div className="mt-4 rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
-          {error.message}
+          {pageError?.message ?? "Unable to load whiteboard. Please retry."}
         </div>
-      )}
-
-      {/* Loading */}
-      {isLoading ? (
+      ) : isPageLoading ? (
         <div className="mt-12 flex items-center justify-center gap-2 text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />
           Loading whiteboard...
         </div>
-      ) : (
+      ) : hasWhiteboardPatients ? (
         /* Kanban columns */
         <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-3">
           {columnData.map((col) => (
@@ -584,17 +706,36 @@ export default function WhiteboardPage() {
             </div>
           ))}
         </div>
+      ) : (
+        <EmptyState
+          className="mt-6"
+          icon={ClipboardList}
+          title="No patients on the whiteboard"
+          description="Checked-in and in-progress appointments will appear here as the day moves."
+          action={{
+            label: "Open schedule",
+            onClick: () => router.push("/schedule"),
+            icon: CalendarPlus,
+          }}
+        />
       )}
 
       {/* Detail modal */}
-      {selectedAppointment && (
-        <AppointmentDetailModal
-          appointment={selectedAppointment}
-          onClose={() => setSelectedAppointment(null)}
-          onStatusChange={handleStatusChange}
-          isUpdating={updateStatus.isPending}
-        />
-      )}
+      {selectedAppointmentFromList &&
+        verifiedPracticeSettings &&
+        pageReady &&
+        selectedAppointmentStillActive && (
+          <AppointmentDetailModal
+            appointment={selectedAppointmentFromList}
+            timeZone={verifiedPracticeSettings.timezone}
+            practiceName={verifiedPracticeSettings.name}
+            practicePhone={verifiedPracticeSettings.phone}
+            onClose={() => setSelectedAppointment(null)}
+            onStatusChange={handleStatusChange}
+            canUpdateStatus={canUpdateStatus}
+            isUpdating={updateStatus.isPending}
+          />
+        )}
     </div>
   );
 }

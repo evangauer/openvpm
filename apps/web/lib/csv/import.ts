@@ -43,9 +43,13 @@ function opt(v: string | undefined): string | undefined {
 }
 
 export function csvToClientRecords(csv: string): ParseResult<ClientImportRecord> {
-  const { rows } = parseCsv(csv);
+  const { rows, errors: parseErrors } = parseCsv(csv);
   const records: ClientImportRecord[] = [];
-  const errors: string[] = [];
+  const errors: string[] = [...parseErrors];
+
+  if (parseErrors.length > 0) {
+    return { records, errors };
+  }
 
   rows.forEach((raw, i) => {
     const r = normalizeRow(raw);
@@ -71,9 +75,13 @@ export function csvToClientRecords(csv: string): ParseResult<ClientImportRecord>
 }
 
 export function csvToPatientRecords(csv: string): ParseResult<PatientImportRecord> {
-  const { rows } = parseCsv(csv);
+  const { rows, errors: parseErrors } = parseCsv(csv);
   const records: PatientImportRecord[] = [];
-  const errors: string[] = [];
+  const errors: string[] = [...parseErrors];
+
+  if (parseErrors.length > 0) {
+    return { records, errors };
+  }
 
   rows.forEach((raw, i) => {
     const r = normalizeRow(raw);

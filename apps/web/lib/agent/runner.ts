@@ -1,8 +1,14 @@
 import { generateText, stepCountIs, tool, type ToolSet } from "ai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createAnthropic } from "@ai-sdk/anthropic";
-import { AGENT_TOOLS, type AgentToolContext } from "./tools";
+import {
+  AGENT_TOOLS,
+  AgentPracticeNotFoundError,
+  type AgentTool,
+  type AgentToolContext,
+} from "./tools";
 import { recordUsage } from "@/lib/billing/usage";
+import { rateLimit } from "@/lib/rate-limit";
 
 /**
  * Provider-agnostic agent runner (Vercel AI SDK). The active model is chosen by
@@ -14,6 +20,9 @@ import { recordUsage } from "@/lib/billing/usage";
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 const MAX_ITERATIONS = 8;
 const MAX_OUTPUT_TOKENS = 1024;
+export const AGENT_RUN_RATE_WINDOW_MS = 60_000;
+export const AGENT_RUN_ACTOR_RATE_LIMIT = 20;
+export const AGENT_RUN_PRACTICE_RATE_LIMIT = 120;
 
 const SYSTEM_PROMPT = `You are the OpenVPM Agent, an operations assistant embedded in an open-source veterinary practice management system.
 
@@ -22,6 +31,7 @@ You help practice staff by using the provided tools to read and act on practice 
 - You operate on a single practice's data; you cannot see other practices.
 - For any drug dose, use calculate_drug_dose and present it as a reference range that the prescribing clinician must verify. Never present a dose as a final prescribing decision.
 - Before booking an appointment, confirm you have the right client and patient (use find_client / get_patient_summary first when ids are not given).
+- Only create SOAP notes when staff explicitly asks you to draft or record one; keep notes factual, concise, and ready for clinician review.
 - Be concise and clinical. Surface warnings the tools return.`;
 
 export interface AgentToolCall {
@@ -41,15 +51,36 @@ export interface AgentRunResult {
 export class AgentNotConfiguredError extends Error {
   constructor() {
     super(
-      "OpenVPM Agent is not configured. Set an AI key (GOOGLE_API_KEY for Gemini, or ANTHROPIC_API_KEY for Claude) to enable agent runs."
+      "OpenVPM Agent is not configured. Set an AI key (GOOGLE_API_KEY or GOOGLE_GENERATIVE_AI_API_KEY for Gemini, or ANTHROPIC_API_KEY for Claude) to enable agent runs."
     );
     this.name = "AgentNotConfiguredError";
   }
 }
 
+export class AgentRateLimitedError extends Error {
+  constructor(
+    public readonly retryAfterSeconds: number,
+    public readonly limit: number,
+    public readonly resetAt: Date
+  ) {
+    super("Too many agent runs. Try again later.");
+    this.name = "AgentRateLimitedError";
+  }
+}
+
+function nonBlank(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
 /** Resolve the model id from request override → AI_MODEL → legacy AGENT_MODEL → default. */
 function activeModelId(override?: string): string {
-  return override || process.env.AI_MODEL || process.env.AGENT_MODEL || DEFAULT_MODEL;
+  return (
+    nonBlank(override) ??
+    nonBlank(process.env.AI_MODEL) ??
+    nonBlank(process.env.AGENT_MODEL) ??
+    DEFAULT_MODEL
+  );
 }
 
 /** Google (Gemini) vs Anthropic (Claude) inferred from the model id. */
@@ -58,14 +89,23 @@ function isGoogleModel(modelId: string): boolean {
 }
 
 function googleApiKey(): string | undefined {
-  return process.env.GOOGLE_API_KEY ?? process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+  return (
+    nonBlank(process.env.GOOGLE_API_KEY) ??
+    nonBlank(process.env.GOOGLE_GENERATIVE_AI_API_KEY)
+  );
+}
+
+function anthropicApiKey(): string | undefined {
+  return nonBlank(process.env.ANTHROPIC_API_KEY);
+}
+
+function hasProviderKey(modelId: string): boolean {
+  return isGoogleModel(modelId) ? Boolean(googleApiKey()) : Boolean(anthropicApiKey());
 }
 
 /** Whether the configured provider has its API key set. */
 export function isAgentConfigured(): boolean {
-  return isGoogleModel(activeModelId())
-    ? Boolean(googleApiKey())
-    : Boolean(process.env.ANTHROPIC_API_KEY);
+  return hasProviderKey(activeModelId());
 }
 
 /** Build an AI SDK model instance for the given model id. */
@@ -74,8 +114,71 @@ function resolveModel(modelId: string) {
     const google = createGoogleGenerativeAI({ apiKey: googleApiKey() });
     return google(modelId.replace(/^google\//, ""));
   }
-  const anthropic = createAnthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const anthropic = createAnthropic({ apiKey: anthropicApiKey() });
   return anthropic(modelId.replace(/^anthropic\//, ""));
+}
+
+function retryAfterSeconds(resetAt: Date): number {
+  return Math.max(1, Math.ceil((resetAt.getTime() - Date.now()) / 1000));
+}
+
+function hasApiScope(scopes: string[], required: string): boolean {
+  return scopes.includes("*") || scopes.includes(required);
+}
+
+function missingToolApiScopes(
+  toolDef: AgentTool,
+  apiKeyScopes: string[] | undefined
+): string[] {
+  if (!apiKeyScopes) return [];
+  return (toolDef.requiredApiScopes ?? []).filter(
+    (scope) => !hasApiScope(apiKeyScopes, scope)
+  );
+}
+
+async function enforceAgentRunRateLimitBucket(input: {
+  key: string;
+  limit: number;
+  logContext: string;
+}): Promise<void> {
+  let result: Awaited<ReturnType<typeof rateLimit>>;
+  try {
+    result = await rateLimit({
+      key: input.key,
+      limit: input.limit,
+      windowMs: AGENT_RUN_RATE_WINDOW_MS,
+    });
+  } catch (err) {
+    console.error(`[agent.${input.logContext}] rate limit failed:`, err);
+    const resetAt = new Date(Date.now() + AGENT_RUN_RATE_WINDOW_MS);
+    throw new AgentRateLimitedError(
+      retryAfterSeconds(resetAt),
+      input.limit,
+      resetAt
+    );
+  }
+
+  if (!result.success) {
+    throw new AgentRateLimitedError(
+      retryAfterSeconds(result.resetAt),
+      input.limit,
+      result.resetAt
+    );
+  }
+}
+
+async function enforceAgentRunRateLimit(ctx: AgentToolContext): Promise<void> {
+  await enforceAgentRunRateLimitBucket({
+    key: `agent-run:${ctx.practiceId}:actor:${ctx.userId}`,
+    limit: AGENT_RUN_ACTOR_RATE_LIMIT,
+    logContext: "actor",
+  });
+
+  await enforceAgentRunRateLimitBucket({
+    key: `agent-run:${ctx.practiceId}:practice`,
+    limit: AGENT_RUN_PRACTICE_RATE_LIMIT,
+    logContext: "practice",
+  });
 }
 
 /**
@@ -86,6 +189,7 @@ function resolveModel(modelId: string) {
 function buildToolSet(
   ctx: AgentToolContext,
   allowWrites: boolean,
+  apiKeyScopes: string[] | undefined,
   sink: AgentToolCall[]
 ): ToolSet {
   const entries = AGENT_TOOLS.map((t) => [
@@ -99,9 +203,19 @@ function buildToolSet(
           if (!t.readOnly && !allowWrites) {
             call.error = "Write tools are disabled for this run.";
           } else {
-            call.result = await t.execute(args, ctx);
+            const missingScopes = missingToolApiScopes(t, apiKeyScopes);
+            if (missingScopes.length > 0) {
+              call.error = `Tool requires API key scope${
+                missingScopes.length === 1 ? "" : "s"
+              }: ${missingScopes.join(", ")}.`;
+            } else {
+              call.result = await t.execute(args, ctx);
+            }
           }
         } catch (e) {
+          if (e instanceof AgentPracticeNotFoundError) {
+            throw e;
+          }
           call.error = e instanceof Error ? e.message : "Tool execution failed";
         }
         sink.push(call);
@@ -121,28 +235,32 @@ export async function runAgent(opts: {
   instruction: string;
   context: AgentToolContext;
   allowWrites?: boolean;
+  apiKeyScopes?: string[];
   model?: string;
 }): Promise<AgentRunResult> {
   const modelId = activeModelId(opts.model);
-  const hasKey = isGoogleModel(modelId)
-    ? Boolean(googleApiKey())
-    : Boolean(process.env.ANTHROPIC_API_KEY);
-  if (!hasKey) throw new AgentNotConfiguredError();
+  if (!hasProviderKey(modelId)) throw new AgentNotConfiguredError();
 
   const allowWrites = opts.allowWrites ?? false;
-
-  // Meter the agent run for hosted billing (no-op on self-host).
-  void recordUsage({ practiceId: opts.context.practiceId, kind: "ai_run" });
+  await enforceAgentRunRateLimit(opts.context);
 
   const toolCalls: AgentToolCall[] = [];
   const result = await generateText({
     model: resolveModel(modelId),
     system: SYSTEM_PROMPT,
     prompt: opts.instruction,
-    tools: buildToolSet(opts.context, allowWrites, toolCalls),
+    tools: buildToolSet(
+      opts.context,
+      allowWrites,
+      opts.apiKeyScopes,
+      toolCalls
+    ),
     stopWhen: stepCountIs(MAX_ITERATIONS),
     maxOutputTokens: MAX_OUTPUT_TOKENS,
   });
+
+  // Meter only successful agent runs for hosted billing (no-op on self-host).
+  await recordUsage({ practiceId: opts.context.practiceId, kind: "ai_run" });
 
   return {
     text: result.text.trim(),

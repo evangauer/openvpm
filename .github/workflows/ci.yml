@@ -61,9 +61,9 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Create the schema, apply RLS (+ least-priv role), then prove tenant
-      # isolation against a real Postgres on every PR.
-      - run: pnpm --filter @openpims/db exec drizzle-kit push --force
+      # Apply committed migrations, apply RLS (+ least-priv role), then prove
+      # tenant isolation against a real Postgres on every PR.
+      - run: pnpm --filter @openpims/db db:migrate
 
       - run: pnpm --filter @openpims/db db:rls
 

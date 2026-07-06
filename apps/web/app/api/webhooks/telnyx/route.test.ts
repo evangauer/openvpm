@@ -1,0 +1,1017 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+const INBOUND_SOURCE = readFileSync(
+  fileURLToPath(
+    new URL("../../../../lib/messaging/inbound.ts", import.meta.url)
+  ),
+  "utf8"
+);
+const ROUTE_SOURCE = readFileSync(
+  fileURLToPath(new URL("./route.ts", import.meta.url)),
+  "utf8"
+);
+
+const mocks = vi.hoisted(() => {
+  const selectResults: unknown[][] = [];
+  const updateResults: unknown[][] = [];
+  const selectLimit = vi.fn(async () => selectResults.shift() ?? []);
+  const selectWhere = vi.fn((_condition: unknown) => ({ limit: selectLimit }));
+  const selectInnerJoin = vi.fn(() => ({
+    innerJoin: selectInnerJoin,
+    where: selectWhere,
+  }));
+  const selectFrom = vi.fn(() => ({
+    innerJoin: selectInnerJoin,
+    where: selectWhere,
+  }));
+  const select = vi.fn(() => ({ from: selectFrom }));
+
+  const updateReturning = vi.fn(async () =>
+    updateResults.length > 0
+      ? updateResults.shift()
+      : [{ id: "00000000-0000-0000-0000-000000000009" }]
+  );
+  const updateWhere = vi.fn((_condition: unknown) => ({
+    returning: updateReturning,
+  }));
+  const updateSet = vi.fn(() => ({ where: updateWhere }));
+  const update = vi.fn(() => ({ set: updateSet }));
+
+  const insertConflict = vi.fn(async (_config?: unknown) => undefined);
+  const insertValues = vi.fn((_values: unknown) => ({
+    onConflictDoNothing: insertConflict,
+  }));
+  const insert = vi.fn(() => ({ values: insertValues }));
+
+  const deleteWhere = vi.fn(async (_condition: unknown) => undefined);
+  const deleteFrom = vi.fn(() => ({ where: deleteWhere }));
+
+  const db = { select, update, insert, delete: deleteFrom };
+
+  return {
+    db,
+    selectResults,
+    updateResults,
+    selectLimit,
+    selectWhere,
+    selectInnerJoin,
+    insertConflict,
+    insertValues,
+    deleteWhere,
+    updateReturning,
+    updateSet,
+    updateWhere,
+    verifyTelnyxSignature: vi.fn(() => true),
+    withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
+      fn(db)
+    ),
+    withTenant: vi.fn(
+      async (
+        _db: unknown,
+        _practiceId: string,
+        fn: (tx: unknown) => unknown
+      ) => fn(db)
+    ),
+  };
+});
+
+vi.mock("@openpims/db/client", () => ({
+  db: mocks.db,
+}));
+
+vi.mock("@/lib/tenant-db", () => ({
+  withSystem: mocks.withSystem,
+  withTenant: mocks.withTenant,
+}));
+
+vi.mock("@/lib/messaging/telnyx-signature", () => ({
+  verifyTelnyxSignature: mocks.verifyTelnyxSignature,
+}));
+
+const { POST } = await import("./route");
+const { communications } = await import("@openpims/db");
+const { MESSAGING_WEBHOOK_BODY_MAX_BYTES } = await import(
+  "@/lib/messaging-webhook-limits"
+);
+
+function sqlIncludesColumnParamPair(
+  value: unknown,
+  columnName: string,
+  paramValue: unknown
+): boolean {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const chunk = value as { name?: unknown; queryChunks?: unknown[] };
+  if (!Array.isArray(chunk.queryChunks)) {
+    return false;
+  }
+
+  const hasColumn = chunk.queryChunks.some(
+    (item) =>
+      !!item &&
+      typeof item === "object" &&
+      (item as { name?: unknown }).name === columnName
+  );
+  const hasParam = chunk.queryChunks.some((item) => {
+    if (!item || typeof item !== "object") {
+      return false;
+    }
+    const candidate = item as { value?: unknown };
+    return Object.prototype.hasOwnProperty.call(candidate, "value")
+      ? Object.is(candidate.value, paramValue)
+      : false;
+  });
+
+  return (
+    (hasColumn && hasParam) ||
+    chunk.queryChunks.some((item) =>
+      sqlIncludesColumnParamPair(item, columnName, paramValue)
+    )
+  );
+}
+
+function sqlIncludesColumnName(
+  value: unknown,
+  columnName: string,
+  seen = new WeakSet<object>()
+): boolean {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  if (seen.has(value)) return false;
+  seen.add(value);
+
+  const candidate = value as { name?: unknown; queryChunks?: unknown[] };
+  if (candidate.name === columnName) return true;
+  if (Array.isArray(candidate.queryChunks)) {
+    return candidate.queryChunks.some((item) =>
+      sqlIncludesColumnName(item, columnName, seen)
+    );
+  }
+  return Object.values(value as Record<string, unknown>).some((item) =>
+    sqlIncludesColumnName(item, columnName, seen)
+  );
+}
+
+function sqlIncludesValue(
+  value: unknown,
+  needle: unknown,
+  seen = new WeakSet<object>()
+): boolean {
+  if (Object.is(value, needle)) return true;
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  if (seen.has(value)) return false;
+  seen.add(value);
+
+  const candidate = value as { value?: unknown; queryChunks?: unknown[] };
+  if (
+    Object.prototype.hasOwnProperty.call(candidate, "value") &&
+    Object.is(candidate.value, needle)
+  ) {
+    return true;
+  }
+  if (Array.isArray(candidate.queryChunks)) {
+    return candidate.queryChunks.some((item) =>
+      sqlIncludesValue(item, needle, seen)
+    );
+  }
+  return Object.values(value as Record<string, unknown>).some((item) =>
+    sqlIncludesValue(item, needle, seen)
+  );
+}
+
+afterEach(() => {
+  vi.clearAllMocks();
+  mocks.selectResults.length = 0;
+  mocks.updateResults.length = 0;
+  delete process.env.TELNYX_PUBLIC_KEY;
+});
+
+describe("Telnyx webhook", () => {
+  it("rejects oversized payloads before signature verification or tenant work", async () => {
+    const response = await POST(
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "content-length": String(MESSAGING_WEBHOOK_BODY_MAX_BYTES + 1),
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body: "{}",
+      })
+    );
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toEqual({
+      error: "Messaging webhook payload too large",
+    });
+    expect(mocks.verifyTelnyxSignature).not.toHaveBeenCalled();
+    expect(mocks.withSystem).not.toHaveBeenCalled();
+    expect(mocks.withTenant).not.toHaveBeenCalled();
+    expect(mocks.insertValues).not.toHaveBeenCalled();
+    expect(mocks.updateSet).not.toHaveBeenCalled();
+  });
+
+  it("rejects streamed oversized payloads without a content-length header", async () => {
+    const response = await POST(
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body: "x".repeat(MESSAGING_WEBHOOK_BODY_MAX_BYTES + 1),
+      })
+    );
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toEqual({
+      error: "Messaging webhook payload too large",
+    });
+    expect(mocks.verifyTelnyxSignature).not.toHaveBeenCalled();
+    expect(mocks.withSystem).not.toHaveBeenCalled();
+    expect(mocks.withTenant).not.toHaveBeenCalled();
+  });
+
+  it("uses the capped streaming body reader", () => {
+    expect(ROUTE_SOURCE).toContain("readRequestTextWithLimit(");
+    expect(ROUTE_SOURCE).toContain("MESSAGING_WEBHOOK_BODY_MAX_BYTES");
+    expect(ROUTE_SOURCE).not.toMatch(/\b(?:req|request)\.text\(\)/);
+  });
+
+  it("treats a blank public key as missing before signature verification", async () => {
+    process.env.TELNYX_PUBLIC_KEY = "   ";
+    const body = JSON.stringify({
+      data: {
+        event_type: "message.received",
+        payload: {
+          id: "msg-inbound",
+          from: { phone_number: "+15555550199" },
+          to: [{ phone_number: "+15555550100" }],
+          text: "Running five minutes late",
+        },
+      },
+    });
+
+    const response = await POST(
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body,
+      })
+    );
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({
+      error: "invalid signature",
+    });
+    expect(mocks.verifyTelnyxSignature).not.toHaveBeenCalled();
+    expect(mocks.withSystem).not.toHaveBeenCalled();
+    expect(mocks.withTenant).not.toHaveBeenCalled();
+  });
+
+  it("updates outbound communication status from delivery receipts", async () => {
+    process.env.TELNYX_PUBLIC_KEY = " test-public-key ";
+    mocks.selectResults.push([
+      {
+        practiceId: "00000000-0000-0000-0000-0000000000aa",
+        locationId: "00000000-0000-0000-0000-000000000002",
+      },
+    ]);
+    const body = JSON.stringify({
+      data: {
+        event_type: "message.finalized",
+        payload: {
+          id: "msg-123",
+          from: { phone_number: "+15555550100" },
+          to: [{ phone_number: "+15555550199", status: "delivered" }],
+        },
+      },
+    });
+
+    const response = await POST(
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body,
+      })
+    );
+
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    expect(mocks.verifyTelnyxSignature).toHaveBeenCalledWith(
+      expect.objectContaining({
+        publicKeyB64: "test-public-key",
+      })
+    );
+    expect(mocks.withTenant).toHaveBeenCalledWith(
+      mocks.db,
+      "00000000-0000-0000-0000-0000000000aa",
+      expect.any(Function)
+    );
+    expect(mocks.updateSet).toHaveBeenCalledWith({ status: "delivered" });
+    const condition = mocks.updateWhere.mock.calls[0]?.[0];
+    expect(sqlIncludesColumnParamPair(condition, "channel", "sms")).toBe(true);
+    expect(sqlIncludesColumnParamPair(condition, "direction", "outbound")).toBe(
+      true
+    );
+    expect(sqlIncludesColumnParamPair(condition, "status", "pending")).toBe(
+      true
+    );
+    expect(sqlIncludesColumnParamPair(condition, "status", "sent")).toBe(true);
+    expect(sqlIncludesColumnName(condition, "deleted_at")).toBe(true);
+  });
+
+  it("routes delivery receipts by messaging profile when no sender number is stored", async () => {
+    process.env.TELNYX_PUBLIC_KEY = "test-public-key";
+    mocks.selectResults.push([
+      {
+        practiceId: "00000000-0000-0000-0000-0000000000aa",
+        locationId: "00000000-0000-0000-0000-000000000002",
+      },
+    ]);
+    const body = JSON.stringify({
+      data: {
+        event_type: "message.finalized",
+        payload: {
+          id: "msg-profile",
+          messaging_profile_id: " profile-1 ",
+          to: [{ phone_number: "+15555550199", status: "delivered" }],
+        },
+      },
+    });
+
+    const response = await POST(
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body,
+      })
+    );
+
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    expect(mocks.withTenant).toHaveBeenCalledWith(
+      mocks.db,
+      "00000000-0000-0000-0000-0000000000aa",
+      expect.any(Function)
+    );
+    expect(mocks.updateSet).toHaveBeenCalledWith({ status: "delivered" });
+    const senderCondition = mocks.selectWhere.mock.calls[0]?.[0];
+    expect(sqlIncludesColumnName(senderCondition, "messaging_profile_id")).toBe(
+      true
+    );
+    expect(sqlIncludesValue(senderCondition, "profile-1")).toBe(true);
+  });
+
+  it("only applies sent delivery receipts to pending outbound communications", async () => {
+    process.env.TELNYX_PUBLIC_KEY = "test-public-key";
+    mocks.selectResults.push([
+      {
+        practiceId: "00000000-0000-0000-0000-0000000000aa",
+        locationId: "00000000-0000-0000-0000-000000000002",
+      },
+    ]);
+    const body = JSON.stringify({
+      data: {
+        event_type: "message.sent",
+        payload: {
+          id: "msg-sent",
+          from: { phone_number: "+15555550100" },
+          to: [{ phone_number: "+15555550199", status: "sent" }],
+        },
+      },
+    });
+
+    const response = await POST(
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body,
+      })
+    );
+
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    expect(mocks.updateSet).toHaveBeenCalledWith({ status: "sent" });
+    const condition = mocks.updateWhere.mock.calls[0]?.[0];
+    expect(sqlIncludesColumnParamPair(condition, "status", "pending")).toBe(
+      true
+    );
+    expect(sqlIncludesColumnParamPair(condition, "status", "sent")).toBe(false);
+  });
+
+  it("logs inbound replies for active sender locations", async () => {
+    process.env.TELNYX_PUBLIC_KEY = "test-public-key";
+    mocks.selectResults.push(
+      [
+        {
+          practiceId: "00000000-0000-0000-0000-0000000000aa",
+          locationId: "00000000-0000-0000-0000-000000000002",
+        },
+      ],
+      [{ id: "00000000-0000-0000-0000-000000000003" }]
+    );
+    const body = JSON.stringify({
+      data: {
+        event_type: "message.received",
+        payload: {
+          id: "msg-inbound",
+          from: { phone_number: "+15555550199" },
+          to: [{ phone_number: "+15555550100" }],
+          text: "Running five minutes late",
+        },
+      },
+    });
+
+    const response = await POST(
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body,
+      })
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      action: "logged",
+    });
+    expect(mocks.selectInnerJoin).toHaveBeenCalled();
+    expect(mocks.withTenant).toHaveBeenCalledWith(
+      mocks.db,
+      "00000000-0000-0000-0000-0000000000aa",
+      expect.any(Function)
+    );
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: "00000000-0000-0000-0000-0000000000aa",
+        clientId: "00000000-0000-0000-0000-000000000003",
+        channel: "sms",
+        direction: "inbound",
+        content: "Running five minutes late",
+        providerMessageId: "msg-inbound",
+        dedupeKey: "telnyx:inbound:msg-inbound",
+      })
+    );
+    const inserted = mocks.insertValues.mock.calls.find(
+      ([value]) =>
+        (value as { providerMessageId?: string }).providerMessageId ===
+        "msg-inbound"
+    )?.[0] as { assignedTo?: unknown };
+    expect(inserted.assignedTo).toBeTruthy();
+    expect(sqlIncludesColumnName(inserted.assignedTo, "assigned_to")).toBe(
+      true
+    );
+    expect(sqlIncludesColumnName(inserted.assignedTo, "client_id")).toBe(true);
+    expect(
+      sqlIncludesValue(
+        inserted.assignedTo,
+        "00000000-0000-0000-0000-0000000000aa"
+      )
+    ).toBe(true);
+    expect(
+      sqlIncludesValue(
+        inserted.assignedTo,
+        "00000000-0000-0000-0000-000000000003"
+      )
+    ).toBe(true);
+    expect(mocks.insertConflict).toHaveBeenCalledWith({
+      target: communications.dedupeKey,
+    });
+  });
+
+  it("falls back to messaging profile when logging inbound replies", async () => {
+    process.env.TELNYX_PUBLIC_KEY = "test-public-key";
+    mocks.selectResults.push(
+      [],
+      [
+        {
+          practiceId: "00000000-0000-0000-0000-0000000000aa",
+          locationId: "00000000-0000-0000-0000-000000000002",
+        },
+      ],
+      [{ id: "00000000-0000-0000-0000-000000000003" }]
+    );
+    const body = JSON.stringify({
+      data: {
+        event_type: "message.received",
+        payload: {
+          id: "msg-profile-inbound",
+          from: { phone_number: "+15555550199" },
+          to: [{ phone_number: "+15555550100" }],
+          messaging_profile_id: "profile-1",
+          text: "Following up",
+        },
+      },
+    });
+
+    const response = await POST(
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body,
+      })
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      action: "logged",
+    });
+    expect(mocks.withSystem).toHaveBeenCalledTimes(3);
+    const profileCondition = mocks.selectWhere.mock.calls[1]?.[0];
+    expect(sqlIncludesColumnName(profileCondition, "messaging_profile_id")).toBe(
+      true
+    );
+    expect(sqlIncludesValue(profileCondition, "profile-1")).toBe(true);
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: "00000000-0000-0000-0000-0000000000aa",
+        clientId: "00000000-0000-0000-0000-000000000003",
+        channel: "sms",
+        direction: "inbound",
+        content: "Following up",
+        providerMessageId: "msg-profile-inbound",
+        dedupeKey: "telnyx:inbound:msg-profile-inbound",
+      })
+    );
+  });
+
+  it("ignores blank inbound messages before tenant writes", async () => {
+    process.env.TELNYX_PUBLIC_KEY = "test-public-key";
+    const body = JSON.stringify({
+      data: {
+        event_type: "message.received",
+        payload: {
+          id: "msg-blank",
+          from: { phone_number: "+15555550199" },
+          to: [{ phone_number: "+15555550100" }],
+          text: "   ",
+        },
+      },
+    });
+
+    const response = await POST(
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body,
+      })
+    );
+
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    expect(mocks.withSystem).not.toHaveBeenCalled();
+    expect(mocks.withTenant).not.toHaveBeenCalled();
+    expect(mocks.insertValues).not.toHaveBeenCalled();
+    expect(mocks.updateSet).not.toHaveBeenCalled();
+  });
+
+  it("leaves inbound replies unlinked when multiple active clients share the sender phone", async () => {
+    process.env.TELNYX_PUBLIC_KEY = "test-public-key";
+    mocks.selectResults.push(
+      [
+        {
+          practiceId: "00000000-0000-0000-0000-0000000000aa",
+          locationId: "00000000-0000-0000-0000-000000000002",
+        },
+      ],
+      [
+        { id: "00000000-0000-0000-0000-000000000003" },
+        { id: "00000000-0000-0000-0000-000000000004" },
+      ]
+    );
+    const body = JSON.stringify({
+      data: {
+        event_type: "message.received",
+        payload: {
+          id: "msg-ambiguous",
+          from: { phone_number: "+15555550199" },
+          to: [{ phone_number: "+15555550100" }],
+          text: "Can you check both pets?",
+        },
+      },
+    });
+
+    const response = await POST(
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body,
+      })
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      action: "logged",
+    });
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "sms",
+        direction: "inbound",
+        content: "Can you check both pets?",
+        providerMessageId: "msg-ambiguous",
+        dedupeKey: "telnyx:inbound:msg-ambiguous",
+      })
+    );
+    expect(mocks.insertValues).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        clientId: expect.any(String),
+      })
+    );
+  });
+
+  it("logs STOP opt-outs to the inbox after suppressing and flipping consent", async () => {
+    process.env.TELNYX_PUBLIC_KEY = "test-public-key";
+    const clientId = "00000000-0000-0000-0000-000000000003";
+    mocks.selectResults.push(
+      [
+        {
+          practiceId: "00000000-0000-0000-0000-0000000000aa",
+          locationId: "00000000-0000-0000-0000-000000000002",
+        },
+      ],
+      [{ id: clientId }]
+    );
+    const body = JSON.stringify({
+      data: {
+        event_type: "message.received",
+        payload: {
+          id: "msg-stop",
+          from: { phone_number: "+15555550199" },
+          to: [{ phone_number: "+15555550100" }],
+          text: "STOP",
+        },
+      },
+    });
+
+    const response = await POST(
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body,
+      })
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      action: "suppressed",
+    });
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: "00000000-0000-0000-0000-0000000000aa",
+        locationId: "00000000-0000-0000-0000-000000000002",
+        phone: "+15555550199",
+        reason: "stop",
+        detail: 'Inbound opt-out: "STOP"',
+      })
+    );
+    expect(mocks.updateSet).toHaveBeenCalledWith({
+      smsConsent: false,
+      smsConsentAt: expect.any(Date),
+    });
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: "00000000-0000-0000-0000-0000000000aa",
+        clientId,
+        channel: "sms",
+        direction: "inbound",
+        subject: "SMS opt-out from +15555550199",
+        content: "STOP",
+        status: "delivered",
+        providerMessageId: "msg-stop",
+        dedupeKey: "telnyx:inbound:msg-stop",
+      })
+    );
+    expect(mocks.insertConflict).toHaveBeenCalledWith({
+      target: communications.dedupeKey,
+    });
+  });
+
+  it("restores client SMS consent on START only when the sender phone uniquely matches a client", async () => {
+    process.env.TELNYX_PUBLIC_KEY = "test-public-key";
+    const clientId = "00000000-0000-0000-0000-000000000003";
+    mocks.selectResults.push(
+      [
+        {
+          practiceId: "00000000-0000-0000-0000-0000000000aa",
+          locationId: "00000000-0000-0000-0000-000000000002",
+        },
+      ],
+      [{ id: clientId }]
+    );
+    const body = JSON.stringify({
+      data: {
+        event_type: "message.received",
+        payload: {
+          id: "msg-start",
+          from: { phone_number: "+15555550199" },
+          to: [{ phone_number: "+15555550100" }],
+          text: "START",
+        },
+      },
+    });
+
+    const response = await POST(
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body,
+      })
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      action: "unsuppressed",
+    });
+    expect(mocks.deleteWhere).toHaveBeenCalled();
+    expect(mocks.updateSet).toHaveBeenCalledWith({
+      smsConsent: true,
+      smsConsentAt: expect.any(Date),
+    });
+    const condition = mocks.updateWhere.mock.calls[0]?.[0];
+    expect(sqlIncludesColumnParamPair(condition, "id", clientId)).toBe(true);
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: "00000000-0000-0000-0000-0000000000aa",
+        clientId,
+        channel: "sms",
+        direction: "inbound",
+        subject: "SMS opt-in from +15555550199",
+        content: "START",
+        status: "delivered",
+        providerMessageId: "msg-start",
+        dedupeKey: "telnyx:inbound:msg-start",
+      })
+    );
+    expect(mocks.insertConflict).toHaveBeenCalledWith({
+      target: communications.dedupeKey,
+    });
+  });
+
+  it("does not broadly restore client SMS consent on START when the sender phone is ambiguous", async () => {
+    process.env.TELNYX_PUBLIC_KEY = "test-public-key";
+    mocks.selectResults.push(
+      [
+        {
+          practiceId: "00000000-0000-0000-0000-0000000000aa",
+          locationId: "00000000-0000-0000-0000-000000000002",
+        },
+      ],
+      [
+        { id: "00000000-0000-0000-0000-000000000003" },
+        { id: "00000000-0000-0000-0000-000000000004" },
+      ]
+    );
+    const body = JSON.stringify({
+      data: {
+        event_type: "message.received",
+        payload: {
+          id: "msg-start-ambiguous",
+          from: { phone_number: "+15555550199" },
+          to: [{ phone_number: "+15555550100" }],
+          text: "START",
+        },
+      },
+    });
+
+    const response = await POST(
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body,
+      })
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      action: "unsuppressed",
+    });
+    expect(mocks.deleteWhere).toHaveBeenCalled();
+    expect(mocks.updateSet).not.toHaveBeenCalled();
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "sms",
+        direction: "inbound",
+        subject: "SMS opt-in from +15555550199",
+        content: "START",
+        providerMessageId: "msg-start-ambiguous",
+        dedupeKey: "telnyx:inbound:msg-start-ambiguous",
+      })
+    );
+    expect(mocks.insertValues).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        clientId: expect.any(String),
+      })
+    );
+  });
+
+  it("uses a bounded dedupe key for long inbound provider ids", async () => {
+    process.env.TELNYX_PUBLIC_KEY = "test-public-key";
+    mocks.selectResults.push(
+      [
+        {
+          practiceId: "00000000-0000-0000-0000-0000000000aa",
+          locationId: "00000000-0000-0000-0000-000000000002",
+        },
+      ],
+      []
+    );
+    const longProviderId = `msg-${"x".repeat(220)}`;
+    const body = JSON.stringify({
+      data: {
+        event_type: "message.received",
+        payload: {
+          id: longProviderId,
+          from: { phone_number: "+15555550199" },
+          to: [{ phone_number: "+15555550100" }],
+          text: "Please call me",
+        },
+      },
+    });
+
+    const response = await POST(
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body,
+      })
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      action: "logged",
+    });
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerMessageId: longProviderId,
+        dedupeKey: expect.stringMatching(/^telnyx:inbound:[a-f0-9]{64}$/),
+      })
+    );
+    const inserted = mocks.insertValues.mock.calls[0]?.[0] as {
+      dedupeKey?: string;
+    };
+    expect(inserted.dedupeKey?.length).toBeLessThanOrEqual(160);
+  });
+
+  it("suppresses SMS recipients after failed delivery receipts", async () => {
+    process.env.TELNYX_PUBLIC_KEY = "test-public-key";
+    mocks.selectResults.push([
+      {
+        practiceId: "00000000-0000-0000-0000-0000000000aa",
+        locationId: "00000000-0000-0000-0000-000000000002",
+      },
+    ]);
+    const body = JSON.stringify({
+      data: {
+        event_type: "message.delivery_failed",
+        payload: {
+          id: "msg-failed",
+          from: { phone_number: "+15555550100" },
+          to: [{ phone_number: "+15555550199", status: "failed" }],
+        },
+      },
+    });
+
+    const response = await POST(
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body,
+      })
+    );
+
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    expect(mocks.updateSet).toHaveBeenCalledWith({ status: "failed" });
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: "00000000-0000-0000-0000-0000000000aa",
+        locationId: "00000000-0000-0000-0000-000000000002",
+        phone: "+15555550199",
+        reason: "bounce",
+        detail: "Delivery failed for provider message msg-failed",
+      })
+    );
+    expect(mocks.insertConflict).toHaveBeenCalled();
+  });
+
+  it("does not suppress recipients when a failed delivery receipt matches no outbound communication", async () => {
+    process.env.TELNYX_PUBLIC_KEY = "test-public-key";
+    mocks.selectResults.push([
+      {
+        practiceId: "00000000-0000-0000-0000-0000000000aa",
+        locationId: "00000000-0000-0000-0000-000000000002",
+      },
+    ]);
+    mocks.updateResults.push([]);
+    const body = JSON.stringify({
+      data: {
+        event_type: "message.delivery_failed",
+        payload: {
+          id: "msg-unmatched-failed",
+          from: { phone_number: "+15555550100" },
+          to: [{ phone_number: "+15555550199", status: "failed" }],
+        },
+      },
+    });
+
+    const response = await POST(
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body,
+      })
+    );
+
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    expect(mocks.updateSet).toHaveBeenCalledWith({ status: "failed" });
+    expect(mocks.updateReturning).toHaveBeenCalled();
+    expect(mocks.insertValues).not.toHaveBeenCalled();
+  });
+
+  it("ignores inbound replies to stale or deleted sender locations", async () => {
+    process.env.TELNYX_PUBLIC_KEY = "test-public-key";
+    mocks.selectResults.push([]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const body = JSON.stringify({
+      data: {
+        event_type: "message.received",
+        payload: {
+          id: "msg-inbound",
+          from: { phone_number: "+15555550199" },
+          to: [{ phone_number: "+15555550100" }],
+          text: "Hello",
+        },
+      },
+    });
+
+    const response = await POST(
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body,
+      })
+    );
+
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    expect(mocks.withTenant).not.toHaveBeenCalled();
+    expect(mocks.insertValues).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("requires active practices when resolving inbound sender locations", () => {
+    const senderLookup = INBOUND_SOURCE.match(
+      /async function findMessagingLocationMatching[\s\S]+?return matches\.length === 1 \? matches\[0\] \?\? null : null;/
+    )?.[0];
+
+    expect(senderLookup).toContain("innerJoin(");
+    expect(senderLookup).toContain("practices");
+    expect(senderLookup).toContain("isNull(practices.deletedAt)");
+  });
+});

@@ -1,9 +1,16 @@
-import type { clients, patients, appointments } from "@openpims/db";
-import type { ApiClient, ApiPatient, ApiAppointment, AppointmentCreate } from "./schema";
+import type { clients, patients, appointments, soapNotes } from "@openpims/db";
+import type {
+  ApiClient,
+  ApiPatient,
+  ApiAppointment,
+  ApiSoapNote,
+  AppointmentCreate,
+} from "./schema";
 
 type ClientRow = typeof clients.$inferSelect;
 type PatientRow = typeof patients.$inferSelect;
 type AppointmentRow = typeof appointments.$inferSelect;
+type SoapNoteRow = typeof soapNotes.$inferSelect;
 
 /**
  * Pure translation between internal Drizzle rows and the public v1 API shapes.
@@ -98,6 +105,22 @@ export function toApiAppointment(row: AppointmentRow): ApiAppointment {
     type_id: row.typeId,
     room_id: row.roomId,
     notes: row.notes,
+    created_at: iso(row.createdAt),
+    updated_at: iso(row.updatedAt),
+  };
+}
+
+export function toApiSoapNote(row: SoapNoteRow, source: string): ApiSoapNote {
+  return {
+    id: row.id,
+    patient_id: row.patientId,
+    appointment_id: row.appointmentId,
+    author_id: row.authorId,
+    subjective: row.subjective,
+    objective: row.objective,
+    assessment: row.assessment,
+    plan: row.plan,
+    source,
     created_at: iso(row.createdAt),
     updated_at: iso(row.updatedAt),
   };

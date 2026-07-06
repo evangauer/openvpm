@@ -61,7 +61,10 @@ export async function addSuppression(opts: {
   );
 }
 
-/** Remove a number from the suppression list (e.g. recipient texts START). */
+/**
+ * Remove carrier STOP suppression after an explicit opt-in keyword. Manual,
+ * bounce, and complaint suppressions remain as staff/provider safety gates.
+ */
 export async function removeSuppression(
   practiceId: string,
   phone: string
@@ -74,7 +77,8 @@ export async function removeSuppression(
       .where(
         and(
           eq(smsSuppressions.practiceId, practiceId),
-          eq(smsSuppressions.phone, e164)
+          eq(smsSuppressions.phone, e164),
+          eq(smsSuppressions.reason, "stop")
         )
       )
   );

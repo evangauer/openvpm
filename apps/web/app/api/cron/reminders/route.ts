@@ -1,5 +1,13 @@
 import { NextResponse } from "next/server";
-import { eq, and, isNull, gte, lte, inArray } from "drizzle-orm";
+import {
+  eq,
+  and,
+  isNull,
+  gte,
+  lte,
+  inArray,
+  sql,
+} from "drizzle-orm";
 import { db } from "@openpims/db/client";
 import {
   appointments,
@@ -9,13 +17,182 @@ import {
   practices,
   rooms,
   communications,
+  locationMessaging,
+  locations,
+  emailSuppressions,
 } from "@openpims/db";
 import { sendAppointmentReminder } from "@/lib/email";
 import { sendAppointmentReminderSms } from "@/lib/sms";
 import { isQuietHours, pickReminderChannel } from "@/lib/messaging/reminders";
+import { hasNonBlankMessagingSender } from "@/lib/messaging/sender-query";
 import { alertOps } from "@/lib/alerts";
 import { withSystem, withTenant } from "@/lib/tenant-db";
 import { cronAuthError } from "@/lib/cron-auth";
+import { reportCronHeartbeat } from "@/lib/cron-heartbeat";
+import {
+  emailSuppressionSendBlockMessage,
+  normalizeEmailSuppressionAddress,
+} from "@/lib/email-suppression";
+
+type ReminderChannel = "sms" | "email";
+const REMINDER_PENDING_RECLAIM_MS = 30 * 60 * 1000;
+
+function formatAppointmentReminderDateTime(
+  startTime: Date,
+  timeZone?: string | null
+): { appointmentDate: string; appointmentTime: string } {
+  const normalizedTimeZone = timeZone?.trim();
+  const dateOptions: Intl.DateTimeFormatOptions = {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  };
+  const timeOptions: Intl.DateTimeFormatOptions = {
+    hour: "numeric",
+    minute: "2-digit",
+  };
+
+  if (normalizedTimeZone) {
+    try {
+      return {
+        appointmentDate: startTime.toLocaleDateString("en-US", {
+          ...dateOptions,
+          timeZone: normalizedTimeZone,
+        }),
+        appointmentTime: startTime.toLocaleTimeString("en-US", {
+          ...timeOptions,
+          timeZone: normalizedTimeZone,
+        }),
+      };
+    } catch {
+      // Fall back to the runtime locale if a saved timezone is invalid.
+    }
+  }
+
+  return {
+    appointmentDate: startTime.toLocaleDateString("en-US", dateOptions),
+    appointmentTime: startTime.toLocaleTimeString("en-US", timeOptions),
+  };
+}
+
+function appointmentReminderDedupeKey(appt: {
+  id: string;
+  startTime: Date | string;
+}): string {
+  return `reminder:appointment:${appt.id}:${new Date(appt.startTime).toISOString()}`;
+}
+
+async function claimReminderCommunication(opts: {
+  practiceId: string;
+  clientId: string;
+  channel: ReminderChannel;
+  patientName: string | null;
+  startTime: Date;
+  dedupeKey: string;
+}): Promise<string | null> {
+  const claimed = await insertReminderCommunicationClaim(opts);
+  if (claimed) return claimed;
+
+  const [existing] = await withTenant(db, opts.practiceId, (tx) =>
+    tx
+      .select({
+        id: communications.id,
+        status: communications.status,
+        createdAt: communications.createdAt,
+      })
+      .from(communications)
+      .where(
+        and(
+          eq(communications.practiceId, opts.practiceId),
+          eq(communications.dedupeKey, opts.dedupeKey),
+          isNull(communications.deletedAt)
+        )
+      )
+      .limit(1)
+  );
+
+  if (!existing) return null;
+  if (existing.status !== "failed" && existing.status !== "pending") {
+    return null;
+  }
+
+  const staleBefore = new Date(Date.now() - REMINDER_PENDING_RECLAIM_MS);
+  const canReclaim =
+    existing.status === "failed" ||
+    new Date(existing.createdAt).getTime() <= staleBefore.getTime();
+  if (!canReclaim) return null;
+
+  const [deleted] = await withTenant(db, opts.practiceId, (tx) =>
+    tx
+      .delete(communications)
+      .where(
+        and(
+          eq(communications.practiceId, opts.practiceId),
+          eq(communications.dedupeKey, opts.dedupeKey),
+          existing.status === "failed"
+            ? eq(communications.status, "failed")
+            : and(
+                eq(communications.status, "pending"),
+                lte(communications.createdAt, staleBefore)
+              ),
+          isNull(communications.deletedAt)
+        )
+      )
+      .returning({ id: communications.id })
+  );
+  if (!deleted) return null;
+
+  return insertReminderCommunicationClaim(opts);
+}
+
+async function insertReminderCommunicationClaim(opts: {
+  practiceId: string;
+  clientId: string;
+  channel: ReminderChannel;
+  patientName: string | null;
+  startTime: Date;
+  dedupeKey: string;
+}): Promise<string | null> {
+  const [row] = await withTenant(db, opts.practiceId, (tx) =>
+    tx
+      .insert(communications)
+      .values({
+        practiceId: opts.practiceId,
+        clientId: opts.clientId,
+        channel: opts.channel,
+        direction: "outbound",
+        subject: "Appointment Reminder",
+        content: `Automated appointment reminder pending for ${opts.patientName ?? "Unknown"} on ${opts.startTime.toISOString()}`,
+        status: "pending",
+        dedupeKey: opts.dedupeKey,
+      })
+      .onConflictDoNothing({ target: communications.dedupeKey })
+      .returning({ id: communications.id })
+  );
+  return row?.id ?? null;
+}
+
+async function recordReminderOutcome(opts: {
+  practiceId: string;
+  communicationId: string;
+  channel: ReminderChannel;
+  status: "sent" | "failed";
+  content: string;
+  providerMessageId?: string;
+}): Promise<void> {
+  await withTenant(db, opts.practiceId, (tx) =>
+    tx
+      .update(communications)
+      .set({
+        channel: opts.channel,
+        status: opts.status,
+        content: opts.content,
+        providerMessageId: opts.providerMessageId,
+      })
+      .where(eq(communications.id, opts.communicationId))
+  );
+}
 
 export async function GET(request: Request) {
   const authError = cronAuthError(request);
@@ -43,6 +220,7 @@ export async function GET(request: Request) {
           clientPhone: clients.phone,
           preferredContactMethod: clients.preferredContactMethod,
           smsConsent: clients.smsConsent,
+          emailSuppressionReason: emailSuppressions.reason,
           doctorName: users.name,
           practiceName: practices.name,
           practicePhone: practices.phone,
@@ -50,14 +228,61 @@ export async function GET(request: Request) {
           locationId: rooms.locationId,
         })
         .from(appointments)
-        .leftJoin(patients, eq(appointments.patientId, patients.id))
-        .leftJoin(clients, eq(appointments.clientId, clients.id))
-        .leftJoin(users, eq(appointments.doctorId, users.id))
-        .leftJoin(practices, eq(appointments.practiceId, practices.id))
-        .leftJoin(rooms, eq(appointments.roomId, rooms.id))
+        .leftJoin(
+          patients,
+          and(
+            eq(appointments.patientId, patients.id),
+            eq(patients.clientId, appointments.clientId),
+            eq(patients.practiceId, appointments.practiceId),
+            isNull(patients.deletedAt)
+          )
+        )
+        .leftJoin(
+          clients,
+          and(
+            eq(appointments.clientId, clients.id),
+            eq(clients.practiceId, appointments.practiceId),
+            isNull(clients.deletedAt)
+          )
+        )
+        .leftJoin(
+          emailSuppressions,
+          and(
+            eq(emailSuppressions.practiceId, appointments.practiceId),
+            sql`${emailSuppressions.email} = lower(trim(${clients.email}))`,
+            isNull(emailSuppressions.deletedAt)
+          )
+        )
+        .leftJoin(
+          users,
+          and(
+            eq(appointments.doctorId, users.id),
+            eq(users.practiceId, appointments.practiceId),
+            isNull(users.deletedAt)
+          )
+        )
+        .innerJoin(
+          practices,
+          and(
+            eq(appointments.practiceId, practices.id),
+            isNull(practices.deletedAt)
+          )
+        )
+        .leftJoin(
+          rooms,
+          and(
+            eq(appointments.roomId, rooms.id),
+            eq(rooms.practiceId, appointments.practiceId),
+            isNull(rooms.deletedAt)
+          )
+        )
         .where(
           and(
             isNull(appointments.deletedAt),
+            eq(patients.practiceId, appointments.practiceId),
+            isNull(patients.deletedAt),
+            eq(clients.practiceId, appointments.practiceId),
+            isNull(clients.deletedAt),
             gte(appointments.startTime, now),
             lte(appointments.startTime, in24h),
             inArray(appointments.status, ["scheduled", "confirmed"]),
@@ -69,6 +294,64 @@ export async function GET(request: Request) {
     let sent = 0;
     let failed = 0;
     let skipped = 0; // SMS-preferred but deferred by quiet hours (no email fallback)
+    let deduped = 0;
+    const senderLocationCache = new Map<string, string | null>();
+
+    const activeSenderLocation = async (
+      practiceId: string,
+      preferredLocationId?: string
+    ): Promise<string | null> => {
+      const cacheKey = `${practiceId}:${preferredLocationId ?? "*"}`;
+      if (senderLocationCache.has(cacheKey)) {
+        return senderLocationCache.get(cacheKey) ?? null;
+      }
+
+      const findSender = async (locationId?: string): Promise<string | null> => {
+        const [sender] = await withSystem(db, (tx) =>
+          tx
+            .select({ locationId: locationMessaging.locationId })
+            .from(locationMessaging)
+            .innerJoin(
+              locations,
+              and(
+                eq(locations.id, locationMessaging.locationId),
+                eq(locations.practiceId, practiceId),
+                isNull(locations.deletedAt)
+              )
+            )
+            .where(
+              locationId
+                ? and(
+                    eq(locationMessaging.locationId, locationId),
+                    eq(locationMessaging.practiceId, practiceId),
+                    isNull(locationMessaging.deletedAt),
+                    eq(locations.practiceId, practiceId),
+                    isNull(locations.deletedAt),
+                    eq(locationMessaging.enabled, true),
+                    eq(locationMessaging.registrationStatus, "active"),
+                    hasNonBlankMessagingSender()
+                  )
+                : and(
+                    eq(locationMessaging.practiceId, practiceId),
+                    isNull(locationMessaging.deletedAt),
+                    eq(locations.practiceId, practiceId),
+                    isNull(locations.deletedAt),
+                    eq(locationMessaging.enabled, true),
+                    eq(locationMessaging.registrationStatus, "active"),
+                    hasNonBlankMessagingSender()
+                  )
+            )
+            .limit(1)
+        );
+        return sender?.locationId ?? null;
+      };
+
+      const locationId =
+        (preferredLocationId ? await findSender(preferredLocationId) : null) ??
+        (await findSender());
+      senderLocationCache.set(cacheKey, locationId);
+      return locationId;
+    };
 
     for (const appt of upcomingAppointments) {
       if (!appt.clientId) {
@@ -77,91 +360,167 @@ export async function GET(request: Request) {
       }
 
       const startDate = new Date(appt.startTime);
-      const appointmentDate = startDate.toLocaleDateString("en-US", {
-        weekday: "long",
-        month: "long",
-        day: "numeric",
-        year: "numeric",
-      });
-      const appointmentTime = startDate.toLocaleTimeString("en-US", {
-        hour: "numeric",
-        minute: "2-digit",
-      });
+      const { appointmentDate, appointmentTime } =
+        formatAppointmentReminderDateTime(startDate, appt.practiceTimezone);
 
       // Email reminder + communications log (the existing path, reused as the
       // fallback whenever SMS isn't chosen or a send is blocked).
-      const emailReminder = async (): Promise<boolean> => {
-        if (!appt.clientEmail) return false;
-        await sendAppointmentReminder({
-          to: appt.clientEmail,
-          clientName: `${appt.clientFirstName} ${appt.clientLastName}`,
-          patientName: appt.patientName ?? "Unknown",
-          appointmentDate,
-          appointmentTime,
-          practiceName: appt.practiceName ?? "",
-        });
-        await withTenant(db, appt.practiceId, (tx) =>
-          tx.insert(communications).values({
+      const emailReminder = async (communicationId: string): Promise<boolean> => {
+        const clientEmail = normalizeEmailSuppressionAddress(appt.clientEmail);
+        if (!clientEmail) return false;
+        if (appt.emailSuppressionReason) {
+          await recordReminderOutcome({
             practiceId: appt.practiceId,
-            clientId: appt.clientId!,
+            communicationId,
             channel: "email",
-            direction: "outbound",
-            subject: "Appointment Reminder",
+            content: `Automated appointment reminder blocked for ${appt.patientName} on ${appt.startTime.toISOString()}: ${emailSuppressionSendBlockMessage(
+              appt.emailSuppressionReason
+            )}`,
+            status: "failed",
+          });
+          return false;
+        }
+        let success = false;
+        let providerMessageId: string | undefined;
+        try {
+          const result = await sendAppointmentReminder({
+            to: clientEmail,
+            clientName: `${appt.clientFirstName} ${appt.clientLastName}`,
+            patientName: appt.patientName ?? "Unknown",
+            appointmentDate,
+            appointmentTime,
+            practiceName: appt.practiceName ?? "",
+          });
+          success = result.success;
+          providerMessageId = result.id;
+        } catch {
+          success = false;
+        }
+        if (success) {
+          await recordReminderOutcome({
+            practiceId: appt.practiceId,
+            communicationId,
+            channel: "email",
             content: `Automated appointment reminder sent for ${appt.patientName} on ${appt.startTime.toISOString()}`,
             status: "sent",
-          }),
-        );
-        return true;
+            providerMessageId,
+          });
+          return true;
+        }
+
+        await recordReminderOutcome({
+          practiceId: appt.practiceId,
+          communicationId,
+          channel: "email",
+          content: `Automated appointment reminder failed for ${appt.patientName} on ${appt.startTime.toISOString()}`,
+          status: "failed",
+        });
+        return false;
       };
 
+      let claimedCommunicationId: string | null = null;
+      let claimedChannel: ReminderChannel = "email";
       try {
         const channel = pickReminderChannel({
           preferredContactMethod: appt.preferredContactMethod,
           phone: appt.clientPhone,
           smsConsent: appt.smsConsent ?? false,
-          hasEmail: Boolean(appt.clientEmail),
+          hasEmail: Boolean(normalizeEmailSuppressionAddress(appt.clientEmail)),
           quietHours: isQuietHours(now, appt.practiceTimezone),
         });
 
+        if (channel === "skip") {
+          skipped++;
+          continue;
+        }
+
+        if (channel === "none") {
+          failed++;
+          continue;
+        }
+
+        const dedupeKey = appointmentReminderDedupeKey(appt);
+        const initialChannel: ReminderChannel =
+          channel === "sms" ? "sms" : "email";
+        claimedChannel = initialChannel;
+        const communicationId = await claimReminderCommunication({
+          practiceId: appt.practiceId,
+          clientId: appt.clientId,
+          channel: initialChannel,
+          patientName: appt.patientName,
+          startTime: startDate,
+          dedupeKey,
+        });
+        if (!communicationId) {
+          deduped++;
+          continue;
+        }
+        claimedCommunicationId = communicationId;
+
         if (channel === "sms") {
-          const result = await sendAppointmentReminderSms({
-            to: appt.clientPhone!,
-            patientName: appt.patientName ?? "Unknown",
-            appointmentDate,
-            appointmentTime,
-            practiceName: appt.practiceName ?? "",
-            practicePhone: appt.practicePhone ?? undefined,
-            practiceId: appt.practiceId,
-            locationId: appt.locationId ?? undefined,
-          });
-          if (result.success) {
-            await withTenant(db, appt.practiceId, (tx) =>
-              tx.insert(communications).values({
+          const senderLocationId = await activeSenderLocation(
+            appt.practiceId,
+            appt.locationId ?? undefined
+          );
+          const result = senderLocationId
+            ? await sendAppointmentReminderSms({
+                to: appt.clientPhone!,
+                patientName: appt.patientName ?? "Unknown",
+                appointmentDate,
+                appointmentTime,
+                practiceName: appt.practiceName ?? "",
+                practicePhone: appt.practicePhone ?? undefined,
                 practiceId: appt.practiceId,
-                clientId: appt.clientId!,
-                channel: "sms",
-                direction: "outbound",
-                subject: "Appointment Reminder",
-                content: `Automated SMS appointment reminder sent for ${appt.patientName} on ${appt.startTime.toISOString()}`,
-                status: "sent",
-              }),
-            );
+                locationId: senderLocationId,
+              })
+            : {
+                success: false,
+                error: "Set up an active texting number before sending SMS reminders",
+              };
+          if (result.success) {
+            await recordReminderOutcome({
+              practiceId: appt.practiceId,
+              communicationId,
+              channel: "sms",
+              content: `Automated SMS appointment reminder sent for ${appt.patientName} on ${appt.startTime.toISOString()}`,
+              status: "sent",
+              providerMessageId: result.sid,
+            });
             sent++;
-          } else if (await emailReminder()) {
+          } else if (await emailReminder(communicationId)) {
             // SMS blocked (e.g. opted out) — fall back to email.
+            sent++;
+          } else {
+            await recordReminderOutcome({
+              practiceId: appt.practiceId,
+              communicationId,
+              channel: "sms",
+              content: `Automated SMS appointment reminder failed for ${appt.patientName} on ${appt.startTime.toISOString()}: ${result.error ?? "unknown error"}`,
+              status: "failed",
+            });
+            failed++;
+          }
+        } else if (channel === "email") {
+          if (await emailReminder(communicationId)) {
             sent++;
           } else {
             failed++;
           }
-        } else if (channel === "email") {
-          await emailReminder();
-          sent++;
-        } else if (channel === "skip") {
-          skipped++;
         } else {
           failed++;
         }
       } catch (error) {
+        if (claimedCommunicationId) {
+          await recordReminderOutcome({
+            practiceId: appt.practiceId,
+            communicationId: claimedCommunicationId,
+            channel: claimedChannel,
+            content: `Automated appointment reminder failed for ${appt.patientName} on ${appt.startTime.toISOString()}: ${
+              error instanceof Error ? error.message : "unknown error"
+            }`,
+            status: "failed",
+          }).catch(() => undefined);
+        }
         console.error(
           `Failed to send reminder for appointment ${appt.id}:`,
           error,
@@ -171,23 +530,42 @@ export async function GET(request: Request) {
     }
 
     console.log(
-      `Cron reminders completed: ${sent} sent, ${failed} failed, ${skipped} deferred (quiet hours) out of ${upcomingAppointments.length} total`,
+      `Cron reminders completed: ${sent} sent, ${failed} failed, ${skipped} deferred (quiet hours), ${deduped} deduped out of ${upcomingAppointments.length} total`,
     );
 
     if (failed > 0) {
       void alertOps(
         "Appointment reminders had failures",
-        `${failed} of ${upcomingAppointments.length} reminders failed to send (${sent} sent, ${skipped} deferred).`,
+        `${failed} of ${upcomingAppointments.length} reminders failed to send (${sent} sent, ${skipped} deferred, ${deduped} deduped).`,
       );
     }
 
-    return NextResponse.json({ sent, failed, skipped });
+    await reportCronHeartbeat({
+      job: "reminders",
+      status: failed > 0 ? "degraded" : "ok",
+      detail: `${sent} sent, ${failed} failed, ${skipped} deferred, ${deduped} deduped`,
+      metrics: {
+        total: upcomingAppointments.length,
+        sent,
+        failed,
+        skipped,
+        deduped,
+      },
+    });
+
+    return NextResponse.json({ sent, failed, skipped, deduped });
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     void alertOps(
       "Reminder cron job crashed",
-      error instanceof Error ? error.message : String(error),
+      message,
     );
     console.error("Cron reminder job failed:", error);
+    await reportCronHeartbeat({
+      job: "reminders",
+      status: "failed",
+      detail: message,
+    });
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 },

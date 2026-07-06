@@ -18,16 +18,27 @@ export function parseAuditPath(path: string): { entityType: string; action: stri
   return { entityType, action };
 }
 
-/** Shallow-redact secret-ish fields so they never land in the audit trail. */
+function redactSecretValue(input: unknown): unknown {
+  if (Array.isArray(input)) {
+    return input.map(redactSecretValue);
+  }
+  if (!input || typeof input !== "object") {
+    return input;
+  }
+
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    out[key] = SECRET_KEY_RE.test(key) ? "[redacted]" : redactSecretValue(value);
+  }
+  return out;
+}
+
+/** Recursively redact secret-ish fields so they never land in the audit trail. */
 export function redactSecrets(input: unknown): Record<string, unknown> | null {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     return input == null ? null : { value: "[redacted-nonobject]" };
   }
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
-    out[k] = SECRET_KEY_RE.test(k) ? "[redacted]" : v;
-  }
-  return out;
+  return redactSecretValue(input) as Record<string, unknown>;
 }
 
 /** Best-effort entity id: prefer the created/updated row's id, else input.id. */

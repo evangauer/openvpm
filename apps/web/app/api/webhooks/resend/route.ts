@@ -1,0 +1,219 @@
+import { NextResponse } from "next/server";
+import { Resend, type WebhookEventPayload } from "resend";
+import { and, eq, inArray, isNull } from "drizzle-orm";
+import { db } from "@openpims/db/client";
+import { communications, emailSuppressions, practices } from "@openpims/db";
+import { withSystem, withTenant } from "@/lib/tenant-db";
+import { readRequestTextWithLimit } from "@/lib/request-json";
+import {
+  EMAIL_WEBHOOK_BODY_MAX_BYTES,
+  emailWebhookContentLengthTooLarge,
+} from "@/lib/email-webhook-limits";
+import {
+  normalizeEmailSuppressionAddress,
+  type EmailSuppressionReason,
+} from "@/lib/email-suppression";
+import { emailEnv } from "@/lib/email-env";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+type EmailWebhookEvent = Extract<
+  WebhookEventPayload,
+  { data: { email_id: string; to: string[] } }
+>;
+
+function payloadTooLargeResponse() {
+  return NextResponse.json(
+    { error: "Email webhook payload too large" },
+    { status: 413 }
+  );
+}
+
+function verifiedEvent(
+  rawBody: string,
+  headers: Headers
+): WebhookEventPayload | null {
+  const webhookSecret = emailEnv("RESEND_WEBHOOK_SECRET");
+  const id = headers.get("svix-id");
+  const timestamp = headers.get("svix-timestamp");
+  const signature = headers.get("svix-signature");
+
+  if (!webhookSecret || !id || !timestamp || !signature) return null;
+
+  try {
+    const resend = new Resend(emailEnv("RESEND_API_KEY") ?? "re_webhook_verify");
+    return resend.webhooks.verify({
+      payload: rawBody,
+      webhookSecret,
+      headers: { id, timestamp, signature },
+    });
+  } catch {
+    return null;
+  }
+}
+
+function isEmailWebhookEvent(
+  event: WebhookEventPayload
+): event is EmailWebhookEvent {
+  const data = (event as { data?: { email_id?: unknown; to?: unknown } }).data;
+  return typeof data?.email_id === "string" && Array.isArray(data.to);
+}
+
+function communicationStatusForEvent(
+  type: WebhookEventPayload["type"]
+): "delivered" | "failed" | null {
+  if (type === "email.delivered") return "delivered";
+  if (
+    type === "email.bounced" ||
+    type === "email.complained" ||
+    type === "email.failed" ||
+    type === "email.suppressed"
+  ) {
+    return "failed";
+  }
+  return null;
+}
+
+function suppressionReasonForEvent(
+  type: WebhookEventPayload["type"]
+): EmailSuppressionReason | null {
+  if (type === "email.bounced") return "bounce";
+  if (type === "email.complained") return "complaint";
+  if (type === "email.suppressed") return "suppressed";
+  return null;
+}
+
+function eventDetail(event: EmailWebhookEvent): string {
+  if (event.type === "email.bounced") {
+    return event.data.bounce?.message || "Resend reported a hard bounce.";
+  }
+  if (event.type === "email.failed") {
+    return event.data.failed?.reason || "Resend reported email delivery failed.";
+  }
+  if (event.type === "email.suppressed") {
+    return (
+      event.data.suppressed?.message || "Resend reported recipient suppression."
+    );
+  }
+  if (event.type === "email.complained") {
+    return "Resend reported a recipient spam complaint.";
+  }
+  return `Resend event ${event.type}`;
+}
+
+function groupByPractice(
+  rows: Array<{ id: string; practiceId: string }>
+): Map<string, string[]> {
+  const grouped = new Map<string, string[]>();
+  for (const row of rows) {
+    grouped.set(row.practiceId, [...(grouped.get(row.practiceId) ?? []), row.id]);
+  }
+  return grouped;
+}
+
+export async function POST(request: Request) {
+  if (emailWebhookContentLengthTooLarge(request.headers)) {
+    return payloadTooLargeResponse();
+  }
+
+  const rawBody = await readRequestTextWithLimit(
+    request,
+    EMAIL_WEBHOOK_BODY_MAX_BYTES
+  );
+  if (!rawBody.ok) {
+    return payloadTooLargeResponse();
+  }
+
+  const event = verifiedEvent(rawBody.text, request.headers);
+  if (!event) {
+    return NextResponse.json({ error: "invalid signature" }, { status: 401 });
+  }
+
+  if (!isEmailWebhookEvent(event)) {
+    return NextResponse.json({ ok: true });
+  }
+
+  const status = communicationStatusForEvent(event.type);
+  const suppressionReason = suppressionReasonForEvent(event.type);
+  if (!status && !suppressionReason) {
+    return NextResponse.json({ ok: true });
+  }
+
+  const matches = await withSystem(db, (tx) =>
+    tx
+      .select({
+        id: communications.id,
+        practiceId: communications.practiceId,
+      })
+      .from(communications)
+      .innerJoin(
+        practices,
+        and(
+          eq(practices.id, communications.practiceId),
+          isNull(practices.deletedAt)
+        )
+      )
+      .where(
+        and(
+          eq(communications.providerMessageId, event.data.email_id),
+          eq(communications.channel, "email"),
+          eq(communications.direction, "outbound"),
+          isNull(communications.deletedAt)
+        )
+      )
+      .limit(20)
+  );
+
+  const recipients = Array.from(
+    new Set(
+      event.data.to
+        .map((email) => normalizeEmailSuppressionAddress(email))
+        .filter((email): email is string => Boolean(email))
+    )
+  );
+  const detail = eventDetail(event);
+
+  for (const [practiceId, communicationIds] of groupByPractice(matches)) {
+    await withTenant(db, practiceId, async (tx) => {
+      if (status && communicationIds.length > 0) {
+        await tx
+          .update(communications)
+          .set({ status })
+          .where(
+            and(
+              eq(communications.practiceId, practiceId),
+              inArray(communications.id, communicationIds),
+              eq(communications.channel, "email"),
+              eq(communications.direction, "outbound"),
+              inArray(
+                communications.status,
+                status === "delivered"
+                  ? ["pending", "sent"]
+                  : ["pending", "sent", "delivered"]
+              ),
+              isNull(communications.deletedAt)
+            )
+          );
+      }
+
+      if (suppressionReason && recipients.length > 0) {
+        await tx
+          .insert(emailSuppressions)
+          .values(
+            recipients.map((email) => ({
+              practiceId,
+              email,
+              reason: suppressionReason,
+              detail,
+            }))
+          )
+          .onConflictDoNothing({
+            target: [emailSuppressions.practiceId, emailSuppressions.email],
+          });
+      }
+    });
+  }
+
+  return NextResponse.json({ ok: true });
+}

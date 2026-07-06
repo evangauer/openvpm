@@ -1,21 +1,125 @@
 "use client";
 
 import { useState } from "react";
+import dynamic from "next/dynamic";
 import { useParams, useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
-import { ArrowLeft, Save, ShieldAlert } from "lucide-react";
+import {
+  AlertCircle,
+  ArrowLeft,
+  ClipboardList,
+  Loader2,
+  Save,
+  ShieldAlert,
+} from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
-import { SoapNoteEditor } from "@/components/SoapNoteEditor";
+import { Checkbox } from "@/components/ui/checkbox";
+import { EmptyState } from "@/components/common/empty-state";
 import { toast } from "sonner";
+import {
+  hasSoapContent,
+  normalizeSoapSection,
+} from "@/lib/records/soap-content";
+import {
+  SOAP_NOTE_TEMPLATES,
+  applySoapTemplateToSections,
+  getSoapTemplateById,
+} from "@/lib/records/soap-templates";
+
+const SoapNoteEditor = dynamic(
+  () =>
+    import("@/components/SoapNoteEditor").then((mod) => mod.SoapNoteEditor),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="min-h-32 rounded-lg border border-border bg-muted/20 p-3 text-sm text-muted-foreground">
+        Loading editor...
+      </div>
+    ),
+  }
+);
+
+function canCreateSoapNoteRole(role?: string | null): boolean {
+  return role === "admin" || role === "veterinarian";
+}
 
 export default function NewSoapNotePage() {
   const params = useParams<{ patientId: string }>();
   const router = useRouter();
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const userRole = session?.user?.role;
+  const canCreateSoapNote = canCreateSoapNoteRole(userRole);
+  const accessDenied = status !== "loading" && !canCreateSoapNote;
 
-  if (userRole && userRole !== "admin" && userRole !== "veterinarian") {
+  const [subjective, setSubjective] = useState("");
+  const [objective, setObjective] = useState("");
+  const [assessment, setAssessment] = useState("");
+  const [plan, setPlan] = useState("");
+  const [selectedTemplateId, setSelectedTemplateId] = useState(
+    SOAP_NOTE_TEMPLATES[0]?.id ?? ""
+  );
+  const [replaceTemplateContent, setReplaceTemplateContent] = useState(false);
+  const canSave = hasSoapContent({ subjective, objective, assessment, plan });
+  const selectedTemplate = getSoapTemplateById(selectedTemplateId);
+
+  const {
+    data: patient,
+    isLoading: patientLoading,
+    error: patientError,
+  } =
+    trpc.patients.getById.useQuery(
+      { id: params.patientId },
+      { enabled: !!params.patientId && canCreateSoapNote }
+    );
+
+  const createNote = trpc.records.createSoapNote.useMutation({
+    onSuccess: () => {
+      toast.success("SOAP note created");
+      router.push("/records");
+    },
+    onError: (err) => {
+      toast.error(err.message);
+    },
+  });
+
+  function handleSave() {
+    if (!params.patientId || !patient) {
+      toast.error("Load the patient before saving a SOAP note");
+      return;
+    }
+    if (!canSave) {
+      toast.error("Add at least one SOAP section before saving");
+      return;
+    }
+    createNote.mutate({
+      patientId: params.patientId,
+      subjective: normalizeSoapSection(subjective),
+      objective: normalizeSoapSection(objective),
+      assessment: normalizeSoapSection(assessment),
+      plan: normalizeSoapSection(plan),
+    });
+  }
+
+  function handleApplyTemplate() {
+    if (!selectedTemplate) return;
+    const next = applySoapTemplateToSections(
+      { subjective, objective, assessment, plan },
+      selectedTemplate,
+      { replaceExisting: replaceTemplateContent }
+    );
+    setSubjective(next.subjective);
+    setObjective(next.objective);
+    setAssessment(next.assessment);
+    setPlan(next.plan);
+    toast.success(
+      replaceTemplateContent || !canSave
+        ? `${selectedTemplate.name} template applied`
+        : `${selectedTemplate.name} template filled blank sections`
+    );
+  }
+
+  if (accessDenied) {
     return (
       <div className="flex flex-col items-center justify-center py-24 text-center">
         <ShieldAlert className="h-12 w-12 text-muted-foreground mb-4" />
@@ -34,41 +138,39 @@ export default function NewSoapNotePage() {
     );
   }
 
-  const [subjective, setSubjective] = useState("");
-  const [objective, setObjective] = useState("");
-  const [assessment, setAssessment] = useState("");
-  const [plan, setPlan] = useState("");
-
-  const { data: patient, isLoading: patientLoading } =
-    trpc.patients.getById.useQuery(
-      { id: params.patientId },
-      { enabled: !!params.patientId }
+  if (status === "loading") {
+    return (
+      <div className="flex items-center justify-center gap-2 rounded-lg border border-border bg-card p-8 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Checking SOAP note access...
+      </div>
     );
-
-  const createNote = trpc.records.createSoapNote.useMutation({
-    onSuccess: () => {
-      toast.success("SOAP note created");
-      router.push("/records");
-    },
-    onError: (err) => {
-      toast.error(err.message);
-    },
-  });
-
-  function handleSave() {
-    if (!params.patientId) return;
-    createNote.mutate({
-      patientId: params.patientId,
-      subjective: subjective || undefined,
-      objective: objective || undefined,
-      assessment: assessment || undefined,
-      plan: plan || undefined,
-    });
   }
 
   if (patientLoading) {
     return (
-      <div className="text-center text-muted-foreground py-12">Loading...</div>
+      <div className="flex items-center justify-center gap-2 rounded-lg border border-border bg-card p-8 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Loading patient...
+      </div>
+    );
+  }
+
+  if (patientError || !patient) {
+    return (
+      <EmptyState
+        icon={AlertCircle}
+        title="Unable to load patient"
+        description={
+          patientError?.message ??
+          "Choose a patient from Records before creating a SOAP note."
+        }
+        action={{
+          label: "Back to Records",
+          onClick: () => router.push("/records"),
+          icon: ArrowLeft,
+        }}
+      />
     );
   }
 
@@ -100,6 +202,47 @@ export default function NewSoapNotePage() {
       </div>
 
       <div className="mt-6 space-y-6">
+        <div className="rounded-lg border border-border bg-card p-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+            <div className="w-full lg:max-w-sm">
+              <label className="mb-1 block text-sm font-medium">
+                SOAP Template
+              </label>
+              <select
+                value={selectedTemplateId}
+                onChange={(event) => setSelectedTemplateId(event.target.value)}
+                className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+              >
+                {SOAP_NOTE_TEMPLATES.map((template) => (
+                  <option key={template.id} value={template.id}>
+                    {template.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {canSave && (
+              <label className="flex min-h-10 items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm">
+                <Checkbox
+                  checked={replaceTemplateContent}
+                  onChange={(event) =>
+                    setReplaceTemplateContent(event.target.checked)
+                  }
+                />
+                Replace existing content
+              </label>
+            )}
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleApplyTemplate}
+              disabled={!selectedTemplate}
+            >
+              <ClipboardList className="mr-2 h-4 w-4" />
+              Apply template
+            </Button>
+          </div>
+        </div>
+
         <div className="rounded-lg border border-border bg-card p-6 space-y-6">
           {/* Subjective */}
           <div>
@@ -164,10 +307,18 @@ export default function NewSoapNotePage() {
 
         {/* Actions */}
         <div className="flex items-center gap-3">
-          <Button onClick={handleSave} disabled={createNote.isPending}>
+          <Button
+            onClick={handleSave}
+            disabled={createNote.isPending || !canSave}
+          >
             <Save className="mr-2 h-4 w-4" />
             {createNote.isPending ? "Saving..." : "Save Note"}
           </Button>
+          {!canSave && (
+            <p className="text-sm text-muted-foreground">
+              Add at least one section to save this note.
+            </p>
+          )}
           <Button variant="outline" onClick={() => router.push("/records")}>
             Cancel
           </Button>

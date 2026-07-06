@@ -3,7 +3,14 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useSession } from "next-auth/react";
-import { ArrowRight, Check, PartyPopper, Sparkles, X } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowRight,
+  Check,
+  PartyPopper,
+  Sparkles,
+  X,
+} from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { Card } from "@/components/ui/card";
@@ -23,7 +30,7 @@ type Milestone = {
  * trial. Unlike the old finish-setup card (which only appeared after onboarding
  * "completed" and tracked setup chores), this is value-milestone based and is
  * derived entirely from real practice state — giving a new admin momentum and a
- * concrete reason to come back, all the way to "add billing to keep your data".
+ * concrete reason to come back, all the way to confirming billing is connected.
  */
 export function ActivationChecklist() {
   const { start } = useTour();
@@ -46,17 +53,62 @@ export function ActivationChecklist() {
   const sub = trpc.subscription.get.useQuery(undefined, opts);
   const dismiss = trpc.settings.dismissSetup.useMutation();
 
+  if (!isAdmin) return null;
+
+  const loadError = state.error ?? onboarding.error ?? practice.error ?? sub.error;
+  if (loadError) {
+    return (
+      <ActivationChecklistError
+        message={loadError.message}
+        onRetry={() => {
+          void Promise.all([
+            state.refetch(),
+            onboarding.refetch(),
+            practice.refetch(),
+            sub.refetch(),
+          ]);
+        }}
+      />
+    );
+  }
+
+  const isChecklistLoading =
+    state.isLoading ||
+    onboarding.isLoading ||
+    practice.isLoading ||
+    sub.isLoading;
+
   // Wait for the core signals before rendering so we never flash a wrong state.
-  if (!isAdmin || !state.data || !onboarding.data || !sub.data) return null;
+  if (isChecklistLoading) return <ActivationChecklistLoading />;
+  if (!state.data || !onboarding.data || !practice.data || !sub.data) {
+    return (
+      <ActivationChecklistError
+        message="Setup checklist data was unavailable. Try loading it again."
+        onRetry={() => {
+          void Promise.all([
+            state.refetch(),
+            onboarding.refetch(),
+            practice.refetch(),
+            sub.refetch(),
+          ]);
+        }}
+      />
+    );
+  }
   if (hidden || state.data.setupDismissed) return null;
 
-  const enforced = sub.data.billingEnforced;
+  const checklistState = state.data;
+  const onboardingData = onboarding.data;
+  const practiceData = practice.data;
+  const subscriptionData = sub.data;
+
+  const enforced = subscriptionData.billingEnforced;
   const tourDone =
-    state.data.tourStatus === "completed" ||
-    state.data.tourStatus === "skipped";
-  const brandColor = (
-    practice.data?.settings as { brandColor?: string } | null
-  )?.brandColor;
+    checklistState.tourStatus === "completed" ||
+    checklistState.tourStatus === "skipped";
+  const brandColor = (practiceData.settings as { brandColor?: string } | null)
+    ?.brandColor;
+  const practiceName = practiceData.name ?? "your practice";
 
   const milestones: Milestone[] = [
     {
@@ -70,37 +122,37 @@ export function ActivationChecklist() {
       key: "brand",
       label: "Make it your brand",
       hint: "Add your logo and accent color.",
-      done: !!practice.data?.logoUrl || !!brandColor,
+      done: !!practiceData.logoUrl || !!brandColor,
       href: "/settings?tab=practice",
     },
     {
       key: "team",
       label: "Invite a teammate",
       hint: "Bring your doctors and front desk in. Staff is unlimited.",
-      done: (sub.data.billableSeatCount ?? 1) > 1,
+      done: (subscriptionData.billableSeatCount ?? 1) > 1,
       href: "/settings?tab=staff",
     },
     {
       key: "ai",
       label: "Ask the AI assistant something",
       hint: "Try “Which pets are overdue for vaccines?”",
-      done: (sub.data.usage?.aiRuns ?? 0) > 0,
+      done: (subscriptionData.usage?.aiRuns ?? 0) > 0,
       href: "/agent",
     },
     {
       key: "data",
       label: "Bring in your real data",
       hint: "Import clients and pets, then clear the sample data.",
-      done: !onboarding.data.hasDemoData,
+      done: !onboardingData.hasDemoData,
       href: "/settings?tab=data",
     },
     ...(enforced
       ? [
           {
             key: "billing",
-            label: "Add billing to keep your data",
-            hint: "Add a card before your trial ends. Cancel anytime.",
-            done: !!sub.data.hasBillingAccount,
+            label: "Confirm billing is connected",
+            hint: "Stripe keeps the trial ready to convert. Cancel anytime.",
+            done: !!subscriptionData.hasBillingAccount,
             href: "/settings?tab=billing",
           } as Milestone,
         ]
@@ -133,8 +185,7 @@ export function ActivationChecklist() {
             You&apos;re all set 🎉
           </p>
           <p className="text-sm text-muted-foreground">
-            Every setup step is done — {practice.data?.name ?? "your practice"} is
-            ready to run.
+            Every setup step is done — {practiceName} is ready to run.
           </p>
         </div>
         <Button variant="ghost" size="sm" onClick={dontShowAgain}>
@@ -162,7 +213,7 @@ export function ActivationChecklist() {
         </span>
         <div>
           <p className="font-heading text-base font-semibold">
-            Get {practice.data?.name ?? "your practice"} running
+            Get {practiceName} running
           </p>
           <p className="text-sm text-muted-foreground">
             {doneCount} of {total} complete
@@ -240,6 +291,55 @@ export function ActivationChecklist() {
         >
           Don&apos;t show this again
         </button>
+      </div>
+    </Card>
+  );
+}
+
+function ActivationChecklistLoading() {
+  return (
+    <Card className="p-5 sm:p-6">
+      <div className="animate-pulse">
+        <div className="flex items-center gap-3">
+          <div className="h-9 w-9 rounded-lg bg-muted" />
+          <div className="space-y-2">
+            <div className="h-4 w-48 rounded bg-muted" />
+            <div className="h-3 w-24 rounded bg-muted" />
+          </div>
+        </div>
+        <div className="mt-4 h-2 rounded-full bg-muted" />
+        <div className="mt-4 grid gap-2">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div key={index} className="h-14 rounded-lg border bg-muted/40" />
+          ))}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function ActivationChecklistError({
+  message,
+  onRetry,
+}: {
+  message: string;
+  onRetry: () => void;
+}) {
+  return (
+    <Card className="border-destructive/30 bg-destructive/5 p-5">
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-destructive/10 text-destructive">
+          <AlertTriangle className="h-5 w-5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="font-heading text-base font-semibold">
+            Setup checklist could not load
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">{message}</p>
+          <Button variant="outline" size="sm" onClick={onRetry} className="mt-3">
+            Retry
+          </Button>
+        </div>
       </div>
     </Card>
   );

@@ -1,8 +1,10 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@openpims/db/client";
-import { locationMessaging } from "@openpims/db";
+import { locationMessaging, locations } from "@openpims/db";
 import { withSystem } from "@/lib/tenant-db";
 import { consoleProvider } from "./console";
+import { envValue, nonBlank } from "./env";
+import { hasNonBlankMessagingSender } from "./sender-query";
 import { telnyxProvider } from "./telnyx";
 import { twilioProvider } from "./twilio";
 import type { MessagingProvider, MessagingSender } from "./types";
@@ -20,8 +22,8 @@ export { isSuppressed, addSuppression, removeSuppression } from "./suppression";
 export function getMessagingProvider(): MessagingProvider {
   // Demo deployments never send real messages, regardless of configured creds —
   // the demo is purely a demo. This is the single chokepoint for all sends.
-  if (process.env.NEXT_PUBLIC_DEMO_MODE === "true") return consoleProvider;
-  const override = process.env.MESSAGING_PROVIDER?.toLowerCase();
+  if (envValue("NEXT_PUBLIC_DEMO_MODE") === "true") return consoleProvider;
+  const override = envValue("MESSAGING_PROVIDER")?.toLowerCase();
   if (override === "telnyx") return telnyxProvider;
   if (override === "twilio") return twilioProvider;
   if (telnyxProvider.isConfigured()) return telnyxProvider;
@@ -33,29 +35,28 @@ export function getMessagingProvider(): MessagingProvider {
 export function requiredMessagingEnvNames(): string[] {
   return getMessagingProvider().name === "twilio"
     ? ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"]
-    : ["TELNYX_API_KEY", "TELNYX_MESSAGING_PROFILE_ID"];
+    : ["TELNYX_API_KEY", "TELNYX_MESSAGING_PROFILE_ID", "TELNYX_PUBLIC_KEY"];
 }
 
 /** Platform-wide env default sender for the active provider (dev + fallback). */
 function envSender(): MessagingSender {
   if (getMessagingProvider().name === "twilio") {
     return {
-      messagingServiceId: process.env.TWILIO_MESSAGING_SERVICE_SID || undefined,
-      from: process.env.TWILIO_PHONE_NUMBER || undefined,
+      messagingServiceId: envValue("TWILIO_MESSAGING_SERVICE_SID"),
+      from: envValue("TWILIO_PHONE_NUMBER"),
     };
   }
   return {
-    messagingServiceId: process.env.TELNYX_MESSAGING_PROFILE_ID || undefined,
-    from: process.env.TELNYX_FROM_NUMBER || undefined,
+    messagingServiceId: envValue("TELNYX_MESSAGING_PROFILE_ID"),
+    from: envValue("TELNYX_FROM_NUMBER"),
   };
 }
 
 /**
- * Resolve the sender for a practice/location. Prefers the location's own
- * configured number (each clinic texts from its own number — see number
- * strategy) read from `location_messaging`, and falls back to the platform-wide
- * env default (dev / not-yet-provisioned). A DB error falls back to env rather
- * than blocking the send.
+ * Resolve the sender for a practice/location. Calls with a location id must use
+ * that location's active texting setup; calls without a location id fall back to
+ * the platform-wide env default for dev / not-yet-provisioned workflows. A DB
+ * error falls back to env only when there was no explicit location target.
  */
 export async function resolveSender(opts: {
   practiceId?: string;
@@ -70,18 +71,52 @@ export async function resolveSender(opts: {
             senderE164: locationMessaging.senderE164,
           })
           .from(locationMessaging)
-          .where(eq(locationMessaging.locationId, opts.locationId!))
+          .innerJoin(
+            locations,
+            and(
+              eq(locations.id, locationMessaging.locationId),
+              opts.practiceId
+                ? eq(locations.practiceId, opts.practiceId)
+                : eq(locations.practiceId, locationMessaging.practiceId),
+              isNull(locations.deletedAt)
+            )
+          )
+          .where(
+            opts.practiceId
+              ? and(
+                  eq(locationMessaging.locationId, opts.locationId!),
+                  eq(locationMessaging.practiceId, opts.practiceId),
+                  isNull(locationMessaging.deletedAt),
+                  eq(locations.practiceId, opts.practiceId),
+                  isNull(locations.deletedAt),
+                  eq(locationMessaging.enabled, true),
+                  eq(locationMessaging.registrationStatus, "active"),
+                  hasNonBlankMessagingSender()
+                )
+              : and(
+                  eq(locationMessaging.locationId, opts.locationId!),
+                  isNull(locationMessaging.deletedAt),
+                  isNull(locations.deletedAt),
+                  eq(locationMessaging.enabled, true),
+                  eq(locationMessaging.registrationStatus, "active"),
+                  hasNonBlankMessagingSender()
+                )
+          )
           .limit(1)
       );
-      if (row && (row.messagingProfileId || row.senderE164)) {
+      if (row) {
+        const messagingServiceId = nonBlank(row.messagingProfileId);
+        const from = nonBlank(row.senderE164);
+        if (!messagingServiceId && !from) return {};
         return {
-          messagingServiceId: row.messagingProfileId ?? undefined,
-          from: row.senderE164 ?? undefined,
+          messagingServiceId,
+          from,
         };
       }
     } catch (e) {
-      console.error("[messaging] resolveSender lookup failed; using env default", e);
+      console.error("[messaging] resolveSender lookup failed", e);
     }
+    return {};
   }
   return envSender();
 }

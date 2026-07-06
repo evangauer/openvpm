@@ -1,8 +1,8 @@
 import { randomBytes, createHash } from "crypto";
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, eq, gt, isNull, lt } from "drizzle-orm";
 import { db } from "@openpims/db/client";
 import type { Database } from "@openpims/db/client";
-import { authTokens } from "@openpims/db";
+import { authTokens, sessions, verificationTokens } from "@openpims/db";
 import { withSystem } from "@/lib/tenant-db";
 
 export type AuthTokenType = "email_verify" | "password_reset" | "invite";
@@ -30,19 +30,32 @@ export async function createAuthToken(opts: {
 }): Promise<string> {
   const raw = randomBytes(32).toString("hex");
   const now = opts.now ?? new Date();
-  const insertToken = (tx: Database) =>
-    tx.insert(authTokens).values({
+  const issueToken = async (tx: Database) => {
+    await tx
+      .update(authTokens)
+      .set({ usedAt: now })
+      .where(
+        and(
+          eq(authTokens.userId, opts.userId),
+          eq(authTokens.type, opts.type),
+          isNull(authTokens.usedAt),
+          gt(authTokens.expiresAt, now)
+        )
+      );
+
+    await tx.insert(authTokens).values({
       userId: opts.userId,
       email: opts.email.toLowerCase(),
       tokenHash: hashToken(raw),
       type: opts.type,
       expiresAt: new Date(now.getTime() + TTL_MS[opts.type]),
     });
+  };
 
   if (opts.db) {
-    await insertToken(opts.db);
+    await issueToken(opts.db);
   } else {
-    await withSystem(db, insertToken);
+    await withSystem(db, issueToken);
   }
   return raw;
 }
@@ -54,13 +67,14 @@ export async function createAuthToken(opts: {
 export async function consumeAuthToken(
   raw: string,
   type: AuthTokenType,
-  now: Date = new Date()
+  opts: { now?: Date; db?: Database } = {}
 ): Promise<{ userId: string; email: string } | null> {
   const tokenHash = hashToken(raw);
-  return withSystem(db, async (tx) => {
+  const now = opts.now ?? new Date();
+  const claimToken = async (tx: Database) => {
     const [row] = await tx
-      .select()
-      .from(authTokens)
+      .update(authTokens)
+      .set({ usedAt: now })
       .where(
         and(
           eq(authTokens.tokenHash, tokenHash),
@@ -69,12 +83,60 @@ export async function consumeAuthToken(
           gt(authTokens.expiresAt, now)
         )
       )
-      .limit(1);
-    if (!row) return null;
-    await tx
-      .update(authTokens)
-      .set({ usedAt: now })
-      .where(eq(authTokens.id, row.id));
-    return { userId: row.userId, email: row.email };
-  });
+      .returning({
+        userId: authTokens.userId,
+        email: authTokens.email,
+      });
+    return row ?? null;
+  };
+
+  if (opts.db) {
+    return claimToken(opts.db);
+  }
+  return withSystem(db, claimToken);
+}
+
+export async function cleanupExpiredAuthArtifacts(options: {
+  now?: Date;
+  db?: Database;
+} = {}): Promise<{
+  authTokensDeleted: number;
+  sessionsDeleted: number;
+  verificationTokensDeleted: number;
+  deleted: number;
+  cutoff: Date;
+}> {
+  const cutoff = options.now ?? new Date();
+  const cleanup = async (tx: Database) => {
+    const deletedAuthTokens = await tx
+      .delete(authTokens)
+      .where(lt(authTokens.expiresAt, cutoff))
+      .returning({ id: authTokens.id });
+    const deletedSessions = await tx
+      .delete(sessions)
+      .where(lt(sessions.expires, cutoff))
+      .returning({ id: sessions.id });
+    const deletedVerificationTokens = await tx
+      .delete(verificationTokens)
+      .where(lt(verificationTokens.expires, cutoff))
+      .returning({ expires: verificationTokens.expires });
+
+    return {
+      authTokensDeleted: deletedAuthTokens.length,
+      sessionsDeleted: deletedSessions.length,
+      verificationTokensDeleted: deletedVerificationTokens.length,
+    };
+  };
+
+  const counts = options.db
+    ? await cleanup(options.db)
+    : await withSystem(db, cleanup);
+  return {
+    ...counts,
+    deleted:
+      counts.authTokensDeleted +
+      counts.sessionsDeleted +
+      counts.verificationTokensDeleted,
+    cutoff,
+  };
 }

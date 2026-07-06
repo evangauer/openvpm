@@ -1,17 +1,9 @@
 "use client";
 
-import { useState } from "react";
-import {
-  LineChart,
-  Line,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-} from "recharts";
+import dynamic from "next/dynamic";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import {
   DollarSign,
   CalendarCheck,
@@ -23,13 +15,53 @@ import {
   CheckCircle,
   Activity,
   BarChart3,
+  Download,
+  Loader2,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
+import {
+  isCompleteReportDateRangeInputValid,
+  reportPresetDateRange,
+  reportDateRangeInputError,
+  type ReportDatePreset,
+} from "@/lib/reports/date-range";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { EmptyState } from "@/components/common/empty-state";
 import { useCurrencyFormatter } from "@/lib/locale/useCurrency";
 
+function ReportChartChunkLoading() {
+  return (
+    <div className="h-[300px] w-full animate-pulse rounded-md bg-muted" />
+  );
+}
+
+const RevenueLineChart = dynamic(
+  () =>
+    import("@/components/reports/report-charts").then(
+      (mod) => mod.RevenueLineChart
+    ),
+  {
+    ssr: false,
+    loading: ReportChartChunkLoading,
+  }
+);
+
+const ServicesCountChart = dynamic(
+  () =>
+    import("@/components/reports/report-charts").then(
+      (mod) => mod.ServicesCountChart
+    ),
+  {
+    ssr: false,
+    loading: ReportChartChunkLoading,
+  }
+);
+
 type Tab = "revenue" | "appointments" | "services" | "inventory";
+type DateRange = { startDate: string; endDate: string };
+type ReportPdfCell = string | number | null | undefined;
 
 const tabs: { key: Tab; label: string; icon: React.ElementType }[] = [
   { key: "revenue", label: "Revenue", icon: DollarSign },
@@ -37,6 +69,10 @@ const tabs: { key: Tab; label: string; icon: React.ElementType }[] = [
   { key: "services", label: "Services", icon: BarChart3 },
   { key: "inventory", label: "Inventory", icon: Package },
 ];
+
+function canViewReportsRole(role?: string | null): boolean {
+  return role === "admin" || role === "veterinarian";
+}
 
 function KpiCard({
   title,
@@ -90,90 +126,379 @@ function LoadingSkeleton() {
   );
 }
 
-function RevenueTab() {
+function defaultClientReportDateRange(
+  now = new Date(),
+  timeZone?: string | null
+): DateRange {
+  return reportPresetDateRange("last30", now, timeZone);
+}
+
+function reportFilename(
+  tab: Tab,
+  range?: { startDate: string; endDate: string },
+  extension = "csv"
+) {
+  const suffix = range ? `${range.startDate}_to_${range.endDate}` : "current";
+  return `${tab}-report-${suffix}.${extension}`;
+}
+
+function csvCell(value: unknown): string {
+  const text = value == null ? "" : String(value);
+  if (/[",\n\r]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
+}
+
+function downloadCsv(filename: string, rows: unknown[][]) {
+  const csv = rows.map((row) => row.map(csvCell).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function downloadReportPdf({
+  filename,
+  title,
+  subtitle,
+  columns,
+  rows,
+  emptyMessage,
+}: {
+  filename: string;
+  title: string;
+  subtitle?: string;
+  columns: string[];
+  rows: ReportPdfCell[][];
+  emptyMessage?: string;
+}) {
+  const { generateReportPdf } = await import("@/lib/pdf");
+  generateReportPdf({
+    title,
+    subtitle,
+    columns,
+    rows,
+    emptyMessage,
+  }).save(filename);
+}
+
+function ReportExportButtons({
+  onCsv,
+  onPdf,
+}: {
+  onCsv: () => void;
+  onPdf: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap justify-end gap-2">
+      <Button variant="outline" size="sm" onClick={onCsv} className="gap-2">
+        <Download className="h-4 w-4" />
+        Export CSV
+      </Button>
+      <Button variant="outline" size="sm" onClick={onPdf} className="gap-2">
+        <Download className="h-4 w-4" />
+        Export PDF
+      </Button>
+    </div>
+  );
+}
+
+function ReportError({
+  message,
+  onRetry,
+}: {
+  message: string;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-8 text-center">
+      <AlertTriangle className="mx-auto h-8 w-8 text-destructive" />
+      <p className="mt-3 font-medium">Could not load report</p>
+      <p className="mt-1 text-sm text-muted-foreground">{message}</p>
+      <Button variant="outline" size="sm" onClick={onRetry} className="mt-4">
+        Retry
+      </Button>
+    </div>
+  );
+}
+
+function ReportMissingData({ onRetry }: { onRetry: () => void }) {
+  return (
+    <EmptyState
+      icon={AlertTriangle}
+      title="Could not load report data"
+      description="The report request finished without returning data. Try loading it again."
+      action={{ label: "Retry", onClick: onRetry }}
+      className="border-destructive/30 bg-destructive/5"
+    />
+  );
+}
+
+function DateRangeControls({
+  value,
+  onChange,
+  timeZone,
+  validationMessage,
+}: {
+  value: DateRange;
+  onChange: (next: DateRange) => void;
+  timeZone?: string | null;
+  validationMessage?: string | null;
+}) {
+  const setPreset = (preset: ReportDatePreset) => {
+    onChange(reportPresetDateRange(preset, new Date(), timeZone));
+  };
+  const errorId = validationMessage ? "reports-date-range-error" : undefined;
+
+  return (
+    <div className="mt-4 rounded-lg border border-border bg-card p-3">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className="text-xs font-medium text-muted-foreground">
+            Start
+            <Input
+              type="date"
+              value={value.startDate}
+              aria-invalid={Boolean(validationMessage) || undefined}
+              aria-describedby={errorId}
+              onChange={(event) =>
+                onChange({ ...value, startDate: event.target.value })
+              }
+              className="mt-1"
+            />
+          </label>
+          <label className="text-xs font-medium text-muted-foreground">
+            End
+            <Input
+              type="date"
+              value={value.endDate}
+              aria-invalid={Boolean(validationMessage) || undefined}
+              aria-describedby={errorId}
+              onChange={(event) =>
+                onChange({ ...value, endDate: event.target.value })
+              }
+              className="mt-1"
+            />
+          </label>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setPreset("last30")}
+          >
+            Last 30 Days
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setPreset("month")}
+          >
+            Month to Date
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setPreset("lastMonth")}
+          >
+            Last Month
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setPreset("year")}>
+            Year to Date
+          </Button>
+        </div>
+      </div>
+      {validationMessage ? (
+        <p
+          id="reports-date-range-error"
+          className="mt-2 text-xs text-destructive"
+        >
+          {validationMessage}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function ReportDateRangeInvalid({ message }: { message: string }) {
+  return (
+    <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-8 text-center">
+      <AlertTriangle className="mx-auto h-8 w-8 text-destructive" />
+      <p className="mt-3 font-medium">Choose a valid report date range</p>
+      <p className="mt-1 text-sm text-muted-foreground">{message}</p>
+    </div>
+  );
+}
+
+function RevenueTab({ dateRange }: { dateRange: DateRange }) {
   const formatCurrency = useCurrencyFormatter();
-  const { data, isLoading } = trpc.reports.revenue.useQuery();
+  const { data, isLoading, isError, error, refetch } =
+    trpc.reports.revenue.useQuery(dateRange);
 
-  if (isLoading || !data) return <LoadingSkeleton />;
+  if (isError) {
+    return <ReportError message={error.message} onRetry={() => refetch()} />;
+  }
+  if (isLoading) return <LoadingSkeleton />;
+  if (!data) return <ReportMissingData onRetry={() => refetch()} />;
 
-  const diff = data.lastMonth > 0
-    ? Math.round(((data.thisMonth - data.lastMonth) / data.lastMonth) * 100)
-    : data.thisMonth > 0
+  const diff = data.previousTotal > 0
+    ? Math.round(((data.total - data.previousTotal) / data.previousTotal) * 100)
+    : data.total > 0
       ? 100
       : 0;
+  const revenueRows = [
+    [
+      "selected_period_total",
+      `${data.range.startDate} to ${data.range.endDate}`,
+      data.total,
+    ],
+    [
+      "previous_period_total",
+      `${data.range.previousStartDate} to ${data.range.previousEndDate}`,
+      data.previousTotal,
+    ],
+    ...data.daily.map((row) => ["daily_revenue", row.date, row.amount]),
+  ];
+  const exportRevenue = () =>
+    downloadCsv(reportFilename("revenue", data.range), [
+      ["metric", "period", "amount"],
+      ...revenueRows,
+    ]);
+  const exportRevenuePdf = () =>
+    void downloadReportPdf({
+      filename: reportFilename("revenue", data.range, "pdf"),
+      title: "Revenue Report",
+      subtitle: `${data.range.startDate} to ${data.range.endDate}`,
+      columns: ["Metric", "Period", "Amount"],
+      rows: revenueRows.map(([metric, period, amount]) => [
+        metric,
+        period,
+        formatCurrency(Number(amount)),
+      ]),
+      emptyMessage: "No revenue data for this period.",
+    });
 
   return (
     <div className="space-y-6">
       <div className="grid gap-4 sm:grid-cols-2">
         <KpiCard
-          title="This Month"
-          value={formatCurrency(data.thisMonth)}
+          title="Selected Range"
+          value={formatCurrency(data.total)}
           subtitle={
             diff !== 0
-              ? `${diff > 0 ? "+" : ""}${diff}% vs last month`
+              ? `${diff > 0 ? "+" : ""}${diff}% vs previous period`
               : undefined
           }
           icon={DollarSign}
         />
         <KpiCard
-          title="Last Month"
-          value={formatCurrency(data.lastMonth)}
+          title="Previous Period"
+          value={formatCurrency(data.previousTotal)}
           icon={TrendingUp}
         />
       </div>
 
       <div className="rounded-lg border border-border bg-card p-5">
-        <h3 className="mb-4 text-sm font-medium text-muted-foreground">
-          Daily Revenue (Last 30 Days)
-        </h3>
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <h3 className="text-sm font-medium text-muted-foreground">
+            Daily Revenue
+          </h3>
+          <ReportExportButtons
+            onCsv={exportRevenue}
+            onPdf={exportRevenuePdf}
+          />
+        </div>
         {data.daily.length > 0 ? (
-          <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={data.daily}>
-              <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-              <XAxis
-                dataKey="date"
-                tick={{ fontSize: 12 }}
-                className="text-muted-foreground"
-              />
-              <YAxis
-                tick={{ fontSize: 12 }}
-                className="text-muted-foreground"
-                tickFormatter={(v) => `$${v}`}
-              />
-              <Tooltip
-                formatter={(value: number) => [formatCurrency(value), "Revenue"]}
-                contentStyle={{
-                  backgroundColor: "hsl(var(--card))",
-                  border: "1px solid hsl(var(--border))",
-                  borderRadius: "0.5rem",
-                }}
-              />
-              <Line
-                type="monotone"
-                dataKey="amount"
-                stroke="#0d9488"
-                strokeWidth={2}
-                dot={false}
-              />
-            </LineChart>
-          </ResponsiveContainer>
+          <RevenueLineChart
+            daily={data.daily}
+            formatCurrency={formatCurrency}
+          />
         ) : (
-          <p className="py-12 text-center text-muted-foreground">
-            No revenue data for this period
-          </p>
+          <EmptyState
+            className="border-0 bg-transparent py-12"
+            icon={DollarSign}
+            title="No revenue data for this period"
+            description="Paid invoices will appear here once they fall inside the selected date range."
+          />
         )}
       </div>
     </div>
   );
 }
 
-function AppointmentsTab() {
-  const { data, isLoading } = trpc.reports.appointments.useQuery();
+function AppointmentsTab({ dateRange }: { dateRange: DateRange }) {
+  const { data, isLoading, isError, error, refetch } =
+    trpc.reports.appointments.useQuery(dateRange);
 
-  if (isLoading || !data) return <LoadingSkeleton />;
+  if (isError) {
+    return <ReportError message={error.message} onRetry={() => refetch()} />;
+  }
+  if (isLoading) return <LoadingSkeleton />;
+  if (!data) return <ReportMissingData onRetry={() => refetch()} />;
+
+  const appointmentRows = [
+    [
+      "summary",
+      "",
+      data.total,
+      data.completed,
+      data.noShows,
+      data.cancelled,
+      data.fillRate,
+    ],
+    ...data.byDoctor.map((doc) => [
+      "doctor",
+      doc.doctorName,
+      doc.total,
+      doc.completed,
+      "",
+      "",
+      doc.total > 0 ? Math.round((doc.completed / doc.total) * 100) : 0,
+    ]),
+  ];
+  const exportAppointments = () =>
+    downloadCsv(reportFilename("appointments", data.range), [
+      ["section", "doctor", "total", "completed", "no_shows", "cancelled", "fill_rate"],
+      ...appointmentRows,
+    ]);
+  const exportAppointmentsPdf = () =>
+    void downloadReportPdf({
+      filename: reportFilename("appointments", data.range, "pdf"),
+      title: "Appointments Report",
+      subtitle: `${data.range.startDate} to ${data.range.endDate}`,
+      columns: [
+        "Section",
+        "Doctor",
+        "Total",
+        "Completed",
+        "No-shows",
+        "Cancelled",
+        "Fill Rate",
+      ],
+      rows: appointmentRows.map((row) => [
+        row[0],
+        row[1],
+        row[2],
+        row[3],
+        row[4],
+        row[5],
+        `${row[6]}%`,
+      ]),
+      emptyMessage: "No appointment data for this period.",
+    });
 
   return (
     <div className="space-y-6">
+      <ReportExportButtons
+        onCsv={exportAppointments}
+        onPdf={exportAppointmentsPdf}
+      />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard title="Total" value={String(data.total)} icon={CalendarCheck} />
         <KpiCard
@@ -206,7 +531,7 @@ function AppointmentsTab() {
       </div>
 
       {/* Doctor breakdown */}
-      {data.byDoctor.length > 0 && (
+      {data.byDoctor.length > 0 ? (
         <div className="rounded-lg border border-border bg-card p-5">
           <h3 className="mb-4 text-sm font-medium text-muted-foreground">
             Doctor Breakdown
@@ -239,21 +564,64 @@ function AppointmentsTab() {
             </table>
           </div>
         </div>
+      ) : (
+        <EmptyState
+          icon={CalendarCheck}
+          title="No doctor breakdown available"
+          description="Appointments will be grouped by assigned doctor for the selected date range."
+        />
       )}
     </div>
   );
 }
 
-function ServicesTab() {
+function ServicesTab({ dateRange }: { dateRange: DateRange }) {
   const formatCurrency = useCurrencyFormatter();
-  const { data, isLoading } = trpc.reports.topServices.useQuery();
+  const { data, isLoading, isError, error, refetch } =
+    trpc.reports.topServices.useQuery(dateRange);
 
-  if (isLoading || !data) return <LoadingSkeleton />;
+  if (isError) {
+    return <ReportError message={error.message} onRetry={() => refetch()} />;
+  }
+  if (isLoading) return <LoadingSkeleton />;
+  if (!data) return <ReportMissingData onRetry={() => refetch()} />;
 
-  if (data.length === 0) {
+  const serviceRows = data.items.map((svc) => [
+    svc.name,
+    svc.count,
+    svc.revenue,
+  ]);
+  const exportServices = () =>
+    downloadCsv(reportFilename("services", data.range), [
+      ["service", "count", "revenue"],
+      ...serviceRows,
+    ]);
+  const exportServicesPdf = () =>
+    void downloadReportPdf({
+      filename: reportFilename("services", data.range, "pdf"),
+      title: "Services Report",
+      subtitle: `${data.range.startDate} to ${data.range.endDate}`,
+      columns: ["Service", "Count", "Revenue"],
+      rows: serviceRows.map(([name, count, revenue]) => [
+        name,
+        count,
+        formatCurrency(Number(revenue)),
+      ]),
+      emptyMessage: "No billed service items were found for the selected range.",
+    });
+
+  if (data.items.length === 0) {
     return (
-      <div className="rounded-lg border border-dashed border-border bg-card p-12 text-center">
-        <p className="text-muted-foreground">No service data available</p>
+      <div className="space-y-4">
+        <ReportExportButtons
+          onCsv={exportServices}
+          onPdf={exportServicesPdf}
+        />
+        <EmptyState
+          icon={BarChart3}
+          title="No service data available"
+          description="No billed service items were found for the selected range."
+        />
       </div>
     );
   }
@@ -261,35 +629,16 @@ function ServicesTab() {
   return (
     <div className="space-y-6">
       <div className="rounded-lg border border-border bg-card p-5">
-        <h3 className="mb-4 text-sm font-medium text-muted-foreground">
-          Top 10 Services by Count
-        </h3>
-        <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={data}>
-            <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-            <XAxis
-              dataKey="name"
-              tick={{ fontSize: 11 }}
-              className="text-muted-foreground"
-              angle={-25}
-              textAnchor="end"
-              height={60}
-            />
-            <YAxis
-              tick={{ fontSize: 12 }}
-              className="text-muted-foreground"
-              allowDecimals={false}
-            />
-            <Tooltip
-              contentStyle={{
-                backgroundColor: "hsl(var(--card))",
-                border: "1px solid hsl(var(--border))",
-                borderRadius: "0.5rem",
-              }}
-            />
-            <Bar dataKey="count" fill="#0d9488" radius={[4, 4, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <h3 className="text-sm font-medium text-muted-foreground">
+            Top 10 Services by Count
+          </h3>
+          <ReportExportButtons
+            onCsv={exportServices}
+            onPdf={exportServicesPdf}
+          />
+        </div>
+        <ServicesCountChart items={data.items} />
       </div>
 
       <div className="rounded-lg border border-border bg-card p-5">
@@ -306,7 +655,7 @@ function ServicesTab() {
               </tr>
             </thead>
             <tbody>
-              {data.map((svc) => (
+              {data.items.map((svc) => (
                 <tr key={svc.name} className="border-b border-border last:border-0">
                   <td className="py-2">{svc.name}</td>
                   <td className="py-2 text-right">{svc.count}</td>
@@ -322,28 +671,88 @@ function ServicesTab() {
 }
 
 function InventoryTab() {
-  const { data, isLoading } = trpc.reports.inventoryAlerts.useQuery();
+  const { data, isLoading, isError, error, refetch } =
+    trpc.reports.inventoryAlerts.useQuery();
 
-  if (isLoading || !data) return <LoadingSkeleton />;
+  if (isError) {
+    return <ReportError message={error.message} onRetry={() => refetch()} />;
+  }
+  if (isLoading) return <LoadingSkeleton />;
+  if (!data) return <ReportMissingData onRetry={() => refetch()} />;
 
-  const hasAlerts = data.lowStock.length > 0 || data.expiring.length > 0;
+  const hasAlerts =
+    data.lowStock.length > 0 ||
+    data.expired.length > 0 ||
+    data.expiringSoon.length > 0;
+  const inventoryRows = [
+    ...data.lowStock.map((item) => [
+      "low_stock",
+      item.name,
+      item.sku ?? "",
+      item.stockQuantity,
+      item.reorderPoint ?? 10,
+      "",
+    ]),
+    ...data.expired.map((item) => [
+      "expired",
+      item.name,
+      item.sku ?? "",
+      item.stockQuantity,
+      "",
+      item.expirationDate,
+    ]),
+    ...data.expiringSoon.map((item) => [
+      "expiring_soon",
+      item.name,
+      item.sku ?? "",
+      item.stockQuantity,
+      "",
+      item.expirationDate,
+    ]),
+  ];
+  const exportInventory = () =>
+    downloadCsv(reportFilename("inventory"), [
+      ["section", "product", "sku", "stock", "reorder_point", "expiration_date"],
+      ...inventoryRows,
+    ]);
+  const exportInventoryPdf = () =>
+    void downloadReportPdf({
+      filename: reportFilename("inventory", undefined, "pdf"),
+      title: "Inventory Alerts Report",
+      columns: [
+        "Section",
+        "Product",
+        "SKU",
+        "Stock",
+        "Reorder Point",
+        "Expiration",
+      ],
+      rows: inventoryRows,
+      emptyMessage: "No low stock, expired, or expiring products detected.",
+    });
 
   if (!hasAlerts) {
     return (
-      <div className="rounded-lg border border-green-200 bg-green-50 p-8 text-center dark:border-green-900 dark:bg-green-950/30">
-        <CheckCircle className="mx-auto mb-3 h-8 w-8 text-green-600 dark:text-green-400" />
-        <p className="font-medium text-green-800 dark:text-green-300">
-          All stock levels OK
-        </p>
-        <p className="mt-1 text-sm text-green-600 dark:text-green-400">
-          No low stock or expiring products detected
-        </p>
+      <div className="space-y-4">
+        <ReportExportButtons
+          onCsv={exportInventory}
+          onPdf={exportInventoryPdf}
+        />
+        <EmptyState
+          icon={CheckCircle}
+          title="All stock levels OK"
+          description="No low stock, expired, or expiring products detected."
+        />
       </div>
     );
   }
 
   return (
     <div className="space-y-6">
+      <ReportExportButtons
+        onCsv={exportInventory}
+        onPdf={exportInventoryPdf}
+      />
       {/* Low Stock Alerts */}
       {data.lowStock.length > 0 && (
         <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-5 dark:border-amber-900 dark:bg-amber-950/20">
@@ -381,13 +790,13 @@ function InventoryTab() {
         </div>
       )}
 
-      {/* Expiring Soon */}
-      {data.expiring.length > 0 && (
+      {/* Expired Products */}
+      {data.expired.length > 0 && (
         <div className="rounded-lg border border-red-200 bg-red-50/50 p-5 dark:border-red-900 dark:bg-red-950/20">
           <div className="mb-4 flex items-center gap-2">
-            <Activity className="h-5 w-5 text-red-600 dark:text-red-400" />
+            <XCircle className="h-5 w-5 text-red-600 dark:text-red-400" />
             <h3 className="text-sm font-medium text-red-800 dark:text-red-300">
-              Expiring Soon ({data.expiring.length})
+              Expired Products ({data.expired.length})
             </h3>
           </div>
           <div className="overflow-x-auto">
@@ -401,10 +810,47 @@ function InventoryTab() {
                 </tr>
               </thead>
               <tbody>
-                {data.expiring.map((item) => (
+                {data.expired.map((item) => (
                   <tr
                     key={item.sku ?? item.name}
                     className="border-b border-red-100 last:border-0 dark:border-red-900"
+                  >
+                    <td className="py-2">{item.name}</td>
+                    <td className="py-2 text-muted-foreground">{item.sku ?? "-"}</td>
+                    <td className="py-2 text-right">{item.stockQuantity}</td>
+                    <td className="py-2 text-right font-medium">{item.expirationDate}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Expiring Soon */}
+      {data.expiringSoon.length > 0 && (
+        <div className="rounded-lg border border-orange-200 bg-orange-50/50 p-5 dark:border-orange-900 dark:bg-orange-950/20">
+          <div className="mb-4 flex items-center gap-2">
+            <Activity className="h-5 w-5 text-orange-600 dark:text-orange-400" />
+            <h3 className="text-sm font-medium text-orange-800 dark:text-orange-300">
+              Expiring Soon ({data.expiringSoon.length})
+            </h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-orange-200 text-left text-orange-700 dark:border-orange-800 dark:text-orange-400">
+                  <th className="pb-2 font-medium">Product</th>
+                  <th className="pb-2 font-medium">SKU</th>
+                  <th className="pb-2 font-medium text-right">Stock</th>
+                  <th className="pb-2 font-medium text-right">Expiration Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.expiringSoon.map((item) => (
+                  <tr
+                    key={item.sku ?? item.name}
+                    className="border-b border-orange-100 last:border-0 dark:border-orange-900"
                   >
                     <td className="py-2">{item.name}</td>
                     <td className="py-2 text-muted-foreground">{item.sku ?? "-"}</td>
@@ -422,7 +868,68 @@ function InventoryTab() {
 }
 
 export default function ReportsPage() {
+  const router = useRouter();
+  const { data: session, status } = useSession();
+
+  if (status === "loading") {
+    return (
+      <div className="rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
+        <div className="flex items-center gap-2">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Checking report access...
+        </div>
+      </div>
+    );
+  }
+
+  if (!canViewReportsRole(session?.user?.role)) {
+    return (
+      <EmptyState
+        icon={BarChart3}
+        title="Reports are restricted"
+        description="Only administrators and veterinarians can view practice reports."
+        action={{
+          label: "Back to dashboard",
+          onClick: () => router.push("/"),
+        }}
+      />
+    );
+  }
+
+  return <ReportsDashboard />;
+}
+
+function ReportsDashboard() {
   const [activeTab, setActiveTab] = useState<Tab>("revenue");
+  const [dateRange, setDateRange] = useState<DateRange | null>(null);
+  const settingsQuery = trpc.reports.settings.useQuery();
+  const reportSettings = settingsQuery.data;
+
+  useEffect(() => {
+    if (dateRange === null && reportSettings !== undefined) {
+      setDateRange(
+        defaultClientReportDateRange(new Date(), reportSettings.timezone)
+      );
+    }
+  }, [dateRange, reportSettings]);
+
+  const needsDateRange = activeTab !== "inventory";
+  const dateRangeError = needsDateRange ? settingsQuery.error : null;
+  const settingsMissingData =
+    needsDateRange &&
+    !settingsQuery.isLoading &&
+    !settingsQuery.error &&
+    reportSettings === undefined;
+  const reportSettingsReady =
+    !needsDateRange || Boolean(reportSettings && !settingsQuery.error);
+  const dateRangeValidationMessage =
+    needsDateRange && dateRange ? reportDateRangeInputError(dateRange) : null;
+  const hasValidDateRange =
+    reportSettingsReady &&
+    (!needsDateRange ||
+      Boolean(dateRange && isCompleteReportDateRangeInputValid(dateRange)));
+  const canRenderDateRangeControls =
+    needsDateRange && dateRange && reportSettings && !settingsQuery.error;
 
   return (
     <div>
@@ -434,6 +941,15 @@ export default function ReportsPage() {
           </p>
         </div>
       </div>
+
+      {canRenderDateRangeControls ? (
+        <DateRangeControls
+          value={dateRange}
+          onChange={setDateRange}
+          timeZone={reportSettings.timezone}
+          validationMessage={dateRangeValidationMessage}
+        />
+      ) : null}
 
       {/* Tabs */}
       <div className="mt-6 flex gap-1 rounded-lg border border-border bg-muted/50 p-1">
@@ -461,9 +977,29 @@ export default function ReportsPage() {
 
       {/* Tab content */}
       <div className="mt-6">
-        {activeTab === "revenue" && <RevenueTab />}
-        {activeTab === "appointments" && <AppointmentsTab />}
-        {activeTab === "services" && <ServicesTab />}
+        {dateRangeError ? (
+          <ReportError
+            message={dateRangeError.message}
+            onRetry={() => settingsQuery.refetch()}
+          />
+        ) : settingsMissingData ? (
+          <ReportMissingData onRetry={() => settingsQuery.refetch()} />
+        ) : needsDateRange && !dateRange ? (
+          <LoadingSkeleton />
+        ) : dateRangeValidationMessage ? (
+          <ReportDateRangeInvalid message={dateRangeValidationMessage} />
+        ) : null}
+        {activeTab === "revenue" && hasValidDateRange && dateRange && (
+          <RevenueTab dateRange={dateRange} />
+        )}
+        {activeTab === "appointments" && (
+          hasValidDateRange && dateRange ? (
+            <AppointmentsTab dateRange={dateRange} />
+          ) : null
+        )}
+        {activeTab === "services" && hasValidDateRange && dateRange && (
+          <ServicesTab dateRange={dateRange} />
+        )}
         {activeTab === "inventory" && <InventoryTab />}
       </div>
     </div>

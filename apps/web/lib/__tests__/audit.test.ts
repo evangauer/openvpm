@@ -27,6 +27,31 @@ describe("redactSecrets", () => {
     expect(out.secret).toBe("[redacted]");
     expect(out.authToken).toBe("[redacted]");
   });
+  it("redacts nested secret-ish keys without dropping non-secret context", () => {
+    const out = redactSecrets({
+      patientId: "patient-1",
+      profile: {
+        email: "client@example.com",
+        password: "hunter2",
+      },
+      contacts: [
+        { name: "Owner", portalToken: "portal-token" },
+        { name: "Alt", phone: "+15555550123" },
+      ],
+    });
+
+    expect(out).toEqual({
+      patientId: "patient-1",
+      profile: {
+        email: "client@example.com",
+        password: "[redacted]",
+      },
+      contacts: [
+        { name: "Owner", portalToken: "[redacted]" },
+        { name: "Alt", phone: "+15555550123" },
+      ],
+    });
+  });
   it("returns null for null/undefined", () => {
     expect(redactSecrets(null)).toBeNull();
     expect(redactSecrets(undefined)).toBeNull();

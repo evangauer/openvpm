@@ -1,33 +1,89 @@
 "use client";
 
-import Link from "next/link";
-import { Calendar, PawPrint, DollarSign, FileText, Clock, TrendingUp } from "lucide-react";
+import dynamic from "next/dynamic";
+import { useRouter } from "next/navigation";
+import {
+  Calendar,
+  CalendarPlus,
+  Clock,
+  DollarSign,
+  FileText,
+  PawPrint,
+  TrendingUp,
+} from "lucide-react";
 import { WelcomePanel } from "@/components/dashboard/welcome-panel";
 import { ActivationChecklist } from "@/components/dashboard/activation-checklist";
+import { EmptyState } from "@/components/common/empty-state";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
-import { formatCurrency, localeForCountry } from "@/lib/locale/format";
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
-  LineChart,
-  Line,
-} from "recharts";
+import { formatCurrency } from "@/lib/locale/format";
+import { formatDateInputForTimeZone } from "@/lib/date-input";
 
-function formatTime(date: Date | string) {
-  return new Date(date).toLocaleTimeString("en-US", {
+function DashboardChartsChunkLoading() {
+  return (
+    <>
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="h-[360px] animate-pulse rounded-lg border border-border bg-card p-6">
+          <div className="mb-4 h-5 w-40 rounded bg-muted" />
+          <div className="h-[300px] w-full rounded bg-muted" />
+        </div>
+        <div className="h-[360px] animate-pulse rounded-lg border border-border bg-card p-6">
+          <div className="mb-4 h-5 w-40 rounded bg-muted" />
+          <div className="h-[300px] w-full rounded bg-muted" />
+        </div>
+      </div>
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="h-[360px] animate-pulse rounded-lg border border-border bg-card p-6">
+          <div className="mb-4 h-5 w-40 rounded bg-muted" />
+          <div className="h-[300px] w-full rounded bg-muted" />
+        </div>
+        <div className="h-[360px] animate-pulse rounded-lg border border-border bg-card p-6">
+          <div className="mb-4 h-5 w-40 rounded bg-muted" />
+          <div className="h-[300px] w-full rounded bg-muted" />
+        </div>
+      </div>
+    </>
+  );
+}
+
+const DashboardCharts = dynamic(
+  () =>
+    import("@/components/dashboard/dashboard-charts").then(
+      (mod) => mod.DashboardCharts
+    ),
+  {
+    ssr: false,
+    loading: DashboardChartsChunkLoading,
+  }
+);
+
+function formatTime(date: Date | string, timeZone?: string | null) {
+  const options: Intl.DateTimeFormatOptions = {
     hour: "numeric",
     minute: "2-digit",
-  });
+    timeZone: timeZone ?? undefined,
+  };
+  try {
+    return new Date(date).toLocaleTimeString("en-US", options);
+  } catch {
+    return new Date(date).toLocaleTimeString("en-US", {
+      ...options,
+      timeZone: undefined,
+    });
+  }
+}
+
+function addDateInputDays(dateInput: string, days: number): string {
+  const [year, month, day] = dateInput.split("-").map(Number) as [
+    number,
+    number,
+    number,
+  ];
+  const date = new Date(Date.UTC(year, month - 1, day + days));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(
+    2,
+    "0"
+  )}-${String(date.getUTCDate()).padStart(2, "0")}`;
 }
 
 const kpiConfig = [
@@ -60,16 +116,6 @@ const kpiConfig = [
     isCurrency: false,
   },
 ];
-
-const SPECIES_COLORS: Record<string, string> = {
-  Canine: "#3b82f6",
-  Feline: "#f59e0b",
-  Avian: "#10b981",
-  Rabbit: "#8b5cf6",
-  Reptile: "#ef4444",
-  Equine: "#06b6d4",
-  Other: "#6b7280",
-};
 
 function KpiSkeleton() {
   return (
@@ -105,68 +151,78 @@ function AppointmentRowSkeleton() {
   );
 }
 
-function PieLabel({
-  cx,
-  cy,
-  midAngle,
-  innerRadius,
-  outerRadius,
-  percent,
-  name,
-}: {
-  cx: number;
-  cy: number;
-  midAngle: number;
-  innerRadius: number;
-  outerRadius: number;
-  percent: number;
-  name: string;
-}) {
-  const RADIAN = Math.PI / 180;
-  const radius = innerRadius + (outerRadius - innerRadius) * 1.4;
-  const x = cx + radius * Math.cos(-midAngle * RADIAN);
-  const y = cy + radius * Math.sin(-midAngle * RADIAN);
-  if (percent < 0.03) return null;
-  return (
-    <text
-      x={x}
-      y={y}
-      fill="currentColor"
-      className="text-xs fill-foreground"
-      textAnchor={x > cx ? "start" : "end"}
-      dominantBaseline="central"
-    >
-      {name} ({(percent * 100).toFixed(0)}%)
-    </text>
-  );
-}
-
 export default function DashboardPage() {
+  const router = useRouter();
   const stats = trpc.dashboard.getStats.useQuery();
   const charts = trpc.dashboard.getCharts.useQuery();
   const taxConfig = trpc.billing.getTaxConfig.useQuery(undefined, {
     staleTime: 5 * 60 * 1000,
   });
-  const currency = taxConfig.data?.currency ?? "usd";
-  const country = taxConfig.data?.country ?? "US";
+  const calendarSettingsQuery = trpc.appointments.calendarSettings.useQuery();
+  const calendarSettings = calendarSettingsQuery.data;
+  const taxConfigMissing =
+    !taxConfig.isLoading && !taxConfig.error && !taxConfig.data;
+  const verifiedTaxConfig =
+    taxConfig.error || taxConfigMissing || !taxConfig.data
+      ? null
+      : taxConfig.data;
+  const currency = verifiedTaxConfig ? verifiedTaxConfig.currency : "usd";
+  const country = verifiedTaxConfig ? verifiedTaxConfig.country : "US";
+  const calendarSettingsMissing =
+    !calendarSettingsQuery.isLoading &&
+    !calendarSettingsQuery.error &&
+    !calendarSettings;
+  const verifiedCalendarSettings =
+    calendarSettingsQuery.error || calendarSettingsMissing || !calendarSettings
+      ? null
+      : calendarSettings;
+  const dashboardTimeZone = verifiedCalendarSettings
+    ? verifiedCalendarSettings.timezone
+    : null;
   const fmtMoney = (v: number) => formatCurrency(v, currency, country);
 
   const today = new Date();
-  const todayStr = today.toISOString().slice(0, 10);
-  const tomorrowStr = new Date(
-    today.getFullYear(),
-    today.getMonth(),
-    today.getDate() + 1
-  )
-    .toISOString()
-    .slice(0, 10);
+  const todayStr = formatDateInputForTimeZone(today, dashboardTimeZone);
+  const tomorrowStr = addDateInputDays(todayStr, 1);
 
-  const upcoming = trpc.appointments.list.useQuery({
-    startDate: todayStr,
-    endDate: tomorrowStr,
-  });
+  const upcoming = trpc.appointments.list.useQuery(
+    {
+      startDate: todayStr,
+      endDate: tomorrowStr,
+    },
+    {
+      enabled: verifiedCalendarSettings !== null,
+    }
+  );
+  const upcomingError = calendarSettingsQuery.error ?? upcoming.error;
+  const isUpcomingLoading =
+    calendarSettingsQuery.isLoading || upcoming.isLoading;
+  const isUpcomingMissing =
+    calendarSettingsMissing ||
+    (verifiedCalendarSettings !== null &&
+      !upcoming.isLoading &&
+      !upcoming.error &&
+      !upcoming.data);
+  const statsMissing = !stats.isLoading && !stats.error && !stats.data;
+  const chartsMissing = !charts.isLoading && !charts.error && !charts.data;
+  const statsError = stats.error ?? taxConfig.error;
+  const chartsError = charts.error ?? taxConfig.error;
+  const isStatsLoading = stats.isLoading || taxConfig.isLoading;
+  const isChartsLoading = charts.isLoading || taxConfig.isLoading;
+  const statsDisplayMissing = statsMissing || taxConfigMissing;
+  const chartsDisplayMissing = chartsMissing || taxConfigMissing;
+  const verifiedStats =
+    stats.error || statsMissing || !stats.data ? null : stats.data;
+  const verifiedCharts =
+    charts.error || chartsMissing || !charts.data ? null : charts.data;
+  const verifiedUpcomingAppointments =
+    upcomingError || isUpcomingLoading || isUpcomingMissing || !upcoming.data
+      ? null
+      : upcoming.data;
+  const dashboardStats =
+    statsError || isStatsLoading || statsDisplayMissing ? null : verifiedStats;
 
-  const upcomingAppointments = (upcoming.data ?? [])
+  const upcomingAppointments = (verifiedUpcomingAppointments ?? [])
     .filter(
       (a) =>
         a.status !== "checked_out" &&
@@ -177,51 +233,66 @@ export default function DashboardPage() {
 
   // A brand-new practice has no real activity yet. Hide the charts until there
   // is something to show so the page feels calm instead of abandoned.
-  const cd = charts.data;
+  const chartData =
+    chartsError || isChartsLoading || chartsDisplayMissing
+      ? null
+      : verifiedCharts;
   const hasChartData =
-    !!cd &&
-    (cd.speciesDistribution.length > 0 ||
-      cd.appointmentsByDay.some(
+    !!chartData &&
+    (chartData.speciesDistribution.length > 0 ||
+      chartData.appointmentsByDay.some(
         (d) => d.completed + d.scheduled + d.cancelled > 0
       ) ||
-      cd.revenueByDay.some((d) => d.revenue > 0));
+      chartData.revenueByDay.some((d) => d.revenue > 0) ||
+      chartData.productionByDoctor.some((d) => d.production > 0));
 
   return (
     <div className="space-y-8">
       <WelcomePanel />
       <ActivationChecklist />
       {/* KPI Cards */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        {stats.isLoading
-          ? Array.from({ length: 4 }).map((_, i) => <KpiSkeleton key={i} />)
-          : kpiConfig.map((kpi) => {
-              const Icon = kpi.icon;
-              const value = stats.data?.[kpi.key] ?? 0;
-              return (
-                <div
-                  key={kpi.key}
-                  className="rounded-lg border border-border bg-card p-6"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-md bg-primary/10 text-primary">
-                      <Icon className="h-5 w-5" />
-                    </div>
-                    <div>
-                      <p className="text-sm text-muted-foreground">
-                        {kpi.label}
-                      </p>
-                      <p className="font-heading text-2xl font-bold">
-                        {kpi.isCurrency ? fmtMoney(value) : String(value)}
-                      </p>
-                    </div>
+      {statsError || statsDisplayMissing ? (
+        <div className="rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
+          Unable to load dashboard metrics.
+          {statsError ? ` ${statsError.message}` : " Please retry."}
+        </div>
+      ) : isStatsLoading ? (
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <KpiSkeleton key={i} />
+          ))}
+        </div>
+      ) : dashboardStats ? (
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+          {kpiConfig.map((kpi) => {
+            const Icon = kpi.icon;
+            const value = dashboardStats[kpi.key] ?? 0;
+            return (
+              <div
+                key={kpi.key}
+                className="rounded-lg border border-border bg-card p-6"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-md bg-primary/10 text-primary">
+                    <Icon className="h-5 w-5" />
                   </div>
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    {kpi.description}
-                  </p>
+                  <div>
+                    <p className="text-sm text-muted-foreground">
+                      {kpi.label}
+                    </p>
+                    <p className="font-heading text-2xl font-bold">
+                      {kpi.isCurrency ? fmtMoney(value) : String(value)}
+                    </p>
+                  </div>
                 </div>
-              );
-            })}
-      </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {kpi.description}
+                </p>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
 
       {/* Recent Appointments */}
       <div className="rounded-lg border border-border bg-card">
@@ -231,28 +302,27 @@ export default function DashboardPage() {
           </h2>
         </div>
         <div className="space-y-2 p-4">
-          {upcoming.isLoading ? (
+          {upcomingError || isUpcomingMissing ? (
+            <div className="rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
+              Unable to load upcoming appointments.
+              {upcomingError ? ` ${upcomingError.message}` : " Please retry."}
+            </div>
+          ) : isUpcomingLoading ? (
             Array.from({ length: 3 }).map((_, i) => (
               <AppointmentRowSkeleton key={i} />
             ))
           ) : upcomingAppointments.length === 0 ? (
-            <div className="flex flex-col items-center gap-3 py-10 text-center">
-              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
-                <Calendar className="h-5 w-5" />
-              </div>
-              <div>
-                <p className="text-sm font-medium">No visits booked yet</p>
-                <p className="text-sm text-muted-foreground">
-                  Book your first visit and it shows up here.
-                </p>
-              </div>
-              <Link
-                href="/schedule"
-                className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-              >
-                Book your first visit
-              </Link>
-            </div>
+            <EmptyState
+              className="border-0 bg-transparent py-8"
+              icon={Calendar}
+              title="No visits booked yet"
+              description="Book your first visit and it shows up here."
+              action={{
+                label: "Book your first visit",
+                onClick: () => router.push("/schedule"),
+                icon: CalendarPlus,
+              }}
+            />
           ) : (
             upcomingAppointments.map((appt) => (
               <div
@@ -261,7 +331,7 @@ export default function DashboardPage() {
               >
                 <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
                   <Clock className="h-3.5 w-3.5" />
-                  <span>{formatTime(appt.startTime)}</span>
+                  <span>{formatTime(appt.startTime, dashboardTimeZone)}</span>
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">
@@ -300,165 +370,38 @@ export default function DashboardPage() {
       </div>
 
       {/* Charts */}
-      {charts.isLoading ? (
-        <>
-          <div className="grid gap-4 md:grid-cols-2">
-            <ChartSkeleton />
-            <ChartSkeleton />
-          </div>
-          <ChartSkeleton />
-        </>
-      ) : !hasChartData ? (
-        <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-border bg-card p-12 text-center">
-          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
-            <TrendingUp className="h-5 w-5" />
-          </div>
-          <p className="font-heading text-base font-semibold">
-            Your charts show up once you start
-          </p>
-          <p className="max-w-sm text-sm text-muted-foreground">
-            As you book visits and send bills, your trends and totals fill in
-            here.
-          </p>
+      {chartsError || chartsDisplayMissing ? (
+        <div className="rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
+          Unable to load dashboard charts.
+          {chartsError ? ` ${chartsError.message}` : " Please retry."}
         </div>
-      ) : (
+      ) : isChartsLoading ? (
         <>
           <div className="grid gap-4 md:grid-cols-2">
-            {/* Appointments This Week - Bar Chart */}
-            <div className="rounded-lg border border-border bg-card p-6">
-              <h2 className="mb-4 font-heading text-lg font-semibold">
-                Appointments This Week
-              </h2>
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={charts.data?.appointmentsByDay ?? []}>
-                  <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                  <XAxis
-                    dataKey="date"
-                    className="text-xs fill-muted-foreground"
-                    tick={{ fontSize: 12 }}
-                  />
-                  <YAxis
-                    allowDecimals={false}
-                    className="text-xs fill-muted-foreground"
-                    tick={{ fontSize: 12 }}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: "hsl(var(--card))",
-                      border: "1px solid hsl(var(--border))",
-                      borderRadius: "0.5rem",
-                      fontSize: "0.875rem",
-                    }}
-                  />
-                  <Legend wrapperStyle={{ fontSize: "0.75rem" }} />
-                  <Bar
-                    dataKey="completed"
-                    name="Completed"
-                    stackId="a"
-                    fill="#22c55e"
-                    radius={[0, 0, 0, 0]}
-                  />
-                  <Bar
-                    dataKey="scheduled"
-                    name="Scheduled"
-                    stackId="a"
-                    fill="#3b82f6"
-                    radius={[0, 0, 0, 0]}
-                  />
-                  <Bar
-                    dataKey="cancelled"
-                    name="Cancelled"
-                    stackId="a"
-                    fill="#ef4444"
-                    radius={[4, 4, 0, 0]}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-
-            {/* Species Distribution - Pie Chart */}
-            <div className="rounded-lg border border-border bg-card p-6">
-              <h2 className="mb-4 font-heading text-lg font-semibold">
-                Species Distribution
-              </h2>
-              <ResponsiveContainer width="100%" height={300}>
-                <PieChart>
-                  <Pie
-                    data={charts.data?.speciesDistribution ?? []}
-                    cx="50%"
-                    cy="50%"
-                    outerRadius={100}
-                    dataKey="value"
-                    label={PieLabel}
-                  >
-                    {(charts.data?.speciesDistribution ?? []).map((entry) => (
-                      <Cell
-                        key={entry.name}
-                        fill={SPECIES_COLORS[entry.name] ?? "#6b7280"}
-                      />
-                    ))}
-                  </Pie>
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: "hsl(var(--card))",
-                      border: "1px solid hsl(var(--border))",
-                      borderRadius: "0.5rem",
-                      fontSize: "0.875rem",
-                    }}
-                  />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
+            <ChartSkeleton />
+            <ChartSkeleton />
           </div>
-
-          {/* Revenue Trend - Line Chart */}
-          <div className="rounded-lg border border-border bg-card p-6">
-            <h2 className="mb-4 font-heading text-lg font-semibold">
-              Revenue (Last 30 Days)
-            </h2>
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={charts.data?.revenueByDay ?? []}>
-                <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                <XAxis
-                  dataKey="date"
-                  className="text-xs fill-muted-foreground"
-                  tick={{ fontSize: 12 }}
-                />
-                <YAxis
-                  className="text-xs fill-muted-foreground"
-                  tick={{ fontSize: 12 }}
-                  tickFormatter={(value: number) =>
-                    new Intl.NumberFormat(localeForCountry(country), {
-                      style: "currency",
-                      currency: currency.toUpperCase(),
-                      minimumFractionDigits: 0,
-                      maximumFractionDigits: 0,
-                    }).format(value)
-                  }
-                />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "hsl(var(--card))",
-                    border: "1px solid hsl(var(--border))",
-                    borderRadius: "0.5rem",
-                    fontSize: "0.875rem",
-                  }}
-                  formatter={(value: number) => [fmtMoney(value), "Revenue"]}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="revenue"
-                  name="Revenue"
-                  stroke="#0d9488"
-                  strokeWidth={2}
-                  dot={false}
-                  activeDot={{ r: 4, fill: "#0d9488" }}
-                />
-              </LineChart>
-            </ResponsiveContainer>
+          <div className="grid gap-4 md:grid-cols-2">
+            <ChartSkeleton />
+            <ChartSkeleton />
           </div>
         </>
-      )}
+      ) : chartData && !hasChartData ? (
+        <EmptyState
+          icon={TrendingUp}
+          title="Your charts show up once you start"
+          description="As you book visits and send bills, your trends and totals fill in here."
+        />
+      ) : chartData ? (
+        <DashboardCharts
+          appointmentsByDay={chartData.appointmentsByDay}
+          speciesDistribution={chartData.speciesDistribution}
+          revenueByDay={chartData.revenueByDay}
+          productionByDoctor={chartData.productionByDoctor}
+          currency={currency}
+          country={country}
+        />
+      ) : null}
     </div>
   );
 }

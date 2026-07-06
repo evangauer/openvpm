@@ -1,3 +1,5 @@
+import { WEBHOOK_EVENT_DEFINITIONS } from "@/lib/webhook-events";
+
 export default function AIIntegrationDocs() {
   return (
     <div className="min-h-screen bg-gray-50">
@@ -26,11 +28,39 @@ export default function AIIntegrationDocs() {
             integrate directly with your practice management system.
           </p>
           <p className="text-gray-700">
-            All API endpoints use <strong>tRPC</strong> over HTTP. Authentication
-            is session-based for the MVP, with API key authentication coming
-            soon. All requests are scoped to the authenticated user&apos;s
-            practice.
+            Dashboard workflows use <strong>tRPC</strong> over HTTP with the
+            signed-in user&apos;s session. External integrations can use API keys
+            for <strong>/api/v1</strong> endpoints, including the agent endpoint
+            with the <strong>agent:run</strong> scope. Write-enabled agent runs
+            also require <strong>agent:write</strong> plus each write
+            tool&apos;s underlying resource scope. All requests are scoped to the
+            authenticated practice; clinical record writes such as SOAP note
+            creation require <strong>records:write</strong>.
           </p>
+        </Section>
+
+        {/* API Key Agent Endpoint */}
+        <Section id="api-key-agent" title="API Key Agent Endpoint">
+          <p className="mb-4 text-gray-700">
+            For server-to-server automations, create an API key in Settings with
+            the <strong>agent:run</strong> scope and call the REST agent
+            endpoint. Use <code>allow_writes: false</code> for read-only
+            summaries. To set <code>allow_writes: true</code>, grant
+            <strong>agent:write</strong> as well as the resource scopes the
+            trusted workflow may mutate, such as
+            <strong>appointments:write</strong> or
+            <strong>records:write</strong>.
+          </p>
+
+          <CodeBlock>
+            {`curl -X POST https://your-practice.openvpm.com/api/v1/agent \\
+  -H "Authorization: Bearer ovpm_<key>" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "instruction": "Summarize today's checked-in appointments and flag overdue vaccines.",
+    "allow_writes": false
+  }'`}
+          </CodeBlock>
         </Section>
 
         {/* SOAP Note Integration */}
@@ -48,8 +78,9 @@ export default function AIIntegrationDocs() {
             Endpoint
           </h3>
           <CodeBlock>
-            {`POST /api/trpc/ai.createSoapFromAI
+            {`POST /api/v1/soap-notes
 
+Authorization: Bearer ovpm_<key>
 Content-Type: application/json`}
           </CodeBlock>
 
@@ -58,47 +89,53 @@ Content-Type: application/json`}
           </h3>
           <CodeBlock>
             {`{
-  "patientId": "uuid",          // Required - the patient record
-  "appointmentId": "uuid",      // Optional - link to appointment
-  "subjective": "string",       // Patient history, owner complaints
-  "objective": "string",        // Physical exam findings, vitals
-  "assessment": "string",       // Diagnosis, differential list
-  "plan": "string",             // Treatment plan, follow-up
-  "source": "string"            // Required - e.g. "scribenote", "vetrec"
+  "patient_id": "uuid",          // Required - the patient record
+  "appointment_id": "uuid",      // Optional - link to appointment
+  "author_id": "uuid",           // Optional if appointment has a doctor
+  "subjective": "string",        // Patient history, owner complaints
+  "objective": "string",         // Physical exam findings, vitals
+  "assessment": "string",        // Diagnosis, differential list
+  "plan": "string",              // Treatment plan, follow-up
+  "source": "string"             // Required - e.g. "scribenote", "vetrec"
 }`}
           </CodeBlock>
+          <p className="mt-3 text-sm text-gray-500">
+            Create the key with the <strong>records:write</strong> scope.
+            OpenVPM validates the patient, optional appointment, and author
+            against the authenticated practice before inserting the note.
+          </p>
 
           <h3 className="mb-2 mt-6 text-sm font-semibold uppercase tracking-wider text-gray-500">
             Example (cURL)
           </h3>
           <CodeBlock>
-            {`curl -X POST https://your-practice.openvpm.com/api/trpc/ai.createSoapFromAI \\
+            {`curl -X POST https://your-practice.openvpm.com/api/v1/soap-notes \\
+  -H "Authorization: Bearer ovpm_<key>" \\
   -H "Content-Type: application/json" \\
-  -H "Cookie: next-auth.session-token=<SESSION>" \\
   -d '{
-    "json": {
-      "patientId": "a1b2c3d4-...",
-      "subjective": "Owner reports decreased appetite x3 days...",
-      "objective": "T: 101.5F, HR: 120, RR: 24. Mild dehydration...",
-      "assessment": "Suspect early-stage renal disease...",
-      "plan": "CBC/Chem panel, urinalysis. Recheck in 2 weeks.",
-      "source": "scribenote"
-    }
+    "patient_id": "a1b2c3d4-...",
+    "appointment_id": "b2c3d4e5-...",
+    "subjective": "Owner reports decreased appetite x3 days...",
+    "objective": "T: 101.5F, HR: 120, RR: 24. Mild dehydration...",
+    "assessment": "Suspect early-stage renal disease...",
+    "plan": "CBC/Chem panel, urinalysis. Recheck in 2 weeks.",
+    "source": "scribenote"
   }'`}
           </CodeBlock>
         </Section>
 
-        {/* Structured Queries */}
-        <Section id="structured-queries" title="Structured Queries">
+        {/* Dashboard Query Helpers */}
+        <Section id="dashboard-query-helpers" title="Dashboard Query Helpers">
           <p className="mb-6 text-gray-700">
-            AI assistants can query OpenVPM for actionable clinical insights.
-            These endpoints return structured data optimized for AI consumption
-            &mdash; no parsing required.
+            Signed-in dashboard experiences can use these tRPC procedures for
+            actionable clinical insights. They require a session cookie and are
+            not API-key REST endpoints; server-to-server integrations should use
+            the <strong>/api/v1</strong> REST surface and signed webhooks.
           </p>
 
           <QueryCard
             name="Overdue Vaccinations"
-            endpoint="GET /api/trpc/ai.patientsOverdueVaccinations"
+            endpoint="tRPC: ai.patientsOverdueVaccinations (session cookie)"
             description="Returns patients whose vaccinations are past due. Useful for automated reminder campaigns or AI-powered outreach."
             response={`[
   {
@@ -115,7 +152,7 @@ Content-Type: application/json`}
 
           <QueryCard
             name="Patients Needing Follow-Up"
-            endpoint="GET /api/trpc/ai.patientsNeedingFollowUp"
+            endpoint="tRPC: ai.patientsNeedingFollowUp (session cookie)"
             description="Identifies patients seen in the last 7 days (checked out) who do not have a future appointment scheduled. Ideal for proactive care workflows."
             response={`[
   {
@@ -131,7 +168,7 @@ Content-Type: application/json`}
 
           <QueryCard
             name="Daily Practice Summary"
-            endpoint="GET /api/trpc/ai.dailySummary"
+            endpoint="tRPC: ai.dailySummary (session cookie)"
             description="Returns an aggregate view of today's practice activity. Perfect for AI dashboard widgets, morning briefings, or end-of-day reports."
             response={`{
   "date": "2026-03-17",
@@ -166,74 +203,36 @@ Content-Type: application/json`}
               Available Events
             </h3>
             <div className="space-y-3">
-              <EventRow
-                event="appointment.created"
-                description="New appointment scheduled"
-              />
-              <EventRow
-                event="appointment.checked_in"
-                description="Patient arrives and checks in"
-              />
-              <EventRow
-                event="appointment.checked_out"
-                description="Visit complete, patient discharged"
-              />
-              <EventRow
-                event="soap_note.created"
-                description="New SOAP note recorded"
-              />
-              <EventRow
-                event="patient.created"
-                description="New patient added to the system"
-              />
-              <EventRow
-                event="invoice.paid"
-                description="Invoice payment received"
-              />
+              {WEBHOOK_EVENT_DEFINITIONS.map((definition) => (
+                <EventRow
+                  key={definition.event}
+                  event={definition.event}
+                  description={definition.description}
+                />
+              ))}
             </div>
           </div>
 
           <CodeBlock>
             {`// Webhook payload format
 {
-  "event": "appointment.checked_in",
+  "event": "appointment.created",
   "timestamp": "2026-03-17T09:15:00Z",
-  "practiceId": "uuid",
   "data": {
     "appointmentId": "uuid",
     "patientId": "uuid",
     "patientName": "Bella",
-    "clientId": "uuid"
+    "clientId": "uuid",
+    "source": "dashboard"
   }
 }`}
           </CodeBlock>
 
           <p className="mt-4 text-sm text-gray-500">
-            Webhook registration endpoint coming soon. Contact us for early
-            access.
+            Admins can create webhook subscriptions in Settings or through the
+            <code>webhooks.create</code> API. The signing secret is returned once
+            at creation time.
           </p>
-        </Section>
-
-        {/* Coming Soon */}
-        <Section id="coming-soon" title="Coming Soon">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <ComingSoonCard
-              title="Voice Agent Integration"
-              description="Connect voice AI agents for hands-free clinical documentation during appointments."
-            />
-            <ComingSoonCard
-              title="Differential Diagnosis"
-              description="AI-suggested differentials based on presenting signs, history, and species-specific data."
-            />
-            <ComingSoonCard
-              title="Automated Triage"
-              description="AI-powered phone triage that assesses urgency and routes to the right provider."
-            />
-            <ComingSoonCard
-              title="API Key Authentication"
-              description="Dedicated API keys for third-party integrations with granular permission scoping."
-            />
-          </div>
         </Section>
 
         {/* Footer */}
@@ -314,21 +313,6 @@ function EventRow({
         {event}
       </code>
       <span className="text-sm text-gray-600">{description}</span>
-    </div>
-  );
-}
-
-function ComingSoonCard({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className="rounded-lg border border-dashed border-gray-300 bg-white p-5">
-      <h3 className="mb-1 text-base font-semibold text-gray-900">{title}</h3>
-      <p className="text-sm text-gray-500">{description}</p>
     </div>
   );
 }

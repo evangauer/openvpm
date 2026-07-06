@@ -3,7 +3,14 @@
 import { useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { Activity, AlertCircle, Download, Pill, Shield } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { EmptyState } from "@/components/common/empty-state";
+import {
+  calculatePortalAge,
+  formatPortalDate,
+  portalCalendarDayDifference,
+} from "@/lib/portal/date";
 
 const speciesEmoji: Record<string, string> = {
   canine: "🐶",
@@ -15,28 +22,30 @@ const speciesEmoji: Record<string, string> = {
   other: "🐾",
 };
 
-function calculateAge(dob: string | null): string {
-  if (!dob) return "Unknown age";
-  const birth = new Date(dob);
-  const now = new Date();
-  const years = now.getFullYear() - birth.getFullYear();
-  const months = now.getMonth() - birth.getMonth();
-  const totalMonths = years * 12 + months;
-  if (totalMonths < 12) return `${totalMonths} month${totalMonths !== 1 ? "s" : ""} old`;
-  const y = Math.floor(totalMonths / 12);
-  return `${y} year${y !== 1 ? "s" : ""} old`;
-}
-
-function formatDate(d: string | Date | null): string {
-  if (!d) return "N/A";
-  return new Date(d).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
+function formatDate(
+  d: string | Date | null,
+  timeZone?: string | null
+): string {
+  return formatPortalDate(d, undefined, timeZone);
 }
 
 type Tab = "vaccinations" | "prescriptions" | "weights";
+
+type PortalVaccinationForCertificate = {
+  vaccineName: string;
+  lotNumber: string | null;
+  manufacturer: string | null;
+  administeredAt: string | Date;
+  nextDueDate: string | null;
+};
+
+function certificateFilename(patientName: string, vaccineName: string): string {
+  const slug = `${patientName}-${vaccineName}-certificate`
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `${slug || "vaccination-certificate"}.pdf`;
+}
 
 export default function PetDetailPage() {
   const params = useParams();
@@ -57,18 +66,54 @@ export default function PetDetailPage() {
     );
   }
 
-  if (error) {
+  if (error || !data) {
     return (
-      <div className="text-center py-20">
-        <p className="text-lg text-gray-500">Unable to load pet information.</p>
-        <Link href={`/portal/${token}`} className="text-teal-600 underline mt-2 inline-block">
+      <div className="max-w-xl">
+        <EmptyState
+          className="py-12"
+          icon={AlertCircle}
+          title="Unable to load pet information"
+          description="Please refresh this page or return to the portal home."
+        />
+        <Link
+          href={`/portal/${token}`}
+          className="mt-4 inline-block text-sm font-medium text-teal-600 hover:text-teal-700"
+        >
           Back to portal
         </Link>
       </div>
     );
   }
 
-  if (!data) return null;
+  const petDetail = data;
+  const practiceTimeZone = petDetail.timezone;
+
+  async function downloadVaccinationCertificate(
+    vaccination: PortalVaccinationForCertificate
+  ) {
+    const { generateVaccinationCertificatePdf } = await import("@/lib/pdf");
+    generateVaccinationCertificatePdf({
+      practiceName: petDetail.practice.name,
+      practiceAddress: petDetail.practice.address ?? undefined,
+      practicePhone: petDetail.practice.phone ?? undefined,
+      practiceEmail: petDetail.practice.email ?? undefined,
+      patientName: petDetail.name,
+      species: petDetail.species,
+      breed: petDetail.breed ?? undefined,
+      sex: petDetail.sex?.replace("_", " "),
+      dob: petDetail.dob ? formatDate(petDetail.dob, practiceTimeZone) : undefined,
+      color: petDetail.color ?? undefined,
+      clientName: petDetail.clientName,
+      vaccineName: vaccination.vaccineName,
+      administeredAt: formatDate(vaccination.administeredAt, practiceTimeZone),
+      nextDueDate: vaccination.nextDueDate
+        ? formatDate(vaccination.nextDueDate, practiceTimeZone)
+        : undefined,
+      manufacturer: vaccination.manufacturer ?? undefined,
+      lotNumber: vaccination.lotNumber ?? undefined,
+      generatedDate: formatDate(new Date(), practiceTimeZone),
+    }).save(certificateFilename(petDetail.name, vaccination.vaccineName));
+  }
 
   const tabs: { key: Tab; label: string; count: number }[] = [
     { key: "vaccinations", label: "Vaccinations", count: data.vaccinations.length },
@@ -81,9 +126,14 @@ export default function PetDetailPage() {
     className: string;
   } {
     if (!nextDue) return { label: "No due date", className: "bg-gray-100 text-gray-600" };
-    const due = new Date(nextDue);
-    const now = new Date();
-    const daysUntil = Math.ceil((due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+    const daysUntil = portalCalendarDayDifference(
+      nextDue,
+      new Date(),
+      practiceTimeZone
+    );
+    if (daysUntil === null) {
+      return { label: "No due date", className: "bg-gray-100 text-gray-600" };
+    }
     if (daysUntil < 0) return { label: "Overdue", className: "bg-red-100 text-red-700" };
     if (daysUntil <= 30) return { label: "Due soon", className: "bg-amber-100 text-amber-700" };
     return { label: "Up to date", className: "bg-green-100 text-green-700" };
@@ -111,7 +161,7 @@ export default function PetDetailPage() {
           <h1 className="text-2xl font-bold text-gray-900">{data.name}</h1>
           <p className="text-gray-500">
             {data.breed || data.species} &middot; {data.color || ""} &middot;{" "}
-            {calculateAge(data.dob)}
+            {calculatePortalAge(data.dob)}
           </p>
           <p className="text-sm text-gray-400 capitalize">
             {data.sex?.replace("_", " ")}
@@ -178,7 +228,11 @@ export default function PetDetailPage() {
       {activeTab === "vaccinations" && (
         <div>
           {data.vaccinations.length === 0 ? (
-            <p className="text-gray-400 py-8 text-center">No vaccination records yet.</p>
+            <EmptyState
+              className="py-10"
+              icon={Shield}
+              title="No vaccination records yet"
+            />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -188,6 +242,7 @@ export default function PetDetailPage() {
                     <th className="pb-2 font-medium">Given</th>
                     <th className="pb-2 font-medium">Next Due</th>
                     <th className="pb-2 font-medium">Status</th>
+                    <th className="pb-2 font-medium">Certificate</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -196,12 +251,26 @@ export default function PetDetailPage() {
                     return (
                       <tr key={v.id}>
                         <td className="py-3 font-medium text-gray-900">{v.vaccineName}</td>
-                        <td className="py-3 text-gray-600">{formatDate(v.administeredAt)}</td>
-                        <td className="py-3 text-gray-600">{formatDate(v.nextDueDate)}</td>
+                        <td className="py-3 text-gray-600">
+                          {formatDate(v.administeredAt, practiceTimeZone)}
+                        </td>
+                        <td className="py-3 text-gray-600">
+                          {formatDate(v.nextDueDate, practiceTimeZone)}
+                        </td>
                         <td className="py-3">
                           <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${status.className}`}>
                             {status.label}
                           </span>
+                        </td>
+                        <td className="py-3">
+                          <button
+                            type="button"
+                            onClick={() => void downloadVaccinationCertificate(v)}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-teal-200 px-3 py-1.5 text-xs font-medium text-teal-700 transition-colors hover:border-teal-300 hover:bg-teal-50"
+                          >
+                            <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                            Download
+                          </button>
                         </td>
                       </tr>
                     );
@@ -217,7 +286,11 @@ export default function PetDetailPage() {
       {activeTab === "prescriptions" && (
         <div>
           {data.prescriptions.length === 0 ? (
-            <p className="text-gray-400 py-8 text-center">No active prescriptions.</p>
+            <EmptyState
+              className="py-10"
+              icon={Pill}
+              title="No active prescriptions"
+            />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -237,7 +310,9 @@ export default function PetDetailPage() {
                       <td className="py-3 text-gray-600">{rx.dosage}</td>
                       <td className="py-3 text-gray-600">{rx.frequency}</td>
                       <td className="py-3 text-gray-600">{rx.refillsRemaining}</td>
-                      <td className="py-3 text-gray-600">{formatDate(rx.endDate)}</td>
+                      <td className="py-3 text-gray-600">
+                        {formatDate(rx.endDate, practiceTimeZone)}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -263,7 +338,11 @@ export default function PetDetailPage() {
       {activeTab === "weights" && (
         <div>
           {data.weights.length === 0 ? (
-            <p className="text-gray-400 py-8 text-center">No weight records yet.</p>
+            <EmptyState
+              className="py-10"
+              icon={Activity}
+              title="No weight records yet"
+            />
           ) : (
             <div className="space-y-3">
               {data.weights.map((w, i) => {
@@ -286,7 +365,7 @@ export default function PetDetailPage() {
                         </span>
                       </p>
                       <p className="text-xs text-gray-400">
-                        {formatDate(w.recordedAt)}
+                        {formatDate(w.recordedAt, practiceTimeZone)}
                       </p>
                     </div>
                     {diff !== null && (

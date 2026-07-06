@@ -36,8 +36,8 @@ export function WelcomeEmail({
         from the very first minute.
       </Paragraph>
       <Paragraph muted>
-        Your {trialDays}-day trial is fully featured. No card needed, and your
-        data is always yours to export.
+        After secure Stripe checkout, your {trialDays}-day trial is fully
+        featured and your data is always yours to export.
       </Paragraph>
 
       <Section style={{ margin: "28px 0 8px" }}>
