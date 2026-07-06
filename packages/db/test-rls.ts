@@ -35,6 +35,8 @@ const app = postgres(appUrl, { max: 1 });
 
 const aId = randomUUID();
 const bId = randomUUID();
+const aInvoice = randomUUID();
+const bInvoice = randomUUID();
 let failures = 0;
 
 async function appTransaction<T>(
@@ -68,6 +70,24 @@ try {
   });
   check("tenant B sees only B's clients", bRows.length === 1 && bRows[0]!.practice_id === bId);
 
+  // Child tables without practice_id isolate via the parent join policy.
+  // invoice_adjustments is the representative (regression: it was missing
+  // from enable-rls.sql entirely, leaving it readable across tenants).
+  await owner`insert into invoices (id, practice_id, client_id, subtotal, tax, total)
+    select i.id, i.practice_id, c.id, 0, 0, 0
+    from (values (${aInvoice}::uuid, ${aId}::uuid), (${bInvoice}::uuid, ${bId}::uuid)) as i(id, practice_id)
+    join clients c on c.practice_id = i.practice_id`;
+  await owner`insert into invoice_adjustments (invoice_id, type, amount) values
+    (${aInvoice}, 'credit', 1), (${bInvoice}, 'credit', 2)`;
+  const aAdj = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select invoice_id from invoice_adjustments where invoice_id in (${aInvoice}, ${bInvoice})`;
+  });
+  check(
+    "tenant A sees only A's invoice adjustments (child join policy)",
+    aAdj.length === 1 && aAdj[0]!.invoice_id === aInvoice,
+  );
+
   // Cross-tenant WRITE is rejected by the WITH CHECK clause.
   let writeBlocked = false;
   try {
@@ -95,6 +115,8 @@ try {
   failures++;
 } finally {
   // Cleanup (as owner).
+  await owner`delete from invoice_adjustments where invoice_id in (${aInvoice}, ${bInvoice})`;
+  await owner`delete from invoices where id in (${aInvoice}, ${bInvoice})`;
   await owner`delete from clients where practice_id in (${aId}, ${bId})`;
   await owner`delete from practices where id in (${aId}, ${bId})`;
   await owner.end();

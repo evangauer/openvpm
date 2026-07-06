@@ -84,6 +84,7 @@ DECLARE
     ['treatment_plan_items','plan_id','treatment_plans'],
     ['treatment_template_items','template_id','treatment_templates'],
     ['invoice_items','invoice_id','invoices'],
+    ['invoice_adjustments','invoice_id','invoices'],
     ['payments','invoice_id','invoices']
   ];
 BEGIN
