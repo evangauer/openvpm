@@ -237,6 +237,8 @@ export async function runAgent(opts: {
   allowWrites?: boolean;
   apiKeyScopes?: string[];
   model?: string;
+  /** Prior conversation turns, oldest first, for multi-turn chat context. */
+  history?: Array<{ role: "user" | "assistant"; content: string }>;
 }): Promise<AgentRunResult> {
   const modelId = activeModelId(opts.model);
   if (!hasProviderKey(modelId)) throw new AgentNotConfiguredError();
@@ -245,10 +247,20 @@ export async function runAgent(opts: {
   await enforceAgentRunRateLimit(opts.context);
 
   const toolCalls: AgentToolCall[] = [];
+  // A conversation (with history) uses `messages`; a one-shot run uses `prompt`.
+  const messagesInput =
+    opts.history && opts.history.length > 0
+      ? {
+          messages: [
+            ...opts.history.map((m) => ({ role: m.role, content: m.content })),
+            { role: "user" as const, content: opts.instruction },
+          ],
+        }
+      : { prompt: opts.instruction };
   const result = await generateText({
     model: resolveModel(modelId),
     system: SYSTEM_PROMPT,
-    prompt: opts.instruction,
+    ...messagesInput,
     tools: buildToolSet(
       opts.context,
       allowWrites,

@@ -1,25 +1,27 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
-import {
-  Popover,
-  PopoverTrigger,
-  PopoverContent,
-} from "@/components/ui/popover";
-import { Button } from "@/components/ui/button";
 
 const PRESETS = ["#0d9488", "#16a34a", "#f97316", "#db2777"];
+const FALLBACK = "#0d9488";
 
-function isHex(v: string): boolean {
-  return /^#[0-9a-fA-F]{6}$/.test(v);
+/** Lowercase, prepend #, expand #abc → #aabbcc, validate. Returns null if bad. */
+function normalizeHex(input: string): string | null {
+  let h = input.trim().toLowerCase();
+  if (!h.startsWith("#")) h = "#" + h;
+  if (/^#[0-9a-f]{3}$/.test(h)) {
+    h = "#" + h.slice(1).split("").map((c) => c + c).join("");
+  }
+  return /^#[0-9a-f]{6}$/.test(h) ? h : null;
 }
 
 /**
  * Accent color picker: four brand presets plus a custom swatch that opens a
- * native color picker + hex input (the "click the blank swatch, paste a hex"
- * pattern). Shared by the Settings branding section and the onboarding journey.
+ * lightweight popover (native color well + hex input). The popover is a plain
+ * absolutely-positioned panel — no Radix Popover — so it opens instantly.
+ * Shared by the Settings branding section and the onboarding journey.
  */
 export function AccentColorPicker({
   value,
@@ -33,7 +35,29 @@ export function AccentColorPicker({
   const current = (value ?? "").toLowerCase();
   const customActive = !!current && !PRESETS.includes(current);
   const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState(customActive ? current : "#0d9488");
+  const [draft, setDraft] = useState(customActive ? current : FALLBACK);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  function commit(v: string) {
+    const hex = normalizeHex(v);
+    if (hex) onChange(hex);
+  }
 
   return (
     <div className="flex items-center gap-2.5">
@@ -54,67 +78,80 @@ export function AccentColorPicker({
             )}
             style={{ backgroundColor: c }}
           >
-            {active ? <Check className="h-4 w-4 text-white" /> : null}
+            {active ? <Check className="h-4 w-4 text-white" strokeWidth={3} /> : null}
           </button>
         );
       })}
 
-      <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
-          <button
-            type="button"
-            aria-label="Custom accent color"
-            disabled={disabled}
-            className={cn(
-              "flex h-9 w-9 items-center justify-center rounded-full border-2 transition-transform disabled:opacity-50",
-              customActive
-                ? "scale-110 border-foreground"
-                : "border-dashed border-muted-foreground/40 hover:scale-105"
-            )}
-            style={customActive ? { backgroundColor: current } : undefined}
-          >
-            {customActive ? (
-              <Check className="h-4 w-4 text-white" />
-            ) : (
-              <Plus className="h-4 w-4 text-muted-foreground" />
-            )}
-          </button>
-        </PopoverTrigger>
-        <PopoverContent align="start" className="w-56">
-          <p className="text-sm font-medium">Custom accent</p>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            Pick a color or paste a hex code.
-          </p>
-          <div className="mt-3 flex items-center gap-2">
-            <input
-              type="color"
-              value={isHex(draft) ? draft : "#0d9488"}
-              onChange={(e) => setDraft(e.target.value)}
-              aria-label="Color picker"
-              className="h-9 w-9 shrink-0 cursor-pointer rounded-md border border-input bg-transparent p-0.5"
-            />
-            <input
-              type="text"
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              placeholder="#0d9488"
-              maxLength={7}
-              className="h-9 w-full rounded-md border border-input bg-background px-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            />
+      <div className="relative" ref={ref}>
+        <button
+          type="button"
+          aria-label="Custom accent color"
+          disabled={disabled}
+          onClick={() => setOpen((o) => !o)}
+          className={cn(
+            "flex h-9 w-9 items-center justify-center rounded-full border-2 transition-transform disabled:opacity-50",
+            customActive
+              ? "scale-110 border-foreground"
+              : "border-dashed border-muted-foreground/40 hover:scale-105"
+          )}
+          style={customActive ? { backgroundColor: current } : undefined}
+        >
+          {customActive ? (
+            <Check className="h-4 w-4 text-white" strokeWidth={3} />
+          ) : (
+            <Plus className="h-4 w-4 text-muted-foreground" />
+          )}
+        </button>
+
+        {open ? (
+          <div className="absolute left-0 top-11 z-30 w-56 rounded-lg border border-border bg-popover p-3 shadow-lg">
+            <p className="mb-2 text-xs font-medium text-foreground">
+              Your brand color
+            </p>
+            <div className="flex items-center gap-2">
+              <input
+                type="color"
+                value={normalizeHex(draft) ?? FALLBACK}
+                onChange={(e) => {
+                  setDraft(e.target.value);
+                  commit(e.target.value);
+                }}
+                aria-label="Pick color"
+                className="h-9 w-10 shrink-0 cursor-pointer rounded-md border border-input bg-transparent p-0.5"
+              />
+              <input
+                type="text"
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onBlur={() => commit(draft)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    commit(draft);
+                    setOpen(false);
+                  }
+                }}
+                placeholder={FALLBACK}
+                maxLength={7}
+                spellCheck={false}
+                aria-label="Hex color"
+                className="h-9 w-full min-w-0 rounded-md border border-input bg-background px-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                commit(draft);
+                setOpen(false);
+              }}
+              disabled={!normalizeHex(draft) || disabled}
+              className="mt-2.5 h-8 w-full rounded-md bg-primary text-xs font-medium text-primary-foreground disabled:opacity-50"
+            >
+              Use this color
+            </button>
           </div>
-          <Button
-            size="sm"
-            className="mt-3 w-full"
-            disabled={!isHex(draft) || disabled}
-            onClick={() => {
-              onChange(draft.toLowerCase());
-              setOpen(false);
-            }}
-          >
-            Apply color
-          </Button>
-        </PopoverContent>
-      </Popover>
+        ) : null}
+      </div>
     </div>
   );
 }

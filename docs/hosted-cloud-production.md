@@ -15,7 +15,7 @@ This boundary is intentional. Do not add hosted-only requirements to the self-ho
 - `Try the Live Demo` -> `${NEXT_PUBLIC_DEMO_URL}/login`
 - `Self-host OpenVPM` -> `/install` and GitHub
 
-Cloud signup creates a practice, a primary location, the owner admin user, default configuration, and hosted first-run demo data. Hosted accounts must verify email before login, then complete secure Stripe checkout for a card-collected trial before hosted access is activated.
+Cloud signup creates a practice, a primary location, the owner admin user, default configuration, and hosted first-run demo data. With `HOSTED_NO_CARD_TRIAL=true`, signup grants a 14-day trial immediately with no card and the clinic lands in the product (adding a card converts to paid); email verification is a soft prompt, not a login gate.
 
 Set the marketing deployment envs to:
 
@@ -150,7 +150,7 @@ The Cloud plan includes **1,000 AI actions + 1,000 SMS per month**, then bills *
 1. Create two meters — `openvpm_ai_run` and `openvpm_sms` — with sum aggregation, value payload key `value`, and customer mapping by `stripe_customer_id`. The event names must match `lib/billing/stripe-meters.ts`.
 2. Create a graduated metered price per meter with the included allowance as the $0 first tier: tiers `[{ up_to: 1000, unit_amount: 0 }, { up_to: inf, unit_amount: 5 }]` for AI (cents) and `… unit_amount: 3` for SMS, each with `recurring.usage_type=metered` and `recurring.meter=<meter id>`. Wire to `STRIPE_PRICE_AI_OVERAGE` / `STRIPE_PRICE_SMS_OVERAGE`.
 
-Checkout creates one subscription: a per-location licensed item (quantity = active non-deleted locations, kept current by quantity sync) plus any configured quantity-less metered items. `recordUsage()` writes the local `usage_records` row (display/reconcile source of truth) and, once the practice has a Stripe customer, reports a meter event so Stripe bills overage automatically. Before the card-collected Stripe checkout completes, there is no customer to meter against, so any pre-checkout usage stays local. Leaving the overage price envs unset keeps usage recorded but unbilled.
+Checkout creates one subscription: a per-location licensed item (quantity = active non-deleted locations, kept current by quantity sync) plus any configured quantity-less metered items. `recordUsage()` writes the local `usage_records` row (display/reconcile source of truth) and, once the practice has a Stripe customer, reports a meter event so Stripe bills overage automatically. Before the conversion Stripe checkout completes, there is no customer to meter against, so any pre-checkout usage stays local. Leaving the overage price envs unset keeps usage recorded but unbilled.
 
 Stripe Tax gates hosted readiness. Complete Stripe Tax registrations and origin-address setup in Stripe, then set `STRIPE_TAX_ENABLED=true` so subscription checkout collects billing address/tax IDs and lets Stripe calculate tax on the Cloud subscription. Client invoice payments stay on OpenVPM's already-totaled invoice amounts and do not add Stripe Tax again.
 

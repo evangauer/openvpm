@@ -3,6 +3,8 @@
 export interface JourneyState {
   /** When true, the seeded sample data stays put instead of being cleared at finish. */
   keepSampleData: boolean;
+  /** When true, finishing the wizard launches the quick product tour. */
+  startTourAfter: boolean;
 }
 
 export interface StepHandle {

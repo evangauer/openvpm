@@ -52,6 +52,14 @@ export type MessagingSetupLocation = {
 type Step = "choose" | "confirm" | "registration" | "done";
 type SearchNumber = { phoneNumber: string; monthlyCost: string | null };
 
+/** Format a provider's raw monthly cost (e.g. "1.00000") as "$1.00". */
+function formatMonthlyCost(cost: string | null): string | null {
+  if (!cost) return null;
+  const value = Number(cost);
+  if (!Number.isFinite(value)) return null;
+  return `$${value.toFixed(2)}`;
+}
+
 const STEPS: { id: Step; title: string }[] = [
   { id: "choose", title: "Choose a texting number" },
   { id: "confirm", title: "Confirm the number" },
@@ -489,9 +497,9 @@ function ConfirmStep({
             >
               <span className="font-medium text-slate-950">{n.phoneNumber}</span>
               <span className="flex items-center gap-2">
-                {n.monthlyCost ? (
+                {formatMonthlyCost(n.monthlyCost) ? (
                   <span className="text-xs text-slate-500">
-                    ${n.monthlyCost}/mo
+                    {formatMonthlyCost(n.monthlyCost)}/mo
                   </span>
                 ) : null}
                 {selectedNumber === n.phoneNumber ? (

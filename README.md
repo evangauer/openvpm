@@ -291,7 +291,7 @@ OpenVPM ships with a built-in AI agent that operates on practice data through a 
 
 Self-hosting stays fully unlocked and free. Leave `HOSTED_BILLING_ENABLED` unset and OpenVPM runs without Stripe gates, hosted metering, or paid-plan limits.
 
-OpenVPM Cloud is the hosted service for clinics that do not want to run infrastructure. It includes a 14-day card-collected trial with hosted access enabled after secure Stripe checkout, then bills one simple plan:
+OpenVPM Cloud is the hosted service for clinics that do not want to run infrastructure. It includes a 14-day free trial with no credit card required — clinics land in the product immediately and add a card only to convert, then bills one simple plan:
 
 - $79/month per active, non-deleted location, with unlimited staff (all roles included)
 - Included monthly SMS and AI allowances, with Stripe-metered overages

@@ -10,6 +10,8 @@ import {
   billingEnforced,
   cloudCheckoutPriceIds,
   cloudMeteredPriceIds,
+  noCardTrialEnabled,
+  trialEndsAtFrom,
   TRIAL_DAYS,
 } from "@/lib/billing/plans";
 import { createAuthToken, consumeAuthToken } from "@/lib/auth-tokens";
@@ -179,6 +181,12 @@ export const authRouter = createRouter({
 
       const onboardingDraft = cleanOnboardingDraft(input.onboardingDraft);
       const hostedBilling = billingEnforced();
+      // Card-free trial: skip the Stripe Checkout wall at signup and grant a
+      // `trialing` window directly, so the clinic lands in the product and only
+      // adds a card to convert. Access gating keys off the practice's trial
+      // columns (see hasHostedFullAccess), independent of any Stripe object.
+      const noCardTrial = hostedBilling && noCardTrialEnabled();
+      const trialEndsAt = noCardTrial ? trialEndsAtFrom() : undefined;
       let hostedCheckoutLineItems:
         | Array<{
             priceId: string;
@@ -187,7 +195,7 @@ export const authRouter = createRouter({
           }>
         | undefined;
 
-      if (hostedBilling) {
+      if (hostedBilling && !noCardTrial) {
         const { locationPriceId } = cloudCheckoutPriceIds();
         if (!locationPriceId) {
           throw new TRPCError({
@@ -223,6 +231,15 @@ export const authRouter = createRouter({
             .values({
               name: input.practiceName.trim(),
               email,
+              // Card-free trial grants Cloud access immediately with no Stripe
+              // subscription; the trial-lifecycle sweep lapses it at expiry.
+              ...(noCardTrial
+                ? {
+                    subscriptionTier: "cloud",
+                    billingStatus: "trialing",
+                    trialEndsAt,
+                  }
+                : {}),
             })
             .returning();
 
@@ -392,6 +409,9 @@ export const authRouter = createRouter({
         verificationEmailSent,
         verificationUrl: exposeAuthLinksForPreview() ? verificationUrl : undefined,
         checkoutUrl,
+        // Hosted signups (no-card trial) land in the first-run onboarding wizard
+        // instead of the bare dashboard.
+        onboardingRequired: noCardTrial,
       };
     }),
 

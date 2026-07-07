@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   seedPractice: vi.fn(async () => undefined),
   seedDemoData: vi.fn(async () => ({})),
   billingEnforced: vi.fn(() => false),
+  noCardTrialEnabled: vi.fn(() => false),
   recordAuditLog: vi.fn(async () => undefined),
 }));
 
@@ -39,6 +40,9 @@ vi.mock("@/lib/onboarding/defaults", () => ({
 
 vi.mock("@/lib/billing/plans", () => ({
   billingEnforced: mocks.billingEnforced,
+  noCardTrialEnabled: mocks.noCardTrialEnabled,
+  trialEndsAtFrom: (from = new Date()) =>
+    new Date(from.getTime() + 14 * 24 * 60 * 60 * 1000),
   cloudCheckoutPriceIds: () => ({
     locationPriceId: process.env.STRIPE_PRICE_CLOUD_LOCATION || undefined,
   }),
@@ -197,6 +201,7 @@ afterEach(() => {
     resetAt: new Date(),
   });
   mocks.billingEnforced.mockReturnValue(false);
+  mocks.noCardTrialEnabled.mockReturnValue(false);
   mocks.createSubscriptionCheckoutSession.mockResolvedValue({
     url: "https://stripe.example/signup-checkout",
   });
@@ -486,6 +491,40 @@ describe("auth router input validation", () => {
         cancelUrl: "http://localhost:3000/login?checkout=cancelled",
       })
     );
+  });
+
+  it("grants a card-free trial at signup without any Stripe checkout", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    mocks.billingEnforced.mockReturnValue(true);
+    mocks.noCardTrialEnabled.mockReturnValue(true);
+    const { db, insertValues } = createRegistrationDb();
+
+    await expect(
+      callerWithDb(db).register({
+        email: "owner@example.com",
+        password: "password123",
+        practiceName: "Neighborhood Veterinary",
+      })
+    ).resolves.toMatchObject({
+      id: "user-1",
+      email: "owner@example.com",
+      verificationRequired: true,
+      onboardingRequired: true,
+      checkoutUrl: undefined,
+    });
+
+    const practiceInsert = insertValues.mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    expect(practiceInsert).toMatchObject({
+      name: "Neighborhood Veterinary",
+      subscriptionTier: "cloud",
+      billingStatus: "trialing",
+    });
+    expect(practiceInsert.trialEndsAt).toBeInstanceOf(Date);
+    // Card-free trial never touches Stripe Checkout.
+    expect(mocks.createSubscriptionCheckoutSession).not.toHaveBeenCalled();
   });
 
   it("rejects hosted signup when Stripe returns an unsafe checkout URL", async () => {

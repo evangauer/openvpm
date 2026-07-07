@@ -16,6 +16,9 @@ import {
 import { toast } from "sonner";
 import type { StepHandle } from "../journey-types";
 
+/** Brand default accent, pre-highlighted so the step never arrives blank. */
+const SUGGESTED_ACCENT = "#0d9488";
+
 /**
  * Step 2: optional logo upload and accent color. Both save right away through
  * updatePractice, so Continue has nothing extra to do.
@@ -165,10 +168,15 @@ export function BrandingStep({ register }: { register: (h: StepHandle) => void }
       <div className="space-y-2">
         <span className="text-sm font-medium text-slate-700">Accent color</span>
         <AccentColorPicker
-          value={savedColor}
+          value={savedColor ?? SUGGESTED_ACCENT}
           onChange={pickColor}
           disabled={updatePractice.isPending}
         />
+        {!savedColor ? (
+          <p className="text-xs text-slate-500">
+            We picked a color to start. Tap another if you like.
+          </p>
+        ) : null}
       </div>
     </div>
   );

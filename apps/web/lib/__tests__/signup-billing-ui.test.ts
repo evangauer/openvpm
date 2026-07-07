@@ -7,10 +7,6 @@ describe("signup billing copy", () => {
     "components/dashboard/welcome-panel.tsx",
     "utf8"
   );
-  const onboardingSource = readFileSync(
-    "app/(dashboard)/onboarding/page.tsx",
-    "utf8"
-  );
   const activationChecklistSource = readFileSync(
     "components/dashboard/activation-checklist.tsx",
     "utf8"
@@ -20,34 +16,32 @@ describe("signup billing copy", () => {
     "utf8"
   );
   const readmeSource = readFileSync("../../README.md", "utf8");
-  const hostedRunbookSource = readFileSync(
-    "../../docs/hosted-cloud-production.md",
-    "utf8"
-  );
-  const hostedTrialSources = [
-    registerSource,
-    welcomePanelSource,
-    onboardingSource,
-    activationChecklistSource,
-    welcomeEmailSource,
-    readmeSource,
-    hostedRunbookSource,
-  ];
 
-  it("does not advertise hosted Cloud trials as no-card signups", () => {
-    for (const source of hostedTrialSources) {
-      expect(source).not.toMatch(/no[- ]card/i);
-      expect(source).not.toContain("Add a card before your trial ends");
+  it("advertises the hosted trial as no-card, not card-collected", () => {
+    const noCardSurfaces = [
+      registerSource,
+      welcomePanelSource,
+      welcomeEmailSource,
+      readmeSource,
+    ];
+    // None of the customer-facing trial surfaces should still claim a card is
+    // collected up front — the hosted trial is card-free.
+    for (const source of noCardSurfaces) {
+      expect(source).not.toContain("collect a card securely");
+      expect(source).not.toContain("After secure Stripe checkout");
+      expect(source).not.toContain("card-collected trial");
+      expect(source).not.toContain("billing secured through Stripe");
     }
-    expect(registerSource).toContain(
-      "Hosted Cloud trials collect a card securely with Stripe."
-    );
-    expect(readmeSource).toContain("14-day card-collected trial");
-    expect(hostedRunbookSource).toContain("card-collected trial");
-    expect(welcomeEmailSource).toContain("After secure Stripe checkout");
-    expect(welcomePanelSource).toContain("billing secured through Stripe");
-    expect(onboardingSource).toContain("Setup before first charge");
+    expect(registerSource).toContain("No credit card required");
+    expect(welcomePanelSource).toContain("no credit card is required");
+    expect(welcomeEmailSource).toContain("no credit card");
+    expect(readmeSource).toContain("no credit card required");
     expect(activationChecklistSource).toContain("Confirm billing is connected");
+  });
+
+  it("keeps the safe card-checkout path for conversion", () => {
+    // The card checkout (used to convert/upgrade) is still guarded by the safe
+    // redirect helper even though signup no longer forces it.
     expect(registerSource).toContain(
       'import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect"'
     );
@@ -55,5 +49,7 @@ describe("signup billing copy", () => {
     expect(registerSource).toContain(
       "if (!isSafeCheckoutRedirectUrl(data.checkoutUrl))"
     );
+    // New signups land on the dashboard, where the setup wizard auto-opens.
+    expect(registerSource).toContain('router.push("/")');
   });
 });

@@ -134,6 +134,12 @@ const tourStepIdInput = z
   .max(128, "Tour step must be at most 128 characters")
   .nullish();
 
+const journeyStepIdInput = z
+  .string()
+  .trim()
+  .max(64, "Journey step must be at most 64 characters")
+  .nullish();
+
 function staffAdminRosterLockKey(practiceId: string) {
   return `settings:staff-admin-roster:${practiceId}`;
 }
@@ -226,6 +232,10 @@ interface PracticeSettings {
     tourStatus?: "not_started" | "in_progress" | "completed" | "skipped";
     lastStepId?: string | null;
     setupDismissed?: boolean;
+    /** Resume cursor for the "Make it yours" setup wizard (step id, not index). */
+    journeyStepId?: string | null;
+    /** "I'll finish later" — suppresses auto-open without completing onboarding. */
+    journeyDismissed?: boolean;
   };
   accountDeletionRequest?: {
     status: "requested";
@@ -782,13 +792,14 @@ export const settingsRouter = createRouter({
       throw practiceNotFound();
     }
     const settings = (practice.settings ?? {}) as PracticeSettings;
-    return (
-      settings.onboardingState ?? {
-        tourStatus: "not_started" as const,
-        lastStepId: null,
-        setupDismissed: false,
-      }
-    );
+    return {
+      tourStatus: "not_started" as const,
+      lastStepId: null,
+      setupDismissed: false,
+      journeyStepId: null,
+      journeyDismissed: false,
+      ...(settings.onboardingState ?? {}),
+    };
   }),
 
   /** Persist tour progress (resume / skip / complete). */
@@ -814,6 +825,43 @@ export const settingsRouter = createRouter({
         tourStatus: input.status,
         lastStepId:
           input.lastStepId ?? settings.onboardingState?.lastStepId ?? null,
+      };
+      await ctx.db
+        .update(practices)
+        .set({ settings: { ...settings, onboardingState } })
+        .where(activePracticeWhere(ctx.practiceId));
+      return { ok: true };
+    }),
+
+  /**
+   * Persist "Make it yours" setup-wizard progress. `stepId` is the resume
+   * cursor; `dismissed: true` records "I'll finish later" (suppresses auto-open
+   * without marking onboarding complete). Mirrors setTourStatus.
+   */
+  setJourneyProgress: adminProcedure
+    .input(
+      z.object({
+        stepId: journeyStepIdInput,
+        dismissed: z.boolean().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [practice] = await ctx.db
+        .select({ settings: practices.settings })
+        .from(practices)
+        .where(activePracticeWhere(ctx.practiceId))
+        .limit(1);
+      if (!practice) {
+        throw practiceNotFound();
+      }
+      const settings = (practice.settings ?? {}) as PracticeSettings;
+      const onboardingState = {
+        ...(settings.onboardingState ?? {}),
+        journeyStepId:
+          input.stepId ?? settings.onboardingState?.journeyStepId ?? null,
+        ...(input.dismissed !== undefined
+          ? { journeyDismissed: input.dismissed }
+          : {}),
       };
       await ctx.db
         .update(practices)

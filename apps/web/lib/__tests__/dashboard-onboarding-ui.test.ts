@@ -132,9 +132,7 @@ describe("dashboard onboarding UI states", () => {
     expect(journeyProviderSource).toContain("if (!isAdmin) return;");
     expect(journeyProviderSource).toContain("const isOpen = isAdmin && index !== null");
     expect(journeyProviderSource).toContain("value={{ openJourney, isOpen }}");
-    expect(journeyProviderSource).toContain(
-      "{isOpen ? <JourneyShell index={index!} setIndex={setIndex} /> : null}"
-    );
+    expect(journeyProviderSource).toContain("<JourneyShell steps={steps}");
     expect(journeyProviderSource).toContain(
       "trpc.settings.completeOnboarding.useMutation"
     );
@@ -143,5 +141,26 @@ describe("dashboard onboarding UI states", () => {
     );
     expect(settingsRouter).toContain("completeOnboarding: adminProcedure.mutation");
     expect(settingsRouter).toContain("clearDemoData: adminProcedure.mutation");
+  });
+
+  it("auto-opens the wizard for unfinished, non-dismissed onboarding and resumes durably", () => {
+    // Auto-open gate: only when onboarding is not finished and not dismissed.
+    expect(journeyProviderSource).toContain(
+      "onboardingStatus.data.completedAt == null"
+    );
+    expect(journeyProviderSource).toContain(
+      "onboardingState.data.journeyDismissed === true"
+    );
+    expect(journeyProviderSource).toContain("if (notFinished && !dismissed)");
+    // Resume from the durable cursor rather than always step 0.
+    expect(journeyProviderSource).toContain(
+      "steps.findIndex((s) => s.id === journeyStepId)"
+    );
+    expect(journeyProviderSource).toContain("setIndex(resumeIndex)");
+    // "I'll finish later" records dismissal WITHOUT completing onboarding.
+    expect(journeyProviderSource).toContain(
+      "setJourneyProgress.mutate({ stepId: step.id, dismissed: true })"
+    );
+    expect(settingsRouter).toContain("setJourneyProgress: adminProcedure");
   });
 });

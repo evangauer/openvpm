@@ -51,6 +51,7 @@ export function ActivationChecklist() {
   const onboarding = trpc.settings.onboardingStatus.useQuery(undefined, opts);
   const practice = trpc.settings.getPractice.useQuery(undefined, opts);
   const sub = trpc.subscription.get.useQuery(undefined, opts);
+  const texting = trpc.messaging.activationSummary.useQuery(undefined, opts);
   const dismiss = trpc.settings.dismissSetup.useMutation();
 
   if (!isAdmin) return null;
@@ -145,6 +146,13 @@ export function ActivationChecklist() {
       hint: "Import clients and pets, then clear the sample data.",
       done: !onboardingData.hasDemoData,
       href: "/settings?tab=data",
+    },
+    {
+      key: "texting",
+      label: "Turn on texting",
+      hint: "Add a number for reminders and two-way texts with clients.",
+      done: texting.data?.hasActiveNumber ?? false,
+      href: "/settings?tab=messaging&setup=texting",
     },
     ...(enforced
       ? [

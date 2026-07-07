@@ -55,6 +55,9 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
       // Keep the cached onboarding state in sync so the auto-start effect never
       // re-reads a stale "not_started" after a terminal status.
       utils.settings.getOnboardingState.setData(undefined, (prev) => ({
+        journeyStepId: prev?.journeyStepId ?? null,
+        journeyDismissed: prev?.journeyDismissed ?? false,
+        ...prev,
         tourStatus: status,
         lastStepId: stepId ?? prev?.lastStepId ?? null,
         setupDismissed: prev?.setupDismissed ?? false,

@@ -109,8 +109,8 @@ export function WelcomePanel() {
         </h2>
         <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
           {hasSample
-            ? "We set up a sample practice — real clients, pets, and appointments — so the app feels alive. Poke around, then make it yours. Your 14-day trial is fully featured, with billing secured through Stripe."
-            : "Your workspace is ready. Add your first client and patient to get going. Your 14-day trial is fully featured, with billing secured through Stripe."}
+            ? "We set up a sample practice — real clients, pets, and appointments — so the app feels alive. Poke around, then make it yours. Your 14-day trial is fully featured, and no credit card is required to start."
+            : "Your workspace is ready. Add your first client and patient to get going. Your 14-day trial is fully featured, and no credit card is required to start."}
         </p>
 
         <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">

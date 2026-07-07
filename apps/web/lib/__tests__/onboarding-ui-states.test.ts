@@ -32,66 +32,25 @@ describe("onboarding UI states", () => {
   );
   const settingsRouter = readFileSync("server/routers/settings.ts", "utf8");
 
-  it("surfaces onboarding page query failures before loading or fallback estimates", () => {
-    expect(onboardingPage).toContain("function OnboardingLoadError");
+  it("retires the standalone onboarding page as a redirect to the dashboard", () => {
+    // The static "Your OpenVPM workspace is ready" page was replaced by the
+    // auto-opening setup wizard; this route is now just a redirect stub.
     expect(onboardingPage).toContain(
-      "const loadError = status.error ?? subscription.error"
+      'import { redirect } from "next/navigation"'
     );
-    expect(onboardingPage).toContain("Onboarding details could not load");
-    expect(onboardingPage).toContain("status.refetch()");
-    expect(onboardingPage).toContain("subscription.refetch()");
-    expect(onboardingPage.indexOf("if (loadError)")).toBeLessThan(
-      onboardingPage.indexOf("if (status.isLoading || subscription.isLoading)")
-    );
-    expect(onboardingPage).toContain("if (!status.data || !subscription.data)");
-    expect(onboardingPage).toContain(
-      "Onboarding details were unavailable. Retry before reviewing trial, billing, or demo-data setup."
-    );
-    expect(onboardingPage).toContain("const onboardingStatus = status.data");
-    expect(onboardingPage).toContain("const subscriptionDetails = subscription.data");
-    expect(onboardingPage.indexOf("if (status.isLoading || subscription.isLoading)")).toBeLessThan(
-      onboardingPage.indexOf("if (!status.data || !subscription.data)")
-    );
-    expect(onboardingPage.indexOf("if (!status.data || !subscription.data)")).toBeLessThan(
-      onboardingPage.indexOf("const subscriptionDetails = subscription.data")
-    );
-    expect(onboardingPage).not.toContain("subscription.data?.locationCount ?? 1");
-    expect(onboardingPage).not.toContain("subscription.data?.billableSeatCount ?? 1");
-    expect(onboardingPage).not.toContain("subscription.data?.estimatedMonthlyBase");
-    expect(onboardingPage).not.toContain("status.data?.hasDemoData");
+    expect(onboardingPage).toContain('redirect("/")');
+    expect(onboardingPage).not.toContain("Your OpenVPM workspace is ready");
+    expect(onboardingPage).not.toContain("Setup before first charge");
+    expect(onboardingPage).not.toContain("function AdminOnboardingPage");
   });
 
-  it("guards direct onboarding actions to admin users", () => {
-    expect(onboardingPage).toContain('import { useSession } from "next-auth/react"');
-    expect(onboardingPage).toContain(
-      'import { EmptyState } from "@/components/common/empty-state"'
-    );
-    expect(onboardingPage).toContain("export default function OnboardingPage()");
-    expect(onboardingPage).toContain("function AdminOnboardingPage()");
-    expect(onboardingPage).toContain(
-      "const { data: session, status: sessionStatus } = useSession()"
-    );
-    expect(onboardingPage).toContain('if (sessionStatus === "loading")');
-    expect(onboardingPage).toContain('if (session?.user?.role !== "admin")');
-    expect(onboardingPage).toContain('title="Onboarding is admin-only"');
-    expect(onboardingPage).toContain(
-      'description="Only admins can change setup, billing, team, and demo data."'
-    );
-    expect(onboardingPage).toContain("return <AdminOnboardingPage />");
-
+  it("keeps onboarding mutations admin-only at the settings router", () => {
     expect(settingsRouter).toContain("onboardingStatus: adminProcedure.query");
-    expect(settingsRouter).toContain("completeOnboarding: adminProcedure.mutation");
+    expect(settingsRouter).toContain(
+      "completeOnboarding: adminProcedure.mutation"
+    );
     expect(settingsRouter).toContain("clearDemoData: adminProcedure.mutation");
-  });
-
-  it("counts onboarding trial days from the practice timezone", () => {
-    expect(onboardingPage).toContain(
-      'import { trialCalendarDaysLeft } from "@/lib/billing/trial-days"'
-    );
-    expect(onboardingPage).toContain(
-      "subscriptionDetails.trialEndsAt,\n    subscriptionDetails.timezone"
-    );
-    expect(onboardingPage).not.toContain("trialEndsAt.getTime() - Date.now()");
+    expect(settingsRouter).toContain("setJourneyProgress: adminProcedure");
   });
 
   it("surfaces guided setup query failures instead of showing default step states", () => {

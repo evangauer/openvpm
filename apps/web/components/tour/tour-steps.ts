@@ -61,7 +61,7 @@ export const TOUR_STEPS: TourStep[] = [
   {
     id: "finish",
     route: "/",
-    title: "Now let us make it yours",
-    body: "That was the quick look. Next we will set up your clinic in a few easy steps.",
+    title: "You're all set",
+    body: "That was the quick look. Your clinic is ready to go. Your data stays yours, and the AI helper is here whenever you need it.",
   },
 ];

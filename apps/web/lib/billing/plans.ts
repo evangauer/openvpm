@@ -242,6 +242,21 @@ export function planHasFeature(tier: string | null | undefined, feature: Feature
 /** Length of the new-practice free trial on the hosted service. */
 export const TRIAL_DAYS = 14;
 
+/**
+ * Whether hosted signups start a card-free trial. When true, a new practice is
+ * granted a `trialing` window at signup with NO Stripe subscription — the user
+ * lands straight in the product and only enters card details to convert. When
+ * false (legacy), signup redirects to card-collected Stripe Checkout first.
+ */
+export function noCardTrialEnabled(): boolean {
+  return envFlagEnabled("HOSTED_NO_CARD_TRIAL");
+}
+
+/** The trial-end timestamp for a trial starting now (or at `from`). */
+export function trialEndsAtFrom(from: Date = new Date()): Date {
+  return new Date(from.getTime() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
+}
+
 /** Whether a practice is in an unexpired trial window. */
 export function isTrialActive(
   billingStatus: string | null | undefined,

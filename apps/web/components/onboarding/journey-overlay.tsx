@@ -4,6 +4,8 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -13,25 +15,54 @@ import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { useTour } from "@/components/tour/tour-provider";
 import type { JourneyState, StepHandle } from "./journey-types";
 import { PracticeBasicsStep } from "./steps/practice-basics";
 import { BrandingStep } from "./steps/branding";
 import { InviteTeamStep } from "./steps/invite-team";
 import { BringDataStep } from "./steps/bring-data";
 import { TryAgentStep } from "./steps/try-agent";
+import { SetUpTextingStep } from "./steps/set-up-texting";
+import { AddACardStep } from "./steps/add-a-card";
+import { AllSetStep } from "./steps/all-set";
 
-const STEPS = [
-  { id: "basics", title: "Tell us about your clinic." },
-  { id: "branding", title: "Make it feel like yours." },
-  { id: "team", title: "Bring your team in." },
-  { id: "data", title: "Add your real clients and pets." },
-  { id: "agent", title: "Try your AI helper." },
-] as const;
+type StepId =
+  | "basics"
+  | "branding"
+  | "team"
+  | "data"
+  | "agent"
+  | "phone"
+  | "billing"
+  | "allSet";
 
-const TOTAL = STEPS.length;
+interface StepDef {
+  id: StepId;
+  title: string;
+}
+
+/**
+ * The effective step list. Billing ("add a card") only appears on the hosted
+ * service; self-host has nothing to charge. The closing "all set" step always
+ * comes last and offers the quick product tour.
+ */
+function buildSteps(billingEnforced: boolean): StepDef[] {
+  return [
+    { id: "basics", title: "Tell us about your clinic." },
+    { id: "branding", title: "Make it feel like yours." },
+    { id: "team", title: "Bring your team in." },
+    { id: "data", title: "Add your real clients and pets." },
+    { id: "agent", title: "Try your AI helper." },
+    { id: "phone", title: "Set up texting." },
+    ...(billingEnforced
+      ? [{ id: "billing" as const, title: "Add a card." }]
+      : []),
+    { id: "allSet", title: "You're all set." },
+  ];
+}
 
 interface OnboardingJourneyContextValue {
-  /** Open the "Make it yours" guided setup from the first step. */
+  /** Open the "Make it yours" guided setup (resumes at the saved step). */
   openJourney: () => void;
   isOpen: boolean;
 }
@@ -46,12 +77,13 @@ export function useOnboardingJourney() {
 }
 
 /**
- * Provides the "Make it yours" guided setup as an OPT-IN overlay. It no longer
- * auto-opens after the tour — onboarding is opt-in now, so the welcome panel and
- * activation checklist invoke `openJourney()` explicitly. Mount once in the
- * dashboard layout, wrapping the content so consumers can open it. Each step
- * runs its own server work on Continue; finishing marks onboarding complete (and
- * clears the sample data unless the user chose to keep it).
+ * Provides the "Make it yours" guided setup. It auto-opens once for a new admin
+ * whose onboarding isn't finished (and wasn't dismissed with "I'll finish
+ * later"), resuming at the saved step. The welcome panel and activation
+ * checklist can also invoke `openJourney()` explicitly. Mount once in the
+ * dashboard layout. Each step runs its own server work on Continue; finishing
+ * marks onboarding complete (and clears the sample data unless the user chose to
+ * keep it), then optionally launches the quick product tour.
  */
 export function OnboardingJourneyProvider({
   children,
@@ -61,44 +93,96 @@ export function OnboardingJourneyProvider({
   const { data: session, status } = useSession();
   const isAdmin =
     status === "authenticated" && session?.user?.role === "admin";
+
+  const onboardingStatus = trpc.settings.onboardingStatus.useQuery(undefined, {
+    enabled: isAdmin,
+  });
+  const onboardingState = trpc.settings.getOnboardingState.useQuery(undefined, {
+    enabled: isAdmin,
+  });
+  const subscription = trpc.subscription.get.useQuery(undefined, {
+    enabled: isAdmin,
+  });
+
+  const billingEnforced = subscription.data?.billingEnforced ?? false;
+  const steps = useMemo(() => buildSteps(billingEnforced), [billingEnforced]);
+
+  const journeyStepId = onboardingState.data?.journeyStepId ?? null;
+  const resumeIndex = useMemo(() => {
+    const i = steps.findIndex((s) => s.id === journeyStepId);
+    return i >= 0 ? i : 0;
+  }, [steps, journeyStepId]);
+
   // null = closed; a number is the active step index.
   const [index, setIndex] = useState<number | null>(null);
+  // Opens at most once per mount, so finishing/dismissing never reopens it.
+  const opened = useRef(false);
+
   const openJourney = useCallback(() => {
     if (!isAdmin) return;
+    setIndex(resumeIndex);
+  }, [isAdmin, resumeIndex]);
 
-    setIndex(0);
-  }, [isAdmin]);
+  useEffect(() => {
+    if (opened.current || index !== null || !isAdmin) return;
+    // Wait until all gates are loaded so the step list + resume point are stable.
+    if (
+      !onboardingStatus.data ||
+      !onboardingState.data ||
+      !subscription.data
+    ) {
+      return;
+    }
+    const notFinished = onboardingStatus.data.completedAt == null;
+    const dismissed = onboardingState.data.journeyDismissed === true;
+    if (notFinished && !dismissed) {
+      opened.current = true;
+      setIndex(resumeIndex);
+    }
+  }, [
+    isAdmin,
+    index,
+    onboardingStatus.data,
+    onboardingState.data,
+    subscription.data,
+    resumeIndex,
+  ]);
+
   const isOpen = isAdmin && index !== null;
 
   return (
-    <OnboardingJourneyContext.Provider
-      value={{ openJourney, isOpen }}
-    >
+    <OnboardingJourneyContext.Provider value={{ openJourney, isOpen }}>
       {children}
-      {isOpen ? <JourneyShell index={index!} setIndex={setIndex} /> : null}
+      {isOpen ? (
+        <JourneyShell steps={steps} index={index!} setIndex={setIndex} />
+      ) : null}
     </OnboardingJourneyContext.Provider>
   );
 }
 
 /**
  * The mounted overlay. Split out so its hooks only run while the journey is
- * actually open, and the step index lives in the parent for the open-once guard.
+ * actually open. The step index lives in the parent for the open-once guard.
  */
 function JourneyShell({
+  steps,
   index,
   setIndex,
 }: {
+  steps: StepDef[];
   index: number;
   setIndex: (i: number | null) => void;
 }) {
   const utils = trpc.useUtils();
+  const { start: startTour } = useTour();
   const completeOnboarding = trpc.settings.completeOnboarding.useMutation();
   const clearDemoData = trpc.settings.clearDemoData.useMutation();
+  const setJourneyProgress = trpc.settings.setJourneyProgress.useMutation();
 
-  // Default to keeping the sample data; the "Add your data" step changes this
-  // when the user chooses to import real data or connect later by API.
+  // Shared step state. Default to keeping sample data and offering the tour.
   const [state, setStateRaw] = useState<JourneyState>({
     keepSampleData: true,
+    startTourAfter: true,
   });
   const setState = useCallback(
     (patch: Partial<JourneyState>) =>
@@ -113,8 +197,20 @@ function JourneyShell({
   }, []);
 
   const [busy, setBusy] = useState(false);
-  const step = STEPS[index]!;
-  const isLast = index >= TOTAL - 1;
+  const total = steps.length;
+  const step = steps[index]!;
+  const isLast = index >= total - 1;
+
+  // Persist the resume cursor (durable + optimistic) so a reload resumes here.
+  const persistCursor = useCallback(
+    (stepId: string) => {
+      utils.settings.getOnboardingState.setData(undefined, (prev) =>
+        prev ? { ...prev, journeyStepId: stepId } : prev
+      );
+      setJourneyProgress.mutate({ stepId });
+    },
+    [utils, setJourneyProgress]
+  );
 
   const finish = useCallback(async () => {
     await completeOnboarding.mutateAsync();
@@ -125,13 +221,24 @@ function JourneyShell({
         // Clearing sample data is best-effort; never block finishing on it.
       }
     }
-    // Refresh both gates so the overlay closes and never reopens.
     await Promise.all([
       utils.settings.onboardingStatus.invalidate(),
       utils.settings.getOnboardingState.invalidate(),
     ]);
     setIndex(null);
-  }, [completeOnboarding, clearDemoData, state.keepSampleData, utils, setIndex]);
+    // Chain the quick product tour if the user opted in on the last step.
+    if (state.startTourAfter) {
+      startTour();
+    }
+  }, [
+    completeOnboarding,
+    clearDemoData,
+    state.keepSampleData,
+    state.startTourAfter,
+    utils,
+    setIndex,
+    startTour,
+  ]);
 
   const handleContinue = useCallback(async () => {
     if (busy) return;
@@ -145,7 +252,9 @@ function JourneyShell({
         await finish();
       } else {
         handleRef.current = null;
-        setIndex(index + 1);
+        const next = index + 1;
+        persistCursor(steps[next]!.id);
+        setIndex(next);
       }
     } catch (err) {
       toast.error(
@@ -154,28 +263,27 @@ function JourneyShell({
     } finally {
       setBusy(false);
     }
-  }, [busy, isLast, finish, index, setIndex]);
+  }, [busy, isLast, finish, index, steps, persistCursor, setIndex]);
 
   const handleBack = useCallback(() => {
     if (busy || index === 0) return;
     handleRef.current = null;
-    setIndex(index - 1);
-  }, [busy, index, setIndex]);
+    const prev = index - 1;
+    persistCursor(steps[prev]!.id);
+    setIndex(prev);
+  }, [busy, index, steps, persistCursor, setIndex]);
 
-  const handleSkip = useCallback(async () => {
+  const handleFinishLater = useCallback(() => {
     if (busy) return;
-    // Skip ends the whole setup: mark it done so it never reopens.
-    setBusy(true);
-    try {
-      await finish();
-    } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : "Something went wrong. Try again."
-      );
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, finish]);
+    // Not the same as finishing: record where we are and that it was dismissed,
+    // WITHOUT marking onboarding complete. The checklist keeps nudging and the
+    // user can resume from here later.
+    utils.settings.getOnboardingState.setData(undefined, (prev) =>
+      prev ? { ...prev, journeyStepId: step.id, journeyDismissed: true } : prev
+    );
+    setJourneyProgress.mutate({ stepId: step.id, dismissed: true });
+    setIndex(null);
+  }, [busy, step.id, utils, setJourneyProgress, setIndex]);
 
   return (
     <div
@@ -193,12 +301,12 @@ function JourneyShell({
               Make it yours
             </div>
             <span className="text-xs font-medium text-slate-500">
-              Step {index + 1} of {TOTAL}
+              Step {index + 1} of {total}
             </span>
           </div>
 
           <div className="mt-3 flex gap-1.5" aria-hidden="true">
-            {STEPS.map((s, i) => (
+            {steps.map((s, i) => (
               <span
                 key={s.id}
                 className={cn(
@@ -231,6 +339,15 @@ function JourneyShell({
             {step.id === "agent" ? (
               <TryAgentStep register={register} />
             ) : null}
+            {step.id === "phone" ? (
+              <SetUpTextingStep register={register} />
+            ) : null}
+            {step.id === "billing" ? (
+              <AddACardStep register={register} />
+            ) : null}
+            {step.id === "allSet" ? (
+              <AllSetStep register={register} state={state} setState={setState} />
+            ) : null}
           </div>
 
           {/* Footer */}
@@ -247,14 +364,16 @@ function JourneyShell({
                   Back
                 </Button>
               ) : null}
-              <button
-                type="button"
-                onClick={handleSkip}
-                disabled={busy}
-                className="text-sm font-medium text-slate-500 hover:text-slate-700 disabled:opacity-50"
-              >
-                Skip for now
-              </button>
+              {!isLast ? (
+                <button
+                  type="button"
+                  onClick={handleFinishLater}
+                  disabled={busy}
+                  className="text-sm font-medium text-slate-500 hover:text-slate-700 disabled:opacity-50"
+                >
+                  I&apos;ll finish later
+                </button>
+              ) : null}
             </div>
 
             <Button type="button" onClick={handleContinue} disabled={busy}>

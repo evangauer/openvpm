@@ -70,18 +70,18 @@ function RegisterPageInner() {
         return;
       }
 
-      // Self-hosted or unconfigured local billing lands directly in the app.
-      // Hosted Cloud signups with Stripe configured are sent to card-collected
-      // checkout first so the trial can convert cleanly at the end.
+      // No checkout wall: card-free hosted trials and self-host both sign in and
+      // land in the app immediately. (A legacy card-up-front flow would have
+      // returned a checkoutUrl above and never reached here.)
       const result = await signIn("credentials", {
         email: email.trim().toLowerCase(),
         password,
         redirect: false,
       });
       if (result?.ok) {
-        // Land directly in the live (sample-data-seeded) product with a welcome
-        // beat. The tour and guided setup are opt-in from there, not forced.
-        router.push("/?welcome=1");
+        // Land on the dashboard; the "Make it yours" setup wizard auto-opens
+        // there for new admins (hosted and self-host alike).
+        router.push("/");
         router.refresh();
       } else {
         toast.success("Account created. Please sign in.");
@@ -228,7 +228,7 @@ function RegisterPageInner() {
 
             <p className="flex items-center justify-center gap-1.5 text-xs text-slate-500">
               <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
-              Hosted Cloud trials collect a card securely with Stripe.
+              Free for 14 days. No credit card required.
             </p>
           </form>
 

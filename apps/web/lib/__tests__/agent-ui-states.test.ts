@@ -11,7 +11,7 @@ describe("agent UI states", () => {
   const apiRouteSource = readFileSync("app/api/v1/agent/route.ts", "utf8");
 
   it("fails closed until agent status is loaded and configured", () => {
-    expect(source).toContain('import { useEffect, useState } from "react"');
+    expect(source).toContain('import { useEffect, useRef, useState } from "react"');
     expect(source).toContain("const verifiedAgentStatus =");
     expect(source).toContain(
       "status.error || statusMissing || !status.data ? null : status.data"
@@ -30,7 +30,7 @@ describe("agent UI states", () => {
       "if (!canRun && allowWrites) {\n      setAllowWrites(false);"
     );
     expect(source).toContain("if (submitDisabled) return");
-    expect(source).toContain("{ onSettled: () => setAllowWrites(false) }");
+    expect(source).toContain("onSettled: () => setAllowWrites(false)");
     expect(source).toContain("disabled={!canRun || run.isPending}");
     expect(source).toContain("disabled={submitDisabled}");
     expect(source).not.toContain("status.data?.configured");

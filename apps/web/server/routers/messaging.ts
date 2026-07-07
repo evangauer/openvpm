@@ -307,6 +307,34 @@ export const messagingRouter = createRouter({
     };
   }),
 
+  /**
+   * Lightweight messaging state for the activation checklist: whether a number
+   * is provisioned at all, and whether texting is live (active + enabled).
+   */
+  activationSummary: adminOnly.query(async ({ ctx }) => {
+    await assertActivePractice(ctx);
+    const rows = await ctx.db
+      .select({
+        registrationStatus: locationMessaging.registrationStatus,
+        enabled: locationMessaging.enabled,
+        senderE164: locationMessaging.senderE164,
+      })
+      .from(locationMessaging)
+      .where(
+        and(
+          eq(locationMessaging.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
+          isNull(locationMessaging.deletedAt)
+        )
+      );
+    return {
+      hasAnyNumber: rows.some((r) => !!r.senderE164),
+      hasActiveNumber: rows.some(
+        (r) => r.registrationStatus === "active" && r.enabled
+      ),
+    };
+  }),
+
   /** Search purchasable local SMS numbers, optionally by US area code. */
   searchNumbers: adminOnly
     .input(

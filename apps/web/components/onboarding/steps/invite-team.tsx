@@ -1,9 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Plus, X } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Input } from "@/components/ui/input";
-import { SETTINGS_EMAIL_MAX_LENGTH } from "@/lib/settings-policy";
+import { Button } from "@/components/ui/button";
+import {
+  SETTINGS_EMAIL_MAX_LENGTH,
+  STAFF_NAME_MAX_LENGTH,
+} from "@/lib/settings-policy";
 import { isValidEmail } from "@/lib/utils";
 import { toast } from "sonner";
 import type { StepHandle } from "../journey-types";
@@ -18,19 +23,20 @@ const ROLES: { value: Role; label: string }[] = [
   { value: "admin", label: "Admin" },
 ];
 
+const MAX_ROWS = 10;
+
 const selectClass =
   "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
 
 interface Row {
+  name: string;
   email: string;
   role: Role;
 }
 
-const EMPTY_ROWS: Row[] = [
-  { email: "", role: "front_desk" },
-  { email: "", role: "front_desk" },
-  { email: "", role: "front_desk" },
-];
+function emptyRow(): Row {
+  return { name: "", email: "", role: "front_desk" };
+}
 
 function getInviteEmailError(email: string): string | null {
   const trimmed = email.trim();
@@ -47,8 +53,9 @@ function isInviteEmailValid(email: string): boolean {
 }
 
 /**
- * Step 3: invite up to three teammates by email. Continue sends one invite per
- * valid email and reports a short summary.
+ * Step 3: invite teammates by email. Starts with a single row; "Add another"
+ * appends more (up to MAX_ROWS). Continue sends one invite per valid email and
+ * reports a short summary. Empty rows are skipped, so the step is fully optional.
  */
 export function InviteTeamStep({
   register,
@@ -56,7 +63,7 @@ export function InviteTeamStep({
   register: (h: StepHandle) => void;
 }) {
   const inviteStaff = trpc.settings.inviteStaff.useMutation();
-  const [rows, setRows] = useState<Row[]>(EMPTY_ROWS);
+  const [rows, setRows] = useState<Row[]>([emptyRow()]);
 
   useEffect(() => {
     register({
@@ -75,6 +82,7 @@ export function InviteTeamStep({
           try {
             await inviteStaff.mutateAsync({
               email: row.email.trim().toLowerCase(),
+              name: row.name.trim() || undefined,
               role: row.role,
             });
             sent += 1;
@@ -87,9 +95,7 @@ export function InviteTeamStep({
           }
         }
         if (sent > 0) {
-          toast.success(
-            sent === 1 ? "Sent 1 invite" : `Sent ${sent} invites`
-          );
+          toast.success(sent === 1 ? "Sent 1 invite" : `Sent ${sent} invites`);
         }
         return true;
       },
@@ -99,6 +105,16 @@ export function InviteTeamStep({
   function update(i: number, patch: Partial<Row>) {
     setRows((prev) =>
       prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r))
+    );
+  }
+
+  function addRow() {
+    setRows((prev) => (prev.length >= MAX_ROWS ? prev : [...prev, emptyRow()]));
+  }
+
+  function removeRow(i: number) {
+    setRows((prev) =>
+      prev.length <= 1 ? prev : prev.filter((_, idx) => idx !== i)
     );
   }
 
@@ -114,11 +130,16 @@ export function InviteTeamStep({
           const emailError = getInviteEmailError(row.email);
           const emailErrorId = `teammate-email-${i + 1}-error`;
           return (
-            <div
-              key={i}
-              className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_140px]"
-            >
-              <div className="space-y-1">
+            <div key={i} className="space-y-1">
+              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_140px_auto]">
+                <Input
+                  type="text"
+                  value={row.name}
+                  maxLength={STAFF_NAME_MAX_LENGTH}
+                  onChange={(e) => update(i, { name: e.target.value })}
+                  placeholder="Name"
+                  aria-label={`Teammate name ${i + 1}`}
+                />
                 <Input
                   type="email"
                   value={row.email}
@@ -129,28 +150,44 @@ export function InviteTeamStep({
                   placeholder="teammate@clinic.com"
                   aria-label={`Teammate email ${i + 1}`}
                 />
-                {emailError ? (
-                  <p id={emailErrorId} className="text-xs text-red-700">
-                    {emailError}
-                  </p>
-                ) : null}
+                <select
+                  className={selectClass}
+                  value={row.role}
+                  onChange={(e) => update(i, { role: e.target.value as Role })}
+                  aria-label={`Teammate role ${i + 1}`}
+                >
+                  {ROLES.map((r) => (
+                    <option key={r.value} value={r.value}>
+                      {r.label}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => removeRow(i)}
+                  disabled={rows.length <= 1}
+                  aria-label={`Remove teammate ${i + 1}`}
+                  className="flex h-10 w-10 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  <X className="h-4 w-4" />
+                </button>
               </div>
-              <select
-                className={selectClass}
-                value={row.role}
-                onChange={(e) => update(i, { role: e.target.value as Role })}
-                aria-label={`Teammate role ${i + 1}`}
-              >
-                {ROLES.map((r) => (
-                  <option key={r.value} value={r.value}>
-                    {r.label}
-                  </option>
-                ))}
-              </select>
+              {emailError ? (
+                <p id={emailErrorId} className="text-xs text-red-700">
+                  {emailError}
+                </p>
+              ) : null}
             </div>
           );
         })}
       </div>
+
+      {rows.length < MAX_ROWS ? (
+        <Button type="button" variant="outline" size="sm" onClick={addRow}>
+          <Plus className="mr-1.5 h-4 w-4" />
+          Add another
+        </Button>
+      ) : null}
     </div>
   );
 }

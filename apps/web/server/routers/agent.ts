@@ -65,6 +65,17 @@ export const agentRouter = createRouter({
         instruction: z.string().trim().min(1).max(AGENT_INSTRUCTION_MAX_LENGTH),
         // Writes (e.g. booking) are opt-in per run and require an explicit flag.
         allowWrites: z.boolean().default(false),
+        // Prior turns (oldest first) for multi-turn chat. Bounded to keep the
+        // prompt small; the client sends a trailing window of the conversation.
+        history: z
+          .array(
+            z.object({
+              role: z.enum(["user", "assistant"]),
+              content: z.string().trim().min(1).max(AGENT_INSTRUCTION_MAX_LENGTH),
+            })
+          )
+          .max(20)
+          .optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -73,6 +84,7 @@ export const agentRouter = createRouter({
         return await runAgent({
           instruction: input.instruction,
           allowWrites: input.allowWrites,
+          history: input.history,
           context: {
             db: ctx.db,
             practiceId: ctx.practiceId,
