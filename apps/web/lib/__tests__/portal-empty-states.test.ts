@@ -87,7 +87,8 @@ describe("portal empty states", () => {
     expect(appointments).toContain(
       "const { upcoming, past } = splitPortalAppointments(data)"
     );
-    expect(appointments).toContain("Upcoming & Active");
+    expect(appointments).not.toContain("Upcoming & Active");
+    expect(appointments).toContain("Upcoming");
     expect(appointments).toContain('title="No upcoming appointments"');
     expect(appointments).toContain('title="No past appointments"');
     expect(appointments).toContain('label: "Request appointment"');

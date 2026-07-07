@@ -129,12 +129,12 @@ describe("reports", () => {
       [{ date: "2026-06-01", amount: "50.00" }],
     ]);
 
-    await expect(
-      callerWithDb(db).revenue({
-        startDate: "2026-06-01",
-        endDate: "2026-06-07",
-      })
-    ).resolves.toMatchObject({
+    const summary = await callerWithDb(db).revenue({
+      startDate: "2026-06-01",
+      endDate: "2026-06-07",
+    });
+
+    expect(summary).toMatchObject({
       range: {
         startDate: "2026-06-01",
         endDate: "2026-06-07",
@@ -143,8 +143,11 @@ describe("reports", () => {
       },
       total: 125.5,
       previousTotal: 75.25,
-      daily: [{ date: "2026-06-01", amount: 50 }],
     });
+    // The daily series is zero-filled to one point per day in the range.
+    expect(summary.daily).toHaveLength(7);
+    expect(summary.daily[0]).toEqual({ date: "2026-06-01", amount: 50 });
+    expect(summary.daily.slice(1).every((d) => d.amount === 0)).toBe(true);
   });
 
   it("defaults report ranges to the practice-local day", async () => {
@@ -168,7 +171,12 @@ describe("reports", () => {
       },
       total: 125.5,
       previousTotal: 75.25,
-      daily: [{ date: "2026-07-14", amount: 50 }],
+    });
+    // Zero-filled: 30 days ending on the practice-local "today".
+    expect(summary.daily).toHaveLength(30);
+    expect(summary.daily[summary.daily.length - 1]).toEqual({
+      date: "2026-07-14",
+      amount: 50,
     });
     expect(summary.range.start.toISOString()).toBe(
       "2026-06-15T07:00:00.000Z"

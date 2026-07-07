@@ -18,6 +18,7 @@ import {
   AgentRateLimitedError,
 } from "@/lib/agent";
 import { AGENT_INSTRUCTION_MAX_LENGTH } from "@/lib/agent/policy";
+import { billingEnforced } from "@/lib/billing/plans";
 
 export { AGENT_INSTRUCTION_MAX_LENGTH } from "@/lib/agent/policy";
 
@@ -55,6 +56,9 @@ export const agentRouter = createRouter({
   /** Whether the agent is enabled (API key present) and what it can do. */
   status: protectedProcedure.query(() => ({
     configured: isAgentConfigured(),
+    // Hosted users get a friendly "unavailable" message when unconfigured;
+    // self-host admins get env-var instructions they can act on.
+    hosted: billingEnforced(),
     tools: AGENT_TOOL_NAMES,
   })),
 

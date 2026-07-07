@@ -20,6 +20,7 @@ import type { Database } from "@openpims/db/client";
 import {
   resolveReportDateRange,
   validateReportDateRangeInput,
+  zeroFillDailySeries,
   type ResolvedReportDateRange,
 } from "@/lib/reports/date-range";
 import { addDaysYmd } from "@/lib/inventory/alerts";
@@ -167,10 +168,16 @@ export const reportsRouter = createRouter({
         previousTotal,
         thisMonth: total,
         lastMonth: previousTotal,
-        daily: dailyRows.map((r) => ({
-          date: r.date,
-          amount: parseFloat(String(r.amount)),
-        })),
+        // One point per day so the chart draws a continuous line instead of
+        // floating dots on sparse revenue.
+        daily: zeroFillDailySeries(
+          dailyRows.map((r) => ({
+            date: r.date,
+            amount: parseFloat(String(r.amount)),
+          })),
+          range.startDate,
+          range.endDate
+        ),
       };
     }),
 

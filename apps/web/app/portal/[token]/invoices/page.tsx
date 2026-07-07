@@ -234,13 +234,13 @@ export default function InvoicesPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-200 text-left text-gray-500">
-                  <th className="pb-2 font-medium">Date</th>
-                  <th className="pb-2 font-medium">Patient</th>
-                  <th className="pb-2 font-medium text-right">Total</th>
-                  <th className="pb-2 font-medium text-right">Paid</th>
+                  <th className="pb-2 pr-4 font-medium">Date</th>
+                  <th className="pb-2 pr-4 font-medium">Patient</th>
+                  <th className="pb-2 pr-4 font-medium text-right">Total</th>
+                  <th className="pb-2 pr-4 font-medium text-right">Paid</th>
                   <th className="pb-2 font-medium text-right">Balance</th>
-                  <th className="pb-2 font-medium">Status</th>
-                  <th className="pb-2 font-medium">Due Date</th>
+                  <th className="pb-2 pl-6 pr-4 font-medium">Status</th>
+                  <th className="pb-2 pr-4 font-medium">Due Date</th>
                   <th className="pb-2 font-medium" />
                 </tr>
               </thead>
@@ -262,14 +262,14 @@ export default function InvoicesPage() {
                         isReturnedInvoice ? "bg-teal-50/60" : undefined
                       }
                     >
-                      <td className="py-3 text-gray-600">
+                      <td className="py-3 pr-4 text-gray-600">
                         {formatDate(inv.createdAt, inv.country, inv.timezone)}
                       </td>
-                      <td className="py-3 text-gray-900">{inv.patientName || "-"}</td>
-                      <td className="py-3 text-right font-medium text-gray-900">
+                      <td className="py-3 pr-4 text-gray-900">{inv.patientName || "-"}</td>
+                      <td className="py-3 pr-4 text-right font-medium text-gray-900">
                         {formatCurrency(inv.total, inv.currency, inv.country)}
                       </td>
-                      <td className="py-3 text-right text-gray-600">
+                      <td className="py-3 pr-4 text-right text-gray-600">
                         {formatCurrency(inv.paidAmount, inv.currency, inv.country)}
                         {adjusted > 0 && (
                           <span className="block text-xs text-gray-400">
@@ -280,7 +280,7 @@ export default function InvoicesPage() {
                       <td className={`py-3 text-right font-medium ${balance > 0 ? "text-red-600" : "text-green-600"}`}>
                         {formatCurrency(balance, inv.currency, inv.country)}
                       </td>
-                      <td className="py-3">
+                      <td className="py-3 pl-6 pr-4">
                         <span
                           className={`rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${
                             statusStyles[status] || "bg-gray-100 text-gray-600"
@@ -289,7 +289,7 @@ export default function InvoicesPage() {
                           {status}
                         </span>
                       </td>
-                      <td className="py-3 text-gray-500">
+                      <td className="py-3 pr-4 text-gray-500">
                         {formatDate(inv.dueDate, inv.country, inv.timezone)}
                       </td>
                       <td className="py-3">

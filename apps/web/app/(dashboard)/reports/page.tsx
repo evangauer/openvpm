@@ -347,11 +347,20 @@ function RevenueTab({ dateRange }: { dateRange: DateRange }) {
   if (isLoading) return <LoadingSkeleton />;
   if (!data) return <ReportMissingData onRetry={() => refetch()} />;
 
-  const diff = data.previousTotal > 0
-    ? Math.round(((data.total - data.previousTotal) / data.previousTotal) * 100)
-    : data.total > 0
-      ? 100
-      : 0;
+  // A percent against a $0 previous period is meaningless; call it new
+  // revenue instead of "+100%".
+  const diff =
+    data.previousTotal > 0
+      ? Math.round(
+          ((data.total - data.previousTotal) / data.previousTotal) * 100
+        )
+      : null;
+  const rangeSubtitle =
+    diff !== null && diff !== 0
+      ? `${diff > 0 ? "+" : ""}${diff}% vs previous period`
+      : diff === null && data.total > 0
+        ? "New revenue this period"
+        : undefined;
   const revenueRows = [
     [
       "selected_period_total",
@@ -390,11 +399,7 @@ function RevenueTab({ dateRange }: { dateRange: DateRange }) {
         <KpiCard
           title="Selected Range"
           value={formatCurrency(data.total)}
-          subtitle={
-            diff !== 0
-              ? `${diff > 0 ? "+" : ""}${diff}% vs previous period`
-              : undefined
-          }
+          subtitle={rangeSubtitle}
           icon={DollarSign}
         />
         <KpiCard

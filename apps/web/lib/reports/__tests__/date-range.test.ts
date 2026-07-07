@@ -7,6 +7,7 @@ import {
   reportDateRangeInputError,
   resolveReportDateRange,
   validateReportDateRangeInput,
+  zeroFillDailySeries,
 } from "../date-range";
 
 describe("report date ranges", () => {
@@ -145,5 +146,47 @@ describe("report date ranges", () => {
         endDate: "2026-06-07",
       })
     ).toBe(true);
+  });
+});
+
+describe("zeroFillDailySeries", () => {
+  it("emits one point per day across the range, zeroing missing days", () => {
+    const filled = zeroFillDailySeries(
+      [{ date: "2026-07-03", amount: 2209.68 }],
+      "2026-07-01",
+      "2026-07-05"
+    );
+
+    expect(filled).toEqual([
+      { date: "2026-07-01", amount: 0 },
+      { date: "2026-07-02", amount: 0 },
+      { date: "2026-07-03", amount: 2209.68 },
+      { date: "2026-07-04", amount: 0 },
+      { date: "2026-07-05", amount: 0 },
+    ]);
+  });
+
+  it("crosses month boundaries and preserves existing amounts", () => {
+    const filled = zeroFillDailySeries(
+      [
+        { date: "2026-06-30", amount: 10 },
+        { date: "2026-07-01", amount: 20 },
+      ],
+      "2026-06-29",
+      "2026-07-01"
+    );
+
+    expect(filled.map((d) => d.date)).toEqual([
+      "2026-06-29",
+      "2026-06-30",
+      "2026-07-01",
+    ]);
+    expect(filled.map((d) => d.amount)).toEqual([0, 10, 20]);
+  });
+
+  it("returns a single point for a one-day range", () => {
+    expect(zeroFillDailySeries([], "2026-07-04", "2026-07-04")).toEqual([
+      { date: "2026-07-04", amount: 0 },
+    ]);
   });
 });

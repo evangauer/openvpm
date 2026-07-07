@@ -151,7 +151,15 @@ describe("dashboard onboarding UI states", () => {
     expect(journeyProviderSource).toContain(
       "onboardingState.data.journeyDismissed === true"
     );
-    expect(journeyProviderSource).toContain("if (notFinished && !dismissed)");
+    expect(journeyProviderSource).toContain(
+      "if (notFinished && !dismissed && !established)"
+    );
+    // Established practices (seeded demo, self-host upgrades) are never
+    // greeted like new signups even without a recorded completion date.
+    expect(journeyProviderSource).toContain(
+      "onboardingStatus.data.establishedPractice === true"
+    );
+    expect(settingsRouter).toContain("ESTABLISHED_PRACTICE_PATIENT_THRESHOLD");
     // Resume from the durable cursor rather than always step 0.
     expect(journeyProviderSource).toContain(
       "steps.findIndex((s) => s.id === journeyStepId)"

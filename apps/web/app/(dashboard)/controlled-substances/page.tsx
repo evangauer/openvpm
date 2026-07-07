@@ -17,6 +17,7 @@ import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/common/empty-state";
+import { TableScroll } from "@/components/common/table-scroll";
 import {
   CONTROLLED_SUBSTANCE_DRUG_NAME_MAX_LENGTH,
   CONTROLLED_SUBSTANCE_LOT_NUMBER_MAX_LENGTH,
@@ -454,7 +455,7 @@ function SummarySection() {
               Loading summary...
             </div>
           ) : data && data.length > 0 ? (
-            <div className="overflow-x-auto">
+            <TableScroll>
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border">
@@ -504,7 +505,7 @@ function SummarySection() {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </TableScroll>
           ) : (
             <EmptyState
               className="border-0 bg-transparent py-6"
@@ -651,7 +652,7 @@ function ControlledSubstancesLogPage() {
         </div>
       ) : verifiedLogPayload.log.items.length > 0 ? (
         <>
-          <div className="mt-4 overflow-x-auto rounded-lg border border-border">
+          <TableScroll className="mt-4 rounded-lg border border-border">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border bg-muted/50">
@@ -732,12 +733,12 @@ function ControlledSubstancesLogPage() {
                 ))}
               </tbody>
             </table>
-          </div>
+          </TableScroll>
 
           {/* Pagination */}
           <div className="mt-4 flex items-center justify-between text-sm text-muted-foreground">
             <p>
-              Showing {offset + 1}--
+              Showing {offset + 1}&ndash;
               {Math.min(offset + limit, verifiedLogPayload.log.total)} of{" "}
               {verifiedLogPayload.log.total}
             </p>

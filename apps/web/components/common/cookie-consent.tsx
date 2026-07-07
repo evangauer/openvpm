@@ -2,17 +2,33 @@
 
 import { useEffect, useState } from "react";
 import { Analytics } from "@vercel/analytics/next";
-import { Check, ShieldCheck, SlidersHorizontal, X } from "lucide-react";
+import { Check, ShieldCheck, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 
 export const COOKIE_CONSENT_STORAGE_KEY = "openvpm.cookie-consent.v1";
+export const COOKIE_PREFERENCES_EVENT = "openvpm:cookie-preferences";
 export type CookieConsentChoice = "essential" | "analytics";
+
+/**
+ * Reopen the consent panel from anywhere (sidebar footer, portal footer).
+ * A window event instead of context so server layouts can render the trigger.
+ */
+export function openCookiePreferences(): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event(COOKIE_PREFERENCES_EVENT));
+}
+
+export function CookiePreferencesLink({ className }: { className?: string }) {
+  return (
+    <button
+      type="button"
+      onClick={openCookiePreferences}
+      className={className ?? "underline-offset-2 hover:underline"}
+    >
+      Cookie preferences
+    </button>
+  );
+}
 
 type ConsentStorage = Pick<Storage, "getItem" | "setItem">;
 
@@ -53,6 +69,12 @@ export function CookieConsent() {
     setReady(true);
   }, []);
 
+  useEffect(() => {
+    const open = () => setPreferencePanelOpen(true);
+    window.addEventListener(COOKIE_PREFERENCES_EVENT, open);
+    return () => window.removeEventListener(COOKIE_PREFERENCES_EVENT, open);
+  }, []);
+
   function saveChoice(nextChoice: CookieConsentChoice) {
     writeCookieConsent(nextChoice);
     setChoice(nextChoice);
@@ -64,25 +86,6 @@ export function CookieConsent() {
   return (
     <>
       {choice === "analytics" ? <Analytics /> : null}
-      {ready && choice !== null && !preferencePanelOpen ? (
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                aria-label="Open cookie preferences"
-                className="fixed bottom-3 left-3 z-[80] h-9 w-9 rounded-full border-border bg-card/95 text-muted-foreground shadow-sm backdrop-blur hover:text-foreground sm:bottom-6 sm:left-6"
-                onClick={() => setPreferencePanelOpen(true)}
-              >
-                <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="right">Cookie preferences</TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-      ) : null}
       {panelOpen ? (
         <div
           role="region"

@@ -22,7 +22,11 @@ describe("responsive dashboard and portal tables", () => {
         if (!line.includes("<table")) return;
         const localWrapper = lines
           .slice(Math.max(0, index - 5), index + 1)
-          .some((candidate) => candidate.includes("overflow-x-auto"));
+          .some(
+            (candidate) =>
+              candidate.includes("overflow-x-auto") ||
+              candidate.includes("<TableScroll")
+          );
         if (!localWrapper) {
           offenders.push(`${file}:${index + 1}`);
         }

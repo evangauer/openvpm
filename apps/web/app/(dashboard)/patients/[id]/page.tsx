@@ -607,7 +607,11 @@ export default function PatientDetailPage() {
                   )}
                 >
                   {allergy.allergen}
-                  {allergy.severity === "severe" ? " (!)" : ""}
+                  {allergy.severity === "severe" ? (
+                    <span className="ml-1 text-[10px] font-semibold uppercase tracking-wide">
+                      severe
+                    </span>
+                  ) : null}
                 </span>
               ))}
             </div>

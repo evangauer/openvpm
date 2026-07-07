@@ -53,8 +53,12 @@ describe("agent UI states", () => {
     expect(source).toContain("Agent status is unavailable");
     expect(source).toContain("onClick={() => void status.refetch()}");
     expect(source).toContain("status.error.message");
-    expect(source).toContain(
-      "Agent runs are unavailable until configuration is verified."
+    expect(source).toContain("The agent is not available right now.");
+    // Hosted clinics must never see raw env-var instructions; self-host
+    // admins keep them because they can actually act on them.
+    expect(source).toContain("verifiedAgentStatus?.hosted ? (");
+    expect(source.indexOf("verifiedAgentStatus?.hosted ? (")).toBeLessThan(
+      source.indexOf("GOOGLE_API_KEY")
     );
     expect(source.indexOf(": status.error ? (")).toBeLessThan(
       source.indexOf(": statusMissing ? (")

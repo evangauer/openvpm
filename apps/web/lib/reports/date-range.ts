@@ -178,6 +178,28 @@ export function reportPresetDateRange(
   };
 }
 
+/**
+ * Expand a sparse per-day series to one point per day across the range so
+ * charts draw a continuous line instead of floating dots. Ranges are capped
+ * at MAX_REPORT_RANGE_DAYS, bounding the output.
+ */
+export function zeroFillDailySeries(
+  daily: Array<{ date: string; amount: number }>,
+  startDate: string,
+  endDate: string
+): Array<{ date: string; amount: number }> {
+  const byDate = new Map(daily.map((d) => [d.date, d.amount]));
+  const filled: Array<{ date: string; amount: number }> = [];
+  for (
+    let date = startDate;
+    date <= endDate;
+    date = addDateInputDays(date, 1)
+  ) {
+    filled.push({ date, amount: byDate.get(date) ?? 0 });
+  }
+  return filled;
+}
+
 export function resolveReportDateRange(
   input: ReportDateRangeInput,
   now = new Date(),

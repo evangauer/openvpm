@@ -1194,8 +1194,18 @@ export default function InboxPage() {
                 ) : null}
               </div>
             </div>
+          ) : conversationGroups.length > 0 ? (
+            /* Conversations exist but none is selected */
+            <div className="flex-1 flex items-center justify-center">
+              <EmptyState
+                className="border-0 bg-transparent"
+                icon={MessageSquare}
+                title="Select a conversation"
+                description="Pick a conversation from the list to read and reply."
+              />
+            </div>
           ) : (
-            /* Empty state */
+            /* Truly empty inbox */
             <div className="flex-1 flex items-center justify-center">
               <EmptyState
                 className="border-0 bg-transparent"

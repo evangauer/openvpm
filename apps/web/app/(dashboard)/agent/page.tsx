@@ -214,13 +214,22 @@ function AgentRunner() {
   ) : !configured ? (
     <div className="mb-4 flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-      <p>
-        Set <code className="break-all font-mono">GOOGLE_API_KEY</code> or{" "}
-        <code className="break-all font-mono">GOOGLE_GENERATIVE_AI_API_KEY</code>{" "}
-        for Gemini, or{" "}
-        <code className="break-all font-mono">ANTHROPIC_API_KEY</code> for
-        Claude, to enable agent runs.
-      </p>
+      {verifiedAgentStatus?.hosted ? (
+        // Hosted clinics can't fix a platform key. Keep it human; ops sees
+        // the missing config through /api/health checks.
+        <p>
+          The agent is not available right now. We are on it. Please check
+          back soon.
+        </p>
+      ) : (
+        <p>
+          Set <code className="break-all font-mono">GOOGLE_API_KEY</code> or{" "}
+          <code className="break-all font-mono">GOOGLE_GENERATIVE_AI_API_KEY</code>{" "}
+          for Gemini, or{" "}
+          <code className="break-all font-mono">ANTHROPIC_API_KEY</code> for
+          Claude, to enable agent runs.
+        </p>
+      )}
     </div>
   ) : null;
 
@@ -305,7 +314,7 @@ function AgentRunner() {
             placeholder={
               canRun
                 ? "Ask the agent anything…  (Enter to send, Shift+Enter for a new line)"
-                : "Agent runs are unavailable until configuration is verified."
+                : "The agent is not available right now."
             }
             className="max-h-40 w-full resize-none bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground"
           />

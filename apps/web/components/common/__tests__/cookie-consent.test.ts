@@ -69,11 +69,19 @@ describe("cookie consent analytics gate", () => {
       "components/common/cookie-consent.tsx",
       "utf8"
     );
+    const sidebar = readFileSync("components/layout/sidebar.tsx", "utf8");
+    const portalLayout = readFileSync("app/portal/layout.tsx", "utf8");
 
-    expect(component).toContain('aria-label="Open cookie preferences"');
+    // The panel reopens via a window event; no floating button that can
+    // overlap page content. Both surfaces (app sidebar, portal footer)
+    // render a reopen trigger.
+    expect(component).toContain("COOKIE_PREFERENCES_EVENT");
+    expect(component).toContain("window.addEventListener(COOKIE_PREFERENCES_EVENT");
     expect(component).toContain("setPreferencePanelOpen(true)");
-    expect(component).toContain("choice !== null && !preferencePanelOpen");
     expect(component).toContain("setPreferencePanelOpen(false)");
     expect(component).toContain('aria-label="Close cookie preferences"');
+    expect(component).not.toContain("fixed bottom-3 left-3");
+    expect(sidebar).toContain("openCookiePreferences");
+    expect(portalLayout).toContain("CookiePreferencesLink");
   });
 });

@@ -140,6 +140,13 @@ const journeyStepIdInput = z
   .max(64, "Journey step must be at most 64 characters")
   .nullish();
 
+/**
+ * At or above this many patients a practice counts as established, so the
+ * first-run wizard never auto-opens for it. Hosted first-run demo data seeds
+ * exactly 3 patients, keeping fresh signups safely below the bar.
+ */
+export const ESTABLISHED_PRACTICE_PATIENT_THRESHOLD = 5;
+
 function staffAdminRosterLockKey(practiceId: string) {
   return `settings:staff-admin-roster:${practiceId}`;
 }
@@ -756,10 +763,25 @@ export const settingsRouter = createRouter({
       throw practiceNotFound();
     }
     const settings = (practice.settings ?? {}) as PracticeSettings;
+    // A practice that already runs on real data (e.g. seeded demo, or a
+    // self-host upgrading into the wizard feature) must not be greeted like
+    // a brand-new signup, even though it never recorded a completion date.
+    const existingPatients = await ctx.db
+      .select({ id: patients.id })
+      .from(patients)
+      .where(
+        and(
+          eq(patients.practiceId, ctx.practiceId),
+          isNull(patients.deletedAt)
+        )
+      )
+      .limit(ESTABLISHED_PRACTICE_PATIENT_THRESHOLD);
     return {
       completedAt: settings.onboardingCompletedAt ?? null,
       hasDemoData: !!settings.demoData,
       onboardingDraft: settings.onboardingDraft ?? null,
+      establishedPractice:
+        existingPatients.length >= ESTABLISHED_PRACTICE_PATIENT_THRESHOLD,
     };
   }),
 

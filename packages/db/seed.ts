@@ -91,6 +91,9 @@ async function seed() {
       website: "https://neighborhoodvet.example.com",
       timezone: "America/New_York",
       subscriptionTier: "cloud",
+      // The demo practice is a fully set-up clinic; the first-run wizard
+      // must not greet it like a new signup.
+      settings: { onboardingCompletedAt: new Date().toISOString() },
     })
     .returning();
   console.log(`Practice: ${practice!.name} (${practice!.id})`);
@@ -826,6 +829,7 @@ async function seed() {
     total: string;
     paidAmount: string;
     dueDate: string;
+    createdAt: Date;
   }[] = [];
 
   for (let i = 0; i < invoiceStatuses.length; i++) {
@@ -842,12 +846,20 @@ async function seed() {
     const total = (parseFloat(subtotal) + parseFloat(tax)).toFixed(2);
     const paidAmount = status === "paid" ? total : status === "overdue" ? "0.00" : "0.00";
 
+    // Issue every invoice before its due date so no invoice reads as "due
+    // before it was created" in the UI.
     let dueDate: string;
+    let createdAt: Date;
     if (status === "paid") {
-      dueDate = dateStr(daysAgo(Math.floor(Math.random() * 30)));
+      const dueDaysAgo = Math.floor(Math.random() * 30);
+      createdAt = daysAgo(dueDaysAgo + 14);
+      dueDate = dateStr(daysAgo(dueDaysAgo));
     } else if (status === "overdue") {
-      dueDate = dateStr(daysAgo(Math.floor(Math.random() * 14) + 1));
+      const dueDaysAgo = Math.floor(Math.random() * 14) + 1;
+      createdAt = daysAgo(dueDaysAgo + 14);
+      dueDate = dateStr(daysAgo(dueDaysAgo));
     } else {
+      createdAt = daysAgo(Math.floor(Math.random() * 5));
       dueDate = dateStr(daysFromNow(30));
     }
 
@@ -862,6 +874,7 @@ async function seed() {
       total,
       paidAmount,
       dueDate,
+      createdAt,
     });
   }
 

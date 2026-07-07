@@ -18,6 +18,7 @@ import { useCurrencyFormatter } from "@/lib/locale/useCurrency";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/common/empty-state";
+import { TableScroll } from "@/components/common/table-scroll";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { formatClinicalDate } from "@/lib/records/clinical-dates";
@@ -1082,7 +1083,7 @@ export default function InventoryPage() {
               Loading...
             </div>
           ) : productsQuery.data && productsQuery.data.items.length > 0 ? (
-            <div className="mt-4 overflow-x-auto rounded-lg border border-border">
+            <TableScroll className="mt-4 rounded-lg border border-border">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border bg-muted/50">
@@ -1179,7 +1180,7 @@ export default function InventoryPage() {
                           <div className="flex flex-wrap gap-1">
                             <span
                               className={cn(
-                                "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
+                                "inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium",
                                 stock.className
                               )}
                             >
@@ -1244,7 +1245,7 @@ export default function InventoryPage() {
                   })}
                 </tbody>
               </table>
-            </div>
+            </TableScroll>
           ) : (
             <EmptyState
               className="mt-6"
@@ -1315,7 +1316,7 @@ export default function InventoryPage() {
               Loading...
             </div>
           ) : suppliersQuery.data && suppliersQuery.data.length > 0 ? (
-            <div className="mt-4 overflow-x-auto rounded-lg border border-border">
+            <TableScroll className="mt-4 rounded-lg border border-border">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border bg-muted/50">
@@ -1399,7 +1400,7 @@ export default function InventoryPage() {
                   })}
                 </tbody>
               </table>
-            </div>
+            </TableScroll>
           ) : (
             <EmptyState
               className="mt-6"

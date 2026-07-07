@@ -28,6 +28,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/common/empty-state";
 import { TableSkeleton } from "@/components/common/loading";
+import { TableScroll } from "@/components/common/table-scroll";
 import {
   BILLING_ADJUSTMENT_REASON_MAX_LENGTH,
   BILLING_NOTES_MAX_LENGTH,
@@ -282,7 +283,7 @@ export default function BillingPage() {
         <TableSkeleton rows={8} cols={7} />
       ) : data && data.items.length > 0 ? (
         <>
-          <div className="mt-6 overflow-x-auto rounded-lg border border-border">
+          <TableScroll className="mt-6 rounded-lg border border-border">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border bg-muted/50">
@@ -338,7 +339,7 @@ export default function BillingPage() {
                 ))}
               </tbody>
             </table>
-          </div>
+          </TableScroll>
 
           {/* Pagination */}
           <div className="mt-4 flex items-center justify-between text-sm text-muted-foreground">

@@ -22,8 +22,10 @@ import {
   Bot,
   ChevronLeft,
   ChevronRight,
+  Cookie,
   LogOut,
 } from "lucide-react";
+import { openCookiePreferences } from "@/components/common/cookie-consent";
 
 function PawMark({ className }: { className?: string }) {
   return (
@@ -224,6 +226,17 @@ export function Sidebar({
             </button>
           </div>
         )}
+        <button
+          onClick={openCookiePreferences}
+          aria-label="Open cookie preferences"
+          className={cn(
+            "flex w-full items-center rounded-md p-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground",
+            isCollapsed ? "justify-center" : "gap-2 px-3"
+          )}
+        >
+          <Cookie className="h-4 w-4 shrink-0" aria-hidden="true" />
+          {!isCollapsed && <span>Cookie preferences</span>}
+        </button>
         {collapsible && (
           <button
             onClick={() => setCollapsed(!collapsed)}

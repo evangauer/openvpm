@@ -135,7 +135,10 @@ export function OnboardingJourneyProvider({
     }
     const notFinished = onboardingStatus.data.completedAt == null;
     const dismissed = onboardingState.data.journeyDismissed === true;
-    if (notFinished && !dismissed) {
+    // Practices already running on real data (seeded demo, self-host
+    // upgrades) never get greeted like a brand-new signup.
+    const established = onboardingStatus.data.establishedPractice === true;
+    if (notFinished && !dismissed && !established) {
       opened.current = true;
       setIndex(resumeIndex);
     }

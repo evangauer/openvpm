@@ -38,6 +38,8 @@ function formatDateTime(d: string | Date, timeZone?: string | null): string {
 }
 
 function formatStatusLabel(status: string): string {
+  // Pet-owner wording: "checked out" is clinic jargon.
+  if (status === "checked_out") return "Completed";
   return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
@@ -100,7 +102,7 @@ export default function AppointmentsPage() {
       <section className="mb-10">
         <h2 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
           <span className="h-2 w-2 rounded-full bg-teal-500" />
-          Upcoming & Active
+          Upcoming
         </h2>
         {upcoming.length === 0 ? (
           <EmptyState
