@@ -65,6 +65,18 @@ jobs:
       # tenant isolation against a real Postgres on every PR.
       - run: pnpm --filter @openpims/db db:migrate
 
+      # Schema drift guard: if drizzle-kit generate produces anything, a schema
+      # change was committed without its migration (or a migration was written
+      # without its snapshot, which silently re-emits old DDL forever).
+      - name: Check schema matches committed migrations
+        run: |
+          pnpm --filter @openpims/db db:generate
+          if [ -n "$(git status --porcelain packages/db/drizzle)" ]; then
+            echo "::error::Schema and committed migrations are out of sync — run pnpm db:generate and commit the result."
+            git status --porcelain packages/db/drizzle
+            exit 1
+          fi
+
       - run: pnpm --filter @openpims/db db:rls
 
       - run: pnpm --filter @openpims/db db:rls:test
