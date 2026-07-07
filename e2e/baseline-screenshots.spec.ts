@@ -203,7 +203,15 @@ async function captureFirstRowDetail(
   });
 }
 
-function writeReport(widthName: string, results: RouteResult[]): void {
+function writeReport(widthName: string, rawResults: RouteResult[]): void {
+  // Reports are committed to the (public) repo; never persist the portal
+  // access token, even though it only exists in a local dev database.
+  const results = PORTAL_TOKEN
+    ? rawResults.map((r) => ({
+        ...r,
+        route: r.route.split(PORTAL_TOKEN).join("[token]"),
+      }))
+    : rawResults;
   fs.mkdirSync(path.join(OUT, widthName), { recursive: true });
   fs.writeFileSync(
     path.join(OUT, `report-${widthName}.json`),

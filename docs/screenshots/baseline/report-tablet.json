@@ -60,9 +60,7 @@
     "route": "/inbox",
     "status": 200,
     "consoleErrors": [],
-    "emptyHits": [
-      "No messages"
-    ],
+    "emptyHits": [],
     "horizontalOverflow": false
   },
   {
