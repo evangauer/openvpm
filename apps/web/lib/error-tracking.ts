@@ -1,3 +1,4 @@
+import type { TRPCError } from "@trpc/server";
 import { alertOps } from "@/lib/alerts";
 
 export interface ErrorReportInput {
@@ -34,6 +35,29 @@ export function sanitizeErrorReport(input: ErrorReportInput): ErrorReportInput {
     digest: input.digest ? input.digest.slice(0, 120) : null,
     path: sanitizeErrorPath(input.path),
   };
+}
+
+/**
+ * tRPC maps expected failures (auth, validation, not-found, rate limits) to
+ * non-500 codes; only INTERNAL_SERVER_ERROR means a procedure actually
+ * crashed, so that is the only code worth alerting on.
+ */
+export function captureTrpcError(opts: {
+  error: Pick<TRPCError, "code" | "message" | "cause" | "stack">;
+  path?: string;
+  type?: string;
+}): void {
+  if (opts.error.code !== "INTERNAL_SERVER_ERROR") return;
+  const cause = opts.error.cause;
+  void captureException({
+    source: "trpc",
+    message: `${opts.type ?? "call"} ${opts.path ?? "unknown"}: ${opts.error.message}`,
+    stack:
+      cause instanceof Error && cause.stack
+        ? cause.stack
+        : (opts.error.stack ?? null),
+    path: opts.path ? `/api/trpc/${opts.path}` : null,
+  });
 }
 
 export async function captureException(input: ErrorReportInput): Promise<void> {
