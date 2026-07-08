@@ -230,6 +230,24 @@ function RegisterPageInner() {
               <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
               Free for 14 days. No credit card required.
             </p>
+
+            <p className="text-center text-xs text-slate-400">
+              By creating a workspace you agree to the{" "}
+              <Link
+                href="/legal/terms"
+                className="underline underline-offset-2 hover:text-slate-600"
+              >
+                Terms of Service
+              </Link>{" "}
+              and{" "}
+              <Link
+                href="/legal/privacy"
+                className="underline underline-offset-2 hover:text-slate-600"
+              >
+                Privacy Policy
+              </Link>
+              .
+            </p>
           </form>
 
           <p className="mt-8 text-center text-sm text-slate-500">

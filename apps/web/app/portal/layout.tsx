@@ -33,6 +33,15 @@ export default function PortalLayout({
           <span className="mx-2" aria-hidden="true">
             ·
           </span>
+          <a
+            href="/legal/privacy"
+            className="underline-offset-2 hover:text-gray-600 hover:underline"
+          >
+            Privacy
+          </a>
+          <span className="mx-2" aria-hidden="true">
+            ·
+          </span>
           <CookiePreferencesLink className="underline-offset-2 hover:text-gray-600 hover:underline" />
         </div>
       </footer>
