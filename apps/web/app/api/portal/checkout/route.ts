@@ -13,6 +13,10 @@ import { createCheckoutSession } from "@/lib/stripe";
 import { withSystem } from "@/lib/tenant-db";
 import { billingEnforced, hasHostedFullAccess } from "@/lib/billing/plans";
 import {
+  getChargeableStripeConnectAccountId,
+  stripeConnectApplicationFeeAmount,
+} from "@/lib/billing/payment-accounts";
+import {
   invoiceBalanceCents,
   moneyToCents,
 } from "@/lib/billing/invoice-balance";
@@ -281,6 +285,24 @@ export async function POST(req: NextRequest) {
         );
       }
 
+      // On hosted, client money must land in the practice's own Stripe
+      // account (Connect destination charge), exactly like the staff
+      // "Take Card" path. A platform charge would put clinic revenue in
+      // OpenVPM's account. Self-host keeps the platform charge: there the
+      // configured Stripe key IS the practice's own account.
+      const connectedAccountId = billingEnforced()
+        ? await getChargeableStripeConnectAccountId(tx, invoice.practiceId)
+        : null;
+      if (billingEnforced() && !connectedAccountId) {
+        return NextResponse.json(
+          {
+            error:
+              "Online payments are not set up for this clinic yet. Please call the clinic to pay.",
+          },
+          { status: 503 },
+        );
+      }
+
       const origin = req.nextUrl.origin;
       const result = await createCheckoutSession({
         invoiceId: invoice.id,
@@ -289,6 +311,10 @@ export async function POST(req: NextRequest) {
         clientName: `${client.firstName} ${client.lastName}`,
         description,
         currency: practice.currency ?? "usd",
+        connectedAccountId: connectedAccountId ?? undefined,
+        applicationFeeAmount: connectedAccountId
+          ? stripeConnectApplicationFeeAmount(amountCents)
+          : undefined,
         successUrl: buildPortalPaymentReturnUrl({
           origin,
           token,

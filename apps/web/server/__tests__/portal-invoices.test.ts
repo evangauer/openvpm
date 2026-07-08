@@ -149,6 +149,66 @@ describe("portal invoices", () => {
     ]);
   });
 
+  it("hosted: advertises portal payments only with a chargeable Connect account", async () => {
+    vi.stubEnv("STRIPE_SECRET_KEY", " sk_test_123 ");
+    mocks.billingEnforced.mockReturnValue(true);
+    mocks.hasHostedFullAccess.mockReturnValue(true);
+    const invoiceRow = {
+      id: INVOICE_ID,
+      status: "sent",
+      subtotal: "100.00",
+      tax: "0.00",
+      total: "100.00",
+      paidAmount: "0.00",
+      adjustedAmount: "0.00",
+      dueDate: "2026-07-15",
+      createdAt: new Date("2026-07-01T12:00:00Z"),
+      isEstimate: false,
+      patientName: "Juniper",
+    };
+    const practiceRow = {
+      currency: "usd",
+      country: "US",
+      timezone: "America/New_York",
+      tier: "cloud",
+      billingStatus: "active",
+      trialEndsAt: null,
+    };
+
+    const withConnect = createDb([
+      [{ id: CLIENT_ID, practiceId: PRACTICE_ID }],
+      ACTIVE_PRACTICE,
+      [practiceRow],
+      [
+        {
+          stripeAccountId: "acct_123",
+          onboardingStatus: "active",
+          chargesEnabled: true,
+          payoutsEnabled: true,
+        },
+      ],
+      [invoiceRow],
+    ]);
+    await expect(
+      callerWithDb(withConnect.db).getInvoices({ token: TOKEN })
+    ).resolves.toEqual([
+      expect.objectContaining({ id: INVOICE_ID, onlinePaymentsEnabled: true }),
+    ]);
+
+    const withoutConnect = createDb([
+      [{ id: CLIENT_ID, practiceId: PRACTICE_ID }],
+      ACTIVE_PRACTICE,
+      [practiceRow],
+      [],
+      [invoiceRow],
+    ]);
+    await expect(
+      callerWithDb(withoutConnect.db).getInvoices({ token: TOKEN })
+    ).resolves.toEqual([
+      expect.objectContaining({ id: INVOICE_ID, onlinePaymentsEnabled: false }),
+    ]);
+  });
+
   it("does not advertise portal payments when hosted billing has gated the practice", async () => {
     vi.stubEnv("STRIPE_SECRET_KEY", " sk_test_123 ");
     mocks.billingEnforced.mockReturnValue(true);

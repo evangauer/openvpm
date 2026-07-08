@@ -31,6 +31,7 @@ import {
 } from "@/lib/portal/booking";
 import { findOpenSlots } from "@/lib/scheduling/availability";
 import { billingEnforced, hasHostedFullAccess } from "@/lib/billing/plans";
+import { getChargeableStripeConnectAccountId } from "@/lib/billing/payment-accounts";
 import { clinicalDateInput } from "@/lib/records/clinical-inputs";
 import {
   PORTAL_ACCESS_TOKEN_MAX_LENGTH,
@@ -719,16 +720,23 @@ export const portalRouter = createRouter({
       const country = practice.country ?? "US";
       const timezone = practice.timezone ?? null;
       const hostedBillingEnforced = billingEnforced();
+      // On hosted, the portal Pay button additionally requires the practice's
+      // Stripe Connect account — client money goes to the clinic, never to
+      // the platform account. Mirrors the /api/portal/checkout gate.
       const onlinePaymentsEnabled =
         stripeConfigured() &&
         (!hostedBillingEnforced ||
-          hasHostedFullAccess(
+          (hasHostedFullAccess(
             practice.tier,
             practice.billingStatus,
             practice.trialEndsAt,
             new Date(),
             hostedBillingEnforced
-          ));
+          ) &&
+            (await getChargeableStripeConnectAccountId(
+              ctx.db,
+              client.practiceId
+            )) !== null));
 
       const rows = await ctx.db
         .select({

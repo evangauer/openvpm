@@ -35,6 +35,10 @@ const mocks = vi.hoisted(() => {
     ),
     billingEnforced: vi.fn(() => false),
     hasHostedFullAccess: vi.fn(() => true),
+    getChargeableStripeConnectAccountId: vi.fn(
+      async (): Promise<string | null> => null
+    ),
+    stripeConnectApplicationFeeAmount: vi.fn((): number | undefined => 250),
     rateLimit: vi.fn(async () => ({
       success: true,
       remaining: 9,
@@ -71,6 +75,12 @@ vi.mock("@/lib/stripe", () => ({
 vi.mock("@/lib/billing/plans", () => ({
   billingEnforced: mocks.billingEnforced,
   hasHostedFullAccess: mocks.hasHostedFullAccess,
+}));
+
+vi.mock("@/lib/billing/payment-accounts", () => ({
+  getChargeableStripeConnectAccountId:
+    mocks.getChargeableStripeConnectAccountId,
+  stripeConnectApplicationFeeAmount: mocks.stripeConnectApplicationFeeAmount,
 }));
 
 vi.mock("@/lib/rate-limit", () => ({
@@ -159,6 +169,8 @@ afterEach(() => {
   });
   mocks.billingEnforced.mockReturnValue(false);
   mocks.hasHostedFullAccess.mockReturnValue(true);
+  mocks.getChargeableStripeConnectAccountId.mockResolvedValue(null);
+  mocks.stripeConnectApplicationFeeAmount.mockReturnValue(250);
   mocks.rateLimit.mockResolvedValue({
     success: true,
     remaining: 9,
@@ -466,8 +478,66 @@ describe("portal checkout route", () => {
           `https://portal.example.com/portal/portal-token/invoices?payment=success&invoice=${INVOICE_ID}`,
         cancelUrl:
           `https://portal.example.com/portal/portal-token/invoices?payment=cancelled&invoice=${INVOICE_ID}`,
+        connectedAccountId: undefined,
+        applicationFeeAmount: undefined,
       })
     );
+    // Self-host: the platform Stripe key IS the practice's account.
+    expect(mocks.getChargeableStripeConnectAccountId).not.toHaveBeenCalled();
+  });
+
+  it("hosted: routes portal checkout through the practice's Connect account", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    mocks.getChargeableStripeConnectAccountId.mockResolvedValue("acct_123");
+    mocks.selectResults.push(
+      [client()],
+      [invoice()],
+      [{ amount: "10.00" }],
+      [{ name: "Biscuit" }],
+      [practice({ tier: "cloud", billingStatus: "active" })]
+    );
+
+    const response = await POST(
+      portalRequest({ token: "portal-token", invoiceId: INVOICE_ID })
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.getChargeableStripeConnectAccountId).toHaveBeenCalledWith(
+      mocks.db,
+      PRACTICE_ID
+    );
+    expect(mocks.stripeConnectApplicationFeeAmount).toHaveBeenCalledWith(6500);
+    expect(mocks.createCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        invoiceId: INVOICE_ID,
+        amount: 6500,
+        connectedAccountId: "acct_123",
+        applicationFeeAmount: 250,
+      })
+    );
+  });
+
+  it("hosted: refuses portal checkout when the practice has no chargeable Connect account", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    mocks.getChargeableStripeConnectAccountId.mockResolvedValue(null);
+    mocks.selectResults.push(
+      [client()],
+      [invoice()],
+      [{ amount: "10.00" }],
+      [{ name: "Biscuit" }],
+      [practice({ tier: "cloud", billingStatus: "active" })]
+    );
+
+    const response = await POST(
+      portalRequest({ token: "portal-token", invoiceId: INVOICE_ID })
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error:
+        "Online payments are not set up for this clinic yet. Please call the clinic to pay.",
+    });
+    expect(mocks.createCheckoutSession).not.toHaveBeenCalled();
   });
 
   it.each([
