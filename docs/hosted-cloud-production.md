@@ -15,7 +15,7 @@ This boundary is intentional. Do not add hosted-only requirements to the self-ho
 - `Try the Live Demo` -> `${NEXT_PUBLIC_DEMO_URL}/login`
 - `Self-host OpenVPM` -> `/install` and GitHub
 
-Cloud signup creates a practice, a primary location, the owner admin user, default configuration, and hosted first-run demo data. With `HOSTED_NO_CARD_TRIAL=true`, signup grants a 14-day trial immediately with no card and the clinic lands in the product (adding a card converts to paid); email verification is a soft prompt, not a login gate.
+Cloud signup creates a practice, a primary location, the owner admin user, default configuration, and hosted first-run demo data. By default, signup grants a 14-day trial immediately with no card and the clinic lands in the product (adding a card converts to paid); email verification is a soft prompt, not a login gate. Set `HOSTED_NO_CARD_TRIAL=false` to reinstate the legacy card-collected checkout wall at signup.
 
 Set the marketing deployment envs to:
 
