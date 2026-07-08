@@ -536,6 +536,55 @@ export const appointmentsRouter = createRouter({
         .orderBy(appointments.startTime);
     }),
 
+  /** A patient's visit history (newest first) for the patient chart. */
+  listByPatient: protectedProcedure
+    .input(
+      z.object({
+        patientId: z.string().uuid(),
+        limit: z.number().int().min(1).max(100).default(50),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      return ctx.db
+        .select({
+          id: appointments.id,
+          startTime: appointments.startTime,
+          endTime: appointments.endTime,
+          status: appointments.status,
+          notes: appointments.notes,
+          doctorName: users.name,
+          typeName: appointmentTypes.name,
+          typeColor: appointmentTypes.color,
+        })
+        .from(appointments)
+        .leftJoin(
+          users,
+          and(
+            eq(appointments.doctorId, users.id),
+            eq(users.practiceId, ctx.practiceId),
+            isNull(users.deletedAt)
+          )
+        )
+        .leftJoin(
+          appointmentTypes,
+          and(
+            eq(appointments.typeId, appointmentTypes.id),
+            eq(appointmentTypes.practiceId, ctx.practiceId),
+            isNull(appointmentTypes.deletedAt)
+          )
+        )
+        .where(
+          and(
+            eq(appointments.patientId, input.patientId),
+            eq(appointments.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(appointments.deletedAt)
+          )
+        )
+        .orderBy(desc(appointments.startTime))
+        .limit(input.limit);
+    }),
+
   getById: protectedProcedure
     .input(z.object({ id: z.string().uuid() }))
     .query(async ({ ctx, input }) => {

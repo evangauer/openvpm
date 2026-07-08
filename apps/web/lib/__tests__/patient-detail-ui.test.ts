@@ -71,6 +71,36 @@ describe("patient detail UI states", () => {
     expect(source).toContain('title="No weight records yet"');
     expect(source).toContain('title="No vitals recorded yet"');
     expect(source).toContain('title="No vaccination records yet"');
+    expect(source).toContain('title="No medical records yet"');
+    expect(source).toContain('title="No appointments yet"');
+    expect(source).toContain('title="No invoices yet"');
+  });
+
+  it("gives the chart medical-history tabs backed by tenant-scoped queries", () => {
+    const source = readFileSync("app/(dashboard)/patients/[id]/page.tsx", "utf8");
+    const appointmentsRouter = readFileSync(
+      "server/routers/appointments.ts",
+      "utf8"
+    );
+
+    // The chart is the medical record: SOAP timeline, visit history, and
+    // billing history live on the patient page.
+    for (const label of ["Medical Records", "Appointments", "Invoices"]) {
+      expect(source).toContain(`label: "${label}"`);
+    }
+    expect(source).toContain("trpc.records.listSoapNotes.useQuery({ patientId })");
+    expect(source).toContain(
+      "trpc.appointments.listByPatient.useQuery({ patientId })"
+    );
+    expect(source).toContain("trpc.billing.listInvoices.useQuery({");
+    // listByPatient stays tenant-scoped like every appointments query.
+    const listByPatient = appointmentsRouter.slice(
+      appointmentsRouter.indexOf("listByPatient:")
+    );
+    expect(listByPatient).toContain(
+      "eq(appointments.practiceId, ctx.practiceId)"
+    );
+    expect(listByPatient).toContain("activePracticePredicate(ctx.practiceId)");
   });
 
   it("surfaces Vitals and Vaccinations load errors before empty states", () => {

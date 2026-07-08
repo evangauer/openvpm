@@ -11,12 +11,17 @@ import {
   Activity,
   Shield,
   Camera,
+  CalendarDays,
   FileDown,
+  FileText,
   Loader2,
   Plus,
+  Receipt,
 } from "lucide-react";
 import { toast } from "sonner";
+import Link from "next/link";
 import { trpc } from "@/lib/trpc";
+import { useCurrencyFormatter } from "@/lib/locale/useCurrency";
 import { EmptyState } from "@/components/common/empty-state";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -142,13 +147,23 @@ function calculateAge(dob: string | null): string {
   return `${adjustedYears}y ${adjustedMonths}m`;
 }
 
-type Tab = "overview" | "weight" | "vitals" | "vaccinations";
+type Tab =
+  | "overview"
+  | "records"
+  | "appointments"
+  | "weight"
+  | "vitals"
+  | "vaccinations"
+  | "invoices";
 
 const tabs: { id: Tab; label: string }[] = [
   { id: "overview", label: "Overview" },
+  { id: "records", label: "Medical Records" },
+  { id: "appointments", label: "Appointments" },
   { id: "weight", label: "Weight History" },
   { id: "vitals", label: "Vitals" },
   { id: "vaccinations", label: "Vaccinations" },
+  { id: "invoices", label: "Invoices" },
 ];
 
 function canManagePatientDetailRole(role?: string | null): boolean {
@@ -818,6 +833,22 @@ export default function PatientDetailPage() {
         {activeTab === "vaccinations" && (
           <VaccinationsTab patientId={patient.id} timeZone={recordsTimeZone} />
         )}
+
+        {activeTab === "records" && (
+          <MedicalRecordsTab
+            patientId={patient.id}
+            timeZone={recordsTimeZone}
+          />
+        )}
+
+        {activeTab === "appointments" && (
+          <AppointmentsTab
+            patientId={patient.id}
+            timeZone={recordsTimeZone}
+          />
+        )}
+
+        {activeTab === "invoices" && <InvoicesTab patientId={patient.id} />}
       </div>
     </div>
   );
@@ -1170,6 +1201,306 @@ function VaccinationsTab({
               <td className="px-4 py-3">{vax.lotNumber ?? "\u2014"}</td>
               <td className="px-4 py-3 text-muted-foreground">
                 {vax.administeredByName ?? "\u2014"}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function MedicalRecordsTab({
+  patientId,
+  timeZone,
+}: {
+  patientId: string;
+  timeZone?: string | null;
+}) {
+  const { data: notes, isLoading, error } =
+    trpc.records.listSoapNotes.useQuery({ patientId });
+  const notesMissing = !isLoading && !error && !notes;
+
+  if (error) {
+    return (
+      <PatientDetailErrorPanel
+        message={`Unable to load medical records. ${error.message}`}
+      />
+    );
+  }
+  if (notesMissing) {
+    return (
+      <PatientDetailErrorPanel message="Unable to load medical records. Please retry." />
+    );
+  }
+  if (isLoading) {
+    return <PatientDetailLoadingPanel label="Loading medical records..." />;
+  }
+  if (!notes || notes.length === 0) {
+    return (
+      <EmptyState
+        icon={FileText}
+        title="No medical records yet"
+        description="SOAP notes written in Records will show up here."
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {notes.map((note) => (
+        <div
+          key={note.id}
+          className="rounded-lg border border-border bg-card p-4"
+        >
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <p className="text-sm font-medium">
+              {note.createdAt
+                ? formatClinicalDateTime(note.createdAt, timeZone, "Unknown")
+                : "Unknown"}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {note.authorName ?? "Unknown author"}
+            </p>
+          </div>
+          <dl className="grid gap-3 sm:grid-cols-2">
+            {(
+              [
+                ["Subjective", note.subjective],
+                ["Objective", note.objective],
+                ["Assessment", note.assessment],
+                ["Plan", note.plan],
+              ] as const
+            ).map(([label, value]) =>
+              value ? (
+                <div key={label}>
+                  <dt className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    {label}
+                  </dt>
+                  <dd className="mt-1 whitespace-pre-wrap text-sm">{value}</dd>
+                </div>
+              ) : null
+            )}
+          </dl>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const appointmentStatusStyles: Record<string, string> = {
+  scheduled: "bg-blue-100 text-blue-700",
+  confirmed: "bg-teal-100 text-teal-700",
+  checked_in: "bg-amber-100 text-amber-700",
+  in_exam: "bg-purple-100 text-purple-700",
+  checked_out: "bg-green-100 text-green-700",
+  no_show: "bg-red-100 text-red-700",
+  cancelled: "bg-gray-100 text-gray-500",
+};
+
+function AppointmentsTab({
+  patientId,
+  timeZone,
+}: {
+  patientId: string;
+  timeZone?: string | null;
+}) {
+  const { data: visits, isLoading, error } =
+    trpc.appointments.listByPatient.useQuery({ patientId });
+  const visitsMissing = !isLoading && !error && !visits;
+
+  if (error) {
+    return (
+      <PatientDetailErrorPanel
+        message={`Unable to load appointments. ${error.message}`}
+      />
+    );
+  }
+  if (visitsMissing) {
+    return (
+      <PatientDetailErrorPanel message="Unable to load appointments. Please retry." />
+    );
+  }
+  if (isLoading) {
+    return <PatientDetailLoadingPanel label="Loading appointments..." />;
+  }
+  if (!visits || visits.length === 0) {
+    return (
+      <EmptyState
+        icon={CalendarDays}
+        title="No appointments yet"
+        description="Visits booked on the schedule will show up here."
+      />
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto rounded-lg border border-border">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-border bg-muted/50">
+            <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+              When
+            </th>
+            <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+              Type
+            </th>
+            <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+              Doctor
+            </th>
+            <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+              Status
+            </th>
+            <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+              Notes
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {visits.map((visit) => (
+            <tr
+              key={visit.id}
+              className="border-b border-border last:border-0"
+            >
+              <td className="px-4 py-3">
+                {visit.startTime
+                  ? formatClinicalDateTime(visit.startTime, timeZone, "Unknown")
+                  : "Unknown"}
+              </td>
+              <td className="px-4 py-3">
+                <span className="inline-flex items-center gap-2">
+                  {visit.typeColor ? (
+                    <span
+                      aria-hidden="true"
+                      className="h-2 w-2 rounded-full"
+                      style={{ backgroundColor: visit.typeColor }}
+                    />
+                  ) : null}
+                  {visit.typeName ?? "—"}
+                </span>
+              </td>
+              <td className="px-4 py-3 text-muted-foreground">
+                {visit.doctorName ?? "—"}
+              </td>
+              <td className="px-4 py-3">
+                <span
+                  className={cn(
+                    "inline-flex whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium capitalize",
+                    appointmentStatusStyles[visit.status] ??
+                      "bg-gray-100 text-gray-600"
+                  )}
+                >
+                  {visit.status.replace(/_/g, " ")}
+                </span>
+              </td>
+              <td className="max-w-xs truncate px-4 py-3 text-muted-foreground">
+                {visit.notes || "—"}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+const invoiceStatusStyles: Record<string, string> = {
+  draft: "bg-gray-100 text-gray-600",
+  sent: "bg-blue-100 text-blue-700",
+  paid: "bg-green-100 text-green-700",
+  overdue: "bg-red-100 text-red-700",
+  void: "bg-gray-100 text-gray-400",
+};
+
+function InvoicesTab({ patientId }: { patientId: string }) {
+  const formatCurrency = useCurrencyFormatter();
+  const { data, isLoading, error } = trpc.billing.listInvoices.useQuery({
+    patientId,
+    limit: 50,
+  });
+  const invoicesMissing = !isLoading && !error && !data;
+
+  if (error) {
+    return (
+      <PatientDetailErrorPanel
+        message={`Unable to load invoices. ${error.message}`}
+      />
+    );
+  }
+  if (invoicesMissing) {
+    return (
+      <PatientDetailErrorPanel message="Unable to load invoices. Please retry." />
+    );
+  }
+  if (isLoading) {
+    return <PatientDetailLoadingPanel label="Loading invoices..." />;
+  }
+  if (!data || data.items.length === 0) {
+    return (
+      <EmptyState
+        icon={Receipt}
+        title="No invoices yet"
+        description="Invoices created in Billing for this patient will show up here."
+      />
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto rounded-lg border border-border">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-border bg-muted/50">
+            <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+              Created
+            </th>
+            <th className="px-4 py-3 text-right font-medium text-muted-foreground">
+              Total
+            </th>
+            <th className="px-4 py-3 text-right font-medium text-muted-foreground">
+              Paid
+            </th>
+            <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+              Status
+            </th>
+            <th className="px-4 py-3" />
+          </tr>
+        </thead>
+        <tbody>
+          {data.items.map((invoice) => (
+            <tr
+              key={invoice.id}
+              className="border-b border-border last:border-0"
+            >
+              <td className="px-4 py-3 text-muted-foreground">
+                {invoice.createdAt
+                  ? new Date(invoice.createdAt).toLocaleDateString()
+                  : "—"}
+              </td>
+              <td className="px-4 py-3 text-right tabular-nums font-medium">
+                {formatCurrency(invoice.total)}
+              </td>
+              <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
+                {formatCurrency(invoice.paidAmount)}
+              </td>
+              <td className="px-4 py-3">
+                <span
+                  className={cn(
+                    "inline-flex whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium capitalize",
+                    invoiceStatusStyles[
+                      invoice.isEstimate ? "draft" : invoice.status
+                    ] ?? "bg-gray-100 text-gray-600"
+                  )}
+                >
+                  {invoice.isEstimate ? "estimate" : invoice.status}
+                </span>
+              </td>
+              <td className="px-4 py-3 text-right">
+                <Link
+                  href="/billing"
+                  className="text-xs font-medium text-primary hover:underline"
+                >
+                  Open in Billing
+                </Link>
               </td>
             </tr>
           ))}

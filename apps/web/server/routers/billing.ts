@@ -854,6 +854,7 @@ export const billingRouter = createRouter({
       z.object({
         status: invoiceStatusSchema.optional(),
         isEstimate: z.boolean().optional(),
+        patientId: z.string().uuid().optional(),
         limit: z.number().int().min(1).max(100).default(25),
         offset: listOffsetInput,
       })
@@ -866,6 +867,10 @@ export const billingRouter = createRouter({
 
       if (input.status) {
         conditions.push(eq(invoices.status, input.status));
+      }
+
+      if (input.patientId) {
+        conditions.push(eq(invoices.patientId, input.patientId));
       }
 
       if (input.isEstimate !== undefined) {
