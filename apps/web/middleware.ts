@@ -9,6 +9,7 @@ const PUBLIC_PATH_PREFIXES = [
   "/api",
   "/api-docs",
   "/forgot-password",
+  "/legal",
   "/login",
   "/portal",
   "/register",

@@ -24,4 +24,9 @@ describe("legal pages", () => {
     expect(register).toContain('href="/legal/privacy"');
     expect(portal).toContain('href="/legal/privacy"');
   });
+
+  it("keeps legal pages public in the auth middleware", () => {
+    const middleware = readFileSync("middleware.ts", "utf8");
+    expect(middleware).toContain('"/legal",');
+  });
 });
