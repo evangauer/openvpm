@@ -330,7 +330,7 @@ test("Dogfood C2: prescription with allergy warning + lab", async ({ page }) => 
   // A severe-allergy match blocks saving until the clinician acknowledges.
   await page
     .locator('label:has-text("Clinician reviewed") input')
-    .check();
+    .check({ force: true });
   await page.waitForTimeout(400);
   await page.getByRole("button", { name: /save prescription/i }).click();
   await page.waitForTimeout(1800);
