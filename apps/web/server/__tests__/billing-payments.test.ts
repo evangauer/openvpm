@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   recordAuditLog: vi.fn(async () => undefined),
   dispatchWebhookEvent: vi.fn(async () => undefined),
+  loadClientReceipt: vi.fn(async (): Promise<unknown> => null),
+  deliverClientReceipt: vi.fn(async () => undefined),
 }));
 
 vi.mock("@/lib/audit", () => ({
@@ -11,6 +13,11 @@ vi.mock("@/lib/audit", () => ({
 
 vi.mock("@/lib/webhook-dispatcher", () => ({
   dispatchWebhookEvent: mocks.dispatchWebhookEvent,
+}));
+
+vi.mock("@/lib/billing/client-receipts", () => ({
+  loadClientReceipt: mocks.loadClientReceipt,
+  deliverClientReceipt: mocks.deliverClientReceipt,
 }));
 
 const { billingRouter } = await import("../routers/billing");

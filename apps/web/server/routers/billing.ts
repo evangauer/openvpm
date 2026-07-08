@@ -28,6 +28,10 @@ import {
   stripeConnectApplicationFeeAmount,
 } from "@/lib/billing/payment-accounts";
 import {
+  deliverClientReceipt,
+  loadClientReceipt,
+} from "@/lib/billing/client-receipts";
+import {
   BILLING_ADJUSTMENT_REASON_MAX_LENGTH,
   BILLING_CURRENCY_AMOUNT_PATTERN,
   BILLING_INVOICE_LINE_DESCRIPTION_MAX_LENGTH,
@@ -1327,6 +1331,16 @@ export const billingRouter = createRouter({
         });
       }
 
+      // Email the pet owner a receipt (no-op when no email on file; a lost
+      // email never fails the payment).
+      const receipt = await loadClientReceipt(ctx.db, input.invoiceId, {
+        amountPaidCents: amountCents,
+        balanceRemainingCents: totalCents - paidAfterCents - adjustedCents,
+      });
+      if (receipt) {
+        await deliverClientReceipt(receipt);
+      }
+
       return payment;
     }),
 
@@ -1361,6 +1375,60 @@ export const billingRouter = createRouter({
         )
         .orderBy(desc(payments.receivedAt));
     }),
+
+  /**
+   * Accounts-receivable at a glance: open balance, the overdue slice of it,
+   * and cash actually collected this calendar month.
+   */
+  arSummary: protectedProcedure.query(async ({ ctx }) => {
+    const result = await ctx.db.execute(sql`
+      with balances as (
+        select
+          i.status,
+          greatest(
+            i.total::numeric
+              - i.paid_amount::numeric
+              - coalesce((
+                  select sum(a.amount::numeric)
+                  from invoice_adjustments a
+                  where a.invoice_id = i.id
+                    and a.deleted_at is null
+                ), 0),
+            0
+          ) as balance
+        from invoices i
+        where i.practice_id = ${ctx.practiceId}
+          and i.deleted_at is null
+          and i.is_estimate = false
+          and i.status in ('sent', 'overdue')
+      )
+      select
+        coalesce((select sum(balance) from balances), 0)::text as "outstanding",
+        coalesce((select sum(balance) from balances where status = 'overdue'), 0)::text as "overdue",
+        coalesce((
+          select sum(p.amount::numeric)
+          from payments p
+          join invoices pi on pi.id = p.invoice_id
+          where pi.practice_id = ${ctx.practiceId}
+            and pi.deleted_at is null
+            and p.deleted_at is null
+            and p.received_at >= date_trunc('month', now())
+        ), 0)::text as "collectedThisMonth"
+    `);
+    const rows = Array.isArray(result)
+      ? result
+      : ((result as { rows?: unknown[] } | null)?.rows ?? []);
+    const row = (rows[0] ?? {}) as {
+      outstanding?: string;
+      overdue?: string;
+      collectedThisMonth?: string;
+    };
+    return {
+      outstanding: row.outstanding ?? "0",
+      overdue: row.overdue ?? "0",
+      collectedThisMonth: row.collectedThisMonth ?? "0",
+    };
+  }),
 
   createCardPaymentCheckout: protectedProcedure
     .use(requireRole("admin", "front_desk"))

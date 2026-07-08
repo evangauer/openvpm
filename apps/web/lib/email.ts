@@ -327,6 +327,59 @@ export async function sendInvoiceEmail(data: {
 }
 
 // ---------------------------------------------------------------------------
+// Client payment receipt (practice-branded, sent to the pet owner)
+// ---------------------------------------------------------------------------
+
+export async function sendClientPaymentReceiptEmail(data: {
+  to: string;
+  clientName: string;
+  patientName?: string;
+  amountPaid: string;
+  balanceRemaining: string;
+  fullyPaid: boolean;
+  practiceName: string;
+  practicePhone?: string;
+}): Promise<{ success: boolean; id?: string; error?: string }> {
+  const patientLine = data.patientName
+    ? ` for <strong>${data.patientName}</strong>`
+    : "";
+  const balanceBlock = data.fullyPaid
+    ? `<p style="margin:0;color:#0f172a;font-size:14px;font-weight:600;">This invoice is paid in full.</p>`
+    : `<p style="margin:0 0 4px;color:#6b7280;font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;">Remaining Balance</p>
+       <p style="margin:0;color:#0f172a;font-size:16px;font-weight:600;">${data.balanceRemaining}</p>`;
+
+  const body = `
+    <p style="margin:0 0 16px;color:#111827;font-size:15px;line-height:1.6;">Hi ${data.clientName},</p>
+    <p style="margin:0 0 24px;color:#111827;font-size:15px;line-height:1.6;">We got your payment${patientLine}. Thank you!</p>
+    <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;background-color:#f0fdf4;border:1px solid #dcfce7;border-radius:8px;margin-bottom:24px;">
+      <tr>
+        <td style="padding:20px 24px;">
+          <p style="margin:0 0 4px;color:#6b7280;font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;">Amount Paid</p>
+          <p style="margin:0 0 16px;color:#0f172a;font-size:28px;font-weight:700;">${data.amountPaid}</p>
+          ${balanceBlock}
+        </td>
+      </tr>
+    </table>
+    <p style="margin:0;color:#111827;font-size:15px;line-height:1.6;">Keep this email for your records. If anything looks wrong, please contact us${data.practicePhone ? ` at <strong>${data.practicePhone}</strong>` : ""}.</p>
+  `;
+
+  const footer = practiceFooter({
+    practiceName: data.practiceName,
+    practicePhone: data.practicePhone,
+  });
+
+  const html = emailLayout(data.practiceName, body, footer);
+
+  const result = await sendEmail({
+    to: data.to,
+    subject: `Payment received – ${data.practiceName}`,
+    html,
+  });
+
+  return { success: result.success, id: result.id, error: result.error };
+}
+
+// ---------------------------------------------------------------------------
 // Account: email verification + password reset (hosted auth)
 // ---------------------------------------------------------------------------
 

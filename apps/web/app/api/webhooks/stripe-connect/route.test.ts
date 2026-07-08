@@ -34,6 +34,11 @@ vi.mock("@/lib/webhook-dispatcher", () => ({
   dispatchWebhookEvent: vi.fn(async () => undefined),
 }));
 
+vi.mock("@/lib/billing/client-receipts", () => ({
+  loadClientReceipt: vi.fn(async () => null),
+  deliverClientReceipt: vi.fn(async () => undefined),
+}));
+
 const { POST } = await import("./route");
 
 function stripeRequest() {

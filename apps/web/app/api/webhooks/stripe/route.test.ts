@@ -48,6 +48,8 @@ const mocks = vi.hoisted(() => {
     claimStripeEvent: vi.fn(async () => true),
     constructWebhookEvent: vi.fn(),
     dispatchWebhookEvent: vi.fn(async () => undefined),
+    loadClientReceipt: vi.fn(async (): Promise<unknown> => null),
+    deliverClientReceipt: vi.fn(async () => undefined),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
       fn(db)
     ),
@@ -72,6 +74,11 @@ vi.mock("@/lib/billing/stripe-events", () => ({
 
 vi.mock("@/lib/webhook-dispatcher", () => ({
   dispatchWebhookEvent: mocks.dispatchWebhookEvent,
+}));
+
+vi.mock("@/lib/billing/client-receipts", () => ({
+  loadClientReceipt: mocks.loadClientReceipt,
+  deliverClientReceipt: mocks.deliverClientReceipt,
 }));
 
 const { POST } = await import("./route");
@@ -139,6 +146,7 @@ afterEach(() => {
   vi.clearAllMocks();
   mocks.selectResults.length = 0;
   mocks.claimStripeEvent.mockResolvedValue(true);
+  mocks.loadClientReceipt.mockResolvedValue(null);
 });
 
 describe("Stripe client invoice webhook", () => {
@@ -229,6 +237,23 @@ describe("Stripe client invoice webhook", () => {
         source: "stripe",
       }
     );
+    // A newly recorded payment emails the pet owner a receipt.
+    expect(mocks.loadClientReceipt).toHaveBeenCalledWith(mocks.db, INVOICE_ID, {
+      amountPaidCents: 12500,
+      balanceRemainingCents: 0,
+    });
+  });
+
+  it("emails a receipt only when the client has an email on file", async () => {
+    mocks.constructWebhookEvent.mockResolvedValue(checkoutEvent());
+    const receipt = { to: "jane@example.com" };
+    mocks.loadClientReceipt.mockResolvedValue(receipt);
+    mocks.selectResults.push([activeInvoice], [], [], [{ total: "125.00" }]);
+
+    const response = await POST(stripeRequest());
+
+    await expect(response.json()).resolves.toEqual({ received: true });
+    expect(mocks.deliverClientReceipt).toHaveBeenCalledWith(receipt);
   });
 
   it("skips money side effects for already-claimed Stripe events", async () => {

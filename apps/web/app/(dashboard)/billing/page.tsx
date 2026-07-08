@@ -144,6 +144,7 @@ function getDisplayStatus(invoice: {
 export default function BillingPage() {
   const router = useRouter();
   const { data: session } = useSession();
+  const formatCurrency = useCurrencyFormatter();
   const canManageBilling = canManageBillingRole(session?.user?.role);
   const [activeTab, setActiveTab] = useState(0);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -162,6 +163,9 @@ export default function BillingPage() {
     isEstimate: isEstimateFilter,
     limit,
     offset,
+  });
+  const arSummary = trpc.billing.arSummary.useQuery(undefined, {
+    staleTime: 60 * 1000,
   });
   const listError = billingConfig.error ?? error;
   const isListLoading = billingConfig.isLoading || isLoading;
@@ -254,6 +258,46 @@ export default function BillingPage() {
         settingsReady={billingSettingsReady}
         canManageBilling={canManageBilling}
       />
+
+      {/* Accounts receivable at a glance */}
+      <div className="mt-6 grid gap-4 sm:grid-cols-3">
+        <div className="rounded-lg border border-border bg-card p-4">
+          <p className="text-sm text-muted-foreground">Outstanding</p>
+          <p className="mt-1 font-heading text-2xl font-semibold">
+            {arSummary.isError
+              ? "—"
+              : arSummary.data
+                ? formatCurrency(arSummary.data.outstanding)
+                : "…"}
+          </p>
+        </div>
+        <div className="rounded-lg border border-border bg-card p-4">
+          <p className="text-sm text-muted-foreground">Overdue</p>
+          <p
+            className={`mt-1 font-heading text-2xl font-semibold ${
+              arSummary.data && Number(arSummary.data.overdue) > 0
+                ? "text-destructive"
+                : ""
+            }`}
+          >
+            {arSummary.isError
+              ? "—"
+              : arSummary.data
+                ? formatCurrency(arSummary.data.overdue)
+                : "…"}
+          </p>
+        </div>
+        <div className="rounded-lg border border-border bg-card p-4">
+          <p className="text-sm text-muted-foreground">Collected this month</p>
+          <p className="mt-1 font-heading text-2xl font-semibold">
+            {arSummary.isError
+              ? "—"
+              : arSummary.data
+                ? formatCurrency(arSummary.data.collectedThisMonth)
+                : "…"}
+          </p>
+        </div>
+      </div>
 
       {/* Status filter tabs */}
       <div className="mt-6 flex items-center gap-1 border-b border-border">

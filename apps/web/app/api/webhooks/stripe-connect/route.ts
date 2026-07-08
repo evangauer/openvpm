@@ -20,6 +20,11 @@ import {
   stripeConnectAccountState,
 } from "@/lib/billing/payment-accounts";
 import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
+import {
+  deliverClientReceipt,
+  loadClientReceipt,
+  type ClientReceipt,
+} from "@/lib/billing/client-receipts";
 import { readRequestTextWithLimit } from "@/lib/request-json";
 import {
   STRIPE_WEBHOOK_BODY_MAX_BYTES,
@@ -74,6 +79,7 @@ export async function POST(req: NextRequest) {
       practiceId: string;
       payload: Record<string, any>;
     }[] = [];
+    const clientReceipts: ClientReceipt[] = [];
 
     await withSystem(db, async (tx) => {
       const claimed = await claimStripeEvent(tx, {
@@ -318,6 +324,15 @@ export async function POST(req: NextRequest) {
           },
         });
       }
+
+      // Receipt only for a newly recorded payment, never on redelivery.
+      if (!existingPayment) {
+        const receipt = await loadClientReceipt(tx, invoiceId, {
+          amountPaidCents: amountCents,
+          balanceRemainingCents: totalCents - paidCents - adjustedCents,
+        });
+        if (receipt) clientReceipts.push(receipt);
+      }
     });
 
     for (const paidInvoiceEvent of paidInvoiceEvents) {
@@ -326,6 +341,10 @@ export async function POST(req: NextRequest) {
         "invoice.paid",
         paidInvoiceEvent.payload,
       );
+    }
+
+    for (const receipt of clientReceipts) {
+      await deliverClientReceipt(receipt);
     }
 
     return NextResponse.json({ received: true });
