@@ -147,6 +147,28 @@ const journeyStepIdInput = z
  */
 export const ESTABLISHED_PRACTICE_PATIENT_THRESHOLD = 5;
 
+/**
+ * Atomic JSONB patches for practices.settings. Wizard mutations land
+ * concurrently (finishing fires while the step cursor is still persisting);
+ * read-modify-write of the whole JSON loses whichever write commits first,
+ * so patches must merge in-database against the current row.
+ */
+function settingsMergePatch(patch: Record<string, unknown>) {
+  return sql`coalesce(${practices.settings}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb`;
+}
+
+function settingsRemoveKey(key: string) {
+  return sql`coalesce(${practices.settings}, '{}'::jsonb) - ${key}`;
+}
+
+function onboardingStateMergePatch(patch: Record<string, unknown>) {
+  return sql`jsonb_set(
+    coalesce(${practices.settings}, '{}'::jsonb),
+    '{onboardingState}',
+    coalesce(${practices.settings}->'onboardingState', '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb
+  )`;
+}
+
 function staffAdminRosterLockKey(practiceId: string) {
   return `settings:staff-admin-roster:${practiceId}`;
 }
@@ -787,19 +809,18 @@ export const settingsRouter = createRouter({
 
   /** Mark onboarding complete. */
   completeOnboarding: adminProcedure.mutation(async ({ ctx }) => {
-    const [practice] = await ctx.db
-      .select({ settings: practices.settings })
-      .from(practices)
+    const [updated] = await ctx.db
+      .update(practices)
+      .set({
+        settings: settingsMergePatch({
+          onboardingCompletedAt: new Date().toISOString(),
+        }),
+      })
       .where(activePracticeWhere(ctx.practiceId))
-      .limit(1);
-    if (!practice) {
+      .returning({ id: practices.id });
+    if (!updated) {
       throw practiceNotFound();
     }
-    const settings = (practice.settings ?? {}) as PracticeSettings;
-    await ctx.db
-      .update(practices)
-      .set({ settings: { ...settings, onboardingCompletedAt: new Date().toISOString() } })
-      .where(activePracticeWhere(ctx.practiceId));
     return { ok: true };
   }),
 
@@ -833,25 +854,17 @@ export const settingsRouter = createRouter({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const [practice] = await ctx.db
-        .select({ settings: practices.settings })
-        .from(practices)
+      const patch: Record<string, unknown> = { tourStatus: input.status };
+      if (input.lastStepId != null) patch.lastStepId = input.lastStepId;
+
+      const [updated] = await ctx.db
+        .update(practices)
+        .set({ settings: onboardingStateMergePatch(patch) })
         .where(activePracticeWhere(ctx.practiceId))
-        .limit(1);
-      if (!practice) {
+        .returning({ id: practices.id });
+      if (!updated) {
         throw practiceNotFound();
       }
-      const settings = (practice.settings ?? {}) as PracticeSettings;
-      const onboardingState = {
-        ...(settings.onboardingState ?? {}),
-        tourStatus: input.status,
-        lastStepId:
-          input.lastStepId ?? settings.onboardingState?.lastStepId ?? null,
-      };
-      await ctx.db
-        .update(practices)
-        .set({ settings: { ...settings, onboardingState } })
-        .where(activePracticeWhere(ctx.practiceId));
       return { ok: true };
     }),
 
@@ -868,49 +881,32 @@ export const settingsRouter = createRouter({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const [practice] = await ctx.db
-        .select({ settings: practices.settings })
-        .from(practices)
+      const patch: Record<string, unknown> = {};
+      if (input.stepId != null) patch.journeyStepId = input.stepId;
+      if (input.dismissed !== undefined) patch.journeyDismissed = input.dismissed;
+      if (Object.keys(patch).length === 0) return { ok: true };
+
+      const [updated] = await ctx.db
+        .update(practices)
+        .set({ settings: onboardingStateMergePatch(patch) })
         .where(activePracticeWhere(ctx.practiceId))
-        .limit(1);
-      if (!practice) {
+        .returning({ id: practices.id });
+      if (!updated) {
         throw practiceNotFound();
       }
-      const settings = (practice.settings ?? {}) as PracticeSettings;
-      const onboardingState = {
-        ...(settings.onboardingState ?? {}),
-        journeyStepId:
-          input.stepId ?? settings.onboardingState?.journeyStepId ?? null,
-        ...(input.dismissed !== undefined
-          ? { journeyDismissed: input.dismissed }
-          : {}),
-      };
-      await ctx.db
-        .update(practices)
-        .set({ settings: { ...settings, onboardingState } })
-        .where(activePracticeWhere(ctx.practiceId));
       return { ok: true };
     }),
 
   /** Dismiss the dashboard "finish setup" card. */
   dismissSetup: adminProcedure.mutation(async ({ ctx }) => {
-    const [practice] = await ctx.db
-      .select({ settings: practices.settings })
-      .from(practices)
+    const [updated] = await ctx.db
+      .update(practices)
+      .set({ settings: onboardingStateMergePatch({ setupDismissed: true }) })
       .where(activePracticeWhere(ctx.practiceId))
-      .limit(1);
-    if (!practice) {
+      .returning({ id: practices.id });
+    if (!updated) {
       throw practiceNotFound();
     }
-    const settings = (practice.settings ?? {}) as PracticeSettings;
-    const onboardingState = {
-      ...(settings.onboardingState ?? {}),
-      setupDismissed: true,
-    };
-    await ctx.db
-      .update(practices)
-      .set({ settings: { ...settings, onboardingState } })
-      .where(activePracticeWhere(ctx.practiceId));
     return { ok: true };
   }),
 
@@ -1024,10 +1020,9 @@ export const settingsRouter = createRouter({
           );
       }
     }
-    const { demoData: _omit, ...rest } = settings;
     await ctx.db
       .update(practices)
-      .set({ settings: rest })
+      .set({ settings: settingsRemoveKey("demoData") })
       .where(activePracticeWhere(ctx.practiceId));
     return { ok: true };
   }),
@@ -1047,7 +1042,7 @@ export const settingsRouter = createRouter({
     const demoData = await seedDemoData(ctx.db, { practiceId: ctx.practiceId });
     await ctx.db
       .update(practices)
-      .set({ settings: { ...settings, demoData } })
+      .set({ settings: settingsMergePatch({ demoData }) })
       .where(activePracticeWhere(ctx.practiceId));
     return { ok: true, alreadyPresent: false };
   }),

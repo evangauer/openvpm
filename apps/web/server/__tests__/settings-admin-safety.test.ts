@@ -219,11 +219,15 @@ describe("settings admin stale target safety", () => {
       updatedRows: [],
     });
 
+    // completeOnboarding writes with a guarded atomic update: the
+    // active-practice predicate excludes missing/deleted rows, so zero
+    // updated rows surfaces as NOT_FOUND and no fallback state is created.
     await expect(callerWithDb(db).completeOnboarding()).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
     });
-    expect(updateSet).not.toHaveBeenCalled();
+    expect(updateSet).toHaveBeenCalledTimes(1);
+    updateSet.mockClear();
 
     await expect(
       callerWithDb(db).updatePractice({ name: "Neighborhood Veterinary" })
