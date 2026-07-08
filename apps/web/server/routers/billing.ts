@@ -14,6 +14,7 @@ import {
   createConnectAccount,
   createConnectAccountLink,
   createConnectLoginLink,
+  refundStripeCheckoutPayment,
   retrieveConnectAccount,
 } from "@/lib/stripe";
 import { billingEnforced } from "@/lib/billing/plans";
@@ -1374,6 +1375,183 @@ export const billingRouter = createRouter({
           )
         )
         .orderBy(desc(payments.receivedAt));
+    }),
+
+  /**
+   * Refund a recorded payment, at most once per payment. Card payments are
+   * refunded at Stripe inside the same transaction that records the refund:
+   * the unique refund external id is inserted first (a concurrent attempt
+   * dies on the index before reaching Stripe) and the Stripe call runs last
+   * (a Stripe failure rolls the local record back). Recorded as a negative
+   * payment row so paid-amount recomputation and AR stay consistent.
+   */
+  refundPayment: protectedProcedure
+    .use(requireRole("admin"))
+    .input(
+      z.object({
+        paymentId: z.string().uuid(),
+        amount: paymentAmountSchema.optional(),
+        reason: z
+          .string()
+          .trim()
+          .max(BILLING_ADJUSTMENT_REASON_MAX_LENGTH)
+          .optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [payment] = await ctx.db
+        .select({
+          id: payments.id,
+          invoiceId: payments.invoiceId,
+          amount: payments.amount,
+          method: payments.method,
+          externalId: payments.externalId,
+        })
+        .from(payments)
+        .where(
+          and(
+            eq(payments.id, input.paymentId),
+            paymentPracticeScope(ctx),
+            isNull(payments.deletedAt)
+          )
+        )
+        .limit(1);
+
+      if (!payment) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Payment not found" });
+      }
+
+      const originalCents = moneyToCents(payment.amount);
+      if (originalCents <= 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Only payments can be refunded.",
+        });
+      }
+
+      const refundExternalId = `refund:payment:${payment.id}`;
+      const [existingRefund] = await ctx.db
+        .select({ id: payments.id })
+        .from(payments)
+        .where(
+          and(
+            eq(payments.externalId, refundExternalId),
+            isNull(payments.deletedAt)
+          )
+        )
+        .limit(1);
+      if (existingRefund) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "This payment has already been refunded.",
+        });
+      }
+
+      const amountCents = input.amount
+        ? moneyToCents(input.amount)
+        : originalCents;
+      if (amountCents <= 0 || amountCents > originalCents) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Refund exceeds the original payment.",
+        });
+      }
+
+      const invoice = await getInvoiceForPractice(ctx, payment.invoiceId);
+      const adjustedCents = await getInvoiceAdjustmentTotalCents(
+        ctx,
+        payment.invoiceId
+      );
+      const paidBeforeCents = moneyToCents(invoice.paidAmount);
+      const paidAfterCents = paidBeforeCents - amountCents;
+      const updates: Record<string, any> = {
+        paidAmount: centsToMoney(paidAfterCents),
+      };
+      if (
+        invoice.status === "paid" &&
+        paidAfterCents + adjustedCents < moneyToCents(invoice.total)
+      ) {
+        // A refunded balance reopens the invoice for collection.
+        updates.status = "sent";
+      }
+
+      const refund = await ctx.db.transaction(async (tx) => {
+        const [createdRefund] = await tx
+          .insert(payments)
+          .values({
+            invoiceId: payment.invoiceId,
+            amount: centsToMoney(-amountCents),
+            method: payment.method,
+            receivedBy: ctx.user.id,
+            externalId: refundExternalId,
+            notes: input.reason
+              ? `Refund: ${input.reason}`
+              : "Refund of recorded payment",
+          })
+          .returning();
+
+        const [updatedInvoice] = await tx
+          .update(invoices)
+          .set(updates)
+          .where(
+            and(
+              eq(invoices.id, payment.invoiceId),
+              eq(invoices.practiceId, ctx.practiceId),
+              isNull(invoices.deletedAt),
+              eq(invoices.isEstimate, false),
+              eq(invoices.status, invoice.status),
+              eq(invoices.paidAmount, invoice.paidAmount ?? "0"),
+              invoiceAdjustmentTotalMatches(adjustedCents)
+            )
+          )
+          .returning({ id: invoices.id });
+
+        if (!updatedInvoice) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "Invoice changed while refunding. Refresh and try again.",
+          });
+        }
+
+        // Real money moves last so any failure above (including the unique
+        // refund id) means Stripe was never called; a Stripe failure here
+        // rolls back the local record.
+        const stripeRefund = await refundStripeCheckoutPayment({
+          externalId: payment.externalId,
+          amountCents,
+        }).catch((err) => {
+          console.error("[billing] Stripe refund failed:", err);
+          throw new TRPCError({
+            code: "BAD_GATEWAY",
+            message:
+              "Stripe could not process the refund. Nothing was recorded.",
+          });
+        });
+
+        if (stripeRefund) {
+          await tx
+            .update(payments)
+            .set({
+              notes: `${createdRefund!.notes} (Stripe refund ${stripeRefund.refundId})`,
+            })
+            .where(eq(payments.id, createdRefund!.id));
+        }
+
+        return createdRefund!;
+      });
+
+      await dispatchWebhookEvent(ctx.practiceId, "invoice.refunded", {
+        id: payment.invoiceId,
+        paymentId: payment.id,
+        refundId: refund.id,
+        amount: centsToMoney(amountCents),
+        paidAmount: centsToMoney(paidAfterCents),
+        total: invoice.total,
+        source: "dashboard",
+      });
+
+      return refund;
     }),
 
   /**

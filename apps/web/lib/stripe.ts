@@ -40,6 +40,72 @@ export async function createCheckoutSession(data: {
   return { url: stripeCheckoutRedirectUrl(session.url) };
 }
 
+/**
+ * Parse a payments.external_id written by the checkout webhooks.
+ * `stripe:checkout:<session>` is a platform charge (self-host / legacy);
+ * `stripe:connect:<acct>:checkout:<session>` is a Connect destination charge.
+ * Returns null for non-Stripe payments (cash, check, manual).
+ */
+export function parseStripeCheckoutExternalId(
+  externalId: string | null | undefined
+): { sessionId: string; connectedAccountId?: string } | null {
+  if (!externalId) return null;
+  const connect = externalId.match(/^stripe:connect:([^:]+):checkout:(.+)$/);
+  if (connect) {
+    return { connectedAccountId: connect[1]!, sessionId: connect[2]! };
+  }
+  const platform = externalId.match(/^stripe:checkout:(.+)$/);
+  if (platform) {
+    return { sessionId: platform[1]! };
+  }
+  return null;
+}
+
+/**
+ * Refund a card payment recorded from a Checkout session. Throws on any
+ * Stripe failure — a refund the staff believes happened must never silently
+ * not happen. Returns null when the payment is not a Stripe payment.
+ */
+export async function refundStripeCheckoutPayment(data: {
+  externalId: string | null | undefined;
+  amountCents: number;
+}): Promise<{ refundId: string } | null> {
+  const parsed = parseStripeCheckoutExternalId(data.externalId);
+  if (!parsed) return null;
+  if (!stripe) {
+    throw new Error("Stripe is not configured; cannot refund a card payment.");
+  }
+
+  const requestOptions = parsed.connectedAccountId
+    ? { stripeAccount: parsed.connectedAccountId }
+    : undefined;
+  const session = requestOptions
+    ? await stripe.checkout.sessions.retrieve(parsed.sessionId, requestOptions)
+    : await stripe.checkout.sessions.retrieve(parsed.sessionId);
+  const paymentIntent =
+    typeof session.payment_intent === "string"
+      ? session.payment_intent
+      : session.payment_intent?.id;
+  if (!paymentIntent) {
+    throw new Error(
+      `Stripe Checkout session has no payment intent to refund: ${parsed.sessionId}`
+    );
+  }
+
+  const params: Stripe.RefundCreateParams = {
+    payment_intent: paymentIntent,
+    amount: data.amountCents,
+    // On Connect destination charges, return the platform fee too so the
+    // clinic is never out of pocket for a refund.
+    ...(parsed.connectedAccountId ? { refund_application_fee: true } : {}),
+  };
+  const refund = requestOptions
+    ? await stripe.refunds.create(params, requestOptions)
+    : await stripe.refunds.create(params);
+
+  return { refundId: refund.id };
+}
+
 export function buildInvoiceCheckoutSessionParams(data: {
   invoiceId: string;
   amount: number;

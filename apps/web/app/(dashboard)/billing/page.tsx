@@ -1180,6 +1180,21 @@ function PaymentSection({
     },
   });
 
+  const refundPayment = trpc.billing.refundPayment.useMutation({
+    onSuccess: () => {
+      toast.success("Payment refunded");
+      utils.billing.listPayments.invalidate({ invoiceId });
+      utils.billing.listInvoices.invalidate();
+      utils.billing.getInvoice.invalidate({ id: invoiceId });
+      utils.billing.arSummary.invalidate();
+    },
+    onError: (err) => {
+      toast.error(err.message);
+    },
+  });
+  const { data: paymentSession } = useSession();
+  const canRefund = paymentSession?.user?.role === "admin";
+
   const remaining = Math.max(0, Number(invoiceBalanceDue ?? 0));
   const amountInputMax = Math.min(remaining, BILLING_UNIT_PRICE_MAX);
   const canCollect =
@@ -1463,6 +1478,7 @@ function PaymentSection({
               <th className="py-2 text-left font-medium text-muted-foreground">
                 Notes
               </th>
+              {canRefund && <th className="py-2" />}
             </tr>
           </thead>
           <tbody>
@@ -1479,7 +1495,13 @@ function PaymentSection({
                       )
                     : "\u2014"}
                 </td>
-                <td className="py-2 text-right tabular-nums font-medium text-green-600">
+                <td
+                  className={`py-2 text-right tabular-nums font-medium ${
+                    Number(payment.amount) < 0
+                      ? "text-destructive"
+                      : "text-green-600"
+                  }`}
+                >
                   {formatCurrency(payment.amount)}
                 </td>
                 <td className="py-2 capitalize text-muted-foreground">
@@ -1491,6 +1513,30 @@ function PaymentSection({
                 <td className="py-2 text-muted-foreground">
                   {payment.notes || "\u2014"}
                 </td>
+                {canRefund && (
+                  <td className="py-2 text-right">
+                    {Number(payment.amount) > 0 && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive"
+                        disabled={refundPayment.isPending}
+                        onClick={() => {
+                          if (
+                            !window.confirm(
+                              `Refund ${formatCurrency(payment.amount)}? Card payments are refunded through Stripe.`
+                            )
+                          ) {
+                            return;
+                          }
+                          refundPayment.mutate({ paymentId: payment.id });
+                        }}
+                      >
+                        Refund
+                      </Button>
+                    )}
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>

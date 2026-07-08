@@ -490,3 +490,25 @@ describe("construct Stripe webhook events", () => {
     );
   });
 });
+
+describe("parseStripeCheckoutExternalId", () => {
+  it("parses platform and Connect checkout external ids", async () => {
+    const { parseStripeCheckoutExternalId } = await import("@/lib/stripe");
+
+    expect(parseStripeCheckoutExternalId("stripe:checkout:cs_123")).toEqual({
+      sessionId: "cs_123",
+    });
+    expect(
+      parseStripeCheckoutExternalId("stripe:connect:acct_9:checkout:cs_456")
+    ).toEqual({ connectedAccountId: "acct_9", sessionId: "cs_456" });
+  });
+
+  it("returns null for manual payments and unknown formats", async () => {
+    const { parseStripeCheckoutExternalId } = await import("@/lib/stripe");
+
+    expect(parseStripeCheckoutExternalId(null)).toBeNull();
+    expect(parseStripeCheckoutExternalId(undefined)).toBeNull();
+    expect(parseStripeCheckoutExternalId("refund:payment:abc")).toBeNull();
+    expect(parseStripeCheckoutExternalId("stripe:refund:re_1")).toBeNull();
+  });
+});

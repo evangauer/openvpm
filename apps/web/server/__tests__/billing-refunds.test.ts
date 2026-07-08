@@ -1,0 +1,288 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+  recordAuditLog: vi.fn(async () => undefined),
+  dispatchWebhookEvent: vi.fn(async () => undefined),
+  loadClientReceipt: vi.fn(async (): Promise<unknown> => null),
+  deliverClientReceipt: vi.fn(async () => undefined),
+  refundStripeCheckoutPayment: vi.fn(
+    async (): Promise<{ refundId: string } | null> => null
+  ),
+}));
+
+vi.mock("@/lib/audit", () => ({
+  recordAuditLog: mocks.recordAuditLog,
+}));
+
+vi.mock("@/lib/webhook-dispatcher", () => ({
+  dispatchWebhookEvent: mocks.dispatchWebhookEvent,
+}));
+
+vi.mock("@/lib/billing/client-receipts", () => ({
+  loadClientReceipt: mocks.loadClientReceipt,
+  deliverClientReceipt: mocks.deliverClientReceipt,
+}));
+
+vi.mock("@/lib/stripe", () => ({
+  createCheckoutSession: vi.fn(),
+  createConnectAccount: vi.fn(),
+  createConnectAccountLink: vi.fn(),
+  createConnectLoginLink: vi.fn(),
+  refundStripeCheckoutPayment: mocks.refundStripeCheckoutPayment,
+  retrieveConnectAccount: vi.fn(),
+}));
+
+const { billingRouter } = await import("../routers/billing");
+
+const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
+const USER_ID = "00000000-0000-0000-0000-000000000001";
+const INVOICE_ID = "00000000-0000-0000-0000-000000000002";
+const PAYMENT_ID = "00000000-0000-0000-0000-000000000003";
+
+const paidInvoice = {
+  id: INVOICE_ID,
+  total: "100.00",
+  paidAmount: "100.00",
+  status: "paid",
+  isEstimate: false,
+};
+
+const cardPayment = {
+  id: PAYMENT_ID,
+  invoiceId: INVOICE_ID,
+  amount: "100.00",
+  method: "online",
+  externalId: "stripe:connect:acct_9:checkout:cs_456",
+};
+
+function callerWithDb(db: Record<string, unknown>, role = "admin") {
+  const session = {
+    user: {
+      id: USER_ID,
+      email: "admin@example.com",
+      name: "Admin",
+      role,
+      practiceId: PRACTICE_ID,
+    },
+  };
+  return billingRouter.createCaller({ db, session } as never);
+}
+
+function thenableRows(result: unknown[]) {
+  return {
+    limit: vi.fn(async () => result),
+    then: (
+      resolve: (value: unknown[]) => unknown,
+      reject?: (e: unknown) => unknown
+    ) => Promise.resolve(result).then(resolve, reject),
+  };
+}
+
+function createDb(opts: {
+  selectResults: unknown[][];
+  refundRow?: Record<string, unknown>;
+  updateReturns?: unknown[][];
+}) {
+  const selectResults = [...opts.selectResults];
+  const select = vi.fn(() => {
+    const result = selectResults.shift() ?? [];
+    const afterWhere = thenableRows(result);
+    const builder = {
+      from: vi.fn(() => builder),
+      leftJoin: vi.fn(() => builder),
+      where: vi.fn(() => afterWhere),
+      orderBy: vi.fn(async () => result),
+      limit: vi.fn(async () => result),
+    };
+    return builder;
+  });
+
+  const refundRow = opts.refundRow ?? {
+    id: "00000000-0000-0000-0000-000000000009",
+    invoiceId: INVOICE_ID,
+    amount: "-100.00",
+    notes: "Refund of recorded payment",
+  };
+  const insertReturning = vi.fn(async () => [refundRow]);
+  const insertValues = vi.fn(() => ({ returning: insertReturning }));
+  const insert = vi.fn(() => ({ values: insertValues }));
+
+  const updateReturns = [...(opts.updateReturns ?? [[{ id: INVOICE_ID }]])];
+  const updateWhere = vi.fn(() => ({
+    returning: vi.fn(async () => updateReturns.shift() ?? []),
+    then: (resolve: (v: unknown) => unknown) => Promise.resolve(resolve([])),
+  }));
+  const updateSet = vi.fn(() => ({ where: updateWhere }));
+  const update = vi.fn(() => ({ set: updateSet }));
+
+  const db: Record<string, unknown> = {
+    transaction: async (fn: (tx: unknown) => unknown) => fn(db),
+    execute: vi.fn(async () => undefined),
+    select,
+    insert,
+    update,
+  };
+  return { db, select, insert, insertValues, updateSet };
+}
+
+afterEach(() => {
+  vi.clearAllMocks();
+  mocks.refundStripeCheckoutPayment.mockResolvedValue(null);
+});
+
+describe("billing refunds", () => {
+  it("refunds a card payment through Stripe and reopens the invoice", async () => {
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [
+        [cardPayment], // payment lookup
+        [], // no existing refund
+        [paidInvoice], // invoice
+        [], // adjustments
+      ],
+    });
+    mocks.refundStripeCheckoutPayment.mockResolvedValue({
+      refundId: "re_123",
+    });
+
+    await callerWithDb(db).refundPayment({
+      paymentId: PAYMENT_ID,
+      reason: "Owner cancelled",
+    });
+
+    expect(insertValues).toHaveBeenCalledWith({
+      invoiceId: INVOICE_ID,
+      amount: "-100.00",
+      method: "online",
+      receivedBy: USER_ID,
+      externalId: `refund:payment:${PAYMENT_ID}`,
+      notes: "Refund: Owner cancelled",
+    });
+    // A fully refunded paid invoice reopens for collection.
+    expect(updateSet).toHaveBeenCalledWith({
+      paidAmount: "0.00",
+      status: "sent",
+    });
+    expect(mocks.refundStripeCheckoutPayment).toHaveBeenCalledWith({
+      externalId: "stripe:connect:acct_9:checkout:cs_456",
+      amountCents: 10000,
+    });
+    expect(mocks.dispatchWebhookEvent).toHaveBeenCalledWith(
+      PRACTICE_ID,
+      "invoice.refunded",
+      expect.objectContaining({
+        id: INVOICE_ID,
+        paymentId: PAYMENT_ID,
+        amount: "100.00",
+        paidAmount: "0.00",
+      })
+    );
+  });
+
+  it("requires the admin role", async () => {
+    const { db } = createDb({ selectResults: [] });
+
+    await expect(
+      callerWithDb(db, "front_desk").refundPayment({ paymentId: PAYMENT_ID })
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.refundStripeCheckoutPayment).not.toHaveBeenCalled();
+  });
+
+  it("refuses a second refund of the same payment before touching Stripe", async () => {
+    const { db, insert } = createDb({
+      selectResults: [
+        [cardPayment],
+        [{ id: "existing-refund" }], // refund already recorded
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).refundPayment({ paymentId: PAYMENT_ID })
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "This payment has already been refunded.",
+    });
+    expect(mocks.refundStripeCheckoutPayment).not.toHaveBeenCalled();
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it("refuses to refund a refund row", async () => {
+    const { db } = createDb({
+      selectResults: [[{ ...cardPayment, amount: "-100.00" }]],
+    });
+
+    await expect(
+      callerWithDb(db).refundPayment({ paymentId: PAYMENT_ID })
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "Only payments can be refunded.",
+    });
+  });
+
+  it("caps partial refunds at the original payment amount", async () => {
+    const { db } = createDb({
+      selectResults: [[cardPayment], [], [paidInvoice], []],
+    });
+
+    await expect(
+      callerWithDb(db).refundPayment({
+        paymentId: PAYMENT_ID,
+        amount: "150.00",
+      })
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "Refund exceeds the original payment.",
+    });
+    expect(mocks.refundStripeCheckoutPayment).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a Stripe refund failure and records nothing", async () => {
+    const { db } = createDb({
+      selectResults: [[cardPayment], [], [paidInvoice], []],
+    });
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    mocks.refundStripeCheckoutPayment.mockRejectedValue(
+      new Error("stripe down")
+    );
+
+    try {
+      await expect(
+        callerWithDb(db).refundPayment({ paymentId: PAYMENT_ID })
+      ).rejects.toMatchObject({
+        code: "BAD_GATEWAY",
+        message: "Stripe could not process the refund. Nothing was recorded.",
+      });
+      expect(mocks.dispatchWebhookEvent).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("refunds manual payments without calling Stripe APIs", async () => {
+    const manualPayment = {
+      ...cardPayment,
+      method: "cash",
+      externalId: null,
+    };
+    const { db, insertValues } = createDb({
+      selectResults: [[manualPayment], [], [paidInvoice], []],
+    });
+
+    await callerWithDb(db).refundPayment({ paymentId: PAYMENT_ID });
+
+    // The helper is still consulted, but a null externalId is not a Stripe
+    // payment, so no Stripe refund happens (mock resolves null).
+    expect(mocks.refundStripeCheckoutPayment).toHaveBeenCalledWith({
+      externalId: null,
+      amountCents: 10000,
+    });
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amount: "-100.00",
+        method: "cash",
+        externalId: `refund:payment:${PAYMENT_ID}`,
+      })
+    );
+  });
+});
