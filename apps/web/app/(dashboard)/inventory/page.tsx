@@ -958,8 +958,8 @@ export default function InventoryPage() {
       {/* Products Tab */}
       {tab === "products" && (
         <>
-          <div className="mt-4 flex items-center gap-4">
-            <div className="relative flex-1 max-w-sm">
+          <div className="mt-4 flex flex-wrap items-center gap-3 sm:gap-4">
+            <div className="relative w-full min-w-48 flex-1 sm:max-w-sm">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 placeholder="Search by name or SKU..."

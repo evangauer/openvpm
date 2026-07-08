@@ -125,7 +125,10 @@ export function TopBar({
       </div>
 
       <div className="flex shrink-0 items-center gap-2">
-        <TrialBadge />
+        {/* Below sm the pill would crush the page title into one character. */}
+        <div className="hidden sm:block">
+          <TrialBadge />
+        </div>
         <button
           type="button"
           onClick={onSearchOpen}

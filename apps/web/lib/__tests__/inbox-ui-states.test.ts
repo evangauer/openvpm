@@ -251,4 +251,14 @@ describe("inbox UI states", () => {
       source.indexOf("smsComposeBlocked && smsSummary")
     );
   });
+
+  it("collapses the two-pane layout on phones: list or thread, with a back button", () => {
+    // Below md, an open conversation replaces the list instead of squeezing
+    // beside it; the back button restores the list.
+    expect(source).toContain('selectedClientId || selectedUnmatched || newMessageMode');
+    expect(source).toContain('"hidden"');
+    expect(source).toContain("md:w-80 md:border-r");
+    expect(source).toContain("Back to conversations");
+    expect(source).toContain("setSelectedUnmatched(null);");
+  });
 });

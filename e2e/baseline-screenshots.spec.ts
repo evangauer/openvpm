@@ -22,6 +22,7 @@ const ADMIN_PASSWORD = process.env.BASELINE_PASSWORD ?? "password123";
 const WIDTHS = [
   { name: "desktop", viewport: { width: 1440, height: 900 } },
   { name: "tablet", viewport: { width: 768, height: 1024 } },
+  { name: "mobile", viewport: { width: 375, height: 812 } },
 ] as const;
 
 const APP_ROUTES: { slug: string; route: string }[] = [
@@ -242,6 +243,22 @@ for (const width of WIDTHS) {
 
     for (const { slug, route } of APP_ROUTES) {
       await captureRoute(page, collector, width.name, slug, route, results);
+    }
+
+    // Below lg the sidebar lives in a drawer; capture it open.
+    if (width.viewport.width < 1024) {
+      await page.goto("/", { waitUntil: "networkidle" }).catch(() => {});
+      const menuButton = page.getByRole("button", { name: /open navigation|menu/i }).first();
+      if (await menuButton.isVisible().catch(() => false)) {
+        await menuButton.click();
+        await page.waitForTimeout(600);
+        await page
+          .screenshot({
+            path: path.join(OUT, width.name, "mobile-nav-open.png"),
+          })
+          .catch(() => {});
+        await page.keyboard.press("Escape");
+      }
     }
 
     await captureFirstRowDetail(

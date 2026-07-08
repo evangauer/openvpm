@@ -643,10 +643,18 @@ export default function InboxPage() {
         </div>
       ) : null}
 
-      {/* Two-panel layout */}
+      {/* Two-panel layout; below md the panes swap (list OR thread) so
+          neither renders into ~half a phone screen. */}
       <div className="flex flex-1 rounded-lg border border-border bg-card overflow-hidden min-h-0">
         {/* Left panel - list */}
-        <div className="w-80 border-r border-border flex flex-col shrink-0">
+        <div
+          className={cn(
+            "w-full flex-col border-border shrink-0 md:flex md:w-80 md:border-r",
+            selectedClientId || selectedUnmatched || newMessageMode
+              ? "hidden"
+              : "flex"
+          )}
+        >
           {/* Filter tabs */}
           <div className="flex border-b border-border">
             {filterTabs.map((tab) => (
@@ -775,7 +783,28 @@ export default function InboxPage() {
         </div>
 
         {/* Right panel - detail/compose */}
-        <div className="flex-1 flex flex-col min-w-0">
+        <div
+          className={cn(
+            "flex-1 flex-col min-w-0 md:flex",
+            selectedClientId || selectedUnmatched || newMessageMode
+              ? "flex"
+              : "hidden"
+          )}
+        >
+          {(selectedClientId || selectedUnmatched || newMessageMode) && (
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedClientId(null);
+                setSelectedUnmatched(null);
+                setNewMessageMode(false);
+              }}
+              className="flex items-center gap-1.5 border-b border-border px-4 py-2 text-sm text-muted-foreground hover:text-foreground md:hidden"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Back to conversations
+            </button>
+          )}
           {newMessageMode && canMutateInbox ? (
             /* New message - client search */
             <div className="flex-1 flex flex-col">

@@ -504,7 +504,7 @@ export default function PatientDetailPage() {
 
       {/* Patient Header Card */}
       <div className="rounded-lg border border-border bg-card p-6">
-        <div className="flex items-start justify-between">
+        <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex items-start gap-4">
             <div className="group relative h-14 w-14">
               {patient.photoUrl ? (
@@ -578,7 +578,7 @@ export default function PatientDetailPage() {
               )}
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button
               variant="outline"
               size="sm"

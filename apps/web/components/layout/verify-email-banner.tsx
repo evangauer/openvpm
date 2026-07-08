@@ -74,9 +74,10 @@ export function VerifyEmailBanner() {
   if (!data.verificationEnabled || data.emailVerified) return null;
 
   return (
-    <div className="flex items-center gap-3 border-b border-amber-200 bg-amber-50 px-6 py-2.5 text-sm text-amber-900">
-      <Mail className="h-4 w-4 shrink-0" />
-      <p className="flex-1">
+    // Wraps at phone widths so the resend button never clips off-screen.
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-900 sm:px-6">
+      <Mail className="hidden h-4 w-4 shrink-0 sm:block" />
+      <p className="min-w-0 flex-1 basis-48">
         {resend.isSuccess ? (
           <span className="inline-flex items-center gap-1.5">
             <Check className="h-4 w-4" /> Verification email sent. Check your inbox (and spam).
@@ -93,7 +94,7 @@ export function VerifyEmailBanner() {
           type="button"
           disabled={resend.isPending || !data.email}
           onClick={() => data.email && resend.mutate({ email: data.email })}
-          className="inline-flex items-center gap-1.5 rounded-md border border-amber-300 bg-white px-2.5 py-1 text-xs font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+          className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-amber-300 bg-white px-2.5 py-1 text-xs font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50"
         >
           {resend.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
           Resend email
@@ -103,7 +104,7 @@ export function VerifyEmailBanner() {
         type="button"
         onClick={dismiss}
         aria-label="Dismiss"
-        className="rounded p-1 text-amber-700 hover:bg-amber-100"
+        className="shrink-0 rounded p-1 text-amber-700 hover:bg-amber-100"
       >
         <X className="h-4 w-4" />
       </button>
