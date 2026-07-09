@@ -17,6 +17,8 @@ This boundary is intentional. Do not add hosted-only requirements to the self-ho
 
 Cloud signup creates a practice, a primary location, the owner admin user, default configuration, and hosted first-run demo data. By default, signup grants a 14-day trial immediately with no card and the clinic lands in the product (adding a card converts to paid); email verification is a soft prompt, not a login gate. Set `HOSTED_NO_CARD_TRIAL=false` to reinstate the legacy card-collected checkout wall at signup.
 
+First run greets the new admin (and every invited staff member, once) with the value-first welcome: Polaroid guide cards that walk a workflow on the seeded demo data before any setup is asked. The Make-it-yours wizard is offered right after the first completed guide and from the welcome's "Set up my clinic instead" link. Rollback lever: `NEXT_PUBLIC_FIRST_RUN_MODE=wizard` restores the auto-opening wizard exactly. `NEXT_PUBLIC_WELCOME_VARIANT=imagery` switches the cards to the layered-art look (reviewers can flip live with `?welcomeVariant=`).
+
 Set the marketing deployment envs to:
 
 ```env

@@ -40,7 +40,14 @@ async function login(page: Page) {
     page.click('button[type="submit"]'),
   ]);
   await page.waitForTimeout(1000);
-  // If the wizard re-opens, park it; individual tests reopen what they need.
+  // Park first-run overlays; individual tests reopen what they need. The
+  // welcome surface greets each user once ("Skip for now" persists per
+  // browser context) and the wizard may resume for admins mid-setup.
+  const skipWelcome = page.getByRole("button", { name: /skip for now/i }).first();
+  if (await skipWelcome.isVisible().catch(() => false)) {
+    await skipWelcome.click();
+    await page.waitForTimeout(500);
+  }
   const later = page.getByText(/finish later/i).first();
   if (await later.isVisible().catch(() => false)) {
     await later.click();
@@ -69,6 +76,17 @@ test("Dogfood A: signup, wizard, dashboard", async ({ page }) => {
   // Cookie banner first so it never blocks wizard buttons.
   const cookie = page.getByRole("button", { name: /essential only/i });
   if (await cookie.isVisible().catch(() => false)) await cookie.click();
+
+  // Value-first welcome greets new signups; step into the wizard from its
+  // "Set up my clinic instead" link so the walk below stays the same.
+  const setupInstead = page
+    .getByRole("button", { name: /set up my clinic instead/i })
+    .first();
+  if (await setupInstead.isVisible().catch(() => false)) {
+    await shot(page, "welcome-surface");
+    await setupInstead.click();
+    await page.waitForTimeout(1200);
+  }
 
   // Walk the "Make it yours" wizard by always clicking the primary action.
   for (let step = 0; step < 12; step++) {
