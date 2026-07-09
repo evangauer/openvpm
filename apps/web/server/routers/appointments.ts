@@ -45,6 +45,8 @@ import {
   appointmentStatusValues,
   canTransitionAppointmentStatus,
 } from "@/lib/scheduling/appointment-status";
+import { generateCalendarFeedToken } from "@/lib/calendar/tokens";
+import { appBaseUrl } from "@/lib/app-url";
 
 type AppointmentsContext = {
   db: Database;
@@ -1196,7 +1198,70 @@ export const appointmentsRouter = createRouter({
         return { seriesId: series!.id, created, skipped };
       });
     }),
+
+  // ── ICS calendar feed ─────────────────────────────────────
+  // A practice-wide read-only "subscribe by URL" feed (Google, Apple,
+  // Outlook). One shared clinic calendar: same trust boundary as the
+  // whiteboard, so any staff member may read or turn on the URL. The token
+  // is a capability; rotation (admin-only) invalidates the old URL.
+
+  /** Current feed URL, or null when the feed has not been turned on. */
+  calendarFeed: protectedProcedure.query(async ({ ctx }) => {
+    const [practice] = await ctx.db
+      .select({ token: practices.calendarFeedToken })
+      .from(practices)
+      .where(and(eq(practices.id, ctx.practiceId), isNull(practices.deletedAt)))
+      .limit(1);
+    if (!practice) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "Practice not found" });
+    }
+    return { url: calendarFeedUrl(practice.token) };
+  }),
+
+  /**
+   * Turn the feed on. Idempotent under concurrency: COALESCE keeps the
+   * first token ever written, so double-clicks and racing staff both get
+   * the same URL back. (Viewers are blocked by the global mutation guard.)
+   */
+  enableCalendarFeed: protectedProcedure.mutation(async ({ ctx }) => {
+    const candidate = generateCalendarFeedToken();
+    const [updated] = await ctx.db
+      .update(practices)
+      .set({
+        calendarFeedToken: sql`coalesce(${practices.calendarFeedToken}, ${candidate})`,
+      })
+      .where(and(eq(practices.id, ctx.practiceId), isNull(practices.deletedAt)))
+      .returning({ token: practices.calendarFeedToken });
+    if (!updated?.token) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "Practice not found" });
+    }
+    return { url: calendarFeedUrl(updated.token)! };
+  }),
+
+  /** Replace the token. The old URL stops working for the whole clinic. */
+  rotateCalendarFeed: protectedProcedure
+    .use(requireRole("admin"))
+    .mutation(async ({ ctx }) => {
+      const [updated] = await ctx.db
+        .update(practices)
+        .set({ calendarFeedToken: generateCalendarFeedToken() })
+        .where(
+          and(eq(practices.id, ctx.practiceId), isNull(practices.deletedAt))
+        )
+        .returning({ token: practices.calendarFeedToken });
+      if (!updated?.token) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Practice not found",
+        });
+      }
+      return { url: calendarFeedUrl(updated.token)! };
+    }),
 });
+
+function calendarFeedUrl(token: string | null): string | null {
+  return token ? `${appBaseUrl()}/api/calendar/${token}.ics` : null;
+}
 
 /** Compute the start date/time for the Nth occurrence (0-based). */
 function computeOccurrenceDate(

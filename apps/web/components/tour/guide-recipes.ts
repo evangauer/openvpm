@@ -118,8 +118,20 @@ export function buildGuideSteps(
     }
 
     case "calendar-feed":
-      // Ships with the calendar subscribe button (its anchor does not exist
-      // yet). An empty recipe makes start() a safe no-op until then.
-      return [];
+      return [
+        {
+          id: "subscribe",
+          route: "/schedule",
+          anchor: "calendar-subscribe",
+          title: "Your schedule, in your calendar",
+          body: "Click this button to get your calendar link. Paste it into Google, Apple, or Outlook and it stays up to date on its own.",
+          advanceOn: GUIDE_SIGNALS.calendarUrlCopied,
+        },
+        {
+          id: "done",
+          title: "Set it and forget it",
+          body: "New visits now show up in your own calendar without any extra work.",
+        },
+      ];
   }
 }

@@ -103,8 +103,11 @@ describe("guide recipes", () => {
     expect(steps[0]!.advanceOn).toBeUndefined();
   });
 
-  it("calendar-feed stays a no-op until the subscribe button ships", () => {
-    expect(buildGuideSteps("calendar-feed", RICH_CONTEXT)).toEqual([]);
+  it("calendar-feed spotlights the subscribe button and advances on copy", () => {
+    const steps = buildGuideSteps("calendar-feed", RICH_CONTEXT);
+    expect(steps[0]!.route).toBe("/schedule");
+    expect(steps[0]!.anchor).toBe("calendar-subscribe");
+    expect(steps[0]!.advanceOn).toBe(GUIDE_SIGNALS.calendarUrlCopied);
   });
 
   it("keeps guide copy in voice: no em or en dashes", () => {

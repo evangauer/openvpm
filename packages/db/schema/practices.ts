@@ -8,6 +8,7 @@ import {
   numeric,
   timestamp,
   index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { baseColumns } from "./common";
@@ -46,6 +47,10 @@ export const practices = pgTable(
       .notNull()
       .default("8.00"),
     vatNumber: varchar("vat_number", { length: 32 }), // shown on invoices where applicable
+    // Capability token for the read-only ICS schedule feed (null = feed off).
+    // Practice-wide by design: one shared clinic calendar, same trust
+    // boundary as the whiteboard. Rotating it invalidates the old URL.
+    calendarFeedToken: varchar("calendar_feed_token", { length: 64 }),
   },
   (table) => ({
     billingTrialIdx: index("practices_billing_trial_idx").on(
@@ -60,6 +65,11 @@ export const practices = pgTable(
     stripeSubscriptionIdx: index("practices_stripe_subscription_idx").on(
       table.stripeSubscriptionId,
       table.deletedAt
+    ),
+    // Unique token lookup for the unauthenticated ICS feed route. Postgres
+    // treats NULLs as distinct, so practices without a feed are unaffected.
+    calendarFeedTokenUq: uniqueIndex("practices_calendar_feed_token_uq").on(
+      table.calendarFeedToken
     ),
   })
 );

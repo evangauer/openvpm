@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/common/empty-state";
+import { CalendarSubscribe } from "@/components/schedule/calendar-subscribe";
 import { cn } from "@/lib/utils";
 import { dateInputTimeUtcInstant } from "@/lib/date-input";
 import {
@@ -1867,11 +1868,12 @@ export default function SchedulePage() {
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 className="font-heading text-xl font-semibold">Schedule</h2>
           <p className="text-sm text-muted-foreground">Appointment calendar</p>
         </div>
+        <CalendarSubscribe />
       </div>
 
       {/* Toolbar */}
