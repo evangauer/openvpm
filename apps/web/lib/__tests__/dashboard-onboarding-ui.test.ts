@@ -6,10 +6,6 @@ describe("dashboard onboarding UI states", () => {
     "components/dashboard/activation-checklist.tsx",
     "utf8"
   );
-  const welcomeSource = readFileSync(
-    "components/dashboard/welcome-panel.tsx",
-    "utf8"
-  );
   const tourProviderSource = readFileSync(
     "components/tour/tour-provider.tsx",
     "utf8"
@@ -68,46 +64,12 @@ describe("dashboard onboarding UI states", () => {
     expect(activationSource).not.toContain("onboarding.data.hasDemoData");
   });
 
-  it("surfaces welcome panel loading and missing-data states before welcome copy", () => {
-    expect(welcomeSource).toContain('import { useSession } from "next-auth/react"');
-    expect(welcomeSource).toContain(
-      "const { data: session, status } = useSession()"
-    );
-    expect(welcomeSource).toContain(
-      'status === "authenticated" && session?.user?.role === "admin"'
-    );
-    expect(welcomeSource).toContain("enabled: show && isAdmin");
-    expect(welcomeSource).toContain("if (!show || !isAdmin) return null");
-    expect(settingsRouter).toContain("getPractice: adminProcedure.query");
-    expect(settingsRouter).toContain("onboardingStatus: adminProcedure.query");
-    expect(welcomeSource).toContain("const loadError = practice.error ?? onboarding.error");
-    expect(welcomeSource).toContain("function WelcomePanelLoading");
-    expect(welcomeSource).toContain("function WelcomePanelError");
-    expect(welcomeSource).toContain("function retryWelcomeDetails");
-    expect(welcomeSource).toContain("Welcome details could not load");
-    expect(welcomeSource).toContain("practice.refetch()");
-    expect(welcomeSource).toContain("onboarding.refetch()");
-    expect(welcomeSource).toContain("const isWelcomeLoading");
-    expect(welcomeSource).toContain("practice.isLoading || onboarding.isLoading");
-    expect(welcomeSource).toContain(
-      "if (isWelcomeLoading) return <WelcomePanelLoading onDismiss={dismiss} />"
-    );
-    expect(welcomeSource).toContain("if (!practice.data || !onboarding.data)");
-    expect(welcomeSource).toContain(
-      "Welcome details were unavailable. Try loading them again."
-    );
-    expect(welcomeSource).toContain("const hasSample = onboarding.data.hasDemoData");
-    expect(welcomeSource).not.toContain("onboarding.data?.hasDemoData ?? true");
-    expect(welcomeSource).not.toContain("practice.data?.name?.trim()");
-    expect(welcomeSource.indexOf("if (loadError)")).toBeLessThan(
-      welcomeSource.indexOf("if (isWelcomeLoading)")
-    );
-    expect(welcomeSource.indexOf("if (isWelcomeLoading)")).toBeLessThan(
-      welcomeSource.indexOf("if (!practice.data || !onboarding.data)")
-    );
-    expect(welcomeSource.indexOf("if (!practice.data || !onboarding.data)")).toBeLessThan(
-      welcomeSource.indexOf("const hasSample = onboarding.data.hasDemoData")
-    );
+  it("retired the dormant welcome panel in favor of the welcome surface", () => {
+    // The old ?welcome=1 panel is gone; the dashboard leads with the
+    // activation checklist, and greeting lives in components/welcome/.
+    const dashboardSource = readFileSync("app/(dashboard)/page.tsx", "utf8");
+    expect(dashboardSource).not.toContain("WelcomePanel");
+    expect(dashboardSource).toContain("<ActivationChecklist />");
   });
 
   it("keeps tour setup persistence admin-only at the provider boundary", () => {

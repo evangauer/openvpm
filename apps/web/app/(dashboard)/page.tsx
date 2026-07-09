@@ -11,7 +11,6 @@ import {
   PawPrint,
   TrendingUp,
 } from "lucide-react";
-import { WelcomePanel } from "@/components/dashboard/welcome-panel";
 import { ActivationChecklist } from "@/components/dashboard/activation-checklist";
 import { EmptyState } from "@/components/common/empty-state";
 import { cn } from "@/lib/utils";
@@ -248,7 +247,6 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-8">
-      <WelcomePanel />
       <ActivationChecklist />
       {/* KPI Cards */}
       {statsError || statsDisplayMissing ? (

@@ -8,6 +8,7 @@ import { CommandSearch } from "@/components/common/command-search";
 import { ErrorBoundary } from "@/components/common/error-boundary";
 import { TourProvider } from "@/components/tour/tour-provider";
 import { OnboardingJourneyProvider } from "@/components/onboarding/journey-overlay";
+import { WelcomeProvider } from "@/components/welcome/welcome-provider";
 import { BrandTheme } from "@/components/brand/brand-theme";
 import { VerifyEmailBanner } from "@/components/layout/verify-email-banner";
 
@@ -38,6 +39,7 @@ export default function DashboardLayout({
   return (
     <TourProvider>
       <OnboardingJourneyProvider>
+        <WelcomeProvider>
         <div className="flex h-screen overflow-hidden">
           <Sidebar className="hidden lg:flex" />
           {mobileNavOpen && (
@@ -86,6 +88,7 @@ export default function DashboardLayout({
             onClose={() => setSearchOpen(false)}
           />
         </div>
+        </WelcomeProvider>
       </OnboardingJourneyProvider>
       <BrandTheme />
     </TourProvider>

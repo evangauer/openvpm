@@ -27,3 +27,22 @@ export function guideSignalName(event: Event): string | null {
   const detail = (event as CustomEvent<{ name?: unknown }>).detail;
   return typeof detail?.name === "string" ? detail.name : null;
 }
+
+/**
+ * Fired by the tour provider when a named guide finishes its last step.
+ * The welcome surface listens to offer the next move (another card, or
+ * the Make-it-yours wizard after an admin's first win).
+ */
+export const GUIDE_COMPLETED_EVENT = "ovpm:guide-completed";
+
+export function emitGuideCompleted(recipe: string): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent(GUIDE_COMPLETED_EVENT, { detail: { recipe } })
+  );
+}
+
+export function guideCompletedRecipe(event: Event): string | null {
+  const detail = (event as CustomEvent<{ recipe?: unknown }>).detail;
+  return typeof detail?.recipe === "string" ? detail.recipe : null;
+}

@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { useTour } from "@/components/tour/tour-provider";
+import { firstRunMode } from "@/lib/welcome/first-run";
 import type { JourneyState, StepHandle } from "./journey-types";
 import { PracticeBasicsStep } from "./steps/practice-basics";
 import { BrandingStep } from "./steps/branding";
@@ -125,6 +126,11 @@ export function OnboardingJourneyProvider({
 
   useEffect(() => {
     if (opened.current || index !== null || !isAdmin) return;
+    // In "welcome" first-run mode the Polaroid guide surface owns the
+    // greeting; the wizard opens on demand (welcome footer, first-win
+    // offer, activation checklist). NEXT_PUBLIC_FIRST_RUN_MODE=wizard
+    // restores this auto-open exactly.
+    if (firstRunMode() === "welcome") return;
     // Wait until all gates are loaded so the step list + resume point are stable.
     if (
       !onboardingStatus.data ||
