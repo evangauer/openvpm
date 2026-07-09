@@ -18,6 +18,10 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/common/empty-state";
 import {
+  emitGuideSignal,
+  GUIDE_SIGNALS,
+} from "@/components/tour/guide-signals";
+import {
   AGENT_INSTRUCTION_MAX_LENGTH,
   isAgentInstructionValid,
 } from "@/lib/agent/policy";
@@ -77,6 +81,7 @@ export default function AgentPage() {
 }
 
 function AgentRunner() {
+  const router = useRouter();
   const status = trpc.agent.status.useQuery();
   const run = trpc.agent.run.useMutation();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -85,6 +90,20 @@ function AgentRunner() {
   const idRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const prefilled = useRef(false);
+
+  // One-shot ?ask= prefill (guides deep-link here with a ready question).
+  // The param is stripped right away so a refresh will not re-fill.
+  useEffect(() => {
+    if (prefilled.current || typeof window === "undefined") return;
+    prefilled.current = true;
+    const ask = new URLSearchParams(window.location.search).get("ask");
+    if (ask?.trim()) {
+      setInstruction(ask.trim().slice(0, AGENT_INSTRUCTION_MAX_LENGTH));
+      router.replace("/agent");
+      textareaRef.current?.focus();
+    }
+  }, [router]);
 
   const statusMissing = !status.isLoading && !status.error && !status.data;
   const verifiedAgentStatus =
@@ -150,6 +169,7 @@ function AgentRunner() {
               toolCalls: data.toolCalls,
             },
           ]);
+          emitGuideSignal(GUIDE_SIGNALS.agentRunSucceeded);
         },
         onError: (err) => {
           setMessages((prev) => [
@@ -291,7 +311,10 @@ function AgentRunner() {
 
       {/* Composer */}
       <div className="mt-3 shrink-0">
-        <div className="rounded-2xl border border-border bg-card p-2 shadow-sm focus-within:border-primary/40">
+        <div
+          data-tour="agent-input"
+          className="rounded-2xl border border-border bg-card p-2 shadow-sm focus-within:border-primary/40"
+        >
           <textarea
             ref={textareaRef}
             value={instruction}

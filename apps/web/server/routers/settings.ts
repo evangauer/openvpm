@@ -807,6 +807,92 @@ export const settingsRouter = createRouter({
     };
   }),
 
+  /**
+   * Data the welcome guides need, readable by ANY authenticated role (the
+   * welcome surface greets invited staff too, unlike the admin-only wizard).
+   * Prefers the seeded demo client/patient while they are alive, then falls
+   * back to the practice's first real client so guides degrade gracefully
+   * after demo data is cleared.
+   */
+  welcomeContext: protectedProcedure.query(async ({ ctx }) => {
+    const [practice] = await ctx.db
+      .select({ name: practices.name, settings: practices.settings })
+      .from(practices)
+      .where(activePracticeWhere(ctx.practiceId))
+      .limit(1);
+    if (!practice) {
+      throw practiceNotFound();
+    }
+    const settings = (practice.settings ?? {}) as PracticeSettings;
+    const demo = settings.demoData;
+
+    let portalClient: {
+      id: string;
+      firstName: string;
+      lastName: string;
+    } | null = null;
+    const demoClientId = demo?.clientIds?.[0];
+    if (demoClientId) {
+      const [row] = await ctx.db
+        .select({
+          id: clients.id,
+          firstName: clients.firstName,
+          lastName: clients.lastName,
+        })
+        .from(clients)
+        .where(
+          and(
+            eq(clients.id, demoClientId),
+            eq(clients.practiceId, ctx.practiceId),
+            isNull(clients.deletedAt)
+          )
+        )
+        .limit(1);
+      portalClient = row ?? null;
+    }
+    if (!portalClient) {
+      const [row] = await ctx.db
+        .select({
+          id: clients.id,
+          firstName: clients.firstName,
+          lastName: clients.lastName,
+        })
+        .from(clients)
+        .where(
+          and(
+            eq(clients.practiceId, ctx.practiceId),
+            isNull(clients.deletedAt)
+          )
+        )
+        .limit(1);
+      portalClient = row ?? null;
+    }
+
+    let demoPatientName: string | null = null;
+    const demoPatientId = demo?.patientIds?.[0];
+    if (demoPatientId) {
+      const [row] = await ctx.db
+        .select({ name: patients.name })
+        .from(patients)
+        .where(
+          and(
+            eq(patients.id, demoPatientId),
+            eq(patients.practiceId, ctx.practiceId),
+            isNull(patients.deletedAt)
+          )
+        )
+        .limit(1);
+      demoPatientName = row?.name ?? null;
+    }
+
+    return {
+      practiceName: practice.name,
+      hasDemoData: !!demo,
+      portalClient,
+      demoPatientName,
+    };
+  }),
+
   /** Mark onboarding complete. */
   completeOnboarding: adminProcedure.mutation(async ({ ctx }) => {
     const [updated] = await ctx.db

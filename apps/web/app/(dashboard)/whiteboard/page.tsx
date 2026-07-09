@@ -639,6 +639,8 @@ export default function WhiteboardPage() {
         </div>
       </div>
 
+      {/* Board area (the "your day" guide spotlights this region) */}
+      <div data-tour="whiteboard-board">
       {pageError || pageMissing ? (
         <div className="mt-4 rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
           {pageError?.message ?? "Unable to load whiteboard. Please retry."}
@@ -719,6 +721,7 @@ export default function WhiteboardPage() {
           }}
         />
       )}
+      </div>
 
       {/* Detail modal */}
       {selectedAppointmentFromList &&

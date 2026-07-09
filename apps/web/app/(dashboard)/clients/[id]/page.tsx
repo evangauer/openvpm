@@ -26,6 +26,10 @@ import { trpc } from "@/lib/trpc";
 import { EmptyState } from "@/components/common/empty-state";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import {
+  emitGuideSignal,
+  GUIDE_SIGNALS,
+} from "@/components/tour/guide-signals";
 import { toast } from "sonner";
 import { useCurrencyFormatter } from "@/lib/locale/useCurrency";
 import {
@@ -153,6 +157,7 @@ export default function ClientDetailPage() {
         `${window.location.origin}${portalPath}`
       );
       toast.success("Portal link copied");
+      emitGuideSignal(GUIDE_SIGNALS.portalLinkCopied);
     } catch {
       toast.error("Could not copy portal link");
     }
@@ -218,7 +223,10 @@ export default function ClientDetailPage() {
         </div>
       </div>
 
-      <div className="mt-6 rounded-lg border border-border bg-card p-6">
+      <div
+        data-tour="client-portal-link"
+        className="mt-6 rounded-lg border border-border bg-card p-6"
+      >
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <h3 className="font-heading text-lg font-semibold">

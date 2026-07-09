@@ -1951,7 +1951,8 @@ export default function SchedulePage() {
         </div>
       </div>
 
-      {/* Error */}
+      {/* Calendar area (the "your day" guide spotlights this region) */}
+      <div data-tour="schedule-calendar">
       {scheduleError || scheduleMissing ? (
         <div className="mt-4 rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
           {scheduleError?.message ?? "Unable to load schedule. Please retry."}
@@ -2055,6 +2056,7 @@ export default function SchedulePage() {
           onAppointmentClick={setSelectedAppointment}
         />
       )}
+      </div>
 
       {/* Detail popover */}
       {selectedAppointmentFromList &&
