@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import {
   backupKey,
+  coerceRowDates,
   PRACTICE_EXPORT_SECRET_REPLACEMENTS,
   PRACTICE_EXPORT_SYSTEM_EXCLUSIONS,
   PRACTICE_EXPORT_SECTIONS,
@@ -10,6 +11,7 @@ import {
   summarizePracticeExport,
   validatePracticeExportRestore,
 } from "../export";
+import { patients } from "@openpims/db";
 import {
   PRACTICE_BACKUP_JSON_MAX_BYTES,
   isPracticeBackupJsonSizeValid,
@@ -314,6 +316,58 @@ describe("restorePracticeData", () => {
       restorePracticeData(db as never, "target-practice", backup)
     ).rejects.toThrow("Backup contains invalid restore data");
     expect(inserted).toEqual([]);
+  });
+
+  it("coerces JSON timestamp strings into Dates before insert", async () => {
+    // A real backup file round-trips through JSON, so every timestamp is an
+    // ISO string; pg timestamp columns reject those (value.toISOString crash).
+    const backup = {
+      ...emptyBackup(),
+      clients: [
+        {
+          id: "client-1",
+          practiceId: "source-practice",
+          createdAt: "2026-07-01T12:00:00.000Z",
+          updatedAt: "2026-07-02T12:00:00.000Z",
+        },
+      ],
+      patients: [
+        {
+          id: "patient-1",
+          practiceId: "source-practice",
+          clientId: "client-1",
+          createdAt: "2026-07-01T12:00:00.000Z",
+          dob: "2020-05-01",
+        },
+      ],
+    };
+    const { db, inserted } = restoreDb();
+
+    await restorePracticeData(db as never, "target-practice", backup);
+    const restoredRows = inserted.flatMap(({ rows }) => rows);
+    const client = restoredRows.find((row) => row.id === "client-1");
+    const patient = restoredRows.find((row) => row.id === "patient-1");
+
+    expect(client?.createdAt).toBeInstanceOf(Date);
+    expect(client?.updatedAt).toBeInstanceOf(Date);
+    expect((client?.createdAt as Date).toISOString()).toBe(
+      "2026-07-01T12:00:00.000Z"
+    );
+    expect(patient?.createdAt).toBeInstanceOf(Date);
+    // String-mode date columns (calendar dates) stay strings.
+    expect(patient?.dob).toBe("2020-05-01");
+  });
+
+  it("leaves null, absent, and unparseable timestamp values unchanged", () => {
+    const rows = coerceRowDates(patients, [
+      { id: "patient-1", createdAt: null, deletedAt: undefined },
+      { id: "patient-2", createdAt: "not-a-date" },
+      { id: "patient-3", createdAt: new Date("2026-07-01T12:00:00.000Z") },
+    ]);
+
+    expect(rows[0].createdAt).toBeNull();
+    expect(rows[1].createdAt).toBe("not-a-date");
+    expect(rows[2].createdAt).toBeInstanceOf(Date);
   });
 
   it("wraps direct restore helper calls in a database transaction when available", async () => {

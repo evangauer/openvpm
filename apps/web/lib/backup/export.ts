@@ -1,4 +1,4 @@
-import { eq, and, isNull, inArray, sql } from "drizzle-orm";
+import { eq, and, isNull, inArray, sql, getTableColumns } from "drizzle-orm";
 import type { Database } from "@openpims/db/client";
 import { redactSecrets } from "@/lib/audit";
 import {
@@ -460,6 +460,30 @@ async function tenantParentChildRows(
     );
 }
 
+/**
+ * Backups round-trip through JSON, so timestamp values arrive as ISO strings
+ * while the drizzle timestamp columns expect Date objects on insert. Coerce
+ * per-table so a real backup file is directly restorable.
+ */
+export function coerceRowDates(table: any, rows: Row[]): Row[] {
+  const dateColumns = Object.entries(getTableColumns(table))
+    .filter(([, column]) => (column as { dataType?: string }).dataType === "date")
+    .map(([name]) => name);
+  if (dateColumns.length === 0) return rows;
+
+  return rows.map((row) => {
+    const coerced = { ...row };
+    for (const name of dateColumns) {
+      const value = coerced[name];
+      if (typeof value === "string") {
+        const parsed = new Date(value);
+        if (!Number.isNaN(parsed.getTime())) coerced[name] = parsed;
+      }
+    }
+    return coerced;
+  });
+}
+
 async function restoreRows(
   db: Database,
   table: any,
@@ -468,7 +492,10 @@ async function restoreRows(
   opts: { practiceId?: string } = {}
 ): Promise<number> {
   if (rows.length === 0) return 0;
-  const sanitizedRows = sanitizePracticeExportRows(section, rows);
+  const sanitizedRows = coerceRowDates(
+    table,
+    sanitizePracticeExportRows(section, rows)
+  );
   const values = opts.practiceId
     ? withPracticeId(sanitizedRows, opts.practiceId)
     : sanitizedRows;
