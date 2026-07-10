@@ -16,6 +16,8 @@ import {
   users,
   appointments,
   practices,
+  captureSessions,
+  files,
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
@@ -63,6 +65,11 @@ import {
   PROCEDURE_NAME_MAX_LENGTH,
   PROCEDURE_NOTES_MAX_LENGTH,
 } from "@/lib/records/procedure-policy";
+import {
+  CAPTURE_TOKEN_TTL_MS,
+  generateCaptureToken,
+} from "@/lib/consult/tokens";
+import { appBaseUrl } from "@/lib/app-url";
 import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
 import { positiveIntegerColumnInput } from "./storage-bounds";
 
@@ -1042,5 +1049,60 @@ export const recordsRouter = createRouter({
         source: "dashboard",
       });
       return procedure!;
+    }),
+
+  // In-consult QR photo capture. Staff mint a short-lived capture link for a
+  // patient; the QR opens a no-login mobile page (app/capture/[token]) whose
+  // uploads land in the files table linked to this patient. Role gate mirrors
+  // patient management (patients.addAllergy): all staff except viewers.
+  createCaptureSession: protectedProcedure
+    .use(requireRole("admin", "veterinarian", "technician", "front_desk"))
+    .input(z.object({ patientId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      await assertPatientBelongsToPractice(ctx, input.patientId);
+      const token = generateCaptureToken();
+      const expiresAt = new Date(Date.now() + CAPTURE_TOKEN_TTL_MS);
+      await ctx.db
+        .insert(captureSessions)
+        .values({
+          practiceId: ctx.practiceId,
+          patientId: input.patientId,
+          createdBy: ctx.user.id,
+          token,
+          expiresAt,
+        })
+        .returning();
+      return {
+        token,
+        url: `${appBaseUrl()}/capture/${token}`,
+        expiresAt,
+      };
+    }),
+
+  /** Photos attached to a patient via capture links, newest first. */
+  listCaptureFiles: protectedProcedure
+    .input(z.object({ patientId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      await assertPatientBelongsToPractice(ctx, input.patientId);
+      return ctx.db
+        .select({
+          id: files.id,
+          fileName: files.fileName,
+          fileUrl: files.fileUrl,
+          mimeType: files.mimeType,
+          createdAt: files.createdAt,
+        })
+        .from(files)
+        .where(
+          and(
+            eq(files.practiceId, ctx.practiceId),
+            eq(files.entityType, "patient"),
+            eq(files.entityId, input.patientId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(files.deletedAt)
+          )
+        )
+        .orderBy(desc(files.createdAt))
+        .limit(50);
     }),
 });

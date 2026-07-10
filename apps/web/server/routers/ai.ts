@@ -1,17 +1,33 @@
 import { z } from "zod";
 import { eq, and, isNull, lt, gte, lte, sql, desc, inArray } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { createRouter, protectedProcedure } from "../trpc";
+import {
+  createRouter,
+  protectedProcedure,
+  requireFeature,
+  requireRole,
+} from "../trpc";
 import {
   soapNotes,
   vaccinationRecords,
   patients,
+  patientAllergies,
+  problemList,
+  vitalSigns,
   clients,
   appointments,
   invoices,
   practices,
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
+import { AgentNotConfiguredError } from "@/lib/agent";
+import {
+  SOAP_DRAFT_VISIT_CONTEXT_MAX_LENGTH,
+  SoapDraftUnavailableError,
+  draftSoapNote,
+} from "@/lib/ai/soap-draft";
+import { rateLimit } from "@/lib/rate-limit";
+import { recordUsage } from "@/lib/billing/usage";
 import {
   dateInputUtcRangeForTimeZone,
   formatDateInputForTimeZone,
@@ -202,6 +218,147 @@ export const aiRouter = createRouter({
         })
         .returning();
       return { ...note!, source };
+    }),
+
+  /**
+   * AI SOAP draft for the in-app editor ("Draft with AI").
+   * Unlike createSoapFromAI above (external scribes POST finished notes),
+   * this generates a draft from chart context and returns it WITHOUT saving;
+   * the clinician reviews, edits, and saves through records.createSoapNote.
+   * Gated like the agent: SOAP-writing roles + the hosted "agent" feature.
+   */
+  draftSoapNote: protectedProcedure
+    .use(requireRole("admin", "veterinarian"))
+    .use(requireFeature("agent"))
+    .input(
+      z.object({
+        patientId: z.string().uuid(),
+        visitContext: optionalClinicalTextInput(
+          "Visit context",
+          SOAP_DRAFT_VISIT_CONTEXT_MAX_LENGTH
+        ),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
+      await assertPatientBelongsToPractice(ctx, input.patientId);
+
+      const drafts = await rateLimit({
+        key: `soap-draft:${ctx.practiceId}:actor:${ctx.user.id}`,
+        limit: 10,
+        windowMs: 60_000,
+      });
+      if (!drafts.success) {
+        throw new TRPCError({
+          code: "TOO_MANY_REQUESTS",
+          message: "Too many drafts at once. Wait a minute and try again.",
+        });
+      }
+
+      const [[patient], allergies, problems, [latestVitals]] =
+        await Promise.all([
+          ctx.db
+            .select({
+              name: patients.name,
+              species: patients.species,
+              breed: patients.breed,
+              sex: patients.sex,
+              dob: patients.dob,
+            })
+            .from(patients)
+            .where(
+              and(
+                eq(patients.id, input.patientId),
+                eq(patients.practiceId, ctx.practiceId),
+                activePracticePredicate(ctx.practiceId),
+                isNull(patients.deletedAt)
+              )
+            )
+            .limit(1),
+          ctx.db
+            .select({
+              allergen: patientAllergies.allergen,
+              severity: patientAllergies.severity,
+            })
+            .from(patientAllergies)
+            .where(
+              and(
+                eq(patientAllergies.patientId, input.patientId),
+                activePracticePredicate(ctx.practiceId),
+                sql`exists (
+                  select 1
+                  from ${patients}
+                  where ${patients.id} = ${patientAllergies.patientId}
+                    and ${patients.practiceId} = ${ctx.practiceId}
+                    and ${patients.deletedAt} is null
+                )`,
+                isNull(patientAllergies.deletedAt)
+              )
+            ),
+          ctx.db
+            .select({
+              description: problemList.description,
+              status: problemList.status,
+            })
+            .from(problemList)
+            .where(
+              and(
+                eq(problemList.patientId, input.patientId),
+                eq(problemList.practiceId, ctx.practiceId),
+                activePracticePredicate(ctx.practiceId),
+                isNull(problemList.deletedAt)
+              )
+            ),
+          ctx.db
+            .select({
+              temperatureC: vitalSigns.temperatureC,
+              heartRateBpm: vitalSigns.heartRateBpm,
+              respiratoryRateBpm: vitalSigns.respiratoryRateBpm,
+              weightKg: vitalSigns.weightKg,
+            })
+            .from(vitalSigns)
+            .where(
+              and(
+                eq(vitalSigns.patientId, input.patientId),
+                eq(vitalSigns.practiceId, ctx.practiceId),
+                activePracticePredicate(ctx.practiceId),
+                isNull(vitalSigns.deletedAt)
+              )
+            )
+            .orderBy(desc(vitalSigns.recordedAt))
+            .limit(1),
+        ]);
+
+      if (!patient) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Patient not found" });
+      }
+
+      try {
+        const draft = await draftSoapNote({
+          patient,
+          allergies,
+          activeProblems: problems,
+          latestVitals: latestVitals ?? null,
+          visitContext: input.visitContext,
+        });
+        // Meter successful drafts like agent runs (no-op on self-host).
+        await recordUsage({ practiceId: ctx.practiceId, kind: "ai_run" });
+        return draft;
+      } catch (e) {
+        if (e instanceof AgentNotConfiguredError) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: e.message,
+          });
+        }
+        if (e instanceof SoapDraftUnavailableError) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: e.message });
+        }
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Could not draft the note. Try again.",
+        });
+      }
     }),
 
   /**

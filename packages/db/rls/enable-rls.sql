@@ -52,7 +52,7 @@ DECLARE
   t text;
   tbls text[] := array[
     'api_keys','appointment_types','appointment_waitlist','appointments','audit_log',
-    'cases','clients','clinical_notes','communications','controlled_substance_log','email_suppressions',
+    'capture_sessions','cases','clients','clinical_notes','communications','controlled_substance_log','email_suppressions',
     'files','insurance_claims','insurance_policies','invoices','lab_results','location_messaging',
     'locations','patients','practice_payment_accounts','prescriptions','problem_list','procedures','products','purchase_orders',
     'recurring_series','rooms','services','sms_suppressions','soap_notes','staff_schedules','suppliers',

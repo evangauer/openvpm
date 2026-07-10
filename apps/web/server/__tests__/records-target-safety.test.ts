@@ -41,13 +41,13 @@ const PATIENT_ID = "00000000-0000-0000-0000-000000000002";
 const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000003";
 const RECORD_ID = "00000000-0000-0000-0000-000000000004";
 
-function callerWithDb(db: Record<string, unknown>) {
+function callerWithDb(db: Record<string, unknown>, role = "veterinarian") {
   const session = {
     user: {
       id: USER_ID,
-      email: "doctor@example.com",
+      email: `${role}@example.com`,
       name: "Doctor",
-      role: "veterinarian",
+      role,
       practiceId: PRACTICE_ID,
     },
   };
@@ -787,5 +787,82 @@ describe("records target safety", () => {
         reviewedBy: USER_ID,
       })
     );
+  });
+});
+
+describe("capture sessions", () => {
+  const patientRow = [{ id: PATIENT_ID }];
+
+  it("mints a 30-minute capture link for a tenant-owned patient", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-10T12:00:00.000Z"));
+    const { db, insertValues } = createDb({
+      selectResults: [patientRow],
+      insertedRows: [{ id: RECORD_ID }],
+    });
+
+    const result = await callerWithDb(db).createCaptureSession({
+      patientId: PATIENT_ID,
+    });
+
+    expect(result.token).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.url).toMatch(
+      new RegExp(`/capture/${result.token}$`)
+    );
+    expect(result.expiresAt).toEqual(
+      new Date("2026-07-10T12:30:00.000Z")
+    );
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: PRACTICE_ID,
+        patientId: PATIENT_ID,
+        createdBy: USER_ID,
+        token: result.token,
+        expiresAt: result.expiresAt,
+      })
+    );
+  });
+
+  it("keeps capture links restricted to non-viewer staff roles", async () => {
+    for (const role of [
+      "admin",
+      "veterinarian",
+      "technician",
+      "front_desk",
+    ]) {
+      const { db } = createDb({
+        selectResults: [patientRow],
+        insertedRows: [{ id: RECORD_ID }],
+      });
+      await expect(
+        callerWithDb(db, role).createCaptureSession({ patientId: PATIENT_ID })
+      ).resolves.toMatchObject({ token: expect.any(String) });
+    }
+
+    const { db, insertValues } = createDb();
+    await expect(
+      callerWithDb(db, "viewer").createCaptureSession({
+        patientId: PATIENT_ID,
+      })
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("rejects capture links for patients outside the practice", async () => {
+    const { db, insertValues } = createDb({ selectResults: [[]] });
+
+    await expect(
+      callerWithDb(db).createCaptureSession({ patientId: PATIENT_ID })
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("requires a tenant-owned patient before listing capture files", async () => {
+    const { db } = createDb({ selectResults: [[]] });
+
+    await expect(
+      callerWithDb(db).listCaptureFiles({ patientId: PATIENT_ID })
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 });

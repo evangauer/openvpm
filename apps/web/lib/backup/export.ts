@@ -71,6 +71,8 @@ export const PRACTICE_EXPORT_SYSTEM_EXCLUSIONS = {
   sessions: "Transient authentication sessions.",
   verificationTokens: "Transient authentication verification tokens.",
   authTokens: "Expiring pre-tenant email verification and password-reset tokens.",
+  captureSessions:
+    "Expiring QR photo-capture link tokens; restoring them would resurrect old capture URLs. The photos themselves are in the files section.",
 } as const;
 
 export const PRACTICE_EXPORT_SECRET_REPLACEMENTS = {

@@ -1,4 +1,10 @@
-import { generateText, stepCountIs, tool, type ToolSet } from "ai";
+import {
+  generateText,
+  stepCountIs,
+  tool,
+  type LanguageModel,
+  type ToolSet,
+} from "ai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import {
@@ -106,6 +112,17 @@ function hasProviderKey(modelId: string): boolean {
 /** Whether the configured provider has its API key set. */
 export function isAgentConfigured(): boolean {
   return hasProviderKey(activeModelId());
+}
+
+/**
+ * Resolve the configured AI SDK model instance for one-shot generations
+ * (e.g. SOAP drafts) that share the agent's provider/model configuration.
+ * Throws AgentNotConfiguredError when no provider key is set.
+ */
+export function configuredModel(): LanguageModel {
+  const modelId = activeModelId();
+  if (!hasProviderKey(modelId)) throw new AgentNotConfiguredError();
+  return resolveModel(modelId);
 }
 
 /** Build an AI SDK model instance for the given model id. */

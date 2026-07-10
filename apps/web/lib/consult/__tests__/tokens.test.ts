@@ -1,0 +1,57 @@
+import { describe, expect, it } from "vitest";
+import {
+  CAPTURE_TOKEN_LENGTH,
+  CAPTURE_TOKEN_TTL_MS,
+  captureRateLimitKey,
+  generateCaptureToken,
+  isCaptureTokenShape,
+} from "../tokens";
+
+describe("capture tokens", () => {
+  it("generates 64-hex tokens that pass the shape guard", () => {
+    const token = generateCaptureToken();
+    expect(token).toHaveLength(CAPTURE_TOKEN_LENGTH);
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
+    expect(isCaptureTokenShape(token)).toBe(true);
+  });
+
+  it("generates unique tokens", () => {
+    const tokens = new Set(
+      Array.from({ length: 32 }, () => generateCaptureToken())
+    );
+    expect(tokens.size).toBe(32);
+  });
+
+  it("rejects malformed token shapes", () => {
+    const valid = "ab".repeat(32);
+    for (const bad of [
+      "",
+      "short",
+      "Z".repeat(64),
+      "AB".repeat(32), // uppercase hex is not what we mint
+      `${valid}x`,
+      valid.slice(0, 63),
+      "../../../etc/passwd",
+    ]) {
+      expect(isCaptureTokenShape(bad)).toBe(false);
+    }
+    expect(isCaptureTokenShape(valid)).toBe(true);
+  });
+
+  it("expires capture links after 30 minutes", () => {
+    expect(CAPTURE_TOKEN_TTL_MS).toBe(30 * 60 * 1000);
+  });
+
+  it("hashes the token in rate-limit keys (never the raw credential)", () => {
+    const token = generateCaptureToken();
+    const key = captureRateLimitKey("capture-upload", token);
+    expect(key.startsWith("capture-upload:token:")).toBe(true);
+    expect(key).not.toContain(token);
+    expect(key).toMatch(/^capture-upload:token:[0-9a-f]{64}$/);
+    // Deterministic per token, distinct across tokens.
+    expect(captureRateLimitKey("capture-upload", token)).toBe(key);
+    expect(
+      captureRateLimitKey("capture-upload", generateCaptureToken())
+    ).not.toBe(key);
+  });
+});

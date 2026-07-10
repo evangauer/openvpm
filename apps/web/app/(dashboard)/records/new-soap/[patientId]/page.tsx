@@ -11,11 +11,13 @@ import {
   Loader2,
   Save,
   ShieldAlert,
+  Sparkles,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { EmptyState } from "@/components/common/empty-state";
+import { CapturePhotos } from "@/components/records/capture-photos";
 import { toast } from "sonner";
 import {
   hasSoapContent,
@@ -42,6 +44,20 @@ const SoapNoteEditor = dynamic(
 
 function canCreateSoapNoteRole(role?: string | null): boolean {
   return role === "admin" || role === "veterinarian";
+}
+
+/** Plain-text AI draft sections -> simple HTML the tiptap editor can load. */
+function draftTextToHtml(text: string): string {
+  const escaped = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  const paragraphs = escaped
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean)
+    .map((paragraph) => `<p>${paragraph.replace(/\n/g, "<br>")}</p>`);
+  return paragraphs.join("");
 }
 
 export default function NewSoapNotePage() {
@@ -82,6 +98,33 @@ export default function NewSoapNotePage() {
       toast.error(err.message);
     },
   });
+
+  // AI draft availability mirrors the OpenVPM Agent (same key + model config).
+  const agentStatus = trpc.agent.status.useQuery(undefined, {
+    enabled: canCreateSoapNote,
+  });
+  const aiConfigured = agentStatus.data?.configured ?? false;
+  const draftWithAi = trpc.ai.draftSoapNote.useMutation({
+    onSuccess: (draft) => {
+      setSubjective(draftTextToHtml(draft.subjective));
+      setObjective(draftTextToHtml(draft.objective));
+      setAssessment(draftTextToHtml(draft.assessment));
+      setPlan(draftTextToHtml(draft.plan));
+      toast.success("Draft ready. Please review and edit before you save.");
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  function handleDraftWithAi() {
+    if (!params.patientId || draftWithAi.isPending) return;
+    if (
+      canSave &&
+      !window.confirm("Replace what you typed with the AI draft?")
+    ) {
+      return;
+    }
+    draftWithAi.mutate({ patientId: params.patientId });
+  }
 
   function handleSave() {
     if (!params.patientId || !patient) {
@@ -186,7 +229,7 @@ export default function NewSoapNotePage() {
         Back to Records
       </Button>
 
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="font-heading text-xl font-semibold">New SOAP Note</h2>
           {patient && (
@@ -196,6 +239,29 @@ export default function NewSoapNotePage() {
                 ? ` - ${patient.species.charAt(0).toUpperCase() + patient.species.slice(1)}`
                 : ""}
               {patient.breed ? ` (${patient.breed})` : ""}
+            </p>
+          )}
+        </div>
+        <div className="flex flex-col items-end gap-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <CapturePhotos patientId={params.patientId} />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleDraftWithAi}
+              disabled={!aiConfigured || draftWithAi.isPending}
+            >
+              {draftWithAi.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Sparkles className="mr-2 h-4 w-4" />
+              )}
+              {draftWithAi.isPending ? "Drafting..." : "Draft with AI"}
+            </Button>
+          </div>
+          {!aiConfigured && !agentStatus.isLoading && (
+            <p className="text-xs text-muted-foreground">
+              AI is not set up yet. Ask your admin to add an AI key.
             </p>
           )}
         </div>
