@@ -15,6 +15,7 @@ const PUBLIC_PATH_PREFIXES = [
   "/portal",
   "/register",
   "/reset-password",
+  "/sign",
   "/verify-email",
 ];
 

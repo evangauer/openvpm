@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CAPTURE_TOKEN_LENGTH,
   CAPTURE_TOKEN_TTL_MS,
+  CONSENT_TOKEN_TTL_MS,
   captureRateLimitKey,
   generateCaptureToken,
   isCaptureTokenShape,
@@ -40,6 +41,10 @@ describe("capture tokens", () => {
 
   it("expires capture links after 30 minutes", () => {
     expect(CAPTURE_TOKEN_TTL_MS).toBe(30 * 60 * 1000);
+  });
+
+  it("expires consent links after 60 minutes", () => {
+    expect(CONSENT_TOKEN_TTL_MS).toBe(60 * 60 * 1000);
   });
 
   it("hashes the token in rate-limit keys (never the raw credential)", () => {

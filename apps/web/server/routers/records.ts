@@ -17,6 +17,7 @@ import {
   appointments,
   practices,
   captureSessions,
+  consentRequests,
   files,
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
@@ -67,8 +68,15 @@ import {
 } from "@/lib/records/procedure-policy";
 import {
   CAPTURE_TOKEN_TTL_MS,
+  CONSENT_TOKEN_TTL_MS,
   generateCaptureToken,
 } from "@/lib/consult/tokens";
+import {
+  CONSENT_BODY_MAX_LENGTH,
+  CONSENT_TITLE_MAX_LENGTH,
+  DEFAULT_CONSENT_BODY,
+  DEFAULT_CONSENT_TITLE,
+} from "@/lib/consult/consent-template";
 import { appBaseUrl } from "@/lib/app-url";
 import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
 import { positiveIntegerColumnInput } from "./storage-bounds";
@@ -1103,6 +1111,78 @@ export const recordsRouter = createRouter({
           )
         )
         .orderBy(desc(files.createdAt))
+        .limit(50);
+    }),
+
+  // E-sign consent dispatch. Same capability-link model as capture sessions:
+  // staff mint a short-lived signing link for a patient, the QR opens the
+  // no-login /sign/[token] page, and the signed PDF lands in files. The
+  // consent copy is snapshotted here so template edits never change what
+  // someone already signed. Role gate mirrors createCaptureSession.
+  createConsentRequest: protectedProcedure
+    .use(requireRole("admin", "veterinarian", "technician", "front_desk"))
+    .input(
+      z.object({
+        patientId: z.string().uuid(),
+        title: z.string().trim().min(1).max(CONSENT_TITLE_MAX_LENGTH).optional(),
+        bodyText: z.string().trim().min(1).max(CONSENT_BODY_MAX_LENGTH).optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      await assertPatientBelongsToPractice(ctx, input.patientId);
+      const token = generateCaptureToken();
+      const expiresAt = new Date(Date.now() + CONSENT_TOKEN_TTL_MS);
+      const [created] = await ctx.db
+        .insert(consentRequests)
+        .values({
+          practiceId: ctx.practiceId,
+          patientId: input.patientId,
+          createdBy: ctx.user.id,
+          token,
+          expiresAt,
+          title: input.title ?? DEFAULT_CONSENT_TITLE,
+          bodyText: input.bodyText ?? DEFAULT_CONSENT_BODY,
+        })
+        .returning({ id: consentRequests.id });
+      return {
+        id: created!.id,
+        token,
+        url: `${appBaseUrl()}/sign/${token}`,
+        expiresAt,
+      };
+    }),
+
+  /** Consent requests for a patient, newest first (tokens never leave here). */
+  listConsents: protectedProcedure
+    .input(z.object({ patientId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      await assertPatientBelongsToPractice(ctx, input.patientId);
+      return ctx.db
+        .select({
+          id: consentRequests.id,
+          title: consentRequests.title,
+          status: consentRequests.status,
+          signerName: consentRequests.signerName,
+          signedAt: consentRequests.signedAt,
+          expiresAt: consentRequests.expiresAt,
+          createdAt: consentRequests.createdAt,
+          fileId: consentRequests.fileId,
+          fileUrl: files.fileUrl,
+        })
+        .from(consentRequests)
+        .leftJoin(
+          files,
+          and(eq(files.id, consentRequests.fileId), isNull(files.deletedAt))
+        )
+        .where(
+          and(
+            eq(consentRequests.practiceId, ctx.practiceId),
+            eq(consentRequests.patientId, input.patientId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(consentRequests.deletedAt)
+          )
+        )
+        .orderBy(desc(consentRequests.createdAt))
         .limit(50);
     }),
 });

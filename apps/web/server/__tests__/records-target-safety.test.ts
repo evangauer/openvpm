@@ -866,3 +866,98 @@ describe("capture sessions", () => {
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 });
+
+describe("consent requests", () => {
+  const patientRow = [{ id: PATIENT_ID }];
+
+  it("mints a 60-minute consent link with the default template snapshot", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-10T12:00:00.000Z"));
+    const { db, insertValues } = createDb({
+      selectResults: [patientRow],
+      insertedRows: [{ id: RECORD_ID }],
+    });
+
+    const result = await callerWithDb(db).createConsentRequest({
+      patientId: PATIENT_ID,
+    });
+
+    expect(result.token).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.url).toMatch(new RegExp(`/sign/${result.token}$`));
+    expect(result.expiresAt).toEqual(new Date("2026-07-10T13:00:00.000Z"));
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: PRACTICE_ID,
+        patientId: PATIENT_ID,
+        createdBy: USER_ID,
+        token: result.token,
+        expiresAt: result.expiresAt,
+        title: "Consent to treatment",
+        bodyText: expect.stringContaining("I give this clinic permission"),
+      })
+    );
+  });
+
+  it("snapshots custom consent copy onto the request", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [patientRow],
+      insertedRows: [{ id: RECORD_ID }],
+    });
+
+    await callerWithDb(db).createConsentRequest({
+      patientId: PATIENT_ID,
+      title: "Dental cleaning consent",
+      bodyText: "I agree to the dental cleaning we talked about.",
+    });
+
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Dental cleaning consent",
+        bodyText: "I agree to the dental cleaning we talked about.",
+      })
+    );
+  });
+
+  it("keeps consent links restricted to non-viewer staff roles", async () => {
+    for (const role of [
+      "admin",
+      "veterinarian",
+      "technician",
+      "front_desk",
+    ] as const) {
+      const { db } = createDb({
+        selectResults: [patientRow],
+        insertedRows: [{ id: RECORD_ID }],
+      });
+      await expect(
+        callerWithDb(db, role).createConsentRequest({ patientId: PATIENT_ID })
+      ).resolves.toMatchObject({ token: expect.any(String) });
+    }
+
+    const { db, insertValues } = createDb();
+    await expect(
+      callerWithDb(db, "viewer").createConsentRequest({
+        patientId: PATIENT_ID,
+      })
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("rejects consent links for patients outside the practice", async () => {
+    const { db, insertValues } = createDb({ selectResults: [[]] });
+
+    await expect(
+      callerWithDb(db).createConsentRequest({ patientId: PATIENT_ID })
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("requires a tenant-owned patient before listing consents", async () => {
+    const { db } = createDb({ selectResults: [[]] });
+
+    await expect(
+      callerWithDb(db).listConsents({ patientId: PATIENT_ID })
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+});

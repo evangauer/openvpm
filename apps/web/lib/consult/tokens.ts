@@ -10,6 +10,8 @@ import { createHash, randomBytes } from "node:crypto";
 export const CAPTURE_TOKEN_LENGTH = 64;
 export const CAPTURE_TOKEN_PATTERN = /^[0-9a-f]{64}$/;
 export const CAPTURE_TOKEN_TTL_MS = 30 * 60 * 1000;
+/** Consent links live longer than photo links: the form may wait in a lobby. */
+export const CONSENT_TOKEN_TTL_MS = 60 * 60 * 1000;
 
 export function generateCaptureToken(): string {
   return randomBytes(32).toString("hex");

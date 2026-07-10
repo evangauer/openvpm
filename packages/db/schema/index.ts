@@ -10,6 +10,7 @@ export * from "./communications";
 export * from "./auth";
 export * from "./controlled-substances";
 export * from "./files";
+export * from "./consents";
 export * from "./templates";
 export * from "./insurance";
 export * from "./wellness";

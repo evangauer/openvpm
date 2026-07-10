@@ -73,6 +73,8 @@ export const PRACTICE_EXPORT_SYSTEM_EXCLUSIONS = {
   authTokens: "Expiring pre-tenant email verification and password-reset tokens.",
   captureSessions:
     "Expiring QR photo-capture link tokens; restoring them would resurrect old capture URLs. The photos themselves are in the files section.",
+  consentRequests:
+    "Expiring e-sign link tokens; the signed consent PDF is in the files section and the signing event is in the audit log.",
 } as const;
 
 export const PRACTICE_EXPORT_SECRET_REPLACEMENTS = {
