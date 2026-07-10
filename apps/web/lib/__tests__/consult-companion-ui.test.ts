@@ -33,7 +33,7 @@ describe("consult companion UI states", () => {
       'import { CapturePhotos } from "@/components/records/capture-photos"'
     );
     expect(patientPage).toMatch(
-      /\{canManagePatientDetail && \(\s*<CapturePhotos patientId=\{patient\.id\} \/>\s*\)\}/
+      /\{canManagePatientDetail && \(\s*<>\s*<CapturePhotos patientId=\{patient\.id\} \/>\s*<ConsentSign patientId=\{patient\.id\} \/>\s*<\/>\s*\)\}/
     );
   });
 
@@ -110,6 +110,86 @@ describe("consult companion UI states", () => {
 
   it("keeps consult companion copy free of em dashes", () => {
     for (const source of [captureClient, captureModal, captureLayout]) {
+      expect(source).not.toContain("—");
+    }
+  });
+});
+
+describe("e-sign consent UI states", () => {
+  const patientPage = readFileSync(
+    "app/(dashboard)/patients/[id]/page.tsx",
+    "utf8"
+  );
+  const signPage = readFileSync("app/sign/[token]/page.tsx", "utf8");
+  const signClient = readFileSync("app/sign/[token]/sign-client.tsx", "utf8");
+  const signLayout = readFileSync("app/sign/layout.tsx", "utf8");
+  const consentModal = readFileSync(
+    "components/records/consent-sign.tsx",
+    "utf8"
+  );
+  const middleware = readFileSync("middleware.ts", "utf8");
+  const recordsRouter = readFileSync("server/routers/records.ts", "utf8");
+
+  it("gates the signature button behind patient management", () => {
+    expect(patientPage).toContain(
+      'import { ConsentSign } from "@/components/records/consent-sign"'
+    );
+  });
+
+  it("allows the no-login sign page through the middleware allowlist", () => {
+    const allowlist = middleware.slice(
+      middleware.indexOf("PUBLIC_PATH_PREFIXES"),
+      middleware.indexOf("];")
+    );
+    expect(allowlist).toContain('"/sign"');
+  });
+
+  it("lets staff edit the consent copy before minting the code", () => {
+    expect(consentModal).toContain("DEFAULT_CONSENT_TITLE");
+    expect(consentModal).toContain("DEFAULT_CONSENT_BODY");
+    expect(consentModal).toContain("createConsentRequest.useMutation");
+    expect(consentModal).toContain("Make the code");
+  });
+
+  it("shows the signed state with a link to the PDF", () => {
+    expect(consentModal).toContain("listConsents.useQuery");
+    expect(consentModal).toContain("Signed by");
+    expect(consentModal).toContain("Open the signed PDF");
+  });
+
+  it("requires both a name and drawn ink before submitting", () => {
+    expect(signClient).toContain(
+      "Boolean(signature) && signerName.trim().length > 0"
+    );
+    expect(signClient).toContain("Agree and sign");
+    expect(signClient).toContain('toDataURL("image/png")');
+  });
+
+  it("shows the friendly expired copy on dead links", () => {
+    expect(signClient).toContain(
+      "This link has expired. Ask the front desk for a new code."
+    );
+  });
+
+  it("keeps the sign page from widening the token oracle", () => {
+    // The server component renders the same shell for every token; content
+    // comes only from the rate-limited API.
+    expect(signPage).not.toContain("withSystem");
+    expect(signPage).toContain('export const dynamic = "force-dynamic"');
+  });
+
+  it("snapshots consent copy server-side so edits never rewrite signed forms", () => {
+    expect(recordsRouter).toContain("createConsentRequest");
+    expect(recordsRouter).toContain(
+      "title: input.title ?? DEFAULT_CONSENT_TITLE"
+    );
+    expect(recordsRouter).toContain(
+      "bodyText: input.bodyText ?? DEFAULT_CONSENT_BODY"
+    );
+  });
+
+  it("keeps e-sign copy free of em dashes", () => {
+    for (const source of [signClient, signLayout, consentModal]) {
       expect(source).not.toContain("—");
     }
   });

@@ -26,6 +26,7 @@ import { useCurrencyFormatter } from "@/lib/locale/useCurrency";
 import { EmptyState } from "@/components/common/empty-state";
 import { Button } from "@/components/ui/button";
 import { CapturePhotos } from "@/components/records/capture-photos";
+import { ConsentSign } from "@/components/records/consent-sign";
 import { cn } from "@/lib/utils";
 import {
   CLIENT_UPLOAD_TIMEOUT_MS,
@@ -636,7 +637,10 @@ export default function PatientDetailPage() {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {canManagePatientDetail && (
-              <CapturePhotos patientId={patient.id} />
+              <>
+                <CapturePhotos patientId={patient.id} />
+                <ConsentSign patientId={patient.id} />
+              </>
             )}
             <Button
               variant="outline"
