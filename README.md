@@ -65,6 +65,10 @@ That's the bar we're building to.
 |-----------|----------|----------------|
 | ![Dashboard](docs/screenshots/dashboard.png) | ![Schedule](docs/screenshots/schedule.png) | ![Patient](docs/screenshots/patient.png) |
 
+## Help & Guides
+
+Short, plain-language guides live in [docs/help](docs/help/README.md): getting started, the day sheet, the AI helper, client portals, calendar sync, and owning your data. Switching from another PIMS? Start with [Migrating to OpenVPM](docs/migrating-to-openvpm.md).
+
 ## Features
 
 ### Phase 1 — Foundation (Implemented)
