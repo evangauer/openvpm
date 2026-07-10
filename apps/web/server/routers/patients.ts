@@ -569,6 +569,36 @@ export const patientsRouter = createRouter({
       return allergy!;
     }),
 
+  /**
+   * Soft delete: the row keeps its history (the Rx safety log may reference
+   * it) but stops feeding the alert bar, prescription checks, and portal.
+   */
+  removeAllergy: patientManagerProcedure
+    .input(
+      z.object({
+        patientId: z.string().uuid(),
+        id: z.string().uuid(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      await assertPatientBelongsToPractice(ctx.db, ctx.practiceId, input.patientId);
+      const [removed] = await ctx.db
+        .update(patientAllergies)
+        .set({ deletedAt: new Date() })
+        .where(
+          and(
+            eq(patientAllergies.id, input.id),
+            eq(patientAllergies.patientId, input.patientId),
+            isNull(patientAllergies.deletedAt)
+          )
+        )
+        .returning({ id: patientAllergies.id });
+      if (!removed) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Allergy not found" });
+      }
+      return { ok: true };
+    }),
+
   merge: protectedProcedure
     .use(requireRole("admin"))
     .input(

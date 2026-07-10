@@ -17,6 +17,7 @@ import {
   Loader2,
   Plus,
   Receipt,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
@@ -353,6 +354,60 @@ export default function PatientDetailPage() {
     });
   }
 
+  // Allergies: recorded here feed the alert bar, prescription safety
+  // warnings, the portal, and PDF summaries.
+  const [showAllergyForm, setShowAllergyForm] = useState(false);
+  const [allergyName, setAllergyName] = useState("");
+  const [allergySeverity, setAllergySeverity] = useState<
+    "mild" | "moderate" | "severe"
+  >("moderate");
+  const [allergyReaction, setAllergyReaction] = useState("");
+  const addAllergy = trpc.patients.addAllergy.useMutation({
+    onSuccess: () => {
+      toast.success("Allergy recorded");
+      utils.patients.getById.invalidate({ id: params.id });
+      setAllergyName("");
+      setAllergyReaction("");
+      setAllergySeverity("moderate");
+      setShowAllergyForm(false);
+    },
+    onError: (err) => toast.error(err.message),
+  });
+  const removeAllergy = trpc.patients.removeAllergy.useMutation({
+    onSuccess: () => {
+      toast.success("Allergy removed");
+      utils.patients.getById.invalidate({ id: params.id });
+    },
+    onError: (err) => toast.error(err.message),
+  });
+  const canSubmitAllergy =
+    canManagePatientDetail &&
+    allergyName.trim().length > 0 &&
+    !addAllergy.isPending;
+
+  function handleAddAllergy(e: React.FormEvent) {
+    e.preventDefault();
+    if (!canSubmitAllergy || !patient) return;
+    addAllergy.mutate({
+      patientId: patient.id,
+      allergen: allergyName.trim(),
+      severity: allergySeverity,
+      reaction: allergyReaction.trim() || undefined,
+    });
+  }
+
+  function handleRemoveAllergy(allergy: { id: string; allergen: string }) {
+    if (!patient || removeAllergy.isPending) return;
+    if (
+      !window.confirm(
+        `Remove the "${allergy.allergen}" allergy? Prescription safety checks will stop warning about it.`
+      )
+    ) {
+      return;
+    }
+    removeAllergy.mutate({ patientId: patient.id, id: allergy.id });
+  }
+
   const loadError = error ?? recordsSettingsError;
   const isPageLoading = !loadError && (isLoading || recordsSettingsLoading);
 
@@ -601,17 +656,18 @@ export default function PatientDetailPage() {
       </div>
 
       {/* Allergy Alert Bar */}
-      {patient.allergies && patient.allergies.length > 0 && (
+      {patient.allergies && patient.allergies.length > 0 ? (
         <div className="mt-4 flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-4 dark:border-red-900 dark:bg-red-950/30">
           <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-red-600 dark:text-red-400" />
-          <div>
+          <div className="min-w-0 flex-1">
             <p className="text-sm font-semibold text-red-800 dark:text-red-300">
               Allergies
             </p>
-            <div className="mt-1 flex flex-wrap gap-2">
+            <div className="mt-1 flex flex-wrap items-center gap-2">
               {patient.allergies.map((allergy) => (
                 <span
                   key={allergy.id}
+                  title={allergy.reaction ?? undefined}
                   className={cn(
                     "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
                     allergy.severity === "severe"
@@ -627,12 +683,76 @@ export default function PatientDetailPage() {
                       severe
                     </span>
                   ) : null}
+                  {canManagePatientDetail ? (
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveAllergy(allergy)}
+                      disabled={removeAllergy.isPending}
+                      aria-label={`Remove ${allergy.allergen} allergy`}
+                      className="ml-1 rounded-full p-0.5 opacity-60 transition-opacity hover:opacity-100 disabled:cursor-not-allowed"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  ) : null}
                 </span>
               ))}
+              {canManagePatientDetail && !showAllergyForm ? (
+                <button
+                  type="button"
+                  onClick={() => setShowAllergyForm(true)}
+                  className="inline-flex items-center gap-1 rounded-full border border-dashed border-red-300 px-2.5 py-0.5 text-xs font-medium text-red-700 transition-colors hover:bg-red-100 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950"
+                >
+                  <Plus className="h-3 w-3" />
+                  Add
+                </button>
+              ) : null}
             </div>
+            {showAllergyForm ? (
+              <AllergyForm
+                allergyName={allergyName}
+                setAllergyName={setAllergyName}
+                allergySeverity={allergySeverity}
+                setAllergySeverity={setAllergySeverity}
+                allergyReaction={allergyReaction}
+                setAllergyReaction={setAllergyReaction}
+                canSubmit={canSubmitAllergy}
+                isPending={addAllergy.isPending}
+                onSubmit={handleAddAllergy}
+                onCancel={() => setShowAllergyForm(false)}
+              />
+            ) : null}
           </div>
         </div>
-      )}
+      ) : canManagePatientDetail ? (
+        <div className="mt-4 rounded-lg border border-border bg-muted/30 px-4 py-3">
+          {showAllergyForm ? (
+            <AllergyForm
+              allergyName={allergyName}
+              setAllergyName={setAllergyName}
+              allergySeverity={allergySeverity}
+              setAllergySeverity={setAllergySeverity}
+              allergyReaction={allergyReaction}
+              setAllergyReaction={setAllergyReaction}
+              canSubmit={canSubmitAllergy}
+              isPending={addAllergy.isPending}
+              onSubmit={handleAddAllergy}
+              onCancel={() => setShowAllergyForm(false)}
+            />
+          ) : (
+            <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground">
+              <span>No known allergies recorded.</span>
+              <button
+                type="button"
+                onClick={() => setShowAllergyForm(true)}
+                className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Add allergy
+              </button>
+            </div>
+          )}
+        </div>
+      ) : null}
 
       {/* Tab Navigation */}
       <div className="mt-6 border-b border-border">
@@ -1507,5 +1627,104 @@ function InvoicesTab({ patientId }: { patientId: string }) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+function AllergyForm({
+  allergyName,
+  setAllergyName,
+  allergySeverity,
+  setAllergySeverity,
+  allergyReaction,
+  setAllergyReaction,
+  canSubmit,
+  isPending,
+  onSubmit,
+  onCancel,
+}: {
+  allergyName: string;
+  setAllergyName: (v: string) => void;
+  allergySeverity: "mild" | "moderate" | "severe";
+  setAllergySeverity: (v: "mild" | "moderate" | "severe") => void;
+  allergyReaction: string;
+  setAllergyReaction: (v: string) => void;
+  canSubmit: boolean;
+  isPending: boolean;
+  onSubmit: (e: React.FormEvent) => void;
+  onCancel: () => void;
+}) {
+  return (
+    <form onSubmit={onSubmit} className="mt-3 flex flex-wrap items-end gap-2">
+      <div className="w-full sm:w-44">
+        <label
+          htmlFor="allergy-allergen"
+          className="mb-1 block text-xs font-medium text-muted-foreground"
+        >
+          Allergen
+        </label>
+        <input
+          id="allergy-allergen"
+          type="text"
+          value={allergyName}
+          maxLength={255}
+          required
+          placeholder="Penicillin"
+          onChange={(event) => setAllergyName(event.target.value)}
+          className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+        />
+      </div>
+      <div>
+        <label
+          htmlFor="allergy-severity"
+          className="mb-1 block text-xs font-medium text-muted-foreground"
+        >
+          Severity
+        </label>
+        <select
+          id="allergy-severity"
+          value={allergySeverity}
+          onChange={(event) =>
+            setAllergySeverity(
+              event.target.value as "mild" | "moderate" | "severe"
+            )
+          }
+          className="rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+        >
+          <option value="mild">Mild</option>
+          <option value="moderate">Moderate</option>
+          <option value="severe">Severe</option>
+        </select>
+      </div>
+      <div className="w-full sm:w-56">
+        <label
+          htmlFor="allergy-reaction"
+          className="mb-1 block text-xs font-medium text-muted-foreground"
+        >
+          Reaction (optional)
+        </label>
+        <input
+          id="allergy-reaction"
+          type="text"
+          value={allergyReaction}
+          maxLength={2000}
+          placeholder="Facial swelling"
+          onChange={(event) => setAllergyReaction(event.target.value)}
+          className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+        />
+      </div>
+      <div className="flex items-center gap-2">
+        <Button type="submit" size="sm" disabled={!canSubmit}>
+          {isPending ? (
+            <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Plus className="mr-1.5 h-3.5 w-3.5" />
+          )}
+          {isPending ? "Saving..." : "Save allergy"}
+        </Button>
+        <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </form>
   );
 }

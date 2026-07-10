@@ -30,6 +30,7 @@ const MERGE_PATIENT_ID = "00000000-0000-0000-0000-000000000004";
 const OTHER_CLIENT_ID = "00000000-0000-0000-0000-000000000005";
 const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000006";
 const WAITLIST_ID = "00000000-0000-0000-0000-000000000007";
+const ALLERGY_ID = "00000000-0000-0000-0000-000000000008";
 
 function callerWithDb(db: Record<string, unknown>, role = "admin") {
   const session = {
@@ -458,6 +459,66 @@ describe("patients mutation safety", () => {
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("keeps allergy removal restricted to non-viewer staff roles", async () => {
+    const { db, select, updateSet } = createDb();
+
+    await expect(
+      callerWithDb(db, "viewer").removeAllergy({
+        patientId: PATIENT_ID,
+        id: ALLERGY_ID,
+      })
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    expect(select).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("soft deletes allergies for tenant-owned patients only", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [[{ id: PATIENT_ID }]],
+      updatedRows: [{ id: ALLERGY_ID }],
+    });
+
+    await expect(
+      callerWithDb(db, "front_desk").removeAllergy({
+        patientId: PATIENT_ID,
+        id: ALLERGY_ID,
+      })
+    ).resolves.toEqual({ ok: true });
+
+    // Soft delete: the row is retired via deletedAt, never hard-deleted.
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ deletedAt: expect.any(Date) })
+    );
+  });
+
+  it("404s allergy removal when the patient is not tenant-owned", async () => {
+    const { db, updateSet } = createDb({ selectResults: [[]] });
+
+    await expect(
+      callerWithDb(db).removeAllergy({
+        patientId: PATIENT_ID,
+        id: ALLERGY_ID,
+      })
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("404s allergy removal when the row is missing or already removed", async () => {
+    const { db } = createDb({
+      selectResults: [[{ id: PATIENT_ID }]],
+      updatedRows: [],
+    });
+
+    await expect(
+      callerWithDb(db).removeAllergy({
+        patientId: PATIENT_ID,
+        id: ALLERGY_ID,
+      })
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
   it("rejects stale or cross-tenant patient updates", async () => {

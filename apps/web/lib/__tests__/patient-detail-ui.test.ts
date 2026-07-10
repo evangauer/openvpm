@@ -292,4 +292,26 @@ describe("patient detail UI states", () => {
     expect(source).toContain("weightKg: weightKg.trim()");
     expect(source).toContain('toast.success("Weight recorded")');
   });
+
+  it("lets staff manage allergies from the alert bar, gated and confirmed", () => {
+    const source = readFileSync("app/(dashboard)/patients/[id]/page.tsx", "utf8");
+    // Add + remove both refresh the same getById payload the bar renders from.
+    expect(source).toContain("trpc.patients.addAllergy.useMutation");
+    expect(source).toContain("trpc.patients.removeAllergy.useMutation");
+    const invalidations = source.match(
+      /utils\.patients\.getById\.invalidate\(\{ id: params\.id \}\)/g
+    );
+    expect(invalidations && invalidations.length).toBeGreaterThanOrEqual(3);
+    // Removal is destructive to safety checks; it must be confirmed and
+    // both controls stay behind the same role gate as the server.
+    expect(source).toContain("window.confirm(");
+    expect(source).toContain(
+      "Prescription safety checks will stop warning about it."
+    );
+    expect(source).toContain("{canManagePatientDetail && !showAllergyForm ?");
+    expect(source).toContain("allergen: allergyName.trim()");
+    // Read-only roles still see the alert bar but never the empty-state
+    // add strip (it renders null for them).
+    expect(source).toContain(") : canManagePatientDetail ? (");
+  });
 });
