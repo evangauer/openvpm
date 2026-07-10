@@ -17,6 +17,7 @@ describe("Vercel cron schedule", () => {
         "/api/cron/wellness-billing",
         "/api/cron/rate-limit-cleanup",
         "/api/cron/auth-cleanup",
+        "/api/cron/activation-digest",
       ])
     );
   });

@@ -11,6 +11,7 @@ export const CRON_HEARTBEAT_JOBS = [
   "wellness-billing",
   "rate-limit-cleanup",
   "auth-cleanup",
+  "activation-digest",
 ] as const;
 
 export type CronHeartbeatJob = (typeof CRON_HEARTBEAT_JOBS)[number];

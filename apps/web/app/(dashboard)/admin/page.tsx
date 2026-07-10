@@ -7,6 +7,7 @@ import {
   Clock,
   CheckCircle,
   AlertTriangle,
+  TrendingUp,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { EmptyState } from "@/components/common/empty-state";
@@ -38,6 +39,10 @@ function formatDate(d: Date | string | null, timeZone?: string | null) {
   }
 }
 
+function formatPct(rate: number) {
+  return `${Math.round(rate * 100)}%`;
+}
+
 const statusStyles: Record<string, string> = {
   active: "bg-green-100 text-green-700",
   trialing: "bg-blue-100 text-blue-700",
@@ -51,6 +56,8 @@ export default function AdminPage() {
     trpc.admin.overview.useQuery(undefined, {
       retry: false,
     });
+  const { data: funnel, error: funnelError } =
+    trpc.admin.activationFunnel.useQuery({ days: 30 }, { retry: false });
 
   if (error?.data?.code === "FORBIDDEN") {
     return (
@@ -121,6 +128,51 @@ export default function AdminPage() {
             </div>
           );
         })}
+      </div>
+
+      {/* Trial funnel */}
+      <div className="mt-6 rounded-lg border border-border bg-card p-5">
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <TrendingUp className="h-4 w-4" />
+          <span className="text-sm">Trial funnel (30 days)</span>
+        </div>
+        {funnel ? (
+          <>
+            <div className="mt-3 grid gap-4 sm:grid-cols-3">
+              <div>
+                <p className="text-sm text-muted-foreground">Signups</p>
+                <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
+                  {funnel.totals.signups}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">Activated</p>
+                <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
+                  {funnel.totals.activated}
+                  <span className="ml-2 text-sm font-normal text-muted-foreground">
+                    {formatPct(funnel.totals.activationRate)}
+                  </span>
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">Subscribed</p>
+                <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
+                  {funnel.totals.subscribed}
+                  <span className="ml-2 text-sm font-normal text-muted-foreground">
+                    {formatPct(funnel.totals.conversionRate)}
+                  </span>
+                </p>
+              </div>
+            </div>
+            <p className="mt-3 text-xs text-muted-foreground">
+              Activated = added a real client and booked a real visit
+            </p>
+          </>
+        ) : (
+          <p className="mt-3 text-sm text-muted-foreground">
+            {funnelError ? "Could not load the funnel." : "Loading funnel..."}
+          </p>
+        )}
       </div>
 
       {/* Practices table */}

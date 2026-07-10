@@ -32,6 +32,10 @@
     {
       "path": "/api/cron/auth-cleanup",
       "schedule": "45 4 * * *"
+    },
+    {
+      "path": "/api/cron/activation-digest",
+      "schedule": "0 13 * * 1"
     }
   ]
 }

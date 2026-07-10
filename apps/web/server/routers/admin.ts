@@ -1,9 +1,11 @@
+import { z } from "zod";
 import { isNull, sql, desc } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure } from "../trpc";
 import { db } from "@openpims/db/client";
 import { practices, users, clients, patients, locations } from "@openpims/db";
 import { isPlatformAdmin } from "@/lib/platform-admin";
+import { computeActivationFunnel } from "@/lib/admin/activation-funnel";
 import {
   CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD,
   CLOUD_SEAT_UNIT_PRICE_MONTHLY_USD,
@@ -118,4 +120,16 @@ export const adminRouter = createRouter({
     };
     })
   ),
+
+  /**
+   * Trial funnel: signups -> activated -> subscribed, derived from existing
+   * rows (see lib/admin/activation-funnel.ts for the definitions).
+   */
+  activationFunnel: platformAdminProcedure
+    .input(
+      z
+        .object({ days: z.number().int().min(1).max(365).default(30) })
+        .optional()
+    )
+    .query(({ input }) => computeActivationFunnel(db, input?.days ?? 30)),
 });

@@ -21,6 +21,22 @@ describe("admin UI", () => {
     expect(source).not.toContain("if (isLoading || !data)");
   });
 
+  it("shows the trial funnel tile with counts, rates, and the plain hint", () => {
+    expect(source).toContain(
+      "trpc.admin.activationFunnel.useQuery({ days: 30 }, { retry: false })"
+    );
+    expect(source).toContain("Trial funnel (30 days)");
+    expect(source).toContain("{funnel.totals.signups}");
+    expect(source).toContain("{funnel.totals.activated}");
+    expect(source).toContain("{funnel.totals.subscribed}");
+    expect(source).toContain("formatPct(funnel.totals.activationRate)");
+    expect(source).toContain("formatPct(funnel.totals.conversionRate)");
+    expect(source).toContain(
+      "Activated = added a real client and booked a real visit"
+    );
+    expect(source).toContain("Could not load the funnel.");
+  });
+
   it("renders practice dates in each practice timezone", () => {
     expect(source).toContain(
       "function formatDate(d: Date | string | null, timeZone?: string | null)"
