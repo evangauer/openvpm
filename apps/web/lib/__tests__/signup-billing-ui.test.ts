@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest";
 
 describe("signup billing copy", () => {
   const registerSource = readFileSync("app/(auth)/register/page.tsx", "utf8");
-  const welcomePanelSource = readFileSync(
-    "components/dashboard/welcome-panel.tsx",
+  // The dormant WelcomePanel was replaced by the welcome surface; its copy
+  // deck is now the customer-facing first-run voice to hold to account.
+  const welcomeCopySource = readFileSync(
+    "components/welcome/welcome-copy.ts",
     "utf8"
   );
   const activationChecklistSource = readFileSync(
@@ -20,7 +22,7 @@ describe("signup billing copy", () => {
   it("advertises the hosted trial as no-card, not card-collected", () => {
     const noCardSurfaces = [
       registerSource,
-      welcomePanelSource,
+      welcomeCopySource,
       welcomeEmailSource,
       readmeSource,
     ];
@@ -33,7 +35,6 @@ describe("signup billing copy", () => {
       expect(source).not.toContain("billing secured through Stripe");
     }
     expect(registerSource).toContain("No credit card required");
-    expect(welcomePanelSource).toContain("no credit card is required");
     expect(welcomeEmailSource).toContain("no credit card");
     expect(readmeSource).toContain("no credit card required");
     expect(activationChecklistSource).toContain("Confirm billing is connected");
