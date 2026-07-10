@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { parseCsv, normalizeKey } from "../parse";
-import { csvToClientRecords, csvToPatientRecords } from "../import";
+import {
+  csvToClientRecords,
+  csvToPatientRecords,
+  csvToVaccinationRecords,
+} from "../import";
 
 describe("parseCsv", () => {
   it("parses headers and rows", () => {
@@ -97,6 +101,110 @@ describe("csvToPatientRecords", () => {
       'clientEmail,name,species\n"owner@example.com,Rex,canine'
     );
 
+    expect(records).toEqual([]);
+    expect(errors).toEqual(["CSV has an unterminated quoted field."]);
+  });
+
+  it("reads real-export headers and values (migration aliases)", () => {
+    // AVImark-style export: friendly headers, dog/cat species, MN sex,
+    // US-format birthday. All should normalize without hand-editing.
+    const csv =
+      "Owner Email,Pet Name,Species,Gender,Birthday,Microchip\n" +
+      "jane@x.com,Rex,Dog,MN,3/5/2019,985112004\n" +
+      "jane@x.com,Tweety,Bird,F,2020-01-15,";
+    const { records, errors } = csvToPatientRecords(csv);
+    expect(errors).toEqual([]);
+    expect(records[0]).toMatchObject({
+      clientEmail: "jane@x.com",
+      name: "Rex",
+      species: "canine",
+      sex: "male_neutered",
+      dob: "2019-03-05",
+      microchipNumber: "985112004",
+    });
+    expect(records[1]).toMatchObject({
+      name: "Tweety",
+      species: "avian",
+      sex: "female",
+      dob: "2020-01-15",
+    });
+  });
+
+  it("passes unreadable DOBs through so the router reports them precisely", () => {
+    const csv = "clientEmail,name,species,dob\njane@x.com,Rex,canine,last spring";
+    const { records } = csvToPatientRecords(csv);
+    expect(records[0]!.dob).toBe("last spring");
+  });
+});
+
+describe("csvToClientRecords migration aliases", () => {
+  it("reads owner-style headers from real exports", () => {
+    const csv =
+      "Owner First Name,Surname,Email Address,Cell Phone,Street Address,Town,Province,Postal Code\n" +
+      "Jane,Doe,jane@x.com,555-0100,1 Main St,Boise,ID,83701";
+    const { records, errors } = csvToClientRecords(csv);
+    expect(errors).toEqual([]);
+    expect(records[0]).toEqual({
+      firstName: "Jane",
+      lastName: "Doe",
+      email: "jane@x.com",
+      phone: "555-0100",
+      address: "1 Main St",
+      city: "Boise",
+      state: "ID",
+      zip: "83701",
+    });
+  });
+});
+
+describe("csvToVaccinationRecords", () => {
+  it("maps vaccine history rows with alias headers and US dates", () => {
+    const csv =
+      "Owner Email,Pet Name,Vaccine,Date Given,Due Date,Lot,Manufacturer\n" +
+      "jane@x.com,Rex,Rabies 3yr,10/4/2024,10/4/2027,RB-771,Zoetis";
+    const { records, errors } = csvToVaccinationRecords(csv);
+    expect(errors).toEqual([]);
+    expect(records[0]).toEqual({
+      clientEmail: "jane@x.com",
+      patientName: "Rex",
+      vaccineName: "Rabies 3yr",
+      administeredAt: "2024-10-04",
+      nextDueDate: "2027-10-04",
+      lotNumber: "RB-771",
+      manufacturer: "Zoetis",
+    });
+  });
+
+  it("requires an owner email, pet name, vaccine, and readable date given", () => {
+    const csv =
+      "clientEmail,patientName,vaccineName,dateGiven\n" +
+      ",Rex,Rabies,10/4/2024\n" +
+      "jane@x.com,,Rabies,10/4/2024\n" +
+      "jane@x.com,Rex,,10/4/2024\n" +
+      "jane@x.com,Rex,Rabies,someday";
+    const { records, errors } = csvToVaccinationRecords(csv);
+    expect(records).toEqual([]);
+    expect(errors).toHaveLength(4);
+    expect(errors[0]).toMatch(/Row 1: clientEmail is required/);
+    expect(errors[1]).toMatch(/Row 2: patientName is required/);
+    expect(errors[2]).toMatch(/Row 3: vaccineName is required/);
+    expect(errors[3]).toMatch(/Row 4: dateGiven must be a date/);
+  });
+
+  it("imports a row without its due date when only the due date is unreadable", () => {
+    const csv =
+      "clientEmail,patientName,vaccineName,dateGiven,nextDueDate\n" +
+      "jane@x.com,Rex,DHPP,2024-06-01,when due";
+    const { records, errors } = csvToVaccinationRecords(csv);
+    expect(records).toHaveLength(1);
+    expect(records[0]!.nextDueDate).toBeUndefined();
+    expect(errors[0]).toMatch(/nextDueDate could not be read/);
+  });
+
+  it("does not map vaccination records from malformed quoted CSV", () => {
+    const { records, errors } = csvToVaccinationRecords(
+      'clientEmail,patientName,vaccineName,dateGiven\n"jane@x.com,Rex'
+    );
     expect(records).toEqual([]);
     expect(errors).toEqual(["CSV has an unterminated quoted field."]);
   });

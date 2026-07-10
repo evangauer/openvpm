@@ -83,6 +83,7 @@ import {
   IMPORT_CSV_MAX_BYTES,
   isImportCsvSizeValid,
 } from "@/lib/import/policy";
+import { MIGRATION_SOURCES } from "@/lib/import/sources";
 import {
   AUTH_PASSWORD_MAX_LENGTH,
   AUTH_PASSWORD_MIN_LENGTH,
@@ -2662,14 +2663,27 @@ type ImportPreview = {
   willInsert: number;
   duplicates?: number;
   unmatchedClient?: number;
+  unmatchedPatient?: number;
   errors: string[];
 };
+type ImportMode = "clients" | "patients" | "vaccinations";
 const IMPORT_CSV_SIZE_MESSAGE = "CSV imports must be 5 MB or less.";
+const IMPORT_COLUMN_HINTS: Record<ImportMode, string> = {
+  clients:
+    "Expected columns: firstName, lastName, email, phone, address, city, state, zip",
+  patients:
+    "Expected columns: clientEmail, name, species, breed, sex, dob, color, microchipNumber",
+  vaccinations:
+    "Expected columns: clientEmail, patientName, vaccineName, dateGiven, nextDueDate, lotNumber, manufacturer",
+};
 
 // ── Data Tab ─────────────────────────────────────────────────
 function DataTab() {
   const [exportingType, setExportingType] = useState<string | null>(null);
-  const [importMode, setImportMode] = useState<"clients" | "patients" | null>(null);
+  const [importMode, setImportMode] = useState<ImportMode | null>(null);
+  const [migrationSource, setMigrationSource] = useState<
+    (typeof MIGRATION_SOURCES)[number]["id"] | null
+  >(null);
   const [csvText, setCsvText] = useState("");
   const [csvFileName, setCsvFileName] = useState("");
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
@@ -2796,6 +2810,31 @@ function DataTab() {
       setCsvText("");
       setCsvFileName("");
       toast.success("Patients imported");
+    },
+    onError: (err) => {
+      toast.error(err.message);
+    },
+  });
+  const importVaccinationsCsv = trpc.data.importVaccinationsCsv.useMutation({
+    onSuccess: (data) => {
+      if ("dryRun" in data && data.dryRun) {
+        setImportPreview({
+          total: data.total,
+          willInsert: data.willInsert,
+          duplicates: data.duplicates,
+          unmatchedPatient: data.unmatchedPatient,
+          errors: data.errors,
+        });
+        setImportResult(null);
+        toast.success("Vaccination CSV checked");
+        return;
+      }
+
+      setImportResult({ imported: data.imported ?? 0, errors: data.errors });
+      setImportPreview(null);
+      setCsvText("");
+      setCsvFileName("");
+      toast.success("Vaccine history imported");
     },
     onError: (err) => {
       toast.error(err.message);
@@ -3031,8 +3070,10 @@ function DataTab() {
         setCsvText(text);
         if (importMode === "clients") {
           importClientsCsv.mutate({ csv: text, dryRun: true });
-        } else {
+        } else if (importMode === "patients") {
           importPatientsCsv.mutate({ csv: text, dryRun: true });
+        } else {
+          importVaccinationsCsv.mutate({ csv: text, dryRun: true });
         }
       };
       reader.onerror = () => {
@@ -3041,7 +3082,7 @@ function DataTab() {
       };
       reader.readAsText(file);
     },
-    [importClientsCsv, importMode, importPatientsCsv]
+    [importClientsCsv, importMode, importPatientsCsv, importVaccinationsCsv]
   );
 
   const handleDrop = useCallback(
@@ -3064,12 +3105,24 @@ function DataTab() {
     }
     if (importMode === "clients") {
       importClientsCsv.mutate({ csv: csvText, dryRun: false });
-    } else {
+    } else if (importMode === "patients") {
       importPatientsCsv.mutate({ csv: csvText, dryRun: false });
+    } else {
+      importVaccinationsCsv.mutate({ csv: csvText, dryRun: false });
     }
-  }, [csvText, importMode, importPreview, importClientsCsv, importPatientsCsv]);
+  }, [
+    csvText,
+    importMode,
+    importPreview,
+    importClientsCsv,
+    importPatientsCsv,
+    importVaccinationsCsv,
+  ]);
 
-  const isImportPending = importClientsCsv.isPending || importPatientsCsv.isPending;
+  const isImportPending =
+    importClientsCsv.isPending ||
+    importPatientsCsv.isPending ||
+    importVaccinationsCsv.isPending;
   const canRestoreBackup =
     Boolean(backupPayload) &&
     Boolean(backupSummary) &&
@@ -3482,49 +3535,82 @@ function DataTab() {
       <div>
         <h3 className="text-sm font-semibold mb-1">Import Data</h3>
         <p className="text-sm text-muted-foreground mb-4">
-          Upload a CSV file to check for parser errors, duplicates, and missing
-          owner matches before importing.
+          Moving from another system? Import clients first, then patients,
+          then vaccine history. Every file is dry-run first so you see
+          duplicates and missing matches before anything is saved. Common
+          column names from AVImark, Cornerstone, and ezyVet exports are
+          understood automatically.
         </p>
 
+        {/* Where the data is coming from (export instructions per source) */}
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium text-muted-foreground">
+            Coming from:
+          </span>
+          {MIGRATION_SOURCES.map((source) => (
+            <button
+              key={source.id}
+              type="button"
+              onClick={() =>
+                setMigrationSource(
+                  migrationSource === source.id ? null : source.id
+                )
+              }
+              className={cn(
+                "rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors",
+                migrationSource === source.id
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-border text-muted-foreground hover:border-primary/50"
+              )}
+            >
+              {source.name}
+            </button>
+          ))}
+        </div>
+        {migrationSource ? (
+          <p className="mb-4 max-w-2xl rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            {
+              MIGRATION_SOURCES.find((s) => s.id === migrationSource)!
+                .exportHint
+            }
+          </p>
+        ) : null}
+
         {/* Import mode selector */}
-        <div className="flex gap-2 mb-4">
-          <Button
-            variant={importMode === "clients" ? "default" : "outline"}
-            size="sm"
-            onClick={() => {
-              setImportMode("clients");
-              setCsvText("");
-              setCsvFileName("");
-              setImportPreview(null);
-              setImportResult(null);
-            }}
-          >
-            <Upload className="mr-2 h-4 w-4" />
-            Import Clients
-          </Button>
-          <Button
-            variant={importMode === "patients" ? "default" : "outline"}
-            size="sm"
-            onClick={() => {
-              setImportMode("patients");
-              setCsvText("");
-              setCsvFileName("");
-              setImportPreview(null);
-              setImportResult(null);
-            }}
-          >
-            <Upload className="mr-2 h-4 w-4" />
-            Import Patients
-          </Button>
+        <div className="flex flex-wrap gap-2 mb-4">
+          {(
+            [
+              { mode: "clients" as const, label: "1. Import Clients" },
+              { mode: "patients" as const, label: "2. Import Patients" },
+              {
+                mode: "vaccinations" as const,
+                label: "3. Import Vaccine History",
+              },
+            ]
+          ).map(({ mode, label }) => (
+            <Button
+              key={mode}
+              variant={importMode === mode ? "default" : "outline"}
+              size="sm"
+              onClick={() => {
+                setImportMode(mode);
+                setCsvText("");
+                setCsvFileName("");
+                setImportPreview(null);
+                setImportResult(null);
+              }}
+            >
+              <Upload className="mr-2 h-4 w-4" />
+              {label}
+            </Button>
+          ))}
         </div>
 
         {importMode && (
           <div className="max-w-2xl space-y-4">
             {/* Expected columns hint */}
             <p className="text-xs text-muted-foreground">
-              {importMode === "clients"
-                ? "Expected columns: firstName, lastName, email, phone, address, city, state, zip"
-                : "Expected columns: clientEmail, name, species, breed, sex, dob, color, microchipNumber"}
+              {IMPORT_COLUMN_HINTS[importMode]}
             </p>
 
             {/* Drop zone */}
@@ -3602,6 +3688,12 @@ function DataTab() {
                       <ImportStat
                         label="Missing owners"
                         value={importPreview.unmatchedClient ?? 0}
+                      />
+                    )}
+                    {importMode === "vaccinations" && (
+                      <ImportStat
+                        label="Missing pets"
+                        value={importPreview.unmatchedPatient ?? 0}
                       />
                     )}
                     <ImportStat

@@ -1,10 +1,18 @@
 import { parseCsv, normalizeRow } from "./parse";
+import {
+  normalizeDateValue,
+  normalizeSexValue,
+  normalizeSpeciesValue,
+} from "@/lib/import/normalize";
 
 /**
  * Map parsed CSV rows into the record shapes the data router's import
  * mutations expect. Header matching is normalized (case/spacing/underscore
- * insensitive). Returns valid records plus per-row errors so a partial import
- * can proceed and report what it skipped. Pure — no I/O.
+ * insensitive) and each field accepts the aliases that real PIMS exports
+ * use (AVImark, Cornerstone, ezyVet, plain spreadsheets), so a clinic's
+ * export usually imports without hand-editing headers. Returns valid
+ * records plus per-row errors so a partial import can proceed and report
+ * what it skipped. Pure — no I/O.
  */
 
 export interface ClientImportRecord {
@@ -29,17 +37,75 @@ export interface PatientImportRecord {
   microchipNumber?: string;
 }
 
+export interface VaccinationImportRecord {
+  clientEmail: string;
+  patientName: string;
+  vaccineName: string;
+  administeredAt: string;
+  nextDueDate?: string;
+  lotNumber?: string;
+  manufacturer?: string;
+}
+
 export interface ParseResult<T> {
   records: T[];
   errors: string[];
 }
 
 const SPECIES = ["canine", "feline", "avian", "rabbit", "reptile", "equine", "other"];
-const SEXES = ["male", "female", "male_neutered", "female_spayed"];
+
+/**
+ * Normalized-header aliases per field (see parse.ts normalizeKey: lowercase,
+ * strip non-alphanumerics). First match wins, so put our canonical export
+ * headers first — a round-trip of our own export must always import.
+ */
+const CLIENT_ALIASES: Record<keyof ClientImportRecord, string[]> = {
+  firstName: ["firstname", "first", "clientfirstname", "ownerfirstname", "fname", "givenname"],
+  lastName: ["lastname", "last", "surname", "clientlastname", "ownerlastname", "lname", "familyname"],
+  email: ["email", "emailaddress", "clientemail", "owneremail", "email1"],
+  phone: ["phone", "phonenumber", "homephone", "cellphone", "mobilephone", "mobile", "phone1", "contactnumber"],
+  address: ["address", "address1", "streetaddress", "addressline1", "street"],
+  city: ["city", "town"],
+  state: ["state", "province", "region"],
+  zip: ["zip", "zipcode", "postalcode", "postcode"],
+};
+
+const PATIENT_ALIASES: Record<keyof PatientImportRecord, string[]> = {
+  clientEmail: ["clientemail", "owneremail", "email", "emailaddress"],
+  name: ["name", "patientname", "petname", "patient", "pet", "animalname"],
+  species: ["species", "speciesdescription", "kind", "animaltype"],
+  breed: ["breed", "breeddescription"],
+  sex: ["sex", "gender"],
+  dob: ["dob", "dateofbirth", "birthday", "birthdate", "born"],
+  color: ["color", "colour", "markings"],
+  microchipNumber: ["microchipnumber", "microchip", "chipnumber", "microchipid", "chipid"],
+};
+
+const VACCINATION_ALIASES: Record<keyof VaccinationImportRecord, string[]> = {
+  clientEmail: ["clientemail", "owneremail", "email", "emailaddress"],
+  patientName: ["patientname", "name", "petname", "patient", "pet", "animalname"],
+  vaccineName: ["vaccinename", "vaccine", "vaccination", "description", "treatment"],
+  administeredAt: ["administeredat", "dategiven", "givendate", "givenon", "date", "vaccinationdate", "administered", "dateadministered"],
+  nextDueDate: ["nextduedate", "duedate", "nextdue", "due", "dueon", "expires", "expirationdate"],
+  lotNumber: ["lotnumber", "lot", "serialnumber", "serial"],
+  manufacturer: ["manufacturer", "maker", "brand", "producer"],
+};
 
 function opt(v: string | undefined): string | undefined {
   const t = v?.trim();
   return t ? t : undefined;
+}
+
+/** First non-empty value among a field's normalized-header aliases. */
+function fromAliases(
+  row: Record<string, string>,
+  aliases: string[]
+): string | undefined {
+  for (const key of aliases) {
+    const value = opt(row[key]);
+    if (value) return value;
+  }
+  return undefined;
 }
 
 export function csvToClientRecords(csv: string): ParseResult<ClientImportRecord> {
@@ -53,8 +119,8 @@ export function csvToClientRecords(csv: string): ParseResult<ClientImportRecord>
 
   rows.forEach((raw, i) => {
     const r = normalizeRow(raw);
-    const firstName = opt(r.firstname);
-    const lastName = opt(r.lastname);
+    const firstName = fromAliases(r, CLIENT_ALIASES.firstName);
+    const lastName = fromAliases(r, CLIENT_ALIASES.lastName);
     if (!firstName || !lastName) {
       errors.push(`Row ${i + 1}: firstName and lastName are required.`);
       return;
@@ -62,12 +128,12 @@ export function csvToClientRecords(csv: string): ParseResult<ClientImportRecord>
     records.push({
       firstName,
       lastName,
-      email: opt(r.email),
-      phone: opt(r.phone),
-      address: opt(r.address),
-      city: opt(r.city),
-      state: opt(r.state),
-      zip: opt(r.zip),
+      email: fromAliases(r, CLIENT_ALIASES.email),
+      phone: fromAliases(r, CLIENT_ALIASES.phone),
+      address: fromAliases(r, CLIENT_ALIASES.address),
+      city: fromAliases(r, CLIENT_ALIASES.city),
+      state: fromAliases(r, CLIENT_ALIASES.state),
+      zip: fromAliases(r, CLIENT_ALIASES.zip),
     });
   });
 
@@ -85,9 +151,10 @@ export function csvToPatientRecords(csv: string): ParseResult<PatientImportRecor
 
   rows.forEach((raw, i) => {
     const r = normalizeRow(raw);
-    const clientEmail = opt(r.clientemail) ?? opt(r.email);
-    const name = opt(r.name) ?? opt(r.patientname);
-    const species = opt(r.species)?.toLowerCase();
+    const clientEmail = fromAliases(r, PATIENT_ALIASES.clientEmail);
+    const name = fromAliases(r, PATIENT_ALIASES.name);
+    const speciesRaw = fromAliases(r, PATIENT_ALIASES.species);
+    const species = normalizeSpeciesValue(speciesRaw);
 
     if (!clientEmail) {
       errors.push(`Row ${i + 1}: clientEmail is required to link the pet to an owner.`);
@@ -97,23 +164,89 @@ export function csvToPatientRecords(csv: string): ParseResult<PatientImportRecor
       errors.push(`Row ${i + 1}: name is required.`);
       return;
     }
-    if (!species || !SPECIES.includes(species)) {
+    if (!species) {
       errors.push(
-        `Row ${i + 1}: species must be one of ${SPECIES.join(", ")} (got "${species ?? ""}").`
+        `Row ${i + 1}: species must be one of ${SPECIES.join(", ")} (got "${speciesRaw?.toLowerCase() ?? ""}").`
       );
       return;
     }
 
-    const sex = opt(r.sex)?.toLowerCase();
+    // DOB: normalize common formats; an unreadable value passes through so
+    // the router's validation reports it with the exact expected format.
+    const dobRaw = fromAliases(r, PATIENT_ALIASES.dob);
+    const dob = dobRaw ? normalizeDateValue(dobRaw) ?? dobRaw : undefined;
+
     records.push({
       clientEmail,
       name,
-      species: species as PatientImportRecord["species"],
-      breed: opt(r.breed),
-      sex: sex && SEXES.includes(sex) ? (sex as PatientImportRecord["sex"]) : undefined,
-      dob: opt(r.dob),
-      color: opt(r.color),
-      microchipNumber: opt(r.microchipnumber) ?? opt(r.microchip),
+      species,
+      breed: fromAliases(r, PATIENT_ALIASES.breed),
+      sex: normalizeSexValue(fromAliases(r, PATIENT_ALIASES.sex)),
+      dob,
+      color: fromAliases(r, PATIENT_ALIASES.color),
+      microchipNumber: fromAliases(r, PATIENT_ALIASES.microchipNumber),
+    });
+  });
+
+  return { records, errors };
+}
+
+export function csvToVaccinationRecords(
+  csv: string
+): ParseResult<VaccinationImportRecord> {
+  const { rows, errors: parseErrors } = parseCsv(csv);
+  const records: VaccinationImportRecord[] = [];
+  const errors: string[] = [...parseErrors];
+
+  if (parseErrors.length > 0) {
+    return { records, errors };
+  }
+
+  rows.forEach((raw, i) => {
+    const r = normalizeRow(raw);
+    const clientEmail = fromAliases(r, VACCINATION_ALIASES.clientEmail);
+    const patientName = fromAliases(r, VACCINATION_ALIASES.patientName);
+    const vaccineName = fromAliases(r, VACCINATION_ALIASES.vaccineName);
+    const administeredRaw = fromAliases(r, VACCINATION_ALIASES.administeredAt);
+
+    if (!clientEmail) {
+      errors.push(
+        `Row ${i + 1}: clientEmail is required to link the vaccine to a pet.`
+      );
+      return;
+    }
+    if (!patientName) {
+      errors.push(`Row ${i + 1}: patientName is required.`);
+      return;
+    }
+    if (!vaccineName) {
+      errors.push(`Row ${i + 1}: vaccineName is required.`);
+      return;
+    }
+    const administeredAt = normalizeDateValue(administeredRaw);
+    if (!administeredAt) {
+      errors.push(
+        `Row ${i + 1}: dateGiven must be a date (like 2025-10-04 or 10/4/2025), got "${administeredRaw ?? ""}".`
+      );
+      return;
+    }
+
+    const dueRaw = fromAliases(r, VACCINATION_ALIASES.nextDueDate);
+    const nextDueDate = dueRaw ? normalizeDateValue(dueRaw) ?? undefined : undefined;
+    if (dueRaw && !nextDueDate) {
+      errors.push(
+        `Row ${i + 1}: nextDueDate could not be read as a date (got "${dueRaw}"); the row imports without it.`
+      );
+    }
+
+    records.push({
+      clientEmail,
+      patientName,
+      vaccineName,
+      administeredAt,
+      nextDueDate,
+      lotNumber: fromAliases(r, VACCINATION_ALIASES.lotNumber),
+      manufacturer: fromAliases(r, VACCINATION_ALIASES.manufacturer),
     });
   });
 

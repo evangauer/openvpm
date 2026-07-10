@@ -11,13 +11,16 @@ import {
   invoiceItems,
   practices,
   users,
+  vaccinationRecords,
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import {
   type ClientImportRecord,
   type PatientImportRecord,
+  type VaccinationImportRecord,
   csvToClientRecords,
   csvToPatientRecords,
+  csvToVaccinationRecords,
 } from "@/lib/csv/import";
 import {
   exportPracticeData,
@@ -42,6 +45,10 @@ export { IMPORT_CSV_MAX_BYTES, IMPORT_MAX_ROWS } from "@/lib/import/policy";
 
 type ClientImportRow = Omit<typeof clients.$inferInsert, "practiceId">;
 type PatientImportRow = Omit<typeof patients.$inferInsert, "practiceId">;
+type VaccinationImportRow = Omit<
+  typeof vaccinationRecords.$inferInsert,
+  "practiceId"
+>;
 type DataContext = {
   db: Database;
   practiceId: string;
@@ -79,6 +86,10 @@ const importOptionalEmail = z.preprocess(
 const importOptionalDate = z.preprocess(
   (value) => (typeof value === "string" ? value.trim() || undefined : value),
   clinicalDateInput("Date of birth").optional()
+);
+const importOptionalDueDate = z.preprocess(
+  (value) => (typeof value === "string" ? value.trim() || undefined : value),
+  clinicalDateInput("Next due date").optional()
 );
 const clientImportRecordInput = z.object({
   firstName: importRequiredText("First name", 128),
@@ -118,6 +129,21 @@ const importClientsInput = z.object({
 const importPatientsInput = z.object({
   patients: patientImportRecordsInput,
 });
+const vaccinationImportRecordInput = z.object({
+  clientEmail: z.string().trim().email().max(255),
+  patientName: importRequiredText("Patient name", 128),
+  vaccineName: importRequiredText("Vaccine name", 255),
+  administeredAt: clinicalDateInput("Date given"),
+  nextDueDate: importOptionalDueDate,
+  lotNumber: importOptionalText("Lot number", 64),
+  manufacturer: importOptionalText("Manufacturer", 128),
+});
+const vaccinationImportRecordsInput = z
+  .array(vaccinationImportRecordInput)
+  .max(
+    IMPORT_MAX_ROWS,
+    `Vaccination imports can include at most ${IMPORT_MAX_ROWS} rows.`
+  );
 const importCsvInput = z.object({
   csv: z
     .string()
@@ -295,6 +321,122 @@ function dedupePatientImport(
   });
 
   return { rows, errors, duplicates, unmatchedClient };
+}
+
+/** Key linking a vaccination row to a pet: owner email + normalized name. */
+function vaccinationPatientKey(clientEmail: string, patientName: string): string {
+  return `${normalizeImportEmail(clientEmail) ?? ""}|${normalizeImportText(patientName)}`;
+}
+
+/** Identity of an administered dose: patient + vaccine + date given. */
+function vaccinationIdentityKey(input: {
+  patientId: string;
+  vaccineName: string;
+  administeredDate: string;
+}): string {
+  return [
+    input.patientId,
+    normalizeImportText(input.vaccineName),
+    input.administeredDate,
+  ].join("|");
+}
+
+/**
+ * Historical doses import at noon UTC of the given day so the calendar
+ * date survives every clinic timezone (the exact hour was never in the
+ * source export to begin with).
+ */
+function vaccinationInstant(dateInput: string): Date {
+  return new Date(`${dateInput}T12:00:00.000Z`);
+}
+
+function dedupeVaccinationImport(
+  records: VaccinationImportRecord[],
+  patientKeyToId: Record<string, string | "ambiguous">,
+  existingDoses: Array<{
+    patientId: string;
+    vaccineName: string;
+    administeredAt: Date;
+  }>
+): {
+  rows: VaccinationImportRow[];
+  errors: string[];
+  duplicates: number;
+  unmatchedPatient: number;
+} {
+  const seen = new Set(
+    existingDoses.map((dose) =>
+      vaccinationIdentityKey({
+        patientId: dose.patientId,
+        vaccineName: dose.vaccineName,
+        administeredDate: dose.administeredAt.toISOString().slice(0, 10),
+      })
+    )
+  );
+
+  const rows: VaccinationImportRow[] = [];
+  const errors: string[] = [];
+  let duplicates = 0;
+  let unmatchedPatient = 0;
+
+  records.forEach((record, index) => {
+    const key = vaccinationPatientKey(record.clientEmail, record.patientName);
+    const patientId = patientKeyToId[key];
+    if (!patientId) {
+      unmatchedPatient++;
+      errors.push(
+        `Row ${index + 1}: No pet named "${record.patientName}" found for client "${record.clientEmail}"`
+      );
+      return;
+    }
+    if (patientId === "ambiguous") {
+      unmatchedPatient++;
+      errors.push(
+        `Row ${index + 1}: More than one pet named "${record.patientName}" belongs to "${record.clientEmail}"; add this dose by hand.`
+      );
+      return;
+    }
+
+    const identityKey = vaccinationIdentityKey({
+      patientId,
+      vaccineName: record.vaccineName,
+      administeredDate: record.administeredAt,
+    });
+    if (seen.has(identityKey)) {
+      duplicates++;
+      errors.push(
+        `Row ${index + 1}: Skipped duplicate dose "${record.vaccineName}" for "${record.patientName}".`
+      );
+      return;
+    }
+    seen.add(identityKey);
+
+    rows.push({
+      patientId,
+      vaccineName: record.vaccineName.trim(),
+      administeredAt: vaccinationInstant(record.administeredAt),
+      nextDueDate: record.nextDueDate ?? null,
+      lotNumber: record.lotNumber?.trim() || null,
+      manufacturer: record.manufacturer?.trim() || null,
+      // Historical import: no OpenVPM user administered this dose.
+      administeredBy: null,
+    });
+  });
+
+  return { rows, errors, duplicates, unmatchedPatient };
+}
+
+function parseVaccinationImportRecords(
+  records: VaccinationImportRecord[]
+): VaccinationImportRecord[] {
+  const result = vaccinationImportRecordsInput.safeParse(records);
+  if (!result.success) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Vaccination import rows contain invalid values.",
+    });
+  }
+  return result.data;
 }
 
 function parseClientImportRecords(
@@ -916,6 +1058,101 @@ export const dataRouter = createRouter({
       if (deduped.rows.length > 0) {
         await ctx.db.insert(patients).values(
           deduped.rows.map((p) => ({ ...p, practiceId: ctx.practiceId }))
+        );
+      }
+      return {
+        imported: deduped.rows.length,
+        errors: [...errors, ...deduped.errors],
+      };
+    }),
+
+  /**
+   * Vaccination history import (migration): rows link to pets by owner
+   * email + pet name, so run it AFTER clients and patients. Historical
+   * doses power reminders and the overdue-vaccine views from day one.
+   */
+  importVaccinationsCsv: adminProcedure
+    .input(importCsvInput)
+    .mutation(async ({ ctx, input }) => {
+      const { records, errors } = csvToVaccinationRecords(input.csv);
+      const validRecords = parseVaccinationImportRecords(records);
+
+      if (validRecords.length === 0 && errors.length > 0) {
+        if (input.dryRun) {
+          return {
+            dryRun: true as const,
+            total: 0,
+            willInsert: 0,
+            unmatchedPatient: 0,
+            duplicates: 0,
+            errors,
+          };
+        }
+        return { imported: 0, errors };
+      }
+
+      await assertActivePractice(ctx);
+
+      const patientRows = await ctx.db
+        .select({
+          id: patients.id,
+          name: patients.name,
+          clientEmail: clients.email,
+        })
+        .from(patients)
+        .innerJoin(clients, eq(patients.clientId, clients.id))
+        .where(
+          and(
+            eq(patients.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(patients.deletedAt),
+            isNull(clients.deletedAt)
+          )
+        );
+      const patientKeyToId: Record<string, string | "ambiguous"> = {};
+      for (const p of patientRows) {
+        if (!p.clientEmail) continue;
+        const key = vaccinationPatientKey(p.clientEmail, p.name);
+        // Two pets with the same name under one owner cannot be told apart
+        // by a CSV row; flag instead of guessing which pet got the dose.
+        patientKeyToId[key] = patientKeyToId[key] ? "ambiguous" : p.id;
+      }
+
+      const existingDoses = await ctx.db
+        .select({
+          patientId: vaccinationRecords.patientId,
+          vaccineName: vaccinationRecords.vaccineName,
+          administeredAt: vaccinationRecords.administeredAt,
+        })
+        .from(vaccinationRecords)
+        .where(
+          and(
+            eq(vaccinationRecords.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(vaccinationRecords.deletedAt)
+          )
+        );
+
+      const deduped = dedupeVaccinationImport(
+        validRecords,
+        patientKeyToId,
+        existingDoses
+      );
+
+      if (input.dryRun) {
+        return {
+          dryRun: true as const,
+          total: validRecords.length,
+          willInsert: deduped.rows.length,
+          unmatchedPatient: deduped.unmatchedPatient,
+          duplicates: deduped.duplicates,
+          errors: [...errors, ...deduped.errors],
+        };
+      }
+
+      if (deduped.rows.length > 0) {
+        await ctx.db.insert(vaccinationRecords).values(
+          deduped.rows.map((v) => ({ ...v, practiceId: ctx.practiceId }))
         );
       }
       return {
