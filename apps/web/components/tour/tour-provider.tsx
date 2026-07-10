@@ -19,7 +19,11 @@ import {
   type GuideContext,
   type GuideStep,
 } from "./guide-recipes";
-import { GUIDE_SIGNAL_EVENT, guideSignalName } from "./guide-signals";
+import {
+  emitGuideCompleted,
+  GUIDE_SIGNAL_EVENT,
+  guideSignalName,
+} from "./guide-signals";
 import { useAnchorRect } from "./use-tour-anchor";
 import { Coachmark } from "./coachmark";
 
@@ -137,8 +141,12 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
     setRun((r) => {
       if (!r) return r;
       if (r.index >= r.steps.length - 1) {
-        if (r.recipe === "tour") persist("completed");
-        else markGuideCompleted(userId, r.recipe);
+        if (r.recipe === "tour") {
+          persist("completed");
+        } else {
+          markGuideCompleted(userId, r.recipe);
+          emitGuideCompleted(r.recipe);
+        }
         return null;
       }
       if (r.recipe === "tour") persist("in_progress", r.steps[r.index + 1]!.id);

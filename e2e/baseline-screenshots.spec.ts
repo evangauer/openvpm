@@ -82,6 +82,11 @@ async function login(page: Page): Promise<void> {
     await cookieBtn.click();
     await page.waitForTimeout(300);
   }
+  const skipWelcome = page.getByRole("button", { name: /skip for now/i }).first();
+  if (await skipWelcome.isVisible().catch(() => false)) {
+    await skipWelcome.click();
+    await page.waitForTimeout(500);
+  }
   const finishLater = page.getByText(/finish later/i).first();
   if (await finishLater.isVisible().catch(() => false)) {
     await finishLater.click();
@@ -243,6 +248,19 @@ for (const width of WIDTHS) {
 
     for (const { slug, route } of APP_ROUTES) {
       await captureRoute(page, collector, width.name, slug, route, results);
+    }
+
+    // First-run welcome surface, both imagery variants (?guides=1 forces it
+    // open regardless of per-user seen state).
+    for (const variant of ["vignette", "imagery"] as const) {
+      await captureRoute(
+        page,
+        collector,
+        width.name,
+        `welcome-${variant}`,
+        `/?guides=1&welcomeVariant=${variant}`,
+        results
+      );
     }
 
     // Below lg the sidebar lives in a drawer; capture it open.
