@@ -30,6 +30,7 @@ import {
   MapPin,
   Star,
   HeartPulse,
+  Compass,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -39,6 +40,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { EmptyState } from "@/components/common/empty-state";
 import { AccentColorPicker } from "@/components/brand/accent-color-picker";
 import { MessagingTab } from "@/components/settings/messaging-tab";
+import { useWelcome } from "@/components/welcome/welcome-provider";
 import { cn, isValidEmail } from "@/lib/utils";
 import { toast } from "sonner";
 import { regionDefaults } from "@/lib/locale/format";
@@ -173,11 +175,16 @@ const PRESET_COLORS = [
 // custom hex), reused by Settings and the onboarding journey.
 
 const ROLE_BADGE: Record<string, string> = {
-  admin: "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400",
-  veterinarian: "bg-teal-100 text-teal-800 dark:bg-teal-900/30 dark:text-teal-400",
-  technician: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400",
-  front_desk: "bg-gray-100 text-gray-800 dark:bg-gray-900/30 dark:text-gray-400",
-  viewer: "bg-slate-100 text-slate-800 dark:bg-slate-900/30 dark:text-slate-400",
+  admin:
+    "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400",
+  veterinarian:
+    "bg-teal-100 text-teal-800 dark:bg-teal-900/30 dark:text-teal-400",
+  technician:
+    "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400",
+  front_desk:
+    "bg-gray-100 text-gray-800 dark:bg-gray-900/30 dark:text-gray-400",
+  viewer:
+    "bg-slate-100 text-slate-800 dark:bg-slate-900/30 dark:text-slate-400",
 };
 
 const ROOM_TYPES = ["exam", "surgery", "treatment", "boarding"] as const;
@@ -197,7 +204,7 @@ type PracticeInfoForm = {
 
 function formatSettingsDateTime(
   value: Date | string | null | undefined,
-  timeZone?: string | null
+  timeZone?: string | null,
 ): string {
   if (!value) return "";
 
@@ -225,14 +232,14 @@ function formatSettingsDateTime(
 
 function formatSettingsDateInput(
   value: Date = new Date(),
-  timeZone?: string | null
+  timeZone?: string | null,
 ): string {
   return formatDateInputForTimeZone(value, timeZone?.trim() || "UTC");
 }
 
 function requireSettingsExportData<T>(
   result: { data?: T; error?: { message?: string } | null },
-  fallbackMessage: string
+  fallbackMessage: string,
 ): T {
   if (result.error) {
     throw new Error(result.error.message || fallbackMessage);
@@ -262,7 +269,12 @@ function SettingsLoadError({
           <p className="font-medium">{title}</p>
           <p className="mt-1">{message}</p>
           {onRetry ? (
-            <Button variant="outline" size="sm" onClick={onRetry} className="mt-3">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onRetry}
+              className="mt-3"
+            >
               Retry
             </Button>
           ) : null}
@@ -289,10 +301,11 @@ export default function SettingsPage() {
 
 function SettingsPageInner() {
   const { data: session, status } = useSession();
+  const { openWelcome } = useWelcome();
   const searchParams = useSearchParams();
   const initialTab = (searchParams.get("tab") as Tab) || "practice";
   const [activeTab, setActiveTab] = useState<Tab>(
-    tabs.some((t) => t.id === initialTab) ? initialTab : "practice"
+    tabs.some((t) => t.id === initialTab) ? initialTab : "practice",
   );
 
   if (status === "loading") {
@@ -325,42 +338,55 @@ function SettingsPageInner() {
             Practice configuration and staff management
           </p>
         </div>
+        <Button
+          variant="outline"
+          size="sm"
+          data-tour="settings-guides"
+          onClick={openWelcome}
+        >
+          <Compass className="mr-2 h-4 w-4" />
+          Guides
+        </Button>
       </div>
 
-      {/* Tabs */}
-      <div className="mt-6 flex flex-wrap gap-1 border-b border-border">
-        {tabs.map((tab) => {
-          const Icon = tab.icon;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={cn(
-                "flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors",
-                activeTab === tab.id
-                  ? "border-primary text-primary"
-                  : "border-transparent text-muted-foreground hover:text-foreground"
-              )}
-            >
-              <Icon className="h-4 w-4" />
-              {tab.label}
-            </button>
-          );
-        })}
-      </div>
+      <div className="mt-6 flex flex-col gap-6 lg:flex-row lg:gap-8">
+        {/* Section nav: horizontal scroll on small screens, vertical on lg+ */}
+        <nav className="lg:w-56 lg:shrink-0" aria-label="Settings sections">
+          <div className="flex gap-1 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible lg:pb-0">
+            {tabs.map((tab) => {
+              const Icon = tab.icon;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={cn(
+                    "flex items-center gap-2 whitespace-nowrap rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                    activeTab === tab.id
+                      ? "bg-primary/10 text-primary"
+                      : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                  )}
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+        </nav>
 
-      {/* Tab content */}
-      <div className="mt-6">
-        {activeTab === "practice" && <PracticeInfoTab />}
-        {activeTab === "locations" && <LocationsTab />}
-        {activeTab === "staff" && <StaffTab />}
-        {activeTab === "appointmentTypes" && <AppointmentTypesTab />}
-        {activeTab === "rooms" && <RoomsTab />}
-        {activeTab === "data" && <DataTab />}
-        {activeTab === "templates" && <TemplatesTab />}
-        {activeTab === "wellness" && <WellnessPlansTab />}
-        {activeTab === "messaging" && <MessagingTab />}
-        {activeTab === "billing" && <BillingTab />}
+        {/* Tab content */}
+        <div className="min-w-0 flex-1">
+          {activeTab === "practice" && <PracticeInfoTab />}
+          {activeTab === "locations" && <LocationsTab />}
+          {activeTab === "staff" && <StaffTab />}
+          {activeTab === "appointmentTypes" && <AppointmentTypesTab />}
+          {activeTab === "rooms" && <RoomsTab />}
+          {activeTab === "data" && <DataTab />}
+          {activeTab === "templates" && <TemplatesTab />}
+          {activeTab === "wellness" && <WellnessPlansTab />}
+          {activeTab === "messaging" && <MessagingTab />}
+          {activeTab === "billing" && <BillingTab />}
+        </div>
       </div>
     </div>
   );
@@ -414,7 +440,7 @@ function PracticeInfoTab() {
       const res = await fetchWithClientTimeout(
         "/api/upload",
         { method: "POST", body },
-        CLIENT_UPLOAD_TIMEOUT_MS
+        CLIENT_UPLOAD_TIMEOUT_MS,
       );
       const json = await res.json();
       if (!res.ok) {
@@ -501,194 +527,213 @@ function PracticeInfoTab() {
   };
 
   return (
-    <div className="max-w-2xl space-y-6 rounded-lg border border-border bg-card p-6">
-      <div className="grid gap-4">
-        <label className="space-y-1.5">
-          <span className="text-sm font-medium">Practice Name</span>
-          <Input
-            maxLength={PRACTICE_NAME_MAX_LENGTH}
-            value={current.name}
-            onChange={(e) => handleChange("name", e.target.value)}
-          />
-        </label>
-        <label className="space-y-1.5">
-          <span className="text-sm font-medium">Address</span>
-          <Input
-            maxLength={SETTINGS_ADDRESS_MAX_LENGTH}
-            value={current.address}
-            onChange={(e) => handleChange("address", e.target.value)}
-          />
-        </label>
-        <div className="grid grid-cols-2 gap-4">
-          <label className="space-y-1.5">
-            <span className="text-sm font-medium">Phone</span>
-            <Input
-              maxLength={SETTINGS_PHONE_MAX_LENGTH}
-              value={current.phone}
-              onChange={(e) => handleChange("phone", e.target.value)}
-            />
-          </label>
-          <label className="space-y-1.5">
-            <span className="text-sm font-medium">Email</span>
-            <Input
-              type="email"
-              maxLength={SETTINGS_EMAIL_MAX_LENGTH}
-              value={current.email}
-              onChange={(e) => handleChange("email", e.target.value)}
-            />
-          </label>
-        </div>
-        <label className="space-y-1.5">
-          <span className="text-sm font-medium">Website</span>
-          <Input
-            maxLength={SETTINGS_WEBSITE_MAX_LENGTH}
-            value={current.website}
-            onChange={(e) => handleChange("website", e.target.value)}
-          />
-        </label>
-        <label className="space-y-1.5">
-          <span className="text-sm font-medium">Timezone</span>
-          <select
-            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-            value={current.timezone}
-            onChange={(e) => handleChange("timezone", e.target.value)}
-          >
-            {TIMEZONES.map((tz) => (
-              <option key={tz} value={tz}>
-                {tz.replace(/_/g, " ")}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-
-      {/* ── Region & Tax ── */}
-      <div className="space-y-1 border-t border-border pt-6">
-        <h3 className="text-sm font-semibold">Region &amp; Tax</h3>
-        <p className="text-xs text-muted-foreground">
-          Controls invoice currency, tax rate, and date formatting. Choosing a
-          country prefills the usual defaults — adjust as needed.
-        </p>
-      </div>
-      <div className="grid gap-4">
-        <div className="grid grid-cols-2 gap-4">
-          <label className="space-y-1.5">
-            <span className="text-sm font-medium">Country</span>
-            <select
-              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-              value={current.country}
-              onChange={(e) => handleCountryChange(e.target.value)}
-            >
-              {COUNTRIES.map((c) => (
-                <option key={c.code} value={c.code}>
-                  {c.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="space-y-1.5">
-            <span className="text-sm font-medium">Currency</span>
-            <select
-              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-              value={current.currency}
-              onChange={(e) => handleChange("currency", e.target.value)}
-            >
-              {CURRENCIES.map((c) => (
-                <option key={c} value={c}>
-                  {c.toUpperCase()}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        <div className="grid grid-cols-2 gap-4">
-          <label className="space-y-1.5">
-            <span className="text-sm font-medium">Tax / VAT rate (%)</span>
-            <Input
-              type="number"
-              step="0.01"
-              min="0"
-              max="999.99"
-              value={current.taxRatePercent}
-              onChange={(e) => handleChange("taxRatePercent", e.target.value)}
-            />
-          </label>
-          <label className="space-y-1.5">
-            <span className="text-sm font-medium">VAT number (optional)</span>
-            <Input
-              maxLength={SETTINGS_VAT_NUMBER_MAX_LENGTH}
-              value={current.vatNumber}
-              onChange={(e) => handleChange("vatNumber", e.target.value)}
-            />
-          </label>
-        </div>
-      </div>
-
-      {/* ── Branding ── */}
-      <div className="space-y-1 border-t border-border pt-6">
-        <h3 className="text-sm font-semibold">Branding</h3>
-        <p className="text-xs text-muted-foreground">
-          Your logo and accent color appear across OpenVPM. Changes save
-          immediately.
-        </p>
-      </div>
-      <div className="grid gap-5">
-        {/* Logo */}
-        <div className="space-y-2">
-          <span className="text-sm font-medium">Logo</span>
-          <div className="flex items-center gap-4">
-            {practice.logoUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={practice.logoUrl}
-                alt="Practice logo"
-                className="h-14 w-14 rounded-lg border border-border object-cover"
+    <div className="space-y-6">
+      <div className="grid gap-6 xl:grid-cols-2">
+        {/* ── Practice details ── */}
+        <div className="space-y-6 rounded-lg border border-border bg-card p-6">
+          <div className="space-y-1">
+            <h3 className="text-sm font-semibold">Practice details</h3>
+            <p className="text-xs text-muted-foreground">
+              Your practice name, contact info, and timezone.
+            </p>
+          </div>
+          <div className="grid gap-4">
+            <label className="space-y-1.5">
+              <span className="text-sm font-medium">Practice Name</span>
+              <Input
+                maxLength={PRACTICE_NAME_MAX_LENGTH}
+                value={current.name}
+                onChange={(e) => handleChange("name", e.target.value)}
               />
-            ) : (
-              <div className="flex h-14 w-14 items-center justify-center rounded-lg border border-dashed border-border text-muted-foreground">
-                <ImageIcon className="h-5 w-5" />
-              </div>
-            )}
-            <div>
-              <input
-                ref={logoInputRef}
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) handleLogoUpload(file);
-                  e.target.value = "";
-                }}
+            </label>
+            <label className="space-y-1.5">
+              <span className="text-sm font-medium">Address</span>
+              <Input
+                maxLength={SETTINGS_ADDRESS_MAX_LENGTH}
+                value={current.address}
+                onChange={(e) => handleChange("address", e.target.value)}
               />
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={uploadingLogo || brandingMutation.isPending}
-                onClick={() => logoInputRef.current?.click()}
+            </label>
+            <div className="grid grid-cols-2 gap-4">
+              <label className="space-y-1.5">
+                <span className="text-sm font-medium">Phone</span>
+                <Input
+                  maxLength={SETTINGS_PHONE_MAX_LENGTH}
+                  value={current.phone}
+                  onChange={(e) => handleChange("phone", e.target.value)}
+                />
+              </label>
+              <label className="space-y-1.5">
+                <span className="text-sm font-medium">Email</span>
+                <Input
+                  type="email"
+                  maxLength={SETTINGS_EMAIL_MAX_LENGTH}
+                  value={current.email}
+                  onChange={(e) => handleChange("email", e.target.value)}
+                />
+              </label>
+            </div>
+            <label className="space-y-1.5">
+              <span className="text-sm font-medium">Website</span>
+              <Input
+                maxLength={SETTINGS_WEBSITE_MAX_LENGTH}
+                value={current.website}
+                onChange={(e) => handleChange("website", e.target.value)}
+              />
+            </label>
+            <label className="space-y-1.5">
+              <span className="text-sm font-medium">Timezone</span>
+              <select
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                value={current.timezone}
+                onChange={(e) => handleChange("timezone", e.target.value)}
               >
-                {uploadingLogo ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                ) : (
-                  <Upload className="mr-2 h-4 w-4" />
-                )}
-                {practice.logoUrl ? "Replace logo" : "Upload logo"}
-              </Button>
-              <p className="mt-1.5 text-xs text-muted-foreground">
-                PNG, JPG, or WebP. Square images work best.
-              </p>
+                {TIMEZONES.map((tz) => (
+                  <option key={tz} value={tz}>
+                    {tz.replace(/_/g, " ")}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </div>
+
+        {/* ── Region & Tax ── */}
+        <div className="space-y-6 rounded-lg border border-border bg-card p-6">
+          <div className="space-y-1">
+            <h3 className="text-sm font-semibold">Region &amp; Tax</h3>
+            <p className="text-xs text-muted-foreground">
+              Controls invoice currency, tax rate, and date formatting. Choosing
+              a country prefills the usual defaults — adjust as needed.
+            </p>
+          </div>
+          <div className="grid gap-4">
+            <div className="grid grid-cols-2 gap-4">
+              <label className="space-y-1.5">
+                <span className="text-sm font-medium">Country</span>
+                <select
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  value={current.country}
+                  onChange={(e) => handleCountryChange(e.target.value)}
+                >
+                  {COUNTRIES.map((c) => (
+                    <option key={c.code} value={c.code}>
+                      {c.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="space-y-1.5">
+                <span className="text-sm font-medium">Currency</span>
+                <select
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  value={current.currency}
+                  onChange={(e) => handleChange("currency", e.target.value)}
+                >
+                  {CURRENCIES.map((c) => (
+                    <option key={c} value={c}>
+                      {c.toUpperCase()}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <label className="space-y-1.5">
+                <span className="text-sm font-medium">Tax / VAT rate (%)</span>
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="999.99"
+                  value={current.taxRatePercent}
+                  onChange={(e) =>
+                    handleChange("taxRatePercent", e.target.value)
+                  }
+                />
+              </label>
+              <label className="space-y-1.5">
+                <span className="text-sm font-medium">
+                  VAT number (optional)
+                </span>
+                <Input
+                  maxLength={SETTINGS_VAT_NUMBER_MAX_LENGTH}
+                  value={current.vatNumber}
+                  onChange={(e) => handleChange("vatNumber", e.target.value)}
+                />
+              </label>
             </div>
           </div>
         </div>
 
-        {/* Accent color */}
-        <div className="space-y-2">
-          <span className="text-sm font-medium">Accent color</span>
-          <AccentColorPicker
-            value={currentBrandColor}
-            onChange={(c) => brandingMutation.mutate({ brandColor: c })}
-            disabled={brandingMutation.isPending}
-          />
+        {/* ── Branding ── */}
+        <div className="space-y-6 rounded-lg border border-border bg-card p-6">
+          <div className="space-y-1">
+            <h3 className="text-sm font-semibold">Branding</h3>
+            <p className="text-xs text-muted-foreground">
+              Your logo and accent color appear across OpenVPM. Changes save
+              immediately.
+            </p>
+          </div>
+          <div className="grid gap-5">
+            {/* Logo */}
+            <div className="space-y-2">
+              <span className="text-sm font-medium">Logo</span>
+              <div className="flex items-center gap-4">
+                {practice.logoUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={practice.logoUrl}
+                    alt="Practice logo"
+                    className="h-14 w-14 rounded-lg border border-border object-cover"
+                  />
+                ) : (
+                  <div className="flex h-14 w-14 items-center justify-center rounded-lg border border-dashed border-border text-muted-foreground">
+                    <ImageIcon className="h-5 w-5" />
+                  </div>
+                )}
+                <div>
+                  <input
+                    ref={logoInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) handleLogoUpload(file);
+                      e.target.value = "";
+                    }}
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={uploadingLogo || brandingMutation.isPending}
+                    onClick={() => logoInputRef.current?.click()}
+                  >
+                    {uploadingLogo ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Upload className="mr-2 h-4 w-4" />
+                    )}
+                    {practice.logoUrl ? "Replace logo" : "Upload logo"}
+                  </Button>
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    PNG, JPG, or WebP. Square images work best.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Accent color */}
+            <div className="space-y-2">
+              <span className="text-sm font-medium">Accent color</span>
+              <AccentColorPicker
+                value={currentBrandColor}
+                onChange={(c) => brandingMutation.mutate({ brandColor: c })}
+                disabled={brandingMutation.isPending}
+              />
+            </div>
+          </div>
         </div>
       </div>
 
@@ -881,7 +926,9 @@ function LocationsTab() {
               placeholder="Phone"
               maxLength={SETTINGS_PHONE_MAX_LENGTH}
               value={addForm.phone}
-              onChange={(e) => setAddForm({ ...addForm, phone: e.target.value })}
+              onChange={(e) =>
+                setAddForm({ ...addForm, phone: e.target.value })
+              }
             />
             <Input
               placeholder="Address"
@@ -1200,20 +1247,174 @@ function BillingTab() {
   // Self-host: nothing to buy — everything is unlocked.
   if (!data.billingEnforced) {
     return (
-      <div className="max-w-2xl space-y-4">
-        <div className="rounded-lg border border-border bg-card p-6">
-          <div className="flex items-center gap-3">
-            <Check className="h-5 w-5 text-green-600" />
-            <h3 className="font-heading text-lg font-semibold">
-              Self-hosted — all features unlocked
-            </h3>
+      <div className="space-y-6">
+        <div className="grid gap-6 xl:grid-cols-2">
+          <div className="rounded-lg border border-border bg-card p-6">
+            <div className="flex items-center gap-3">
+              <Check className="h-5 w-5 text-green-600" />
+              <h3 className="font-heading text-lg font-semibold">
+                Self-hosted — all features unlocked
+              </h3>
+            </div>
+            <p className="mt-2 text-sm text-muted-foreground">
+              You&apos;re running OpenVPM on your own infrastructure. Every
+              feature is available and there&apos;s no subscription — free
+              forever. Plans below are how the managed OpenVPM Cloud is priced,
+              for reference.
+            </p>
           </div>
-          <p className="mt-2 text-sm text-muted-foreground">
-            You&apos;re running OpenVPM on your own infrastructure. Every feature
-            is available and there&apos;s no subscription — free forever. Plans
-            below are how the managed OpenVPM Cloud is priced, for reference.
-          </p>
+          <ClientPaymentProcessingSection
+            data={paymentAccount.data}
+            isLoading={paymentAccount.isLoading}
+            error={paymentAccount.error?.message}
+            setupPending={setupPaymentAccount.isPending}
+            refreshPending={refreshPaymentAccount.isPending}
+            dashboardPending={openPaymentAccountDashboard.isPending}
+            onSetup={() => setupPaymentAccount.mutate()}
+            onRefresh={() => refreshPaymentAccount.mutate()}
+            onDashboard={() => openPaymentAccountDashboard.mutate()}
+          />
         </div>
+        <PlanGrid
+          plans={data.plans}
+          currentTier={data.tier}
+          enforced={false}
+          onChoose={() => {}}
+          busyTier={null}
+        />
+      </div>
+    );
+  }
+
+  const daysLeft = trialCalendarDaysLeft(data.trialEndsAt, data.timezone) ?? 0;
+  const currentPlan = data.plans.find((p) => p.tier === data.tier);
+  const showReadOnlyNotice = !data.hasFullAccess;
+
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-6 xl:grid-cols-2">
+        {/* Current status */}
+        <div className="rounded-lg border border-border bg-card p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-muted-foreground">Current plan</p>
+              <h3 className="font-heading text-xl font-semibold">
+                {currentPlan?.name ?? data.tier}
+              </h3>
+            </div>
+            <span
+              className={cn(
+                "rounded-full px-3 py-1 text-xs font-medium capitalize",
+                data.billingStatus === "active" &&
+                  "bg-green-100 text-green-700",
+                data.billingStatus === "trialing" &&
+                  "bg-blue-100 text-blue-700",
+                data.billingStatus === "past_due" && "bg-red-100 text-red-700",
+                (data.billingStatus === "canceled" ||
+                  data.billingStatus === "none") &&
+                  "bg-gray-100 text-gray-600",
+              )}
+            >
+              {data.billingStatus.replace("_", " ")}
+            </span>
+          </div>
+          {showReadOnlyNotice && (
+            <div className="mt-4 flex gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <p>
+                Cloud is in read-only mode. You can view records, manage
+                billing, and export data; writes resume when your trial or
+                subscription is active.
+              </p>
+            </div>
+          )}
+          {data.billingStatus === "trialing" && (
+            <p className="mt-3 text-sm text-muted-foreground">
+              You&apos;re on a free trial with full Cloud access —{" "}
+              <span className="font-medium text-foreground">
+                {daysLeft} days left
+              </span>
+              . Subscribe below to keep your features after it ends.
+            </p>
+          )}
+          {data.billingStatus === "past_due" && (
+            <p className="mt-3 text-sm text-red-600">
+              Your last payment failed. Update your payment method to restore
+              write access.
+            </p>
+          )}
+          {/* Billing summary: locations + seats + this month's metered usage */}
+          <div className="mt-4 grid gap-3 border-t border-border pt-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
+            <div>
+              <p className="text-muted-foreground">Locations</p>
+              <p className="font-medium">
+                {data.locationCount} x ${data.locationUnitPriceMonthlyUsd}/mo
+              </p>
+            </div>
+            <div>
+              <p className="text-muted-foreground">Staff</p>
+              <p className="font-medium">
+                {data.billableSeatCount}
+                {data.seatUnitPriceMonthlyUsd > 0
+                  ? ` x $${data.seatUnitPriceMonthlyUsd}/mo`
+                  : " (unlimited, included)"}
+              </p>
+            </div>
+            <div>
+              <p className="text-muted-foreground">Base estimate</p>
+              <p className="font-medium">${data.estimatedMonthlyBase}/mo</p>
+            </div>
+            <div>
+              <p className="text-muted-foreground">SMS this month</p>
+              <p className="font-medium">
+                {data.usage.sms}
+                {currentPlan?.includedSmsPerMonth != null
+                  ? ` / ${currentPlan.includedSmsPerMonth} included`
+                  : ""}
+              </p>
+            </div>
+            <div>
+              <p className="text-muted-foreground">AI actions this month</p>
+              <p className="font-medium">
+                {data.usage.aiRuns}
+                {currentPlan?.includedAiRunsPerMonth != null
+                  ? ` / ${currentPlan.includedAiRunsPerMonth.toLocaleString()} included`
+                  : ""}
+              </p>
+            </div>
+          </div>
+          {data.billingSyncStatus && (
+            <div
+              className={cn(
+                "mt-4 rounded-md border p-3 text-xs",
+                data.billingSyncStatus.status === "error"
+                  ? "border-red-200 bg-red-50 text-red-700"
+                  : data.billingSyncStatus.status === "legacy"
+                    ? "border-amber-200 bg-amber-50 text-amber-800"
+                    : "border-border bg-muted/30 text-muted-foreground",
+              )}
+            >
+              <span className="font-medium">Billing sync: </span>
+              {data.billingSyncStatus.message}
+            </div>
+          )}
+          {data.hasBillingAccount && (
+            <Button
+              variant="outline"
+              className="mt-4"
+              disabled={portal.isPending}
+              onClick={() => portal.mutate()}
+            >
+              {portal.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <CreditCard className="mr-2 h-4 w-4" />
+              )}
+              Manage billing
+            </Button>
+          )}
+        </div>
+
         <ClientPaymentProcessingSection
           data={paymentAccount.data}
           isLoading={paymentAccount.isLoading}
@@ -1225,150 +1426,16 @@ function BillingTab() {
           onRefresh={() => refreshPaymentAccount.mutate()}
           onDashboard={() => openPaymentAccountDashboard.mutate()}
         />
-        <PlanGrid plans={data.plans} currentTier={data.tier} enforced={false} onChoose={() => {}} busyTier={null} />
       </div>
-    );
-  }
-
-  const daysLeft = trialCalendarDaysLeft(data.trialEndsAt, data.timezone) ?? 0;
-  const currentPlan = data.plans.find((p) => p.tier === data.tier);
-  const showReadOnlyNotice = !data.hasFullAccess;
-
-  return (
-    <div className="max-w-3xl space-y-5">
-      {/* Current status */}
-      <div className="rounded-lg border border-border bg-card p-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm text-muted-foreground">Current plan</p>
-            <h3 className="font-heading text-xl font-semibold">
-              {currentPlan?.name ?? data.tier}
-            </h3>
-          </div>
-          <span
-            className={cn(
-              "rounded-full px-3 py-1 text-xs font-medium capitalize",
-              data.billingStatus === "active" && "bg-green-100 text-green-700",
-              data.billingStatus === "trialing" && "bg-blue-100 text-blue-700",
-              data.billingStatus === "past_due" && "bg-red-100 text-red-700",
-              (data.billingStatus === "canceled" || data.billingStatus === "none") &&
-                "bg-gray-100 text-gray-600"
-            )}
-          >
-            {data.billingStatus.replace("_", " ")}
-          </span>
-        </div>
-        {showReadOnlyNotice && (
-          <div className="mt-4 flex gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-            <p>
-              Cloud is in read-only mode. You can view records, manage billing,
-              and export data; writes resume when your trial or subscription is active.
-            </p>
-          </div>
-        )}
-        {data.billingStatus === "trialing" && (
-          <p className="mt-3 text-sm text-muted-foreground">
-            You&apos;re on a free trial with full Cloud access —{" "}
-            <span className="font-medium text-foreground">{daysLeft} days left</span>. Subscribe
-            below to keep your features after it ends.
-          </p>
-        )}
-        {data.billingStatus === "past_due" && (
-          <p className="mt-3 text-sm text-red-600">
-            Your last payment failed. Update your payment method to restore write access.
-          </p>
-        )}
-        {/* Billing summary: locations + seats + this month's metered usage */}
-        <div className="mt-4 grid gap-3 border-t border-border pt-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
-          <div>
-            <p className="text-muted-foreground">Locations</p>
-            <p className="font-medium">
-              {data.locationCount} x ${data.locationUnitPriceMonthlyUsd}/mo
-            </p>
-          </div>
-          <div>
-            <p className="text-muted-foreground">Staff</p>
-            <p className="font-medium">
-              {data.billableSeatCount}
-              {data.seatUnitPriceMonthlyUsd > 0
-                ? ` x $${data.seatUnitPriceMonthlyUsd}/mo`
-                : " (unlimited, included)"}
-            </p>
-          </div>
-          <div>
-            <p className="text-muted-foreground">Base estimate</p>
-            <p className="font-medium">${data.estimatedMonthlyBase}/mo</p>
-          </div>
-          <div>
-            <p className="text-muted-foreground">SMS this month</p>
-            <p className="font-medium">
-              {data.usage.sms}
-              {currentPlan?.includedSmsPerMonth != null
-                ? ` / ${currentPlan.includedSmsPerMonth} included`
-                : ""}
-            </p>
-          </div>
-          <div>
-            <p className="text-muted-foreground">AI actions this month</p>
-            <p className="font-medium">
-              {data.usage.aiRuns}
-              {currentPlan?.includedAiRunsPerMonth != null
-                ? ` / ${currentPlan.includedAiRunsPerMonth.toLocaleString()} included`
-                : ""}
-            </p>
-          </div>
-        </div>
-        {data.billingSyncStatus && (
-          <div
-            className={cn(
-              "mt-4 rounded-md border p-3 text-xs",
-              data.billingSyncStatus.status === "error"
-                ? "border-red-200 bg-red-50 text-red-700"
-                : data.billingSyncStatus.status === "legacy"
-                  ? "border-amber-200 bg-amber-50 text-amber-800"
-                  : "border-border bg-muted/30 text-muted-foreground"
-            )}
-          >
-            <span className="font-medium">Billing sync: </span>
-            {data.billingSyncStatus.message}
-          </div>
-        )}
-        {data.hasBillingAccount && (
-          <Button
-            variant="outline"
-            className="mt-4"
-            disabled={portal.isPending}
-            onClick={() => portal.mutate()}
-          >
-            {portal.isPending ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <CreditCard className="mr-2 h-4 w-4" />
-            )}
-            Manage billing
-          </Button>
-        )}
-      </div>
-
-      <ClientPaymentProcessingSection
-        data={paymentAccount.data}
-        isLoading={paymentAccount.isLoading}
-        error={paymentAccount.error?.message}
-        setupPending={setupPaymentAccount.isPending}
-        refreshPending={refreshPaymentAccount.isPending}
-        dashboardPending={openPaymentAccountDashboard.isPending}
-        onSetup={() => setupPaymentAccount.mutate()}
-        onRefresh={() => refreshPaymentAccount.mutate()}
-        onDashboard={() => openPaymentAccountDashboard.mutate()}
-      />
 
       <PlanGrid
         plans={data.plans}
         currentTier={data.tier}
         enforced
         onChoose={(tier) => checkout.mutate({ tier })}
-        busyTier={checkout.isPending ? checkout.variables?.tier ?? null : null}
+        busyTier={
+          checkout.isPending ? (checkout.variables?.tier ?? null) : null
+        }
       />
     </div>
   );
@@ -1432,7 +1499,7 @@ function ClientPaymentProcessingSection({
         ? "bg-blue-100 text-blue-700"
         : "bg-gray-100 text-gray-600";
   const canOpenDashboard = Boolean(
-    data?.connectRequired && data.status !== "not_started"
+    data?.connectRequired && data.status !== "not_started",
   );
   const canShowSetup =
     Boolean(data?.connectRequired && data.stripeConfigured) &&
@@ -1449,7 +1516,7 @@ function ClientPaymentProcessingSection({
             <span
               className={cn(
                 "rounded-full px-3 py-1 text-xs font-medium capitalize",
-                statusClass
+                statusClass,
               )}
             >
               {status}
@@ -1463,11 +1530,7 @@ function ClientPaymentProcessingSection({
         </div>
         <div className="flex flex-wrap gap-2">
           {canShowSetup && (
-            <Button
-              size="sm"
-              disabled={setupPending}
-              onClick={onSetup}
-            >
+            <Button size="sm" disabled={setupPending} onClick={onSetup}>
               {setupPending ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (
@@ -1515,11 +1578,7 @@ function ClientPaymentProcessingSection({
           Loading client payment status
         </div>
       )}
-      {error && (
-        <p className="mt-4 text-sm text-destructive">
-          {error}
-        </p>
-      )}
+      {error && <p className="mt-4 text-sm text-destructive">{error}</p>}
       {!isLoading && !error && data && (
         <div className="mt-4 grid gap-3 border-t border-border pt-4 text-sm sm:grid-cols-3">
           <div>
@@ -1539,7 +1598,11 @@ function ClientPaymentProcessingSection({
           <div>
             <p className="text-muted-foreground">Payouts</p>
             <p className="font-medium">
-              {data.payoutsEnabled ? "Enabled" : data.connectRequired ? "Pending" : "N/A"}
+              {data.payoutsEnabled
+                ? "Enabled"
+                : data.connectRequired
+                  ? "Pending"
+                  : "N/A"}
             </p>
           </div>
           {data.requirementsCurrentlyDue?.length ? (
@@ -1595,13 +1658,16 @@ function PlanGrid({
     <div className="grid gap-4 sm:grid-cols-3">
       {plans.map((p) => {
         const isCurrent = p.tier === currentTier;
-        const canBuy = enforced && p.purchasable && p.tier === "cloud" && !isCurrent;
+        const canBuy =
+          enforced && p.purchasable && p.tier === "cloud" && !isCurrent;
         return (
           <div
             key={p.tier}
             className={cn(
               "flex flex-col rounded-lg border bg-card p-5",
-              isCurrent ? "border-primary ring-1 ring-primary" : "border-border"
+              isCurrent
+                ? "border-primary ring-1 ring-primary"
+                : "border-border",
             )}
           >
             <h4 className="font-heading text-base font-semibold">{p.name}</h4>
@@ -1613,7 +1679,9 @@ function PlanGrid({
               ) : (
                 <>
                   ${p.locationUnitPriceMonthlyUsd}
-                  <span className="text-sm font-normal text-muted-foreground">/location</span>
+                  <span className="text-sm font-normal text-muted-foreground">
+                    /location
+                  </span>
                   <span className="block text-sm font-normal text-muted-foreground">
                     {p.seatUnitPriceMonthlyUsd && p.seatUnitPriceMonthlyUsd > 0
                       ? `+ $${p.seatUnitPriceMonthlyUsd}/staff/mo`
@@ -1624,9 +1692,13 @@ function PlanGrid({
             </p>
             <p className="mt-2 text-xs text-muted-foreground">{p.blurb}</p>
             <ul className="mt-3 space-y-1 text-xs text-muted-foreground">
-              <li>{p.seatLimit === null ? "All" : p.seatLimit} staff roles included</li>
               <li>
-                {p.locationLimit === null ? "Unlimited" : p.locationLimit} location
+                {p.seatLimit === null ? "All" : p.seatLimit} staff roles
+                included
+              </li>
+              <li>
+                {p.locationLimit === null ? "Unlimited" : p.locationLimit}{" "}
+                location
                 {p.locationLimit === 1 ? "" : "s"}
               </li>
               {p.includedSmsPerMonth ? (
@@ -1639,7 +1711,8 @@ function PlanGrid({
               ) : null}
               {p.includedAiRunsPerMonth ? (
                 <li>
-                  {p.includedAiRunsPerMonth.toLocaleString()} AI actions/mo included
+                  {p.includedAiRunsPerMonth.toLocaleString()} AI actions/mo
+                  included
                   {p.aiOveragePriceUsd
                     ? `, then $${p.aiOveragePriceUsd}/action`
                     : ""}
@@ -1658,7 +1731,9 @@ function PlanGrid({
             </ul>
             <div className="mt-4 pt-2">
               {isCurrent ? (
-                <span className="text-xs font-medium text-primary">Current plan</span>
+                <span className="text-xs font-medium text-primary">
+                  Current plan
+                </span>
               ) : canBuy ? (
                 <Button
                   size="sm"
@@ -1772,7 +1847,9 @@ function StaffTab() {
     phone: "",
     licenseNumber: "",
   });
-  const [confirmDeactivate, setConfirmDeactivate] = useState<string | null>(null);
+  const [confirmDeactivate, setConfirmDeactivate] = useState<string | null>(
+    null,
+  );
 
   const resetAddForm = () =>
     setAddForm({
@@ -1805,7 +1882,8 @@ function StaffTab() {
     isStaffPasswordValid(form.password) &&
     isStaffContactFieldsValid(form);
   const isStaffInviteFormValid = (form: typeof inviteForm) =>
-    isSettingsEmailInputValid(form.email) && isOptionalStaffNameValid(form.name);
+    isSettingsEmailInputValid(form.email) &&
+    isOptionalStaffNameValid(form.name);
   const isStaffEditFormValid = (form: typeof editForm) =>
     isStaffNameValid(form.name) && isStaffContactFieldsValid(form);
   const staffMissing = !isLoading && !staffError && !staffList;
@@ -1919,7 +1997,11 @@ function StaffTab() {
               )}
               Send invite
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setShowInvite(false)}>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setShowInvite(false)}
+            >
               Cancel
             </Button>
           </div>
@@ -1961,9 +2043,7 @@ function StaffTab() {
               placeholder="Full name"
               maxLength={STAFF_NAME_MAX_LENGTH}
               value={addForm.name}
-              onChange={(e) =>
-                setAddForm({ ...addForm, name: e.target.value })
-              }
+              onChange={(e) => setAddForm({ ...addForm, name: e.target.value })}
             />
             <Input
               placeholder="Email"
@@ -2035,11 +2115,7 @@ function StaffTab() {
               )}
               Create
             </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => setShowAdd(false)}
-            >
+            <Button size="sm" variant="ghost" onClick={() => setShowAdd(false)}>
               Cancel
             </Button>
           </div>
@@ -2065,7 +2141,10 @@ function StaffTab() {
           </thead>
           <tbody>
             {staffList?.map((user) => (
-              <tr key={user.id} className="border-b border-border last:border-0">
+              <tr
+                key={user.id}
+                className="border-b border-border last:border-0"
+              >
                 {editingId === user.id ? (
                   <>
                     <td className="px-4 py-2">
@@ -2164,7 +2243,7 @@ function StaffTab() {
                       <span
                         className={cn(
                           "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
-                          ROLE_BADGE[user.role] ?? ROLE_BADGE.front_desk
+                          ROLE_BADGE[user.role] ?? ROLE_BADGE.front_desk,
                         )}
                       >
                         {user.role.replace("_", " ")}
@@ -2363,9 +2442,7 @@ function AppointmentTypesTab() {
               placeholder="Type name"
               maxLength={APPOINTMENT_TYPE_NAME_MAX_LENGTH}
               value={addForm.name}
-              onChange={(e) =>
-                setAddForm({ ...addForm, name: e.target.value })
-              }
+              onChange={(e) => setAddForm({ ...addForm, name: e.target.value })}
             />
             <Input
               type="number"
@@ -2390,7 +2467,7 @@ function AppointmentTypesTab() {
                       "h-8 w-8 rounded-full border-2 transition-transform",
                       addForm.color === c
                         ? "border-foreground scale-110"
-                        : "border-transparent"
+                        : "border-transparent",
                     )}
                     style={{ backgroundColor: c }}
                     onClick={() => setAddForm({ ...addForm, color: c })}
@@ -2404,7 +2481,8 @@ function AppointmentTypesTab() {
               onChange={(e) =>
                 setAddForm({
                   ...addForm,
-                  defaultRoomType: e.target.value as typeof addForm.defaultRoomType,
+                  defaultRoomType: e.target
+                    .value as typeof addForm.defaultRoomType,
                 })
               }
             >
@@ -2430,11 +2508,7 @@ function AppointmentTypesTab() {
               )}
               Create
             </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => setShowAdd(false)}
-            >
+            <Button size="sm" variant="ghost" onClick={() => setShowAdd(false)}>
               Cancel
             </Button>
           </div>
@@ -2494,7 +2568,7 @@ function AppointmentTypesTab() {
                               "h-6 w-6 rounded-full border-2",
                               editForm.color === c
                                 ? "border-foreground"
-                                : "border-transparent"
+                                : "border-transparent",
                             )}
                             style={{ backgroundColor: c }}
                             onClick={() =>
@@ -2511,8 +2585,8 @@ function AppointmentTypesTab() {
                         onChange={(e) =>
                           setEditForm({
                             ...editForm,
-                            defaultRoomType:
-                              e.target.value as typeof editForm.defaultRoomType,
+                            defaultRoomType: e.target
+                              .value as typeof editForm.defaultRoomType,
                           })
                         }
                       >
@@ -2579,8 +2653,7 @@ function AppointmentTypesTab() {
                               durationMinutes: type.durationMinutes,
                               color: type.color ?? "#0d9488",
                               requiresDoctor: type.requiresDoctor,
-                              defaultRoomType:
-                                type.defaultRoomType ?? "exam",
+                              defaultRoomType: type.defaultRoomType ?? "exam",
                             });
                           }}
                         >
@@ -2589,9 +2662,7 @@ function AppointmentTypesTab() {
                         <Button
                           size="sm"
                           variant="ghost"
-                          onClick={() =>
-                            deleteMutation.mutate({ id: type.id })
-                          }
+                          onClick={() => deleteMutation.mutate({ id: type.id })}
                         >
                           <Trash2 className="h-4 w-4 text-destructive" />
                         </Button>
@@ -2634,7 +2705,7 @@ function downloadCSV(data: Record<string, unknown>[], filename: string) {
             ? `"${val.replace(/"/g, '""')}"`
             : val;
         })
-        .join(",")
+        .join(","),
     ),
   ].join("\n");
   const blob = new Blob([csv], { type: "text/csv" });
@@ -2686,13 +2757,18 @@ function DataTab() {
   >(null);
   const [csvText, setCsvText] = useState("");
   const [csvFileName, setCsvFileName] = useState("");
-  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(
+    null,
+  );
   const [importResult, setImportResult] = useState<{
     imported: number;
     errors?: string[];
   } | null>(null);
   const [backupFileName, setBackupFileName] = useState("");
-  const [backupPayload, setBackupPayload] = useState<Record<string, unknown> | null>(null);
+  const [backupPayload, setBackupPayload] = useState<Record<
+    string,
+    unknown
+  > | null>(null);
   const [backupSummary, setBackupSummary] = useState<{
     counts: Record<string, number>;
     missingSections: string[];
@@ -2713,11 +2789,21 @@ function DataTab() {
   const backupFileInputRef = useRef<HTMLInputElement>(null);
 
   const utils = trpc.useUtils();
-  const exportClients = trpc.data.exportClients.useQuery(undefined, { enabled: false });
-  const exportPatients = trpc.data.exportPatients.useQuery(undefined, { enabled: false });
-  const exportAppointments = trpc.data.exportAppointments.useQuery(undefined, { enabled: false });
-  const exportInvoices = trpc.data.exportInvoices.useQuery(undefined, { enabled: false });
-  const exportFullBackup = trpc.data.exportFullBackup.useQuery(undefined, { enabled: false });
+  const exportClients = trpc.data.exportClients.useQuery(undefined, {
+    enabled: false,
+  });
+  const exportPatients = trpc.data.exportPatients.useQuery(undefined, {
+    enabled: false,
+  });
+  const exportAppointments = trpc.data.exportAppointments.useQuery(undefined, {
+    enabled: false,
+  });
+  const exportInvoices = trpc.data.exportInvoices.useQuery(undefined, {
+    enabled: false,
+  });
+  const exportFullBackup = trpc.data.exportFullBackup.useQuery(undefined, {
+    enabled: false,
+  });
   const restoreBackup = trpc.data.restoreBackup.useMutation({
     onSuccess: (data) => {
       if (data.dryRun) {
@@ -2886,45 +2972,47 @@ function DataTab() {
           const result = await exportClients.refetch();
           data = requireSettingsExportData(
             result,
-            "Could not export clients"
+            "Could not export clients",
           ) as Record<string, unknown>[];
         } else if (type === "patients") {
           const result = await exportPatients.refetch();
           data = requireSettingsExportData(
             result,
-            "Could not export patients"
+            "Could not export patients",
           ) as Record<string, unknown>[];
         } else if (type === "appointments") {
           const result = await exportAppointments.refetch();
           data = requireSettingsExportData(
             result,
-            "Could not export appointments"
+            "Could not export appointments",
           ) as Record<string, unknown>[];
         } else if (type === "invoices") {
           const result = await exportInvoices.refetch();
           // Flatten items for CSV
           const raw = requireSettingsExportData(
             result,
-            "Could not export invoices"
+            "Could not export invoices",
           );
           data = raw.map((inv) => {
             const { items, ...rest } = inv;
             return {
               ...rest,
-              items: items.map((i: { description: string }) => i.description).join("; "),
+              items: items
+                .map((i: { description: string }) => i.description)
+                .join("; "),
             } as Record<string, unknown>;
           });
         }
         downloadCSV(data, `${type}-export.csv`);
       } catch (err) {
         toast.error(
-          err instanceof Error ? err.message : "Could not export data"
+          err instanceof Error ? err.message : "Could not export data",
         );
       } finally {
         setExportingType(null);
       }
     },
-    [exportClients, exportPatients, exportAppointments, exportInvoices]
+    [exportClients, exportPatients, exportAppointments, exportInvoices],
   );
 
   const handleFullBackupExport = useCallback(async () => {
@@ -2936,13 +3024,13 @@ function DataTab() {
       const result = await exportFullBackup.refetch();
       const backup = requireSettingsExportData(
         result,
-        "Could not export full backup"
+        "Could not export full backup",
       );
       const date = formatSettingsDateInput(new Date(), settingsTimeZone);
       downloadJSON(backup, `openvpm-full-backup-${date}.json`);
     } catch (err) {
       toast.error(
-        err instanceof Error ? err.message : "Could not export full backup"
+        err instanceof Error ? err.message : "Could not export full backup",
       );
     } finally {
       setExportingType(null);
@@ -2991,7 +3079,7 @@ function DataTab() {
           setBackupFileName("");
           setBackupPayload(null);
           toast.error(
-            err instanceof Error ? err.message : "Could not read backup JSON"
+            err instanceof Error ? err.message : "Could not read backup JSON",
           );
         }
       };
@@ -3001,7 +3089,7 @@ function DataTab() {
       };
       reader.readAsText(file);
     },
-    [restoreBackup]
+    [restoreBackup],
   );
 
   const handleBackupRestore = useCallback(() => {
@@ -3082,7 +3170,7 @@ function DataTab() {
       };
       reader.readAsText(file);
     },
-    [importClientsCsv, importMode, importPatientsCsv, importVaccinationsCsv]
+    [importClientsCsv, importMode, importPatientsCsv, importVaccinationsCsv],
   );
 
   const handleDrop = useCallback(
@@ -3094,7 +3182,7 @@ function DataTab() {
         handleFileSelect(file);
       }
     },
-    [handleFileSelect]
+    [handleFileSelect],
   );
 
   const handleImportConfirm = useCallback(() => {
@@ -3234,9 +3322,21 @@ function DataTab() {
           {(
             [
               { key: "clients", label: "Export Clients", icon: Users },
-              { key: "patients", label: "Export Patients", icon: FileSpreadsheet },
-              { key: "appointments", label: "Export Appointments", icon: Calendar },
-              { key: "invoices", label: "Export Invoices", icon: FileSpreadsheet },
+              {
+                key: "patients",
+                label: "Export Patients",
+                icon: FileSpreadsheet,
+              },
+              {
+                key: "appointments",
+                label: "Export Appointments",
+                icon: Calendar,
+              },
+              {
+                key: "invoices",
+                label: "Export Invoices",
+                icon: FileSpreadsheet,
+              },
             ] as const
           ).map(({ key, label, icon: Icon }) => (
             <Button
@@ -3327,7 +3427,7 @@ function DataTab() {
                         ? "Missing sections"
                         : backupSummary.restoreErrors.length > 0
                           ? "Invalid backup data"
-                        : "Verified"}
+                          : "Verified"}
                     </Badge>
                     <span className="text-muted-foreground">
                       {backupSummary.totalRows.toLocaleString()} rows detected
@@ -3498,7 +3598,9 @@ function DataTab() {
                   }
                   className="mt-0.5"
                 />
-                <span>I downloaded the full backup before requesting deletion.</span>
+                <span>
+                  I downloaded the full backup before requesting deletion.
+                </span>
               </label>
               <label className="flex items-start gap-2 text-sm">
                 <Checkbox
@@ -3535,11 +3637,10 @@ function DataTab() {
       <div>
         <h3 className="text-sm font-semibold mb-1">Import Data</h3>
         <p className="text-sm text-muted-foreground mb-4">
-          Moving from another system? Import clients first, then patients,
-          then vaccine history. Every file is dry-run first so you see
-          duplicates and missing matches before anything is saved. Common
-          column names from AVImark, Cornerstone, and ezyVet exports are
-          understood automatically.
+          Moving from another system? Import clients first, then patients, then
+          vaccine history. Every file is dry-run first so you see duplicates and
+          missing matches before anything is saved. Common column names from
+          AVImark, Cornerstone, and ezyVet exports are understood automatically.
         </p>
 
         {/* Where the data is coming from (export instructions per source) */}
@@ -3553,14 +3654,14 @@ function DataTab() {
               type="button"
               onClick={() =>
                 setMigrationSource(
-                  migrationSource === source.id ? null : source.id
+                  migrationSource === source.id ? null : source.id,
                 )
               }
               className={cn(
                 "rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors",
                 migrationSource === source.id
                   ? "border-primary bg-primary/10 text-primary"
-                  : "border-border text-muted-foreground hover:border-primary/50"
+                  : "border-border text-muted-foreground hover:border-primary/50",
               )}
             >
               {source.name}
@@ -3578,16 +3679,14 @@ function DataTab() {
 
         {/* Import mode selector */}
         <div className="flex flex-wrap gap-2 mb-4">
-          {(
-            [
-              { mode: "clients" as const, label: "1. Import Clients" },
-              { mode: "patients" as const, label: "2. Import Patients" },
-              {
-                mode: "vaccinations" as const,
-                label: "3. Import Vaccine History",
-              },
-            ]
-          ).map(({ mode, label }) => (
+          {[
+            { mode: "clients" as const, label: "1. Import Clients" },
+            { mode: "patients" as const, label: "2. Import Patients" },
+            {
+              mode: "vaccinations" as const,
+              label: "3. Import Vaccine History",
+            },
+          ].map(({ mode, label }) => (
             <Button
               key={mode}
               variant={importMode === mode ? "default" : "outline"}
@@ -3619,7 +3718,7 @@ function DataTab() {
                 "rounded-lg border-2 border-dashed p-8 text-center transition-colors cursor-pointer",
                 isDragging
                   ? "border-primary bg-primary/5"
-                  : "border-border hover:border-primary/50"
+                  : "border-border hover:border-primary/50",
               )}
               onDragOver={(e) => {
                 e.preventDefault();
@@ -3653,7 +3752,8 @@ function DataTab() {
             {/* Server dry-run preview */}
             {csvFileName && (
               <p className="text-xs text-muted-foreground">
-                Selected file: <span className="font-medium">{csvFileName}</span>
+                Selected file:{" "}
+                <span className="font-medium">{csvFileName}</span>
               </p>
             )}
 
@@ -3673,7 +3773,10 @@ function DataTab() {
                     </span>
                   </div>
                   <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-                    <ImportStat label="Rows parsed" value={importPreview.total} />
+                    <ImportStat
+                      label="Rows parsed"
+                      value={importPreview.total}
+                    />
                     <ImportStat
                       label="Will import"
                       value={importPreview.willInsert}
@@ -3850,10 +3953,7 @@ function RoomsTab() {
   return (
     <div className="space-y-4">
       <div className="flex justify-end">
-        <Button
-          onClick={() => setShowAdd(!showAdd)}
-          size="sm"
-        >
+        <Button onClick={() => setShowAdd(!showAdd)} size="sm">
           <Plus className="mr-2 h-4 w-4" />
           Add Room
         </Button>
@@ -3867,9 +3967,7 @@ function RoomsTab() {
               placeholder="Room name"
               maxLength={ROOM_NAME_MAX_LENGTH}
               value={addForm.name}
-              onChange={(e) =>
-                setAddForm({ ...addForm, name: e.target.value })
-              }
+              onChange={(e) => setAddForm({ ...addForm, name: e.target.value })}
             />
             <select
               className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
@@ -3901,11 +3999,7 @@ function RoomsTab() {
               )}
               Create
             </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => setShowAdd(false)}
-            >
+            <Button size="sm" variant="ghost" onClick={() => setShowAdd(false)}>
               Cancel
             </Button>
           </div>
@@ -3994,7 +4088,7 @@ function WellnessPlansTab() {
       toast.success(
         variables.active
           ? "Wellness plan reactivated"
-          : "Wellness plan deactivated"
+          : "Wellness plan deactivated",
       );
     },
     onError: (err) => {
@@ -4018,8 +4112,7 @@ function WellnessPlansTab() {
   const canCreate =
     addForm.name.trim().length > 0 &&
     addForm.name.trim().length <= WELLNESS_PLAN_NAME_MAX_LENGTH &&
-    addForm.description.trim().length <=
-      WELLNESS_PLAN_DESCRIPTION_MAX_LENGTH &&
+    addForm.description.trim().length <= WELLNESS_PLAN_DESCRIPTION_MAX_LENGTH &&
     isWellnessPlanPriceInputValid(addForm.price) &&
     !createMutation.isPending;
   const wellnessPlansMissing = !isLoading && !wellnessError && !plans;
@@ -4071,9 +4164,7 @@ function WellnessPlansTab() {
               placeholder="Plan name"
               maxLength={WELLNESS_PLAN_NAME_MAX_LENGTH}
               value={addForm.name}
-              onChange={(e) =>
-                setAddForm({ ...addForm, name: e.target.value })
-              }
+              onChange={(e) => setAddForm({ ...addForm, name: e.target.value })}
             />
             <Input
               type="number"
@@ -4092,7 +4183,8 @@ function WellnessPlansTab() {
               onChange={(e) =>
                 setAddForm({
                   ...addForm,
-                  billingInterval: e.target.value as typeof addForm.billingInterval,
+                  billingInterval: e.target
+                    .value as typeof addForm.billingInterval,
                 })
               }
             >
@@ -4126,11 +4218,7 @@ function WellnessPlansTab() {
               )}
               Create
             </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => setShowAdd(false)}
-            >
+            <Button size="sm" variant="ghost" onClick={() => setShowAdd(false)}>
               Cancel
             </Button>
           </div>
@@ -4228,10 +4316,13 @@ type TemplateCategory = (typeof TEMPLATE_CATEGORIES)[number];
 
 const CATEGORY_BADGE: Record<string, string> = {
   surgery: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400",
-  wellness: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400",
+  wellness:
+    "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400",
   dental: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400",
-  preventive: "bg-teal-100 text-teal-800 dark:bg-teal-900/30 dark:text-teal-400",
-  emergency: "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-400",
+  preventive:
+    "bg-teal-100 text-teal-800 dark:bg-teal-900/30 dark:text-teal-400",
+  emergency:
+    "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-400",
   other: "bg-gray-100 text-gray-800 dark:bg-gray-900/30 dark:text-gray-400",
 };
 
@@ -4289,7 +4380,7 @@ function TemplatesTab() {
     },
   ]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(
-    null
+    null,
   );
 
   const resetAddForm = () => {
@@ -4325,12 +4416,12 @@ function TemplatesTab() {
   const updateItem = (
     index: number,
     field: keyof TemplateItem,
-    value: string | number
+    value: string | number,
   ) => {
     setAddItems(
       addItems.map((item, i) =>
-        i === index ? { ...item, [field]: value } : item
-      )
+        i === index ? { ...item, [field]: value } : item,
+      ),
     );
   };
   const templateItemsToCreate = addItems
@@ -4349,7 +4440,7 @@ function TemplatesTab() {
     isTreatmentTemplateUnitPriceInputValid(item.defaultUnitPrice) &&
     isTreatmentTemplateItemTotalValid(
       item.defaultUnitPrice,
-      item.defaultQuantity
+      item.defaultQuantity,
     );
   const canCreateTemplate =
     addForm.name.trim().length > 0 &&
@@ -4362,7 +4453,7 @@ function TemplatesTab() {
     !createMutation.isPending;
 
   const selectedTemplate = templateList?.find(
-    (t) => t.id === selectedTemplateId
+    (t) => t.id === selectedTemplateId,
   );
   const {
     data: selectedTemplateDetail,
@@ -4371,7 +4462,7 @@ function TemplatesTab() {
     refetch: refetchSelectedTemplate,
   } = trpc.templates.getById.useQuery(
     { id: selectedTemplateId! },
-    { enabled: !!selectedTemplateId }
+    { enabled: !!selectedTemplateId },
   );
   const templatesMissing = !isLoading && !templatesError && !templateList;
   const selectedTemplateMissing =
@@ -4419,7 +4510,7 @@ function TemplatesTab() {
               "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
               selectedTemplate.isActive !== false
                 ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
-                : "bg-gray-100 text-gray-800 dark:bg-gray-900/30 dark:text-gray-400"
+                : "bg-gray-100 text-gray-800 dark:bg-gray-900/30 dark:text-gray-400",
             )}
           >
             {selectedTemplate.isActive !== false ? "Active" : "Inactive"}
@@ -4462,12 +4553,17 @@ function TemplatesTab() {
               {selectedTemplateError ? (
                 <tr>
                   <td colSpan={4} className="p-4">
-                    <SettingsLoadError message={selectedTemplateError.message} />
+                    <SettingsLoadError
+                      message={selectedTemplateError.message}
+                    />
                   </td>
                 </tr>
               ) : selectedTemplateLoading ? (
                 <tr>
-                  <td colSpan={4} className="px-4 py-8 text-center text-muted-foreground">
+                  <td
+                    colSpan={4}
+                    className="px-4 py-8 text-center text-muted-foreground"
+                  >
                     <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
                     Loading template items...
                   </td>
@@ -4484,11 +4580,10 @@ function TemplatesTab() {
                 </tr>
               ) : selectedTemplateDetail?.items?.length ? (
                 selectedTemplateDetail.items.map((item: any, i: number) => (
-                  <tr
-                    key={i}
-                    className="border-b border-border last:border-0"
-                  >
-                    <td className="px-4 py-3 font-medium">{item.description}</td>
+                  <tr key={i} className="border-b border-border last:border-0">
+                    <td className="px-4 py-3 font-medium">
+                      {item.description}
+                    </td>
                     <td className="px-4 py-3 text-muted-foreground capitalize">
                       {item.itemType}
                     </td>
@@ -4542,9 +4637,7 @@ function TemplatesTab() {
               placeholder="Template name"
               maxLength={TREATMENT_TEMPLATE_NAME_MAX_LENGTH}
               value={addForm.name}
-              onChange={(e) =>
-                setAddForm({ ...addForm, name: e.target.value })
-              }
+              onChange={(e) => setAddForm({ ...addForm, name: e.target.value })}
             />
             <select
               className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
@@ -4610,7 +4703,7 @@ function TemplatesTab() {
                     updateItem(
                       index,
                       "defaultQuantity",
-                      parseInt(e.target.value) || 1
+                      parseInt(e.target.value) || 1,
                     )
                   }
                 />
@@ -4623,11 +4716,7 @@ function TemplatesTab() {
                   className="w-28"
                   value={item.defaultUnitPrice}
                   onChange={(e) =>
-                    updateItem(
-                      index,
-                      "defaultUnitPrice",
-                      e.target.value
-                    )
+                    updateItem(index, "defaultUnitPrice", e.target.value)
                   }
                 />
                 <Button
@@ -4669,11 +4758,7 @@ function TemplatesTab() {
               )}
               Create
             </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => setShowAdd(false)}
-            >
+            <Button size="sm" variant="ghost" onClick={() => setShowAdd(false)}>
               Cancel
             </Button>
           </div>
@@ -4708,22 +4793,21 @@ function TemplatesTab() {
                   <span
                     className={cn(
                       "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize",
-                      CATEGORY_BADGE[template.category ?? "other"] ?? CATEGORY_BADGE.other
+                      CATEGORY_BADGE[template.category ?? "other"] ??
+                        CATEGORY_BADGE.other,
                     )}
                   >
                     {template.category}
                   </span>
                 </td>
-                <td className="px-4 py-3 text-muted-foreground">
-                  —
-                </td>
+                <td className="px-4 py-3 text-muted-foreground">—</td>
                 <td className="px-4 py-3">
                   <span
                     className={cn(
                       "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
                       template.isActive !== false
                         ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
-                        : "bg-gray-100 text-gray-800 dark:bg-gray-900/30 dark:text-gray-400"
+                        : "bg-gray-100 text-gray-800 dark:bg-gray-900/30 dark:text-gray-400",
                     )}
                   >
                     {template.isActive !== false ? "Active" : "Inactive"}

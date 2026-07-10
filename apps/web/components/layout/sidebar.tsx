@@ -22,12 +22,8 @@ import {
   Bot,
   ChevronLeft,
   ChevronRight,
-  Compass,
-  Cookie,
   LogOut,
 } from "lucide-react";
-import { openCookiePreferences } from "@/components/common/cookie-consent";
-import { useWelcome } from "@/components/welcome/welcome-provider";
 
 function PawMark({ className }: { className?: string }) {
   return (
@@ -97,7 +93,6 @@ export function Sidebar({
 }: SidebarProps = {}) {
   const [collapsed, setCollapsed] = useState(false);
   const pathname = usePathname();
-  const { openWelcome } = useWelcome();
   const { data: session, status } = useSession();
   const role = isUserRole(session?.user?.role) ? session.user.role : undefined;
   const { data: branding } = trpc.settings.getBranding.useQuery();
@@ -198,22 +193,6 @@ export function Sidebar({
               </li>
             );
           })}
-          {canShowNav ? (
-            <li>
-              <button
-                type="button"
-                data-tour="nav-guides"
-                onClick={() => {
-                  openWelcome();
-                  onNavigate?.();
-                }}
-                className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-              >
-                <Compass className="h-4 w-4 shrink-0" />
-                {!isCollapsed && <span className="truncate">Guides</span>}
-              </button>
-            </li>
-          ) : null}
         </ul>
       </nav>
 
@@ -245,17 +224,6 @@ export function Sidebar({
             </button>
           </div>
         )}
-        <button
-          onClick={openCookiePreferences}
-          aria-label="Open cookie preferences"
-          className={cn(
-            "flex w-full items-center rounded-md p-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground",
-            isCollapsed ? "justify-center" : "gap-2 px-3"
-          )}
-        >
-          <Cookie className="h-4 w-4 shrink-0" aria-hidden="true" />
-          {!isCollapsed && <span>Cookie preferences</span>}
-        </button>
         {collapsible && (
           <button
             onClick={() => setCollapsed(!collapsed)}

@@ -45,7 +45,7 @@ describe("wellness settings UI", () => {
       "addForm.name.trim().length <= WELLNESS_PLAN_NAME_MAX_LENGTH"
     );
     expect(source).toContain(
-      "addForm.description.trim().length <=\n      WELLNESS_PLAN_DESCRIPTION_MAX_LENGTH"
+      "addForm.description.trim().length <= WELLNESS_PLAN_DESCRIPTION_MAX_LENGTH"
     );
     expect(source).not.toContain("priceValue >= 0 &&");
   });

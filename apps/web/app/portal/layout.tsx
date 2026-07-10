@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { CookiePreferencesLink } from "@/components/common/cookie-consent";
 
 export const metadata: Metadata = {
   title: "Pet Portal - OpenVPM",
@@ -39,10 +38,6 @@ export default function PortalLayout({
           >
             Privacy
           </a>
-          <span className="mx-2" aria-hidden="true">
-            ·
-          </span>
-          <CookiePreferencesLink className="underline-offset-2 hover:text-gray-600 hover:underline" />
         </div>
       </footer>
     </div>

@@ -79,8 +79,15 @@ describe("welcome surface UI states", () => {
     expect(surfaceSource).toContain("showSetupLink");
     expect(surfaceSource).toContain("onSetupInstead");
     expect(providerSource).toContain("openJourney()");
-    expect(sidebarSource).toContain('data-tour="nav-guides"');
-    expect(sidebarSource).toContain("openWelcome()");
+    // Guides moved out of the sidebar into Settings (founder decision):
+    // the sidebar stays clean, Settings owns the manual re-entry point.
+    expect(sidebarSource).not.toContain("nav-guides");
+    const settingsSource = readFileSync(
+      "app/(dashboard)/settings/page.tsx",
+      "utf8"
+    );
+    expect(settingsSource).toContain('data-tour="settings-guides"');
+    expect(settingsSource).toContain("onClick={openWelcome}");
   });
 
   it("keeps the copy deck in voice: no em or en dashes", () => {

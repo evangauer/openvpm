@@ -92,6 +92,7 @@ export function WelcomeSurface({
                 tilt={TILTS[i % TILTS.length]!}
                 done={completed.has(card)}
                 variant={variant}
+                enterDelayMs={i * 420}
                 onOpen={() => onStartGuide(card, guideContext)}
               >
                 <Vignette />
@@ -99,6 +100,35 @@ export function WelcomeSurface({
             );
           })}
         </div>
+
+        <style>{`
+          /* Polaroids drop and settle one after another; the rows inside
+             each picture then place themselves in order. backwards-fill
+             only, so hover/tilt transforms take over once settled. */
+          @keyframes welcome-card-in {
+            0% { opacity: 0; transform: translateY(-14px) rotate(var(--tilt)) scale(0.96); }
+            70% { opacity: 1; transform: translateY(2px) rotate(var(--tilt)) scale(1.005); }
+            100% { opacity: 1; transform: translateY(0) rotate(var(--tilt)) scale(1); }
+          }
+          .welcome-card-enter {
+            animation: welcome-card-in 560ms ease-out backwards;
+            animation-delay: var(--enter-delay, 0ms);
+          }
+          @keyframes welcome-row-in {
+            0% { opacity: 0; transform: translateY(4px); }
+            100% { opacity: 1; transform: translateY(0); }
+          }
+          .vignette-stagger > * {
+            animation: welcome-row-in 480ms ease-out backwards;
+            animation-delay: calc(var(--enter-delay, 0ms) + 260ms);
+          }
+          .vignette-stagger > *:nth-child(2) { animation-delay: calc(var(--enter-delay, 0ms) + 420ms); }
+          .vignette-stagger > *:nth-child(3) { animation-delay: calc(var(--enter-delay, 0ms) + 580ms); }
+          .vignette-stagger > *:nth-child(4) { animation-delay: calc(var(--enter-delay, 0ms) + 740ms); }
+          @media (prefers-reduced-motion: reduce) {
+            .welcome-card-enter, .vignette-stagger > * { animation: none; }
+          }
+        `}</style>
 
         <div className="mt-10 flex flex-col items-center gap-2">
           <button

@@ -19,6 +19,7 @@ export function PolaroidCard({
   tilt,
   done,
   variant,
+  enterDelayMs = 0,
   onOpen,
   children,
 }: {
@@ -27,6 +28,8 @@ export function PolaroidCard({
   tilt: number;
   done: boolean;
   variant: WelcomeVariant;
+  /** Staggers the drop-and-settle entrance so cards arrive in order. */
+  enterDelayMs?: number;
   onOpen: () => void;
   children: React.ReactNode;
 }) {
@@ -35,10 +38,15 @@ export function PolaroidCard({
     <button
       type="button"
       onClick={onOpen}
-      style={{ "--tilt": `${tilt}deg` } as React.CSSProperties}
+      style={
+        {
+          "--tilt": `${tilt}deg`,
+          "--enter-delay": `${enterDelayMs}ms`,
+        } as React.CSSProperties
+      }
       className={cn(
         "group w-56 shrink-0 rounded-sm bg-white p-3 pb-4 text-left shadow-md ring-1 ring-black/5",
-        "rotate-[var(--tilt)] transition-all duration-300 ease-out",
+        "welcome-card-enter rotate-[var(--tilt)] transition-all duration-300 ease-out",
         "hover:z-10 hover:rotate-0 hover:-translate-y-2 hover:shadow-xl",
         "focus-visible:z-10 focus-visible:rotate-0 focus-visible:-translate-y-2 focus-visible:shadow-xl",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"

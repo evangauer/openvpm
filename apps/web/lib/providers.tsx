@@ -7,7 +7,7 @@ import { SessionProvider } from "next-auth/react";
 import { ThemeProvider } from "next-themes";
 import { Toaster } from "sonner";
 import superjson from "superjson";
-import { CookieConsent } from "@/components/common/cookie-consent";
+import { Analytics } from "@vercel/analytics/next";
 import { createAppQueryClient } from "./query-client";
 import { trpc } from "./trpc";
 
@@ -38,7 +38,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
           >
             {children}
             <Toaster richColors position="bottom-right" />
-            <CookieConsent />
+            <Analytics />
           </ThemeProvider>
         </SessionProvider>
       </QueryClientProvider>

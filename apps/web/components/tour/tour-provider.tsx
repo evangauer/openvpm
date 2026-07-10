@@ -95,19 +95,32 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
     [isAdmin, setTourStatus, utils]
   );
 
+  // Warm every route a guide will visit so each Next paints immediately
+  // instead of waiting on an unprefetched navigation.
+  const prefetchSteps = useCallback(
+    (steps: GuideStep[]) => {
+      for (const s of steps) {
+        if (s.route) router.prefetch(s.route.split("?")[0]!);
+      }
+    },
+    [router]
+  );
+
   const start = useCallback(
     (recipe: GuideId = "tour", ctx: GuideContext = {}) => {
       if (recipe === "tour") {
         if (!isAdmin) return;
+        prefetchSteps(TOUR_STEPS);
         setRun({ recipe, steps: TOUR_STEPS, index: 0 });
         persist("in_progress", TOUR_STEPS[0]!.id);
         return;
       }
       const steps = buildGuideSteps(recipe, ctx);
       if (steps.length === 0) return;
+      prefetchSteps(steps);
       setRun({ recipe, steps, index: 0 });
     },
-    [isAdmin, persist]
+    [isAdmin, persist, prefetchSteps]
   );
 
   // Start ONLY on an explicit ?tour=start deep-link. Onboarding is opt-in: a
@@ -149,15 +162,24 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
         }
         return null;
       }
-      if (r.recipe === "tour") persist("in_progress", r.steps[r.index + 1]!.id);
+      // Navigate WITH the step change (not as a trailing effect) so rapid
+      // Next clicks always land on the newest step's route.
+      const nextStep = r.steps[r.index + 1]!;
+      if (nextStep.route) router.push(nextStep.route);
+      if (r.recipe === "tour") persist("in_progress", nextStep.id);
       return { ...r, index: r.index + 1 };
     });
-  }, [persist, userId]);
+  }, [persist, router, userId]);
 
   const onBack = useCallback(
     () =>
-      setRun((r) => (r && r.index > 0 ? { ...r, index: r.index - 1 } : r)),
-    []
+      setRun((r) => {
+        if (!r || r.index <= 0) return r;
+        const prevStep = r.steps[r.index - 1]!;
+        if (prevStep.route) router.push(prevStep.route);
+        return { ...r, index: r.index - 1 };
+      }),
+    [router]
   );
 
   const onSkip = useCallback(() => {

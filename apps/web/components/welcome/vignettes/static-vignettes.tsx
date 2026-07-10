@@ -13,7 +13,7 @@ import { CalendarPlus, ClipboardList, Globe, PawPrint } from "lucide-react";
 export function DayVignette() {
   return (
     <div
-      className="flex h-full w-full flex-col justify-center gap-1.5 bg-gradient-to-br from-orange-50 to-violet-50 p-3"
+      className="vignette-stagger flex h-full w-full flex-col justify-center gap-1.5 bg-gradient-to-br from-orange-50 to-violet-50 p-3"
       aria-label="Example: today's schedule with Biscuit checked in at 9:00"
     >
       <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
@@ -56,7 +56,7 @@ export function DayVignette() {
 export function PortalVignette() {
   return (
     <div
-      className="flex h-full w-full flex-col justify-center gap-2 bg-gradient-to-br from-pink-50 to-emerald-50 p-3"
+      className="vignette-stagger flex h-full w-full flex-col justify-center gap-2 bg-gradient-to-br from-pink-50 to-emerald-50 p-3"
       aria-label="Example: a pet parent's portal with visits and bills"
     >
       <div className="flex items-center gap-2">
@@ -103,7 +103,7 @@ export function CalendarVignette() {
   const days = Array.from({ length: 28 }, (_, i) => i + 1);
   return (
     <div
-      className="flex h-full w-full flex-col justify-center gap-1.5 bg-gradient-to-br from-emerald-50 to-violet-50 p-3"
+      className="vignette-stagger flex h-full w-full flex-col justify-center gap-1.5 bg-gradient-to-br from-emerald-50 to-violet-50 p-3"
       aria-label="Example: the clinic schedule inside your own calendar app"
     >
       <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
