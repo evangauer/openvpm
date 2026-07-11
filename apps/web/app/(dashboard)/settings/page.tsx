@@ -1173,6 +1173,7 @@ function redirectToClientPaymentUrl(url: unknown) {
 
 function BillingTab() {
   const utils = trpc.useUtils();
+  const [showAllPlans, setShowAllPlans] = useState(false);
   const {
     data,
     isLoading,
@@ -1289,154 +1290,179 @@ function BillingTab() {
   const daysLeft = trialCalendarDaysLeft(data.trialEndsAt, data.timezone) ?? 0;
   const currentPlan = data.plans.find((p) => p.tier === data.tier);
   const showReadOnlyNotice = !data.hasFullAccess;
+  const perLocation = data.locationUnitPriceMonthlyUsd;
+  const multiLocation = data.locationCount > 1;
+  const priceSentence = multiLocation
+    ? `$${perLocation} a month for each of your ${data.locationCount} locations (about $${data.estimatedMonthlyBase} a month)`
+    : `$${perLocation} a month for your location`;
+  // Only surface the sync note when something actually needs attention.
+  const showSyncNote =
+    data.billingSyncStatus &&
+    (data.billingSyncStatus.status === "error" ||
+      data.billingSyncStatus.status === "legacy");
 
   return (
     <div className="space-y-6">
-      <div className="grid gap-6 xl:grid-cols-2">
-        {/* Current status */}
-        <div className="rounded-lg border border-border bg-card p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-muted-foreground">Current plan</p>
-              <h3 className="font-heading text-xl font-semibold">
+      {/* One clear plan card: what you have, what it costs, what is included. */}
+      <div className="rounded-lg border border-border bg-card p-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="text-sm text-muted-foreground">Your plan</p>
+            <div className="flex items-center gap-3">
+              <h3 className="font-heading text-2xl font-semibold">
                 {currentPlan?.name ?? data.tier}
               </h3>
-            </div>
-            <span
-              className={cn(
-                "rounded-full px-3 py-1 text-xs font-medium capitalize",
-                data.billingStatus === "active" &&
-                  "bg-green-100 text-green-700",
-                data.billingStatus === "trialing" &&
-                  "bg-blue-100 text-blue-700",
-                data.billingStatus === "past_due" && "bg-red-100 text-red-700",
-                (data.billingStatus === "canceled" ||
-                  data.billingStatus === "none") &&
-                  "bg-gray-100 text-gray-600",
-              )}
-            >
-              {data.billingStatus.replace("_", " ")}
-            </span>
-          </div>
-          {showReadOnlyNotice && (
-            <div className="mt-4 flex gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-              <p>
-                Cloud is in read-only mode. You can view records, manage
-                billing, and export data; writes resume when your trial or
-                subscription is active.
-              </p>
-            </div>
-          )}
-          {data.billingStatus === "trialing" && (
-            <p className="mt-3 text-sm text-muted-foreground">
-              You&apos;re on a free trial with full Cloud access —{" "}
-              <span className="font-medium text-foreground">
-                {daysLeft} days left
+              <span
+                className={cn(
+                  "rounded-full px-3 py-1 text-xs font-medium capitalize",
+                  data.billingStatus === "active" &&
+                    "bg-green-100 text-green-700",
+                  data.billingStatus === "trialing" &&
+                    "bg-blue-100 text-blue-700",
+                  data.billingStatus === "past_due" &&
+                    "bg-red-100 text-red-700",
+                  (data.billingStatus === "canceled" ||
+                    data.billingStatus === "none") &&
+                    "bg-gray-100 text-gray-600",
+                )}
+              >
+                {data.billingStatus === "trialing"
+                  ? `Trial · ${daysLeft} days left`
+                  : data.billingStatus.replace("_", " ")}
               </span>
-              . Subscribe below to keep your features after it ends.
-            </p>
-          )}
-          {data.billingStatus === "past_due" && (
-            <p className="mt-3 text-sm text-red-600">
-              Your last payment failed. Update your payment method to restore
-              write access.
-            </p>
-          )}
-          {/* Billing summary: locations + seats + this month's metered usage */}
-          <div className="mt-4 grid gap-3 border-t border-border pt-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
-            <div>
-              <p className="text-muted-foreground">Locations</p>
-              <p className="font-medium">
-                {data.locationCount} x ${data.locationUnitPriceMonthlyUsd}/mo
-              </p>
-            </div>
-            <div>
-              <p className="text-muted-foreground">Staff</p>
-              <p className="font-medium">
-                {data.billableSeatCount}
-                {data.seatUnitPriceMonthlyUsd > 0
-                  ? ` x $${data.seatUnitPriceMonthlyUsd}/mo`
-                  : " (unlimited, included)"}
-              </p>
-            </div>
-            <div>
-              <p className="text-muted-foreground">Base estimate</p>
-              <p className="font-medium">${data.estimatedMonthlyBase}/mo</p>
-            </div>
-            <div>
-              <p className="text-muted-foreground">SMS this month</p>
-              <p className="font-medium">
-                {data.usage.sms}
-                {currentPlan?.includedSmsPerMonth != null
-                  ? ` / ${currentPlan.includedSmsPerMonth} included`
-                  : ""}
-              </p>
-            </div>
-            <div>
-              <p className="text-muted-foreground">AI actions this month</p>
-              <p className="font-medium">
-                {data.usage.aiRuns}
-                {currentPlan?.includedAiRunsPerMonth != null
-                  ? ` / ${currentPlan.includedAiRunsPerMonth.toLocaleString()} included`
-                  : ""}
-              </p>
             </div>
           </div>
-          {data.billingSyncStatus && (
-            <div
-              className={cn(
-                "mt-4 rounded-md border p-3 text-xs",
-                data.billingSyncStatus.status === "error"
-                  ? "border-red-200 bg-red-50 text-red-700"
-                  : data.billingSyncStatus.status === "legacy"
-                    ? "border-amber-200 bg-amber-50 text-amber-800"
-                    : "border-border bg-muted/30 text-muted-foreground",
-              )}
-            >
-              <span className="font-medium">Billing sync: </span>
-              {data.billingSyncStatus.message}
-            </div>
-          )}
-          {data.hasBillingAccount && (
-            <Button
-              variant="outline"
-              className="mt-4"
-              disabled={portal.isPending}
-              onClick={() => portal.mutate()}
-            >
-              {portal.isPending ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <CreditCard className="mr-2 h-4 w-4" />
-              )}
-              Manage billing
-            </Button>
-          )}
+          <div className="flex flex-wrap gap-2">
+            {data.hasBillingAccount ? (
+              <Button
+                variant="outline"
+                disabled={portal.isPending}
+                onClick={() => portal.mutate()}
+              >
+                {portal.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <CreditCard className="mr-2 h-4 w-4" />
+                )}
+                Manage billing
+              </Button>
+            ) : (
+              <Button
+                disabled={checkout.isPending}
+                onClick={() => checkout.mutate({ tier: "cloud" })}
+              >
+                {checkout.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <CreditCard className="mr-2 h-4 w-4" />
+                )}
+                Subscribe
+              </Button>
+            )}
+          </div>
         </div>
 
-        <ClientPaymentProcessingSection
-          data={paymentAccount.data}
-          isLoading={paymentAccount.isLoading}
-          error={paymentAccount.error?.message}
-          setupPending={setupPaymentAccount.isPending}
-          refreshPending={refreshPaymentAccount.isPending}
-          dashboardPending={openPaymentAccountDashboard.isPending}
-          onSetup={() => setupPaymentAccount.mutate()}
-          onRefresh={() => refreshPaymentAccount.mutate()}
-          onDashboard={() => openPaymentAccountDashboard.mutate()}
-        />
+        <p className="mt-4 max-w-2xl text-sm text-muted-foreground">
+          {data.billingStatus === "trialing" ? (
+            <>
+              Your free trial has{" "}
+              <span className="font-medium text-foreground">
+                {daysLeft} days
+              </span>{" "}
+              left. After that, {currentPlan?.name ?? "Cloud"} is {priceSentence}
+              . Unlimited staff, and everything you see today stays on.
+            </>
+          ) : (
+            <>
+              {currentPlan?.name ?? "Cloud"} is {priceSentence}. Unlimited
+              staff, everything included.
+            </>
+          )}
+        </p>
+
+        {(currentPlan?.includedSmsPerMonth != null ||
+          currentPlan?.includedAiRunsPerMonth != null) && (
+          <p className="mt-2 text-sm text-muted-foreground">
+            This month:{" "}
+            <span className="font-medium text-foreground">
+              {data.usage.sms}
+            </span>{" "}
+            of {currentPlan?.includedSmsPerMonth?.toLocaleString()} included
+            texts ·{" "}
+            <span className="font-medium text-foreground">
+              {data.usage.aiRuns}
+            </span>{" "}
+            of {currentPlan?.includedAiRunsPerMonth?.toLocaleString()} included
+            AI actions
+          </p>
+        )}
+
+        {showReadOnlyNotice && (
+          <div className="mt-4 flex gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <p>
+              Cloud is in read-only mode. You can view records, manage billing,
+              and export data; writes resume when your trial or subscription is
+              active.
+            </p>
+          </div>
+        )}
+        {data.billingStatus === "past_due" && (
+          <p className="mt-3 text-sm text-red-600">
+            Your last payment failed. Update your payment method to restore
+            write access.
+          </p>
+        )}
+        {showSyncNote && (
+          <div
+            className={cn(
+              "mt-4 rounded-md border p-3 text-xs",
+              data.billingSyncStatus!.status === "error"
+                ? "border-red-200 bg-red-50 text-red-700"
+                : "border-amber-200 bg-amber-50 text-amber-800",
+            )}
+          >
+            <span className="font-medium">Billing sync: </span>
+            {data.billingSyncStatus!.message}
+          </div>
+        )}
       </div>
 
-      <PlanGrid
-        plans={data.plans}
-        currentTier={data.tier}
-        enforced
-        onChoose={(tier) => checkout.mutate({ tier })}
-        busyTier={
-          checkout.isPending ? (checkout.variables?.tier ?? null) : null
-        }
+      <ClientPaymentProcessingSection
+        data={paymentAccount.data}
+        isLoading={paymentAccount.isLoading}
+        error={paymentAccount.error?.message}
+        setupPending={setupPaymentAccount.isPending}
+        refreshPending={refreshPaymentAccount.isPending}
+        dashboardPending={openPaymentAccountDashboard.isPending}
+        onSetup={() => setupPaymentAccount.mutate()}
+        onRefresh={() => refreshPaymentAccount.mutate()}
+        onDashboard={() => openPaymentAccountDashboard.mutate()}
       />
+
+      {/* Plan comparison is reference material, collapsed by default. */}
+      <div>
+        <button
+          type="button"
+          className="text-sm font-medium text-primary underline-offset-4 hover:underline"
+          onClick={() => setShowAllPlans((v) => !v)}
+        >
+          {showAllPlans ? "Hide plan comparison" : "Compare all plans"}
+        </button>
+        {showAllPlans && (
+          <div className="mt-4">
+            <PlanGrid
+              plans={data.plans}
+              currentTier={data.tier}
+              enforced
+              onChoose={(tier) => checkout.mutate({ tier })}
+              busyTier={
+                checkout.isPending ? (checkout.variables?.tier ?? null) : null
+              }
+            />
+          </div>
+        )}
+      </div>
     </div>
   );
 }

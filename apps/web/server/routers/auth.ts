@@ -205,21 +205,10 @@ export const authRouter = createRouter({
           });
         }
 
-        const { aiOveragePriceId, smsOveragePriceId } =
-          cloudMeteredPriceIds();
+        // Checkout shows the single per-location price so the clinic sees one
+        // clean product; the metered overage items (AI + SMS) are attached to
+        // the subscription server-side after creation (subscription sync).
         hostedCheckoutLineItems = [{ priceId: locationPriceId, quantity: 1 }];
-        if (aiOveragePriceId) {
-          hostedCheckoutLineItems.push({
-            priceId: aiOveragePriceId,
-            metered: true,
-          });
-        }
-        if (smsOveragePriceId) {
-          hostedCheckoutLineItems.push({
-            priceId: smsOveragePriceId,
-            metered: true,
-          });
-        }
       }
 
       const passwordHash = await hash(input.password, PASSWORD_HASH_COST);

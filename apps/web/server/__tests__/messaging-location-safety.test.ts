@@ -145,6 +145,30 @@ beforeEach(() => {
   vi.clearAllMocks();
   delete process.env.NEXT_PUBLIC_APP_URL;
   delete process.env.NEXTAUTH_URL;
+  // The platform kill-switch is on for behavior tests; the gate itself is
+  // covered in "messaging provisioning kill-switch".
+  vi.stubEnv("MESSAGING_PROVISIONING_ENABLED", "true");
+});
+
+describe("messaging provisioning kill-switch", () => {
+  it("blocks number search and provisioning until ops enables it", async () => {
+    vi.stubEnv("MESSAGING_PROVISIONING_ENABLED", "");
+    const { db, select } = createDb();
+
+    await expect(
+      callerWithDb(db).provisionNumber({ locationId: LOCATION_ID, mode: "host" })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("almost ready"),
+    });
+    await expect(
+      callerWithDb(db).searchNumbers({ areaCode: "212" })
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    // No DB reads and no Telnyx calls happen while the switch is off.
+    expect(select).not.toHaveBeenCalled();
+    expect(mocks.searchAvailableNumbers).not.toHaveBeenCalled();
+  });
 });
 
 describe("messaging location target safety", () => {

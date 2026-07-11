@@ -478,12 +478,11 @@ describe("auth router input validation", () => {
     expect(practiceInsert).not.toHaveProperty("billingStatus");
     expect(practiceInsert).not.toHaveProperty("trialEndsAt");
 
+    // Checkout shows one clean product: the metered overage items are added
+    // to the subscription server-side after creation, never at checkout.
     expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalledWith(
       expect.objectContaining({
-        lineItems: [
-          { priceId: "price_location", quantity: 1 },
-          { priceId: "price_sms", metered: true },
-        ],
+        lineItems: [{ priceId: "price_location", quantity: 1 }],
         practiceId: "practice-1",
         customerEmail: "owner@example.com",
         trialPeriodDays: 14,

@@ -161,16 +161,15 @@ export const subscriptionRouter = createRouter({
         new Date(practice.trialEndsAt).getTime() > Date.now()
           ? practice.trialEndsAt
           : null;
-      // Per-location licensed item, plus the metered overage items (AI + SMS)
-      // when configured. Metered items carry no quantity; Stripe meters them.
-      const { aiOveragePriceId, smsOveragePriceId } = cloudMeteredPriceIds();
+      // Checkout carries only the per-location licensed item so the clinic
+      // sees one clean product. The metered overage items (AI + SMS) are
+      // attached to the subscription server-side after creation
+      // (syncPracticeSubscriptionQuantities), not shown at checkout.
       const lineItems: Array<{
         priceId: string;
         quantity?: number;
         metered?: boolean;
       }> = [{ priceId: locationPriceId, quantity: counts.locationCount }];
-      if (aiOveragePriceId) lineItems.push({ priceId: aiOveragePriceId, metered: true });
-      if (smsOveragePriceId) lineItems.push({ priceId: smsOveragePriceId, metered: true });
       const customerEmail =
         billingContactEmail(practice.email) ??
         billingContactEmail(ctx.session.user.email);

@@ -102,6 +102,23 @@ async function assertActivePractice(ctx: {
   }
 }
 
+/**
+ * Platform kill-switch for number provisioning. Numbers cost real money and
+ * cannot send until the platform's carrier registration (10DLC) is approved,
+ * so provisioning stays off until ops flips MESSAGING_PROVISIONING_ENABLED.
+ * The Telnyx key alone being present must not open the purchase path.
+ */
+function assertProvisioningEnabled(): void {
+  const flag = process.env.MESSAGING_PROVISIONING_ENABLED?.trim().toLowerCase();
+  if (flag !== "true" && flag !== "1") {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Texting setup is almost ready. We are finishing carrier registration; check back soon.",
+    });
+  }
+}
+
 function telnyxWebhookUrl(): string {
   const rawBase = configuredWebhookBaseUrl();
   if (!rawBase) {
@@ -350,6 +367,7 @@ export const messagingRouter = createRouter({
       })
     )
     .query(async ({ ctx, input }) => {
+      assertProvisioningEnabled();
       await assertActivePractice(ctx);
       try {
         return await searchAvailableNumbers(input);
@@ -409,6 +427,7 @@ export const messagingRouter = createRouter({
       })
     )
     .mutation(async ({ ctx, input }) => {
+      assertProvisioningEnabled();
       await assertActivePractice(ctx);
       const [loc] = await ctx.db
         .select({ id: locations.id, name: locations.name, phone: locations.phone })

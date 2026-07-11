@@ -55,6 +55,21 @@ describe("billing sync practice scoping", () => {
     expect(syncState).toContain("{ locationCount: 0, billableSeatCount: 0 }");
   });
 
+  it("attaches missing metered overage items idempotently during sync", () => {
+    const syncState = source.slice(
+      source.indexOf("export async function syncPracticeSubscriptionQuantities"),
+      source.length
+    );
+
+    // Checkout carries only the base price; sync adds the metered items and
+    // must never duplicate ones that already exist on the subscription.
+    expect(syncState).toContain("cloudMeteredPriceIds()");
+    expect(syncState).toMatch(
+      /meteredPriceId &&\s*!items\.some\(\(item\) => item\.price\?\.id === meteredPriceId\)/
+    );
+    expect(syncState).toContain("stripe.subscriptionItems.create({");
+  });
+
   it("resolves Stripe price IDs through trim-aware billing helpers", () => {
     const syncState = source.slice(
       source.indexOf("export async function syncPracticeSubscriptionQuantities"),

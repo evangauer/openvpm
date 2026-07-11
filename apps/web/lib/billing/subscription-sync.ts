@@ -7,6 +7,7 @@ import {
   STRIPE_PRICE_CLOUD_LEGACY_ENV,
   billingEnforced,
   cloudCheckoutPriceIds,
+  cloudMeteredPriceIds,
   estimatedCloudBaseMonthlyUsd,
   stripePriceIdFromEnv,
 } from "./plans";
@@ -189,7 +190,7 @@ export async function syncPracticeSubscriptionQuantities(opts: {
       return state;
     }
 
-    const updates = [
+    const updates: Promise<unknown>[] = [
       stripe.subscriptionItems.update(locationItem.id, {
         quantity: counts.locationCount,
       }),
@@ -200,6 +201,25 @@ export async function syncPracticeSubscriptionQuantities(opts: {
           quantity: counts.billableSeatCount,
         })
       );
+    }
+
+    // Checkout shows only the per-location price (one clean product for the
+    // clinic); the metered overage items (AI + SMS) are attached here after
+    // the subscription exists. Idempotent: only add what is missing, so this
+    // also self-heals subscriptions created before overage prices existed.
+    const { aiOveragePriceId, smsOveragePriceId } = cloudMeteredPriceIds();
+    for (const meteredPriceId of [aiOveragePriceId, smsOveragePriceId]) {
+      if (
+        meteredPriceId &&
+        !items.some((item) => item.price?.id === meteredPriceId)
+      ) {
+        updates.push(
+          stripe.subscriptionItems.create({
+            subscription: subscriptionId,
+            price: meteredPriceId,
+          })
+        );
+      }
     }
     await Promise.all(updates);
 
