@@ -52,6 +52,10 @@ import {
   isAppointmentRecurrenceIntervalInputValid,
   isAppointmentRecurrenceOccurrencesInputValid,
 } from "@/lib/scheduling/appointment-policy";
+import {
+  layoutOverlaps,
+  type OverlapPosition,
+} from "@/lib/scheduling/overlap-layout";
 
 // --- Constants ---
 
@@ -195,6 +199,54 @@ function sortAppointments(appointments: Appointment[]): Appointment[] {
     (a, b) =>
       new Date(a.startTime).getTime() - new Date(b.startTime).getTime()
   );
+}
+
+/** Side-by-side columns for concurrent appointments (never stacked). */
+function buildOverlapLayout(
+  appointments: Appointment[]
+): Map<string, OverlapPosition> {
+  return layoutOverlaps(
+    appointments.map((appt) => ({
+      id: appt.id,
+      startMs: new Date(appt.startTime).getTime(),
+      endMs: new Date(appt.endTime).getTime(),
+    }))
+  );
+}
+
+/**
+ * One lane per doctor for the day view, derived from the day's own
+ * appointments (works even when the only provider is the practice admin).
+ * Unassigned appointments (tech work like nail trims) share a Team lane.
+ */
+function buildDayLanes(
+  appointments: Appointment[]
+): { key: string; label: string; appointments: Appointment[] }[] {
+  const byDoctor = new Map<string, { label: string; appointments: Appointment[] }>();
+  for (const appt of appointments) {
+    const key = appt.doctorId ?? "team";
+    const existing = byDoctor.get(key);
+    if (existing) {
+      existing.appointments.push(appt);
+    } else {
+      byDoctor.set(key, {
+        label: appt.doctorId ? appt.doctorName ?? "Doctor" : "Team",
+        appointments: [appt],
+      });
+    }
+  }
+  const lanes = [...byDoctor.entries()].map(([key, lane]) => ({
+    key,
+    label: lane.label,
+    appointments: lane.appointments,
+  }));
+  // Doctors alphabetically, the shared Team lane last.
+  lanes.sort((a, b) => {
+    if (a.key === "team") return 1;
+    if (b.key === "team") return -1;
+    return a.label.localeCompare(b.label);
+  });
+  return lanes;
 }
 
 function formatToolbarDate(date: Date, view: CalendarView): string {
@@ -348,24 +400,32 @@ function AppointmentBlock({
   appointment,
   timeZone,
   onClick,
+  position,
 }: {
   appointment: Appointment;
   timeZone?: string | null;
   onClick: () => void;
+  position?: OverlapPosition;
 }) {
   const start = new Date(appointment.startTime);
   const end = new Date(appointment.endTime);
   const { top, height } = getAppointmentLayout(start, end, timeZone);
   const bgColor = getAppointmentColor(appointment);
+  // Concurrent appointments split the column width; a lone appointment
+  // keeps the old full-width look.
+  const widthPct = 100 / (position?.columns ?? 1);
+  const leftPct = (position?.column ?? 0) * widthPct;
 
   return (
     <button
       type="button"
       onClick={onClick}
-      className="absolute left-1 right-1 rounded-md px-2 py-1 text-left text-xs overflow-hidden cursor-pointer transition-opacity hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
+      className="absolute rounded-md px-2 py-1 text-left text-xs overflow-hidden cursor-pointer transition-opacity hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
       style={{
         top,
         height,
+        left: `calc(${leftPct}% + 3px)`,
+        width: `calc(${widthPct}% - 6px)`,
         backgroundColor: `${bgColor}20`,
         borderLeft: `3px solid ${bgColor}`,
       }}
@@ -399,61 +459,125 @@ function DayCalendar({
   onSlotClick?: (y: number) => void;
   onAppointmentClick: (appointment: Appointment) => void;
 }) {
+  // A real clinic day: one lane per doctor (plus a Team lane for
+  // unassigned/tech work). With one provider or none it stays the single
+  // clean column it always was.
+  const lanes = buildDayLanes(appointments);
+  const showLanes = lanes.length > 1;
+
+  const laneColumn = (laneAppointments: Appointment[], key: string) => {
+    const layout = buildOverlapLayout(laneAppointments);
+    return (
+      <div
+        key={key}
+        className={cn(
+          "relative flex-1 border-l border-border",
+          onSlotClick && "cursor-pointer"
+        )}
+        style={{ height: CALENDAR_HEIGHT, minWidth: showLanes ? 160 : undefined }}
+        onClick={(e) => {
+          if (!onSlotClick) return;
+          if ((e.target as HTMLElement).closest("button")) return;
+          const rect = e.currentTarget.getBoundingClientRect();
+          onSlotClick(e.clientY - rect.top);
+        }}
+      >
+        <GridLines />
+
+        {showNowLine && (
+          <div
+            className="absolute left-0 right-0 z-10 flex items-center"
+            style={{ top: nowTop }}
+          >
+            <div className="h-2.5 w-2.5 rounded-full bg-red-500 -ml-1" />
+            <div className="flex-1 border-t-2 border-red-500" />
+          </div>
+        )}
+
+        {laneAppointments.map((appt) => (
+          <AppointmentBlock
+            key={appt.id}
+            appointment={appt}
+            timeZone={timeZone}
+            onClick={() => onAppointmentClick(appt)}
+            position={layout.get(appt.id)}
+          />
+        ))}
+      </div>
+    );
+  };
+
   return (
     <div className="mt-4 overflow-hidden rounded-lg border border-border bg-card">
-      <div className="flex overflow-auto" style={{ maxHeight: "calc(100vh - 220px)" }}>
-        <TimeSlots />
-
+      <div className="overflow-x-auto">
         <div
-          className={cn(
-            "relative flex-1 border-l border-border",
-            onSlotClick && "cursor-pointer"
-          )}
-          style={{ height: CALENDAR_HEIGHT }}
-          onClick={(e) => {
-            if (!onSlotClick) return;
-            if ((e.target as HTMLElement).closest("button")) return;
-            const rect = e.currentTarget.getBoundingClientRect();
-            onSlotClick(e.clientY - rect.top);
+          style={{
+            minWidth: showLanes ? 64 + lanes.length * 160 : undefined,
           }}
         >
-          <GridLines />
-
-          {showNowLine && (
-            <div
-              className="absolute left-0 right-0 z-10 flex items-center"
-              style={{ top: nowTop }}
-            >
-              <div className="h-2.5 w-2.5 rounded-full bg-red-500 -ml-1" />
-              <div className="flex-1 border-t-2 border-red-500" />
+          {showLanes && (
+            <div className="flex border-b border-border bg-muted/30">
+              <div className="w-16 shrink-0" />
+              {lanes.map((lane) => (
+                <div
+                  key={lane.key}
+                  className="flex-1 border-l border-border px-3 py-2"
+                  style={{ minWidth: 160 }}
+                >
+                  <p className="truncate text-sm font-medium">{lane.label}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {lane.appointments.length} appointment
+                    {lane.appointments.length !== 1 ? "s" : ""}
+                  </p>
+                </div>
+              ))}
             </div>
           )}
 
-          {appointments.length > 0 ? (
-            appointments.map((appt) => (
-              <AppointmentBlock
-                key={appt.id}
-                appointment={appt}
-                timeZone={timeZone}
-                onClick={() => onAppointmentClick(appt)}
-              />
-            ))
-          ) : (
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="text-center">
-                <Calendar className="mx-auto h-8 w-8 text-muted-foreground/40" />
-                <p className="mt-2 text-sm text-muted-foreground">
-                  No appointments for this day
-                </p>
+          <div
+            className="flex overflow-y-auto"
+            style={{ maxHeight: "calc(100vh - 220px)" }}
+          >
+            <TimeSlots />
+
+            {appointments.length > 0 ? (
+              showLanes ? (
+                lanes.map((lane) => laneColumn(lane.appointments, lane.key))
+              ) : (
+                laneColumn(appointments, "all")
+              )
+            ) : (
+              <div
+                className={cn(
+                  "relative flex-1 border-l border-border",
+                  onSlotClick && "cursor-pointer"
+                )}
+                style={{ height: CALENDAR_HEIGHT }}
+                onClick={(e) => {
+                  if (!onSlotClick) return;
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  onSlotClick(e.clientY - rect.top);
+                }}
+              >
+                <GridLines />
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <div className="text-center">
+                    <Calendar className="mx-auto h-8 w-8 text-muted-foreground/40" />
+                    <p className="mt-2 text-sm text-muted-foreground">
+                      No appointments for this day
+                    </p>
+                  </div>
+                </div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
 
       {appointments.length > 0 && (
         <div className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
           {appointments.length} appointment{appointments.length !== 1 ? "s" : ""}
+          {showLanes && ` · ${lanes.length} lanes`}
         </div>
       )}
     </div>
@@ -530,6 +654,7 @@ function WeekCalendar({
                 const key = toISODate(day);
                 const isToday = key === todayKey;
                 const dayAppointments = sortAppointments(appointmentsByDate[key] ?? []);
+                const dayLayout = buildOverlapLayout(dayAppointments);
 
                 return (
                   <div
@@ -562,6 +687,7 @@ function WeekCalendar({
                         appointment={appt}
                         timeZone={timeZone}
                         onClick={() => onAppointmentClick(appt)}
+                        position={dayLayout.get(appt.id)}
                       />
                     ))}
                   </div>

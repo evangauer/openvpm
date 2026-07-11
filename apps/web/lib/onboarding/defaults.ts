@@ -187,13 +187,19 @@ export async function seedDemoData(
   const wellnessTypeId = typeByName("Wellness Exam");
   const vaccineTypeId = typeByName("Vaccination");
   const sickTypeId = typeByName("Sick Visit");
+  const recheckTypeId = typeByName("Recheck / Follow-up");
   const doctorId = owner?.id ?? null;
   const room1 = seededRooms[0]?.id ?? null;
   const room2 = seededRooms[1]?.id ?? room1;
 
-  // Build appointments for today inside business hours (clinic local time), plus
-  // one in the future. Hours render 8-18 on the Schedule, so 9:00 / 11:30 / 14:00
-  // all show up. A mix of statuses makes the day look real.
+  // Build a day of appointments inside business hours (clinic local time),
+  // plus one in the future. Hours render 8-18 on the Schedule. The shape
+  // follows how a real clinic day is staggered (docs/agents/
+  // vet-workflow-research.md §6): morning wellness anchors, a same-day sick
+  // visit, short vaccine/recheck slots, one doctor-less tech appointment
+  // (nail trims and boosters run without a doctor, and it shows the Team
+  // lane), and one deliberate mid-afternoon overlap so the side-by-side
+  // rendering is visible. A mix of statuses makes the day look real.
   const todayAt = (hour: number, minute: number) => {
     const d = new Date();
     d.setHours(hour, minute, 0, 0);
@@ -207,6 +213,9 @@ export async function seedDemoData(
     status: "scheduled" | "confirmed" | "checked_in" | "in_exam";
     typeId: string | null;
     roomId: string | null;
+    /** Omit for the owner; pass null for tech work with no doctor. */
+    doctor?: string | null;
+    notes?: string;
   }) => ({
     practiceId: opts.practiceId,
     clientId: insertedClients[opts2.clientIdx]!.id,
@@ -215,14 +224,16 @@ export async function seedDemoData(
     endTime: new Date(opts2.start.getTime() + opts2.durationMin * 60 * 1000),
     status: opts2.status,
     typeId: opts2.typeId,
-    doctorId,
+    doctorId: opts2.doctor === undefined ? doctorId : opts2.doctor,
     roomId: opts2.roomId,
+    notes: opts2.notes,
   });
 
   const futureStart = new Date(Date.now() + 26 * 60 * 60 * 1000);
   const insertedAppts = await db
     .insert(appointments)
     .values([
+      // Keep this first: the wellness SOAP note below links to it.
       mkAppt({
         clientIdx: 0,
         patientIdx: 0,
@@ -231,6 +242,28 @@ export async function seedDemoData(
         status: "checked_in",
         typeId: wellnessTypeId,
         roomId: room1,
+      }),
+      mkAppt({
+        clientIdx: 1,
+        patientIdx: 1,
+        start: todayAt(10, 0),
+        durationMin: 30,
+        status: "in_exam",
+        typeId: sickTypeId,
+        roomId: room2,
+        notes: "Less active this week. Owner worried.",
+      }),
+      // Tech work runs without a doctor: this renders in the Team lane.
+      mkAppt({
+        clientIdx: 2,
+        patientIdx: 2,
+        start: todayAt(10, 0),
+        durationMin: 15,
+        status: "confirmed",
+        typeId: vaccineTypeId,
+        roomId: room1,
+        doctor: null,
+        notes: "Booster with the tech. Nail trim if time allows.",
       }),
       mkAppt({
         clientIdx: 1,
@@ -249,6 +282,27 @@ export async function seedDemoData(
         status: "scheduled",
         typeId: sickTypeId,
         roomId: room1,
+      }),
+      // Deliberate overlap with the 2:00: concurrent blocks render side by
+      // side, never stacked.
+      mkAppt({
+        clientIdx: 0,
+        patientIdx: 0,
+        start: todayAt(14, 15),
+        durationMin: 15,
+        status: "scheduled",
+        typeId: vaccineTypeId,
+        roomId: room2,
+      }),
+      mkAppt({
+        clientIdx: 1,
+        patientIdx: 1,
+        start: todayAt(15, 30),
+        durationMin: 15,
+        status: "scheduled",
+        typeId: recheckTypeId,
+        roomId: room1,
+        notes: "Quick look at the teeth after starting dental care.",
       }),
       mkAppt({
         clientIdx: 0,
