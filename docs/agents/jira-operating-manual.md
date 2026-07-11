@@ -14,24 +14,25 @@ production on the first pass. A one-line ticket produces one-line-quality work.
 
 ## The board
 
-- **Site:** `get-talky.atlassian.net`
-- **Project:** OpenVPM — **key `OPENVPM`**
-- **Type:** team-managed **Software**. Hierarchy: **Epic → Story / Task / Bug → Sub-task**.
-- **Access:** the Atlassian MCP (`mcp__claude_ai_Atlassian__*`). The MCP writes as
-  **Evan's account**, so your identity lives in **labels + comment signatures**
-  (see Attribution). Cloud id: `88265351-683a-47a9-910c-6183509bbfa3`.
+- **Project:** OpenVPM — **key `OPENVPM`**, a team-managed **Software** project on
+  the team's Atlassian site. Reach it through the Atlassian MCP; the site host and
+  cloud id resolve at runtime (via `getAccessibleAtlassianResources`) and are kept
+  in the team's private notes, not in this public repo.
+- **Hierarchy:** **Epic → Task / Bug → Subtask**.
+- **Access:** the Atlassian MCP (`mcp__claude_ai_Atlassian__*`) writes as the
+  connected account, so your identity lives in **labels + comment signatures**
+  (see Attribution).
 
 ## Issue types
 
 | Type | Use for | Who creates it |
 |------|---------|----------------|
 | **Epic** | A lifecycle workstream / theme (see Epic spine below). | Humans, or agents *after asking*. |
-| **Story** | A user-facing feature or capability. | Anyone. |
-| **Task** | Engineering/ops work with no direct user story. | Anyone. |
+| **Task** | Any feature or engineering/ops work. | Anyone. |
 | **Bug** | A defect. | Anyone. |
-| **Sub-task** | A slice of a Story/Task an agent finishes in one sitting. | The owning agent. |
+| **Subtask** | A slice of a Task/Bug an agent finishes in one sitting. | The owning agent. |
 
-Every actionable Story/Task/Bug is attached to an Epic and filled out with the
+Every actionable Task/Bug is attached to an Epic and filled out with the
 **Golden Ticket template** below.
 
 ## Workflow — the state machine
@@ -73,7 +74,7 @@ the next agent has zero context.
 - **On pickup** → move to *In Progress*, comment:
   `[agent:eng] plan: <2–4 bullets; name the files/modules you'll touch>`
 - **As you go** → comment decisions and findings. Future agents replay this.
-- **On finish** → move to *In Review*, check every Acceptance Criteria box in the
+- **On finish** → move to *In Review*, flip each acceptance-criteria ☐ to ✅ in the
   description, comment:
   `[agent:eng] done: <what changed> · PR: <url> · tests: <command/screen/evidence>`
 - **When stuck** → move to *Blocked*, comment:
@@ -106,7 +107,7 @@ the next agent has zero context.
 
 ## The Golden Ticket template
 
-Paste this into the **description** of every actionable Story / Task / Bug. This
+Paste this into the **description** of every actionable Task / Bug. This
 template is the single highest-leverage thing in this manual.
 
 ```markdown
@@ -117,9 +118,9 @@ template is the single highest-leverage thing in this manual.
 - In scope: …
 - Out of scope: …
 
-## Acceptance criteria  (the Definition of Done — check these on finish)
-- [ ] …
-- [ ] …
+## Acceptance criteria  (the Definition of Done — flip ☐ to ✅ on finish)
+- ☐ …
+- ☐ …
 
 ## Technical notes
 - Repo / branch: …
@@ -131,9 +132,9 @@ template is the single highest-leverage thing in this manual.
 <How we'll know it works: a command, a screen to check, an e2e spec.>
 
 ## Definition of Ready  (must all be true before → In Progress)
-- [ ] Acceptance criteria are testable
-- [ ] Entry-point files identified
-- [ ] Dependencies / blockers noted
+- ☐ Acceptance criteria are testable
+- ☐ Entry-point files identified
+- ☐ Dependencies / blockers noted
 
 ## Links
 Epic: OPENVPM-NN · Depends on: OPENVPM-NN · Plan/memory: …
