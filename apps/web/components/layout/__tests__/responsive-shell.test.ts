@@ -19,8 +19,11 @@ describe("responsive dashboard shell", () => {
     expect(source).toContain('aria-label="Open navigation"');
     expect(source).toContain("lg:hidden");
     expect(source).toContain('aria-label="Open search"');
+    // The search label and the shortcut hint stay hidden on phones; the
+    // trigger only takes its comfortable search-bar width from sm up.
     expect(source).toContain('className="hidden sm:inline"');
-    expect(source).toContain('className="ml-2 hidden');
+    expect(source).toContain('className="ml-auto hidden');
+    expect(source).toContain("sm:w-64");
   });
 
   it("keeps top bar labels and quick-create actions aligned with app roles", () => {

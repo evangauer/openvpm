@@ -133,11 +133,11 @@ export function TopBar({
           type="button"
           onClick={onSearchOpen}
           aria-label="Open search"
-          className="flex h-9 items-center gap-2 rounded-md border border-input bg-background px-2 text-sm text-muted-foreground transition-colors hover:bg-accent sm:px-3"
+          className="flex h-9 items-center gap-2 rounded-md border border-input bg-background px-2 text-sm text-muted-foreground transition-colors hover:bg-accent sm:w-64 sm:px-3 md:w-80"
         >
-          <Search className="h-4 w-4" />
+          <Search className="h-4 w-4 shrink-0" />
           <span className="hidden sm:inline">Search...</span>
-          <kbd className="ml-2 hidden rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium md:inline">
+          <kbd className="ml-auto hidden rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium md:inline">
             ⌘K
           </kbd>
         </button>

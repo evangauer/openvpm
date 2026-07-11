@@ -168,7 +168,7 @@ export function CommandSearch({
       aria-modal="true"
     >
       <div className="fixed inset-0 bg-black/50" onClick={onClose} />
-      <div className="relative w-full max-w-lg rounded-lg border border-border bg-background shadow-elevated">
+      <div className="relative mx-4 w-full max-w-2xl rounded-lg border border-border bg-background shadow-elevated">
         <Command className="flex flex-col" shouldFilter={!hasQuery}>
           <div className="flex items-center border-b border-border px-3">
             {isSearching ? (
