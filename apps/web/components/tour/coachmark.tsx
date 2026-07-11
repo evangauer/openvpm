@@ -1,11 +1,84 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { TourStep } from "./tour-steps";
 
 const CARD_W = 320;
+const CARD_H = 260; // placement estimate, matches the viewport clamp below
+const GAP = 16;
+
+interface Box {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+function overlaps(a: Box, b: Box): boolean {
+  return (
+    a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top
+  );
+}
+
+/**
+ * Do-it steps open floating UI right next to their anchor (the calendar
+ * popover, for one), and the card at z-70 would sit on top of the thing it
+ * just asked the user to open. Watch the body for Radix popper portals and
+ * hand back a position clear of both the popper and the anchor.
+ */
+function useDodgeFloatingUi(
+  base: { left: number; top: number } | null,
+  anchor: DOMRect | null
+): { left: number; top: number } | null {
+  const [dodged, setDodged] = useState<{ left: number; top: number } | null>(
+    null
+  );
+
+  useEffect(() => {
+    if (!base || !anchor || typeof document === "undefined") {
+      setDodged(null);
+      return;
+    }
+    const compute = () => {
+      const poppers = Array.from(
+        document.querySelectorAll("[data-radix-popper-content-wrapper]")
+      ).map((el) => el.getBoundingClientRect());
+      const card: Box = {
+        left: base.left,
+        top: base.top,
+        right: base.left + CARD_W,
+        bottom: base.top + CARD_H,
+      };
+      const hit = poppers.find((p) => p.width > 0 && overlaps(card, p));
+      if (!hit) {
+        setDodged(null);
+        return;
+      }
+      // Try fully left of the popper + anchor; otherwise drop below them.
+      const unionLeft = Math.min(hit.left, anchor.left);
+      const leftOf = unionLeft - CARD_W - GAP;
+      if (leftOf >= GAP) {
+        setDodged({ left: leftOf, top: base.top });
+        return;
+      }
+      const unionBottom = Math.max(hit.bottom, anchor.bottom);
+      setDodged({
+        left: Math.max(GAP, Math.min(base.left, window.innerWidth - CARD_W - GAP)),
+        top: Math.min(unionBottom + GAP, window.innerHeight - CARD_H - GAP),
+      });
+    };
+    compute();
+    // Radix portals mount and unmount directly under <body>.
+    const mo = new MutationObserver(compute);
+    mo.observe(document.body, { childList: true });
+    return () => mo.disconnect();
+  }, [base?.left, base?.top, anchor]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return dodged;
+}
 
 interface CoachmarkProps {
   /** Anchor rect to spotlight, or null for a centered card. */
@@ -30,16 +103,19 @@ export function Coachmark({
   const isCentered = !rect;
   const isLast = index === total - 1;
 
-  let cardStyle: React.CSSProperties | undefined;
+  let basePosition: { left: number; top: number } | null = null;
   if (rect && typeof window !== "undefined") {
     const spaceRight = window.innerWidth - rect.right;
     const left =
       spaceRight > CARD_W + 32
-        ? rect.right + 16
-        : Math.max(16, rect.left - CARD_W - 16);
-    const top = Math.min(Math.max(rect.top, 16), window.innerHeight - 260);
-    cardStyle = { left, top };
+        ? rect.right + GAP
+        : Math.max(GAP, rect.left - CARD_W - GAP);
+    const top = Math.min(Math.max(rect.top, GAP), window.innerHeight - CARD_H);
+    basePosition = { left, top };
   }
+  const dodged = useDodgeFloatingUi(basePosition, rect);
+  const cardStyle: React.CSSProperties | undefined =
+    dodged ?? basePosition ?? undefined;
 
   return (
     <>
@@ -62,7 +138,7 @@ export function Coachmark({
         role="dialog"
         aria-label={step.title}
         className={cn(
-          "fixed z-[70] w-80 rounded-lg border border-border bg-popover p-4 text-popover-foreground shadow-xl",
+          "fixed z-[70] w-80 rounded-lg border border-border bg-popover p-4 text-popover-foreground shadow-xl transition-[left,top] duration-200",
           isCentered && "left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
         )}
         style={cardStyle}
