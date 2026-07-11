@@ -55,6 +55,27 @@ function formatGeneratedDateUtc(): string {
   return new Date().toLocaleDateString("en-US", { timeZone: "UTC" });
 }
 
+/**
+ * Brand mark: a white paw print on a teal rounded square, drawn with
+ * primitives so PDFs need no image asset. Matches the in-app brand color.
+ */
+function drawPawMark(doc: jsPDF, x: number, y: number, size: number) {
+  const [r, g, b] = hexToRgb(COLOR_TEAL);
+  doc.setFillColor(r, g, b);
+  doc.roundedRect(x, y, size, size, size * 0.22, size * 0.22, "F");
+
+  doc.setFillColor(255, 255, 255);
+  const cx = x + size / 2;
+  const s = size / 12;
+  // Main pad
+  doc.ellipse(cx, y + 7.7 * s, 2.7 * s, 2.2 * s, "F");
+  // Four toes
+  doc.circle(cx - 3.3 * s, y + 4.7 * s, 1.15 * s, "F");
+  doc.circle(cx - 1.15 * s, y + 3.5 * s, 1.15 * s, "F");
+  doc.circle(cx + 1.15 * s, y + 3.5 * s, 1.15 * s, "F");
+  doc.circle(cx + 3.3 * s, y + 4.7 * s, 1.15 * s, "F");
+}
+
 // ---------------------------------------------------------------------------
 // 1. Invoice PDF
 // ---------------------------------------------------------------------------
@@ -445,11 +466,18 @@ export function generateMedicalSummaryPdf(data: MedicalSummaryData): jsPDF {
   }
 
   // ---- Header ---------------------------------------------------------------
+  // Stacked top to bottom (logo, clinic name, document title) so any
+  // clinic-name length fits without colliding with the title.
+  const logoSize = 12;
+  drawPawMark(doc, PAGE_MARGIN, y, logoSize);
+  y += logoSize + 8;
+
   doc.setFont(FONT, "bold");
   doc.setFontSize(20);
   setColor(doc, COLOR_TEAL);
-  doc.text(data.practiceName, PAGE_MARGIN, y);
-  y += 7;
+  const nameLines = doc.splitTextToSize(data.practiceName, CONTENT_WIDTH);
+  doc.text(nameLines, PAGE_MARGIN, y);
+  y += nameLines.length * 8;
 
   doc.setFont(FONT, "normal");
   doc.setFontSize(9);
@@ -462,16 +490,14 @@ export function generateMedicalSummaryPdf(data: MedicalSummaryData): jsPDF {
     doc.text(data.practicePhone, PAGE_MARGIN, y);
     y += 4;
   }
+  y += 4;
 
-  // Title
   doc.setFont(FONT, "bold");
   doc.setFontSize(16);
   setColor(doc, COLOR_DARK);
-  doc.text("MEDICAL RECORD SUMMARY", PAGE_WIDTH - PAGE_MARGIN, PAGE_MARGIN, {
-    align: "right",
-  });
+  doc.text("MEDICAL RECORD SUMMARY", PAGE_MARGIN, y);
 
-  y = Math.max(y, PAGE_MARGIN + 14) + 4;
+  y += 3;
   drawLine(doc, y);
   y += 8;
 

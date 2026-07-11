@@ -1,5 +1,45 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { generateMedicalSummaryPdf } from "../pdf";
+
+describe("medical summary header", () => {
+  const source = readFileSync("lib/pdf.ts", "utf8");
+
+  it("stacks logo, clinic name, then the title so long names cannot collide", () => {
+    const headerSection = source.slice(
+      source.indexOf("export function generateMedicalSummaryPdf"),
+      source.indexOf('sectionHeading("Patient Information")')
+    );
+    const logoAt = headerSection.indexOf("drawPawMark");
+    const nameAt = headerSection.indexOf("splitTextToSize(data.practiceName");
+    const titleAt = headerSection.indexOf('"MEDICAL RECORD SUMMARY"');
+    expect(logoAt).toBeGreaterThan(-1);
+    expect(nameAt).toBeGreaterThan(logoAt);
+    expect(titleAt).toBeGreaterThan(nameAt);
+    // The title is no longer right-aligned onto the same line as the name.
+    expect(headerSection).not.toContain('align: "right"');
+  });
+
+  it("renders with a very long clinic name without throwing", () => {
+    const doc = generateMedicalSummaryPdf({
+      practiceName:
+        "Bushwick Veterinary Clinic and Animal Wellness Center of Greater Brooklyn",
+      practiceAddress: "123 Knickerbocker Ave, Brooklyn, NY",
+      practicePhone: "(555) 000-1234",
+      patientName: "Biscuit",
+      species: "Canine",
+      clientName: "Jordan Avery",
+      allergies: [],
+      problems: [],
+      vaccinations: [{ name: "Rabies", date: "2026-05-01", nextDue: "2027-05-01" }],
+      recentNotes: [],
+      prescriptions: [],
+      generatedDate: "7/11/2026",
+    });
+    expect(doc.getNumberOfPages()).toBeGreaterThanOrEqual(1);
+    expect(doc.output("arraybuffer").byteLength).toBeGreaterThan(1000);
+  });
+});
 
 describe("pdf generation date labels", () => {
   const source = readFileSync("lib/pdf.ts", "utf8");
