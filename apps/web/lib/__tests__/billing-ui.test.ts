@@ -122,7 +122,10 @@ describe("billing invoice form UX", () => {
     expect(source).toContain("servicesQuery.isLoading");
     expect(source).toContain("const servicesMissing =");
     expect(source).toContain("const serviceOptions =");
-    expect(source).toContain("serviceOptions.map((service)");
+    // The plain select gave way to the searchable picker (service-picker-ui
+    // tests cover its behavior); the page still feeds it the guarded options.
+    expect(source).toContain("<ServicePicker");
+    expect(source).toContain("services={serviceOptions}");
     expect(source).toContain("serviceOptions.find((s) => s.id === serviceId)");
     expect(source).toContain(
       "serviceOptions.find((s) => s.id === selectedServiceId)"
