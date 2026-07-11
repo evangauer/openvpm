@@ -19,6 +19,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { FormField } from "@/components/ui/form-field";
+import { PawMark } from "@/components/brand/paw-mark";
 import { cn, initials, isValidEmail } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
@@ -148,7 +149,7 @@ function RegisterPageInner() {
             className="inline-flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-primary"
           >
             <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-              <PawPrint className="h-4 w-4" />
+              <PawMark className="h-4 w-4" />
             </span>
             OpenVPM {cloudIntent ? "Cloud" : ""}
           </Link>

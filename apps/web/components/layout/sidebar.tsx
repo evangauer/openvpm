@@ -24,24 +24,7 @@ import {
   ChevronRight,
   LogOut,
 } from "lucide-react";
-
-function PawMark({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      className={className}
-      fill="currentColor"
-      xmlns="http://www.w3.org/2000/svg"
-      aria-hidden="true"
-    >
-      <ellipse cx="12" cy="16" rx="4.5" ry="3.5" />
-      <ellipse cx="6" cy="9" rx="2" ry="2.5" />
-      <ellipse cx="9.5" cy="4.5" rx="1.7" ry="2.2" />
-      <ellipse cx="14.5" cy="4.5" rx="1.7" ry="2.2" />
-      <ellipse cx="18" cy="9" rx="2" ry="2.5" />
-    </svg>
-  );
-}
+import { PawMark } from "@/components/brand/paw-mark";
 
 type UserRole = "admin" | "veterinarian" | "technician" | "front_desk" | "viewer";
 
