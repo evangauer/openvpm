@@ -70,11 +70,25 @@ function useDodgeFloatingUi(
         top: Math.min(unionBottom + GAP, window.innerHeight - CARD_H - GAP),
       });
     };
-    compute();
-    // Radix portals mount and unmount directly under <body>.
-    const mo = new MutationObserver(compute);
+    // Radix mounts the portal first and positions it a frame later via a
+    // style transform (no childList mutation), so measure again shortly
+    // after any mutation or the popper is still at 0x0 when we look.
+    let active = true;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const computeSoon = () => {
+      if (!active) return;
+      compute();
+      timers.push(setTimeout(() => active && compute(), 120));
+      timers.push(setTimeout(() => active && compute(), 400));
+    };
+    computeSoon();
+    const mo = new MutationObserver(computeSoon);
     mo.observe(document.body, { childList: true });
-    return () => mo.disconnect();
+    return () => {
+      active = false;
+      timers.forEach(clearTimeout);
+      mo.disconnect();
+    };
   }, [base?.left, base?.top, anchor]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return dodged;
