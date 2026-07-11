@@ -40,7 +40,11 @@ export function AddACardStep({
     try {
       // Resume at the closing step when Stripe sends the user back.
       await setJourneyProgress.mutateAsync({ stepId: "allSet" });
-      const result = await createCheckout.mutateAsync({ tier: "cloud" });
+      const result = await createCheckout.mutateAsync({
+        tier: "cloud",
+        // Stripe sends the admin back into the guided setup, not billing.
+        returnTo: "setup",
+      });
       const url = result?.url;
       if (!url || !isSafeCheckoutRedirectUrl(url)) {
         toast.error("Checkout is unavailable right now. Please try again.");

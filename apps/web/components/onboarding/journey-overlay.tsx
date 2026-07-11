@@ -124,6 +124,26 @@ export function OnboardingJourneyProvider({
     setIndex(resumeIndex);
   }, [isAdmin, resumeIndex]);
 
+  // Returning from Stripe Checkout during setup: ?setup=resume reopens the
+  // journey at the saved step (the card step persisted "allSet" before the
+  // redirect), instead of stranding the admin wherever Stripe landed them.
+  useEffect(() => {
+    if (opened.current || index !== null || !isAdmin) return;
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("setup") !== "resume") return;
+    if (!onboardingState.data) return; // wait for the saved cursor
+    opened.current = true;
+    params.delete("setup");
+    const rest = params.toString();
+    window.history.replaceState(
+      null,
+      "",
+      window.location.pathname + (rest ? `?${rest}` : "")
+    );
+    setIndex(resumeIndex);
+  }, [isAdmin, index, onboardingState.data, resumeIndex]);
+
   useEffect(() => {
     if (opened.current || index !== null || !isAdmin) return;
     // In "welcome" first-run mode the Polaroid guide surface owns the

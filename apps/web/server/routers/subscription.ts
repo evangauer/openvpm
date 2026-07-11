@@ -126,7 +126,14 @@ export const subscriptionRouter = createRouter({
 
   /** Start a Stripe Checkout for the self-serve Cloud plan. */
   createCheckout: adminProcedure
-    .input(z.object({ tier: z.enum(["cloud"]).default("cloud") }))
+    .input(
+      z.object({
+        tier: z.enum(["cloud"]).default("cloud"),
+        // Where Stripe sends the admin back: the billing page (default) or
+        // the guided setup, which resumes where they left off.
+        returnTo: z.enum(["settings", "setup"]).default("settings"),
+      })
+    )
     .mutation(async ({ ctx, input }) => {
       const plan = PLANS[input.tier];
       const { locationPriceId } = cloudCheckoutPriceIds();
@@ -180,8 +187,14 @@ export const subscriptionRouter = createRouter({
         customerEmail,
         trialEnd: activeTrialEnd,
         trialPeriodDays: activeTrialEnd || practice.trialEndsAt ? undefined : TRIAL_DAYS,
-        successUrl: `${base}/settings?tab=billing&checkout=success`,
-        cancelUrl: `${base}/settings?tab=billing&checkout=cancelled`,
+        successUrl:
+          input.returnTo === "setup"
+            ? `${base}/?setup=resume&checkout=success`
+            : `${base}/settings?tab=billing&checkout=success`,
+        cancelUrl:
+          input.returnTo === "setup"
+            ? `${base}/?setup=resume&checkout=cancelled`
+            : `${base}/settings?tab=billing&checkout=cancelled`,
       });
       const checkoutUrl = result?.url;
       if (!isSafeCheckoutRedirectUrl(checkoutUrl)) {
