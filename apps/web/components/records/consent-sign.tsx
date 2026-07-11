@@ -9,30 +9,53 @@ import { Button } from "@/components/ui/button";
 import {
   CONSENT_BODY_MAX_LENGTH,
   CONSENT_TITLE_MAX_LENGTH,
-  DEFAULT_CONSENT_BODY,
-  DEFAULT_CONSENT_TITLE,
 } from "@/lib/consult/consent-template";
 
 const CONSENT_POLL_INTERVAL_MS = 5_000;
 
 /**
- * "Get signature" button + consent dispatch modal. Staff review (and can
- * edit) the consent text, then a QR appears; the client signs on their own
- * phone or a handed-over tablet via the no-login /sign/[token] page. The
- * signed status shows here live. Mount only for roles that can manage the
- * patient.
+ * "Get signature" button + consent dispatch modal. Staff pick a form from
+ * the practice library ("what are they signing?"), review and optionally
+ * edit the text, then a QR appears; the client signs on their own phone or
+ * a handed-over tablet via the no-login /sign/[token] page. The signed
+ * status shows here live. Mount only for roles that can manage the patient.
  */
 export function ConsentSign({ patientId }: { patientId: string }) {
   const [open, setOpen] = useState(false);
-  const [title, setTitle] = useState(DEFAULT_CONSENT_TITLE);
-  const [bodyText, setBodyText] = useState(DEFAULT_CONSENT_BODY);
+  const [formId, setFormId] = useState<string | null>(null);
+  const [title, setTitle] = useState("");
+  const [bodyText, setBodyText] = useState("");
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+
+  const forms = trpc.records.listConsentForms.useQuery(undefined, {
+    enabled: open,
+  });
 
   const createRequest = trpc.records.createConsentRequest.useMutation({
     onError: (err) => toast.error(err.message),
   });
 
   const request = createRequest.data;
+
+  // Default to the first form (the library's plain consent-to-treatment)
+  // once the list arrives.
+  useEffect(() => {
+    if (!open || formId !== null) return;
+    const first = forms.data?.[0];
+    if (first) {
+      setFormId(first.id);
+      setTitle(first.title);
+      setBodyText(first.body);
+    }
+  }, [open, formId, forms.data]);
+
+  function handleFormChange(nextId: string) {
+    const form = forms.data?.find((row) => row.id === nextId);
+    if (!form) return;
+    setFormId(form.id);
+    setTitle(form.title);
+    setBodyText(form.body);
+  }
 
   const consents = trpc.records.listConsents.useQuery(
     { patientId },
@@ -64,8 +87,9 @@ export function ConsentSign({ patientId }: { patientId: string }) {
     setOpen(false);
     createRequest.reset();
     setQrDataUrl(null);
-    setTitle(DEFAULT_CONSENT_TITLE);
-    setBodyText(DEFAULT_CONSENT_BODY);
+    setFormId(null);
+    setTitle("");
+    setBodyText("");
   }
 
   const activeConsent = request
@@ -114,6 +138,37 @@ export function ConsentSign({ patientId }: { patientId: string }) {
                 <div className="mt-4 space-y-3">
                   <div>
                     <label
+                      htmlFor="consent-form"
+                      className="mb-1 block text-sm font-medium"
+                    >
+                      Form
+                    </label>
+                    {forms.isLoading || !forms.data ? (
+                      <div className="flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm text-muted-foreground">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        Loading forms...
+                      </div>
+                    ) : (
+                      <select
+                        id="consent-form"
+                        value={formId ?? ""}
+                        onChange={(e) => handleFormChange(e.target.value)}
+                        className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                      >
+                        {forms.data.map((form) => (
+                          <option key={form.id} value={form.id}>
+                            {form.title}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Starter templates. Have your attorney look them over,
+                      and fill in any blanks before you send.
+                    </p>
+                  </div>
+                  <div>
+                    <label
                       htmlFor="consent-title"
                       className="mb-1 block text-sm font-medium"
                     >
@@ -149,12 +204,14 @@ export function ConsentSign({ patientId }: { patientId: string }) {
                       size="sm"
                       disabled={
                         createRequest.isPending ||
+                        !formId ||
                         title.trim().length === 0 ||
                         bodyText.trim().length === 0
                       }
                       onClick={() =>
                         createRequest.mutate({
                           patientId,
+                          formId: formId!,
                           title: title.trim(),
                           bodyText: bodyText.trim(),
                         })
@@ -173,9 +230,11 @@ export function ConsentSign({ patientId }: { patientId: string }) {
                       <Button
                         variant="outline"
                         size="sm"
+                        disabled={!formId}
                         onClick={() =>
                           createRequest.mutate({
                             patientId,
+                            formId: formId!,
                             title: title.trim(),
                             bodyText: bodyText.trim(),
                           })

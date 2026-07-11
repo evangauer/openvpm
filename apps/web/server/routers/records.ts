@@ -17,6 +17,7 @@ import {
   appointments,
   practices,
   captureSessions,
+  consentForms,
   consentRequests,
   files,
 } from "@openpims/db";
@@ -74,9 +75,8 @@ import {
 import {
   CONSENT_BODY_MAX_LENGTH,
   CONSENT_TITLE_MAX_LENGTH,
-  DEFAULT_CONSENT_BODY,
-  DEFAULT_CONSENT_TITLE,
 } from "@/lib/consult/consent-template";
+import { CONSENT_FORM_LIBRARY } from "@/lib/consult/consent-form-library";
 import { PATIENT_PHOTO_CATEGORY } from "@/lib/records/file-kinds";
 import { appBaseUrl } from "@/lib/app-url";
 import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
@@ -1210,22 +1210,94 @@ export const recordsRouter = createRouter({
         .limit(200);
     }),
 
+  /**
+   * The practice's consent form library, seeded from the starter set on
+   * first read. The insert is idempotent (unique practice+slug, conflicts
+   * ignored), so concurrent first reads cannot duplicate forms and
+   * practices that predate the library pick it up with no data migration.
+   */
+  listConsentForms: protectedProcedure.query(async ({ ctx }) => {
+    const formColumns = {
+      id: consentForms.id,
+      slug: consentForms.slug,
+      title: consentForms.title,
+      body: consentForms.body,
+      sortOrder: consentForms.sortOrder,
+    };
+    const listForms = () =>
+      ctx.db
+        .select(formColumns)
+        .from(consentForms)
+        .where(
+          and(
+            eq(consentForms.practiceId, ctx.practiceId),
+            eq(consentForms.isActive, true),
+            activePracticePredicate(ctx.practiceId),
+            isNull(consentForms.deletedAt)
+          )
+        )
+        .orderBy(consentForms.sortOrder)
+        .limit(100);
+
+    const existing = await listForms();
+    if (existing.length > 0) return existing;
+
+    await ctx.db
+      .insert(consentForms)
+      .values(
+        CONSENT_FORM_LIBRARY.map((form) => ({
+          practiceId: ctx.practiceId,
+          slug: form.slug,
+          title: form.title,
+          body: form.body,
+          sortOrder: form.sortOrder,
+        }))
+      )
+      .onConflictDoNothing();
+    return listForms();
+  }),
+
   // E-sign consent dispatch. Same capability-link model as capture sessions:
   // staff mint a short-lived signing link for a patient, the QR opens the
-  // no-login /sign/[token] page, and the signed PDF lands in files. The
-  // consent copy is snapshotted here so template edits never change what
-  // someone already signed. Role gate mirrors createCaptureSession.
+  // no-login /sign/[token] page, and the signed PDF lands in files. Every
+  // dispatch is bound to a form from the practice library ("what are they
+  // signing?"); the sent copy is snapshotted here so form edits never
+  // change what someone already signed. Role gate mirrors
+  // createCaptureSession.
   createConsentRequest: protectedProcedure
     .use(requireRole("admin", "veterinarian", "technician", "front_desk"))
     .input(
       z.object({
         patientId: z.string().uuid(),
+        formId: z.string().uuid(),
         title: z.string().trim().min(1).max(CONSENT_TITLE_MAX_LENGTH).optional(),
         bodyText: z.string().trim().min(1).max(CONSENT_BODY_MAX_LENGTH).optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
       await assertPatientBelongsToPractice(ctx, input.patientId);
+      const [form] = await ctx.db
+        .select({
+          id: consentForms.id,
+          title: consentForms.title,
+          body: consentForms.body,
+        })
+        .from(consentForms)
+        .where(
+          and(
+            eq(consentForms.id, input.formId),
+            eq(consentForms.practiceId, ctx.practiceId),
+            eq(consentForms.isActive, true),
+            isNull(consentForms.deletedAt)
+          )
+        )
+        .limit(1);
+      if (!form) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Consent form not found",
+        });
+      }
       const appointmentId = await findActiveVisitId(ctx, input.patientId);
       const token = generateCaptureToken();
       const expiresAt = new Date(Date.now() + CONSENT_TOKEN_TTL_MS);
@@ -1236,10 +1308,11 @@ export const recordsRouter = createRouter({
           patientId: input.patientId,
           createdBy: ctx.user.id,
           appointmentId,
+          formId: form.id,
           token,
           expiresAt,
-          title: input.title ?? DEFAULT_CONSENT_TITLE,
-          bodyText: input.bodyText ?? DEFAULT_CONSENT_BODY,
+          title: input.title ?? form.title,
+          bodyText: input.bodyText ?? form.body,
         })
         .returning({ id: consentRequests.id });
       return {
