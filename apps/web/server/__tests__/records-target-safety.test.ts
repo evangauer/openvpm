@@ -64,6 +64,7 @@ function createDb(opts?: {
     const result = selectResults.shift() ?? [];
     const afterWhere = {
       limit: vi.fn(async () => result),
+      orderBy: vi.fn(() => afterWhere),
       then: (
         resolve: (value: unknown[]) => unknown,
         reject?: (error: unknown) => unknown
@@ -823,6 +824,38 @@ describe("capture sessions", () => {
     );
   });
 
+  it("stamps the open visit so captured photos attach to it", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [patientRow, [{ id: APPOINTMENT_ID }]],
+      insertedRows: [{ id: RECORD_ID }],
+    });
+
+    const result = await callerWithDb(db).createCaptureSession({
+      patientId: PATIENT_ID,
+    });
+
+    expect(result.appointmentId).toBe(APPOINTMENT_ID);
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ appointmentId: APPOINTMENT_ID })
+    );
+  });
+
+  it("leaves the visit blank when the patient has no open visit", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [patientRow, []],
+      insertedRows: [{ id: RECORD_ID }],
+    });
+
+    const result = await callerWithDb(db).createCaptureSession({
+      patientId: PATIENT_ID,
+    });
+
+    expect(result.appointmentId).toBeNull();
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ appointmentId: null })
+    );
+  });
+
   it("keeps capture links restricted to non-viewer staff roles", async () => {
     for (const role of [
       "admin",
@@ -895,6 +928,22 @@ describe("consent requests", () => {
         title: "Consent to treatment",
         bodyText: expect.stringContaining("I give this clinic permission"),
       })
+    );
+  });
+
+  it("stamps the open visit so the signed consent attaches to it", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [patientRow, [{ id: APPOINTMENT_ID }]],
+      insertedRows: [{ id: RECORD_ID }],
+    });
+
+    const result = await callerWithDb(db).createConsentRequest({
+      patientId: PATIENT_ID,
+    });
+
+    expect(result.appointmentId).toBe(APPOINTMENT_ID);
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ appointmentId: APPOINTMENT_ID })
     );
   });
 

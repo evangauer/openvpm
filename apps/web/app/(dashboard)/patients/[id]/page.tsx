@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useMemo, useState, useRef } from "react";
+import { Fragment, useMemo, useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import {
@@ -12,9 +12,14 @@ import {
   Shield,
   Camera,
   CalendarDays,
+  ChevronDown,
+  ChevronRight,
+  Download,
+  ExternalLink,
   FileDown,
   FileText,
   Loader2,
+  Paperclip,
   Plus,
   Receipt,
   X,
@@ -44,6 +49,11 @@ import {
   formatClinicalDate,
   formatClinicalDateTime,
 } from "@/lib/records/clinical-dates";
+import {
+  patientFileKind,
+  patientFileLabel,
+  type PatientFileKind,
+} from "@/lib/records/file-kinds";
 import {
   PATIENT_WEIGHT_MAX_KG,
   PATIENT_WEIGHT_MIN_KG,
@@ -153,6 +163,7 @@ function calculateAge(dob: string | null): string {
 type Tab =
   | "overview"
   | "records"
+  | "documents"
   | "appointments"
   | "weight"
   | "vitals"
@@ -162,6 +173,7 @@ type Tab =
 const tabs: { id: Tab; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "records", label: "Medical Records" },
+  { id: "documents", label: "Documents" },
   { id: "appointments", label: "Appointments" },
   { id: "weight", label: "Weight History" },
   { id: "vitals", label: "Vitals" },
@@ -969,6 +981,10 @@ export default function PatientDetailPage() {
           />
         )}
 
+        {activeTab === "documents" && (
+          <DocumentsTab patientId={patient.id} timeZone={recordsTimeZone} />
+        )}
+
         {activeTab === "appointments" && (
           <AppointmentsTab
             patientId={patient.id}
@@ -1436,6 +1452,7 @@ function AppointmentsTab({
   const { data: visits, isLoading, error } =
     trpc.appointments.listByPatient.useQuery({ patientId });
   const visitsMissing = !isLoading && !error && !visits;
+  const [expandedVisitId, setExpandedVisitId] = useState<string | null>(null);
 
   if (error) {
     return (
@@ -1467,6 +1484,9 @@ function AppointmentsTab({
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-border bg-muted/50">
+            <th className="w-10 px-2 py-3">
+              <span className="sr-only">Documents</span>
+            </th>
             <th className="px-4 py-3 text-left font-medium text-muted-foreground">
               When
             </th>
@@ -1485,49 +1505,354 @@ function AppointmentsTab({
           </tr>
         </thead>
         <tbody>
-          {visits.map((visit) => (
-            <tr
-              key={visit.id}
-              className="border-b border-border last:border-0"
-            >
-              <td className="px-4 py-3">
-                {visit.startTime
-                  ? formatClinicalDateTime(visit.startTime, timeZone, "Unknown")
-                  : "Unknown"}
-              </td>
-              <td className="px-4 py-3">
-                <span className="inline-flex items-center gap-2">
-                  {visit.typeColor ? (
+          {visits.map((visit) => {
+            const expanded = expandedVisitId === visit.id;
+            return (
+              <Fragment key={visit.id}>
+                <tr className="border-b border-border last:border-0">
+                  <td className="px-2 py-3">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedVisitId(expanded ? null : visit.id)
+                      }
+                      aria-expanded={expanded}
+                      aria-label={
+                        expanded
+                          ? "Hide documents for this visit"
+                          : "Show documents for this visit"
+                      }
+                      className="rounded-md p-1 text-muted-foreground transition-colors hover:text-foreground"
+                    >
+                      {expanded ? (
+                        <ChevronDown className="h-4 w-4" />
+                      ) : (
+                        <ChevronRight className="h-4 w-4" />
+                      )}
+                    </button>
+                  </td>
+                  <td className="px-4 py-3">
+                    {visit.startTime
+                      ? formatClinicalDateTime(
+                          visit.startTime,
+                          timeZone,
+                          "Unknown"
+                        )
+                      : "Unknown"}
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="inline-flex items-center gap-2">
+                      {visit.typeColor ? (
+                        <span
+                          aria-hidden="true"
+                          className="h-2 w-2 rounded-full"
+                          style={{ backgroundColor: visit.typeColor }}
+                        />
+                      ) : null}
+                      {visit.typeName ?? "—"}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-muted-foreground">
+                    {visit.doctorName ?? "—"}
+                  </td>
+                  <td className="px-4 py-3">
                     <span
-                      aria-hidden="true"
-                      className="h-2 w-2 rounded-full"
-                      style={{ backgroundColor: visit.typeColor }}
-                    />
-                  ) : null}
-                  {visit.typeName ?? "—"}
-                </span>
-              </td>
-              <td className="px-4 py-3 text-muted-foreground">
-                {visit.doctorName ?? "—"}
-              </td>
-              <td className="px-4 py-3">
-                <span
-                  className={cn(
-                    "inline-flex whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium capitalize",
-                    appointmentStatusStyles[visit.status] ??
-                      "bg-gray-100 text-gray-600"
-                  )}
-                >
-                  {visit.status.replace(/_/g, " ")}
-                </span>
-              </td>
-              <td className="max-w-xs truncate px-4 py-3 text-muted-foreground">
-                {visit.notes || "—"}
-              </td>
-            </tr>
-          ))}
+                      className={cn(
+                        "inline-flex whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium capitalize",
+                        appointmentStatusStyles[visit.status] ??
+                          "bg-gray-100 text-gray-600"
+                      )}
+                    >
+                      {visit.status.replace(/_/g, " ")}
+                    </span>
+                  </td>
+                  <td className="max-w-xs truncate px-4 py-3 text-muted-foreground">
+                    {visit.notes || "—"}
+                  </td>
+                </tr>
+                {expanded && (
+                  <tr className="border-b border-border last:border-0">
+                    <td colSpan={6} className="bg-muted/30 px-4 py-3">
+                      <VisitDocuments
+                        patientId={patientId}
+                        appointmentId={visit.id}
+                        timeZone={timeZone}
+                      />
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+type PatientFile = {
+  id: string;
+  fileName: string;
+  fileUrl: string;
+  mimeType: string | null;
+  fileSizeBytes: number | null;
+  category: string | null;
+  appointmentId: string | null;
+  createdAt: Date;
+  consentTitle: string | null;
+  consentSignerName: string | null;
+  consentSignedAt: Date | null;
+};
+
+function PatientPhotoGrid({ photos }: { photos: PatientFile[] }) {
+  return (
+    <div className="grid grid-cols-3 gap-2 sm:grid-cols-5 lg:grid-cols-8">
+      {photos.map((file) => (
+        <a
+          key={file.id}
+          href={file.fileUrl}
+          target="_blank"
+          rel="noreferrer"
+          title={file.fileName}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={file.fileUrl}
+            alt={file.fileName}
+            className="aspect-square w-full rounded-md border border-border object-cover transition-opacity hover:opacity-80"
+          />
+        </a>
+      ))}
+    </div>
+  );
+}
+
+function PatientFileRows({
+  files,
+  timeZone,
+}: {
+  files: PatientFile[];
+  timeZone?: string | null;
+}) {
+  return (
+    <ul className="divide-y divide-border">
+      {files.map((file) => {
+        const kind = patientFileKind(file);
+        return (
+          <li key={file.id} className="flex items-center gap-3 py-2.5">
+            <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-medium">
+                {patientFileLabel(file)}
+              </p>
+              <p className="truncate text-xs text-muted-foreground">
+                {kind === "consent"
+                  ? `Signed consent${
+                      file.consentSignerName
+                        ? ` · Signed by ${file.consentSignerName}`
+                        : ""
+                    }`
+                  : "Document"}
+                {" · "}
+                {formatClinicalDateTime(file.createdAt, timeZone, "Unknown")}
+              </p>
+            </div>
+            <a
+              href={file.fileUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-primary hover:underline"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              View
+            </a>
+            <a
+              href={file.fileUrl}
+              download={file.fileName}
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-primary hover:underline"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Download
+            </a>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function VisitDocuments({
+  patientId,
+  appointmentId,
+  timeZone,
+}: {
+  patientId: string;
+  appointmentId: string;
+  timeZone?: string | null;
+}) {
+  const { data, isLoading, error } = trpc.records.listPatientFiles.useQuery({
+    patientId,
+    appointmentId,
+  });
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        Loading documents...
+      </div>
+    );
+  }
+  if (error || !data) {
+    return (
+      <p className="text-xs text-destructive">
+        Unable to load documents for this visit.
+      </p>
+    );
+  }
+
+  const photos = data.filter((file) => patientFileKind(file) === "photo");
+  const documents = data.filter((file) => patientFileKind(file) !== "photo");
+
+  if (photos.length === 0 && documents.length === 0) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        Nothing attached to this visit yet. Photos and consents captured
+        during the visit show up here.
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {photos.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {photos.map((file) => (
+            <a
+              key={file.id}
+              href={file.fileUrl}
+              target="_blank"
+              rel="noreferrer"
+              title={file.fileName}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={file.fileUrl}
+                alt={file.fileName}
+                className="h-16 w-16 rounded-md border border-border object-cover transition-opacity hover:opacity-80"
+              />
+            </a>
+          ))}
+        </div>
+      )}
+      {documents.length > 0 && (
+        <PatientFileRows files={documents} timeZone={timeZone} />
+      )}
+    </div>
+  );
+}
+
+const documentFilters: { id: PatientFileKind | "all"; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "photo", label: "Photos" },
+  { id: "consent", label: "Consents" },
+  { id: "document", label: "Documents" },
+];
+
+function DocumentsTab({
+  patientId,
+  timeZone,
+}: {
+  patientId: string;
+  timeZone?: string | null;
+}) {
+  const [filter, setFilter] = useState<PatientFileKind | "all">("all");
+  const { data, isLoading, error } = trpc.records.listPatientFiles.useQuery({
+    patientId,
+  });
+  const filesMissing = !isLoading && !error && !data;
+
+  const counts = useMemo(() => {
+    const next = { all: 0, photo: 0, consent: 0, document: 0 };
+    for (const file of data ?? []) {
+      next.all += 1;
+      next[patientFileKind(file)] += 1;
+    }
+    return next;
+  }, [data]);
+
+  if (error) {
+    return (
+      <PatientDetailErrorPanel
+        message={`Unable to load documents. ${error.message}`}
+      />
+    );
+  }
+  if (filesMissing) {
+    return (
+      <PatientDetailErrorPanel message="Unable to load documents. Please retry." />
+    );
+  }
+  if (isLoading) {
+    return <PatientDetailLoadingPanel label="Loading documents..." />;
+  }
+  if (!data || data.length === 0) {
+    return (
+      <EmptyState
+        icon={Paperclip}
+        title="No documents yet"
+        description="Photos you capture and consents that get signed show up here."
+      />
+    );
+  }
+
+  const visible = data.filter(
+    (file) => filter === "all" || patientFileKind(file) === filter
+  );
+  const photos = visible.filter((file) => patientFileKind(file) === "photo");
+  const documents = visible.filter(
+    (file) => patientFileKind(file) !== "photo"
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-2">
+        {documentFilters.map((option) => (
+          <button
+            key={option.id}
+            type="button"
+            onClick={() => setFilter(option.id)}
+            className={cn(
+              "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+              filter === option.id
+                ? "border-primary bg-primary/10 text-primary"
+                : "border-border text-muted-foreground hover:text-foreground"
+            )}
+          >
+            {option.label} ({counts[option.id]})
+          </button>
+        ))}
+      </div>
+
+      {visible.length === 0 ? (
+        <div className="rounded-lg border border-border bg-card p-6 text-sm text-muted-foreground">
+          Nothing here yet for this filter.
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {photos.length > 0 && (
+            <div className="rounded-lg border border-border bg-card p-4">
+              <h3 className="mb-3 text-sm font-medium">Photos</h3>
+              <PatientPhotoGrid photos={photos} />
+            </div>
+          )}
+          {documents.length > 0 && (
+            <div className="rounded-lg border border-border bg-card px-4 py-2">
+              <PatientFileRows files={documents} timeZone={timeZone} />
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

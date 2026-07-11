@@ -123,6 +123,20 @@ test.describe("E-sign consent live drill", () => {
     const pdfBody = await pdfResponse.body();
     expect(pdfBody.subarray(0, 4).toString()).toBe("%PDF");
 
+    // The signed consent is a permanent part of the record: close the modal,
+    // open the Documents tab, and find it with its form title and signer.
+    await page.getByRole("button", { name: "Done" }).click();
+    await page.getByRole("button", { name: "Documents", exact: true }).click();
+    await expect(
+      page.getByText(/signed by jordan marsh/i)
+    ).toBeVisible({ timeout: 20_000 });
+    await page.screenshot({ path: shot("08-documents-tab.png") });
+
+    // And it stays out of the photo bucket: the Photos filter hides it.
+    await page.getByRole("button", { name: /^photos \(/i }).click();
+    await expect(page.getByText(/signed by jordan marsh/i)).not.toBeVisible();
+    await page.screenshot({ path: shot("09-photos-filter.png") });
+
     console.log(
       "ESIGN_DRILL_RESULT",
       JSON.stringify({ signUrl: signUrl.slice(0, 40) + "…", pdfBytes: pdfBody.length })

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { eq, and, isNull, desc, sql } from "drizzle-orm";
+import { eq, and, isNull, desc, inArray, like, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import {
@@ -77,6 +77,7 @@ import {
   DEFAULT_CONSENT_BODY,
   DEFAULT_CONSENT_TITLE,
 } from "@/lib/consult/consent-template";
+import { PATIENT_PHOTO_CATEGORY } from "@/lib/records/file-kinds";
 import { appBaseUrl } from "@/lib/app-url";
 import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
 import { positiveIntegerColumnInput } from "./storage-bounds";
@@ -302,6 +303,32 @@ async function assertAppointmentBelongsToPatient(
   }
 
   return appointment;
+}
+
+/**
+ * The patient's open visit right now: the most recent checked-in/in-exam
+ * appointment. Capture sessions and consent requests minted while a visit is
+ * open stamp it, so their artifacts attach to that visit; with no open visit
+ * they stay patient-only.
+ */
+async function findActiveVisitId(
+  ctx: RecordsContext,
+  patientId: string
+): Promise<string | null> {
+  const [visit] = await ctx.db
+    .select({ id: appointments.id })
+    .from(appointments)
+    .where(
+      and(
+        eq(appointments.practiceId, ctx.practiceId),
+        eq(appointments.patientId, patientId),
+        inArray(appointments.status, ["checked_in", "in_exam"]),
+        isNull(appointments.deletedAt)
+      )
+    )
+    .orderBy(desc(appointments.startTime))
+    .limit(1);
+  return visit?.id ?? null;
 }
 
 async function assessPrescriptionSafety(
@@ -1068,6 +1095,7 @@ export const recordsRouter = createRouter({
     .input(z.object({ patientId: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
       await assertPatientBelongsToPractice(ctx, input.patientId);
+      const appointmentId = await findActiveVisitId(ctx, input.patientId);
       const token = generateCaptureToken();
       const expiresAt = new Date(Date.now() + CAPTURE_TOKEN_TTL_MS);
       await ctx.db
@@ -1076,6 +1104,7 @@ export const recordsRouter = createRouter({
           practiceId: ctx.practiceId,
           patientId: input.patientId,
           createdBy: ctx.user.id,
+          appointmentId,
           token,
           expiresAt,
         })
@@ -1084,10 +1113,15 @@ export const recordsRouter = createRouter({
         token,
         url: `${appBaseUrl()}/capture/${token}`,
         expiresAt,
+        appointmentId,
       };
     }),
 
-  /** Photos attached to a patient via capture links, newest first. */
+  /**
+   * Photos attached to a patient via capture links, newest first. Photos
+   * only: without the category + mime filters, signed consent PDFs (also
+   * patient files) leak into the capture grid as broken images.
+   */
   listCaptureFiles: protectedProcedure
     .input(z.object({ patientId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
@@ -1106,12 +1140,74 @@ export const recordsRouter = createRouter({
             eq(files.practiceId, ctx.practiceId),
             eq(files.entityType, "patient"),
             eq(files.entityId, input.patientId),
+            eq(files.category, PATIENT_PHOTO_CATEGORY),
+            like(files.mimeType, "image/%"),
             activePracticePredicate(ctx.practiceId),
             isNull(files.deletedAt)
           )
         )
         .orderBy(desc(files.createdAt))
         .limit(50);
+    }),
+
+  /**
+   * Everything attached to a patient (photos, signed consents, documents),
+   * newest first, for the patient Documents tab. Optionally narrowed to one
+   * visit for the per-appointment documents view. Signed consents join back
+   * to their request so the UI can say what was signed and by whom.
+   */
+  listPatientFiles: protectedProcedure
+    .input(
+      z.object({
+        patientId: z.string().uuid(),
+        appointmentId: z.string().uuid().optional(),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      await assertPatientBelongsToPractice(ctx, input.patientId);
+      if (input.appointmentId) {
+        await assertAppointmentBelongsToPatient(
+          ctx,
+          input.appointmentId,
+          input.patientId
+        );
+      }
+      return ctx.db
+        .select({
+          id: files.id,
+          fileName: files.fileName,
+          fileUrl: files.fileUrl,
+          mimeType: files.mimeType,
+          fileSizeBytes: files.fileSizeBytes,
+          category: files.category,
+          appointmentId: files.appointmentId,
+          createdAt: files.createdAt,
+          consentTitle: consentRequests.title,
+          consentSignerName: consentRequests.signerName,
+          consentSignedAt: consentRequests.signedAt,
+        })
+        .from(files)
+        .leftJoin(
+          consentRequests,
+          and(
+            eq(consentRequests.fileId, files.id),
+            isNull(consentRequests.deletedAt)
+          )
+        )
+        .where(
+          and(
+            eq(files.practiceId, ctx.practiceId),
+            eq(files.entityType, "patient"),
+            eq(files.entityId, input.patientId),
+            input.appointmentId
+              ? eq(files.appointmentId, input.appointmentId)
+              : undefined,
+            activePracticePredicate(ctx.practiceId),
+            isNull(files.deletedAt)
+          )
+        )
+        .orderBy(desc(files.createdAt))
+        .limit(200);
     }),
 
   // E-sign consent dispatch. Same capability-link model as capture sessions:
@@ -1130,6 +1226,7 @@ export const recordsRouter = createRouter({
     )
     .mutation(async ({ ctx, input }) => {
       await assertPatientBelongsToPractice(ctx, input.patientId);
+      const appointmentId = await findActiveVisitId(ctx, input.patientId);
       const token = generateCaptureToken();
       const expiresAt = new Date(Date.now() + CONSENT_TOKEN_TTL_MS);
       const [created] = await ctx.db
@@ -1138,6 +1235,7 @@ export const recordsRouter = createRouter({
           practiceId: ctx.practiceId,
           patientId: input.patientId,
           createdBy: ctx.user.id,
+          appointmentId,
           token,
           expiresAt,
           title: input.title ?? DEFAULT_CONSENT_TITLE,
@@ -1149,6 +1247,7 @@ export const recordsRouter = createRouter({
         token,
         url: `${appBaseUrl()}/sign/${token}`,
         expiresAt,
+        appointmentId,
       };
     }),
 

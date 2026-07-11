@@ -16,6 +16,7 @@ import { deleteFile, uploadFile } from "@/lib/s3";
 import { uploadBytesMatchMimeType } from "@/lib/upload-security";
 import { readRequestBytesWithLimit } from "@/lib/request-body";
 import { billingEnforced, hasHostedFullAccess } from "@/lib/billing/plans";
+import { CONSENT_FILE_CATEGORY as CONSENT_CATEGORY } from "@/lib/records/file-kinds";
 
 export const dynamic = "force-dynamic";
 
@@ -40,7 +41,7 @@ const SIGN_REQUEST_MAX_BYTES = 1_000_000;
 /** Decoded signature image cap. */
 const SIGNATURE_PNG_MAX_BYTES = 500_000;
 const SIGNATURE_DATA_URL_PREFIX = "data:image/png;base64,";
-const CONSENT_FILE_CATEGORY = "consents";
+const CONSENT_FILE_CATEGORY = CONSENT_CATEGORY;
 
 function notFound(): NextResponse {
   return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -85,6 +86,7 @@ type ConsentLookup = {
   practiceId: string;
   patientId: string;
   createdBy: string | null;
+  appointmentId: string | null;
   title: string;
   bodyText: string;
   status: string;
@@ -106,6 +108,7 @@ async function lookupConsent(token: string): Promise<ConsentLookup | null> {
         practiceId: consentRequests.practiceId,
         patientId: consentRequests.patientId,
         createdBy: consentRequests.createdBy,
+        appointmentId: consentRequests.appointmentId,
         title: consentRequests.title,
         bodyText: consentRequests.bodyText,
         status: consentRequests.status,
@@ -305,6 +308,7 @@ export async function POST(
           category: CONSENT_FILE_CATEGORY,
           entityType: "patient",
           entityId: session.patientId,
+          appointmentId: session.appointmentId,
         })
         .returning({ id: files.id });
 

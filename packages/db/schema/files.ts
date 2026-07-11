@@ -12,6 +12,7 @@ import { baseColumns } from "./common";
 import { practices } from "./practices";
 import { patients } from "./patients";
 import { users } from "./users";
+import { appointments } from "./scheduling";
 
 export const files = pgTable(
   "files",
@@ -31,12 +32,17 @@ export const files = pgTable(
     category: varchar("category", { length: 64 }),
     entityType: varchar("entity_type", { length: 64 }),
     entityId: uuid("entity_id"),
+    /** The visit this file was captured in, when there was one. Files always
+     * belong to a patient (entityType/entityId); the visit link is optional
+     * so standalone uploads stay patient-only. */
+    appointmentId: uuid("appointment_id").references(() => appointments.id),
   },
   (table) => ({
     practiceIdx: index("files_practice_idx").on(table.practiceId, table.deletedAt),
     entityIdx: index("files_entity_idx").on(table.entityType, table.entityId),
     uploadedByIdx: index("files_uploaded_by_idx").on(table.uploadedBy),
     categoryIdx: index("files_category_idx").on(table.practiceId, table.category),
+    appointmentIdx: index("files_appointment_idx").on(table.appointmentId),
   }),
 );
 
@@ -48,6 +54,10 @@ export const filesRelations = relations(files, ({ one }) => ({
   uploader: one(users, {
     fields: [files.uploadedBy],
     references: [users.id],
+  }),
+  appointment: one(appointments, {
+    fields: [files.appointmentId],
+    references: [appointments.id],
   }),
 }));
 
@@ -68,6 +78,10 @@ export const captureSessions = pgTable(
       .notNull()
       .references(() => patients.id),
     createdBy: uuid("created_by").references(() => users.id),
+    /** The visit open when the session was minted (resolved server-side from
+     * the patient's checked-in/in-exam appointment); copied onto each
+     * uploaded file so photos attach to that visit. */
+    appointmentId: uuid("appointment_id").references(() => appointments.id),
     /** 64-hex capability token embedded in the QR link. */
     token: varchar("token", { length: 64 }).notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),

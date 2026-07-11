@@ -22,6 +22,7 @@ import {
 } from "@/lib/upload-limits";
 import { readRequestBytesWithLimit } from "@/lib/request-body";
 import { billingEnforced, hasHostedFullAccess } from "@/lib/billing/plans";
+import { PATIENT_PHOTO_CATEGORY } from "@/lib/records/file-kinds";
 
 export const dynamic = "force-dynamic";
 
@@ -41,7 +42,7 @@ const IP_LIMIT = 30;
 const IP_WINDOW_MS = 10 * 60 * 1000;
 
 const MAX_FILE_NAME_LENGTH = 255;
-const CAPTURE_FILE_CATEGORY = "patient-photos";
+const CAPTURE_FILE_CATEGORY = PATIENT_PHOTO_CATEGORY;
 
 function notFound(): NextResponse {
   return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -98,6 +99,7 @@ export async function POST(
         practiceId: captureSessions.practiceId,
         patientId: captureSessions.patientId,
         createdBy: captureSessions.createdBy,
+        appointmentId: captureSessions.appointmentId,
         tier: practices.subscriptionTier,
         billingStatus: practices.billingStatus,
         trialEndsAt: practices.trialEndsAt,
@@ -225,6 +227,7 @@ export async function POST(
           category: CAPTURE_FILE_CATEGORY,
           entityType: "patient",
           entityId: session.patientId,
+          appointmentId: session.appointmentId,
         })
         .returning({ id: files.id })
     );

@@ -205,6 +205,9 @@ export function ConsentSign({ patientId }: { patientId: string }) {
                           Open the signed PDF
                         </a>
                       )}
+                      <p className="text-xs text-muted-foreground">
+                        Saved on this patient under Documents.
+                      </p>
                     </div>
                   ) : (
                     <>

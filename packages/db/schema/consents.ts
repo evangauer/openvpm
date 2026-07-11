@@ -13,6 +13,7 @@ import { practices } from "./practices";
 import { patients } from "./patients";
 import { users } from "./users";
 import { files } from "./files";
+import { appointments } from "./scheduling";
 
 /**
  * E-sign consent requests. A staff member dispatches one from a patient
@@ -33,6 +34,10 @@ export const consentRequests = pgTable(
       .notNull()
       .references(() => patients.id),
     createdBy: uuid("created_by").references(() => users.id),
+    /** The visit open when the request was dispatched (resolved server-side
+     * from the patient's checked-in/in-exam appointment); copied onto the
+     * signed PDF's file row so the consent attaches to that visit. */
+    appointmentId: uuid("appointment_id").references(() => appointments.id),
     /** 64-hex capability token embedded in the QR link. */
     token: varchar("token", { length: 64 }).notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
@@ -74,6 +79,10 @@ export const consentRequestsRelations = relations(
     file: one(files, {
       fields: [consentRequests.fileId],
       references: [files.id],
+    }),
+    appointment: one(appointments, {
+      fields: [consentRequests.appointmentId],
+      references: [appointments.id],
     }),
   })
 );
