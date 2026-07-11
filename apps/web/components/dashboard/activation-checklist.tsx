@@ -13,7 +13,6 @@ import {
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
-import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { useTour } from "@/components/tour/tour-provider";
@@ -184,146 +183,137 @@ export function ActivationChecklist() {
 
   if (allDone) {
     return (
-      <Card className="relative flex items-center gap-4 border-primary/20 bg-gradient-to-br from-primary/10 via-card to-card p-5">
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-          <PartyPopper className="h-5 w-5" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <p className="font-heading text-base font-semibold">
-            You&apos;re all set 🎉
-          </p>
-          <p className="text-sm text-muted-foreground">
-            Every setup step is done — {practiceName} is ready to run.
-          </p>
+      <div className="fixed bottom-4 right-4 z-[70] hidden w-[340px] sm:block">
+        <div className="flex items-center gap-3 rounded-2xl border border-zinc-800 bg-zinc-900 p-4 text-zinc-50 shadow-2xl shadow-black/30">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-500 text-zinc-950">
+            <PartyPopper className="h-4 w-4" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="font-heading text-sm font-semibold">
+              You&apos;re all set 🎉
+            </p>
+            <p className="text-xs text-zinc-400">
+              {practiceName} is ready to run.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={dontShowAgain}
+            className="text-xs font-medium text-zinc-400 transition-colors hover:text-zinc-100"
+          >
+            Dismiss
+          </button>
         </div>
-        <Button variant="ghost" size="sm" onClick={dontShowAgain}>
-          Dismiss
-        </Button>
-      </Card>
+      </div>
     );
   }
 
+  // Docked launcher: a compact dark card pinned bottom-right, out of the way
+  // of the day's real work but always one glance from the next setup win.
   return (
-    <Card className="relative p-5 sm:p-6">
-      <button
-        type="button"
-        onClick={snooze}
-        aria-label="Hide for now"
-        title="Hide for now"
-        className="absolute right-3 top-3 rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-      >
-        <X className="h-4 w-4" />
-      </button>
+    <div className="fixed bottom-4 right-4 z-[70] hidden w-[340px] sm:block">
+      <div className="relative rounded-2xl border border-zinc-800 bg-zinc-900 p-4 text-zinc-50 shadow-2xl shadow-black/30">
+        <button
+          type="button"
+          onClick={snooze}
+          aria-label="Hide for now"
+          title="Hide for now"
+          className="absolute right-3 top-3 rounded-md p-1 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+        >
+          <X className="h-4 w-4" />
+        </button>
 
-      <div className="flex items-center gap-3">
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-          <Sparkles className="h-5 w-5" />
-        </span>
-        <div>
-          <p className="font-heading text-base font-semibold">
-            Get {practiceName} running
-          </p>
-          <p className="text-sm text-muted-foreground">
-            {doneCount} of {total} complete
-          </p>
+        <div className="flex items-center gap-2.5 pr-6">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-400">
+            <Sparkles className="h-4 w-4" />
+          </span>
+          <div className="min-w-0">
+            <p className="truncate font-heading text-sm font-semibold">
+              Get {practiceName} running
+            </p>
+            <p className="text-xs text-zinc-400">
+              {doneCount} of {total} done
+            </p>
+          </div>
         </div>
-      </div>
 
-      <Progress value={pct} className="mt-4" />
+        <Progress
+          value={pct}
+          className="mt-3 h-1.5 bg-zinc-800 [&>div]:bg-emerald-500"
+        />
 
-      <div className="mt-4 grid gap-2">
-        {milestones.map((m) => {
-          const inner = (
-            <div
-              className={cn(
-                "group flex items-center gap-3 rounded-lg border px-4 py-3 transition-colors",
-                m.done
-                  ? "border-transparent bg-muted/40"
-                  : "border-border bg-card hover:border-primary/40 hover:bg-accent"
-              )}
-            >
-              <span
+        <div className="mt-3 max-h-[45vh] space-y-1 overflow-y-auto">
+          {milestones.map((m) => {
+            const inner = (
+              <div
                 className={cn(
-                  "flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors",
-                  m.done
-                    ? "border-primary bg-primary text-primary-foreground"
-                    : "border-muted-foreground/30 text-transparent group-hover:border-primary"
+                  "group flex items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors",
+                  m.done ? "opacity-60" : "hover:bg-zinc-800"
                 )}
+                title={m.hint}
               >
-                <Check className="h-3.5 w-3.5" />
-              </span>
-              <div className="min-w-0 flex-1">
+                <span
+                  className={cn(
+                    "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition-colors",
+                    m.done
+                      ? "border-emerald-500 bg-emerald-500 text-zinc-950"
+                      : "border-zinc-600 text-transparent group-hover:border-emerald-400"
+                  )}
+                >
+                  <Check className="h-3 w-3" />
+                </span>
                 <p
                   className={cn(
-                    "text-sm font-medium",
-                    m.done && "text-muted-foreground line-through"
+                    "min-w-0 flex-1 truncate text-[13px] font-medium",
+                    m.done && "text-zinc-400 line-through"
                   )}
                 >
                   {m.label}
                 </p>
                 {!m.done ? (
-                  <p className="text-xs text-muted-foreground">{m.hint}</p>
+                  <ArrowRight className="h-3.5 w-3.5 shrink-0 text-zinc-500 transition-transform group-hover:translate-x-0.5 group-hover:text-emerald-400" />
                 ) : null}
               </div>
-              {!m.done ? (
-                <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
-              ) : null}
-            </div>
-          );
-
-          if (m.href) {
-            return (
-              <Link key={m.key} href={m.href} className="block">
-                {inner}
-              </Link>
             );
-          }
-          return (
-            <button
-              key={m.key}
-              type="button"
-              onClick={m.onClick}
-              className="block w-full text-left"
-            >
-              {inner}
-            </button>
-          );
-        })}
-      </div>
 
-      <div className="mt-4 flex justify-end">
-        <button
-          type="button"
-          onClick={dontShowAgain}
-          className="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-        >
-          Don&apos;t show this again
-        </button>
+            if (m.href) {
+              return (
+                <Link key={m.key} href={m.href} className="block">
+                  {inner}
+                </Link>
+              );
+            }
+            return (
+              <button
+                key={m.key}
+                type="button"
+                onClick={m.onClick}
+                className="block w-full text-left"
+              >
+                {inner}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="mt-3 flex justify-end border-t border-zinc-800 pt-2.5">
+          <button
+            type="button"
+            onClick={dontShowAgain}
+            className="text-xs font-medium text-zinc-500 transition-colors hover:text-zinc-200"
+          >
+            Don&apos;t show this again
+          </button>
+        </div>
       </div>
-    </Card>
+    </div>
   );
 }
 
 function ActivationChecklistLoading() {
-  return (
-    <Card className="p-5 sm:p-6">
-      <div className="animate-pulse">
-        <div className="flex items-center gap-3">
-          <div className="h-9 w-9 rounded-lg bg-muted" />
-          <div className="space-y-2">
-            <div className="h-4 w-48 rounded bg-muted" />
-            <div className="h-3 w-24 rounded bg-muted" />
-          </div>
-        </div>
-        <div className="mt-4 h-2 rounded-full bg-muted" />
-        <div className="mt-4 grid gap-2">
-          {Array.from({ length: 4 }).map((_, index) => (
-            <div key={index} className="h-14 rounded-lg border bg-muted/40" />
-          ))}
-        </div>
-      </div>
-    </Card>
-  );
+  // The docked card simply appears once its data is ready; a floating
+  // skeleton in the corner would only draw the eye to nothing.
+  return null;
 }
 
 function ActivationChecklistError({
@@ -334,21 +324,22 @@ function ActivationChecklistError({
   onRetry: () => void;
 }) {
   return (
-    <Card className="border-destructive/30 bg-destructive/5 p-5">
-      <div className="flex items-start gap-3">
-        <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-destructive/10 text-destructive">
-          <AlertTriangle className="h-5 w-5" />
-        </span>
+    <div className="fixed bottom-4 right-4 z-[70] hidden w-[340px] sm:block">
+      <div className="flex items-start gap-3 rounded-2xl border border-zinc-800 bg-zinc-900 p-4 text-zinc-50 shadow-2xl shadow-black/30">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
         <div className="min-w-0 flex-1">
-          <p className="font-heading text-base font-semibold">
-            Setup checklist could not load
-          </p>
-          <p className="mt-1 text-sm text-muted-foreground">{message}</p>
-          <Button variant="outline" size="sm" onClick={onRetry} className="mt-3">
+          <p className="text-sm font-semibold">Setup checklist could not load</p>
+          <p className="mt-1 text-xs text-zinc-400">{message}</p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onRetry}
+            className="mt-2 border-zinc-700 bg-transparent text-zinc-100 hover:bg-zinc-800"
+          >
             Retry
           </Button>
         </div>
       </div>
-    </Card>
+    </div>
   );
 }

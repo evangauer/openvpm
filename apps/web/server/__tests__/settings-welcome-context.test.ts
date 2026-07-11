@@ -70,7 +70,7 @@ describe("settings.welcomeContext", () => {
     const { db } = createDb([
       [practiceRow(demoSettings)],
       [{ id: DEMO_CLIENT_ID, firstName: "Jordan", lastName: "Avery" }],
-      [{ name: "Biscuit" }],
+      [{ id: DEMO_PATIENT_ID, name: "Biscuit" }],
     ]);
 
     const result = await callerWithRole(db, "front_desk").welcomeContext();
@@ -83,6 +83,9 @@ describe("settings.welcomeContext", () => {
         lastName: "Avery",
       },
       demoPatientName: "Biscuit",
+      demoPatientId: DEMO_PATIENT_ID,
+      // The fixture has no invoiceIds, so the tour's bill step falls back.
+      demoInvoiceId: null,
     });
   });
 

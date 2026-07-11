@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
@@ -150,6 +150,14 @@ export default function BillingPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
   const limit = 25;
+
+  // Deep link: /billing?expand=<invoiceId> opens that invoice's detail (the
+  // welcome tour uses this to walk into a real invoice). After mount so the
+  // server render stays stable.
+  useEffect(() => {
+    const expand = new URLSearchParams(window.location.search).get("expand");
+    if (expand) setExpandedId(expand);
+  }, []);
 
   const tab = STATUS_TABS[activeTab];
   const statusFilter = tab.isEstimate ? undefined : tab.value;
@@ -783,7 +791,7 @@ function InvoiceRow({
       </tr>
       {isExpanded && (
         <tr className="border-b border-border last:border-0">
-          <td colSpan={9} className="bg-muted/20 px-8 py-4">
+          <td colSpan={9} className="bg-muted/20 px-8 py-4" data-tour="invoice-detail">
             {detail.isLoading ? (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />

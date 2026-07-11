@@ -4,9 +4,14 @@
  * the sidebar nav links keeps anchors stable across route changes; steps without
  * an anchor render as a centered card.
  *
- * Voice: simple, fourth-grade, warm, no em dashes. Lead with the value: you own
- * your data and real AI tools are built in.
+ * The tour is context-aware: when the workspace has sample data we walk into a
+ * real chart and a real bill instead of pointing at empty tabs, and the finale
+ * is the AI helper answering a real question. Voice: simple, fourth-grade,
+ * warm, no em dashes. Lead with the value: you own your data and real AI tools
+ * are built in.
  */
+import { GUIDE_SIGNALS } from "./guide-signals";
+
 export interface TourStep {
   id: string;
   /** Route to navigate to before showing this step. */
@@ -15,53 +20,101 @@ export interface TourStep {
   anchor?: string;
   title: string;
   body: string;
+  /** Guide signal that auto-advances past this step (never blocks Next). */
+  advanceOn?: string;
 }
 
-export const TOUR_STEPS: TourStep[] = [
-  {
-    id: "welcome",
-    route: "/",
-    title: "Welcome to OpenVPM",
-    body: "This is your practice. We added a few sample pets so it feels real while you look around.",
-  },
-  {
-    id: "schedule",
-    route: "/schedule",
-    anchor: "nav-/schedule",
-    title: "Your day, at a glance",
-    body: "Book visits and check pets in from one simple calendar.",
-  },
-  {
-    id: "records",
-    route: "/records",
-    anchor: "nav-/records",
-    title: "Every pet's full story",
-    body: "Notes, shots, meds, and labs all live in one place.",
-  },
-  {
-    id: "billing",
-    route: "/billing",
-    anchor: "nav-/billing",
-    title: "Bill in one click",
-    body: "Turn a visit into a bill and take payment online.",
-  },
-  {
-    id: "agent",
-    route: "/agent",
-    anchor: "nav-/agent",
-    title: "Your AI helper",
-    body: "Ask it about your pets and your data and it does the work. You will get to try it in a minute.",
-  },
-  {
-    id: "ownership",
-    route: "/",
-    title: "Your data is yours",
-    body: "You own everything here. Export it any time, and connect by API when you are ready.",
-  },
-  {
-    id: "finish",
-    route: "/",
-    title: "You're all set",
-    body: "That was the quick look. Your clinic is ready to go. Your data stays yours, and the AI helper is here whenever you need it.",
-  },
-];
+export const AGENT_TOUR_QUESTION = "Which pets are overdue for vaccines?";
+
+export interface TourContext {
+  /** First demo patient's name, e.g. "Biscuit", when demo data is present. */
+  demoPatientName?: string | null;
+  /** First demo patient's id, for walking into a real chart. */
+  demoPatientId?: string | null;
+  /** A live sample invoice id, for walking into a real bill. */
+  demoInvoiceId?: string | null;
+  /** False when the AI agent has no platform key; the tour never blocks. */
+  agentConfigured?: boolean;
+}
+
+export function buildTourSteps(ctx: TourContext = {}): TourStep[] {
+  const patientName = ctx.demoPatientName ?? null;
+  const agentReady = ctx.agentConfigured ?? false;
+
+  const steps: TourStep[] = [
+    {
+      id: "welcome",
+      route: "/",
+      title: "Welcome to OpenVPM",
+      body: "This is your practice. We added a few sample pets so it feels real while you look around.",
+    },
+    {
+      id: "schedule",
+      route: "/schedule",
+      anchor: "schedule-calendar",
+      title: "Your day, at a glance",
+      body: patientName
+        ? `Every visit lives here. ${patientName} is already booked, so you can see a real day. Click any open slot to book a visit.`
+        : "Book visits and check pets in from one simple calendar. Click any open slot to book a visit.",
+    },
+  ];
+
+  if (ctx.demoPatientId) {
+    steps.push({
+      id: "patient-chart",
+      route: `/patients/${ctx.demoPatientId}`,
+      title: "Every pet's full story",
+      body: `This is ${patientName ?? "a sample pet"}'s chart. Notes, shots, meds, and labs all live on one page. The tabs go deeper when you need them.`,
+    });
+  } else {
+    steps.push({
+      id: "records",
+      route: "/records",
+      anchor: "nav-/records",
+      title: "Every pet's full story",
+      body: "Notes, shots, meds, and labs all live in one place.",
+    });
+  }
+
+  if (ctx.demoInvoiceId) {
+    steps.push({
+      id: "invoice",
+      route: `/billing?expand=${ctx.demoInvoiceId}`,
+      anchor: "invoice-detail",
+      title: "Bill in one click",
+      body: "Here is a real bill, already itemized. A visit becomes a bill in one click, and clients can pay online.",
+    });
+  } else {
+    steps.push({
+      id: "billing",
+      route: "/billing",
+      anchor: "nav-/billing",
+      title: "Bill in one click",
+      body: "Turn a visit into a bill and take payment online.",
+    });
+  }
+
+  steps.push(
+    {
+      id: "agent",
+      route: `/agent?ask=${encodeURIComponent(AGENT_TOUR_QUESTION)}`,
+      anchor: "agent-input",
+      title: "Now meet your AI helper",
+      body: agentReady
+        ? "We typed a real question for you. Press send and watch it check every chart in seconds."
+        : "Ask about your pets and your data in plain words, right here. Your AI helper turns on once your workspace key is set.",
+      advanceOn: agentReady ? GUIDE_SIGNALS.agentRunSucceeded : undefined,
+    },
+    {
+      id: "finish",
+      route: "/",
+      title: "You're all set",
+      body: "That was your clinic: the day sheet, the charts, the bills, and your AI helper. Your data is always yours. Export it any time.",
+    }
+  );
+
+  return steps;
+}
+
+/** Context-free steps, used for prefetch fallbacks and tests. */
+export const TOUR_STEPS: TourStep[] = buildTourSteps();

@@ -13,7 +13,7 @@ import { useSession } from "next-auth/react";
 import { trpc } from "@/lib/trpc";
 import type { GuideId } from "@/lib/welcome/cards";
 import { markGuideCompleted } from "@/lib/welcome/local-state";
-import { TOUR_STEPS } from "./tour-steps";
+import { buildTourSteps } from "./tour-steps";
 import {
   buildGuideSteps,
   type GuideContext,
@@ -68,6 +68,16 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
     enabled: isAdmin,
   });
   const setTourStatus = trpc.settings.setTourStatus.useMutation();
+  // Context for the deep tour (real chart, real bill, live agent finale).
+  // Both queries are cached app-wide, so this adds no extra traffic.
+  const welcomeCtx = trpc.settings.welcomeContext.useQuery(undefined, {
+    enabled: isAdmin,
+    staleTime: 5 * 60_000,
+  });
+  const agentStatus = trpc.agent.status.useQuery(undefined, {
+    enabled: isAdmin,
+    staleTime: 5 * 60_000,
+  });
 
   // null = no guide running; otherwise the active recipe + step cursor.
   const [run, setRun] = useState<ActiveRun | null>(null);
@@ -110,9 +120,21 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
     (recipe: GuideId = "tour", ctx: GuideContext = {}) => {
       if (recipe === "tour") {
         if (!isAdmin) return;
-        prefetchSteps(TOUR_STEPS);
-        setRun({ recipe, steps: TOUR_STEPS, index: 0 });
-        persist("in_progress", TOUR_STEPS[0]!.id);
+        // Context-aware: with sample data the tour walks into a real chart
+        // and a real bill, and ends on the AI helper answering a question.
+        // Callers may pass context; anything missing fills from the cached
+        // welcome context so every entry point gets the deep tour.
+        const steps = buildTourSteps({
+          demoPatientName:
+            ctx.demoPatientName ?? welcomeCtx.data?.demoPatientName,
+          demoPatientId: welcomeCtx.data?.demoPatientId,
+          demoInvoiceId: welcomeCtx.data?.demoInvoiceId,
+          agentConfigured:
+            ctx.agentConfigured ?? agentStatus.data?.configured,
+        });
+        prefetchSteps(steps);
+        setRun({ recipe, steps, index: 0 });
+        persist("in_progress", steps[0]!.id);
         return;
       }
       const steps = buildGuideSteps(recipe, ctx);
@@ -120,7 +142,7 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
       prefetchSteps(steps);
       setRun({ recipe, steps, index: 0 });
     },
-    [isAdmin, persist, prefetchSteps]
+    [isAdmin, persist, prefetchSteps, welcomeCtx.data, agentStatus.data]
   );
 
   // Start ONLY on an explicit ?tour=start deep-link. Onboarding is opt-in: a
@@ -128,6 +150,9 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
   // welcome surface and activation checklist invoke start() on demand instead.
   useEffect(() => {
     if (autoStarted.current || run !== null || !isAdmin) return;
+    // Wait for the tour context to settle so the deep-link never races into
+    // the shallow fallback steps (fetch errors still start the fallback).
+    if (welcomeCtx.isLoading || agentStatus.isLoading) return;
     const wantStart =
       typeof window !== "undefined" &&
       new URLSearchParams(window.location.search).get("tour") === "start";
@@ -137,7 +162,7 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
       start();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAdmin, stateQuery.data, pathname, run]);
+  }, [isAdmin, stateQuery.data, pathname, run, welcomeCtx.isLoading, agentStatus.isLoading]);
 
   const step = run ? run.steps[run.index] ?? null : null;
 

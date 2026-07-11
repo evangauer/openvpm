@@ -869,20 +869,40 @@ export const settingsRouter = createRouter({
     }
 
     let demoPatientName: string | null = null;
-    const demoPatientId = demo?.patientIds?.[0];
-    if (demoPatientId) {
+    let demoPatientId: string | null = null;
+    const candidatePatientId = demo?.patientIds?.[0];
+    if (candidatePatientId) {
       const [row] = await ctx.db
-        .select({ name: patients.name })
+        .select({ id: patients.id, name: patients.name })
         .from(patients)
         .where(
           and(
-            eq(patients.id, demoPatientId),
+            eq(patients.id, candidatePatientId),
             eq(patients.practiceId, ctx.practiceId),
             isNull(patients.deletedAt)
           )
         )
         .limit(1);
       demoPatientName = row?.name ?? null;
+      demoPatientId = row?.id ?? null;
+    }
+
+    // A live sample invoice lets the welcome tour open a real bill.
+    let demoInvoiceId: string | null = null;
+    const candidateInvoiceId = demo?.invoiceIds?.[0];
+    if (candidateInvoiceId) {
+      const [row] = await ctx.db
+        .select({ id: invoices.id })
+        .from(invoices)
+        .where(
+          and(
+            eq(invoices.id, candidateInvoiceId),
+            eq(invoices.practiceId, ctx.practiceId),
+            isNull(invoices.deletedAt)
+          )
+        )
+        .limit(1);
+      demoInvoiceId = row?.id ?? null;
     }
 
     return {
@@ -890,6 +910,8 @@ export const settingsRouter = createRouter({
       hasDemoData: !!demo,
       portalClient,
       demoPatientName,
+      demoPatientId,
+      demoInvoiceId,
     };
   }),
 
