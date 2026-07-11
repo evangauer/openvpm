@@ -19,6 +19,7 @@ import {
   problemList,
   invoices,
   invoiceItems,
+  communications,
   products,
   locations,
   locationMessaging,
@@ -244,6 +245,7 @@ interface PracticeSettings {
     problemIds?: string[];
     invoiceIds?: string[];
     invoiceItemIds?: string[];
+    communicationIds?: string[];
   };
   onboardingDraft?: {
     logoName?: string;
@@ -1034,6 +1036,17 @@ export const settingsRouter = createRouter({
       const now = new Date();
       // Soft-delete the clinical and billing records first, then the
       // appointments/patients/clients they hang off of.
+      if (demo.communicationIds?.length) {
+        await ctx.db
+          .update(communications)
+          .set({ deletedAt: now })
+          .where(
+            and(
+              eq(communications.practiceId, ctx.practiceId),
+              inArray(communications.id, demo.communicationIds)
+            )
+          );
+      }
       if (demo.invoiceItemIds?.length) {
         await ctx.db
           .update(invoiceItems)

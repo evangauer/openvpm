@@ -13,6 +13,7 @@ import {
   problemList,
   invoices,
   invoiceItems,
+  communications,
 } from "@openpims/db";
 
 /**
@@ -120,6 +121,7 @@ export interface DemoDataIds {
   problemIds: string[];
   invoiceIds: string[];
   invoiceItemIds: string[];
+  communicationIds: string[];
 }
 
 /**
@@ -420,6 +422,41 @@ export async function seedDemoData(
     serviceNames: ["Wellness Exam", "Nail Trim"],
   });
 
+  // A few inbound messages so the Inbox has real conversations to show in the
+  // walkthrough. Inbound + status not "read" + no readAt renders as unread.
+  const insertedComms = await db
+    .insert(communications)
+    .values([
+      {
+        practiceId: opts.practiceId,
+        clientId: insertedClients[0]!.id,
+        channel: "sms" as const,
+        direction: "inbound" as const,
+        content:
+          "Hi! Is Biscuit due for anything at his visit tomorrow? Want to make sure we do it all in one trip.",
+        status: "delivered" as const,
+      },
+      {
+        practiceId: opts.practiceId,
+        clientId: insertedClients[1]!.id,
+        channel: "email" as const,
+        direction: "inbound" as const,
+        subject: "Luna's recent invoice",
+        content:
+          "Thanks for seeing Luna. Quick question about the invoice you sent, can I pay online?",
+        status: "delivered" as const,
+      },
+      {
+        practiceId: opts.practiceId,
+        clientId: insertedClients[2]!.id,
+        channel: "sms" as const,
+        direction: "inbound" as const,
+        content: "Can I get a copy of Mango's records for our new groomer?",
+        status: "delivered" as const,
+      },
+    ])
+    .returning({ id: communications.id });
+
   return {
     clientIds: insertedClients.map((c) => c.id),
     patientIds: insertedPatients.map((p) => p.id),
@@ -429,5 +466,6 @@ export async function seedDemoData(
     problemIds: insertedProblems.map((p) => p.id),
     invoiceIds,
     invoiceItemIds,
+    communicationIds: insertedComms.map((c) => c.id),
   };
 }

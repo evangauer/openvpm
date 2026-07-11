@@ -100,6 +100,14 @@ export function buildTourSteps(ctx: TourContext = {}): TourStep[] {
   }
 
   steps.push({
+    id: "inbox",
+    route: "/inbox",
+    anchor: "inbox-list",
+    title: "Talk to clients, all in one place",
+    body: "Text clients from your own number, or send and receive email, right here. We added a few messages so you can see how it feels.",
+  });
+
+  steps.push({
     id: "agent",
     route: `/agent?ask=${encodeURIComponent(AGENT_TOUR_QUESTION)}`,
     anchor: "agent-input",

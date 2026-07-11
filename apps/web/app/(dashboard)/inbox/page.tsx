@@ -648,6 +648,7 @@ export default function InboxPage() {
       <div className="flex flex-1 rounded-lg border border-border bg-card overflow-hidden min-h-0">
         {/* Left panel - list */}
         <div
+          data-tour="inbox-list"
           className={cn(
             "w-full flex-col border-border shrink-0 md:flex md:w-80 md:border-r",
             selectedClientId || selectedUnmatched || newMessageMode
