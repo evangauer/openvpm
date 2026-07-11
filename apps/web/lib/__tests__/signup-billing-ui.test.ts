@@ -50,7 +50,10 @@ describe("signup billing copy", () => {
     expect(registerSource).toContain(
       "if (!isSafeCheckoutRedirectUrl(data.checkoutUrl))"
     );
-    // New signups land on the dashboard, where the setup wizard auto-opens.
-    expect(registerSource).toContain('router.push("/")');
+    // New signups land on the dashboard via a FULL document navigation: the
+    // logo link prefetches "/" while logged out, so the router cache holds a
+    // redirect to /login and router.push would bounce fresh accounts there.
+    expect(registerSource).toContain('window.location.assign("/")');
+    expect(registerSource).not.toContain('router.push("/");');
   });
 });

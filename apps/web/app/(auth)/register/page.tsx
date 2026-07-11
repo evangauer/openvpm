@@ -79,10 +79,11 @@ function RegisterPageInner() {
         redirect: false,
       });
       if (result?.ok) {
-        // Land on the dashboard; the "Make it yours" setup wizard auto-opens
-        // there for new admins (hosted and self-host alike).
-        router.push("/");
-        router.refresh();
+        // Full document navigation, NOT router.push: the logo link prefetched
+        // "/" while logged out, so the router cache holds a redirect to
+        // /login for up to 30s and push would replay it, bouncing brand-new
+        // accounts to the login page right after signup.
+        window.location.assign("/");
       } else {
         toast.success("Account created. Please sign in.");
         router.push("/login");
