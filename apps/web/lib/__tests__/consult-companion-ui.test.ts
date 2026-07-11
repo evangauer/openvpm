@@ -144,9 +144,15 @@ describe("e-sign consent UI states", () => {
     expect(allowlist).toContain('"/sign"');
   });
 
+  it("binds every dispatch to a form from the practice library", () => {
+    expect(consentModal).toContain("listConsentForms.useQuery");
+    expect(consentModal).toContain("handleFormChange");
+    expect(recordsRouter).toContain("formId: z.string().uuid()");
+  });
+
   it("lets staff edit the consent copy before minting the code", () => {
-    expect(consentModal).toContain("DEFAULT_CONSENT_TITLE");
-    expect(consentModal).toContain("DEFAULT_CONSENT_BODY");
+    expect(consentModal).toContain('id="consent-title"');
+    expect(consentModal).toContain('id="consent-body"');
     expect(consentModal).toContain("createConsentRequest.useMutation");
     expect(consentModal).toContain("Make the code");
   });
@@ -180,12 +186,8 @@ describe("e-sign consent UI states", () => {
 
   it("snapshots consent copy server-side so edits never rewrite signed forms", () => {
     expect(recordsRouter).toContain("createConsentRequest");
-    expect(recordsRouter).toContain(
-      "title: input.title ?? DEFAULT_CONSENT_TITLE"
-    );
-    expect(recordsRouter).toContain(
-      "bodyText: input.bodyText ?? DEFAULT_CONSENT_BODY"
-    );
+    expect(recordsRouter).toContain("title: input.title ?? form.title");
+    expect(recordsRouter).toContain("bodyText: input.bodyText ?? form.body");
   });
 
   it("keeps e-sign copy free of em dashes", () => {

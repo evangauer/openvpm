@@ -19,6 +19,7 @@ import {
   PROCEDURE_NAME_MAX_LENGTH,
   PROCEDURE_NOTES_MAX_LENGTH,
 } from "@/lib/records/procedure-policy";
+import { CONSENT_FORM_LIBRARY } from "@/lib/consult/consent-form-library";
 
 const mocks = vi.hoisted(() => ({
   recordAuditLog: vi.fn(async () => undefined),
@@ -40,6 +41,7 @@ const USER_ID = "00000000-0000-0000-0000-000000000001";
 const PATIENT_ID = "00000000-0000-0000-0000-000000000002";
 const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000003";
 const RECORD_ID = "00000000-0000-0000-0000-000000000004";
+const FORM_ID = "00000000-0000-0000-0000-000000000005";
 
 function callerWithDb(db: Record<string, unknown>, role = "veterinarian") {
   const session = {
@@ -81,7 +83,10 @@ function createDb(opts?: {
   });
 
   const insertReturning = vi.fn(async () => opts?.insertedRows ?? []);
-  const insertValues = vi.fn(() => ({ returning: insertReturning }));
+  const insertValues = vi.fn(() => ({
+    returning: insertReturning,
+    onConflictDoNothing: vi.fn(async () => undefined),
+  }));
   const insert = vi.fn(() => ({ values: insertValues }));
 
   const updateReturning = vi.fn(async () => opts?.updatedRows ?? []);
@@ -900,19 +905,69 @@ describe("capture sessions", () => {
   });
 });
 
+describe("consent forms", () => {
+  it("seeds the starter library on first read, idempotently", async () => {
+    const seeded = CONSENT_FORM_LIBRARY.map((form, i) => ({
+      id: `${FORM_ID.slice(0, -2)}${String(i).padStart(2, "0")}`,
+      slug: form.slug,
+      title: form.title,
+      body: form.body,
+      sortOrder: form.sortOrder,
+    }));
+    const { db, insertValues } = createDb({
+      selectResults: [[], seeded],
+    });
+
+    const result = await callerWithDb(db).listConsentForms();
+
+    expect(insertValues).toHaveBeenCalledTimes(1);
+    const inserted = (
+      insertValues.mock.calls as unknown as Array<
+        [Array<{ slug: string; practiceId: string }>]
+      >
+    )[0]![0];
+    expect(inserted).toHaveLength(CONSENT_FORM_LIBRARY.length);
+    expect(inserted.every((row) => row.practiceId === PRACTICE_ID)).toBe(true);
+    expect(result).toHaveLength(CONSENT_FORM_LIBRARY.length);
+  });
+
+  it("returns existing forms without reseeding", async () => {
+    const existing = [
+      {
+        id: FORM_ID,
+        slug: "treatment",
+        title: "Consent to treatment",
+        body: "custom body",
+        sortOrder: 0,
+      },
+    ];
+    const { db, insertValues } = createDb({ selectResults: [existing] });
+
+    const result = await callerWithDb(db).listConsentForms();
+
+    expect(result).toEqual(existing);
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+});
+
 describe("consent requests", () => {
   const patientRow = [{ id: PATIENT_ID }];
+  const treatmentForm = CONSENT_FORM_LIBRARY[0]!;
+  const formRow = [
+    { id: FORM_ID, title: treatmentForm.title, body: treatmentForm.body },
+  ];
 
-  it("mints a 60-minute consent link with the default template snapshot", async () => {
+  it("mints a 60-minute consent link snapshotting the chosen form", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-10T12:00:00.000Z"));
     const { db, insertValues } = createDb({
-      selectResults: [patientRow],
+      selectResults: [patientRow, formRow],
       insertedRows: [{ id: RECORD_ID }],
     });
 
     const result = await callerWithDb(db).createConsentRequest({
       patientId: PATIENT_ID,
+      formId: FORM_ID,
     });
 
     expect(result.token).toMatch(/^[0-9a-f]{64}$/);
@@ -923,6 +978,7 @@ describe("consent requests", () => {
         practiceId: PRACTICE_ID,
         patientId: PATIENT_ID,
         createdBy: USER_ID,
+        formId: FORM_ID,
         token: result.token,
         expiresAt: result.expiresAt,
         title: "Consent to treatment",
@@ -933,12 +989,13 @@ describe("consent requests", () => {
 
   it("stamps the open visit so the signed consent attaches to it", async () => {
     const { db, insertValues } = createDb({
-      selectResults: [patientRow, [{ id: APPOINTMENT_ID }]],
+      selectResults: [patientRow, formRow, [{ id: APPOINTMENT_ID }]],
       insertedRows: [{ id: RECORD_ID }],
     });
 
     const result = await callerWithDb(db).createConsentRequest({
       patientId: PATIENT_ID,
+      formId: FORM_ID,
     });
 
     expect(result.appointmentId).toBe(APPOINTMENT_ID);
@@ -949,22 +1006,39 @@ describe("consent requests", () => {
 
   it("snapshots custom consent copy onto the request", async () => {
     const { db, insertValues } = createDb({
-      selectResults: [patientRow],
+      selectResults: [patientRow, formRow],
       insertedRows: [{ id: RECORD_ID }],
     });
 
     await callerWithDb(db).createConsentRequest({
       patientId: PATIENT_ID,
+      formId: FORM_ID,
       title: "Dental cleaning consent",
       bodyText: "I agree to the dental cleaning we talked about.",
     });
 
     expect(insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
+        formId: FORM_ID,
         title: "Dental cleaning consent",
         bodyText: "I agree to the dental cleaning we talked about.",
       })
     );
+  });
+
+  it("rejects dispatch when the form is not in the practice library", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [patientRow, []],
+    });
+
+    await expect(
+      callerWithDb(db).createConsentRequest({
+        patientId: PATIENT_ID,
+        formId: FORM_ID,
+      })
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    expect(insertValues).not.toHaveBeenCalled();
   });
 
   it("keeps consent links restricted to non-viewer staff roles", async () => {
@@ -975,11 +1049,14 @@ describe("consent requests", () => {
       "front_desk",
     ] as const) {
       const { db } = createDb({
-        selectResults: [patientRow],
+        selectResults: [patientRow, formRow],
         insertedRows: [{ id: RECORD_ID }],
       });
       await expect(
-        callerWithDb(db, role).createConsentRequest({ patientId: PATIENT_ID })
+        callerWithDb(db, role).createConsentRequest({
+          patientId: PATIENT_ID,
+          formId: FORM_ID,
+        })
       ).resolves.toMatchObject({ token: expect.any(String) });
     }
 
@@ -987,6 +1064,7 @@ describe("consent requests", () => {
     await expect(
       callerWithDb(db, "viewer").createConsentRequest({
         patientId: PATIENT_ID,
+        formId: FORM_ID,
       })
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(insertValues).not.toHaveBeenCalled();
@@ -996,7 +1074,10 @@ describe("consent requests", () => {
     const { db, insertValues } = createDb({ selectResults: [[]] });
 
     await expect(
-      callerWithDb(db).createConsentRequest({ patientId: PATIENT_ID })
+      callerWithDb(db).createConsentRequest({
+        patientId: PATIENT_ID,
+        formId: FORM_ID,
+      })
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(insertValues).not.toHaveBeenCalled();
