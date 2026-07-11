@@ -14,7 +14,7 @@ import { isValidEmail } from "@/lib/utils";
 const DEMO_ROLES = [
   {
     label: "Admin",
-    description: "Full access — everything a practice owner sees",
+    description: "Full access. Everything a practice owner sees.",
     email: "admin@neighborhoodvet.example.com",
     password: "password123",
   },

@@ -83,7 +83,7 @@ export function TrialBadge() {
         className="inline-flex items-center gap-1.5 rounded-full border border-destructive/30 bg-destructive/10 px-3 py-1 text-xs font-medium text-destructive transition-colors hover:bg-destructive/20"
       >
         <Clock className="h-3.5 w-3.5" />
-        Trial ended — read-only · Reactivate
+        Trial ended, read only · Turn it back on
       </Link>
     );
   }

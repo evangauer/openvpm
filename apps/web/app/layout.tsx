@@ -14,7 +14,7 @@ const dmSans = DM_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "OpenVPM — Open-Source Veterinary Practice Management",
+  title: "OpenVPM: Open-Source Veterinary Practice Management",
   description:
     "The first modern, open-source, API-first practice management system built for the veterinary community. Beautiful, fast, and free.",
   icons: {

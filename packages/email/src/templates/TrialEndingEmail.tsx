@@ -30,15 +30,15 @@ export function TrialEndingEmail({
   return (
     <EmailLayout
       brand={brand}
-      preview={`Your OpenVPM trial ends ${whenLabel} — add billing to keep your data`}
+      preview={`Your OpenVPM trial ends ${whenLabel}. Add a card and nothing changes.`}
       unsubscribeUrl={unsubscribeUrl}
     >
       <Heading>Your trial ends {whenLabel}</Heading>
       <Paragraph>
         Hi {practiceName}, your OpenVPM trial ends on{" "}
-        <strong>{trialEndDate}</strong>. Add billing now to keep running without
-        interruption — your schedule, records, and everything you&apos;ve set up
-        stay exactly as they are.
+        <strong>{trialEndDate}</strong>. Add a card now and nothing changes.
+        Your schedule, your records, and everything you&apos;ve set up stay
+        exactly as they are.
       </Paragraph>
 
       <InfoCard tone="warning">
@@ -54,8 +54,8 @@ export function TrialEndingEmail({
       </Section>
 
       <Paragraph muted>
-        If your trial lapses, your workspace simply becomes read-only — nothing
-        is deleted, and you can reactivate anytime by adding billing.
+        If your trial lapses, your workspace simply becomes read only. Nothing
+        is deleted, and you can turn it back on anytime by adding a card.
       </Paragraph>
     </EmailLayout>
   );

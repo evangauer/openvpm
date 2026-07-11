@@ -84,7 +84,7 @@ export function SetUpTextingStep({
                 <p className="text-xs text-slate-500">
                   {isActive
                     ? "Texting is active."
-                    : "Number set up. Carrier registration is pending — sending turns on once it's approved."}
+                    : "Number set up. Carrier registration is pending. Sending turns on once it's approved."}
                 </p>
               </div>
             ) : (

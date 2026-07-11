@@ -15,7 +15,7 @@ export interface WelcomeEmailProps {
 
 const STEPS = [
   "Take the 60-second tour of the schedule, records, and billing.",
-  "Make it yours — add your logo, accent color, and invite your team.",
+  "Make it yours: add your logo, accent color, and invite your team.",
   "Ask the AI assistant something, like “which pets are overdue for vaccines?”",
 ];
 
