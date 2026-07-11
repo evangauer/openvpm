@@ -17,6 +17,8 @@ export interface WelcomeLocalState {
   /** ISO timestamp of the first time this user saw (or skipped) the welcome. */
   seenAt?: string;
   guides?: Partial<Record<GuideId, "completed">>;
+  /** ISO timestamp of the one-time setup offer shown after the last guide. */
+  setupOfferedAt?: string;
 }
 
 function storageKey(userId: string): string {
@@ -63,6 +65,16 @@ export function markGuideCompleted(
   writeWelcomeState(userId, {
     ...state,
     guides: { ...state.guides, [guide]: "completed" },
+  });
+}
+
+export function markSetupOffered(userId: string | null | undefined): void {
+  if (!userId) return;
+  const state = readWelcomeState(userId);
+  if (state.setupOfferedAt) return;
+  writeWelcomeState(userId, {
+    ...state,
+    setupOfferedAt: new Date().toISOString(),
   });
 }
 

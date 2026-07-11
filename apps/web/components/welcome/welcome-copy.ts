@@ -17,9 +17,9 @@ export const WELCOME_COPY = {
   reopenHint: "You can come back any time from Guides in the sidebar.",
   setupInstead: "Set up my clinic instead",
   doneBadge: "Done",
-  firstWin: {
-    title: "That was your first win!",
-    body: "Ready to make OpenVPM yours? Add your logo, your team, and your real clients.",
+  allDone: {
+    title: "You tried them all!",
+    body: "That was every guide. Ready to make OpenVPM yours? Add your logo, your team, and your real clients.",
     accept: "Make it mine",
     later: "Later",
   },

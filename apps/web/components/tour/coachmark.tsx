@@ -99,8 +99,14 @@ export function Coachmark({
                 Back
               </Button>
             ) : null}
-            <Button size="sm" onClick={onNext}>
-              {isLast ? "Finish" : "Next"}
+            {/* On do-it steps (advanceOn) the page owns the primary action,
+                so the button reads as the way past, not the way forward. */}
+            <Button
+              size="sm"
+              variant={!isLast && step.advanceOn ? "ghost" : "default"}
+              onClick={onNext}
+            >
+              {isLast ? "Finish" : step.advanceOn ? "Skip this step" : "Next"}
             </Button>
           </div>
         </div>

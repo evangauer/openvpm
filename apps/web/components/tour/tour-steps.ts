@@ -18,6 +18,11 @@ export interface TourStep {
   route?: string;
   /** `data-tour` value of the element to spotlight. Absent = centered card. */
   anchor?: string;
+  /**
+   * Only visit this step while its anchor is in the DOM; Next and Back pass
+   * over it otherwise (e.g. the AI reply beat when nothing was ever sent).
+   */
+  requiresAnchor?: boolean;
   title: string;
   body: string;
   /** Guide signal that auto-advances past this step (never blocks Next). */
@@ -94,24 +99,36 @@ export function buildTourSteps(ctx: TourContext = {}): TourStep[] {
     });
   }
 
-  steps.push(
-    {
-      id: "agent",
-      route: `/agent?ask=${encodeURIComponent(AGENT_TOUR_QUESTION)}`,
-      anchor: "agent-input",
-      title: "Now meet your AI helper",
-      body: agentReady
-        ? "We typed a real question for you. Press send and watch it check every chart in seconds."
-        : "Ask about your pets and your data in plain words, right here. Your AI helper turns on once your workspace key is set.",
-      advanceOn: agentReady ? GUIDE_SIGNALS.agentRunSucceeded : undefined,
-    },
-    {
-      id: "finish",
-      route: "/",
-      title: "You're all set",
-      body: "That was your clinic: the day sheet, the charts, the bills, and your AI helper. Your data is always yours. Export it any time.",
-    }
-  );
+  steps.push({
+    id: "agent",
+    route: `/agent?ask=${encodeURIComponent(AGENT_TOUR_QUESTION)}`,
+    anchor: "agent-input",
+    title: "Now meet your AI helper",
+    body: agentReady
+      ? "We typed a real question for you. Press send and watch it check every chart in seconds."
+      : "Ask about your pets and your data in plain words, right here. Your AI helper turns on once your workspace key is set.",
+    advanceOn: agentReady ? GUIDE_SIGNALS.agentRunSucceeded : undefined,
+  });
+
+  // The payoff beat: stay on the answer and spotlight it. Without this the
+  // finish step navigated home the moment the reply landed, so nobody ever
+  // read what the AI wrote.
+  if (agentReady) {
+    steps.push({
+      id: "agent-reply",
+      anchor: "agent-reply",
+      requiresAnchor: true,
+      title: "There is your answer",
+      body: "The AI read your charts and answered in plain words. Take a moment and read it. You can ask anything like this, any time.",
+    });
+  }
+
+  steps.push({
+    id: "finish",
+    route: "/",
+    title: "You're all set",
+    body: "That was your clinic: the day sheet, the charts, the bills, and your AI helper. Your data is always yours. Export it any time.",
+  });
 
   return steps;
 }

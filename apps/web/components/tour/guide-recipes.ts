@@ -55,6 +55,9 @@ export function buildGuideSteps(
         },
         {
           id: "done",
+          // Spotlight the real answer so the win lands. requiresAnchor lets
+          // the guide end quietly if the user never pressed send.
+          ...(ready ? { anchor: "agent-reply", requiresAnchor: true } : {}),
           title: "That easy",
           body: "The AI just read your charts so you did not have to. Ask it anything about your clinic, any time.",
         },

@@ -24,8 +24,23 @@ import {
   GUIDE_SIGNAL_EVENT,
   guideSignalName,
 } from "./guide-signals";
-import { useAnchorRect } from "./use-tour-anchor";
+import { findTourAnchor, useAnchorRect } from "./use-tour-anchor";
 import { Coachmark } from "./coachmark";
+
+/**
+ * Walk from `from` in direction `dir`, passing over steps whose required
+ * anchor is not in the DOM right now (e.g. the AI reply beat when the user
+ * skipped sending). Can return -1 or steps.length when nothing is showable.
+ */
+function nextShowable(steps: GuideStep[], from: number, dir: 1 | -1): number {
+  let i = from;
+  while (i >= 0 && i < steps.length) {
+    const s = steps[i]!;
+    if (s.requiresAnchor && s.anchor && !findTourAnchor(s.anchor)) i += dir;
+    else break;
+  }
+  return i;
+}
 
 interface TourContextValue {
   /**
@@ -178,7 +193,8 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
   const onNext = useCallback(() => {
     setRun((r) => {
       if (!r) return r;
-      if (r.index >= r.steps.length - 1) {
+      const next = nextShowable(r.steps, r.index + 1, 1);
+      if (next >= r.steps.length) {
         if (r.recipe === "tour") {
           persist("completed");
         } else {
@@ -189,10 +205,10 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
       }
       // Navigate WITH the step change (not as a trailing effect) so rapid
       // Next clicks always land on the newest step's route.
-      const nextStep = r.steps[r.index + 1]!;
+      const nextStep = r.steps[next]!;
       if (nextStep.route) router.push(nextStep.route);
       if (r.recipe === "tour") persist("in_progress", nextStep.id);
-      return { ...r, index: r.index + 1 };
+      return { ...r, index: next };
     });
   }, [persist, router, userId]);
 
@@ -200,9 +216,11 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
     () =>
       setRun((r) => {
         if (!r || r.index <= 0) return r;
-        const prevStep = r.steps[r.index - 1]!;
+        const prev = nextShowable(r.steps, r.index - 1, -1);
+        if (prev < 0) return r;
+        const prevStep = r.steps[prev]!;
         if (prevStep.route) router.push(prevStep.route);
-        return { ...r, index: r.index - 1 };
+        return { ...r, index: prev };
       }),
     [router]
   );

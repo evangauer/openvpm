@@ -18,7 +18,11 @@ import {
   visibleWelcomeCards,
   type WelcomeCardId,
 } from "@/lib/welcome/cards";
-import { markWelcomeSeen, readWelcomeState } from "@/lib/welcome/local-state";
+import {
+  markSetupOffered,
+  markWelcomeSeen,
+  readWelcomeState,
+} from "@/lib/welcome/local-state";
 import { firstRunMode } from "@/lib/welcome/first-run";
 import { useTour } from "@/components/tour/tour-provider";
 import { useOnboardingJourney } from "@/components/onboarding/journey-overlay";
@@ -84,7 +88,7 @@ export function WelcomeProvider({ children }: { children: React.ReactNode }) {
   });
 
   const [open, setOpen] = useState(false);
-  const [firstWinOpen, setFirstWinOpen] = useState(false);
+  const [setupOfferOpen, setSetupOfferOpen] = useState(false);
   // Auto-open decides at most once per mount; finishing/skipping never re-nags.
   const autoDecided = useRef(false);
   // Captured at mount: the ?guides=1 strip below rewrites the URL, which
@@ -94,7 +98,7 @@ export function WelcomeProvider({ children }: { children: React.ReactNode }) {
   // Manual open (sidebar Guides) works regardless of first-run mode.
   const openWelcome = useCallback(() => {
     if (!authed) return;
-    setFirstWinOpen(false);
+    setSetupOfferOpen(false);
     setOpen(true);
   }, [authed]);
 
@@ -144,26 +148,32 @@ export function WelcomeProvider({ children }: { children: React.ReactNode }) {
     router,
   ]);
 
-  // After a guide finishes: admins mid-onboarding get the wizard offer on
-  // their first win; everyone else returns to the cards to pick another.
+  // After a guide finishes, return to the cards so the next one is one click
+  // away. Only when an admin mid-onboarding has tried every visible card do
+  // we offer setup, once; the docked checklist keeps a standing path to it.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const onCompleted = (event: Event) => {
       const recipe = guideCompletedRecipe(event);
       if (!recipe || recipe === "tour") return;
-      const completedGuides = Object.keys(
-        readWelcomeState(userId).guides ?? {}
-      ).filter((g) => g !== "tour");
-      const firstWin =
+      const state = readWelcomeState(userId);
+      const done = new Set(Object.keys(state.guides ?? {}));
+      const allDone = visibleWelcomeCards({ role }).every((c) => done.has(c));
+      const offerSetup =
         isAdmin &&
         onboardingStatus.data?.completedAt == null &&
-        completedGuides.length <= 1;
-      if (firstWin) setFirstWinOpen(true);
-      else setOpen(true);
+        allDone &&
+        !state.setupOfferedAt;
+      if (offerSetup) {
+        markSetupOffered(userId);
+        setSetupOfferOpen(true);
+      } else {
+        setOpen(true);
+      }
     };
     window.addEventListener(GUIDE_COMPLETED_EVENT, onCompleted);
     return () => window.removeEventListener(GUIDE_COMPLETED_EVENT, onCompleted);
-  }, [isAdmin, onboardingStatus.data, userId]);
+  }, [isAdmin, onboardingStatus.data, userId, role]);
 
   const startGuide = useCallback(
     (card: WelcomeCardId, ctx: GuideContext) => {
@@ -219,14 +229,14 @@ export function WelcomeProvider({ children }: { children: React.ReactNode }) {
           onSetupInstead={setupInstead}
         />
       ) : null}
-      {firstWinOpen ? (
-        <FirstWinOffer
+      {setupOfferOpen ? (
+        <SetupOffer
           onAccept={() => {
-            setFirstWinOpen(false);
+            setSetupOfferOpen(false);
             openJourney();
           }}
           onLater={() => {
-            setFirstWinOpen(false);
+            setSetupOfferOpen(false);
             setOpen(true);
           }}
         />
@@ -249,7 +259,7 @@ function resolveVariant(): WelcomeVariant {
     : "vignette";
 }
 
-function FirstWinOffer({
+function SetupOffer({
   onAccept,
   onLater,
 }: {
@@ -260,24 +270,24 @@ function FirstWinOffer({
     <div className="fixed inset-0 z-[85] flex items-center justify-center bg-slate-900/50 p-4">
       <div
         role="dialog"
-        aria-label={WELCOME_COPY.firstWin.title}
+        aria-label={WELCOME_COPY.allDone.title}
         className="w-full max-w-sm rounded-xl border border-border bg-card p-6 text-center shadow-xl"
       >
         <span className="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700">
           <PartyPopper className="h-5 w-5" aria-hidden="true" />
         </span>
         <h2 className="mt-3 font-heading text-lg font-semibold">
-          {WELCOME_COPY.firstWin.title}
+          {WELCOME_COPY.allDone.title}
         </h2>
         <p className="mt-1.5 text-sm leading-6 text-muted-foreground">
-          {WELCOME_COPY.firstWin.body}
+          {WELCOME_COPY.allDone.body}
         </p>
         <div className="mt-5 flex items-center justify-center gap-2">
           <Button variant="ghost" size="sm" onClick={onLater}>
-            {WELCOME_COPY.firstWin.later}
+            {WELCOME_COPY.allDone.later}
           </Button>
           <Button size="sm" onClick={onAccept}>
-            {WELCOME_COPY.firstWin.accept}
+            {WELCOME_COPY.allDone.accept}
           </Button>
         </div>
       </div>

@@ -6,6 +6,7 @@ import {
   type GuideContext,
 } from "@/components/tour/guide-recipes";
 import { GUIDE_SIGNALS } from "@/components/tour/guide-signals";
+import { buildTourSteps } from "@/components/tour/tour-steps";
 import type { GuideId } from "../welcome/cards";
 
 const ALL_GUIDES: GuideId[] = [
@@ -24,6 +25,8 @@ const ALL_GUIDES: GuideId[] = [
  */
 const ANCHOR_SOURCES: Record<string, string> = {
   "agent-input": "app/(dashboard)/agent/page.tsx",
+  "agent-reply": "app/(dashboard)/agent/page.tsx",
+  "invoice-detail": "app/(dashboard)/billing/page.tsx",
   "schedule-calendar": "app/(dashboard)/schedule/page.tsx",
   "whiteboard-board": "app/(dashboard)/whiteboard/page.tsx",
   "client-portal-link": "app/(dashboard)/clients/[id]/page.tsx",
@@ -36,8 +39,21 @@ const RICH_CONTEXT: GuideContext = {
   agentConfigured: true,
 };
 
+const DEEP_TOUR_CONTEXT = {
+  demoPatientName: "Biscuit",
+  demoPatientId: "patient-1",
+  demoInvoiceId: "invoice-1",
+  agentConfigured: true,
+};
+
 function allSteps(ctx: GuideContext) {
-  return ALL_GUIDES.flatMap((id) => buildGuideSteps(id, ctx));
+  return [
+    ...ALL_GUIDES.flatMap((id) => buildGuideSteps(id, ctx)),
+    ...buildTourSteps({
+      ...DEEP_TOUR_CONTEXT,
+      agentConfigured: ctx.agentConfigured === true,
+    }),
+  ];
 }
 
 describe("guide recipes", () => {
@@ -79,6 +95,34 @@ describe("guide recipes", () => {
     });
     expect(steps[0]!.advanceOn).toBeUndefined();
     expect(steps[0]!.body).toContain("turns on once");
+    // No reply to spotlight either, so the closing step stays centered.
+    expect(steps[1]!.anchor).toBeUndefined();
+  });
+
+  it("ask-ai spotlights the real answer on its closing step", () => {
+    const steps = buildGuideSteps("ask-ai", RICH_CONTEXT);
+    const done = steps[steps.length - 1]!;
+    expect(done.anchor).toBe("agent-reply");
+    // If the user never pressed send there is no reply; the guide must end
+    // without bragging about an answer that does not exist.
+    expect(done.requiresAnchor).toBe(true);
+  });
+
+  it("the deep tour stays on the AI answer before finishing", () => {
+    const steps = buildTourSteps(DEEP_TOUR_CONTEXT);
+    const ids = steps.map((s) => s.id);
+    expect(ids.indexOf("agent-reply")).toBe(ids.indexOf("agent") + 1);
+    expect(ids.indexOf("finish")).toBe(ids.indexOf("agent-reply") + 1);
+    const reply = steps.find((s) => s.id === "agent-reply")!;
+    expect(reply.route).toBeUndefined(); // stays on /agent with the answer
+    expect(reply.anchor).toBe("agent-reply");
+    expect(reply.requiresAnchor).toBe(true);
+    // Without a configured agent there is no answer to stay on.
+    const shallow = buildTourSteps({
+      ...DEEP_TOUR_CONTEXT,
+      agentConfigured: false,
+    });
+    expect(shallow.map((s) => s.id)).not.toContain("agent-reply");
   });
 
   it("your-day names the demo patient when present and stays generic otherwise", () => {

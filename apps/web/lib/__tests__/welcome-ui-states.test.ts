@@ -90,6 +90,18 @@ describe("welcome surface UI states", () => {
     expect(settingsSource).toContain("onClick={openWelcome}");
   });
 
+  it("returns to the cards after every guide; setup waits for the last one", () => {
+    // Evan's walkthrough note: finishing one Polaroid should land back on
+    // the Polaroids, not in the setup wizard. The Make-it-mine offer fires
+    // only when every visible card is done, and only once per user/device.
+    expect(providerSource).toContain(
+      'visibleWelcomeCards({ role }).every((c) => done.has(c))'
+    );
+    expect(providerSource).toContain("!state.setupOfferedAt");
+    expect(providerSource).toContain("markSetupOffered(userId)");
+    expect(copySource).toContain("Make it mine");
+  });
+
   it("keeps the copy deck in voice: no em or en dashes", () => {
     expect(copySource).not.toMatch(/[—–]/);
   });

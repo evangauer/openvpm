@@ -117,6 +117,19 @@ function AgentRunner() {
   const submitDisabled =
     !canRun || !isAgentInstructionValid(instruction) || run.isPending;
   const hasConversation = messages.length > 0;
+  const lastReplyId = [...messages]
+    .reverse()
+    .find((m) => m.role === "assistant" && !m.isError)?.id;
+
+  // Signal the tour AFTER the reply is committed to the DOM so its next step
+  // can spotlight the answer. Firing from onSuccess ran before render, and
+  // the tour moved on from a reply that was not on screen yet.
+  const signaledReplyId = useRef<number | null>(null);
+  useEffect(() => {
+    if (lastReplyId == null || signaledReplyId.current === lastReplyId) return;
+    signaledReplyId.current = lastReplyId;
+    emitGuideSignal(GUIDE_SIGNALS.agentRunSucceeded);
+  }, [lastReplyId]);
 
   useEffect(() => {
     if (!canRun && allowWrites) {
@@ -169,7 +182,6 @@ function AgentRunner() {
               toolCalls: data.toolCalls,
             },
           ]);
-          emitGuideSignal(GUIDE_SIGNALS.agentRunSucceeded);
         },
         onError: (err) => {
           setMessages((prev) => [
@@ -301,9 +313,16 @@ function AgentRunner() {
           </div>
         ) : (
           <div className="space-y-4 pb-2">
-            {messages.map((m) => (
-              <MessageBubble key={m.id} message={m} />
-            ))}
+            {messages.map((m) =>
+              m.id === lastReplyId ? (
+                // The tour's reply beat spotlights the newest good answer.
+                <div key={m.id} data-tour="agent-reply">
+                  <MessageBubble message={m} />
+                </div>
+              ) : (
+                <MessageBubble key={m.id} message={m} />
+              )
+            )}
             {run.isPending ? <TypingIndicator /> : null}
           </div>
         )}
