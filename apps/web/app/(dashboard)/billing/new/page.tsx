@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/common/empty-state";
 import { toast } from "sonner";
+import { ServicePicker } from "@/components/billing/service-picker";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
 import { formatCurrency } from "@/lib/locale/format";
 import {
@@ -472,23 +473,16 @@ function NewInvoiceForm() {
             ) : null}
             <div className="grid grid-cols-12 gap-2">
               <div className="col-span-4">
-                <select
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                <ServicePicker
+                  services={serviceOptions}
                   value={selectedServiceId}
-                  onChange={(e) => handleServiceSelect(e.target.value)}
+                  onSelect={handleServiceSelect}
                   disabled={
                     servicesQuery.isLoading ||
                     !!servicesQuery.error ||
                     servicesMissing
                   }
-                >
-                  <option value="">Select a service...</option>
-                  {serviceOptions.map((service) => (
-                    <option key={service.id} value={service.id}>
-                      {service.name} - ${service.defaultPrice}
-                    </option>
-                  ))}
-                </select>
+                />
               </div>
               <div className="col-span-3">
                 <Input
