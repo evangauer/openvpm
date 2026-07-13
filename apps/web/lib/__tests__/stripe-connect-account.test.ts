@@ -36,7 +36,7 @@ describe("createConnectAccount", () => {
     expect(params.controller).toEqual({
       losses: { payments: "stripe" },
       fees: { payer: "account" },
-      stripe_dashboard: { type: "express" },
+      stripe_dashboard: { type: "full" },
       requirement_collection: "stripe",
     });
     expect(params.country).toBe("US");

@@ -181,13 +181,15 @@ export async function createConnectAccount(data: {
   return stripe.accounts.create({
     // Controller-based account matching our completed platform profile:
     // Stripe carries negative-balance liability and ongoing compliance, the
-    // clinic pays standard Stripe processing fees, onboarding and dashboard
-    // are Stripe-hosted (Express). Legacy `type: "express"` is the
-    // platform-liable configuration and Stripe rejects it under this profile.
+    // clinic pays standard Stripe processing fees, and onboarding is
+    // Stripe-hosted. The dashboard must be "full" — Stripe requires platform
+    // fee-collection and loss liability for the Express dashboard, so under
+    // this profile the clinic gets its own full Stripe Dashboard (which also
+    // fits the promise that practices own their Stripe account outright).
     controller: {
       losses: { payments: "stripe" },
       fees: { payer: "account" },
-      stripe_dashboard: { type: "express" },
+      stripe_dashboard: { type: "full" },
       requirement_collection: "stripe",
     },
     country: (data.country ?? "US").toUpperCase(),

@@ -832,21 +832,16 @@ export const billingRouter = createRouter({
 
       try {
         const link = await createConnectLoginLink(existing.stripeAccountId);
-        if (!isSafeCheckoutRedirectUrl(link?.url)) {
-          throw new TRPCError({
-            code: "SERVICE_UNAVAILABLE",
-            message: "Stripe dashboard is unavailable.",
-          });
+        if (isSafeCheckoutRedirectUrl(link?.url)) {
+          return { url: link!.url };
         }
-        return { url: link.url };
       } catch (err) {
-        if (err instanceof TRPCError) throw err;
-        console.error("[Stripe Connect] dashboard link failed", err);
-        throw new TRPCError({
-          code: "SERVICE_UNAVAILABLE",
-          message: "Stripe dashboard is unavailable.",
-        });
+        // Login links only exist for Express-dashboard accounts. Accounts
+        // with the full Stripe Dashboard sign in to Stripe directly, so fall
+        // through to the standard dashboard URL.
+        console.warn("[Stripe Connect] no login link for account", err);
       }
+      return { url: "https://dashboard.stripe.com/login" };
     }),
 
   listInvoices: protectedProcedure
