@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const accountsCreate = vi.fn(async () => ({ id: "acct_test" }));
+const accountsCreate = vi.fn(async (_params: Record<string, unknown>) => ({
+  id: "acct_test",
+}));
 
 vi.mock("stripe", () => ({
   default: vi.fn(() => ({
@@ -26,7 +28,7 @@ describe("createConnectAccount", () => {
     });
 
     expect(accountsCreate).toHaveBeenCalledTimes(1);
-    const params = accountsCreate.mock.calls[0]![0] as Record<string, unknown>;
+    const params = accountsCreate.mock.calls[0]![0];
 
     // The platform profile is the Stripe-manages-losses configuration;
     // legacy `type: "express"` (platform-liable) is rejected under it.
