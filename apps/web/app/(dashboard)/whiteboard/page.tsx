@@ -534,7 +534,7 @@ export default function WhiteboardPage() {
     isLoading,
     error,
   } = trpc.whiteboard.getActive.useQuery(undefined, {
-    refetchInterval: 5000,
+    refetchInterval: 30000,
   });
   const settingsQuery = trpc.whiteboard.settings.useQuery();
   const practiceSettings = settingsQuery.data;
