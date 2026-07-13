@@ -29,6 +29,7 @@ Headers are matched loosely (case, spaces, and underscores do not matter) and co
 - **AVImark**: Information Search → pull Clients and Patients → Results → Export → save as CSV. Vaccine history exports the same way from medical history. Your Covetrus rep can also produce full exports.
 - **Cornerstone**: Reports → Client report and Patient report → save to CSV. IDEXX support can pull complete exports on request.
 - **ezyVet**: Records dashboard → search Contacts and Animals → Export to CSV.
+- **Shepherd**: Reports → export client and patient lists as CSV. For your full record set, ask Shepherd support for your data export; Shepherd is cloud based, so support sends the files.
 - **Anything else**: any spreadsheet saved as CSV works. When in doubt, send us a sample row and we will confirm the mapping.
 
 ## Import order (it matters)

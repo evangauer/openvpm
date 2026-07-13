@@ -7,7 +7,7 @@
  */
 
 export interface MigrationSource {
-  id: "avimark" | "cornerstone" | "ezyvet" | "other";
+  id: "avimark" | "cornerstone" | "ezyvet" | "shepherd" | "other";
   name: string;
   /** How to get CSV exports out of that system, in one breath. */
   exportHint: string;
@@ -31,6 +31,12 @@ export const MIGRATION_SOURCES: MigrationSource[] = [
     name: "ezyVet",
     exportHint:
       "In ezyVet, open the Records dashboard, search Contacts and Animals, and use Export to download CSV files.",
+  },
+  {
+    id: "shepherd",
+    name: "Shepherd",
+    exportHint:
+      "In Shepherd, use Reports to export your client and patient lists as CSV. For your full records, ask Shepherd support for your data export. Shepherd is cloud based, so support sends the files.",
   },
   {
     id: "other",
