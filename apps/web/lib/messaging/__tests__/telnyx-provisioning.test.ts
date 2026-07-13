@@ -19,13 +19,13 @@ describe("parseAvailableNumbers", () => {
     expect(
       parseAvailableNumbers({
         data: [
-          { phone_number: "+14157271696", cost_information: { monthly_cost: "1.00000" } },
-          { phone_number: "+14158735087", cost_information: { monthly_cost: "1.00000" } },
+          { phone_number: "+15555550100", cost_information: { monthly_cost: "1.00000" } },
+          { phone_number: "+15555550101", cost_information: { monthly_cost: "1.00000" } },
         ],
       })
     ).toEqual([
-      { phoneNumber: "+14157271696", monthlyCost: "1.00000" },
-      { phoneNumber: "+14158735087", monthlyCost: "1.00000" },
+      { phoneNumber: "+15555550100", monthlyCost: "1.00000" },
+      { phoneNumber: "+15555550101", monthlyCost: "1.00000" },
     ]);
   });
 
@@ -54,7 +54,7 @@ describe("Telnyx provisioning requests", () => {
           JSON.stringify({
             data: [
               {
-                phone_number: "+14157271696",
+                phone_number: "+15555550100",
                 cost_information: { monthly_cost: "1.00000" },
               },
             ],
@@ -64,9 +64,9 @@ describe("Telnyx provisioning requests", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
-      searchAvailableNumbers({ areaCode: "415", limit: 3 })
+      searchAvailableNumbers({ areaCode: "555", limit: 3 })
     ).resolves.toEqual([
-      { phoneNumber: "+14157271696", monthlyCost: "1.00000" },
+      { phoneNumber: "+15555550100", monthlyCost: "1.00000" },
     ]);
 
     const [url, init] = fetchMock.mock.calls[0] ?? [];
@@ -76,7 +76,7 @@ describe("Telnyx provisioning requests", () => {
     expect(String(url)).toContain("filter%5Bcountry_code%5D=US");
     expect(String(url)).toContain("filter%5Bfeatures%5D%5B%5D=sms");
     expect(String(url)).toContain("filter%5Blimit%5D=3");
-    expect(String(url)).toContain("filter%5Bnational_destination_code%5D=415");
+    expect(String(url)).toContain("filter%5Bnational_destination_code%5D=555");
     expect(init).toEqual(
       expect.objectContaining({
         method: "GET",
