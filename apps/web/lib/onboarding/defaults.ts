@@ -196,8 +196,7 @@ export async function seedDemoData(
 
   // Build a day of appointments inside business hours (clinic local time),
   // plus one in the future. Hours render 8-18 on the Schedule. The shape
-  // follows how a real clinic day is staggered (docs/agents/
-  // vet-workflow-research.md §6): morning wellness anchors, a same-day sick
+  // follows how a real clinic day is staggered: morning wellness anchors, a same-day sick
   // visit, short vaccine/recheck slots, one doctor-less tech appointment
   // (nail trims and boosters run without a doctor, and it shows the Team
   // lane), and one deliberate mid-afternoon overlap so the side-by-side

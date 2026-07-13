@@ -51,3 +51,4 @@ package-lock.json
 # Local MCP server config (not for the public repo)
 .mcp.json
 .codex/
+.gstack/
