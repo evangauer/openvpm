@@ -113,6 +113,10 @@ const HOSTED_READ_ONLY_MUTATION_ALLOWLIST = new Set([
   "settings.requestAccountDeletion",
   "subscription.createCheckout",
   "subscription.openBillingPortal",
+  // Platform-operator tooling must keep working even when the operator's own
+  // practice trial has lapsed; the procedure itself gates on the
+  // PLATFORM_ADMIN_EMAILS allowlist.
+  "admin.extendTrial",
 ]);
 
 function practiceNotFound(): TRPCError {

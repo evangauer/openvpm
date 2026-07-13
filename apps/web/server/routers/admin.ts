@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { isNull, sql, desc } from "drizzle-orm";
+import { and, eq, isNull, sql, desc } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure } from "../trpc";
 import { db } from "@openpims/db/client";
@@ -120,6 +120,60 @@ export const adminRouter = createRouter({
     };
     })
   ),
+
+  /**
+   * Platform-operator tooling: give a trialing practice more time. Extends
+   * from the later of now / the current trial end, so a lapsed no-card trial
+   * comes back to life. Paid, past-due, and canceled practices are managed in
+   * Stripe, never here.
+   */
+  extendTrial: platformAdminProcedure
+    .input(
+      z.object({
+        practiceId: z.string().uuid(),
+        days: z.number().int().min(1).max(90),
+      })
+    )
+    .mutation(async ({ input }) =>
+      withSystem(db, async (tx) => {
+        const [practice] = await tx
+          .select({
+            id: practices.id,
+            billingStatus: practices.billingStatus,
+            trialEndsAt: practices.trialEndsAt,
+          })
+          .from(practices)
+          .where(
+            and(eq(practices.id, input.practiceId), isNull(practices.deletedAt))
+          )
+          .limit(1);
+
+        if (!practice) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Practice not found." });
+        }
+        if (practice.billingStatus !== "trialing") {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Only trialing practices can be extended. Paid and canceled practices are managed through Stripe.",
+          });
+        }
+
+        const now = Date.now();
+        const base =
+          practice.trialEndsAt && practice.trialEndsAt.getTime() > now
+            ? practice.trialEndsAt.getTime()
+            : now;
+        const trialEndsAt = new Date(base + input.days * 24 * 60 * 60 * 1000);
+
+        await tx
+          .update(practices)
+          .set({ trialEndsAt, updatedAt: new Date() })
+          .where(eq(practices.id, input.practiceId));
+
+        return { practiceId: input.practiceId, trialEndsAt };
+      })
+    ),
 
   /**
    * Trial funnel: signups -> activated -> subscribed, derived from existing

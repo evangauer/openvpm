@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   ShieldAlert,
   Building2,
@@ -52,12 +53,21 @@ const statusStyles: Record<string, string> = {
 };
 
 export default function AdminPage() {
+  const utils = trpc.useUtils();
   const { data, isLoading, error, refetch } =
     trpc.admin.overview.useQuery(undefined, {
       retry: false,
     });
   const { data: funnel, error: funnelError } =
     trpc.admin.activationFunnel.useQuery({ days: 30 }, { retry: false });
+  const [extendTrialError, setExtendTrialError] = useState<string | null>(null);
+  const extendTrial = trpc.admin.extendTrial.useMutation({
+    onSuccess: () => {
+      setExtendTrialError(null);
+      utils.admin.overview.invalidate();
+    },
+    onError: (err) => setExtendTrialError(err.message),
+  });
 
   if (error?.data?.code === "FORBIDDEN") {
     return (
@@ -176,6 +186,11 @@ export default function AdminPage() {
       </div>
 
       {/* Practices table */}
+      {extendTrialError && (
+        <div className="mt-6 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+          Could not extend the trial: {extendTrialError}
+        </div>
+      )}
       <div className="mt-8 overflow-x-auto rounded-lg border border-border">
         <table className="w-full text-sm">
           <thead>
@@ -208,7 +223,22 @@ export default function AdminPage() {
                   </span>
                 </td>
                 <td className="px-4 py-2.5 text-muted-foreground">
-                  {formatDate(p.trialEndsAt, p.timezone)}
+                  <span className="inline-flex items-center gap-2">
+                    {formatDate(p.trialEndsAt, p.timezone)}
+                    {p.billingStatus === "trialing" && (
+                      <button
+                        type="button"
+                        title="Give this trial 14 more days"
+                        disabled={extendTrial.isPending}
+                        onClick={() =>
+                          extendTrial.mutate({ practiceId: p.id, days: 14 })
+                        }
+                        className="rounded border border-border px-1.5 py-0.5 text-xs font-medium text-foreground hover:bg-muted disabled:opacity-50"
+                      >
+                        +14d
+                      </button>
+                    )}
+                  </span>
                 </td>
                 <td className="px-4 py-2.5 text-right tabular-nums">{p.locationCount}</td>
                 <td className="px-4 py-2.5 text-right tabular-nums">{p.userCount}</td>
