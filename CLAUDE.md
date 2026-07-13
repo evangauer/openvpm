@@ -23,3 +23,17 @@ Quick rules (full detail in the manual):
 - Sign every comment with your role: `[agent:eng|qa|gtm|ops|design]`.
 - **Never** delete issues, bulk-transition, or move a `risk:*` ticket to *Done* —
   those need a human.
+
+## Public voice — PRs, commits, and issues
+
+This is a public open-source repo. Pull request descriptions, commit messages,
+and GitHub issues are community-facing. Write them for the project and the
+clinics it serves, not as an internal changelog:
+
+- Frame every change by the problem it solves for people using OpenVPM.
+- No customer, prospect, or partner names. No team-member names or first-person
+  founder references ("X promised", "X asked for").
+- No internal specifics: deals, conversations and their dates, production log
+  or request ids, dashboard links, account identifiers.
+- Who asked, why now, and other context with names belongs in the private
+  tracker (Jira) — link the ticket key instead.
