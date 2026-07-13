@@ -37,3 +37,7 @@ clinics it serves, not as an internal changelog:
   or request ids, dashboard links, account identifiers.
 - Who asked, why now, and other context with names belongs in the private
   tracker (Jira) — link the ticket key instead.
+- Product roadmap and decision records stay out of the repo. Internal
+  journals, launch checklists, call notes, and strategy write-ups live in the
+  private tracker. The exception is community-facing material that materially
+  betters the open-source project (ROADMAP.md, user docs, runbooks).
