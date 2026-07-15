@@ -4,6 +4,7 @@ import {
   csvToClientRecords,
   csvToPatientRecords,
   csvToVaccinationRecords,
+  csvToSoapNoteRecords,
 } from "../import";
 
 describe("parseCsv", () => {
@@ -204,6 +205,85 @@ describe("csvToVaccinationRecords", () => {
   it("does not map vaccination records from malformed quoted CSV", () => {
     const { records, errors } = csvToVaccinationRecords(
       'clientEmail,patientName,vaccineName,dateGiven\n"jane@x.com,Rex'
+    );
+    expect(records).toEqual([]);
+    expect(errors).toEqual(["CSV has an unterminated quoted field."]);
+  });
+});
+
+describe("csvToSoapNoteRecords", () => {
+  it("maps split SOAP columns with alias headers and US dates", () => {
+    const csv =
+      "Owner Email,Pet Name,Visit Date,Subjective,Objective,Assessment,Plan\n" +
+      "jane@x.com,Rex,3/5/2024,Vomiting since Tuesday,BAR T 101.2,Gastritis,Bland diet + recheck";
+    const { records, errors } = csvToSoapNoteRecords(csv);
+    expect(errors).toEqual([]);
+    expect(records[0]).toEqual({
+      clientEmail: "jane@x.com",
+      patientName: "Rex",
+      date: "2024-03-05",
+      subjective: "Vomiting since Tuesday",
+      objective: "BAR T 101.2",
+      assessment: "Gastritis",
+      plan: "Bland diet + recheck",
+    });
+  });
+
+  it("lands a single free-text notes column in the Subjective section", () => {
+    const csv =
+      "clientEmail,patientName,date,notes\n" +
+      "jane@x.com,Rex,2024-03-05,Annual wellness exam. All normal.";
+    const { records, errors } = csvToSoapNoteRecords(csv);
+    expect(errors).toEqual([]);
+    expect(records[0]).toEqual({
+      clientEmail: "jane@x.com",
+      patientName: "Rex",
+      date: "2024-03-05",
+      subjective: "Annual wellness exam. All normal.",
+      objective: undefined,
+      assessment: undefined,
+      plan: undefined,
+    });
+  });
+
+  it("prefers an explicit subjective column over a generic notes column", () => {
+    const csv =
+      "clientEmail,patientName,date,subjective,notes\n" +
+      "jane@x.com,Rex,2024-03-05,Owner reports limping,Ignore me";
+    const { records } = csvToSoapNoteRecords(csv);
+    expect(records[0]!.subjective).toBe("Owner reports limping");
+  });
+
+  it("maps diagnosis and history synonyms onto assessment and subjective", () => {
+    const csv =
+      "clientEmail,patientName,date,history,diagnosis\n" +
+      "jane@x.com,Rex,2024-03-05,Coughing,Kennel cough";
+    const { records } = csvToSoapNoteRecords(csv);
+    expect(records[0]).toMatchObject({
+      subjective: "Coughing",
+      assessment: "Kennel cough",
+    });
+  });
+
+  it("requires an owner email, pet name, readable date, and some note", () => {
+    const csv =
+      "clientEmail,patientName,date,notes\n" +
+      ",Rex,2024-03-05,note\n" +
+      "jane@x.com,,2024-03-05,note\n" +
+      "jane@x.com,Rex,someday,note\n" +
+      "jane@x.com,Rex,2024-03-05,";
+    const { records, errors } = csvToSoapNoteRecords(csv);
+    expect(records).toEqual([]);
+    expect(errors).toHaveLength(4);
+    expect(errors[0]).toMatch(/Row 1: clientEmail is required/);
+    expect(errors[1]).toMatch(/Row 2: patientName is required/);
+    expect(errors[2]).toMatch(/Row 3: date must be a date/);
+    expect(errors[3]).toMatch(/Row 4: needs at least one note/);
+  });
+
+  it("does not map notes from malformed quoted CSV", () => {
+    const { records, errors } = csvToSoapNoteRecords(
+      'clientEmail,patientName,date,notes\n"jane@x.com,Rex'
     );
     expect(records).toEqual([]);
     expect(errors).toEqual(["CSV has an unterminated quoted field."]);

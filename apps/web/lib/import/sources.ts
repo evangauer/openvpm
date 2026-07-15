@@ -51,4 +51,5 @@ export const MIGRATION_STEPS = [
   { mode: "clients" as const, label: "1. Clients (pet owners)" },
   { mode: "patients" as const, label: "2. Patients (pets)" },
   { mode: "vaccinations" as const, label: "3. Vaccine history" },
+  { mode: "soapNotes" as const, label: "4. Medical history (visit notes)" },
 ];

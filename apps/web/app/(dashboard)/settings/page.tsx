@@ -2763,7 +2763,7 @@ type ImportPreview = {
   unmatchedPatient?: number;
   errors: string[];
 };
-type ImportMode = "clients" | "patients" | "vaccinations";
+type ImportMode = "clients" | "patients" | "vaccinations" | "soapNotes";
 const IMPORT_CSV_SIZE_MESSAGE = "CSV imports must be 5 MB or less.";
 const IMPORT_COLUMN_HINTS: Record<ImportMode, string> = {
   clients:
@@ -2772,6 +2772,8 @@ const IMPORT_COLUMN_HINTS: Record<ImportMode, string> = {
     "Expected columns: clientEmail, name, species, breed, sex, dob, color, microchipNumber",
   vaccinations:
     "Expected columns: clientEmail, patientName, vaccineName, dateGiven, nextDueDate, lotNumber, manufacturer",
+  soapNotes:
+    "Expected columns: clientEmail, patientName, date, and either subjective, objective, assessment, plan or a single notes column",
 };
 
 // ── Data Tab ─────────────────────────────────────────────────
@@ -2947,6 +2949,31 @@ function DataTab() {
       setCsvText("");
       setCsvFileName("");
       toast.success("Vaccine history imported");
+    },
+    onError: (err) => {
+      toast.error(err.message);
+    },
+  });
+  const importSoapNotesCsv = trpc.data.importSoapNotesCsv.useMutation({
+    onSuccess: (data) => {
+      if ("dryRun" in data && data.dryRun) {
+        setImportPreview({
+          total: data.total,
+          willInsert: data.willInsert,
+          duplicates: data.duplicates,
+          unmatchedPatient: data.unmatchedPatient,
+          errors: data.errors,
+        });
+        setImportResult(null);
+        toast.success("Medical history CSV checked");
+        return;
+      }
+
+      setImportResult({ imported: data.imported ?? 0, errors: data.errors });
+      setImportPreview(null);
+      setCsvText("");
+      setCsvFileName("");
+      toast.success("Medical history imported");
     },
     onError: (err) => {
       toast.error(err.message);
@@ -3186,8 +3213,10 @@ function DataTab() {
           importClientsCsv.mutate({ csv: text, dryRun: true });
         } else if (importMode === "patients") {
           importPatientsCsv.mutate({ csv: text, dryRun: true });
-        } else {
+        } else if (importMode === "vaccinations") {
           importVaccinationsCsv.mutate({ csv: text, dryRun: true });
+        } else {
+          importSoapNotesCsv.mutate({ csv: text, dryRun: true });
         }
       };
       reader.onerror = () => {
@@ -3196,7 +3225,13 @@ function DataTab() {
       };
       reader.readAsText(file);
     },
-    [importClientsCsv, importMode, importPatientsCsv, importVaccinationsCsv],
+    [
+      importClientsCsv,
+      importMode,
+      importPatientsCsv,
+      importVaccinationsCsv,
+      importSoapNotesCsv,
+    ],
   );
 
   const handleDrop = useCallback(
@@ -3221,8 +3256,10 @@ function DataTab() {
       importClientsCsv.mutate({ csv: csvText, dryRun: false });
     } else if (importMode === "patients") {
       importPatientsCsv.mutate({ csv: csvText, dryRun: false });
-    } else {
+    } else if (importMode === "vaccinations") {
       importVaccinationsCsv.mutate({ csv: csvText, dryRun: false });
+    } else {
+      importSoapNotesCsv.mutate({ csv: csvText, dryRun: false });
     }
   }, [
     csvText,
@@ -3231,12 +3268,14 @@ function DataTab() {
     importClientsCsv,
     importPatientsCsv,
     importVaccinationsCsv,
+    importSoapNotesCsv,
   ]);
 
   const isImportPending =
     importClientsCsv.isPending ||
     importPatientsCsv.isPending ||
-    importVaccinationsCsv.isPending;
+    importVaccinationsCsv.isPending ||
+    importSoapNotesCsv.isPending;
   const canRestoreBackup =
     Boolean(backupPayload) &&
     Boolean(backupSummary) &&
@@ -3664,9 +3703,10 @@ function DataTab() {
         <h3 className="text-sm font-semibold mb-1">Import Data</h3>
         <p className="text-sm text-muted-foreground mb-4">
           Moving from another system? Import clients first, then patients, then
-          vaccine history. Every file is dry-run first so you see duplicates and
-          missing matches before anything is saved. Common column names from
-          AVImark, Cornerstone, and ezyVet exports are understood automatically.
+          vaccine history, then medical history (visit notes). Every file is
+          dry-run first so you see duplicates and missing matches before
+          anything is saved. Common column names from AVImark, Cornerstone,
+          ezyVet, and Shepherd exports are understood automatically.
         </p>
 
         {/* Where the data is coming from (export instructions per source) */}
@@ -3711,6 +3751,10 @@ function DataTab() {
             {
               mode: "vaccinations" as const,
               label: "3. Import Vaccine History",
+            },
+            {
+              mode: "soapNotes" as const,
+              label: "4. Import Medical History",
             },
           ].map(({ mode, label }) => (
             <Button
@@ -3819,7 +3863,8 @@ function DataTab() {
                         value={importPreview.unmatchedClient ?? 0}
                       />
                     )}
-                    {importMode === "vaccinations" && (
+                    {(importMode === "vaccinations" ||
+                      importMode === "soapNotes") && (
                       <ImportStat
                         label="Missing pets"
                         value={importPreview.unmatchedPatient ?? 0}

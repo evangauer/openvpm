@@ -1,6 +1,6 @@
 # Migrating to OpenVPM
 
-Switching systems is the scary part of buying a PIMS. This guide makes it boring: export three CSV files from your old system, import them in order, and your clinic is running with its own clients, pets, and vaccine history. Every import runs a **dry run first** and shows exactly what will be added, what is a duplicate, and what needs a fix, before anything is saved.
+Switching systems is the scary part of buying a PIMS. This guide makes it boring: export a few CSV files from your old system, import them in order, and your clinic is running with its own clients, pets, vaccine history, and medical history. Every import runs a **dry run first** and shows exactly what will be added, what is a duplicate, and what needs a fix, before anything is saved.
 
 On OpenVPM Cloud we will also do this **for you**: send your exports to support and we hand back a ready clinic.
 
@@ -11,10 +11,11 @@ On OpenVPM Cloud we will also do this **for you**: send your exports to support 
 | Clients (pet owners) | clients CSV | deduped by email |
 | Patients (pets) | patients CSV | owner's email |
 | Vaccine history | vaccinations CSV | owner's email + pet name |
+| Medical history (visit notes) | medical history CSV | owner's email + pet name |
 
-Vaccine history is worth the extra file: overdue-vaccine lists, reminders, and the AI assistant all light up with real answers on day one.
+Vaccine history is worth the extra file: overdue-vaccine lists, reminders, and the AI assistant all light up with real answers on day one. Medical history brings each pet's past visit notes across so the record is whole from the first appointment; every note keeps its original visit date.
 
-Appointments, invoices, and full medical notes can be brought over today via a guided (white-glove) migration; a full OpenVPM backup JSON can also be restored into a fresh practice.
+Appointments and invoices can be brought over today via a guided (white-glove) migration; a full OpenVPM backup JSON can also be restored into a fresh practice.
 
 ## Column names: we speak your export's language
 
@@ -23,6 +24,7 @@ Headers are matched loosely (case, spaces, and underscores do not matter) and co
 - **Clients**: `firstName`/`first`/`owner first name`, `lastName`/`surname`, `email`, `phone`/`cell phone`/`mobile`, `address`/`address1`/`street`, `city`, `state`/`province`, `zip`/`postal code`
 - **Patients**: `clientEmail`/`owner email`/`email` (required, links the pet to its owner), `name`/`pet name`/`patient name`, `species` (accepts `dog`, `cat`, `bird`, `bunny`, `horse`, `lizard`, and more), `breed`, `sex` (accepts `M`, `F`, `MN`, `FS`, `neutered male`, `spayed female`), `dob`/`birthday`/`date of birth` (accepts `2019-03-05` and `3/5/2019` and `3/5/19`), `color`, `microchip`
 - **Vaccinations**: `clientEmail`, `patientName`/`pet name`, `vaccine`/`vaccine name`, `date given`/`administered` (required), `next due date`/`due date`, `lot number`, `manufacturer`
+- **Medical history**: `clientEmail`, `patientName`/`pet name`, `date`/`visit date`/`date of service` (required), and the note itself as either split SOAP columns (`subjective`/`history`, `objective`/`exam findings`, `assessment`/`diagnosis`, `plan`/`treatment`) or a single `notes`/`note`/`description` column, which lands in the Subjective section
 
 ## Exporting from your current system
 
@@ -37,6 +39,7 @@ Headers are matched loosely (case, spaces, and underscores do not matter) and co
 1. **Clients first.** Pets link to owners by email, so owners must exist before pets.
 2. **Patients second.** Rows whose owner email is not found are reported, not guessed.
 3. **Vaccinations third.** Doses link by owner email + pet name; duplicates (same pet, same vaccine, same date) are skipped automatically, so re-running a file is safe.
+4. **Medical history last.** Visit notes link by owner email + pet name and keep their original visit date; duplicates (same pet, same date, same note) are skipped, so re-running a file is safe.
 
 Where: **Settings → Data → Import**, or during onboarding in the "Bring your real data" step. Each step shows a dry-run report first: rows parsed, rows that will import, duplicates, unmatched owners or pets, and per-row issues with row numbers.
 
@@ -47,5 +50,5 @@ The door swings both ways, always: **Settings → Data → Export** gives per-en
 ## Limits and safety
 
 - Files up to 5 MB and 10,000 rows per import; split bigger exports.
-- Imports never overwrite existing records; they only add, and duplicates are skipped by stable keys (client email; pet identity or microchip; dose identity).
+- Imports never overwrite existing records; they only add, and duplicates are skipped by stable keys (client email; pet identity or microchip; dose identity; note identity of pet + visit date + text).
 - Everything is tenant scoped and admin only.

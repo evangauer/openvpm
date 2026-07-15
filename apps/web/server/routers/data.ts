@@ -12,16 +12,20 @@ import {
   practices,
   users,
   vaccinationRecords,
+  soapNotes,
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import {
   type ClientImportRecord,
   type PatientImportRecord,
   type VaccinationImportRecord,
+  type SoapNoteImportRecord,
   csvToClientRecords,
   csvToPatientRecords,
   csvToVaccinationRecords,
+  csvToSoapNoteRecords,
 } from "@/lib/csv/import";
+import { SOAP_SECTION_MAX_LENGTH, hasSoapContent } from "@/lib/records/soap-content";
 import {
   exportPracticeData,
   restorePracticeData,
@@ -48,6 +52,12 @@ type PatientImportRow = Omit<typeof patients.$inferInsert, "practiceId">;
 type VaccinationImportRow = Omit<
   typeof vaccinationRecords.$inferInsert,
   "practiceId"
+>;
+// authorId is stamped in the mutation (the importing admin); historical
+// imports have no OpenVPM author of their own.
+type SoapNoteImportRow = Omit<
+  typeof soapNotes.$inferInsert,
+  "practiceId" | "authorId"
 >;
 type DataContext = {
   db: Database;
@@ -143,6 +153,26 @@ const vaccinationImportRecordsInput = z
   .max(
     IMPORT_MAX_ROWS,
     `Vaccination imports can include at most ${IMPORT_MAX_ROWS} rows.`
+  );
+const soapNoteImportRecordInput = z
+  .object({
+    clientEmail: z.string().trim().email().max(255),
+    patientName: importRequiredText("Patient name", 128),
+    date: clinicalDateInput("Visit date"),
+    subjective: importOptionalText("Subjective", SOAP_SECTION_MAX_LENGTH),
+    objective: importOptionalText("Objective", SOAP_SECTION_MAX_LENGTH),
+    assessment: importOptionalText("Assessment", SOAP_SECTION_MAX_LENGTH),
+    plan: importOptionalText("Plan", SOAP_SECTION_MAX_LENGTH),
+  })
+  .refine((record) => hasSoapContent(record), {
+    message:
+      "Each medical history row needs at least one of Subjective, Objective, Assessment, or Plan.",
+  });
+const soapNoteImportRecordsInput = z
+  .array(soapNoteImportRecordInput)
+  .max(
+    IMPORT_MAX_ROWS,
+    `Medical history imports can include at most ${IMPORT_MAX_ROWS} rows.`
   );
 const importCsvInput = z.object({
   csv: z
@@ -434,6 +464,134 @@ function parseVaccinationImportRecords(
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: "Vaccination import rows contain invalid values.",
+    });
+  }
+  return result.data;
+}
+
+/** Text signature of a note's four sections, for duplicate detection. */
+function soapNoteContentSignature(sections: {
+  subjective?: string | null;
+  objective?: string | null;
+  assessment?: string | null;
+  plan?: string | null;
+}): string {
+  return [
+    sections.subjective,
+    sections.objective,
+    sections.assessment,
+    sections.plan,
+  ]
+    .map((section) => normalizeImportText(section))
+    .join("§");
+}
+
+/** Identity of a visit note: pet + visit date + its content. */
+function soapNoteIdentityKey(input: {
+  patientId: string;
+  date: string;
+  signature: string;
+}): string {
+  return [input.patientId, input.date, input.signature].join("|");
+}
+
+/**
+ * Historical visit notes import at noon UTC of the given day (the vaccination
+ * convention) so the calendar date survives every clinic timezone and the
+ * medical history timeline, ordered by created_at, reads in true order.
+ */
+function soapNoteInstant(dateInput: string): Date {
+  return new Date(`${dateInput}T12:00:00.000Z`);
+}
+
+function dedupeSoapNoteImport(
+  records: SoapNoteImportRecord[],
+  patientKeyToId: Record<string, string | "ambiguous">,
+  existingNotes: Array<{
+    patientId: string;
+    createdAt: Date;
+    subjective: string | null;
+    objective: string | null;
+    assessment: string | null;
+    plan: string | null;
+  }>
+): {
+  rows: SoapNoteImportRow[];
+  errors: string[];
+  duplicates: number;
+  unmatchedPatient: number;
+} {
+  const seen = new Set(
+    existingNotes.map((note) =>
+      soapNoteIdentityKey({
+        patientId: note.patientId,
+        date: note.createdAt.toISOString().slice(0, 10),
+        signature: soapNoteContentSignature(note),
+      })
+    )
+  );
+
+  const rows: SoapNoteImportRow[] = [];
+  const errors: string[] = [];
+  let duplicates = 0;
+  let unmatchedPatient = 0;
+
+  records.forEach((record, index) => {
+    // Same owner-email + pet-name link key as the vaccination import.
+    const key = vaccinationPatientKey(record.clientEmail, record.patientName);
+    const patientId = patientKeyToId[key];
+    if (!patientId) {
+      unmatchedPatient++;
+      errors.push(
+        `Row ${index + 1}: No pet named "${record.patientName}" found for client "${record.clientEmail}"`
+      );
+      return;
+    }
+    if (patientId === "ambiguous") {
+      unmatchedPatient++;
+      errors.push(
+        `Row ${index + 1}: More than one pet named "${record.patientName}" belongs to "${record.clientEmail}"; add this note by hand.`
+      );
+      return;
+    }
+
+    const identityKey = soapNoteIdentityKey({
+      patientId,
+      date: record.date,
+      signature: soapNoteContentSignature(record),
+    });
+    if (seen.has(identityKey)) {
+      duplicates++;
+      errors.push(
+        `Row ${index + 1}: Skipped duplicate note for "${record.patientName}" on ${record.date}.`
+      );
+      return;
+    }
+    seen.add(identityKey);
+
+    rows.push({
+      patientId,
+      appointmentId: null,
+      subjective: record.subjective?.trim() || null,
+      objective: record.objective?.trim() || null,
+      assessment: record.assessment?.trim() || null,
+      plan: record.plan?.trim() || null,
+      // Preserve the visit date so the history reads in chronological order.
+      createdAt: soapNoteInstant(record.date),
+    });
+  });
+
+  return { rows, errors, duplicates, unmatchedPatient };
+}
+
+function parseSoapNoteImportRecords(
+  records: SoapNoteImportRecord[]
+): SoapNoteImportRecord[] {
+  const result = soapNoteImportRecordsInput.safeParse(records);
+  if (!result.success) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Medical history import rows contain invalid values.",
     });
   }
   return result.data;
@@ -1153,6 +1311,111 @@ export const dataRouter = createRouter({
       if (deduped.rows.length > 0) {
         await ctx.db.insert(vaccinationRecords).values(
           deduped.rows.map((v) => ({ ...v, practiceId: ctx.practiceId }))
+        );
+      }
+      return {
+        imported: deduped.rows.length,
+        errors: [...errors, ...deduped.errors],
+      };
+    }),
+
+  /**
+   * Medical history import (migration): each row is one dated visit note,
+   * saved as a SOAP note and linked to a pet by owner email + pet name, so
+   * run it AFTER clients and patients. The visit date is preserved (the
+   * history reads in order) and the note is attributed to the importing admin,
+   * since historical records have no OpenVPM author. Re-running a file is
+   * safe: the same pet + date + note text is skipped as a duplicate.
+   */
+  importSoapNotesCsv: adminProcedure
+    .input(importCsvInput)
+    .mutation(async ({ ctx, input }) => {
+      const { records, errors } = csvToSoapNoteRecords(input.csv);
+      const validRecords = parseSoapNoteImportRecords(records);
+
+      if (validRecords.length === 0 && errors.length > 0) {
+        if (input.dryRun) {
+          return {
+            dryRun: true as const,
+            total: 0,
+            willInsert: 0,
+            unmatchedPatient: 0,
+            duplicates: 0,
+            errors,
+          };
+        }
+        return { imported: 0, errors };
+      }
+
+      await assertActivePractice(ctx);
+
+      const patientRows = await ctx.db
+        .select({
+          id: patients.id,
+          name: patients.name,
+          clientEmail: clients.email,
+        })
+        .from(patients)
+        .innerJoin(clients, eq(patients.clientId, clients.id))
+        .where(
+          and(
+            eq(patients.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(patients.deletedAt),
+            isNull(clients.deletedAt)
+          )
+        );
+      const patientKeyToId: Record<string, string | "ambiguous"> = {};
+      for (const p of patientRows) {
+        if (!p.clientEmail) continue;
+        const key = vaccinationPatientKey(p.clientEmail, p.name);
+        // Two pets with the same name under one owner cannot be told apart
+        // by a CSV row; flag instead of guessing which pet the note is for.
+        patientKeyToId[key] = patientKeyToId[key] ? "ambiguous" : p.id;
+      }
+
+      const existingNotes = await ctx.db
+        .select({
+          patientId: soapNotes.patientId,
+          createdAt: soapNotes.createdAt,
+          subjective: soapNotes.subjective,
+          objective: soapNotes.objective,
+          assessment: soapNotes.assessment,
+          plan: soapNotes.plan,
+        })
+        .from(soapNotes)
+        .where(
+          and(
+            eq(soapNotes.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(soapNotes.deletedAt)
+          )
+        );
+
+      const deduped = dedupeSoapNoteImport(
+        validRecords,
+        patientKeyToId,
+        existingNotes
+      );
+
+      if (input.dryRun) {
+        return {
+          dryRun: true as const,
+          total: validRecords.length,
+          willInsert: deduped.rows.length,
+          unmatchedPatient: deduped.unmatchedPatient,
+          duplicates: deduped.duplicates,
+          errors: [...errors, ...deduped.errors],
+        };
+      }
+
+      if (deduped.rows.length > 0) {
+        await ctx.db.insert(soapNotes).values(
+          deduped.rows.map((n) => ({
+            ...n,
+            practiceId: ctx.practiceId,
+            authorId: ctx.user.id,
+          }))
         );
       }
       return {
