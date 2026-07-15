@@ -526,6 +526,7 @@ export const recordsRouter = createRouter({
           assessment: soapNotes.assessment,
           plan: soapNotes.plan,
           authorName: users.name,
+          imported: soapNotes.imported,
           createdAt: soapNotes.createdAt,
         })
         .from(soapNotes)

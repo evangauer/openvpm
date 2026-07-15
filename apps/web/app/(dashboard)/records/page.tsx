@@ -1106,16 +1106,27 @@ export default function RecordsPage() {
                             <div className="flex items-center gap-4">
                               <FileText className="h-4 w-4 text-muted-foreground" />
                               <div>
-                                <p className="text-sm font-medium">
-                                  {note.createdAt
-                                    ? formatClinicalDate(
-                                        note.createdAt,
-                                        recordsTimeZone
-                                      )
-                                    : "No date"}
-                                </p>
+                                <div className="flex items-center gap-2">
+                                  <p className="text-sm font-medium">
+                                    {note.createdAt
+                                      ? formatClinicalDate(
+                                          note.createdAt,
+                                          recordsTimeZone
+                                        )
+                                      : "No date"}
+                                  </p>
+                                  {note.imported ? (
+                                    <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+                                      Imported
+                                    </span>
+                                  ) : null}
+                                </div>
                                 <p className="text-xs text-muted-foreground">
-                                  {note.authorName ?? "Unknown author"}
+                                  {note.imported
+                                    ? note.authorName
+                                      ? `Imported by ${note.authorName}`
+                                      : "Imported record"
+                                    : (note.authorName ?? "Unknown author")}
                                 </p>
                               </div>
                               <p className="text-sm text-muted-foreground line-clamp-1 max-w-md">

@@ -435,6 +435,7 @@ export interface MedicalSummaryData {
     objective?: string;
     assessment?: string;
     plan?: string;
+    imported?: boolean;
   }>;
   prescriptions: Array<{
     medication: string;
@@ -658,7 +659,11 @@ export function generateMedicalSummaryPdf(data: MedicalSummaryData): jsPDF {
       doc.setFont(FONT, "bold");
       doc.setFontSize(10);
       setColor(doc, COLOR_DARK);
-      doc.text(note.date, PAGE_MARGIN, y);
+      doc.text(
+        note.imported ? `${note.date}  (Imported record)` : note.date,
+        PAGE_MARGIN,
+        y
+      );
       y += 6;
 
       doc.setFontSize(9);

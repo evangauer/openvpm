@@ -168,6 +168,7 @@ describe("medical history (SOAP notes) import", () => {
       plan: "Bland diet",
       objective: null,
       assessment: null,
+      imported: true,
     });
     expect((rows[0]!.createdAt as Date).toISOString()).toBe(
       "2024-03-05T12:00:00.000Z"

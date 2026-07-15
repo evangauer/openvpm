@@ -1415,6 +1415,9 @@ export const dataRouter = createRouter({
             ...n,
             practiceId: ctx.practiceId,
             authorId: ctx.user.id,
+            // Mark as migrated so the record shows "Imported" rather than
+            // implying the importing admin authored this historical note.
+            imported: true,
           }))
         );
       }

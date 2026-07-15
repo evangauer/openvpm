@@ -1,0 +1,1 @@
+ALTER TABLE "soap_notes" ADD COLUMN "imported" boolean DEFAULT false NOT NULL;

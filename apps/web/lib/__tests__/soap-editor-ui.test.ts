@@ -398,8 +398,8 @@ describe("records page state handling", () => {
       "const today = formatDateInputForTimeZone(new Date(), timeZone)"
     );
     expect(source).toContain("initialPrescriptionForm(recordsTimeZone)");
-    expect(source).toContain(
-      "formatClinicalDate(\n                                        note.createdAt,\n                                        recordsTimeZone"
+    expect(source).toMatch(
+      /formatClinicalDate\(\s+note\.createdAt,\s+recordsTimeZone/
     );
     expect(source).toContain(
       "getVaccineDueStatus(\n                            vax.nextDueDate,\n                            recordsTimeZone"

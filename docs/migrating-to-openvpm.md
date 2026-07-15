@@ -41,7 +41,7 @@ Headers are matched loosely (case, spaces, and underscores do not matter) and co
 1. **Clients first.** Pets link to owners by email, so owners must exist before pets.
 2. **Patients second.** Rows whose owner email is not found are reported, not guessed.
 3. **Vaccinations third.** Doses link by owner email + pet name; duplicates (same pet, same vaccine, same date) are skipped automatically, so re-running a file is safe.
-4. **Medical history last.** Visit notes link by owner email + pet name and keep their original visit date; duplicates (same pet, same date, same note) are skipped, so re-running a file is safe.
+4. **Medical history last.** Visit notes link by owner email + pet name and keep their original visit date; duplicates (same pet, same date, same note) are skipped, so re-running a file is safe. Imported notes are labeled **Imported** in the record (and on the printed Medical Record Summary), so a migrated visit note is never mistaken for one written in OpenVPM.
 
 Where: **Settings → Data → Import**. Clients and patients can also be brought in during onboarding in the "Bring your real data" step; vaccine and medical history are done from Settings → Data. Each step shows a dry-run report first: rows parsed, rows that will import, duplicates, unmatched owners or pets, and per-row issues with row numbers.
 

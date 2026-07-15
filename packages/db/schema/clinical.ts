@@ -8,6 +8,7 @@ import {
   integer,
   numeric,
   date,
+  boolean,
   index,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
@@ -68,6 +69,10 @@ export const soapNotes = pgTable(
     objective: text("objective"),
     assessment: text("assessment"),
     plan: text("plan"),
+    // True for notes brought in by a migration import. Historical records have
+    // no OpenVPM author, so authorId holds the importing admin; this flag lets
+    // the record show "Imported" instead of implying that admin wrote the note.
+    imported: boolean("imported").notNull().default(false),
   },
   (table) => ({
     patientIdx: index("soap_notes_patient_idx").on(table.patientId),

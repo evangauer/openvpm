@@ -534,6 +534,7 @@ export default function PatientDetailPage() {
           objective: n.objective ?? undefined,
           assessment: n.assessment ?? undefined,
           plan: n.plan ?? undefined,
+          imported: n.imported,
         })),
         prescriptions: prescriptions.map((rx) => ({
           medication: rx.medicationName,
@@ -1398,13 +1399,24 @@ function MedicalRecordsTab({
           className="rounded-lg border border-border bg-card p-4"
         >
           <div className="mb-3 flex items-center justify-between gap-3">
-            <p className="text-sm font-medium">
-              {note.createdAt
-                ? formatClinicalDate(note.createdAt, timeZone, "Unknown")
-                : "Unknown"}
-            </p>
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-medium">
+                {note.createdAt
+                  ? formatClinicalDate(note.createdAt, timeZone, "Unknown")
+                  : "Unknown"}
+              </p>
+              {note.imported ? (
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+                  Imported
+                </span>
+              ) : null}
+            </div>
             <p className="text-xs text-muted-foreground">
-              {note.authorName ?? "Unknown author"}
+              {note.imported
+                ? note.authorName
+                  ? `Imported by ${note.authorName}`
+                  : "Imported record"
+                : (note.authorName ?? "Unknown author")}
             </p>
           </div>
           <dl className="grid gap-3 sm:grid-cols-2">
