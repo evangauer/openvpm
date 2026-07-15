@@ -195,6 +195,27 @@ describe("medical history (SOAP notes) import", () => {
     });
   });
 
+  it("does not abort the import when one row has a malformed email; valid rows still import", async () => {
+    const { db, insertValues } = createDb([patientRows, []]);
+
+    const result = await callerWithDb(db).importSoapNotesCsv({
+      csv: [
+        HEADER,
+        REX_ROW, // valid
+        "none,Bella,2024-03-06,Vaccine visit,", // malformed email -> per-row skip, not a batch abort
+      ].join("\n"),
+      dryRun: true,
+    });
+
+    expect(result).toMatchObject({ dryRun: true, total: 1, willInsert: 1 });
+    expect(
+      result.errors.some((e) =>
+        /Row 2: clientEmail "none" is not a valid email/.test(e)
+      )
+    ).toBe(true);
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("flags same-named pets under one owner instead of guessing", async () => {
     const twins = [
       { id: PATIENT_ID, name: "Rex", clientEmail: "jane@x.com" },

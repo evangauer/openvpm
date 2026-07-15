@@ -246,12 +246,39 @@ describe("csvToSoapNoteRecords", () => {
     });
   });
 
-  it("prefers an explicit subjective column over a generic notes column", () => {
+  it("keeps an explicit subjective column and routes a standalone notes column to the next empty section (no data loss)", () => {
     const csv =
-      "clientEmail,patientName,date,subjective,notes\n" +
-      "jane@x.com,Rex,2024-03-05,Owner reports limping,Ignore me";
+      "clientEmail,patientName,date,history,clinicalNotes\n" +
+      'jane@x.com,Rex,2024-03-05,Vomiting x2 days,"Exam: T 103.1, dehydrated. Dx gastroenteritis. Tx SQ fluids."';
     const { records } = csvToSoapNoteRecords(csv);
-    expect(records[0]!.subjective).toBe("Owner reports limping");
+    expect(records[0]).toMatchObject({
+      subjective: "Vomiting x2 days",
+      objective: "Exam: T 103.1, dehydrated. Dx gastroenteritis. Tx SQ fluids.",
+    });
+  });
+
+  it("skips a row with a malformed email and keeps the valid rows (no whole-file abort)", () => {
+    const csv =
+      "clientEmail,patientName,date,notes\n" +
+      "jane@x.com,Rex,2024-03-05,Annual exam\n" +
+      "none,Bella,2024-03-06,Vaccine visit";
+    const { records, errors } = csvToSoapNoteRecords(csv);
+    expect(records).toHaveLength(1);
+    expect(records[0]!.patientName).toBe("Rex");
+    expect(
+      errors.some((e) =>
+        /Row 2: clientEmail "none" is not a valid email/.test(e)
+      )
+    ).toBe(true);
+  });
+
+  it("flags an over-long note section as a row issue instead of failing the file", () => {
+    const csv =
+      "clientEmail,patientName,date,notes\n" +
+      `jane@x.com,Rex,2024-03-05,${"x".repeat(10001)}`;
+    const { records, errors } = csvToSoapNoteRecords(csv);
+    expect(records).toEqual([]);
+    expect(errors[0]).toMatch(/subjective note is too long/);
   });
 
   it("maps diagnosis and history synonyms onto assessment and subjective", () => {

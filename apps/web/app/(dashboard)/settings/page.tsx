@@ -2773,7 +2773,7 @@ const IMPORT_COLUMN_HINTS: Record<ImportMode, string> = {
   vaccinations:
     "Expected columns: clientEmail, patientName, vaccineName, dateGiven, nextDueDate, lotNumber, manufacturer",
   soapNotes:
-    "Expected columns: clientEmail, patientName, date, and either subjective, objective, assessment, plan or a single notes column",
+    "Expected columns: clientEmail, patientName, date (use YYYY-MM-DD), and either subjective, objective, assessment, plan or a single notes column",
 };
 
 // ── Data Tab ─────────────────────────────────────────────────
@@ -3940,10 +3940,15 @@ function DataTab() {
             )}
 
             {/* Mutation error */}
-            {(importClientsCsv.error || importPatientsCsv.error) && (
+            {(importClientsCsv.error ||
+              importPatientsCsv.error ||
+              importVaccinationsCsv.error ||
+              importSoapNotesCsv.error) && (
               <p className="text-sm text-destructive">
                 {importClientsCsv.error?.message ??
-                  importPatientsCsv.error?.message}
+                  importPatientsCsv.error?.message ??
+                  importVaccinationsCsv.error?.message ??
+                  importSoapNotesCsv.error?.message}
               </p>
             )}
           </div>

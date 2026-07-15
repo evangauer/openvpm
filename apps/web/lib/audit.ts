@@ -9,6 +9,10 @@ import { auditLog } from "@openpims/db";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SECRET_KEY_RE = /pass(word)?|secret|token|keyhash|^key$|apikey/i;
+// Bulk import/restore payloads (raw CSV, full backup JSON) can be megabytes of
+// medical records + client PII. The audit trail records who ran the import and
+// when, not a second copy of the data, so these are replaced with a marker.
+const BULK_PAYLOAD_KEY_RE = /^(csv|backup)$/i;
 
 /** "clients.create" -> { entityType: "clients", action: "create" }. */
 export function parseAuditPath(path: string): { entityType: string; action: string } {
@@ -28,7 +32,11 @@ function redactSecretValue(input: unknown): unknown {
 
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
-    out[key] = SECRET_KEY_RE.test(key) ? "[redacted]" : redactSecretValue(value);
+    out[key] = SECRET_KEY_RE.test(key)
+      ? "[redacted]"
+      : BULK_PAYLOAD_KEY_RE.test(key)
+        ? "[redacted-bulk-payload]"
+        : redactSecretValue(value);
   }
   return out;
 }

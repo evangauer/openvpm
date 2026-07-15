@@ -1119,7 +1119,11 @@ export default function RecordsPage() {
                                 </p>
                               </div>
                               <p className="text-sm text-muted-foreground line-clamp-1 max-w-md">
-                                {note.assessment || "No assessment recorded"}
+                                {note.assessment ||
+                                  note.subjective ||
+                                  note.objective ||
+                                  note.plan ||
+                                  "No note recorded"}
                               </p>
                             </div>
                             {isExpanded ? (

@@ -52,6 +52,21 @@ describe("redactSecrets", () => {
       ],
     });
   });
+  it("redacts bulk import/restore payloads (csv, backup) so PHI is not copied into the audit trail", () => {
+    const out = redactSecrets({
+      csv: "clientEmail,patientName,date,notes\njane@x.com,Rex,2024-03-05,Sensitive medical note",
+      dryRun: true,
+    })!;
+    expect(out.csv).toBe("[redacted-bulk-payload]");
+    expect(out.dryRun).toBe(true);
+
+    const restore = redactSecrets({
+      backup: { soap_notes: [{ subjective: "confidential" }] },
+      confirmFreshPractice: true,
+    })!;
+    expect(restore.backup).toBe("[redacted-bulk-payload]");
+    expect(restore.confirmFreshPractice).toBe(true);
+  });
   it("returns null for null/undefined", () => {
     expect(redactSecrets(null)).toBeNull();
     expect(redactSecrets(undefined)).toBeNull();

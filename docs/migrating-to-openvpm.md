@@ -24,7 +24,9 @@ Headers are matched loosely (case, spaces, and underscores do not matter) and co
 - **Clients**: `firstName`/`first`/`owner first name`, `lastName`/`surname`, `email`, `phone`/`cell phone`/`mobile`, `address`/`address1`/`street`, `city`, `state`/`province`, `zip`/`postal code`
 - **Patients**: `clientEmail`/`owner email`/`email` (required, links the pet to its owner), `name`/`pet name`/`patient name`, `species` (accepts `dog`, `cat`, `bird`, `bunny`, `horse`, `lizard`, and more), `breed`, `sex` (accepts `M`, `F`, `MN`, `FS`, `neutered male`, `spayed female`), `dob`/`birthday`/`date of birth` (accepts `2019-03-05` and `3/5/2019` and `3/5/19`), `color`, `microchip`
 - **Vaccinations**: `clientEmail`, `patientName`/`pet name`, `vaccine`/`vaccine name`, `date given`/`administered` (required), `next due date`/`due date`, `lot number`, `manufacturer`
-- **Medical history**: `clientEmail`, `patientName`/`pet name`, `date`/`visit date`/`date of service` (required), and the note itself as either split SOAP columns (`subjective`/`history`, `objective`/`exam findings`, `assessment`/`diagnosis`, `plan`/`treatment`) or a single `notes`/`note`/`description` column, which lands in the Subjective section
+- **Medical history**: `clientEmail`, `patientName`/`pet name`, `date`/`visit date`/`date of service` (required), and the note itself as either split SOAP columns (`subjective`/`history`, `objective`/`exam findings`, `assessment`/`diagnosis`, `plan`/`treatment`) or a single `notes`/`note`/`description` column. A standalone notes column fills the first empty SOAP section (Subjective when none are mapped), so nothing is dropped when your export keeps a separate reason-for-visit and notes column.
+
+**A note on dates:** to be safe, use ISO dates (`2019-03-05`). Slash dates like `3/5/2019` are read as US month/day/year; if your old system exports day/month/year, save the date column as `YYYY-MM-DD` first so a visit is never filed under the wrong day.
 
 ## Exporting from your current system
 
@@ -41,7 +43,7 @@ Headers are matched loosely (case, spaces, and underscores do not matter) and co
 3. **Vaccinations third.** Doses link by owner email + pet name; duplicates (same pet, same vaccine, same date) are skipped automatically, so re-running a file is safe.
 4. **Medical history last.** Visit notes link by owner email + pet name and keep their original visit date; duplicates (same pet, same date, same note) are skipped, so re-running a file is safe.
 
-Where: **Settings → Data → Import**, or during onboarding in the "Bring your real data" step. Each step shows a dry-run report first: rows parsed, rows that will import, duplicates, unmatched owners or pets, and per-row issues with row numbers.
+Where: **Settings → Data → Import**. Clients and patients can also be brought in during onboarding in the "Bring your real data" step; vaccine and medical history are done from Settings → Data. Each step shows a dry-run report first: rows parsed, rows that will import, duplicates, unmatched owners or pets, and per-row issues with row numbers.
 
 ## Getting your data OUT of OpenVPM
 

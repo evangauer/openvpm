@@ -1400,7 +1400,7 @@ function MedicalRecordsTab({
           <div className="mb-3 flex items-center justify-between gap-3">
             <p className="text-sm font-medium">
               {note.createdAt
-                ? formatClinicalDateTime(note.createdAt, timeZone, "Unknown")
+                ? formatClinicalDate(note.createdAt, timeZone, "Unknown")
                 : "Unknown"}
             </p>
             <p className="text-xs text-muted-foreground">
