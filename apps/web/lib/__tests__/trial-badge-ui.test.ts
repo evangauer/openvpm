@@ -21,6 +21,15 @@ describe("trial badge UI", () => {
     );
   });
 
+  it("starts Stripe checkout directly from the trial badge", () => {
+    expect(source).toContain("trpc.subscription.createCheckout.useMutation");
+    expect(source).toContain('checkout.mutate({ tier: "cloud" })');
+    expect(source).toContain("isSafeCheckoutRedirectUrl(result.url)");
+    expect(source).toContain("window.location.href = result.url");
+    // The trial badge is a real action button now, not a link to settings.
+    expect(source).toContain("disabled={checkout.isPending}");
+  });
+
   it("counts trial days from the practice timezone", () => {
     expect(source).toContain(
       'import { trialCalendarDaysLeft } from "@/lib/billing/trial-days"'
