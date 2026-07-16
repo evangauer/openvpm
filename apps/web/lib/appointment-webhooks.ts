@@ -1,6 +1,7 @@
 export type AppointmentCreatedWebhookSource =
   | "agent"
   | "api"
+  | "booking_page"
   | "dashboard"
   | "portal";
 

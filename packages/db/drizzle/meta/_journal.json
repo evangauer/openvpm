@@ -225,6 +225,13 @@
       "when": 1784151546009,
       "tag": "0031_tearful_silver_samurai",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1784232285175,
+      "tag": "0032_ancient_sage",
+      "breakpoints": true
     }
   ]
 }

@@ -51,7 +51,7 @@ DO $$
 DECLARE
   t text;
   tbls text[] := array[
-    'api_keys','appointment_types','appointment_waitlist','appointments','audit_log',
+    'api_keys','appointment_types','appointment_waitlist','appointments','audit_log','booking_pages',
     'capture_sessions','cases','clients','clinical_notes','communications','consent_forms','consent_requests','controlled_substance_log','email_suppressions',
     'files','insurance_claims','insurance_policies','invoices','lab_results','location_messaging',
     'locations','patients','practice_payment_accounts','prescriptions','problem_list','procedures','products','purchase_orders',

@@ -17,3 +17,4 @@ export * from "./wellness";
 export * from "./usage";
 export * from "./auth-tokens";
 export * from "./messaging";
+export * from "./booking";
