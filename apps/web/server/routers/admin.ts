@@ -25,6 +25,48 @@ const platformAdminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
   return next();
 });
 
+type AdminPracticeSettings = {
+  acquisition?: { source?: string; campaign?: string };
+  onboardingCompletedAt?: string | null;
+  onboardingState?: {
+    journeyStepId?: string | null;
+    journeyDismissed?: boolean;
+  };
+};
+
+const setupStepLabels: Record<string, string> = {
+  basics: "Clinic basics",
+  branding: "Branding",
+  team: "Team",
+  data: "Data import",
+  agent: "AI helper",
+  phone: "Texting",
+  billing: "Billing",
+  allSet: "Finish",
+};
+
+function conversionContext(value: unknown) {
+  const settings = (value ?? {}) as AdminPracticeSettings;
+  const acquisition = settings.acquisition;
+  const acquisitionSource =
+    [acquisition?.source, acquisition?.campaign].filter(Boolean).join(" · ") ||
+    "Unknown";
+
+  if (settings.onboardingCompletedAt) {
+    return { acquisitionSource, setupStage: "Complete" };
+  }
+  const state = settings.onboardingState;
+  const step = state?.journeyStepId;
+  if (step) {
+    const label = setupStepLabels[step] ?? step;
+    return {
+      acquisitionSource,
+      setupStage: state?.journeyDismissed ? `Paused at ${label}` : label,
+    };
+  }
+  return { acquisitionSource, setupStage: "Not started" };
+}
+
 export const adminRouter = createRouter({
   /** Am I a platform admin? (drives whether the /admin nav shows.) */
   isPlatformAdmin: protectedProcedure.query(({ ctx }) => {
@@ -45,6 +87,7 @@ export const adminRouter = createRouter({
         timezone: practices.timezone,
         country: practices.country,
         createdAt: practices.createdAt,
+        settings: practices.settings,
       })
       .from(practices)
       .where(isNull(practices.deletedAt))
@@ -73,6 +116,7 @@ export const adminRouter = createRouter({
       ]);
 
     const practiceRows = rows.map((p) => {
+      const { settings, ...practice } = p;
       const userCount = userCounts.get(p.id) ?? 0;
       const locationCount = Math.max(1, locationCounts.get(p.id) ?? 0);
       const estimatedMrr =
@@ -81,7 +125,8 @@ export const adminRouter = createRouter({
             userCount * CLOUD_SEAT_UNIT_PRICE_MONTHLY_USD
           : 0;
       return {
-        ...p,
+        ...practice,
+        ...conversionContext(settings),
         userCount,
         locationCount,
         estimatedMrr,

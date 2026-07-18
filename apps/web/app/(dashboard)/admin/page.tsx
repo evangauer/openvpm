@@ -148,11 +148,29 @@ export default function AdminPage() {
         </div>
         {funnel ? (
           <>
-            <div className="mt-3 grid gap-4 sm:grid-cols-3">
+            <div className="mt-3 grid gap-4 sm:grid-cols-5">
               <div>
                 <p className="text-sm text-muted-foreground">Signups</p>
                 <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
                   {funnel.totals.signups}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">Setup started</p>
+                <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
+                  {funnel.totals.setupStarted}
+                  <span className="ml-2 text-sm font-normal text-muted-foreground">
+                    {formatPct(funnel.totals.setupStartRate)}
+                  </span>
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">Setup complete</p>
+                <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
+                  {funnel.totals.setupCompleted}
+                  <span className="ml-2 text-sm font-normal text-muted-foreground">
+                    {formatPct(funnel.totals.setupCompletionRate)}
+                  </span>
                 </p>
               </div>
               <div>
@@ -175,7 +193,8 @@ export default function AdminPage() {
               </div>
             </div>
             <p className="mt-3 text-xs text-muted-foreground">
-              Activated = added a real client and booked a real visit
+              Setup progress comes from the guided clinic setup. Activated = added a
+              real client and booked a real visit.
             </p>
           </>
         ) : (
@@ -198,6 +217,8 @@ export default function AdminPage() {
               <th className="px-4 py-2.5 font-medium">Practice</th>
               <th className="px-4 py-2.5 font-medium">Plan</th>
               <th className="px-4 py-2.5 font-medium">Status</th>
+              <th className="px-4 py-2.5 font-medium">Source</th>
+              <th className="px-4 py-2.5 font-medium">Setup</th>
               <th className="px-4 py-2.5 font-medium">Trial ends</th>
               <th className="px-4 py-2.5 font-medium text-right">Locations</th>
               <th className="px-4 py-2.5 font-medium text-right">Staff</th>
@@ -221,6 +242,12 @@ export default function AdminPage() {
                   >
                     {p.billingStatus.replace("_", " ")}
                   </span>
+                </td>
+                <td className="px-4 py-2.5 text-muted-foreground">
+                  {p.acquisitionSource}
+                </td>
+                <td className="px-4 py-2.5 text-muted-foreground">
+                  {p.setupStage}
                 </td>
                 <td className="px-4 py-2.5 text-muted-foreground">
                   <span className="inline-flex items-center gap-2">
@@ -253,7 +280,7 @@ export default function AdminPage() {
             ))}
             {data.practices.length === 0 && (
               <tr>
-                <td colSpan={11} className="px-4 py-8 text-center text-muted-foreground">
+                <td colSpan={13} className="px-4 py-8 text-center text-muted-foreground">
                   No practices yet.
                 </td>
               </tr>

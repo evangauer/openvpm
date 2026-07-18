@@ -42,8 +42,12 @@ function funnel(days: number, totals: Partial<ActivationFunnel["totals"]> = {}):
     weeks: [],
     totals: {
       signups: 5,
+      setupStarted: 3,
+      setupCompleted: 2,
       activated: 2,
       subscribed: 1,
+      setupStartRate: 0.6,
+      setupCompletionRate: 0.4,
       activationRate: 0.4,
       conversionRate: 0.2,
       ...totals,

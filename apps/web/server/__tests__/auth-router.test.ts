@@ -258,6 +258,15 @@ describe("auth router input validation", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
+      caller.register({
+        email: "owner@example.com",
+        password: "password123",
+        practiceName: "Neighborhood Veterinary",
+        acquisition: { source: "<script>" },
+      })
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    await expect(
       caller.requestPasswordReset({
         email: `${"b".repeat(250)}@example.com`,
       })
@@ -296,6 +305,11 @@ describe("auth router input validation", () => {
             },
           ],
         },
+        acquisition: {
+          source: "  homepage_hero  ",
+          medium: "website",
+          campaign: "summer_launch",
+        },
       })
     ).resolves.toMatchObject({
       id: "user-1",
@@ -328,6 +342,12 @@ describe("auth router input validation", () => {
     );
     expect(updateSet).toHaveBeenCalledWith({
       settings: {
+        acquisition: {
+          source: "homepage_hero",
+          medium: "website",
+          campaign: "summer_launch",
+          capturedAt: expect.any(String),
+        },
         onboardingDraft: {
           logoName: "Neighborhood",
           brandColor: "#aabbcc",

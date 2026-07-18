@@ -34,6 +34,7 @@ import {
   isRequiredAuthTextValid,
 } from "@/lib/auth-input-policy";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
+import { acquisitionFromSearchParams } from "@/lib/acquisition";
 
 export default function RegisterPage() {
   return (
@@ -53,6 +54,7 @@ function RegisterPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const cloudIntent = searchParams.get("intent") === "cloud";
+  const acquisition = acquisitionFromSearchParams(searchParams);
   const [practiceName, setPracticeName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -136,6 +138,7 @@ function RegisterPageInner() {
       email: email.trim().toLowerCase(),
       password,
       practiceName: practiceName.trim(),
+      acquisition,
     });
   }
 

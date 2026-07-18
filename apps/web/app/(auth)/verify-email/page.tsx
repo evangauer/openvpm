@@ -44,13 +44,13 @@ function ConfirmToken({ token }: { token: string }) {
       {status === "ok" && (
         <>
           <p className="mt-3 text-sm text-foreground">
-            Your email is verified. You can sign in and start your free trial.
+            Your email is verified. Your OpenVPM trial is ready.
           </p>
           <Link
-            href="/login?next=/"
+            href="/"
             className="mt-6 inline-block rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
-            Sign in and continue
+            Open OpenVPM
           </Link>
         </>
       )}
@@ -92,12 +92,12 @@ function PendingVerification({ email }: { email: string }) {
           <>
             We sent a verification link to{" "}
             <span className="font-medium text-foreground">{email}</span>. Click it
-            to activate your account and start your free trial.
+            to confirm your address. Your trial is already active.
           </>
         ) : (
           <>
-            We sent a verification link to your email. Click it to activate your
-            account and start your free trial.
+            We sent a verification link to your email. Click it to confirm your
+            address. Your trial is already active.
           </>
         )}
       </p>

@@ -81,6 +81,13 @@ describe("admin overview", () => {
           timezone: "America/Los_Angeles",
           country: "US",
           createdAt: new Date("2026-06-01T02:00:00.000Z"),
+          settings: {
+            acquisition: { source: "homepage_hero", campaign: "summer_launch" },
+            onboardingState: {
+              journeyStepId: "data",
+              journeyDismissed: true,
+            },
+          },
         },
       ],
       [{ practiceId: PRACTICE_ID, c: 3 }],
@@ -98,6 +105,8 @@ describe("admin overview", () => {
       locationCount: 2,
       clientCount: 25,
       patientCount: 40,
+      acquisitionSource: "homepage_hero · summer_launch",
+      setupStage: "Paused at Data import",
     });
     expect(mocks.withSystem).toHaveBeenCalledWith(
       mocks.db,

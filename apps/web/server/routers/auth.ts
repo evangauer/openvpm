@@ -33,6 +33,7 @@ import {
   AUTH_ONBOARDING_TEAM_MEMBER_NAME_MAX_LENGTH,
   AUTH_PRACTICE_NAME_MAX_LENGTH,
 } from "@/lib/auth-input-policy";
+import { ACQUISITION_VALUE_MAX_LENGTH } from "@/lib/acquisition";
 
 /** Display name from explicit input, else derived from the email local-part. */
 function deriveName(name: string | undefined, email: string): string {
@@ -108,6 +109,21 @@ const onboardingDraftSchema = z.object({
   teamMembers: z.array(onboardingTeamMemberSchema).max(8).optional(),
 });
 
+const acquisitionValueSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(ACQUISITION_VALUE_MAX_LENGTH)
+  .regex(/^[a-zA-Z0-9._:/-]+$/);
+
+const signupAcquisitionSchema = z
+  .object({
+    source: acquisitionValueSchema.optional(),
+    medium: acquisitionValueSchema.optional(),
+    campaign: acquisitionValueSchema.optional(),
+  })
+  .strict();
+
 const authTokenSchema = z
   .string()
   .regex(/^[a-f0-9]{64}$/i, "Invalid or expired link.");
@@ -152,6 +168,7 @@ export const authRouter = createRouter({
           AUTH_LOCATION_NAME_MAX_LENGTH
         ).optional(),
         onboardingDraft: onboardingDraftSchema.optional(),
+        acquisition: signupAcquisitionSchema.optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -330,6 +347,12 @@ export const authRouter = createRouter({
       // On the hosted service, seed demo data + start onboarding so the trial
       // lands on a lively dashboard. Non-fatal. Self-host skips this.
       const practiceSettings: Record<string, unknown> = {};
+      if (input.acquisition) {
+        practiceSettings.acquisition = {
+          ...input.acquisition,
+          capturedAt: new Date().toISOString(),
+        };
+      }
       if (onboardingDraft) {
         practiceSettings.onboardingDraft = onboardingDraft;
       }
@@ -349,9 +372,9 @@ export const authRouter = createRouter({
           .where(eq(practices.id, practice.id));
       }
 
-      // On the hosted service, require email verification before login. Issue a
-      // token + send the email. Non-fatal: signup still succeeds. Self-host
-      // skips this (frictionless).
+      // On the hosted service, request email verification without blocking the
+      // trial. Issue a token + send the email; the in-app banner follows up.
+      // Non-fatal: signup still succeeds. Self-host skips this.
       let verificationRequired = false;
       let verificationUrl: string | undefined;
       let verificationEmailSent: boolean | undefined;
