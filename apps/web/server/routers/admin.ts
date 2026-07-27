@@ -31,6 +31,7 @@ const platformAdminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
 
 type AdminPracticeSettings = {
   acquisition?: { source?: string; campaign?: string };
+  analyticsExcluded?: boolean;
   onboardingCompletedAt?: string | null;
   onboardingState?: {
     onboardingIntent?: OnboardingIntent;
@@ -59,9 +60,15 @@ function conversionContext(value: unknown) {
     "Unknown";
   const state = settings.onboardingState;
   const onboardingIntent = onboardingIntentLabel(state?.onboardingIntent);
+  const analyticsExcluded = settings.analyticsExcluded === true;
 
   if (settings.onboardingCompletedAt) {
-    return { acquisitionSource, onboardingIntent, setupStage: "Complete" };
+    return {
+      acquisitionSource,
+      onboardingIntent,
+      analyticsExcluded,
+      setupStage: "Complete",
+    };
   }
   const step = state?.journeyStepId;
   if (step) {
@@ -69,10 +76,16 @@ function conversionContext(value: unknown) {
     return {
       acquisitionSource,
       onboardingIntent,
+      analyticsExcluded,
       setupStage: state?.journeyDismissed ? `Paused at ${label}` : label,
     };
   }
-  return { acquisitionSource, onboardingIntent, setupStage: "Not started" };
+  return {
+    acquisitionSource,
+    onboardingIntent,
+    analyticsExcluded,
+    setupStage: "Not started",
+  };
 }
 
 export const adminRouter = createRouter({
@@ -225,6 +238,39 @@ export const adminRouter = createRouter({
           .where(eq(practices.id, input.practiceId));
 
         return { practiceId: input.practiceId, trialEndsAt };
+      })
+    ),
+
+  /** Reversibly exclude internal/test practices from conversion reporting. */
+  setAnalyticsExcluded: platformAdminProcedure
+    .input(
+      z.object({
+        practiceId: z.string().uuid(),
+        excluded: z.boolean(),
+      })
+    )
+    .mutation(async ({ input }) =>
+      withSystem(db, async (tx) => {
+        const [updated] = await tx
+          .update(practices)
+          .set({
+            settings: sql`coalesce(${practices.settings}, '{}'::jsonb) || ${JSON.stringify({
+              analyticsExcluded: input.excluded,
+            })}::jsonb`,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(eq(practices.id, input.practiceId), isNull(practices.deletedAt))
+          )
+          .returning({ id: practices.id });
+
+        if (!updated) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Practice not found.",
+          });
+        }
+        return { practiceId: input.practiceId, excluded: input.excluded };
       })
     ),
 

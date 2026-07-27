@@ -159,6 +159,9 @@ describe("admin activation funnel", () => {
 
     // Soft-deleted practices, clients, and appointments are excluded.
     expect(source).toContain("p.deleted_at is null");
+    expect(source).toContain(
+      "p.settings ->> 'analyticsExcluded' is distinct from 'true'"
+    );
     expect(source).toContain("c.deleted_at is null");
     expect(source).toContain("a.deleted_at is null");
 

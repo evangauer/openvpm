@@ -5,7 +5,8 @@ import { withSystem } from "@/lib/tenant-db";
 /**
  * Trial activation funnel, DERIVED from existing data (no schema changes).
  *
- * - signup: a practice created inside the window (soft-deleted excluded).
+ * - signup: a practice created inside the window (soft-deleted and explicitly
+ *   analytics-excluded internal/test practices are excluded).
  * - activated: the practice has at least one real (non-demo) client AND at
  *   least one real (non-demo) appointment created after signup. Demo rows are
  *   the ids recorded in practices.settings -> 'demoData' when sample data is
@@ -102,6 +103,7 @@ export async function computeActivationFunnel(
         from practices p
         where p.deleted_at is null
           and p.created_at >= ${windowStart}::timestamptz
+          and p.settings ->> 'analyticsExcluded' is distinct from 'true'
       )
       select
         to_char(s.week_start, 'YYYY-MM-DD') as "weekStart",

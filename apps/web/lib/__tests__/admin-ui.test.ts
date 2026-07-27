@@ -51,6 +51,9 @@ describe("admin UI", () => {
     expect(source).toContain(">Source</th>");
     expect(source).toContain(">Intent</th>");
     expect(source).toContain(">Setup</th>");
+    expect(source).toContain(">Metrics</th>");
+    expect(source).toContain("setAnalyticsExcluded.mutate({");
+    expect(source).toContain('{p.analyticsExcluded ? "Excluded" : "Exclude"}');
   });
 
   it("renders practice dates in each practice timezone", () => {
