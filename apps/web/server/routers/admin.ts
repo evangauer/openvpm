@@ -13,6 +13,10 @@ import {
   type PlanTier,
 } from "@/lib/billing/plans";
 import { withSystem } from "@/lib/tenant-db";
+import {
+  onboardingIntentLabel,
+  type OnboardingIntent,
+} from "@/lib/onboarding/intent";
 
 /**
  * Platform-operator only. Crosses tenant boundaries deliberately, so it is
@@ -29,12 +33,14 @@ type AdminPracticeSettings = {
   acquisition?: { source?: string; campaign?: string };
   onboardingCompletedAt?: string | null;
   onboardingState?: {
+    onboardingIntent?: OnboardingIntent;
     journeyStepId?: string | null;
     journeyDismissed?: boolean;
   };
 };
 
 const setupStepLabels: Record<string, string> = {
+  intent: "Starting path",
   basics: "Clinic basics",
   branding: "Branding",
   team: "Team",
@@ -51,20 +57,22 @@ function conversionContext(value: unknown) {
   const acquisitionSource =
     [acquisition?.source, acquisition?.campaign].filter(Boolean).join(" · ") ||
     "Unknown";
+  const state = settings.onboardingState;
+  const onboardingIntent = onboardingIntentLabel(state?.onboardingIntent);
 
   if (settings.onboardingCompletedAt) {
-    return { acquisitionSource, setupStage: "Complete" };
+    return { acquisitionSource, onboardingIntent, setupStage: "Complete" };
   }
-  const state = settings.onboardingState;
   const step = state?.journeyStepId;
   if (step) {
     const label = setupStepLabels[step] ?? step;
     return {
       acquisitionSource,
+      onboardingIntent,
       setupStage: state?.journeyDismissed ? `Paused at ${label}` : label,
     };
   }
-  return { acquisitionSource, setupStage: "Not started" };
+  return { acquisitionSource, onboardingIntent, setupStage: "Not started" };
 }
 
 export const adminRouter = createRouter({

@@ -17,6 +17,7 @@ import {
   IMPORT_CSV_MAX_BYTES,
   isImportCsvSizeValid,
 } from "@/lib/import/policy";
+import { getOnboardingIntentOption } from "@/lib/onboarding/intent";
 import { toast } from "sonner";
 import type { StepHandle, StepProps } from "../journey-types";
 
@@ -57,8 +58,9 @@ function readFileText(file: File): Promise<string> {
  */
 export function BringDataStep({
   register,
+  state,
   setState,
-}: Pick<StepProps, "register" | "setState">) {
+}: StepProps) {
   const importClientsCsv = trpc.data.importClientsCsv.useMutation();
   const importPatientsCsv = trpc.data.importPatientsCsv.useMutation();
 
@@ -252,12 +254,20 @@ export function BringDataStep({
   ]);
 
   const importing = importClientsCsv.isPending || importPatientsCsv.isPending;
+  const pathway = getOnboardingIntentOption(state.onboardingIntent);
+  const pathwayIntro =
+    pathway.value === "alongside"
+      ? "Start small: bring in a few real clients and pets while your current PIMS stays in place."
+      : pathway.value === "replace"
+        ? "Make the move in stages: check a client and pet export before any live workflow changes."
+        : pathway.value === "self_host"
+          ? "The same import and export tools work in hosted and self-hosted OpenVPM."
+          : "Keep the sample clinic as long as you need, or try an import when you are ready.";
 
   return (
     <div className="space-y-4">
       <p className="text-sm leading-6 text-slate-600">
-        Bring in your real clients and pets. You own this data and can export it
-        any time.
+        {pathwayIntro} You own your data and can export it any time.
       </p>
 
       <div className="grid gap-3">

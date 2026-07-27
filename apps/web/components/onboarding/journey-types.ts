@@ -1,6 +1,10 @@
 /** Shared collected state and the per-step contract for the onboarding journey. */
 
+import type { OnboardingIntent } from "@/lib/onboarding/intent";
+
 export interface JourneyState {
+  /** The adoption path selected on the first setup step. */
+  onboardingIntent: OnboardingIntent;
   /** When true, the seeded sample data stays put instead of being cleared at finish. */
   keepSampleData: boolean;
   /** When true, finishing the wizard launches the quick product tour. */

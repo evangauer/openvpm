@@ -111,6 +111,9 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
         journeyStepId: prev?.journeyStepId ?? null,
         journeyDismissed: prev?.journeyDismissed ?? false,
         ...prev,
+        onboardingIntent: prev?.onboardingIntent ?? null,
+        onboardingIntentSelectedAt:
+          prev?.onboardingIntentSelectedAt ?? null,
         tourStatus: status,
         lastStepId: stepId ?? prev?.lastStepId ?? null,
         setupDismissed: prev?.setupDismissed ?? false,

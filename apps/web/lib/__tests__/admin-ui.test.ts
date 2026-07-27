@@ -43,8 +43,10 @@ describe("admin UI", () => {
 
   it("shows trial source and setup stage for diagnosing individual drop-off", () => {
     expect(source).toContain("{p.acquisitionSource}");
+    expect(source).toContain("{p.onboardingIntent}");
     expect(source).toContain("{p.setupStage}");
     expect(source).toContain(">Source</th>");
+    expect(source).toContain(">Intent</th>");
     expect(source).toContain(">Setup</th>");
   });
 

@@ -53,6 +53,10 @@ import {
 } from "@/lib/settings-policy";
 import { sendStaffInviteEmail } from "@/lib/email";
 import { appBaseUrl, exposeAuthLinksForPreview } from "@/lib/app-url";
+import {
+  ONBOARDING_INTENTS,
+  type OnboardingIntent,
+} from "@/lib/onboarding/intent";
 
 const adminProcedure = protectedProcedure.use(requireRole("admin"));
 
@@ -140,6 +144,7 @@ const journeyStepIdInput = z
   .trim()
   .max(64, "Journey step must be at most 64 characters")
   .nullish();
+const onboardingIntentInput = z.enum(ONBOARDING_INTENTS);
 
 /**
  * At or above this many patients a practice counts as established, so the
@@ -263,6 +268,9 @@ interface PracticeSettings {
     tourStatus?: "not_started" | "in_progress" | "completed" | "skipped";
     lastStepId?: string | null;
     setupDismissed?: boolean;
+    /** Adoption pathway selected on the first guided-setup step. */
+    onboardingIntent?: OnboardingIntent;
+    onboardingIntentSelectedAt?: string;
     /** Resume cursor for the "Make it yours" setup wizard (step id, not index). */
     journeyStepId?: string | null;
     /** "I'll finish later" — suppresses auto-open without completing onboarding. */
@@ -800,9 +808,16 @@ export const settingsRouter = createRouter({
         )
       )
       .limit(ESTABLISHED_PRACTICE_PATIENT_THRESHOLD);
+    const demoPatientIds = new Set(settings.demoData?.patientIds ?? []);
     return {
       completedAt: settings.onboardingCompletedAt ?? null,
       hasDemoData: !!settings.demoData,
+      // A secondary-PIMS buyer reaches a real-data milestone without having to
+      // delete the sample clinic first. This also keeps the checklist honest
+      // when real and demo patients intentionally coexist during evaluation.
+      hasRealData: existingPatients.some(
+        (patient) => !demoPatientIds.has(patient.id)
+      ),
       onboardingDraft: settings.onboardingDraft ?? null,
       establishedPractice:
         existingPatients.length >= ESTABLISHED_PRACTICE_PATIENT_THRESHOLD,
@@ -949,6 +964,8 @@ export const settingsRouter = createRouter({
       tourStatus: "not_started" as const,
       lastStepId: null,
       setupDismissed: false,
+      onboardingIntent: null,
+      onboardingIntentSelectedAt: null,
       journeyStepId: null,
       journeyDismissed: false,
       ...(settings.onboardingState ?? {}),
@@ -970,6 +987,27 @@ export const settingsRouter = createRouter({
       const [updated] = await ctx.db
         .update(practices)
         .set({ settings: onboardingStateMergePatch(patch) })
+        .where(activePracticeWhere(ctx.practiceId))
+        .returning({ id: practices.id });
+      if (!updated) {
+        throw practiceNotFound();
+      }
+      return { ok: true };
+    }),
+
+  /** Persist the selected adoption path for tailored setup and funnel review. */
+  setOnboardingIntent: adminProcedure
+    .input(z.object({ intent: onboardingIntentInput }))
+    .mutation(async ({ ctx, input }) => {
+      const [updated] = await ctx.db
+        .update(practices)
+        .set({
+          settings: onboardingStateMergePatch({
+            onboardingIntent: input.intent,
+            onboardingIntentSelectedAt: new Date().toISOString(),
+            journeyDismissed: false,
+          }),
+        })
         .where(activePracticeWhere(ctx.practiceId))
         .returning({ id: practices.id });
       if (!updated) {

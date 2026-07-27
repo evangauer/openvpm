@@ -181,8 +181,27 @@ describe("settings admin stale target safety", () => {
       })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
+    await expect(
+      callerWithDb(db).setOnboardingIntent({ intent: "unknown" as never })
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
     expect(updateSet).not.toHaveBeenCalled();
     expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("persists a validated onboarding pathway without a schema write", async () => {
+    const { db, updateSet } = createDb({
+      updatedRows: [{ id: PRACTICE_ID }],
+    });
+
+    await expect(
+      callerWithDb(db).setOnboardingIntent({ intent: "alongside" })
+    ).resolves.toEqual({ ok: true });
+
+    expect(updateSet).toHaveBeenCalledTimes(1);
+    expect(SETTINGS_SOURCE).toContain("onboardingStateMergePatch({");
+    expect(SETTINGS_SOURCE).toContain("onboardingIntent: input.intent");
+    expect(SETTINGS_SOURCE).toContain("onboardingIntentSelectedAt");
   });
 
   it("validates practice timezone strings through the shared settings policy", () => {

@@ -135,3 +135,27 @@ describe("settings.welcomeContext", () => {
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 });
+
+describe("settings.onboardingStatus", () => {
+  it("does not count seeded demo patients as real imported data", async () => {
+    const { db } = createDb([
+      [{ settings: demoSettings }],
+      [{ id: DEMO_PATIENT_ID }],
+    ]);
+
+    await expect(
+      callerWithRole(db, "admin").onboardingStatus()
+    ).resolves.toMatchObject({ hasDemoData: true, hasRealData: false });
+  });
+
+  it("recognizes real patients while the sample clinic remains available", async () => {
+    const { db } = createDb([
+      [{ settings: demoSettings }],
+      [{ id: DEMO_PATIENT_ID }, { id: "real-patient-1" }],
+    ]);
+
+    await expect(
+      callerWithRole(db, "admin").onboardingStatus()
+    ).resolves.toMatchObject({ hasDemoData: true, hasRealData: true });
+  });
+});

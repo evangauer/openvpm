@@ -218,6 +218,7 @@ export default function AdminPage() {
               <th className="px-4 py-2.5 font-medium">Plan</th>
               <th className="px-4 py-2.5 font-medium">Status</th>
               <th className="px-4 py-2.5 font-medium">Source</th>
+              <th className="px-4 py-2.5 font-medium">Intent</th>
               <th className="px-4 py-2.5 font-medium">Setup</th>
               <th className="px-4 py-2.5 font-medium">Trial ends</th>
               <th className="px-4 py-2.5 font-medium text-right">Locations</th>
@@ -245,6 +246,9 @@ export default function AdminPage() {
                 </td>
                 <td className="px-4 py-2.5 text-muted-foreground">
                   {p.acquisitionSource}
+                </td>
+                <td className="px-4 py-2.5 text-muted-foreground">
+                  {p.onboardingIntent}
                 </td>
                 <td className="px-4 py-2.5 text-muted-foreground">
                   {p.setupStage}
@@ -280,7 +284,7 @@ export default function AdminPage() {
             ))}
             {data.practices.length === 0 && (
               <tr>
-                <td colSpan={13} className="px-4 py-8 text-center text-muted-foreground">
+                <td colSpan={14} className="px-4 py-8 text-center text-muted-foreground">
                   No practices yet.
                 </td>
               </tr>

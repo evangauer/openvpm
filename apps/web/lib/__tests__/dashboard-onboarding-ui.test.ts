@@ -59,6 +59,9 @@ describe("dashboard onboarding UI states", () => {
       "const practiceName = practiceData.name ?? \"your practice\""
     );
     expect(activationSource).toContain("done: !!practiceData.logoUrl || !!brandColor");
+    expect(activationSource).toContain(
+      "done: onboardingData.hasRealData || !onboardingData.hasDemoData"
+    );
     expect(activationSource).not.toContain("practice.data?.");
     expect(activationSource).not.toContain("sub.data.");
     expect(activationSource).not.toContain("onboarding.data.hasDemoData");
@@ -103,6 +106,15 @@ describe("dashboard onboarding UI states", () => {
     );
     expect(settingsRouter).toContain("completeOnboarding: adminProcedure.mutation");
     expect(settingsRouter).toContain("clearDemoData: adminProcedure.mutation");
+    expect(settingsRouter).toContain("setOnboardingIntent: adminProcedure");
+  });
+
+  it("uses the selected pathway to put a tailored first win first", () => {
+    expect(activationSource).toContain("getOnboardingIntentOption");
+    expect(activationSource).toContain("pathway.firstWinTarget");
+    expect(activationSource).toContain("label: pathway.firstWin");
+    expect(activationSource).toContain("hint: pathway.firstWinHint");
+    expect(activationSource).toContain("{pathway.shortLabel} · {doneCount}");
   });
 
   it("auto-opens the wizard for unfinished, non-dismissed onboarding and resumes durably", () => {

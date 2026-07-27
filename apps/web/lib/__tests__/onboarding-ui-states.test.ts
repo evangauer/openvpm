@@ -30,6 +30,18 @@ describe("onboarding UI states", () => {
     "components/onboarding/steps/invite-team.tsx",
     "utf8"
   );
+  const choosePath = readFileSync(
+    "components/onboarding/steps/choose-path.tsx",
+    "utf8"
+  );
+  const onboardingIntent = readFileSync(
+    "lib/onboarding/intent.ts",
+    "utf8"
+  );
+  const journeyOverlay = readFileSync(
+    "components/onboarding/journey-overlay.tsx",
+    "utf8"
+  );
   const settingsRouter = readFileSync("server/routers/settings.ts", "utf8");
 
   it("retires the standalone onboarding page as a redirect to the dashboard", () => {
@@ -50,7 +62,26 @@ describe("onboarding UI states", () => {
       "completeOnboarding: adminProcedure.mutation"
     );
     expect(settingsRouter).toContain("clearDemoData: adminProcedure.mutation");
+    expect(settingsRouter).toContain("setOnboardingIntent: adminProcedure");
     expect(settingsRouter).toContain("setJourneyProgress: adminProcedure");
+    expect(settingsRouter).toContain("hasRealData: existingPatients.some(");
+  });
+
+  it("starts with a persisted adoption pathway and recommends running alongside", () => {
+    expect(journeyOverlay).toContain(
+      '{ id: "intent", title: "How do you want to start?" }'
+    );
+    expect(journeyOverlay).toContain(
+      "initialIntent={onboardingIntent ?? DEFAULT_ONBOARDING_INTENT}"
+    );
+    expect(onboardingIntent).toContain(
+      'label: "Run alongside my current PIMS"'
+    );
+    expect(choosePath).toContain("Recommended");
+    expect(choosePath).toContain(
+      "saveIntent.mutateAsync({ intent: state.onboardingIntent })"
+    );
+    expect(settingsRouter).toContain("onboardingIntentSelectedAt");
   });
 
   it("surfaces guided setup query failures instead of showing default step states", () => {

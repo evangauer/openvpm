@@ -16,6 +16,10 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { useTour } from "@/components/tour/tour-provider";
+import {
+  DEFAULT_ONBOARDING_INTENT,
+  getOnboardingIntentOption,
+} from "@/lib/onboarding/intent";
 
 type Milestone = {
   key: string;
@@ -109,8 +113,11 @@ export function ActivationChecklist() {
   const brandColor = (practiceData.settings as { brandColor?: string } | null)
     ?.brandColor;
   const practiceName = practiceData.name ?? "your practice";
+  const pathway = getOnboardingIntentOption(
+    checklistState.onboardingIntent ?? DEFAULT_ONBOARDING_INTENT
+  );
 
-  const milestones: Milestone[] = [
+  const standardMilestones: Milestone[] = [
     {
       key: "tour",
       label: "Take the 60-second tour",
@@ -142,8 +149,8 @@ export function ActivationChecklist() {
     {
       key: "data",
       label: "Bring in your real data",
-      hint: "Import clients and pets, then clear the sample data.",
-      done: !onboardingData.hasDemoData,
+      hint: "Import a few real clients and pets while you evaluate.",
+      done: onboardingData.hasRealData || !onboardingData.hasDemoData,
       href: "/settings?tab=data",
     },
     {
@@ -164,6 +171,18 @@ export function ActivationChecklist() {
           } as Milestone,
         ]
       : []),
+  ];
+  const firstWinBase =
+    standardMilestones.find((milestone) => milestone.key === pathway.firstWinTarget) ??
+    standardMilestones[0]!;
+  const firstWin: Milestone = {
+    ...firstWinBase,
+    label: pathway.firstWin,
+    hint: pathway.firstWinHint,
+  };
+  const milestones = [
+    firstWin,
+    ...standardMilestones.filter((milestone) => milestone.key !== firstWin.key),
   ];
 
   const total = milestones.length;
@@ -232,7 +251,7 @@ export function ActivationChecklist() {
               Get {practiceName} running
             </p>
             <p className="text-xs text-zinc-400">
-              {doneCount} of {total} done
+              {pathway.shortLabel} · {doneCount} of {total} done
             </p>
           </div>
         </div>

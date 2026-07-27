@@ -84,6 +84,7 @@ describe("admin overview", () => {
           settings: {
             acquisition: { source: "homepage_hero", campaign: "summer_launch" },
             onboardingState: {
+              onboardingIntent: "alongside",
               journeyStepId: "data",
               journeyDismissed: true,
             },
@@ -106,6 +107,7 @@ describe("admin overview", () => {
       clientCount: 25,
       patientCount: 40,
       acquisitionSource: "homepage_hero · summer_launch",
+      onboardingIntent: "Alongside current PIMS",
       setupStage: "Paused at Data import",
     });
     expect(mocks.withSystem).toHaveBeenCalledWith(

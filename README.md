@@ -89,7 +89,9 @@ Treatment templates can populate draft invoices, with itemized manual service/pr
 Product catalog with stock levels, reorder point alerts, lot/batch tracking, and expiration dates. Auto-deduction when products are dispensed from invoices or EMR prescriptions. Supplier contact management for reorder workflows.
 
 **Controlled Substance Tracking**
-DEA-compliant controlled substance logging with full audit trails.
+Controlled-substance logging with patient and lot linkage, running balances,
+waste-witness fields, and full audit trails. Practices should validate the
+configured workflow against their federal, state, and local procedures.
 
 ### Phase 2 — Communication & Intelligence (Implemented)
 

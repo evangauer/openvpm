@@ -17,7 +17,12 @@ import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { useTour } from "@/components/tour/tour-provider";
 import { firstRunMode } from "@/lib/welcome/first-run";
+import {
+  DEFAULT_ONBOARDING_INTENT,
+  type OnboardingIntent,
+} from "@/lib/onboarding/intent";
 import type { JourneyState, StepHandle } from "./journey-types";
+import { ChoosePathStep } from "./steps/choose-path";
 import { PracticeBasicsStep } from "./steps/practice-basics";
 import { BrandingStep } from "./steps/branding";
 import { InviteTeamStep } from "./steps/invite-team";
@@ -28,6 +33,7 @@ import { AddACardStep } from "./steps/add-a-card";
 import { AllSetStep } from "./steps/all-set";
 
 type StepId =
+  | "intent"
   | "basics"
   | "branding"
   | "team"
@@ -49,6 +55,7 @@ interface StepDef {
  */
 function buildSteps(billingEnforced: boolean): StepDef[] {
   return [
+    { id: "intent", title: "How do you want to start?" },
     { id: "basics", title: "Tell us about your clinic." },
     { id: "branding", title: "Make it feel like yours." },
     { id: "team", title: "Bring your team in." },
@@ -109,10 +116,13 @@ export function OnboardingJourneyProvider({
   const steps = useMemo(() => buildSteps(billingEnforced), [billingEnforced]);
 
   const journeyStepId = onboardingState.data?.journeyStepId ?? null;
+  const onboardingIntent = onboardingState.data?.onboardingIntent ?? null;
   const resumeIndex = useMemo(() => {
+    // Anyone who started before pathways existed gets the new choice once.
+    if (!onboardingIntent) return 0;
     const i = steps.findIndex((s) => s.id === journeyStepId);
     return i >= 0 ? i : 0;
-  }, [steps, journeyStepId]);
+  }, [steps, journeyStepId, onboardingIntent]);
 
   // null = closed; a number is the active step index.
   const [index, setIndex] = useState<number | null>(null);
@@ -183,7 +193,11 @@ export function OnboardingJourneyProvider({
     <OnboardingJourneyContext.Provider value={{ openJourney, isOpen }}>
       {children}
       {isOpen ? (
-        <JourneyShell steps={steps} index={index!} setIndex={setIndex} />
+        <JourneyShell steps={steps}
+          index={index!}
+          setIndex={setIndex}
+          initialIntent={onboardingIntent ?? DEFAULT_ONBOARDING_INTENT}
+        />
       ) : null}
     </OnboardingJourneyContext.Provider>
   );
@@ -197,10 +211,12 @@ function JourneyShell({
   steps,
   index,
   setIndex,
+  initialIntent,
 }: {
   steps: StepDef[];
   index: number;
   setIndex: (i: number | null) => void;
+  initialIntent: OnboardingIntent;
 }) {
   const utils = trpc.useUtils();
   const { start: startTour } = useTour();
@@ -210,6 +226,7 @@ function JourneyShell({
 
   // Shared step state. Default to keeping sample data and offering the tour.
   const [state, setStateRaw] = useState<JourneyState>({
+    onboardingIntent: initialIntent,
     keepSampleData: true,
     startTourAfter: true,
   });
@@ -353,6 +370,13 @@ function JourneyShell({
 
           {/* Active step */}
           <div className="mt-5">
+            {step.id === "intent" ? (
+              <ChoosePathStep
+                register={register}
+                state={state}
+                setState={setState}
+              />
+            ) : null}
             {step.id === "basics" ? (
               <PracticeBasicsStep register={register} />
             ) : null}
@@ -363,7 +387,11 @@ function JourneyShell({
               <InviteTeamStep register={register} />
             ) : null}
             {step.id === "data" ? (
-              <BringDataStep register={register} setState={setState} />
+              <BringDataStep
+                register={register}
+                state={state}
+                setState={setState}
+              />
             ) : null}
             {step.id === "agent" ? (
               <TryAgentStep register={register} />
