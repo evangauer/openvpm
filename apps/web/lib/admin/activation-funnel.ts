@@ -23,14 +23,22 @@ export interface ActivationFunnelWeek {
   /** ISO date (YYYY-MM-DD) of the Monday the week starts on. */
   weekStart: string;
   signups: number;
+  setupStarted: number;
+  setupCompleted: number;
   activated: number;
   subscribed: number;
 }
 
 export interface ActivationFunnelTotals {
   signups: number;
+  setupStarted: number;
+  setupCompleted: number;
   activated: number;
   subscribed: number;
+  /** setupStarted / signups; 0 when there are no signups. */
+  setupStartRate: number;
+  /** setupCompleted / signups; 0 when there are no signups. */
+  setupCompletionRate: number;
   /** activated / signups; 0 when there are no signups. */
   activationRate: number;
   /** subscribed / signups; 0 when there are no signups. */
@@ -51,6 +59,8 @@ export function funnelRate(part: number, whole: number): number {
 interface FunnelRow {
   weekStart: string;
   signups: number | string;
+  setupStarted: number | string;
+  setupCompleted: number | string;
   activated: number | string;
   subscribed: number | string;
 }
@@ -76,6 +86,7 @@ export async function computeActivationFunnel(
           p.id,
           p.created_at,
           p.billing_status,
+          p.settings,
           date_trunc('week', p.created_at) as week_start,
           coalesce(p.settings -> 'demoData' -> 'clientIds', '[]'::jsonb)
             as demo_client_ids,
@@ -88,6 +99,14 @@ export async function computeActivationFunnel(
       select
         to_char(s.week_start, 'YYYY-MM-DD') as "weekStart",
         count(*)::int as "signups",
+        count(*) filter (
+          where nullif(s.settings -> 'onboardingState' ->> 'journeyStepId', '')
+            is not null
+            or nullif(s.settings ->> 'onboardingCompletedAt', '') is not null
+        )::int as "setupStarted",
+        count(*) filter (
+          where nullif(s.settings ->> 'onboardingCompletedAt', '') is not null
+        )::int as "setupCompleted",
         count(*) filter (
           where exists (
             select 1
@@ -117,12 +136,19 @@ export async function computeActivationFunnel(
     (row) => ({
       weekStart: String(row.weekStart),
       signups: Number(row.signups) || 0,
+      setupStarted: Number(row.setupStarted) || 0,
+      setupCompleted: Number(row.setupCompleted) || 0,
       activated: Number(row.activated) || 0,
       subscribed: Number(row.subscribed) || 0,
     })
   );
 
   const signups = weeks.reduce((sum, week) => sum + week.signups, 0);
+  const setupStarted = weeks.reduce((sum, week) => sum + week.setupStarted, 0);
+  const setupCompleted = weeks.reduce(
+    (sum, week) => sum + week.setupCompleted,
+    0
+  );
   const activated = weeks.reduce((sum, week) => sum + week.activated, 0);
   const subscribed = weeks.reduce((sum, week) => sum + week.subscribed, 0);
 
@@ -131,8 +157,12 @@ export async function computeActivationFunnel(
     weeks,
     totals: {
       signups,
+      setupStarted,
+      setupCompleted,
       activated,
       subscribed,
+      setupStartRate: funnelRate(setupStarted, signups),
+      setupCompletionRate: funnelRate(setupCompleted, signups),
       activationRate: funnelRate(activated, signups),
       conversionRate: funnelRate(subscribed, signups),
     },

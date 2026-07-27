@@ -13,8 +13,8 @@ import {
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-// Weekly trial-funnel digest for the founder/operators: signups -> activated
-// -> subscribed for the past 7 and 30 days, emailed to PLATFORM_ADMIN_EMAILS.
+// Weekly trial-funnel digest for the founder/operators: signups -> setup ->
+// activated -> subscribed for the past 7 and 30 days.
 // Reporting only — it must never 500-loop, so failures alert ops and still
 // return a non-throwing response.
 export async function GET(request: Request) {
@@ -85,17 +85,30 @@ function pct(rate: number): string {
 }
 
 function funnelSection(title: string, funnel: ActivationFunnel): string {
-  const { signups, activated, subscribed, activationRate, conversionRate } =
-    funnel.totals;
+  const {
+    signups,
+    setupStarted,
+    setupCompleted,
+    activated,
+    subscribed,
+    setupStartRate,
+    setupCompletionRate,
+    activationRate,
+    conversionRate,
+  } = funnel.totals;
   return `<h2 style="margin:24px 0 8px;font-size:16px;color:#111827;">${title}</h2>
 <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;">
   <tr style="text-align:left;color:#6b7280;font-size:13px;">
     <th style="padding:4px 12px 4px 0;font-weight:500;">Signups</th>
+    <th style="padding:4px 12px 4px 0;font-weight:500;">Setup started</th>
+    <th style="padding:4px 12px 4px 0;font-weight:500;">Setup complete</th>
     <th style="padding:4px 12px 4px 0;font-weight:500;">Activated</th>
     <th style="padding:4px 0;font-weight:500;">Subscribed</th>
   </tr>
   <tr style="font-size:20px;color:#111827;font-weight:600;">
     <td style="padding:2px 12px 2px 0;">${signups}</td>
+    <td style="padding:2px 12px 2px 0;">${setupStarted} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(setupStartRate)}</span></td>
+    <td style="padding:2px 12px 2px 0;">${setupCompleted} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(setupCompletionRate)}</span></td>
     <td style="padding:2px 12px 2px 0;">${activated} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(activationRate)}</span></td>
     <td style="padding:2px 0;">${subscribed} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(conversionRate)}</span></td>
   </tr>

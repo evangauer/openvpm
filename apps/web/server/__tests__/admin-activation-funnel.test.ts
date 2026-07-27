@@ -72,21 +72,25 @@ describe("admin activation funnel", () => {
   it("sums weekly rows and computes activation and conversion rates", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
     mocks.executeResults.push([
-      { weekStart: "2026-06-15", signups: 4, activated: 2, subscribed: 1 },
-      { weekStart: "2026-06-22", signups: 6, activated: 3, subscribed: 2 },
+      { weekStart: "2026-06-15", signups: 4, setupStarted: 3, setupCompleted: 1, activated: 2, subscribed: 1 },
+      { weekStart: "2026-06-22", signups: 6, setupStarted: 4, setupCompleted: 2, activated: 3, subscribed: 2 },
     ]);
 
     const result = await caller().activationFunnel({ days: 30 });
 
     expect(result.days).toBe(30);
     expect(result.weeks).toEqual([
-      { weekStart: "2026-06-15", signups: 4, activated: 2, subscribed: 1 },
-      { weekStart: "2026-06-22", signups: 6, activated: 3, subscribed: 2 },
+      { weekStart: "2026-06-15", signups: 4, setupStarted: 3, setupCompleted: 1, activated: 2, subscribed: 1 },
+      { weekStart: "2026-06-22", signups: 6, setupStarted: 4, setupCompleted: 2, activated: 3, subscribed: 2 },
     ]);
     expect(result.totals).toEqual({
       signups: 10,
+      setupStarted: 7,
+      setupCompleted: 3,
       activated: 5,
       subscribed: 3,
+      setupStartRate: 0.7,
+      setupCompletionRate: 0.3,
       activationRate: 0.5,
       conversionRate: 0.3,
     });
@@ -113,8 +117,12 @@ describe("admin activation funnel", () => {
 
     expect(result.totals).toEqual({
       signups: 0,
+      setupStarted: 0,
+      setupCompleted: 0,
       activated: 0,
       subscribed: 0,
+      setupStartRate: 0,
+      setupCompletionRate: 0,
       activationRate: 0,
       conversionRate: 0,
     });
@@ -123,7 +131,7 @@ describe("admin activation funnel", () => {
   it("coerces string counts from the driver into numbers", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
     mocks.executeResults.push([
-      { weekStart: "2026-06-29", signups: "2", activated: "1", subscribed: "0" },
+      { weekStart: "2026-06-29", signups: "2", setupStarted: "1", setupCompleted: "0", activated: "1", subscribed: "0" },
     ]);
 
     const result = await caller().activationFunnel({ days: 30 });
