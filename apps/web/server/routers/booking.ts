@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { eq, and, isNull, sql, not, inArray, lt, gt, asc, ne } from "drizzle-orm";
+import { eq, and, isNull, sql, not, inArray, lt, gt, asc } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, publicProcedure, protectedProcedure, requireRole } from "../trpc";
 import {
@@ -84,6 +84,41 @@ function pageNotFound(): TRPCError {
     code: "NOT_FOUND",
     message: "This booking page is not available.",
   });
+}
+
+function bookingSlugConflict(): TRPCError {
+  return new TRPCError({
+    code: "CONFLICT",
+    message: "That link is already taken. Please choose another.",
+  });
+}
+
+function isPostgresUniqueViolation(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 3; depth++) {
+    if (!current || typeof current !== "object") return false;
+    if ((current as { code?: unknown }).code === "23505") return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/**
+ * Slugs are globally unique, so a tenant-scoped connection cannot answer this
+ * question under RLS. The caller must supply the narrowly scoped system
+ * context used only by the authenticated checkSlug query.
+ */
+async function bookingSlugTakenByAnotherPractice(
+  database: any,
+  slug: string,
+  practiceId: string
+): Promise<boolean> {
+  const [page] = await database
+    .select({ practiceId: bookingPages.practiceId })
+    .from(bookingPages)
+    .where(eq(bookingPages.slug, slug))
+    .limit(1);
+  return Boolean(page && page.practiceId !== practiceId);
 }
 
 /** Resolve a slug to its live page + owning practice, or 404. */
@@ -386,6 +421,13 @@ export const bookingRouter = createRouter({
         });
       }
 
+      // Public booking requests for one practice must not both pass the
+      // conflict check before either appointment commits. publicProcedure
+      // already supplies a transaction, so this lock is held through commit.
+      await ctx.db.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${`public-booking:${practice.id}`}::text))`
+      );
+
       const [conflict] = await ctx.db
         .select({ id: appointments.id })
         .from(appointments)
@@ -566,24 +608,21 @@ export const bookingRouter = createRouter({
       };
     }),
 
-  checkSlug: protectedProcedure
+  // This query is authenticated by requireRole, while publicProcedure gives it
+  // the system DB context needed to see a globally unique slug across RLS
+  // tenants. It returns only a boolean and never writes in system context.
+  checkSlug: publicProcedure
     .use(requireRole("admin"))
     .input(z.object({ slug: bookingSlugInput }))
     .query(async ({ ctx, input }) => {
       if (!isValidBookingSlug(input.slug)) {
         return { valid: false, available: false };
       }
-      const [taken] = await ctx.db
-        .select({ id: bookingPages.id })
-        .from(bookingPages)
-        .where(
-          and(
-            eq(bookingPages.slug, input.slug),
-            isNull(bookingPages.deletedAt),
-            ne(bookingPages.practiceId, ctx.practiceId)
-          )
-        )
-        .limit(1);
+      const taken = await bookingSlugTakenByAnotherPractice(
+        ctx.db,
+        input.slug,
+        ctx.practiceId
+      );
       return { valid: true, available: !taken };
     }),
 
@@ -605,24 +644,6 @@ export const bookingRouter = createRouter({
         });
       }
 
-      const [taken] = await ctx.db
-        .select({ id: bookingPages.id })
-        .from(bookingPages)
-        .where(
-          and(
-            eq(bookingPages.slug, input.slug),
-            isNull(bookingPages.deletedAt),
-            ne(bookingPages.practiceId, ctx.practiceId)
-          )
-        )
-        .limit(1);
-      if (taken) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "That link is already taken. Please choose another.",
-        });
-      }
-
       const [existing] = await ctx.db
         .select({ id: bookingPages.id })
         .from(bookingPages)
@@ -635,27 +656,43 @@ export const bookingRouter = createRouter({
         .limit(1);
 
       if (existing) {
-        const [updated] = await ctx.db
-          .update(bookingPages)
-          .set({
+        try {
+          const [updated] = await ctx.db
+            .update(bookingPages)
+            .set({
+              slug: input.slug,
+              published: input.published,
+              config: input.config,
+            })
+            .where(eq(bookingPages.id, existing.id))
+            .returning({
+              slug: bookingPages.slug,
+              published: bookingPages.published,
+            });
+          return updated!;
+        } catch (error) {
+          if (isPostgresUniqueViolation(error)) throw bookingSlugConflict();
+          throw error;
+        }
+      }
+
+      try {
+        const [created] = await ctx.db
+          .insert(bookingPages)
+          .values({
+            practiceId: ctx.practiceId,
             slug: input.slug,
             published: input.published,
             config: input.config,
           })
-          .where(eq(bookingPages.id, existing.id))
-          .returning({ slug: bookingPages.slug, published: bookingPages.published });
-        return updated!;
+          .returning({
+            slug: bookingPages.slug,
+            published: bookingPages.published,
+          });
+        return created!;
+      } catch (error) {
+        if (isPostgresUniqueViolation(error)) throw bookingSlugConflict();
+        throw error;
       }
-
-      const [created] = await ctx.db
-        .insert(bookingPages)
-        .values({
-          practiceId: ctx.practiceId,
-          slug: input.slug,
-          published: input.published,
-          config: input.config,
-        })
-        .returning({ slug: bookingPages.slug, published: bookingPages.published });
-      return created!;
     }),
 });

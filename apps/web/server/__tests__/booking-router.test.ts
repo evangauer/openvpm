@@ -98,6 +98,8 @@ function createDb(opts?: {
   selectResults?: unknown[][];
   insertResults?: unknown[][];
   updatedRows?: unknown[];
+  insertError?: unknown;
+  updateError?: unknown;
 }) {
   const selectResults = [...(opts?.selectResults ?? [])];
   const insertResults = [...(opts?.insertResults ?? [])];
@@ -128,7 +130,10 @@ function createDb(opts?: {
       insertedValues.push(vals);
       const result = insertResults.shift() ?? [];
       return {
-        returning: vi.fn(async () => result),
+        returning: vi.fn(async () => {
+          if (opts?.insertError) throw opts.insertError;
+          return result;
+        }),
         then: (
           resolve: (value: unknown) => unknown,
           reject?: (error: unknown) => unknown
@@ -137,7 +142,10 @@ function createDb(opts?: {
     }),
   }));
 
-  const updateReturning = vi.fn(async () => opts?.updatedRows ?? []);
+  const updateReturning = vi.fn(async () => {
+    if (opts?.updateError) throw opts.updateError;
+    return opts?.updatedRows ?? [];
+  });
   const updateWhere = vi.fn(() => ({ returning: updateReturning }));
   const updateSet = vi.fn(() => ({ where: updateWhere }));
   const update = vi.fn(() => ({ set: updateSet }));
@@ -150,7 +158,14 @@ function createDb(opts?: {
     update,
   };
 
-  return { db, select, insert, insertedValues, updateSet };
+  return {
+    db,
+    select,
+    insert,
+    insertedValues,
+    updateSet,
+    execute: db.execute as ReturnType<typeof vi.fn>,
+  };
 }
 
 afterEach(() => {
@@ -267,7 +282,7 @@ describe("public booking", () => {
       clientId: CLIENT_ID,
       typeId: null,
     };
-    const { db, insertedValues } = createDb({
+    const { db, insertedValues, execute } = createDb({
       selectResults: [[pageRow()], [], [], []],
       insertResults: [
         [{ id: CLIENT_ID }],
@@ -280,6 +295,12 @@ describe("public booking", () => {
     const result = await publicCaller(db).book(bookInput());
     expect(result.success).toBe(true);
     expect(result.requiresConfirmation).toBe(true);
+    // withSystem establishes the RLS bypass, then booking takes the
+    // practice-scoped advisory lock before checking for a conflicting slot.
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(execute.mock.calls[1]![0])).toContain(
+      "pg_advisory_xact_lock"
+    );
 
     const [clientValues, patientValues, apptValues, commValues] =
       insertedValues as Array<Record<string, unknown>>;
@@ -423,6 +444,18 @@ describe("booking page admin", () => {
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
+  it("keeps the system-scoped global slug lookup admin-only", async () => {
+    const { db, select } = createDb();
+
+    await expect(
+      publicCaller(db).checkSlug({ slug: "test-clinic" })
+    ).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(
+      adminCaller(db, "technician").checkSlug({ slug: "test-clinic" })
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(select).not.toHaveBeenCalled();
+  });
+
   it("rejects invalid and reserved slugs before any database work", async () => {
     const { db, select } = createDb();
     await expect(
@@ -435,22 +468,31 @@ describe("booking page admin", () => {
     expect(select).not.toHaveBeenCalled();
   });
 
-  it("rejects slugs already taken by another practice", async () => {
-    const { db } = createDb({
-      selectResults: [[{ id: "someone-else" }]],
+  it("checks global slug availability outside the tenant-scoped connection", async () => {
+    const { db, select, execute } = createDb({
+      selectResults: [[{ practiceId: "someone-else" }]],
     });
+
     await expect(
-      adminCaller(db).savePage({
-        slug: "taken-slug",
-        published: true,
-        config: {},
-      } as never)
-    ).rejects.toMatchObject({ code: "CONFLICT" });
+      adminCaller(db).checkSlug({ slug: "taken-slug" })
+    ).resolves.toEqual({ valid: true, available: false });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(select).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the practice's current slug available to that practice", async () => {
+    const { db } = createDb({
+      selectResults: [[{ practiceId: PRACTICE_ID }]],
+    });
+
+    await expect(
+      adminCaller(db).checkSlug({ slug: "test-clinic" })
+    ).resolves.toEqual({ valid: true, available: true });
   });
 
   it("creates the page on first save", async () => {
     const { db, insertedValues } = createDb({
-      selectResults: [[], []],
+      selectResults: [[]],
       insertResults: [[{ slug: "test-clinic", published: true }]],
     });
     const result = await adminCaller(db).savePage({
@@ -468,7 +510,7 @@ describe("booking page admin", () => {
 
   it("updates the existing page on later saves", async () => {
     const { db, updateSet, insertedValues } = createDb({
-      selectResults: [[], [{ id: "existing-page" }]],
+      selectResults: [[{ id: "existing-page" }]],
       updatedRows: [{ slug: "new-slug", published: false }],
     });
     const result = await adminCaller(db).savePage({
@@ -481,5 +523,47 @@ describe("booking page admin", () => {
     expect(updateSet).toHaveBeenCalledWith(
       expect.objectContaining({ slug: "new-slug", published: false })
     );
+  });
+
+  it("returns a friendly conflict when a concurrent save wins the slug race", async () => {
+    const duplicate = Object.assign(new Error("duplicate key"), {
+      code: "23505",
+    });
+    const { db } = createDb({
+      selectResults: [[]],
+      insertError: duplicate,
+    });
+
+    await expect(
+      adminCaller(db).savePage({
+        slug: "race-winner",
+        published: true,
+        config: {},
+      } as never)
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "That link is already taken. Please choose another.",
+    });
+  });
+
+  it("returns the same friendly conflict when a slug update loses the race", async () => {
+    const duplicate = Object.assign(new Error("duplicate key"), {
+      code: "23505",
+    });
+    const { db } = createDb({
+      selectResults: [[{ id: "existing-page" }]],
+      updateError: duplicate,
+    });
+
+    await expect(
+      adminCaller(db).savePage({
+        slug: "race-winner",
+        published: true,
+        config: {},
+      } as never)
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "That link is already taken. Please choose another.",
+    });
   });
 });
