@@ -45,10 +45,12 @@ function funnel(days: number, totals: Partial<ActivationFunnel["totals"]> = {}):
       setupStarted: 3,
       setupCompleted: 2,
       activated: 2,
+      billingStarted: 2,
       subscribed: 1,
       setupStartRate: 0.6,
       setupCompletionRate: 0.4,
       activationRate: 0.4,
+      billingStartRate: 0.4,
       conversionRate: 0.2,
       ...totals,
     },
@@ -127,6 +129,11 @@ describe("activation digest cron", () => {
         to: "founder@openvpm.com",
         subject: "OpenVPM trial funnel: 5 signups, 2 activated this week",
         html: expect.stringContaining("Past 30 days"),
+      })
+    );
+    expect(mocks.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        html: expect.stringContaining("Billing started"),
       })
     );
     expect(mocks.sendEmail).toHaveBeenCalledWith(

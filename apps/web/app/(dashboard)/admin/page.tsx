@@ -148,7 +148,7 @@ export default function AdminPage() {
         </div>
         {funnel ? (
           <>
-            <div className="mt-3 grid gap-4 sm:grid-cols-5">
+            <div className="mt-3 grid gap-4 sm:grid-cols-3 xl:grid-cols-6">
               <div>
                 <p className="text-sm text-muted-foreground">Signups</p>
                 <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
@@ -183,7 +183,16 @@ export default function AdminPage() {
                 </p>
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Subscribed</p>
+                <p className="text-sm text-muted-foreground">Billing started</p>
+                <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
+                  {funnel.totals.billingStarted}
+                  <span className="ml-2 text-sm font-normal text-muted-foreground">
+                    {formatPct(funnel.totals.billingStartRate)}
+                  </span>
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">Paid active</p>
                 <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
                   {funnel.totals.subscribed}
                   <span className="ml-2 text-sm font-normal text-muted-foreground">
@@ -194,7 +203,9 @@ export default function AdminPage() {
             </div>
             <p className="mt-3 text-xs text-muted-foreground">
               Setup progress comes from the guided clinic setup. Activated = added a
-              real client and booked a real visit.
+              real client and booked a real visit. Billing started = Stripe
+              subscription created; paid active = billing status active. All rates
+              are signup-cohort rates for this window.
             </p>
           </>
         ) : (

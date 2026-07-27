@@ -10,8 +10,9 @@ import { withSystem } from "@/lib/tenant-db";
  *   least one real (non-demo) appointment created after signup. Demo rows are
  *   the ids recorded in practices.settings -> 'demoData' when sample data is
  *   seeded, so they never count toward activation.
- * - subscribed: billingStatus = 'active' (a 'trialing' practice is still in
- *   the trial, not converted).
+ * - billing started: a Stripe subscription exists and local status is trialing
+ *   or active. This captures card-on-file commitment before the first charge.
+ * - paid active: billingStatus = 'active'. A trialing subscription is not paid.
  *
  * Shared by the platform-admin tRPC query and the weekly digest cron so both
  * always report the same numbers.
@@ -26,6 +27,7 @@ export interface ActivationFunnelWeek {
   setupStarted: number;
   setupCompleted: number;
   activated: number;
+  billingStarted: number;
   subscribed: number;
 }
 
@@ -34,6 +36,7 @@ export interface ActivationFunnelTotals {
   setupStarted: number;
   setupCompleted: number;
   activated: number;
+  billingStarted: number;
   subscribed: number;
   /** setupStarted / signups; 0 when there are no signups. */
   setupStartRate: number;
@@ -41,6 +44,8 @@ export interface ActivationFunnelTotals {
   setupCompletionRate: number;
   /** activated / signups; 0 when there are no signups. */
   activationRate: number;
+  /** billingStarted / signups; 0 when there are no signups. */
+  billingStartRate: number;
   /** subscribed / signups; 0 when there are no signups. */
   conversionRate: number;
 }
@@ -62,6 +67,7 @@ interface FunnelRow {
   setupStarted: number | string;
   setupCompleted: number | string;
   activated: number | string;
+  billingStarted: number | string;
   subscribed: number | string;
 }
 
@@ -86,6 +92,7 @@ export async function computeActivationFunnel(
           p.id,
           p.created_at,
           p.billing_status,
+          p.stripe_subscription_id,
           p.settings,
           date_trunc('week', p.created_at) as week_start,
           coalesce(p.settings -> 'demoData' -> 'clientIds', '[]'::jsonb)
@@ -125,6 +132,10 @@ export async function computeActivationFunnel(
               and not (s.demo_appointment_ids @> to_jsonb(a.id::text))
           )
         )::int as "activated",
+        count(*) filter (
+          where s.stripe_subscription_id is not null
+            and s.billing_status in ('trialing', 'active')
+        )::int as "billingStarted",
         count(*) filter (where s.billing_status = 'active')::int as "subscribed"
       from signups s
       group by s.week_start
@@ -139,6 +150,7 @@ export async function computeActivationFunnel(
       setupStarted: Number(row.setupStarted) || 0,
       setupCompleted: Number(row.setupCompleted) || 0,
       activated: Number(row.activated) || 0,
+      billingStarted: Number(row.billingStarted) || 0,
       subscribed: Number(row.subscribed) || 0,
     })
   );
@@ -150,6 +162,10 @@ export async function computeActivationFunnel(
     0
   );
   const activated = weeks.reduce((sum, week) => sum + week.activated, 0);
+  const billingStarted = weeks.reduce(
+    (sum, week) => sum + week.billingStarted,
+    0
+  );
   const subscribed = weeks.reduce((sum, week) => sum + week.subscribed, 0);
 
   return {
@@ -160,10 +176,12 @@ export async function computeActivationFunnel(
       setupStarted,
       setupCompleted,
       activated,
+      billingStarted,
       subscribed,
       setupStartRate: funnelRate(setupStarted, signups),
       setupCompletionRate: funnelRate(setupCompleted, signups),
       activationRate: funnelRate(activated, signups),
+      billingStartRate: funnelRate(billingStarted, signups),
       conversionRate: funnelRate(subscribed, signups),
     },
   };

@@ -14,7 +14,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 // Weekly trial-funnel digest for the founder/operators: signups -> setup ->
-// activated -> subscribed for the past 7 and 30 days.
+// activated -> billing started -> paid active for the past 7 and 30 days.
 // Reporting only — it must never 500-loop, so failures alert ops and still
 // return a non-throwing response.
 export async function GET(request: Request) {
@@ -90,10 +90,12 @@ function funnelSection(title: string, funnel: ActivationFunnel): string {
     setupStarted,
     setupCompleted,
     activated,
+    billingStarted,
     subscribed,
     setupStartRate,
     setupCompletionRate,
     activationRate,
+    billingStartRate,
     conversionRate,
   } = funnel.totals;
   return `<h2 style="margin:24px 0 8px;font-size:16px;color:#111827;">${title}</h2>
@@ -103,13 +105,15 @@ function funnelSection(title: string, funnel: ActivationFunnel): string {
     <th style="padding:4px 12px 4px 0;font-weight:500;">Setup started</th>
     <th style="padding:4px 12px 4px 0;font-weight:500;">Setup complete</th>
     <th style="padding:4px 12px 4px 0;font-weight:500;">Activated</th>
-    <th style="padding:4px 0;font-weight:500;">Subscribed</th>
+    <th style="padding:4px 12px 4px 0;font-weight:500;">Billing started</th>
+    <th style="padding:4px 0;font-weight:500;">Paid active</th>
   </tr>
   <tr style="font-size:20px;color:#111827;font-weight:600;">
     <td style="padding:2px 12px 2px 0;">${signups}</td>
     <td style="padding:2px 12px 2px 0;">${setupStarted} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(setupStartRate)}</span></td>
     <td style="padding:2px 12px 2px 0;">${setupCompleted} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(setupCompletionRate)}</span></td>
     <td style="padding:2px 12px 2px 0;">${activated} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(activationRate)}</span></td>
+    <td style="padding:2px 12px 2px 0;">${billingStarted} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(billingStartRate)}</span></td>
     <td style="padding:2px 0;">${subscribed} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(conversionRate)}</span></td>
   </tr>
 </table>`;
@@ -137,7 +141,7 @@ function digestHtml(week: ActivationFunnel, month: ActivationFunnel): string {
             <td style="padding:32px;">
               ${funnelSection("Past 7 days", week)}
               ${funnelSection("Past 30 days", month)}
-              <p style="margin:24px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Activated = added a real client and booked a real visit. Subscribed = billing is active. Demo data never counts.</p>
+              <p style="margin:24px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Activated = added a real client and booked a real visit. Billing started = a Stripe subscription exists. Paid active = billing status is active. These are signup-cohort rates; demo data never counts.</p>
             </td>
           </tr>
           <tr>
