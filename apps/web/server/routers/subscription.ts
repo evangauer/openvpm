@@ -86,6 +86,7 @@ export const subscriptionRouter = createRouter({
       trialEndsAt: practice.trialEndsAt ?? null,
       timezone: practice.timezone ?? null,
       hasBillingAccount: !!practice.stripeCustomerId,
+      hasSubscription: !!practice.stripeSubscriptionId,
       billingEnforced: enforced,
       hasFullAccess: hasHostedFullAccess(
         practice.tier,
@@ -147,6 +148,7 @@ export const subscriptionRouter = createRouter({
       const [practice] = await ctx.db
         .select({
           stripeCustomerId: practices.stripeCustomerId,
+          stripeSubscriptionId: practices.stripeSubscriptionId,
           email: practices.email,
           billingStatus: practices.billingStatus,
           trialEndsAt: practices.trialEndsAt,
@@ -157,6 +159,19 @@ export const subscriptionRouter = createRouter({
 
       if (!practice) {
         throw practiceNotFound();
+      }
+
+      // A completed Checkout already owns the subscription lifecycle. Starting
+      // another Checkout for the same practice can create a second Stripe
+      // subscription that charges alongside the first when its trial ends.
+      // Terminal subscription webhooks clear this id, so any stored id is the
+      // server-side signal to manage the existing subscription instead.
+      if (practice.stripeSubscriptionId) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "A subscription is already connected. Manage it from Plan & Billing.",
+        });
       }
 
       const counts = await countBillableLocationsAndSeats(ctx.db, ctx.practiceId);

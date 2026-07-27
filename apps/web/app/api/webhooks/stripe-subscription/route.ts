@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 import type Stripe from "stripe";
 import { db } from "@openpims/db/client";
 import { practices } from "@openpims/db";
-import { constructSubscriptionWebhookEvent } from "@/lib/stripe";
+import { constructSubscriptionWebhookEvent, stripe } from "@/lib/stripe";
 import { tierForStripePrice, normalizeBillingStatus } from "@/lib/billing/plans";
 import { syncPracticeSubscriptionQuantities } from "@/lib/billing/subscription-sync";
 import { alertOps } from "@/lib/alerts";
@@ -103,11 +103,14 @@ export async function POST(req: NextRequest) {
             activePracticeId = practice?.id ?? null;
           }
           if (activePracticeId && subscriptionId) {
-            await syncPracticeSubscriptionQuantities({
-              db: tx,
-              practiceId: activePracticeId,
-              subscriptionId,
-            });
+            if (!stripe) {
+              throw new Error("Stripe is unavailable while reconciling Checkout.");
+            }
+            // Checkout is itself a signed, authoritative link between the
+            // practice and subscription. Apply the current Stripe state now so
+            // access never depends on customer.subscription.* event ordering.
+            const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+            await applySubscription(tx, subscription, activePracticeId);
           }
           break;
         }
@@ -120,7 +123,7 @@ export async function POST(req: NextRequest) {
 
         case "customer.subscription.deleted": {
           const sub = event.data.object as Stripe.Subscription;
-          const practiceId = sub.metadata?.practiceId;
+          const practiceId = await resolvePracticeIdForSubscription(tx, sub);
           if (practiceId) {
             await tx
               .update(practices)
@@ -147,6 +150,19 @@ export async function POST(req: NextRequest) {
           // Only a real (non-$0) charge warrants a receipt — skip the $0 invoice
           // Stripe emits at trial start.
           if (customerId && (inv.amount_paid ?? 0) > 0) {
+            const subscriptionId = subscriptionIdForInvoice(inv);
+            if (subscriptionId) {
+              if (!stripe) {
+                throw new Error(
+                  "Stripe is unavailable while reconciling a paid invoice.",
+                );
+              }
+              // A successful subscription charge is a second authoritative
+              // self-healing point if a subscription-created/updated event was
+              // omitted or arrived out of order.
+              const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+              await applySubscription(tx, subscription);
+            }
             const practice = await practiceForCustomer(tx, customerId);
             const to = billingContactEmail(practice?.email);
             if (practice && to) {
@@ -231,13 +247,17 @@ export async function POST(req: NextRequest) {
   }
 }
 
-/** Apply a subscription's tier/status/trial to its practice (via metadata.practiceId). */
-async function applySubscription(tx: typeof db, sub: Stripe.Subscription) {
-  const practiceId = sub.metadata?.practiceId;
-  if (!practiceId) {
-    console.warn("[Stripe Subscription Webhook] subscription without practiceId metadata:", sub.id);
-    return;
-  }
+/** Apply a subscription's tier/status/trial through one shared mapping path. */
+async function applySubscription(
+  tx: typeof db,
+  sub: Stripe.Subscription,
+  practiceIdHint?: string | null,
+) {
+  const practiceId = await resolvePracticeIdForSubscription(
+    tx,
+    sub,
+    practiceIdHint,
+  );
   const tier =
     sub.items?.data
       ?.map((item) => tierForStripePrice(item.price?.id))
@@ -268,6 +288,82 @@ async function applySubscription(tx: typeof db, sub: Stripe.Subscription) {
     practiceId: practice.id,
     subscriptionId: sub.id,
   });
+}
+
+/**
+ * Resolve a Stripe subscription to exactly one active practice.
+ *
+ * App-created subscriptions carry metadata.practiceId. Checkout may also pass
+ * its signed client_reference_id as a hint. Older/manual subscriptions can be
+ * recovered only when their stored subscription/customer identity maps to one
+ * practice, and a customer fallback may never replace a different stored
+ * subscription. Ambiguous/unmapped events throw so Stripe retries and ops is
+ * alerted by the route-level handler instead of silently acknowledging drift.
+ */
+async function resolvePracticeIdForSubscription(
+  tx: typeof db,
+  sub: Stripe.Subscription,
+  practiceIdHint?: string | null,
+): Promise<string> {
+  const metadataPracticeId = sub.metadata?.practiceId?.trim() || null;
+  const hintedPracticeId = practiceIdHint?.trim() || null;
+  if (
+    metadataPracticeId &&
+    hintedPracticeId &&
+    metadataPracticeId !== hintedPracticeId
+  ) {
+    throw new Error(
+      `Stripe subscription ${sub.id} has conflicting practice identifiers.`,
+    );
+  }
+  if (metadataPracticeId || hintedPracticeId) {
+    return metadataPracticeId ?? hintedPracticeId!;
+  }
+
+  const customerId = subscriptionCustomerId(sub);
+  const identity = customerId
+    ? or(
+        eq(practices.stripeSubscriptionId, sub.id),
+        eq(practices.stripeCustomerId, customerId),
+      )
+    : eq(practices.stripeSubscriptionId, sub.id);
+  const matches = await tx
+    .select({
+      id: practices.id,
+      stripeSubscriptionId: practices.stripeSubscriptionId,
+    })
+    .from(practices)
+    .where(and(identity, isNull(practices.deletedAt)))
+    .limit(2);
+
+  if (matches.length !== 1) {
+    throw new Error(
+      `Stripe subscription ${sub.id} could not be mapped unambiguously to a practice.`,
+    );
+  }
+  const match = matches[0]!;
+  if (
+    match.stripeSubscriptionId &&
+    match.stripeSubscriptionId !== sub.id
+  ) {
+    throw new Error(
+      `Stripe customer fallback for ${sub.id} conflicts with an existing subscription.`,
+    );
+  }
+  return match.id;
+}
+
+function subscriptionCustomerId(sub: Stripe.Subscription): string | null {
+  return typeof sub.customer === "string"
+    ? sub.customer
+    : (sub.customer?.id ?? null);
+}
+
+function subscriptionIdForInvoice(inv: Stripe.Invoice): string | null {
+  const subscription = inv.parent?.subscription_details?.subscription;
+  return typeof subscription === "string"
+    ? subscription
+    : (subscription?.id ?? null);
 }
 
 /** Look up a practice's id / email / name by its Stripe customer id. */

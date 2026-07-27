@@ -1333,7 +1333,7 @@ function BillingTab() {
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
-            {data.hasBillingAccount ? (
+            {data.hasSubscription || data.hasBillingAccount ? (
               <Button
                 variant="outline"
                 disabled={portal.isPending}

@@ -32,7 +32,9 @@ export function AddACardStep({
   }, [register]);
 
   const unitPrice = subscription.data?.locationUnitPriceMonthlyUsd ?? 79;
-  const alreadyHasCard = !!subscription.data?.hasBillingAccount;
+  const alreadyHasCard = Boolean(
+    subscription.data?.hasSubscription || subscription.data?.hasBillingAccount
+  );
 
   async function addCard() {
     if (redirecting) return;

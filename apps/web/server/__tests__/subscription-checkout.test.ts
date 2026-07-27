@@ -177,6 +177,8 @@ describe("subscription checkout", () => {
 
     await expect(callerWithDb(db).get()).resolves.toMatchObject({
       billingEnforced: true,
+      hasBillingAccount: true,
+      hasSubscription: true,
       locationCount: 2,
       billableSeatCount: 4,
       timezone: "America/Los_Angeles",
@@ -187,6 +189,29 @@ describe("subscription checkout", () => {
     });
     expect(mocks.syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
     expect(mocks.readBillingSyncState).toHaveBeenCalledWith(db, PRACTICE_ID);
+  });
+
+  it("rejects a second Checkout when a Stripe subscription is already connected", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    const db = createDb([
+      [
+        practice({
+          billingStatus: "trialing",
+          stripeCustomerId: "cus_123",
+          stripeSubscriptionId: "sub_123",
+        }),
+      ],
+    ]);
+
+    await expect(
+      callerWithDb(db).createCheckout({ tier: "cloud" })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message:
+        "A subscription is already connected. Manage it from Plan & Billing.",
+    });
+    expect(mocks.createSubscriptionCheckoutSession).not.toHaveBeenCalled();
+    expect(mocks.countBillableLocationsAndSeats).not.toHaveBeenCalled();
   });
 
   it("rejects billing reads and actions when the practice is missing or deleted", async () => {

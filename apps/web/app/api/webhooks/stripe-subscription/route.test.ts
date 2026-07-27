@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => {
     updateReturns,
     updateSet,
     constructSubscriptionWebhookEvent: vi.fn(),
+    retrieveSubscription: vi.fn(),
     claimStripeEvent: vi.fn(async () => true),
     syncPracticeSubscriptionQuantities: vi.fn(async () => ({ status: "ok" })),
     alertOps: vi.fn(async () => undefined),
@@ -58,6 +59,11 @@ vi.mock("@/lib/tenant-db", () => ({
 
 vi.mock("@/lib/stripe", () => ({
   constructSubscriptionWebhookEvent: mocks.constructSubscriptionWebhookEvent,
+  stripe: {
+    subscriptions: {
+      retrieve: mocks.retrieveSubscription,
+    },
+  },
 }));
 
 vi.mock("@/lib/billing/stripe-events", () => ({
@@ -133,26 +139,36 @@ function checkoutCompletedEvent() {
   };
 }
 
-function subscriptionUpdatedEvent() {
+function stripeSubscription(
+  status: "trialing" | "active" = "active",
+  metadata: Record<string, string> = { practiceId: PRACTICE_ID },
+) {
   return {
-    id: "evt_subscription",
-    type: "customer.subscription.updated",
-    data: {
-      object: {
-        id: SUBSCRIPTION_ID,
-        customer: CUSTOMER_ID,
-        metadata: { practiceId: PRACTICE_ID },
-        status: "active",
-        trial_end: 1782604800,
-        items: {
-          data: [{ price: { id: PRICE_ID } }],
-        },
-      },
+    id: SUBSCRIPTION_ID,
+    customer: CUSTOMER_ID,
+    metadata,
+    status,
+    trial_end: status === "trialing" ? 1782604800 : null,
+    items: {
+      data: [{ price: { id: PRICE_ID } }],
     },
   };
 }
 
-function invoicePaymentSucceededEvent() {
+function subscriptionUpdatedEvent(
+  status: "trialing" | "active" = "active",
+  eventId = "evt_subscription",
+) {
+  return {
+    id: eventId,
+    type: "customer.subscription.updated",
+    data: {
+      object: stripeSubscription(status),
+    },
+  };
+}
+
+function invoicePaymentSucceededEvent(subscriptionId?: string) {
   return {
     id: "evt_invoice_paid",
     type: "invoice.payment_succeeded",
@@ -169,6 +185,16 @@ function invoicePaymentSucceededEvent() {
           Date.parse("2026-08-01T02:00:00.000Z") / 1000
         ),
         hosted_invoice_url: "https://billing.stripe.test/in_paid",
+        parent: subscriptionId
+          ? {
+              type: "subscription_details",
+              quote_details: null,
+              subscription_details: {
+                metadata: { practiceId: PRACTICE_ID },
+                subscription: subscriptionId,
+              },
+            }
+          : null,
       },
     },
   };
@@ -206,6 +232,7 @@ afterEach(() => {
   mocks.selectResults.length = 0;
   mocks.updateReturns.length = 0;
   mocks.claimStripeEvent.mockResolvedValue(true);
+  mocks.retrieveSubscription.mockResolvedValue(stripeSubscription());
   delete process.env.STRIPE_PRICE_CLOUD_LOCATION;
 });
 
@@ -239,11 +266,15 @@ describe("Stripe subscription webhook", () => {
     expect(ROUTE_SOURCE).not.toMatch(/\b(?:req|request)\.text\(\)/);
   });
 
-  it("claims and syncs Checkout subscriptions only after updating an active practice", async () => {
+  it("claims and applies Checkout subscription state after linking an active practice", async () => {
+    process.env.STRIPE_PRICE_CLOUD_LOCATION = PRICE_ID;
     mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
       checkoutCompletedEvent()
     );
-    mocks.updateReturns.push([{ id: PRACTICE_ID }]);
+    mocks.retrieveSubscription.mockResolvedValueOnce(
+      stripeSubscription("trialing"),
+    );
+    mocks.updateReturns.push([{ id: PRACTICE_ID }], [{ id: PRACTICE_ID }]);
 
     const response = await POST(stripeRequest());
 
@@ -257,6 +288,15 @@ describe("Stripe subscription webhook", () => {
       stripeCustomerId: CUSTOMER_ID,
       stripeSubscriptionId: SUBSCRIPTION_ID,
     });
+    expect(mocks.retrieveSubscription).toHaveBeenCalledWith(SUBSCRIPTION_ID);
+    expect(mocks.updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subscriptionTier: "cloud",
+        billingStatus: "trialing",
+        stripeCustomerId: CUSTOMER_ID,
+        stripeSubscriptionId: SUBSCRIPTION_ID,
+      }),
+    );
     expect(mocks.syncPracticeSubscriptionQuantities).toHaveBeenCalledWith({
       db: mocks.db,
       practiceId: PRACTICE_ID,
@@ -273,6 +313,7 @@ describe("Stripe subscription webhook", () => {
     const response = await POST(stripeRequest());
 
     await expect(response.json()).resolves.toEqual({ received: true });
+    expect(mocks.retrieveSubscription).not.toHaveBeenCalled();
     expect(mocks.syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
   });
 
@@ -292,7 +333,7 @@ describe("Stripe subscription webhook", () => {
         billingStatus: "active",
         stripeCustomerId: CUSTOMER_ID,
         stripeSubscriptionId: SUBSCRIPTION_ID,
-        trialEndsAt: expect.any(Date),
+        trialEndsAt: null,
       })
     );
     expect(mocks.syncPracticeSubscriptionQuantities).toHaveBeenCalledWith({
@@ -300,6 +341,104 @@ describe("Stripe subscription webhook", () => {
       practiceId: PRACTICE_ID,
       subscriptionId: SUBSCRIPTION_ID,
     });
+  });
+
+  it.each(["checkout-first", "subscription-first"] as const)(
+    "converges on current Stripe state when events arrive %s",
+    async (order) => {
+      process.env.STRIPE_PRICE_CLOUD_LOCATION = PRICE_ID;
+      const checkout = checkoutCompletedEvent();
+      const updated = subscriptionUpdatedEvent("active", "evt_subscription_active");
+      const events =
+        order === "checkout-first" ? [checkout, updated] : [updated, checkout];
+      mocks.constructSubscriptionWebhookEvent
+        .mockResolvedValueOnce(events[0])
+        .mockResolvedValueOnce(events[1]);
+      mocks.retrieveSubscription.mockResolvedValueOnce(
+        stripeSubscription("active"),
+      );
+      mocks.updateReturns.push(
+        [{ id: PRACTICE_ID }],
+        [{ id: PRACTICE_ID }],
+        [{ id: PRACTICE_ID }],
+      );
+
+      await expect(POST(stripeRequest()).then((r) => r.json())).resolves.toEqual({
+        received: true,
+      });
+      await expect(POST(stripeRequest()).then((r) => r.json())).resolves.toEqual({
+        received: true,
+      });
+
+      const statusWrites = mocks.updateSet.mock.calls
+        .map(([values]) => values as Record<string, unknown>)
+        .filter((values) => "billingStatus" in values);
+      expect(statusWrites).toHaveLength(2);
+      expect(statusWrites.at(-1)).toEqual(
+        expect.objectContaining({
+          billingStatus: "active",
+          stripeSubscriptionId: SUBSCRIPTION_ID,
+        }),
+      );
+    },
+  );
+
+  it("does no reconciliation work for a duplicate claimed event", async () => {
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
+      checkoutCompletedEvent(),
+    );
+    mocks.claimStripeEvent.mockResolvedValueOnce(false);
+
+    const response = await POST(stripeRequest());
+
+    await expect(response.json()).resolves.toEqual({ received: true });
+    expect(mocks.updateSet).not.toHaveBeenCalled();
+    expect(mocks.retrieveSubscription).not.toHaveBeenCalled();
+    expect(mocks.syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
+  });
+
+  it("falls back to an unambiguous stored subscription when metadata is absent", async () => {
+    process.env.STRIPE_PRICE_CLOUD_LOCATION = PRICE_ID;
+    const event = subscriptionUpdatedEvent();
+    event.data.object.metadata = {};
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(event);
+    mocks.selectResults.push([
+      { id: PRACTICE_ID, stripeSubscriptionId: SUBSCRIPTION_ID },
+    ]);
+    mocks.updateReturns.push([{ id: PRACTICE_ID }]);
+
+    const response = await POST(stripeRequest());
+
+    await expect(response.json()).resolves.toEqual({ received: true });
+    expect(mocks.updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        billingStatus: "active",
+        stripeSubscriptionId: SUBSCRIPTION_ID,
+      }),
+    );
+  });
+
+  it("alerts and retries when metadata-free mapping is ambiguous", async () => {
+    const event = subscriptionUpdatedEvent();
+    event.data.object.metadata = {};
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(event);
+    mocks.selectResults.push([
+      { id: PRACTICE_ID, stripeSubscriptionId: SUBSCRIPTION_ID },
+      {
+        id: "00000000-0000-0000-0000-0000000000bb",
+        stripeSubscriptionId: SUBSCRIPTION_ID,
+      },
+    ]);
+
+    const response = await POST(stripeRequest());
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({ error: "Handler error" });
+    expect(mocks.updateSet).not.toHaveBeenCalled();
+    expect(mocks.alertOps).toHaveBeenCalledWith(
+      "Subscription webhook handler error",
+      expect.stringContaining("could not be mapped unambiguously"),
+    );
   });
 
   it("normalizes subscription receipt billing contacts before claiming and sending", async () => {
@@ -334,6 +473,39 @@ describe("Stripe subscription webhook", () => {
       periodLabel: "June 30, 2026 – July 31, 2026",
       invoiceUrl: "https://billing.stripe.test/in_paid",
     });
+  });
+
+  it("self-heals subscription state from a positive paid invoice", async () => {
+    process.env.STRIPE_PRICE_CLOUD_LOCATION = PRICE_ID;
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
+      invoicePaymentSucceededEvent(SUBSCRIPTION_ID),
+    );
+    mocks.retrieveSubscription.mockResolvedValueOnce(
+      stripeSubscription("active"),
+    );
+    mocks.updateReturns.push([{ id: PRACTICE_ID }]);
+    mocks.selectResults.push([
+      {
+        id: PRACTICE_ID,
+        email: "owner@example.com",
+        name: "Westside Vet",
+        timezone: "America/Los_Angeles",
+      },
+    ]);
+    invokeLifecycleSendOnce();
+
+    const response = await POST(stripeRequest());
+
+    await expect(response.json()).resolves.toEqual({ received: true });
+    expect(mocks.retrieveSubscription).toHaveBeenCalledWith(SUBSCRIPTION_ID);
+    expect(mocks.updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subscriptionTier: "cloud",
+        billingStatus: "active",
+        stripeSubscriptionId: SUBSCRIPTION_ID,
+      }),
+    );
+    expect(mocks.sendPaymentReceiptEmail).toHaveBeenCalledOnce();
   });
 
   it("skips subscription receipts when the billing contact is blank", async () => {

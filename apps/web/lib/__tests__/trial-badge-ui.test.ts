@@ -3,6 +3,14 @@ import { describe, expect, it } from "vitest";
 
 describe("trial badge UI", () => {
   const source = readFileSync("components/layout/trial-badge.tsx", "utf8");
+  const settingsSource = readFileSync(
+    "app/(dashboard)/settings/page.tsx",
+    "utf8",
+  );
+  const addCardSource = readFileSync(
+    "components/onboarding/steps/add-a-card.tsx",
+    "utf8",
+  );
 
   it("surfaces subscription loading and failures before hiding the badge", () => {
     expect(source).toContain("const { data, isLoading, error }");
@@ -28,6 +36,21 @@ describe("trial badge UI", () => {
     expect(source).toContain("window.location.href = result.url");
     // The trial badge is a real action button now, not a link to settings.
     expect(source).toContain("disabled={checkout.isPending}");
+  });
+
+  it("routes card-on-file trialing accounts to billing instead of another Checkout", () => {
+    expect(source).toContain("if (data.hasSubscription)");
+    expect(source).toContain('href="/settings?tab=billing"');
+    expect(source).toContain("Card on file · Manage billing");
+    expect(source.indexOf("if (data.hasSubscription)")).toBeLessThan(
+      source.indexOf("const trialing ="),
+    );
+    expect(settingsSource).toContain(
+      "data.hasSubscription || data.hasBillingAccount",
+    );
+    expect(addCardSource).toContain(
+      "subscription.data?.hasSubscription || subscription.data?.hasBillingAccount",
+    );
   });
 
   it("counts trial days from the practice timezone", () => {

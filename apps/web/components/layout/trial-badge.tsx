@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSession } from "next-auth/react";
-import { AlertTriangle, Clock, Loader2 } from "lucide-react";
+import { AlertTriangle, Clock, CreditCard, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
@@ -66,6 +66,21 @@ export function TrialBadge() {
 
   if (!data.billingEnforced || data.billingStatus === "active") {
     return null;
+  }
+
+  // A Stripe subscription can legitimately remain `trialing` after Checkout
+  // while the saved card waits for the free trial to end. Never offer another
+  // Checkout in that state; it could create a duplicate subscription.
+  if (data.hasSubscription) {
+    return (
+      <Link
+        href="/settings?tab=billing"
+        className="inline-flex items-center gap-1.5 rounded-full border border-teal-200 bg-teal-50 px-3 py-1 text-xs font-medium text-teal-800 transition-colors hover:bg-teal-100"
+      >
+        <CreditCard className="h-3.5 w-3.5" />
+        Card on file · Manage billing
+      </Link>
+    );
   }
 
   const trialing = data.billingStatus === "trialing" && data.trialEndsAt;
