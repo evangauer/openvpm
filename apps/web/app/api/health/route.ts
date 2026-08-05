@@ -2,6 +2,11 @@ import { NextResponse } from "next/server";
 import { sql } from "drizzle-orm";
 import { db } from "@openpims/db/client";
 import {
+  describeDrift,
+  driftIsClean,
+  findSchemaDrift,
+} from "@openpims/db/schema-drift";
+import {
   STRIPE_PRICE_CLOUD_LOCATION_ENV,
   billingEnforced,
 } from "@/lib/billing/plans";
@@ -177,15 +182,34 @@ export async function GET() {
     { ok: boolean; detail?: string; advisory?: boolean }
   > = {};
 
+  let databaseReachable = false;
   try {
     await db.execute(sql`select 1`);
     checks.database = { ok: true };
+    databaseReachable = true;
   } catch (err) {
     void err;
     checks.database = {
       ok: false,
       detail: "Database check failed",
     };
+  }
+
+  // A deploy whose migrations were never applied still boots, connects, and
+  // serves most pages — it just 500s on whichever feature touches the missing
+  // column. Surface that here so a drifted environment reports unhealthy
+  // instead of waiting for a customer to notice.
+  if (databaseReachable) {
+    try {
+      const drift = await findSchemaDrift(db);
+      checks.schema = {
+        ok: driftIsClean(drift),
+        detail: describeDrift(drift),
+      };
+    } catch (err) {
+      void err;
+      checks.schema = { ok: false, detail: "Schema drift check failed" };
+    }
   }
 
   if (billingEnforced()) {

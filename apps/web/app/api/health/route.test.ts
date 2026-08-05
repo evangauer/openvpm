@@ -24,6 +24,10 @@ const mocks = vi.hoisted(() => ({
     ok: true,
     detail: "Object storage bucket reachable",
   })),
+  findSchemaDrift: vi.fn(async () => ({
+    missingTables: [] as string[],
+    missingColumns: [] as { table: string; column: string }[],
+  })),
 }));
 
 vi.mock("@openpims/db/client", () => ({
@@ -31,6 +35,13 @@ vi.mock("@openpims/db/client", () => ({
     execute: mocks.dbExecute,
   },
 }));
+
+vi.mock("@openpims/db/schema-drift", async () => {
+  const actual = await vi.importActual<
+    typeof import("@openpims/db/schema-drift")
+  >("@openpims/db/schema-drift");
+  return { ...actual, findSchemaDrift: mocks.findSchemaDrift };
+});
 
 vi.mock("@/lib/billing/plans", () => ({
   STRIPE_PRICE_CLOUD_LOCATION_ENV: "STRIPE_PRICE_CLOUD_LOCATION",
@@ -114,6 +125,77 @@ afterEach(() => {
   mocks.checkObjectStorageHealth.mockResolvedValue({
     ok: true,
     detail: "Object storage bucket reachable",
+  });
+  mocks.findSchemaDrift.mockResolvedValue({
+    missingTables: [],
+    missingColumns: [],
+  });
+});
+
+describe("health route schema drift", () => {
+  it("reports healthy when the database matches the deployed code", async () => {
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.checks.schema).toEqual({
+      ok: true,
+      detail: "Database schema matches the deployed code",
+    });
+  });
+
+  it("fails the readiness gate when a migration was never applied", async () => {
+    mocks.findSchemaDrift.mockResolvedValue({
+      missingTables: [],
+      missingColumns: [{ table: "soap_notes", column: "imported" }],
+    });
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.ok).toBe(false);
+    expect(json.checks.schema.ok).toBe(false);
+    expect(json.checks.schema.detail).toContain("soap_notes.imported");
+  });
+
+  it("names a missing table so the operator knows what to apply", async () => {
+    mocks.findSchemaDrift.mockResolvedValue({
+      missingTables: ["invoice_adjustments"],
+      missingColumns: [],
+    });
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.schema.detail).toContain("invoice_adjustments");
+  });
+
+  it("skips the drift check when the database is unreachable", async () => {
+    mocks.dbExecute.mockRejectedValueOnce(new Error("connection refused"));
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(json.checks.database.ok).toBe(false);
+    expect(json.checks.schema).toBeUndefined();
+    expect(mocks.findSchemaDrift).not.toHaveBeenCalled();
+  });
+
+  it("does not leak connection details when the drift check itself fails", async () => {
+    mocks.findSchemaDrift.mockRejectedValueOnce(
+      new Error("password=secret host=prod-db")
+    );
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(json.checks.schema).toEqual({
+      ok: false,
+      detail: "Schema drift check failed",
+    });
+    expect(JSON.stringify(json)).not.toContain("password=secret");
   });
 });
 

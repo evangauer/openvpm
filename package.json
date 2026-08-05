@@ -14,6 +14,8 @@
     "db:reset": "pnpm --filter @openpims/db db:reset",
     "db:rls": "pnpm --filter @openpims/db db:rls",
     "db:rls:test": "pnpm --filter @openpims/db db:rls:test",
+    "db:drift": "pnpm --filter @openpims/db db:drift",
+    "db:baseline": "pnpm --filter @openpims/db db:baseline",
     "db:studio": "pnpm --filter @openpims/db db:studio",
     "clean": "turbo clean",
     "test:e2e": "playwright test",
