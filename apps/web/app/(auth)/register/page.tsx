@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
@@ -35,6 +35,8 @@ import {
 } from "@/lib/auth-input-policy";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
 import { acquisitionFromSearchParams } from "@/lib/acquisition";
+import { FUNNEL_EVENTS } from "@/lib/funnel-analytics";
+import { trackFunnelEvent } from "@/lib/track-funnel-event";
 
 export default function RegisterPage() {
   return (
@@ -60,6 +62,16 @@ function RegisterPageInner() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    trackFunnelEvent(FUNNEL_EVENTS.signupLand, {
+      intent: cloudIntent ? "cloud" : "default",
+      source: acquisition?.source ?? "none",
+      campaign: acquisition?.campaign ?? "none",
+    });
+    // Fire once on land; acquisition is derived from the URL for this mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- signup attribution snapshot
+  }, []);
 
   const registerMutation = trpc.auth.register.useMutation({
     onSuccess: async (data) => {

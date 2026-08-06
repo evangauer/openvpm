@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
@@ -11,6 +11,12 @@ import {
 import { AUTH_PASSWORD_MAX_LENGTH } from "@/lib/auth-password-policy";
 import { PawMark } from "@/components/brand/paw-mark";
 import { isValidEmail } from "@/lib/utils";
+import {
+  buildCloudSignupUrl,
+  cloudSignupAppOrigin,
+  FUNNEL_EVENTS,
+} from "@/lib/funnel-analytics";
+import { trackFunnelEvent } from "@/lib/track-funnel-event";
 
 const DEMO_ROLES = [
   {
@@ -80,11 +86,26 @@ function LoginPageInner() {
   const canSubmit =
     isAuthEmailLengthValid(email) && isValidEmail(email) && passwordMeetsPolicy;
 
-  async function signInWith(emailValue: string, passwordValue: string) {
+  useEffect(() => {
+    if (!DEMO_MODE) return;
+    trackFunnelEvent(FUNNEL_EVENTS.demoLand);
+  }, []);
+
+  async function signInWith(
+    emailValue: string,
+    passwordValue: string,
+    roleLabel?: string
+  ) {
     setError("");
     setLoading(true);
     setEmail(emailValue);
     setPassword(passwordValue);
+
+    if (DEMO_MODE && roleLabel) {
+      trackFunnelEvent(FUNNEL_EVENTS.demoRoleSelected, {
+        role: roleLabel.toLowerCase().replace(/\s+/g, "_"),
+      });
+    }
 
     const result = await signIn("credentials", {
       email: emailValue,
@@ -136,7 +157,9 @@ function LoginPageInner() {
                 <button
                   key={role.email}
                   type="button"
-                  onClick={() => signInWith(role.email, role.password)}
+                  onClick={() =>
+                    signInWith(role.email, role.password, role.label)
+                  }
                   disabled={loading}
                   className="group flex flex-col rounded-md border border-border bg-background p-2.5 text-left transition-colors hover:border-primary hover:bg-primary/5 disabled:opacity-50"
                 >
@@ -228,9 +251,29 @@ function LoginPageInner() {
         </p>
         <p className="mt-2 text-center text-sm text-muted-foreground">
           Don&apos;t have an account?{" "}
-          <Link href="/register" className="text-primary hover:underline">
-            Register your practice
-          </Link>
+          {DEMO_MODE ? (
+            <a
+              href={buildCloudSignupUrl({
+                appOrigin: cloudSignupAppOrigin(),
+                source: "demo",
+                medium: "product",
+                campaign: "demo_login",
+              })}
+              onClick={() =>
+                trackFunnelEvent(FUNNEL_EVENTS.demoCtaStartClinic, {
+                  tool: "login",
+                  path: "/login",
+                })
+              }
+              className="text-primary hover:underline"
+            >
+              Start my clinic
+            </a>
+          ) : (
+            <Link href="/register" className="text-primary hover:underline">
+              Register your practice
+            </Link>
+          )}
         </p>
       </div>
     </div>
