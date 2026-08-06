@@ -25,10 +25,22 @@ config({ path: "../../.env" });
 
 import { createHash } from "crypto";
 import { readFileSync } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
 import postgres from "postgres";
+import {
+  describeDrift,
+  driftIsClean,
+  type SchemaDrift,
+} from "./schema-drift";
 
 type JournalEntry = { idx: number; tag: string; when: number };
+type SnapshotTable = {
+  name: string;
+  schema: string;
+  columns: Record<string, { name: string }>;
+};
+type MigrationSnapshot = { tables: Record<string, SnapshotTable> };
 
 const args = process.argv.slice(2);
 const apply = args.includes("--apply");
@@ -48,7 +60,8 @@ if (!url) {
   process.exit(1);
 }
 
-const journalPath = join(__dirname, "drizzle", "meta", "_journal.json");
+const here = dirname(fileURLToPath(import.meta.url));
+const journalPath = join(here, "drizzle", "meta", "_journal.json");
 const journal = JSON.parse(readFileSync(journalPath, "utf8")) as {
   entries: JournalEntry[];
 };
@@ -65,11 +78,65 @@ if (cutoff === -1) {
 const toMark = journal.entries.slice(0, cutoff + 1);
 const remaining = journal.entries.slice(cutoff + 1);
 
+function snapshotPath(entry: JournalEntry): string {
+  const prefix = entry.tag.split("_", 1)[0];
+  return join(here, "drizzle", "meta", `${prefix}_snapshot.json`);
+}
+
+/** Verify the live database contains every table/column at the chosen cutoff. */
+async function findBaselineDrift(entry: JournalEntry): Promise<SchemaDrift> {
+  const snapshot = JSON.parse(
+    readFileSync(snapshotPath(entry), "utf8")
+  ) as MigrationSnapshot;
+  const expected = new Map<string, Set<string>>();
+
+  for (const table of Object.values(snapshot.tables)) {
+    if (table.schema && table.schema !== "public") continue;
+    expected.set(
+      table.name,
+      new Set(Object.values(table.columns).map((column) => column.name))
+    );
+  }
+
+  const rows = await client<
+    { table_name: string; column_name: string }[]
+  >`select table_name, column_name
+    from information_schema.columns
+    where table_schema = 'public'`;
+  const live = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const columns = live.get(row.table_name);
+    if (columns) columns.add(row.column_name);
+    else live.set(row.table_name, new Set([row.column_name]));
+  }
+
+  const missingTables: string[] = [];
+  const missingColumns: SchemaDrift["missingColumns"] = [];
+  for (const [table, columns] of expected) {
+    const liveColumns = live.get(table);
+    if (!liveColumns) {
+      missingTables.push(table);
+      continue;
+    }
+    for (const column of columns) {
+      if (!liveColumns.has(column)) missingColumns.push({ table, column });
+    }
+  }
+
+  missingTables.sort();
+  missingColumns.sort((a, b) =>
+    a.table === b.table
+      ? a.column.localeCompare(b.column)
+      : a.table.localeCompare(b.table)
+  );
+  return { missingTables, missingColumns };
+}
+
 // drizzle-kit identifies an applied migration by the SHA-256 of the migration
 // file's contents, so the ledger has to be written with the same hash it will
 // compute on the next `migrate` run.
 function migrationHash(tag: string): string {
-  const sql = readFileSync(join(__dirname, "drizzle", `${tag}.sql`), "utf8");
+  const sql = readFileSync(join(here, "drizzle", `${tag}.sql`), "utf8");
   return createHash("sha256").update(sql).digest("hex");
 }
 
@@ -111,6 +178,19 @@ async function main() {
     return 1;
   }
 
+  const target = toMark[toMark.length - 1]!;
+  const drift = await findBaselineDrift(target);
+  if (!driftIsClean(drift)) {
+    console.error(
+      `Cannot baseline through ${target.tag}: the live database does not match that migration snapshot.`
+    );
+    console.error(describeDrift(drift));
+    console.error(
+      "Apply or push the missing schema changes, then run the baseline again."
+    );
+    return 1;
+  }
+
   console.log(`\nWill mark ${toMark.length} migration(s) as already applied:`);
   for (const entry of toMark) console.log(`  ✓ ${entry.tag}`);
 
@@ -120,7 +200,7 @@ async function main() {
     );
     for (const entry of remaining) console.log(`  → ${entry.tag}`);
   } else {
-    console.log("\nNo migrations left over — the database is fully current.");
+    console.log("\nNo migrations left over — the selected snapshot is current.");
   }
 
   if (!apply) {
@@ -129,19 +209,20 @@ async function main() {
   }
 
   await client.begin(async (tx) => {
-    await tx`create schema if not exists drizzle`;
-    await tx`
+    await tx.unsafe("create schema if not exists drizzle");
+    await tx.unsafe(`
       create table if not exists drizzle."__drizzle_migrations" (
         id serial primary key,
         hash text not null,
         created_at bigint
       )
-    `;
+    `);
     for (const entry of toMark) {
-      await tx`
-        insert into drizzle."__drizzle_migrations" (hash, created_at)
-        values (${migrationHash(entry.tag)}, ${entry.when})
-      `;
+      await tx.unsafe(
+        `insert into drizzle."__drizzle_migrations" (hash, created_at)
+         values ($1, $2)`,
+        [migrationHash(entry.tag), entry.when]
+      );
     }
   });
 
