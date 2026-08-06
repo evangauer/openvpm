@@ -20,6 +20,7 @@ describe("demo conversion bridge UI", () => {
     expect(login).toContain("Open the live demo");
     expect(login).not.toContain("password123");
     expect(login).not.toContain("View raw credentials");
+    expect(login.match(/min-h-11/g)?.length).toBeGreaterThanOrEqual(2);
     expect(login).toContain("Start my clinic");
   });
 
