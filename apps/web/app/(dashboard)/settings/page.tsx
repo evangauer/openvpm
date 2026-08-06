@@ -27,6 +27,7 @@ import {
   Mail,
   Copy,
   MessageSquare,
+  Globe,
   MapPin,
   Star,
   HeartPulse,
@@ -40,6 +41,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { EmptyState } from "@/components/common/empty-state";
 import { AccentColorPicker } from "@/components/brand/accent-color-picker";
 import { MessagingTab } from "@/components/settings/messaging-tab";
+import { BookingTab } from "@/components/settings/booking-tab";
 import { useWelcome } from "@/components/welcome/welcome-provider";
 import { cn, isValidEmail } from "@/lib/utils";
 import { toast } from "sonner";
@@ -120,6 +122,7 @@ type Tab =
   | "templates"
   | "wellness"
   | "messaging"
+  | "booking"
   | "billing";
 
 const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
@@ -132,6 +135,7 @@ const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: "templates", label: "Templates", icon: Layers },
   { id: "wellness", label: "Wellness Plans", icon: HeartPulse },
   { id: "messaging", label: "Messaging", icon: MessageSquare },
+  { id: "booking", label: "Online Booking", icon: Globe },
   { id: "billing", label: "Plan & Billing", icon: CreditCard },
 ];
 
@@ -385,6 +389,7 @@ function SettingsPageInner() {
           {activeTab === "templates" && <TemplatesTab />}
           {activeTab === "wellness" && <WellnessPlansTab />}
           {activeTab === "messaging" && <MessagingTab />}
+          {activeTab === "booking" && <BookingTab />}
           {activeTab === "billing" && <BillingTab />}
         </div>
       </div>

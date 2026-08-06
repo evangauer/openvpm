@@ -8,6 +8,7 @@ const PUBLIC_PATH_PREFIXES = [
   "/accept-invite",
   "/api",
   "/api-docs",
+  "/book",
   "/capture",
   "/forgot-password",
   "/legal",

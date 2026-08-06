@@ -11,6 +11,8 @@ import { OnboardingJourneyProvider } from "@/components/onboarding/journey-overl
 import { WelcomeProvider } from "@/components/welcome/welcome-provider";
 import { BrandTheme } from "@/components/brand/brand-theme";
 import { VerifyEmailBanner } from "@/components/layout/verify-email-banner";
+import { DemoConversionBar } from "@/components/demo/demo-conversion-bar";
+import { DemoFunnelTracker } from "@/components/demo/demo-funnel-tracker";
 
 export default function DashboardLayout({
   children,
@@ -78,6 +80,8 @@ export default function DashboardLayout({
               onMenuOpen={() => setMobileNavOpen(true)}
               onSearchOpen={() => setSearchOpen(true)}
             />
+            <DemoConversionBar />
+            <DemoFunnelTracker />
             <VerifyEmailBanner />
             <main id="main-content" className="flex-1 overflow-y-auto bg-surface p-4 sm:p-6">
               <ErrorBoundary>{children}</ErrorBoundary>

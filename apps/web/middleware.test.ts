@@ -65,6 +65,21 @@ describe("middleware security headers", () => {
     expectSecurityHeaders(response);
   });
 
+  it("allows public booking pages without exposing lookalike routes", async () => {
+    mocks.getToken.mockResolvedValue(null);
+
+    const bookingResponse = await middleware(request("/book/test-clinic"));
+    const lookalikeResponse = await middleware(request("/bookish"));
+
+    expect(mocks.getToken).toHaveBeenCalledTimes(1);
+    expect(bookingResponse.headers.get("location")).toBeNull();
+    expect(lookalikeResponse.headers.get("location")).toBe(
+      "https://openvpm.test/login?next=%2Fbookish"
+    );
+    expectSecurityHeaders(bookingResponse);
+    expectSecurityHeaders(lookalikeResponse);
+  });
+
   it("allows Vercel observability proxy paths without session lookup", async () => {
     const insights = await middleware(request("/_vercel/insights/view"));
     const proxied = await middleware(request("/5691167a7e0cfa40/view"));

@@ -51,7 +51,7 @@ DO $$
 DECLARE
   t text;
   tbls text[] := array[
-    'api_keys','appointment_types','appointment_waitlist','appointments','audit_log',
+    'api_keys','appointment_types','appointment_waitlist','appointments','audit_log','booking_pages',
     'capture_sessions','cases','clients','clinical_notes','communications','consent_forms','consent_requests','controlled_substance_log','email_suppressions',
     'files','insurance_claims','insurance_policies','invoices','lab_results','location_messaging',
     'locations','patients','practice_payment_accounts','prescriptions','problem_list','procedures','products','purchase_orders',
@@ -127,6 +127,14 @@ CREATE POLICY system_only ON rate_limit_buckets
   USING (app_rls_bypass())
   WITH CHECK (app_rls_bypass());
 
+-- Demo lead capture is global pre-tenant state. Only the email-gate route,
+-- running in explicit system context, may read or write it.
+ALTER TABLE demo_accesses ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS system_only ON demo_accesses;
+CREATE POLICY system_only ON demo_accesses
+  USING (app_rls_bypass())
+  WITH CHECK (app_rls_bypass());
+
 -- 7) Auth-infra tables are NOT tenant-scoped (tokens are used pre-login; the
 --    NextAuth session/verification tables are unused under the JWT strategy). We
 --    don't put tenant RLS on them; instead we revoke the Supabase data-API roles
@@ -140,7 +148,7 @@ BEGIN
   FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format(
-        'REVOKE ALL ON auth_tokens, sessions, verification_tokens FROM %I', r
+        'REVOKE ALL ON auth_tokens, demo_accesses, sessions, verification_tokens FROM %I', r
       );
     END IF;
   END LOOP;

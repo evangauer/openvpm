@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
@@ -11,33 +11,12 @@ import {
 import { AUTH_PASSWORD_MAX_LENGTH } from "@/lib/auth-password-policy";
 import { PawMark } from "@/components/brand/paw-mark";
 import { isValidEmail } from "@/lib/utils";
-
-const DEMO_ROLES = [
-  {
-    label: "Admin",
-    description: "Full access. Everything a practice owner sees.",
-    email: "admin@neighborhoodvet.example.com",
-    password: "password123",
-  },
-  {
-    label: "Veterinarian",
-    description: "Exam room, SOAP notes, prescriptions",
-    email: "sarah.chen@neighborhoodvet.example.com",
-    password: "password123",
-  },
-  {
-    label: "Technician",
-    description: "Treatments, lab workflow, whiteboard",
-    email: "jamie.torres@neighborhoodvet.example.com",
-    password: "password123",
-  },
-  {
-    label: "Front Desk",
-    description: "Scheduling, check-in, billing",
-    email: "morgan.bailey@neighborhoodvet.example.com",
-    password: "password123",
-  },
-];
+import {
+  buildCloudSignupUrl,
+  cloudSignupAppOrigin,
+  FUNNEL_EVENTS,
+} from "@/lib/funnel-analytics";
+import { trackFunnelEvent } from "@/lib/track-funnel-event";
 
 const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE?.trim() === "true";
 
@@ -77,8 +56,16 @@ function LoginPageInner() {
   const [loading, setLoading] = useState(false);
   const passwordMeetsPolicy =
     password.length > 0 && password.length <= AUTH_PASSWORD_MAX_LENGTH;
+  const emailIsValid =
+    isAuthEmailLengthValid(email) && isValidEmail(email);
   const canSubmit =
-    isAuthEmailLengthValid(email) && isValidEmail(email) && passwordMeetsPolicy;
+    emailIsValid && (DEMO_MODE || passwordMeetsPolicy);
+
+  useEffect(() => {
+    if (!DEMO_MODE) return;
+    trackFunnelEvent(FUNNEL_EVENTS.demoLand);
+    trackFunnelEvent(FUNNEL_EVENTS.demoGateViewed);
+  }, []);
 
   async function signInWith(emailValue: string, passwordValue: string) {
     setError("");
@@ -105,6 +92,45 @@ function LoginPageInner() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
+
+    if (DEMO_MODE) {
+      setError("");
+      setLoading(true);
+
+      try {
+        const gateResponse = await fetch("/api/demo-access", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: email.trim().toLowerCase() }),
+        });
+        const gateResult = (await gateResponse.json().catch(() => null)) as
+          | { ok?: boolean; error?: string }
+          | null;
+        if (!gateResponse.ok || !gateResult?.ok) {
+          setError(gateResult?.error ?? "The demo is temporarily unavailable.");
+          return;
+        }
+
+        trackFunnelEvent(FUNNEL_EVENTS.demoGateSubmitted);
+        const result = await signIn("demo", {
+          role: "admin",
+          redirect: false,
+        });
+        if (result?.error) {
+          setError("The demo is temporarily unavailable.");
+          return;
+        }
+
+        router.push(nextPath);
+        router.refresh();
+      } catch {
+        setError("The demo is temporarily unavailable.");
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
     await signInWith(email.trim().toLowerCase(), password);
   }
 
@@ -119,51 +145,20 @@ function LoginPageInner() {
             OpenVPM
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Sign in to your practice
+            {DEMO_MODE ? "Explore the live product" : "Sign in to your practice"}
           </p>
         </div>
 
         {DEMO_MODE && (
           <div className="mb-6 rounded-md border border-primary/20 bg-primary/5 p-4">
             <p className="mb-1 text-sm font-semibold text-foreground">
-              Try the demo — one click to log in
+              Immediate access to the live demo
             </p>
-            <p className="mb-3 text-xs text-muted-foreground">
-              You&apos;re in the live OpenVPM demo. Pick a role to sign in instantly.
+            <p className="text-xs leading-5 text-muted-foreground">
+              No call, sales form, or credit card. We use your email to protect
+              this shared sandbox from automated abuse. We may send one brief
+              email asking what you thought; unsubscribe anytime.
             </p>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {DEMO_ROLES.map((role) => (
-                <button
-                  key={role.email}
-                  type="button"
-                  onClick={() => signInWith(role.email, role.password)}
-                  disabled={loading}
-                  className="group flex flex-col rounded-md border border-border bg-background p-2.5 text-left transition-colors hover:border-primary hover:bg-primary/5 disabled:opacity-50"
-                >
-                  <span className="text-sm font-medium text-foreground group-hover:text-primary">
-                    Log in as {role.label}
-                  </span>
-                  <span className="mt-0.5 text-xs text-muted-foreground">
-                    {role.description}
-                  </span>
-                </button>
-              ))}
-            </div>
-            <details className="mt-3 text-xs text-muted-foreground">
-              <summary className="cursor-pointer select-none hover:text-foreground">
-                View raw credentials
-              </summary>
-              <div className="mt-2 space-y-1 rounded border border-border bg-background p-2 font-mono">
-                {DEMO_ROLES.map((role) => (
-                  <div key={role.email} className="flex justify-between gap-2">
-                    <span className="truncate">{role.email}</span>
-                    <span className="shrink-0 text-muted-foreground">
-                      {role.password}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </details>
           </div>
         )}
 
@@ -188,49 +183,83 @@ function LoginPageInner() {
               onChange={(e) => setEmail(e.target.value)}
               required
               maxLength={AUTH_EMAIL_MAX_LENGTH}
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              className="min-h-11 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
               placeholder="you@clinic.com"
+              autoComplete="email"
             />
           </div>
 
-          <div>
-            <label
-              htmlFor="password"
-              className="mb-1.5 block text-sm font-medium text-foreground"
-            >
-              Password
-            </label>
-            <input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              maxLength={AUTH_PASSWORD_MAX_LENGTH}
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-              placeholder="Enter your password"
-            />
-          </div>
+          {!DEMO_MODE && (
+            <div>
+              <label
+                htmlFor="password"
+                className="mb-1.5 block text-sm font-medium text-foreground"
+              >
+                Password
+              </label>
+              <input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                maxLength={AUTH_PASSWORD_MAX_LENGTH}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                placeholder="Enter your password"
+              />
+            </div>
+          )}
 
           <button
             type="submit"
             disabled={!canSubmit || loading}
-            className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+            className="min-h-11 w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
           >
-            {loading ? "Signing in..." : "Sign in"}
+            {loading
+              ? DEMO_MODE
+                ? "Opening demo..."
+                : "Signing in..."
+              : DEMO_MODE
+                ? "Open the live demo"
+                : "Sign in"}
           </button>
         </form>
 
-        <p className="mt-4 text-center text-sm text-muted-foreground">
-          <Link href="/forgot-password" className="text-primary hover:underline">
-            Forgot your password?
-          </Link>
-        </p>
+        {!DEMO_MODE && (
+          <p className="mt-4 text-center text-sm text-muted-foreground">
+            <Link
+              href="/forgot-password"
+              className="text-primary hover:underline"
+            >
+              Forgot your password?
+            </Link>
+          </p>
+        )}
         <p className="mt-2 text-center text-sm text-muted-foreground">
           Don&apos;t have an account?{" "}
-          <Link href="/register" className="text-primary hover:underline">
-            Register your practice
-          </Link>
+          {DEMO_MODE ? (
+            <a
+              href={buildCloudSignupUrl({
+                appOrigin: cloudSignupAppOrigin(),
+                source: "demo",
+                medium: "product",
+                campaign: "demo_login",
+              })}
+              onClick={() =>
+                trackFunnelEvent(FUNNEL_EVENTS.demoCtaStartClinic, {
+                  tool: "login",
+                  path: "/login",
+                })
+              }
+              className="text-primary hover:underline"
+            >
+              Start my clinic
+            </a>
+          ) : (
+            <Link href="/register" className="text-primary hover:underline">
+              Register your practice
+            </Link>
+          )}
         </p>
       </div>
     </div>

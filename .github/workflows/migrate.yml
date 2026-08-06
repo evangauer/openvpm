@@ -1,0 +1,94 @@
+name: Apply migrations
+
+# Schema changes ship with the code that needs them.
+#
+# Applying migrations by hand is how a deploy ended up running against a
+# database that never got its column: the pull request merged, the code went
+# live, and the migration sat unapplied until a customer reported the error.
+#
+# Every environment that serves traffic gets its migrations applied here, on
+# merge, in one place. Adding an environment means adding a secret — not
+# remembering a manual step.
+
+on:
+  push:
+    branches: [main]
+  # Allow a re-run from the Actions tab if an environment was down at merge time.
+  workflow_dispatch:
+
+# Never let two merges migrate the same database concurrently.
+concurrency:
+  group: apply-migrations
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    name: ${{ matrix.environment }}
+    runs-on: ubuntu-latest
+    strategy:
+      # One environment failing must not stop the others from being migrated.
+      fail-fast: false
+      matrix:
+        include:
+          - environment: production
+            secret_name: PRODUCTION_DATABASE_URL
+          - environment: demo
+            secret_name: DEMO_DATABASE_URL
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "pnpm"
+
+      - run: pnpm install --frozen-lockfile
+
+      # An environment is opted in by adding its secret. Until then this is a
+      # no-op rather than a red build, so adding the workflow does not require
+      # every environment to be wired up on day one.
+      - name: Check environment is configured
+        id: configured
+        env:
+          DATABASE_URL: ${{ secrets[matrix.secret_name] }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::notice::${{ matrix.secret_name }} is not set — skipping ${{ matrix.environment }}."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Report drift before touching anything, so the log says what this run is
+      # about to change.
+      - name: Schema state before
+        if: steps.configured.outputs.ready == 'true'
+        continue-on-error: true
+        env:
+          DATABASE_URL: ${{ secrets[matrix.secret_name] }}
+        run: pnpm db:drift
+
+      - name: Apply migrations
+        if: steps.configured.outputs.ready == 'true'
+        env:
+          DATABASE_URL: ${{ secrets[matrix.secret_name] }}
+        run: pnpm db:migrate
+
+      # New tables arrive without policies. Re-applying is idempotent and keeps
+      # tenant isolation from silently regressing the moment a table is added.
+      - name: Re-apply row-level security
+        if: steps.configured.outputs.ready == 'true'
+        env:
+          DATABASE_URL: ${{ secrets[matrix.secret_name] }}
+          OPENPIMS_APP_DB_PASSWORD: ${{ secrets.OPENPIMS_APP_DB_PASSWORD }}
+        run: pnpm db:rls
+
+      # Fail the job if anything the code expects is still missing, so a partial
+      # or skipped migration cannot pass silently.
+      - name: Verify schema matches the code
+        if: steps.configured.outputs.ready == 'true'
+        env:
+          DATABASE_URL: ${{ secrets[matrix.secret_name] }}
+        run: pnpm db:drift

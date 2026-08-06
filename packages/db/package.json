@@ -5,9 +5,11 @@
   "type": "module",
   "exports": {
     ".": "./schema/index.ts",
-    "./client": "./client.ts"
+    "./client": "./client.ts",
+    "./schema-drift": "./schema-drift.ts"
   },
   "scripts": {
+    "type-check": "tsc --noEmit",
     "db:push": "drizzle-kit push",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
@@ -15,6 +17,8 @@
     "db:reset": "tsx reset.ts",
     "db:rls": "tsx apply-rls.ts",
     "db:rls:test": "tsx test-rls.ts",
+    "db:drift": "tsx check-drift.ts",
+    "db:baseline": "tsx baseline.ts",
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
