@@ -9,6 +9,8 @@ import { ACQUISITION_VALUE_MAX_LENGTH } from "@/lib/acquisition";
 
 export const FUNNEL_EVENTS = {
   demoLand: "demo_land",
+  demoGateViewed: "demo_gate_viewed",
+  demoGateSubmitted: "demo_gate_submitted",
   demoRoleSelected: "demo_role_selected",
   demoToolOpened: "demo_tool_opened",
   demoCtaStartClinic: "demo_cta_start_clinic",

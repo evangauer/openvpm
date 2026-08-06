@@ -11,11 +11,15 @@ describe("demo conversion bridge UI", () => {
     "utf8"
   );
 
-  it("instruments demo login land, role, and start-clinic CTA", () => {
+  it("instruments the email gate and start-clinic CTA", () => {
     expect(login).toContain("FUNNEL_EVENTS.demoLand");
-    expect(login).toContain("FUNNEL_EVENTS.demoRoleSelected");
+    expect(login).toContain("FUNNEL_EVENTS.demoGateViewed");
+    expect(login).toContain("FUNNEL_EVENTS.demoGateSubmitted");
     expect(login).toContain("FUNNEL_EVENTS.demoCtaStartClinic");
     expect(login).toContain("buildCloudSignupUrl");
+    expect(login).toContain("Open the live demo");
+    expect(login).not.toContain("password123");
+    expect(login).not.toContain("View raw credentials");
     expect(login).toContain("Start my clinic");
   });
 

@@ -55,6 +55,8 @@ describe("buildCloudSignupUrl", () => {
 describe("FUNNEL_EVENTS", () => {
   it("keeps stable event name contracts", () => {
     expect(FUNNEL_EVENTS.demoLand).toBe("demo_land");
+    expect(FUNNEL_EVENTS.demoGateViewed).toBe("demo_gate_viewed");
+    expect(FUNNEL_EVENTS.demoGateSubmitted).toBe("demo_gate_submitted");
     expect(FUNNEL_EVENTS.demoRoleSelected).toBe("demo_role_selected");
     expect(FUNNEL_EVENTS.demoToolOpened).toBe("demo_tool_opened");
     expect(FUNNEL_EVENTS.demoCtaStartClinic).toBe("demo_cta_start_clinic");

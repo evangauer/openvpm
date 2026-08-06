@@ -127,7 +127,7 @@ describe("auth password UI policy", () => {
       "password.length > 0 && password.length <= AUTH_PASSWORD_MAX_LENGTH"
     );
     expect(loginSource).toContain(
-      "isAuthEmailLengthValid(email) && isValidEmail(email) && passwordMeetsPolicy"
+      "emailIsValid && (DEMO_MODE || passwordMeetsPolicy)"
     );
     expect(loginSource).toContain("if (!canSubmit) return;");
     expect(loginSource).toContain("email.trim().toLowerCase()");

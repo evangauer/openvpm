@@ -232,6 +232,13 @@
       "when": 1784232285175,
       "tag": "0032_ancient_sage",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1786053190175,
+      "tag": "0033_heavy_giant_girl",
+      "breakpoints": true
     }
   ]
 }
