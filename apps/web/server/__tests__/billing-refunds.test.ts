@@ -165,6 +165,7 @@ describe("billing refunds", () => {
     expect(mocks.refundStripeCheckoutPayment).toHaveBeenCalledWith({
       externalId: "stripe:connect:acct_9:checkout:cs_456",
       amountCents: 10000,
+      idempotencyKey: `refund:payment:${PAYMENT_ID}`,
     });
     expect(mocks.dispatchWebhookEvent).toHaveBeenCalledWith(
       PRACTICE_ID,
@@ -276,6 +277,7 @@ describe("billing refunds", () => {
     expect(mocks.refundStripeCheckoutPayment).toHaveBeenCalledWith({
       externalId: null,
       amountCents: 10000,
+      idempotencyKey: `refund:payment:${PAYMENT_ID}`,
     });
     expect(insertValues).toHaveBeenCalledWith(
       expect.objectContaining({

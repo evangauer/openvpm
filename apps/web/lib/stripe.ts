@@ -1,4 +1,5 @@
 import Stripe from "stripe";
+import { createHash } from "node:crypto";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
 import {
   stripeConnectWebhookSecret,
@@ -9,6 +10,18 @@ import {
 import { envFlagEnabled } from "@/lib/env-bool";
 
 export const STRIPE_TAX_ENABLED_ENV = "STRIPE_TAX_ENABLED";
+
+function stripeIdempotencyKey(
+  scope: string,
+  identity: string,
+  params?: unknown
+): string {
+  const digest = createHash("sha256")
+    .update(JSON.stringify(params ?? identity))
+    .digest("hex")
+    .slice(0, 32);
+  return `openvpm:${scope}:${identity}:${digest}`.slice(0, 255);
+}
 
 const configuredStripeSecretKey = stripeSecretKey();
 const stripe = configuredStripeSecretKey
@@ -32,11 +45,16 @@ export async function createCheckoutSession(data: {
     return null;
   }
   const params = buildInvoiceCheckoutSessionParams(data);
-  const session = data.connectedAccountId
-    ? await stripe.checkout.sessions.create(params, {
-        stripeAccount: data.connectedAccountId,
-      })
-    : await stripe.checkout.sessions.create(params);
+  const session = await stripe.checkout.sessions.create(params, {
+    idempotencyKey: stripeIdempotencyKey(
+      "invoice-checkout",
+      data.invoiceId,
+      params
+    ),
+    ...(data.connectedAccountId
+      ? { stripeAccount: data.connectedAccountId }
+      : {}),
+  });
   return { url: stripeCheckoutRedirectUrl(session.url) };
 }
 
@@ -69,6 +87,8 @@ export function parseStripeCheckoutExternalId(
 export async function refundStripeCheckoutPayment(data: {
   externalId: string | null | undefined;
   amountCents: number;
+  /** Stable local refund identity, e.g. refund:payment:<payment UUID>. */
+  idempotencyKey?: string;
 }): Promise<{ refundId: string } | null> {
   const parsed = parseStripeCheckoutExternalId(data.externalId);
   if (!parsed) return null;
@@ -76,11 +96,11 @@ export async function refundStripeCheckoutPayment(data: {
     throw new Error("Stripe is not configured; cannot refund a card payment.");
   }
 
-  const requestOptions = parsed.connectedAccountId
+  const accountOptions = parsed.connectedAccountId
     ? { stripeAccount: parsed.connectedAccountId }
     : undefined;
-  const session = requestOptions
-    ? await stripe.checkout.sessions.retrieve(parsed.sessionId, requestOptions)
+  const session = accountOptions
+    ? await stripe.checkout.sessions.retrieve(parsed.sessionId, accountOptions)
     : await stripe.checkout.sessions.retrieve(parsed.sessionId);
   const paymentIntent =
     typeof session.payment_intent === "string"
@@ -99,9 +119,15 @@ export async function refundStripeCheckoutPayment(data: {
     // clinic is never out of pocket for a refund.
     ...(parsed.connectedAccountId ? { refund_application_fee: true } : {}),
   };
-  const refund = requestOptions
-    ? await stripe.refunds.create(params, requestOptions)
-    : await stripe.refunds.create(params);
+  const refund = await stripe.refunds.create(params, {
+    idempotencyKey: stripeIdempotencyKey(
+      "refund",
+      data.idempotencyKey ?? parsed.sessionId
+    ),
+    ...(parsed.connectedAccountId
+      ? { stripeAccount: parsed.connectedAccountId }
+      : {}),
+  });
 
   return { refundId: refund.id };
 }
@@ -178,34 +204,42 @@ export async function createConnectAccount(data: {
 }): Promise<Stripe.Account | null> {
   if (!stripe) return null;
 
-  return stripe.accounts.create({
-    // Controller-based account matching our completed platform profile:
-    // Stripe carries negative-balance liability and ongoing compliance, the
-    // clinic pays standard Stripe processing fees, and onboarding is
-    // Stripe-hosted. The dashboard must be "full" — Stripe requires platform
-    // fee-collection and loss liability for the Express dashboard, so under
-    // this profile the clinic gets its own full Stripe Dashboard (which also
-    // fits the promise that practices own their Stripe account outright).
-    controller: {
-      losses: { payments: "stripe" },
-      fees: { payer: "account" },
-      stripe_dashboard: { type: "full" },
-      requirement_collection: "stripe",
+  return stripe.accounts.create(
+    {
+      // Controller-based account matching our completed platform profile:
+      // Stripe carries negative-balance liability and ongoing compliance, the
+      // clinic pays standard Stripe processing fees, and onboarding is
+      // Stripe-hosted. The dashboard must be "full" — Stripe requires platform
+      // fee-collection and loss liability for the Express dashboard, so under
+      // this profile the clinic gets its own full Stripe Dashboard (which also
+      // fits the promise that practices own their Stripe account outright).
+      controller: {
+        losses: { payments: "stripe" },
+        fees: { payer: "account" },
+        stripe_dashboard: { type: "full" },
+        requirement_collection: "stripe",
+      },
+      country: (data.country ?? "US").toUpperCase(),
+      email: checkoutCustomerEmail(data.email),
+      capabilities: {
+        card_payments: { requested: true },
+        transfers: { requested: true },
+      },
+      business_profile: data.businessName
+        ? { name: data.businessName }
+        : undefined,
+      metadata: {
+        practiceId: data.practiceId,
+        source: "openvpm_client_payments",
+      },
     },
-    country: (data.country ?? "US").toUpperCase(),
-    email: checkoutCustomerEmail(data.email),
-    capabilities: {
-      card_payments: { requested: true },
-      transfers: { requested: true },
-    },
-    business_profile: data.businessName
-      ? { name: data.businessName }
-      : undefined,
-    metadata: {
-      practiceId: data.practiceId,
-      source: "openvpm_client_payments",
-    },
-  });
+    {
+      idempotencyKey: stripeIdempotencyKey(
+        "connect-account",
+        data.practiceId
+      ),
+    }
+  );
 }
 
 export async function retrieveConnectAccount(
@@ -275,9 +309,14 @@ export async function createSubscriptionCheckoutSession(data: {
     );
     return null;
   }
-  const session = await stripe.checkout.sessions.create(
-    buildSubscriptionCheckoutSessionParams(data)
-  );
+  const params = buildSubscriptionCheckoutSessionParams(data);
+  const session = await stripe.checkout.sessions.create(params, {
+    idempotencyKey: stripeIdempotencyKey(
+      "subscription-checkout",
+      data.practiceId,
+      params
+    ),
+  });
   return { url: stripeCheckoutRedirectUrl(session.url) };
 }
 

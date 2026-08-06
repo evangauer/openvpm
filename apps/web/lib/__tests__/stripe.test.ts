@@ -15,6 +15,8 @@ afterEach(() => {
 
 async function importStripeWithMock() {
   const checkoutCreate = vi.fn();
+  const checkoutRetrieve = vi.fn();
+  const refundCreate = vi.fn();
   const billingPortalCreate = vi.fn();
   const accountCreate = vi.fn();
   const accountRetrieve = vi.fn();
@@ -25,7 +27,10 @@ async function importStripeWithMock() {
   vi.resetModules();
   vi.doMock("stripe", () => ({
     default: class StripeMock {
-      checkout = { sessions: { create: checkoutCreate } };
+      checkout = {
+        sessions: { create: checkoutCreate, retrieve: checkoutRetrieve },
+      };
+      refunds = { create: refundCreate };
       billingPortal = { sessions: { create: billingPortalCreate } };
       accounts = {
         create: accountCreate,
@@ -42,6 +47,8 @@ async function importStripeWithMock() {
   return {
     stripeModule,
     checkoutCreate,
+    checkoutRetrieve,
+    refundCreate,
     billingPortalCreate,
     accountCreate,
     accountRetrieve,
@@ -339,6 +346,11 @@ describe("create Stripe hosted sessions", () => {
       1,
       expect.objectContaining({
         metadata: { invoiceId: "invoice_123", source: "client_invoice" },
+      }),
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(
+          /^openvpm:invoice-checkout:invoice_123:/
+        ),
       })
     );
 
@@ -351,6 +363,17 @@ describe("create Stripe hosted sessions", () => {
         cancelUrl: "https://app.example.com/settings?checkout=cancelled",
       })
     ).resolves.toEqual({ url: "https://checkout.stripe.com/c/sub_123" });
+    expect(checkoutCreate).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        client_reference_id: "practice_123",
+      }),
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(
+          /^openvpm:subscription-checkout:practice_123:/
+        ),
+      })
+    );
 
     await expect(
       stripeModule.createBillingPortalSession({
@@ -387,7 +410,68 @@ describe("create Stripe hosted sessions", () => {
           stripeConnectAccountId: "acct_123",
         }),
       }),
-      { stripeAccount: "acct_123" }
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(
+          /^openvpm:invoice-checkout:invoice_123:/
+        ),
+        stripeAccount: "acct_123",
+      })
+    );
+  });
+
+  it("reuses checkout idempotency keys only for identical money requests", async () => {
+    const { stripeModule, checkoutCreate } = await importStripeWithMock();
+    checkoutCreate.mockResolvedValue({
+      url: "https://checkout.stripe.com/c/pay_123",
+    });
+    const base = {
+      invoiceId: "invoice_123",
+      clientName: "Jane Client",
+      description: "Invoice payment",
+      successUrl: "https://app.example.com/billing?payment=success",
+      cancelUrl: "https://app.example.com/billing?payment=cancelled",
+    };
+
+    await stripeModule.createCheckoutSession({ ...base, amount: 12550 });
+    await stripeModule.createCheckoutSession({ ...base, amount: 12550 });
+    await stripeModule.createCheckoutSession({ ...base, amount: 10000 });
+
+    const firstKey = checkoutCreate.mock.calls[0]?.[1]?.idempotencyKey;
+    const retryKey = checkoutCreate.mock.calls[1]?.[1]?.idempotencyKey;
+    const changedAmountKey = checkoutCreate.mock.calls[2]?.[1]?.idempotencyKey;
+    expect(firstKey).toBe(retryKey);
+    expect(firstKey).not.toBe(changedAmountKey);
+  });
+
+  it("uses a stable local refund identity for Stripe retries", async () => {
+    const { stripeModule, checkoutRetrieve, refundCreate } =
+      await importStripeWithMock();
+    checkoutRetrieve.mockResolvedValue({ payment_intent: "pi_123" });
+    refundCreate.mockResolvedValue({ id: "re_123" });
+
+    await expect(
+      stripeModule.refundStripeCheckoutPayment({
+        externalId: "stripe:connect:acct_9:checkout:cs_456",
+        amountCents: 12550,
+        idempotencyKey: "refund:payment:payment_123",
+      })
+    ).resolves.toEqual({ refundId: "re_123" });
+
+    expect(checkoutRetrieve).toHaveBeenCalledWith("cs_456", {
+      stripeAccount: "acct_9",
+    });
+    expect(refundCreate).toHaveBeenCalledWith(
+      {
+        payment_intent: "pi_123",
+        amount: 12550,
+        refund_application_fee: true,
+      },
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(
+          /^openvpm:refund:refund:payment:payment_123:/
+        ),
+        stripeAccount: "acct_9",
+      })
     );
   });
 

@@ -1382,8 +1382,10 @@ export const billingRouter = createRouter({
    * refunded at Stripe inside the same transaction that records the refund:
    * the unique refund external id is inserted first (a concurrent attempt
    * dies on the index before reaching Stripe) and the Stripe call runs last
-   * (a Stripe failure rolls the local record back). Recorded as a negative
-   * payment row so paid-amount recomputation and AR stay consistent.
+   * with that same id as its Stripe idempotency identity (a Stripe failure
+   * rolls the local record back, and a later retry cannot move money twice).
+   * Recorded as a negative payment row so paid-amount recomputation and AR
+   * stay consistent.
    */
   refundPayment: protectedProcedure
     .use(requireRole("admin"))
@@ -1520,6 +1522,7 @@ export const billingRouter = createRouter({
         const stripeRefund = await refundStripeCheckoutPayment({
           externalId: payment.externalId,
           amountCents,
+          idempotencyKey: refundExternalId,
         }).catch((err) => {
           console.error("[billing] Stripe refund failed:", err);
           throw new TRPCError({
