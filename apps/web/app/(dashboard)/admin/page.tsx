@@ -9,6 +9,8 @@ import {
   CheckCircle,
   AlertTriangle,
   TrendingUp,
+  MessageSquare,
+  RefreshCw,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { EmptyState } from "@/components/common/empty-state";
@@ -62,8 +64,11 @@ export default function AdminPage() {
     trpc.admin.activationFunnel.useQuery({ days: 30 }, { retry: false });
   const { data: journey, error: journeyError } =
     trpc.admin.journeyFunnel.useQuery({ days: 30 }, { retry: false });
+  const { data: messagingQueue, error: messagingQueueError } =
+    trpc.admin.messagingRegistrationQueue.useQuery(undefined, { retry: false });
   const [extendTrialError, setExtendTrialError] = useState<string | null>(null);
   const [analyticsError, setAnalyticsError] = useState<string | null>(null);
+  const [messagingError, setMessagingError] = useState<string | null>(null);
   const extendTrial = trpc.admin.extendTrial.useMutation({
     onSuccess: () => {
       setExtendTrialError(null);
@@ -79,6 +84,54 @@ export default function AdminPage() {
     },
     onError: (err) => setAnalyticsError(err.message),
   });
+  const refreshMessagingQueue = () =>
+    utils.admin.messagingRegistrationQueue.invalidate();
+  const submitMessagingBrand = trpc.admin.submitMessagingBrand.useMutation({
+    onSuccess: () => {
+      setMessagingError(null);
+      refreshMessagingQueue();
+    },
+    onError: (err) => setMessagingError(err.message),
+  });
+  const submitMessagingCampaign =
+    trpc.admin.submitMessagingCampaign.useMutation({
+      onSuccess: () => {
+        setMessagingError(null);
+        refreshMessagingQueue();
+      },
+      onError: (err) => setMessagingError(err.message),
+    });
+  const assignMessagingNumbers = trpc.admin.assignMessagingNumbers.useMutation({
+    onSuccess: () => {
+      setMessagingError(null);
+      refreshMessagingQueue();
+    },
+    onError: (err) => setMessagingError(err.message),
+  });
+  const attachMessagingProviderIds =
+    trpc.admin.attachMessagingProviderIds.useMutation({
+      onSuccess: () => {
+        setMessagingError(null);
+        refreshMessagingQueue();
+      },
+      onError: (err) => setMessagingError(err.message),
+    });
+  const clearStaleMessagingSubmissionLock =
+    trpc.admin.clearStaleMessagingSubmissionLock.useMutation({
+      onSuccess: () => {
+        setMessagingError(null);
+        refreshMessagingQueue();
+      },
+      onError: (err) => setMessagingError(err.message),
+    });
+  const reconcileMessagingRegistration =
+    trpc.admin.reconcileMessagingRegistration.useMutation({
+      onSuccess: () => {
+        setMessagingError(null);
+        refreshMessagingQueue();
+      },
+      onError: (err) => setMessagingError(err.message),
+    });
 
   if (error?.data?.code === "FORBIDDEN") {
     return (
@@ -149,6 +202,265 @@ export default function AdminPage() {
             </div>
           );
         })}
+      </div>
+
+      {/* Messaging carrier operations */}
+      <div className="mt-6 rounded-lg border border-border bg-card p-5">
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <MessageSquare className="h-4 w-4" />
+          <span className="text-sm">Messaging carrier registrations</span>
+        </div>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Brand and campaign submissions incur Telnyx charges and require an
+          explicit confirmation. Refresh is read-only. Assignment never enables
+          sending.
+        </p>
+        {messagingError ? (
+          <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+            {messagingError}
+          </div>
+        ) : null}
+        {messagingQueue ? (
+          <div className="mt-4 overflow-x-auto rounded-md border border-border">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border bg-muted/30 text-left text-muted-foreground">
+                  <th className="px-3 py-2 font-medium">Clinic</th>
+                  <th className="px-3 py-2 font-medium">Status</th>
+                  <th className="px-3 py-2 font-medium">Brand</th>
+                  <th className="px-3 py-2 font-medium">Campaign</th>
+                  <th className="px-3 py-2 font-medium">Numbers</th>
+                  <th className="px-3 py-2 font-medium">Operator action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {messagingQueue.map((registration) => {
+                  const busy = Boolean(registration.submissionLockAt);
+                  const lockIsStale =
+                    registration.submissionLockAt != null &&
+                    Date.now() -
+                      new Date(registration.submissionLockAt).getTime() >=
+                      15 * 60 * 1000;
+                  const anyMutationPending =
+                    submitMessagingBrand.isPending ||
+                    submitMessagingCampaign.isPending ||
+                    assignMessagingNumbers.isPending ||
+                    attachMessagingProviderIds.isPending ||
+                    clearStaleMessagingSubmissionLock.isPending ||
+                    reconcileMessagingRegistration.isPending;
+                  return (
+                    <tr key={registration.id}>
+                      <td className="px-3 py-2">
+                        <p className="font-medium">
+                          {registration.practiceName}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {registration.legalName} · EIN ••••
+                          {registration.taxIdLast4}
+                        </p>
+                        {registration.lastError ? (
+                          <p className="mt-1 max-w-xs text-xs text-destructive">
+                            {registration.lastError}
+                          </p>
+                        ) : null}
+                      </td>
+                      <td className="px-3 py-2 capitalize">
+                        {registration.status.replace("_", " ")}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-muted-foreground">
+                        {registration.providerBrandStatus ?? "Not submitted"}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-muted-foreground">
+                        {registration.providerCampaignStatus ?? "Not submitted"}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-muted-foreground">
+                        {registration.senders.length === 0
+                          ? "No number"
+                          : registration.senders
+                              .map(
+                                (sender) =>
+                                  `${sender.senderE164 ?? "—"} (${sender.registrationStatus})`
+                              )
+                              .join(", ")}
+                      </td>
+                      <td className="px-3 py-2">
+                        <div className="flex flex-wrap gap-1.5">
+                          {!registration.providerBrandId ? (
+                            <button
+                              type="button"
+                              disabled={busy || anyMutationPending}
+                              className="rounded border border-border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                              onClick={() => {
+                                if (
+                                  window.confirm(
+                                    registration.lastError
+                                      ? `Retry ${registration.practiceName}'s brand only after confirming in the Telnyx portal that no brand was created. This can incur another non-refundable charge. Continue?`
+                                      : `Submit ${registration.practiceName}'s legal brand to Telnyx? This incurs a non-refundable provider charge.`
+                                  )
+                                ) {
+                                  submitMessagingBrand.mutate({
+                                    practiceId: registration.practiceId,
+                                    confirmProviderCharges: true,
+                                    retryAfterProviderReview: Boolean(
+                                      registration.lastError
+                                    ),
+                                  });
+                                }
+                              }}
+                            >
+                              {registration.lastError
+                                ? "Retry reviewed brand"
+                                : "Submit brand"}
+                            </button>
+                          ) : null}
+                          {registration.providerBrandId &&
+                          !registration.providerCampaignId ? (
+                            <button
+                              type="button"
+                              disabled={busy || anyMutationPending}
+                              className="rounded border border-border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                              onClick={() => {
+                                if (
+                                  window.confirm(
+                                    registration.lastError
+                                      ? `Retry ${registration.practiceName}'s campaign only after confirming in the Telnyx portal that no matching campaign exists. This can incur another non-refundable charge. Continue?`
+                                      : `Submit ${registration.practiceName}'s campaign to Telnyx? This incurs non-refundable provider charges.`
+                                  )
+                                ) {
+                                  submitMessagingCampaign.mutate({
+                                    practiceId: registration.practiceId,
+                                    confirmProviderCharges: true,
+                                    retryAfterProviderReview: Boolean(
+                                      registration.lastError
+                                    ),
+                                  });
+                                }
+                              }}
+                            >
+                              {registration.lastError
+                                ? "Retry reviewed campaign"
+                                : "Submit campaign"}
+                            </button>
+                          ) : null}
+                          {registration.providerCampaignId ? (
+                            <button
+                              type="button"
+                              disabled={busy || anyMutationPending}
+                              className="rounded border border-border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                              onClick={() => {
+                                if (
+                                  window.confirm(
+                                    `Assign ${registration.practiceName}'s texting numbers to its approved campaign? Sending will remain disabled.`
+                                  )
+                                ) {
+                                  assignMessagingNumbers.mutate({
+                                    practiceId: registration.practiceId,
+                                    confirmProviderMutation: true,
+                                  });
+                                }
+                              }}
+                            >
+                              Assign numbers
+                            </button>
+                          ) : null}
+                          {registration.providerBrandId ? (
+                            <button
+                              type="button"
+                              title="Read current carrier status"
+                              disabled={anyMutationPending}
+                              className="inline-flex items-center rounded border border-border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                              onClick={() =>
+                                reconcileMessagingRegistration.mutate({
+                                  practiceId: registration.practiceId,
+                                })
+                              }
+                            >
+                              <RefreshCw className="mr-1 h-3 w-3" /> Refresh
+                            </button>
+                          ) : null}
+                          {busy ? (
+                            <>
+                              <button
+                                type="button"
+                                disabled={anyMutationPending}
+                                className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                                onClick={() => {
+                                  const brandId = window.prompt(
+                                    "After reviewing the Telnyx portal, enter the existing brand ID. Cancel if no provider object exists."
+                                  );
+                                  if (!brandId) return;
+                                  const campaignId = window.prompt(
+                                    "Optional: enter the existing campaign ID, or leave blank."
+                                  );
+                                  attachMessagingProviderIds.mutate({
+                                    practiceId: registration.practiceId,
+                                    providerBrandId: brandId.trim(),
+                                    providerCampaignId:
+                                      campaignId?.trim() || undefined,
+                                    confirmProviderPortalReviewed: true,
+                                  });
+                                }}
+                              >
+                                Recover provider IDs
+                              </button>
+                              <button
+                                type="button"
+                                disabled={!lockIsStale || anyMutationPending}
+                                title={
+                                  lockIsStale
+                                    ? "Use only after confirming no matching object exists in Telnyx"
+                                    : "Available after the 15-minute safety window"
+                                }
+                                className="rounded border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/5 disabled:opacity-50"
+                                onClick={() => {
+                                  const providerObject =
+                                    registration.providerBrandId
+                                      ? "campaign"
+                                      : "brand";
+                                  if (
+                                    window.confirm(
+                                      `I reviewed the Telnyx portal and confirmed NO matching ${providerObject} exists. Clear the stale lock and keep all sending disabled?`
+                                    )
+                                  ) {
+                                    clearStaleMessagingSubmissionLock.mutate({
+                                      practiceId: registration.practiceId,
+                                      providerObject,
+                                      confirmProviderPortalReviewed: true,
+                                      confirmNoProviderObjectExists:
+                                        "NO_PROVIDER_OBJECT",
+                                    });
+                                  }
+                                }}
+                              >
+                                No object — clear stale lock
+                              </button>
+                            </>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {messagingQueue.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={6}
+                      className="px-3 py-6 text-center text-muted-foreground"
+                    >
+                      No clinics have submitted carrier details yet.
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="mt-3 text-sm text-muted-foreground">
+            {messagingQueueError
+              ? "Could not load messaging registrations."
+              : "Loading messaging registrations…"}
+          </p>
+        )}
       </div>
 
       {/* Trial funnel */}

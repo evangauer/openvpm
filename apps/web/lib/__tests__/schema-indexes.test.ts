@@ -16,6 +16,7 @@ import {
   invoiceItems,
   labResults,
   locationMessaging,
+  messagingRegistrations,
   locations,
   patientAllergies,
   patientWeights,
@@ -183,6 +184,15 @@ describe("hot table indexes", () => {
       "location_messaging",
       locationMessaging,
       ["location_messaging_practice_idx", "location_messaging_sender_idx"],
+    ],
+    [
+      "messaging_registrations",
+      messagingRegistrations,
+      [
+        "messaging_registrations_practice_idx",
+        "messaging_registrations_status_idx",
+        "messaging_registrations_attested_by_idx",
+      ],
     ],
     [
       "appointment_types",

@@ -51,6 +51,7 @@ function clearMessagingEnv() {
     "TELNYX_MESSAGING_PROFILE_ID",
     "TELNYX_FROM_NUMBER",
     "TELNYX_PUBLIC_KEY",
+    "MESSAGING_REGISTRATION_ENCRYPTION_KEY",
     "TWILIO_ACCOUNT_SID",
     "TWILIO_AUTH_TOKEN",
     "TWILIO_PHONE_NUMBER",
@@ -126,6 +127,7 @@ describe("requiredMessagingEnvNames", () => {
       "TELNYX_API_KEY",
       "TELNYX_MESSAGING_PROFILE_ID",
       "TELNYX_PUBLIC_KEY",
+      "MESSAGING_REGISTRATION_ENCRYPTION_KEY",
     ]);
   });
 

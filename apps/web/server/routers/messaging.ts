@@ -5,6 +5,7 @@ import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import {
   locations,
   locationMessaging,
+  messagingRegistrations,
   clients,
   smsSuppressions,
   practices,
@@ -31,6 +32,10 @@ import {
   TelnyxNotConfiguredError,
 } from "@/lib/messaging/telnyx-provisioning";
 import { normalizeAppBaseUrl } from "@/lib/app-url";
+import {
+  encryptRegistrationTaxId,
+  MessagingRegistrationEncryptionError,
+} from "@/lib/messaging/registration-crypto";
 
 const adminOnly = protectedProcedure.use(requireRole("admin"));
 const MESSAGING_REGISTRATION_PENDING_DETAIL =
@@ -58,6 +63,48 @@ const messagingPhoneInput = z
     }
     return e164;
   });
+
+const httpsUrlInput = z
+  .string()
+  .trim()
+  .url()
+  .max(500)
+  .refine((value) => new URL(value).protocol === "https:", {
+    message: "Use a public HTTPS URL.",
+  });
+
+const a2pRegistrationInput = z.object({
+  entityType: z.enum(["PRIVATE_PROFIT", "NON_PROFIT"]),
+  displayName: z.string().trim().min(2).max(100),
+  legalName: z.string().trim().min(2).max(100),
+  taxId: z
+    .string()
+    .trim()
+    .regex(/^(?:\d[ -]?){8}\d$/, "Enter a valid 9-digit US tax ID.")
+    .transform((value) => value.replace(/\D/g, ""))
+    .optional(),
+  contactFirstName: z.string().trim().min(1).max(100),
+  contactLastName: z.string().trim().min(1).max(100),
+  contactEmail: z.string().trim().email().max(100),
+  businessPhone: messagingPhoneInput,
+  street: z.string().trim().min(3).max(100),
+  city: z.string().trim().min(2).max(100),
+  state: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z]{2}$/, "Use a two-letter US state code.")
+    .transform((value) => value.toUpperCase()),
+  postalCode: z
+    .string()
+    .trim()
+    .regex(/^\d{5}(?:-\d{4})?$/, "Enter a valid US ZIP code."),
+  website: httpsUrlInput.refine((value) => value.length <= 100, {
+    message: "Website URL must be 100 characters or fewer.",
+  }),
+  privacyPolicyUrl: httpsUrlInput,
+  termsUrl: httpsUrlInput,
+  certifyAccuracyAndConsent: z.literal(true),
+});
 
 /** Map a thrown provisioning error to a tRPC error the UI can show. */
 function provisioningError(e: unknown): TRPCError {
@@ -171,6 +218,145 @@ function configuredWebhookBaseUrl(): string {
 }
 
 export const messagingRouter = createRouter({
+  /** Redacted clinic-entered A2P details. Raw/encrypted tax IDs never leave DB. */
+  getRegistration: adminOnly.query(async ({ ctx }) => {
+    await assertActivePractice(ctx);
+    const [registration] = await ctx.db
+      .select({
+        entityType: messagingRegistrations.entityType,
+        displayName: messagingRegistrations.displayName,
+        legalName: messagingRegistrations.legalName,
+        hasTaxId: sql<boolean>`${messagingRegistrations.taxIdEncrypted} <> ''`,
+        taxIdLast4: messagingRegistrations.taxIdLast4,
+        contactFirstName: messagingRegistrations.contactFirstName,
+        contactLastName: messagingRegistrations.contactLastName,
+        contactEmail: messagingRegistrations.contactEmail,
+        businessPhone: messagingRegistrations.businessPhone,
+        street: messagingRegistrations.street,
+        city: messagingRegistrations.city,
+        state: messagingRegistrations.state,
+        postalCode: messagingRegistrations.postalCode,
+        website: messagingRegistrations.website,
+        privacyPolicyUrl: messagingRegistrations.privacyPolicyUrl,
+        termsUrl: messagingRegistrations.termsUrl,
+        status: messagingRegistrations.status,
+        statusDetail: messagingRegistrations.statusDetail,
+        providerBrandStatus: messagingRegistrations.providerBrandStatus,
+        providerCampaignStatus: messagingRegistrations.providerCampaignStatus,
+        lastSyncedAt: messagingRegistrations.lastSyncedAt,
+      })
+      .from(messagingRegistrations)
+      .where(
+        and(
+          eq(messagingRegistrations.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
+          isNull(messagingRegistrations.deletedAt)
+        )
+      )
+      .limit(1);
+    return registration ?? null;
+  }),
+
+  /**
+   * Save legal/contact/consent details without contacting Telnyx. Submitted
+   * registrations become immutable so clinic edits cannot diverge from TCR.
+   */
+  saveRegistration: adminOnly
+    .input(a2pRegistrationInput)
+    .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
+      const [existing] = await ctx.db
+        .select({
+          taxIdEncrypted: messagingRegistrations.taxIdEncrypted,
+          taxIdLast4: messagingRegistrations.taxIdLast4,
+          providerBrandId: messagingRegistrations.providerBrandId,
+          providerCampaignId: messagingRegistrations.providerCampaignId,
+        })
+        .from(messagingRegistrations)
+        .where(
+          and(
+            eq(messagingRegistrations.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(messagingRegistrations.deletedAt)
+          )
+        )
+        .limit(1);
+
+      if (existing?.providerBrandId || existing?.providerCampaignId) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Carrier registration has been submitted. Contact OpenVPM support before changing legal details.",
+        });
+      }
+      if (!existing && !input.taxId) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "A 9-digit US tax ID is required for initial registration.",
+        });
+      }
+
+      let taxIdEncrypted = existing?.taxIdEncrypted;
+      let taxIdLast4 = existing?.taxIdLast4;
+      if (input.taxId) {
+        try {
+          taxIdEncrypted = encryptRegistrationTaxId(input.taxId);
+        } catch (error) {
+          if (error instanceof MessagingRegistrationEncryptionError) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "Secure carrier registration storage is not configured. Contact OpenVPM support.",
+            });
+          }
+          throw error;
+        }
+        taxIdLast4 = input.taxId.slice(-4);
+      }
+      if (!taxIdEncrypted || !taxIdLast4) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Secure tax ID storage is incomplete. Contact OpenVPM support.",
+        });
+      }
+
+      const { taxId: _taxId, ...fields } = input;
+      const { certifyAccuracyAndConsent: _attestation, ...registrationFields } =
+        fields;
+      await ctx.db
+        .insert(messagingRegistrations)
+        .values({
+          practiceId: ctx.practiceId,
+          ...registrationFields,
+          taxIdEncrypted,
+          taxIdLast4,
+          complianceAttestedAt: new Date(),
+          complianceAttestedBy: ctx.user.id,
+          provider: "telnyx",
+          campaignUsecase: "MIXED",
+          status: "not_started",
+          statusDetail: "Ready for OpenVPM carrier review.",
+        })
+        .onConflictDoUpdate({
+          target: messagingRegistrations.practiceId,
+          set: {
+            ...registrationFields,
+            taxIdEncrypted,
+            taxIdLast4,
+            complianceAttestedAt: new Date(),
+            complianceAttestedBy: ctx.user.id,
+            status: "not_started",
+            statusDetail: "Ready for OpenVPM carrier review.",
+            lastError: null,
+            deletedAt: null,
+            updatedAt: new Date(),
+          },
+        });
+
+      return { ok: true, taxIdLast4 };
+    }),
+
   /**
    * Safe, lightweight messaging state for the shared inbox. Unlike the Settings
    * status endpoint, this is visible to all authenticated staff so they can see

@@ -56,8 +56,9 @@ describe("messaging settings UI", () => {
     expect(wizardSource).toContain("isMessagingAreaCodeInputValid(areaCode)");
     expect(wizardSource).toContain("disabled={checking || !isMessagingAreaCodeInputValid(areaCode)}");
     expect(wizardSource).toContain(
-      "When registration is active, turn sending on from Messaging settings"
+      "When registration is active, turn\n          sending on and send a test"
     );
+    expect(tabSource).toContain("<MessagingRegistrationForm />");
     expect(wizardSource).not.toContain("trpc.messaging.testSend.useMutation");
     expect(wizardSource).not.toContain("isMessagingPhoneInputValid(testTo)");
     expect(wizardSource).not.toContain("maxLength={MESSAGING_PHONE_MAX_LENGTH}");

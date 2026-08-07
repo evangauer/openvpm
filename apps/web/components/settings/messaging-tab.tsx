@@ -23,6 +23,7 @@ import {
   MESSAGING_PHONE_MAX_LENGTH,
 } from "@/lib/messaging/policy";
 import { toast } from "sonner";
+import { MessagingRegistrationForm } from "@/components/settings/messaging-registration-form";
 
 const REGISTRATION_BADGE: Record<
   NonNullable<MessagingSetupLocation["messaging"]>["registrationStatus"],
@@ -143,6 +144,8 @@ export function MessagingTab() {
           </p>
         )}
       </div>
+
+      <MessagingRegistrationForm />
 
       <MessagingWizard
         location={wizardLocation}

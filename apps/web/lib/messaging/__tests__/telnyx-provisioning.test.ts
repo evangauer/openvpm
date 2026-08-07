@@ -4,6 +4,9 @@ import {
   parseAvailableNumbers,
   searchAvailableNumbers,
   TelnyxNotConfiguredError,
+  createA2pBrand,
+  createA2pCampaign,
+  ensureA2pNumberAssignment,
 } from "../telnyx-provisioning";
 import { TELNYX_API_TIMEOUT_MS } from "../telnyx-http";
 
@@ -120,5 +123,121 @@ describe("Telnyx provisioning requests", () => {
     );
     await vi.advanceTimersByTimeAsync(TELNYX_API_TIMEOUT_MS);
     await result;
+  });
+
+  it("submits provider-compatible brand and campaign payloads", async () => {
+    vi.stubEnv("TELNYX_API_KEY", "KEY123");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            brandId: "brand-1",
+            identityStatus: "VERIFIED",
+            status: "OK",
+          })
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            campaignId: "campaign-1",
+            campaignStatus: "TCR_PENDING",
+            submissionStatus: "PENDING",
+          })
+        )
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      createA2pBrand({
+        entityType: "PRIVATE_PROFIT",
+        displayName: "Healthy Pets",
+        legalName: "Healthy Pets LLC",
+        ein: "123456789",
+        firstName: "Alex",
+        lastName: "Vet",
+        email: "alex@example.com",
+        phone: "+15555550100",
+        street: "1 Main St",
+        city: "Denver",
+        state: "CO",
+        postalCode: "80202",
+        website: "https://example.com",
+        webhookUrl: "https://app.example.com/api/webhooks/telnyx",
+      })
+    ).resolves.toMatchObject({
+      brandId: "brand-1",
+      identityStatus: "VERIFIED",
+    });
+
+    await expect(
+      createA2pCampaign({
+        brandId: "brand-1",
+        referenceId: "openvpm-clinic-1",
+        displayName: "Healthy Pets",
+        description: "Clinic reminders and support",
+        sample1: "Sample one. Reply STOP to opt out.",
+        sample2: "Sample two. Reply STOP to opt out.",
+        sample3: "Sample three. Reply STOP to opt out.",
+        messageFlow: "Clients opt in during intake.",
+        helpMessage: "Reply HELP for help.",
+        optinMessage: "You are subscribed.",
+        optoutMessage: "You are unsubscribed.",
+        privacyPolicyUrl: "https://example.com/privacy",
+        termsUrl: "https://example.com/terms",
+        webhookUrl: "https://app.example.com/api/webhooks/telnyx",
+      })
+    ).resolves.toMatchObject({
+      campaignId: "campaign-1",
+      campaignStatus: "TCR_PENDING",
+    });
+
+    const brandBody = JSON.parse(
+      String(fetchMock.mock.calls[0]?.[1]?.body)
+    ) as Record<string, unknown>;
+    expect(brandBody).toMatchObject({
+      companyName: "Healthy Pets LLC",
+      ein: "123456789",
+      vertical: "HEALTHCARE",
+      webhookURL: "https://app.example.com/api/webhooks/telnyx",
+    });
+    const campaignBody = JSON.parse(
+      String(fetchMock.mock.calls[1]?.[1]?.body)
+    ) as Record<string, unknown>;
+    expect(campaignBody).toMatchObject({
+      usecase: "MIXED",
+      referenceId: "openvpm-clinic-1",
+      subscriberOptin: true,
+      subscriberOptout: true,
+      termsAndConditions: true,
+      autoRenewal: true,
+    });
+  });
+
+  it("reuses an existing number assignment and refuses a campaign mismatch", async () => {
+    vi.stubEnv("TELNYX_API_KEY", "KEY123");
+    const existing = {
+      phoneNumber: "+15555550100",
+      campaignId: "campaign-1",
+      assignmentStatus: "ASSIGNED",
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(existing)));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      ensureA2pNumberAssignment({
+        phoneNumber: "+15555550100",
+        campaignId: "campaign-1",
+      })
+    ).resolves.toMatchObject(existing);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await expect(
+      ensureA2pNumberAssignment({
+        phoneNumber: "+15555550100",
+        campaignId: "campaign-2",
+      })
+    ).rejects.toMatchObject({ status: 409 });
   });
 });

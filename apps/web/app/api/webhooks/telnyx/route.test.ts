@@ -194,6 +194,58 @@ afterEach(() => {
 });
 
 describe("Telnyx webhook", () => {
+  it("persists signed 10DLC failures and disables clinic senders", async () => {
+    process.env.TELNYX_PUBLIC_KEY = "pub";
+    mocks.selectResults.push([
+      {
+        id: "00000000-0000-0000-0000-000000000008",
+        practiceId: "00000000-0000-0000-0000-0000000000aa",
+        status: "pending",
+      },
+    ]);
+    const body = JSON.stringify({
+      data: {
+        event_type: "10dlc.campaign.update",
+        id: "evt-a2p-1",
+        payload: {
+          brandId: "brand-1",
+          campaignId: "campaign-1",
+          type: "TELNYX_REVIEW",
+          status: "REJECTED",
+          description: "Privacy policy could not be verified",
+        },
+      },
+    });
+
+    const response = await POST(
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body,
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.withSystem).toHaveBeenCalled();
+    expect(mocks.updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "action_required",
+        providerCampaignStatus: "REJECTED",
+        lastError: "Privacy policy could not be verified",
+      })
+    );
+    expect(mocks.updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        registrationStatus: "action_required",
+        enabled: false,
+      })
+    );
+    expect(mocks.withTenant).not.toHaveBeenCalled();
+  });
+
   it("rejects oversized payloads before signature verification or tenant work", async () => {
     const response = await POST(
       new Request("https://openvpm.test/api/webhooks/telnyx", {

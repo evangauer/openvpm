@@ -117,6 +117,12 @@ const HOSTED_READ_ONLY_MUTATION_ALLOWLIST = new Set([
   // practice trial has lapsed; the procedure itself gates on the
   // PLATFORM_ADMIN_EMAILS allowlist.
   "admin.extendTrial",
+  "admin.submitMessagingBrand",
+  "admin.submitMessagingCampaign",
+  "admin.assignMessagingNumbers",
+  "admin.attachMessagingProviderIds",
+  "admin.clearStaleMessagingSubmissionLock",
+  "admin.reconcileMessagingRegistration",
 ]);
 
 function practiceNotFound(): TRPCError {

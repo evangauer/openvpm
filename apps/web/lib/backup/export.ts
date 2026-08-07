@@ -75,6 +75,8 @@ export const PRACTICE_EXPORT_SYSTEM_EXCLUSIONS = {
     "Expiring QR photo-capture link tokens; restoring them would resurrect old capture URLs. The photos themselves are in the files section.",
   consentRequests:
     "Expiring e-sign link tokens; the signed consent PDF is in the files section and the signing event is in the audit log.",
+  messagingRegistrations:
+    "Encrypted tax identity plus live carrier brand/campaign state. It is environment-bound, may be undecryptable under another key, and must never bind a restored clone to the real SMS provider. Recover it only through operational database disaster recovery.",
 } as const;
 
 export const PRACTICE_EXPORT_SECRET_REPLACEMENTS = {

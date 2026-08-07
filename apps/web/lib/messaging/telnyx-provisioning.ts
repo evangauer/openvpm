@@ -38,7 +38,7 @@ function apiKey(): string {
 }
 
 /** Thin authed JSON request to the Telnyx v2 API. Throws TelnyxError on non-2xx. */
-async function telnyxRequest<T = unknown>(
+export async function telnyxRequest<T = unknown>(
   method: string,
   path: string,
   body?: unknown
@@ -198,4 +198,267 @@ export async function createHostedOrder(opts: {
     }
   );
   return { orderId: json.data?.id ?? "", status: json.data?.status ?? null };
+}
+
+// --- A2P 10DLC registration --------------------------------------------------
+
+export type TelnyxBrand = {
+  brandId: string;
+  identityStatus: string | null;
+  status: string | null;
+  failureReasons: string | null;
+};
+
+type TelnyxBrandPayload = {
+  brandId?: string;
+  identityStatus?: string;
+  status?: string;
+  failureReasons?: string;
+};
+
+function parseBrand(payload: TelnyxBrandPayload | undefined): TelnyxBrand {
+  const brandId = payload?.brandId;
+  if (!brandId)
+    throw new TelnyxError("Telnyx did not return an A2P brand id", 502);
+  return {
+    brandId,
+    identityStatus: payload.identityStatus ?? null,
+    status: payload.status ?? null,
+    failureReasons: payload.failureReasons ?? null,
+  };
+}
+
+/** Create a clinic's TCR brand. This incurs a provider registration charge. */
+export async function createA2pBrand(opts: {
+  entityType: "PRIVATE_PROFIT" | "NON_PROFIT";
+  displayName: string;
+  legalName: string;
+  ein: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string;
+  street: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  website: string;
+  webhookUrl: string;
+}): Promise<TelnyxBrand> {
+  const json = await telnyxRequest<
+    TelnyxBrandPayload & { data?: TelnyxBrandPayload }
+  >("POST", "/10dlc/brand", {
+    entityType: opts.entityType,
+    displayName: opts.displayName,
+    companyName: opts.legalName,
+    ein: opts.ein,
+    firstName: opts.firstName,
+    lastName: opts.lastName,
+    email: opts.email,
+    phone: opts.phone,
+    street: opts.street,
+    city: opts.city,
+    state: opts.state,
+    postalCode: opts.postalCode,
+    country: "US",
+    website: opts.website,
+    vertical: "HEALTHCARE",
+    isReseller: false,
+    webhookURL: opts.webhookUrl,
+  });
+  return parseBrand(json.data ?? json);
+}
+
+/** Read-only brand reconciliation. */
+export async function getA2pBrand(brandId: string): Promise<TelnyxBrand> {
+  const json = await telnyxRequest<
+    TelnyxBrandPayload & { data?: TelnyxBrandPayload }
+  >("GET", `/10dlc/brand/${encodeURIComponent(brandId)}`);
+  return parseBrand(json.data ?? json);
+}
+
+export type TelnyxCampaign = {
+  campaignId: string;
+  status: string | null;
+  campaignStatus: string | null;
+  submissionStatus: string | null;
+  referenceId: string | null;
+  failureReasons: string | null;
+};
+
+type TelnyxCampaignPayload = {
+  campaignId?: string;
+  status?: string;
+  campaignStatus?: string;
+  submissionStatus?: string;
+  referenceId?: string;
+  failureReasons?: string;
+};
+
+function parseCampaign(
+  payload: TelnyxCampaignPayload | undefined
+): TelnyxCampaign {
+  const campaignId = payload?.campaignId;
+  if (!campaignId) {
+    throw new TelnyxError("Telnyx did not return an A2P campaign id", 502);
+  }
+  return {
+    campaignId,
+    status: payload.status ?? null,
+    campaignStatus: payload.campaignStatus ?? null,
+    submissionStatus: payload.submissionStatus ?? null,
+    referenceId: payload.referenceId ?? null,
+    failureReasons: payload.failureReasons ?? null,
+  };
+}
+
+export type A2pCampaignInput = {
+  brandId: string;
+  referenceId: string;
+  displayName: string;
+  description: string;
+  sample1: string;
+  sample2: string;
+  sample3: string;
+  messageFlow: string;
+  helpMessage: string;
+  optinMessage: string;
+  optoutMessage: string;
+  privacyPolicyUrl: string;
+  termsUrl: string;
+  webhookUrl: string;
+};
+
+/** Submit a MIXED clinic communications campaign. Incurs provider charges. */
+export async function createA2pCampaign(
+  opts: A2pCampaignInput
+): Promise<TelnyxCampaign> {
+  const json = await telnyxRequest<
+    TelnyxCampaignPayload & { data?: TelnyxCampaignPayload }
+  >("POST", "/10dlc/campaignBuilder", {
+    brandId: opts.brandId,
+    usecase: "MIXED",
+    description: opts.description,
+    sample1: opts.sample1,
+    sample2: opts.sample2,
+    sample3: opts.sample3,
+    messageFlow: opts.messageFlow,
+    helpMessage: opts.helpMessage,
+    optinMessage: opts.optinMessage,
+    optoutMessage: opts.optoutMessage,
+    optinKeywords: "START,YES,UNSTOP",
+    optoutKeywords: "STOP,STOPALL,UNSUBSCRIBE,CANCEL,END,QUIT",
+    helpKeywords: "HELP,INFO",
+    subscriberOptin: true,
+    subscriberOptout: true,
+    subscriberHelp: true,
+    termsAndConditions: true,
+    privacyPolicyLink: opts.privacyPolicyUrl,
+    termsAndConditionsLink: opts.termsUrl,
+    embeddedLink: true,
+    embeddedPhone: true,
+    numberPool: false,
+    ageGated: false,
+    directLending: false,
+    autoRenewal: true,
+    referenceId: opts.referenceId,
+    webhookURL: opts.webhookUrl,
+  });
+  return parseCampaign(json.data ?? json);
+}
+
+/** Read-only campaign reconciliation. */
+export async function getA2pCampaign(
+  campaignId: string
+): Promise<TelnyxCampaign> {
+  const json = await telnyxRequest<
+    TelnyxCampaignPayload & { data?: TelnyxCampaignPayload }
+  >("GET", `/10dlc/campaign/${encodeURIComponent(campaignId)}`);
+  return parseCampaign(json.data ?? json);
+}
+
+/** Locate a previous idempotent campaign submission by its reference id. */
+export async function findA2pCampaignByReference(opts: {
+  brandId: string;
+  referenceId: string;
+}): Promise<TelnyxCampaign | null> {
+  const params = new URLSearchParams({
+    brandId: opts.brandId,
+    recordsPerPage: "500",
+  });
+  const json = await telnyxRequest<{
+    records?: TelnyxCampaignPayload[];
+    data?: { records?: TelnyxCampaignPayload[] };
+  }>("GET", `/10dlc/campaign?${params.toString()}`);
+  const records = json.records ?? json.data?.records ?? [];
+  const found = records.find(
+    (record) => record.referenceId === opts.referenceId
+  );
+  return found ? parseCampaign(found) : null;
+}
+
+export type TelnyxNumberAssignment = {
+  phoneNumber: string;
+  campaignId: string;
+  assignmentStatus: string | null;
+  failureReasons: string | null;
+};
+
+type TelnyxNumberAssignmentPayload = {
+  phoneNumber?: string;
+  campaignId?: string;
+  assignmentStatus?: string;
+  failureReasons?: string;
+};
+
+function parseNumberAssignment(
+  payload: TelnyxNumberAssignmentPayload | undefined
+): TelnyxNumberAssignment {
+  if (!payload?.phoneNumber || !payload.campaignId) {
+    throw new TelnyxError("Telnyx did not return a number assignment", 502);
+  }
+  return {
+    phoneNumber: payload.phoneNumber,
+    campaignId: payload.campaignId,
+    assignmentStatus: payload.assignmentStatus ?? null,
+    failureReasons: payload.failureReasons ?? null,
+  };
+}
+
+export async function getA2pNumberAssignment(
+  phoneNumber: string
+): Promise<TelnyxNumberAssignment | null> {
+  try {
+    const json = await telnyxRequest<
+      TelnyxNumberAssignmentPayload & { data?: TelnyxNumberAssignmentPayload }
+    >(
+      "GET",
+      `/10dlc/phone_number_campaigns/${encodeURIComponent(phoneNumber)}`
+    );
+    return parseNumberAssignment(json.data ?? json);
+  } catch (error) {
+    if (error instanceof TelnyxError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+/** Idempotently assign a number: read first, create only when absent. */
+export async function ensureA2pNumberAssignment(opts: {
+  phoneNumber: string;
+  campaignId: string;
+}): Promise<TelnyxNumberAssignment> {
+  const existing = await getA2pNumberAssignment(opts.phoneNumber);
+  if (existing) {
+    if (existing.campaignId !== opts.campaignId) {
+      throw new TelnyxError(
+        "Phone number is already assigned to a different A2P campaign.",
+        409
+      );
+    }
+    return existing;
+  }
+  const json = await telnyxRequest<
+    TelnyxNumberAssignmentPayload & { data?: TelnyxNumberAssignmentPayload }
+  >("POST", "/10dlc/phone_number_campaigns", opts);
+  return parseNumberAssignment(json.data ?? json);
 }

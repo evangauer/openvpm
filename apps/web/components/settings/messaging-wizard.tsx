@@ -539,9 +539,10 @@ function RegistrationStep({
           Carrier approval is required before live US texting.
         </p>
         <p className="mt-2 text-sm leading-6 text-teal-800">
-          OpenVPM will set up the number and mark registration as pending.
-          Legal business verification and campaign approval are external
-          carrier steps and are not submitted from this screen yet.
+          OpenVPM will set up the number and keep sending off. After this step,
+          complete the clinic&apos;s legal and consent details in Messaging
+          settings; OpenVPM reviews them before any fee-bearing carrier
+          submission.
         </p>
       </div>
     </div>
@@ -567,8 +568,9 @@ function DoneStep({ sender }: { sender: string | null }) {
           Next: carrier approval
         </p>
         <p className="mt-2 text-sm leading-6 text-slate-600">
-          When registration is active, turn sending on from Messaging settings
-          and send a test from the active location card.
+          Complete the US carrier registration form in Messaging settings.
+          OpenVPM will review and submit it. When registration is active, turn
+          sending on and send a test from the active location card.
         </p>
       </div>
     </div>

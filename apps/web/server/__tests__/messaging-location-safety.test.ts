@@ -172,6 +172,47 @@ describe("messaging provisioning kill-switch", () => {
 });
 
 describe("messaging location target safety", () => {
+  it("encrypts clinic tax IDs and upserts registration details tenant-scoped", async () => {
+    vi.stubEnv(
+      "MESSAGING_REGISTRATION_ENCRYPTION_KEY",
+      Buffer.alloc(32, 9).toString("base64")
+    );
+    const { db, insertValues } = createDb({ selectResults: [[]] });
+
+    await expect(
+      callerWithDb(db).saveRegistration({
+        entityType: "PRIVATE_PROFIT",
+        displayName: "Healthy Pets",
+        legalName: "Healthy Pets LLC",
+        taxId: "12-3456789",
+        contactFirstName: "Alex",
+        contactLastName: "Vet",
+        contactEmail: "alex@example.com",
+        businessPhone: "+15555550100",
+        street: "1 Main St",
+        city: "Denver",
+        state: "co",
+        postalCode: "80202",
+        website: "https://example.com",
+        privacyPolicyUrl: "https://example.com/privacy",
+        termsUrl: "https://example.com/terms",
+        certifyAccuracyAndConsent: true,
+      })
+    ).resolves.toEqual({ ok: true, taxIdLast4: "6789" });
+
+    const values = insertValues.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(values).toMatchObject({
+      practiceId: PRACTICE_ID,
+      businessPhone: "+15555550100",
+      state: "CO",
+      taxIdLast4: "6789",
+      status: "not_started",
+      complianceAttestedBy: USER_ID,
+    });
+    expect(values.taxIdEncrypted).toMatch(/^v1:/);
+    expect(JSON.stringify(values)).not.toContain("123456789");
+  });
+
   it("rejects invalid messaging phone inputs before DB or provider calls", async () => {
     const { db, select } = createDb();
 
@@ -469,7 +510,10 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).testSend({ locationId: LOCATION_ID, to: "+15555550100" })
+      callerWithDb(db).testSend({
+        locationId: LOCATION_ID,
+        to: "+15555550100",
+      })
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
     expect(mocks.sendSms).not.toHaveBeenCalled();

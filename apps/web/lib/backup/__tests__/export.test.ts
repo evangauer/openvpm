@@ -86,9 +86,16 @@ describe("summarizePracticeExport", () => {
     expect(sections).not.toContain("practicePaymentAccounts");
     expect(sections).not.toContain("stripeEvents");
     expect(sections).not.toContain("rateLimitBuckets");
+    expect(sections).not.toContain("messagingRegistrations");
     expect(PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.usageRecords).toContain("billing");
     expect(PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.practicePaymentAccounts).toContain(
       "Stripe Connect"
+    );
+    expect(PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.messagingRegistrations).toContain(
+      "Encrypted tax identity"
+    );
+    expect(PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.messagingRegistrations).toContain(
+      "operational database disaster recovery"
     );
   });
 

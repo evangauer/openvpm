@@ -1,9 +1,18 @@
 import { z } from "zod";
 import { and, eq, isNull, sql, desc } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure } from "../trpc";
 import { db } from "@openpims/db/client";
-import { practices, users, clients, patients, locations } from "@openpims/db";
+import {
+  practices,
+  users,
+  clients,
+  patients,
+  locations,
+  messagingRegistrations,
+  locationMessaging,
+} from "@openpims/db";
 import { isPlatformAdmin } from "@/lib/platform-admin";
 import { computeActivationFunnel } from "@/lib/admin/activation-funnel";
 import { computeJourneyFunnel } from "@/lib/admin/journey-funnel";
@@ -18,6 +27,26 @@ import {
   onboardingIntentLabel,
   type OnboardingIntent,
 } from "@/lib/onboarding/intent";
+import { normalizeAppBaseUrl } from "@/lib/app-url";
+import {
+  createA2pBrand,
+  createA2pCampaign,
+  ensureA2pNumberAssignment,
+  findA2pCampaignByReference,
+  getA2pBrand,
+  getA2pCampaign,
+  getA2pNumberAssignment,
+  TelnyxError,
+  type TelnyxNumberAssignment,
+} from "@/lib/messaging/telnyx-provisioning";
+import {
+  decryptRegistrationTaxId,
+  MessagingRegistrationEncryptionError,
+} from "@/lib/messaging/registration-crypto";
+import {
+  mergeRegistrationStatus,
+  observedRegistrationStatus,
+} from "@/lib/messaging/a2p-lifecycle";
 
 /**
  * Platform-operator only. Crosses tenant boundaries deliberately, so it is
@@ -29,6 +58,208 @@ const platformAdminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
   }
   return next();
 });
+
+const MESSAGING_SUBMISSION_LOCK_STALE_MS = 15 * 60 * 1000;
+
+function assertMessagingProviderMutationsEnabled() {
+  const flag = process.env.MESSAGING_PROVISIONING_ENABLED?.trim().toLowerCase();
+  if (flag !== "true" && flag !== "1") {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Messaging provider mutations are disabled by the platform kill-switch.",
+    });
+  }
+}
+
+function telnyxRegistrationWebhookUrl(): string {
+  const raw =
+    process.env.NEXT_PUBLIC_APP_URL?.trim() || process.env.NEXTAUTH_URL?.trim();
+  const normalized = normalizeAppBaseUrl(raw ?? "");
+  if (!normalized) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "A public HTTPS app URL is required for Telnyx registration.",
+    });
+  }
+  const base = new URL(normalized);
+  if (base.protocol !== "https:" || base.hostname === "localhost") {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "A public HTTPS app URL is required for Telnyx registration.",
+    });
+  }
+  return new URL("/api/webhooks/telnyx", base).toString();
+}
+
+function providerFailure(error: unknown): TRPCError {
+  if (error instanceof MessagingRegistrationEncryptionError) {
+    return new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: error.message,
+    });
+  }
+  const message =
+    error instanceof Error ? error.message : "Provider request failed.";
+  return new TRPCError({
+    code:
+      error instanceof TelnyxError && error.status === 409
+        ? "CONFLICT"
+        : "BAD_GATEWAY",
+    message,
+  });
+}
+
+function campaignReferenceId(practiceId: string) {
+  return `openvpm-clinic-${practiceId}`;
+}
+
+function campaignCopy(displayName: string) {
+  return {
+    description:
+      "Veterinary clinic communications including appointment reminders, care follow-ups, invoice notifications, and two-way client support. Messages are sent only to clients whose SMS consent is recorded by the clinic.",
+    sample1: `${displayName}: Reminder—your pet's appointment is tomorrow at 10:00 AM. Reply C to confirm or call the clinic to reschedule. Reply STOP to opt out.`,
+    sample2: `${displayName}: Your pet's care instructions are ready. Reply here with questions or call the clinic. Reply STOP to opt out.`,
+    sample3: `${displayName}: Your invoice is ready to review and pay securely. Reply HELP for help or STOP to opt out.`,
+    messageFlow:
+      "Clients provide their mobile number and consent directly to the veterinary clinic during intake, online booking, by phone, or in person. Clinic staff record that consent in OpenVPM before any SMS is sent. Message frequency varies. Message and data rates may apply. Consent is not a condition of purchase. Clients can reply STOP to opt out or HELP for help.",
+    helpMessage: `Reply to reach ${displayName}, or call the clinic for help. Reply STOP to opt out.`,
+    optinMessage: `${displayName}: You are subscribed to clinic messages. Message frequency varies. Msg & data rates may apply. Reply HELP for help or STOP to opt out.`,
+    optoutMessage: `${displayName}: You have been unsubscribed and will receive no further SMS messages. Reply START to opt back in.`,
+  };
+}
+
+async function registrationForOperator(practiceId: string) {
+  return withSystem(db, async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(messagingRegistrations)
+      .where(
+        and(
+          eq(messagingRegistrations.practiceId, practiceId),
+          isNull(messagingRegistrations.deletedAt)
+        )
+      )
+      .limit(1);
+    if (!row) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "The clinic has not completed carrier registration details.",
+      });
+    }
+    return row;
+  });
+}
+
+async function claimRegistrationOperation(opts: {
+  registrationId: string;
+  operation: "brand" | "campaign" | "assignment";
+  allowReviewedRetry: boolean;
+}) {
+  return withSystem(db, async (tx) => {
+    const lockId = randomUUID();
+    const [claimed] = await tx
+      .update(messagingRegistrations)
+      .set({
+        submissionLockId: lockId,
+        submissionLockAt: new Date(),
+        status: "pending",
+        statusDetail: `OpenVPM is submitting the ${opts.operation} step to the carrier.`,
+        attemptCount: sql`${messagingRegistrations.attemptCount} + 1`,
+        lastSubmittedAt: new Date(),
+        lastError: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(messagingRegistrations.id, opts.registrationId),
+          isNull(messagingRegistrations.deletedAt),
+          isNull(messagingRegistrations.submissionLockId),
+          opts.allowReviewedRetry
+            ? sql`true`
+            : sql`${messagingRegistrations.lastError} is null`
+        )
+      )
+      .returning({ id: messagingRegistrations.id });
+    if (!claimed) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message:
+          "A provider operation is already running or a previous ambiguous failure needs operator review.",
+      });
+    }
+    return lockId;
+  });
+}
+
+async function finishRegistrationOperation(opts: {
+  registrationId: string;
+  lockId: string;
+  values: Partial<typeof messagingRegistrations.$inferInsert>;
+}) {
+  return withSystem(db, async (tx) => {
+    const [updated] = await tx
+      .update(messagingRegistrations)
+      .set({
+        ...opts.values,
+        submissionLockId: null,
+        submissionLockAt: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(messagingRegistrations.id, opts.registrationId),
+          eq(messagingRegistrations.submissionLockId, opts.lockId),
+          isNull(messagingRegistrations.deletedAt)
+        )
+      )
+      .returning({ id: messagingRegistrations.id });
+    if (!updated) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message:
+          "Registration changed while the provider operation was running.",
+      });
+    }
+  });
+}
+
+async function failRegistrationOperation(opts: {
+  registrationId: string;
+  practiceId: string;
+  lockId: string;
+  error: unknown;
+}) {
+  const detail =
+    opts.error instanceof Error
+      ? opts.error.message.slice(0, 1000)
+      : "Provider request failed.";
+  await finishRegistrationOperation({
+    registrationId: opts.registrationId,
+    lockId: opts.lockId,
+    values: {
+      status: "action_required",
+      statusDetail: "Carrier registration needs OpenVPM operator review.",
+      lastError: detail,
+    },
+  });
+  await withSystem(db, async (tx) => {
+    await tx
+      .update(locationMessaging)
+      .set({
+        enabled: false,
+        registrationStatus: "action_required",
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(locationMessaging.practiceId, opts.practiceId),
+          eq(locationMessaging.provider, "telnyx"),
+          isNull(locationMessaging.deletedAt)
+        )
+      );
+  });
+}
 
 type AdminPracticeSettings = {
   acquisition?: { source?: string; campaign?: string };
@@ -274,6 +505,640 @@ export const adminRouter = createRouter({
         return { practiceId: input.practiceId, excluded: input.excluded };
       })
     ),
+
+  /** Redacted A2P work queue. Legal tax IDs are never exposed here. */
+  messagingRegistrationQueue: platformAdminProcedure.query(async () =>
+    withSystem(db, async (tx) => {
+      const rows = await tx
+        .select({
+          id: messagingRegistrations.id,
+          practiceId: messagingRegistrations.practiceId,
+          practiceName: practices.name,
+          displayName: messagingRegistrations.displayName,
+          legalName: messagingRegistrations.legalName,
+          entityType: messagingRegistrations.entityType,
+          taxIdLast4: messagingRegistrations.taxIdLast4,
+          status: messagingRegistrations.status,
+          statusDetail: messagingRegistrations.statusDetail,
+          providerBrandId: messagingRegistrations.providerBrandId,
+          providerBrandStatus: messagingRegistrations.providerBrandStatus,
+          providerCampaignId: messagingRegistrations.providerCampaignId,
+          providerCampaignStatus: messagingRegistrations.providerCampaignStatus,
+          attemptCount: messagingRegistrations.attemptCount,
+          lastSubmittedAt: messagingRegistrations.lastSubmittedAt,
+          lastSyncedAt: messagingRegistrations.lastSyncedAt,
+          lastError: messagingRegistrations.lastError,
+          submissionLockAt: messagingRegistrations.submissionLockAt,
+          updatedAt: messagingRegistrations.updatedAt,
+        })
+        .from(messagingRegistrations)
+        .innerJoin(
+          practices,
+          and(
+            eq(practices.id, messagingRegistrations.practiceId),
+            isNull(practices.deletedAt)
+          )
+        )
+        .where(isNull(messagingRegistrations.deletedAt))
+        .orderBy(desc(messagingRegistrations.updatedAt));
+
+      const senders = await tx
+        .select({
+          practiceId: locationMessaging.practiceId,
+          senderE164: locationMessaging.senderE164,
+          registrationStatus: locationMessaging.registrationStatus,
+          enabled: locationMessaging.enabled,
+        })
+        .from(locationMessaging)
+        .where(isNull(locationMessaging.deletedAt));
+      return rows.map((row) => ({
+        ...row,
+        senders: senders.filter(
+          (sender) => sender.practiceId === row.practiceId
+        ),
+      }));
+    })
+  ),
+
+  /** Fee-bearing TCR brand creation; platform operator only and explicitly confirmed. */
+  submitMessagingBrand: platformAdminProcedure
+    .input(
+      z.object({
+        practiceId: z.string().uuid(),
+        confirmProviderCharges: z.literal(true),
+        retryAfterProviderReview: z.boolean().default(false),
+      })
+    )
+    .mutation(async ({ input }) => {
+      assertMessagingProviderMutationsEnabled();
+      const registration = await registrationForOperator(input.practiceId);
+      if (registration.providerBrandId) {
+        return {
+          ok: true,
+          providerBrandId: registration.providerBrandId,
+          reused: true,
+        };
+      }
+      const lockId = await claimRegistrationOperation({
+        registrationId: registration.id,
+        operation: "brand",
+        allowReviewedRetry: input.retryAfterProviderReview,
+      });
+      try {
+        const brand = await createA2pBrand({
+          entityType: registration.entityType,
+          displayName: registration.displayName,
+          legalName: registration.legalName,
+          ein: decryptRegistrationTaxId(registration.taxIdEncrypted),
+          firstName: registration.contactFirstName,
+          lastName: registration.contactLastName,
+          email: registration.contactEmail,
+          phone: registration.businessPhone,
+          street: registration.street,
+          city: registration.city,
+          state: registration.state,
+          postalCode: registration.postalCode,
+          website: registration.website,
+          webhookUrl: telnyxRegistrationWebhookUrl(),
+        });
+        await finishRegistrationOperation({
+          registrationId: registration.id,
+          lockId,
+          values: {
+            providerBrandId: brand.brandId,
+            providerBrandStatus: brand.identityStatus ?? brand.status,
+            status:
+              brand.identityStatus === "UNVERIFIED"
+                ? "action_required"
+                : "pending",
+            statusDetail:
+              brand.identityStatus === "UNVERIFIED"
+                ? "Carrier could not verify the clinic identity; OpenVPM review is required."
+                : "Carrier brand submitted. Waiting for identity verification.",
+            lastError: brand.failureReasons,
+            lastSyncedAt: new Date(),
+          },
+        });
+        return { ok: true, providerBrandId: brand.brandId, reused: false };
+      } catch (error) {
+        await failRegistrationOperation({
+          registrationId: registration.id,
+          practiceId: registration.practiceId,
+          lockId,
+          error,
+        });
+        throw providerFailure(error);
+      }
+    }),
+
+  /** Fee-bearing campaign submission with reference-id recovery before POST. */
+  submitMessagingCampaign: platformAdminProcedure
+    .input(
+      z.object({
+        practiceId: z.string().uuid(),
+        confirmProviderCharges: z.literal(true),
+        retryAfterProviderReview: z.boolean().default(false),
+      })
+    )
+    .mutation(async ({ input }) => {
+      assertMessagingProviderMutationsEnabled();
+      const registration = await registrationForOperator(input.practiceId);
+      if (!registration.providerBrandId) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Submit the clinic brand before its campaign.",
+        });
+      }
+      if (registration.providerCampaignId) {
+        return {
+          ok: true,
+          providerCampaignId: registration.providerCampaignId,
+          reused: true,
+        };
+      }
+
+      const brand = await getA2pBrand(registration.providerBrandId);
+      if (
+        !new Set(["VERIFIED", "VETTED_VERIFIED"]).has(
+          brand.identityStatus ?? ""
+        )
+      ) {
+        await withSystem(db, async (tx) => {
+          await tx
+            .update(messagingRegistrations)
+            .set({
+              providerBrandStatus: brand.identityStatus ?? brand.status,
+              status:
+                brand.identityStatus === "UNVERIFIED"
+                  ? "action_required"
+                  : "pending",
+              statusDetail:
+                "Carrier brand verification must finish before campaign submission.",
+              lastError: brand.failureReasons,
+              lastSyncedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(eq(messagingRegistrations.id, registration.id));
+        });
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Carrier brand verification is not complete.",
+        });
+      }
+
+      const referenceId = campaignReferenceId(input.practiceId);
+      const recovered = await findA2pCampaignByReference({
+        brandId: registration.providerBrandId,
+        referenceId,
+      });
+      if (recovered) {
+        await withSystem(db, async (tx) => {
+          await tx
+            .update(messagingRegistrations)
+            .set({
+              providerCampaignId: recovered.campaignId,
+              providerCampaignStatus:
+                recovered.campaignStatus ??
+                recovered.status ??
+                recovered.submissionStatus,
+              status: "pending",
+              statusDetail:
+                "Recovered the existing carrier campaign; awaiting approval.",
+              lastError: recovered.failureReasons,
+              lastSyncedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(eq(messagingRegistrations.id, registration.id));
+        });
+        return {
+          ok: true,
+          providerCampaignId: recovered.campaignId,
+          reused: true,
+        };
+      }
+
+      const lockId = await claimRegistrationOperation({
+        registrationId: registration.id,
+        operation: "campaign",
+        allowReviewedRetry: input.retryAfterProviderReview,
+      });
+      try {
+        const copy = campaignCopy(registration.displayName);
+        const campaign = await createA2pCampaign({
+          brandId: registration.providerBrandId,
+          referenceId,
+          displayName: registration.displayName,
+          ...copy,
+          privacyPolicyUrl: registration.privacyPolicyUrl,
+          termsUrl: registration.termsUrl,
+          webhookUrl: telnyxRegistrationWebhookUrl(),
+        });
+        await finishRegistrationOperation({
+          registrationId: registration.id,
+          lockId,
+          values: {
+            providerBrandStatus: brand.identityStatus ?? brand.status,
+            providerCampaignId: campaign.campaignId,
+            providerCampaignStatus:
+              campaign.campaignStatus ??
+              campaign.status ??
+              campaign.submissionStatus,
+            status: "pending",
+            statusDetail:
+              "Carrier campaign submitted. Waiting for mobile-network approval.",
+            lastError: campaign.failureReasons,
+            lastSyncedAt: new Date(),
+          },
+        });
+        return {
+          ok: true,
+          providerCampaignId: campaign.campaignId,
+          reused: false,
+        };
+      } catch (error) {
+        await failRegistrationOperation({
+          registrationId: registration.id,
+          practiceId: registration.practiceId,
+          lockId,
+          error,
+        });
+        throw providerFailure(error);
+      }
+    }),
+
+  /** Idempotent number-to-campaign assignment; never enables sending. */
+  assignMessagingNumbers: platformAdminProcedure
+    .input(
+      z.object({
+        practiceId: z.string().uuid(),
+        confirmProviderMutation: z.literal(true),
+      })
+    )
+    .mutation(async ({ input }) => {
+      assertMessagingProviderMutationsEnabled();
+      const registration = await registrationForOperator(input.practiceId);
+      if (!registration.providerCampaignId || !registration.providerBrandId) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "An approved brand and campaign are required before assignment.",
+        });
+      }
+      const campaign = await getA2pCampaign(registration.providerCampaignId);
+      if (
+        campaign.status !== "ACTIVE" &&
+        campaign.campaignStatus !== "MNO_PROVISIONED"
+      ) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "The carrier campaign is not fully active yet.",
+        });
+      }
+      const senders = await withSystem(db, async (tx) =>
+        tx
+          .select({ phoneNumber: locationMessaging.senderE164 })
+          .from(locationMessaging)
+          .where(
+            and(
+              eq(locationMessaging.practiceId, input.practiceId),
+              eq(locationMessaging.provider, "telnyx"),
+              isNull(locationMessaging.deletedAt),
+              sql`nullif(trim(${locationMessaging.senderE164}), '') is not null`
+            )
+          )
+      );
+      if (senders.length === 0) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Provision at least one clinic texting number first.",
+        });
+      }
+
+      const assignments: TelnyxNumberAssignment[] = [];
+      for (const sender of senders) {
+        if (!sender.phoneNumber) continue;
+        assignments.push(
+          await ensureA2pNumberAssignment({
+            phoneNumber: sender.phoneNumber,
+            campaignId: registration.providerCampaignId,
+          })
+        );
+      }
+      const observed = observedRegistrationStatus({
+        brandIdentityStatus: registration.providerBrandStatus,
+        campaignStatus: campaign.campaignStatus ?? campaign.status,
+        campaignSubmissionStatus: campaign.submissionStatus,
+        assignmentStatuses: assignments.map((row) => row.assignmentStatus),
+      });
+      const next = mergeRegistrationStatus(registration.status, observed);
+      await withSystem(db, async (tx) => {
+        await tx
+          .update(messagingRegistrations)
+          .set({
+            providerCampaignStatus:
+              campaign.campaignStatus ??
+              campaign.status ??
+              campaign.submissionStatus,
+            status: next,
+            statusDetail:
+              next === "active"
+                ? "Carrier registration and all clinic number assignments are active."
+                : "Clinic numbers were submitted for carrier assignment.",
+            lastError:
+              assignments
+                .map((row) => row.failureReasons)
+                .filter(Boolean)
+                .join("; ") || null,
+            lastSyncedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(messagingRegistrations.id, registration.id));
+        await tx
+          .update(locationMessaging)
+          .set({
+            a2pBrandId: registration.providerBrandId,
+            a2pCampaignId: registration.providerCampaignId,
+            registrationStatus: next,
+            registrationDetail:
+              next === "active"
+                ? "Carrier registration active. An admin may now enable sending."
+                : "Carrier number assignment is pending.",
+            enabled: false,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(locationMessaging.practiceId, input.practiceId),
+              eq(locationMessaging.provider, "telnyx"),
+              isNull(locationMessaging.deletedAt)
+            )
+          );
+      });
+      return { ok: true, status: next, assigned: assignments.length };
+    }),
+
+  /**
+   * Recover an ambiguous provider timeout after an operator confirms the IDs in
+   * the Telnyx portal. This clears a stale operation lock without creating or
+   * charging for anything; reconciliation must run next.
+   */
+  attachMessagingProviderIds: platformAdminProcedure
+    .input(
+      z.object({
+        practiceId: z.string().uuid(),
+        providerBrandId: z.string().trim().min(3).max(128),
+        providerCampaignId: z.string().trim().min(3).max(128).optional(),
+        confirmProviderPortalReviewed: z.literal(true),
+      })
+    )
+    .mutation(async ({ input }) =>
+      withSystem(db, async (tx) => {
+        const [updated] = await tx
+          .update(messagingRegistrations)
+          .set({
+            providerBrandId: input.providerBrandId,
+            ...(input.providerCampaignId
+              ? { providerCampaignId: input.providerCampaignId }
+              : {}),
+            status: "pending",
+            statusDetail:
+              "Provider IDs recovered by an OpenVPM operator; refresh status next.",
+            submissionLockId: null,
+            submissionLockAt: null,
+            lastError: null,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(messagingRegistrations.practiceId, input.practiceId),
+              isNull(messagingRegistrations.deletedAt)
+            )
+          )
+          .returning({ id: messagingRegistrations.id });
+        if (!updated) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Registration not found.",
+          });
+        }
+        return { ok: true };
+      })
+    ),
+
+  /**
+   * Clear a crash-stale submission lock only after an operator verifies in the
+   * Telnyx portal that the fee-bearing object was not created. A fresh lock can
+   * never be cleared, and all clinic senders remain disabled.
+   */
+  clearStaleMessagingSubmissionLock: platformAdminProcedure
+    .input(
+      z.object({
+        practiceId: z.string().uuid(),
+        providerObject: z.enum(["brand", "campaign"]),
+        confirmProviderPortalReviewed: z.literal(true),
+        confirmNoProviderObjectExists: z.literal("NO_PROVIDER_OBJECT"),
+      })
+    )
+    .mutation(async ({ input }) =>
+      withSystem(db, async (tx) => {
+        const [registration] = await tx
+          .select({
+            id: messagingRegistrations.id,
+            submissionLockId: messagingRegistrations.submissionLockId,
+            submissionLockAt: messagingRegistrations.submissionLockAt,
+            providerBrandId: messagingRegistrations.providerBrandId,
+            providerCampaignId: messagingRegistrations.providerCampaignId,
+          })
+          .from(messagingRegistrations)
+          .where(
+            and(
+              eq(messagingRegistrations.practiceId, input.practiceId),
+              isNull(messagingRegistrations.deletedAt)
+            )
+          )
+          .limit(1);
+        if (!registration?.submissionLockId || !registration.submissionLockAt) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "No locked provider operation exists.",
+          });
+        }
+        if (
+          registration.submissionLockAt.getTime() >
+          Date.now() - MESSAGING_SUBMISSION_LOCK_STALE_MS
+        ) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "The provider operation is still within its 15-minute safety window.",
+          });
+        }
+        if (
+          (input.providerObject === "brand" && registration.providerBrandId) ||
+          (input.providerObject === "campaign" &&
+            registration.providerCampaignId) ||
+          (input.providerObject === "campaign" && !registration.providerBrandId)
+        ) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Stored provider IDs do not match the operation being recovered.",
+          });
+        }
+
+        const [updated] = await tx
+          .update(messagingRegistrations)
+          .set({
+            submissionLockId: null,
+            submissionLockAt: null,
+            status: "action_required",
+            statusDetail:
+              "OpenVPM confirmed no provider object exists; a reviewed retry is available.",
+            lastError: `Operator cleared a stale ${input.providerObject} lock after confirming no provider object exists.`,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(messagingRegistrations.id, registration.id),
+              eq(
+                messagingRegistrations.submissionLockId,
+                registration.submissionLockId
+              ),
+              isNull(messagingRegistrations.deletedAt)
+            )
+          )
+          .returning({ id: messagingRegistrations.id });
+        if (!updated) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "The provider operation changed during recovery. Refresh and review again.",
+          });
+        }
+        await tx
+          .update(locationMessaging)
+          .set({
+            enabled: false,
+            registrationStatus: "action_required",
+            registrationDetail: "Carrier registration needs OpenVPM review.",
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(locationMessaging.practiceId, input.practiceId),
+              eq(locationMessaging.provider, "telnyx"),
+              isNull(locationMessaging.deletedAt)
+            )
+          );
+        return { ok: true, providerObject: input.providerObject };
+      })
+    ),
+
+  /** Read-only provider reconciliation. Safe to retry and never enables sending. */
+  reconcileMessagingRegistration: platformAdminProcedure
+    .input(z.object({ practiceId: z.string().uuid() }))
+    .mutation(async ({ input }) => {
+      const registration = await registrationForOperator(input.practiceId);
+      if (!registration.providerBrandId) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "No provider brand has been submitted.",
+        });
+      }
+      try {
+        const brand = await getA2pBrand(registration.providerBrandId);
+        const campaign = registration.providerCampaignId
+          ? await getA2pCampaign(registration.providerCampaignId)
+          : null;
+        const senders = await withSystem(db, async (tx) =>
+          tx
+            .select({ phoneNumber: locationMessaging.senderE164 })
+            .from(locationMessaging)
+            .where(
+              and(
+                eq(locationMessaging.practiceId, input.practiceId),
+                eq(locationMessaging.provider, "telnyx"),
+                isNull(locationMessaging.deletedAt),
+                sql`nullif(trim(${locationMessaging.senderE164}), '') is not null`
+              )
+            )
+        );
+        const assignments: Array<TelnyxNumberAssignment | null> = [];
+        if (campaign) {
+          for (const sender of senders) {
+            if (!sender.phoneNumber) continue;
+            assignments.push(await getA2pNumberAssignment(sender.phoneNumber));
+          }
+        }
+        const observed = observedRegistrationStatus({
+          brandIdentityStatus: brand.identityStatus,
+          brandStatus: brand.status,
+          campaignStatus: campaign?.campaignStatus ?? campaign?.status,
+          campaignSubmissionStatus: campaign?.submissionStatus,
+          assignmentStatuses: assignments.map((row) => row?.assignmentStatus),
+        });
+        const next = mergeRegistrationStatus(registration.status, observed);
+        const failureDetail = [
+          brand.failureReasons,
+          campaign?.failureReasons,
+          ...assignments.map((row) => row?.failureReasons),
+        ]
+          .filter(Boolean)
+          .join("; ")
+          .slice(0, 1000);
+        await withSystem(db, async (tx) => {
+          await tx
+            .update(messagingRegistrations)
+            .set({
+              providerBrandStatus: brand.identityStatus ?? brand.status,
+              providerCampaignStatus:
+                campaign?.campaignStatus ??
+                campaign?.status ??
+                campaign?.submissionStatus,
+              status: next,
+              statusDetail:
+                next === "active"
+                  ? "Carrier registration and all clinic number assignments are active."
+                  : next === "action_required" ||
+                      next === "failed" ||
+                      next === "suspended"
+                    ? "Carrier registration needs OpenVPM operator review."
+                    : "Carrier registration is still processing.",
+              lastError: failureDetail || null,
+              lastSyncedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(eq(messagingRegistrations.id, registration.id));
+          await tx
+            .update(locationMessaging)
+            .set({
+              a2pBrandId: registration.providerBrandId,
+              a2pCampaignId: registration.providerCampaignId,
+              registrationStatus: next,
+              registrationDetail:
+                next === "active"
+                  ? "Carrier registration active. An admin may now enable sending."
+                  : next === "action_required" ||
+                      next === "failed" ||
+                      next === "suspended"
+                    ? "Carrier registration needs OpenVPM review."
+                    : "Carrier registration is pending.",
+              ...(next === "active" ? {} : { enabled: false }),
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(locationMessaging.practiceId, input.practiceId),
+                eq(locationMessaging.provider, "telnyx"),
+                isNull(locationMessaging.deletedAt)
+              )
+            );
+        });
+        return { ok: true, status: next, assignments: assignments.length };
+      } catch (error) {
+        throw providerFailure(error);
+      }
+    }),
 
   /**
    * Trial funnel: signups -> activated -> subscribed, derived from existing

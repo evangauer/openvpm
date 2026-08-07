@@ -35,7 +35,12 @@ export function getMessagingProvider(): MessagingProvider {
 export function requiredMessagingEnvNames(): string[] {
   return getMessagingProvider().name === "twilio"
     ? ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"]
-    : ["TELNYX_API_KEY", "TELNYX_MESSAGING_PROFILE_ID", "TELNYX_PUBLIC_KEY"];
+    : [
+        "TELNYX_API_KEY",
+        "TELNYX_MESSAGING_PROFILE_ID",
+        "TELNYX_PUBLIC_KEY",
+        "MESSAGING_REGISTRATION_ENCRYPTION_KEY",
+      ];
 }
 
 /** Platform-wide env default sender for the active provider (dev + fallback). */
