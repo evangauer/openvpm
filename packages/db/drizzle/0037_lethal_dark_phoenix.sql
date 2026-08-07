@@ -1,0 +1,4 @@
+ALTER TABLE "messaging_registrations" ADD CONSTRAINT "messaging_registrations_tax_id_last4_check" CHECK ("messaging_registrations"."tax_id_last4" ~ '^[0-9]{4}$');--> statement-breakpoint
+ALTER TABLE "messaging_registrations" ADD CONSTRAINT "messaging_registrations_us_country_check" CHECK ("messaging_registrations"."country" = 'US');--> statement-breakpoint
+ALTER TABLE "messaging_registrations" ADD CONSTRAINT "messaging_registrations_us_state_check" CHECK ("messaging_registrations"."state" ~ '^[A-Z]{2}$');--> statement-breakpoint
+ALTER TABLE "messaging_registrations" ADD CONSTRAINT "messaging_registrations_attempt_count_check" CHECK ("messaging_registrations"."attempt_count" >= 0);

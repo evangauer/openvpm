@@ -253,6 +253,27 @@
       "when": 1786082165007,
       "tag": "0035_awesome_reavers",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1786114954944,
+      "tag": "0036_busy_dreadnoughts",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1786115544293,
+      "tag": "0037_lethal_dark_phoenix",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1786115753528,
+      "tag": "0038_overconfident_power_pack",
+      "breakpoints": true
     }
   ]
 }

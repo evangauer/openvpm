@@ -1,0 +1,4 @@
+ALTER TABLE "messaging_registrations" ADD COLUMN "compliance_attested_at" timestamp with time zone NOT NULL;--> statement-breakpoint
+ALTER TABLE "messaging_registrations" ADD COLUMN "compliance_attested_by" uuid NOT NULL;--> statement-breakpoint
+ALTER TABLE "messaging_registrations" ADD CONSTRAINT "messaging_registrations_compliance_attested_by_users_id_fk" FOREIGN KEY ("compliance_attested_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "messaging_registrations_attested_by_idx" ON "messaging_registrations" USING btree ("compliance_attested_by");
