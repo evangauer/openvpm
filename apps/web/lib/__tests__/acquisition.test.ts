@@ -22,6 +22,27 @@ describe("signup acquisition", () => {
     ).toEqual({ source: "google", medium: undefined, campaign: undefined });
   });
 
+  it("keeps a valid anonymous funnel id and normalizes its casing", () => {
+    expect(
+      acquisitionFromSearchParams(
+        new URLSearchParams(
+          "funnel_id=123E4567-E89B-42D3-A456-426614174000"
+        )
+      )
+    ).toEqual({
+      source: undefined,
+      medium: undefined,
+      campaign: undefined,
+      funnelId: "123e4567-e89b-42d3-a456-426614174000",
+    });
+  });
+
+  it("drops a malformed funnel id", () => {
+    expect(
+      acquisitionFromSearchParams(new URLSearchParams("funnel_id=not-a-uuid"))
+    ).toBeUndefined();
+  });
+
   it("drops unsafe or oversized values and returns undefined when empty", () => {
     const params = new URLSearchParams({
       source: "<script>",

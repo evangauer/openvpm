@@ -37,6 +37,7 @@ const aId = randomUUID();
 const bId = randomUUID();
 const aInvoice = randomUUID();
 const bInvoice = randomUUID();
+const funnelEventId = randomUUID();
 let failures = 0;
 
 async function appTransaction<T>(
@@ -55,6 +56,8 @@ try {
   await owner`insert into practices (id, name) values (${aId}, 'RLS Test A'), (${bId}, 'RLS Test B')`;
   await owner`insert into clients (practice_id, first_name, last_name) values
     (${aId}, 'Alice', 'A'), (${bId}, 'Bob', 'B')`;
+  await owner`insert into funnel_events (id, event_name, practice_id)
+    values (${funnelEventId}, 'registration', ${aId})`;
 
   // Tenant A context sees only A's rows.
   const aRows = await appTransaction(async (tx) => {
@@ -104,18 +107,38 @@ try {
   const noneRows = await app`select practice_id from clients where practice_id in (${aId}, ${bId})`;
   check("no tenant context → zero rows", noneRows.length === 0);
 
+  // Product analytics is system-only even with a valid tenant context. The
+  // public ingestion route writes under an explicit system transaction.
+  const hiddenFunnelRows = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id from funnel_events where id = ${funnelEventId}`;
+  });
+  check(
+    "tenant context cannot read system-only funnel events",
+    hiddenFunnelRows.length === 0,
+  );
+
   // System bypass sees both (for cron / platform admin).
   const allRows = await appTransaction(async (tx) => {
     await tx`select set_config('app.rls_bypass', 'on', true)`;
     return tx`select practice_id from clients where practice_id in (${aId}, ${bId})`;
   });
   check("system bypass sees both practices", allRows.length === 2);
+  const systemFunnelRows = await appTransaction(async (tx) => {
+    await tx`select set_config('app.rls_bypass', 'on', true)`;
+    return tx`select id from funnel_events where id = ${funnelEventId}`;
+  });
+  check(
+    "system bypass can read funnel events",
+    systemFunnelRows.length === 1,
+  );
 } catch (err) {
   console.error("Unexpected error:", err);
   failures++;
 } finally {
   // Cleanup (as owner).
   await owner`delete from invoice_adjustments where invoice_id in (${aInvoice}, ${bInvoice})`;
+  await owner`delete from funnel_events where id = ${funnelEventId}`;
   await owner`delete from invoices where id in (${aInvoice}, ${bInvoice})`;
   await owner`delete from clients where practice_id in (${aId}, ${bId})`;
   await owner`delete from practices where id in (${aId}, ${bId})`;

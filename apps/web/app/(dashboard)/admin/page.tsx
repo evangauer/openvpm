@@ -60,6 +60,8 @@ export default function AdminPage() {
     });
   const { data: funnel, error: funnelError } =
     trpc.admin.activationFunnel.useQuery({ days: 30 }, { retry: false });
+  const { data: journey, error: journeyError } =
+    trpc.admin.journeyFunnel.useQuery({ days: 30 }, { retry: false });
   const [extendTrialError, setExtendTrialError] = useState<string | null>(null);
   const [analyticsError, setAnalyticsError] = useState<string | null>(null);
   const extendTrial = trpc.admin.extendTrial.useMutation({
@@ -150,6 +152,95 @@ export default function AdminPage() {
       </div>
 
       {/* Trial funnel */}
+      <div className="mt-6 rounded-lg border border-border bg-card p-5">
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <TrendingUp className="h-4 w-4" />
+          <span className="text-sm">Production journey cohorts (30 days)</span>
+        </div>
+        {journey ? (
+          <>
+            <div className="mt-3 grid gap-4 sm:grid-cols-3 xl:grid-cols-6">
+              {[
+                ["Visit", journey.totals.visitors, null],
+                ["Demo", journey.totals.demos, journey.totals.demoRate],
+                ["Registered", journey.totals.registrations, journey.totals.registrationRate],
+                ["Activated", journey.totals.activated, journey.totals.activationRate],
+                ["Card added", journey.totals.cardAdded, journey.totals.cardRate],
+                ["Paid", journey.totals.paid, journey.totals.paidRate],
+              ].map(([label, value, rate]) => (
+                <div key={String(label)}>
+                  <p className="text-sm text-muted-foreground">{label}</p>
+                  <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
+                    {value}
+                    {typeof rate === "number" ? (
+                      <span className="ml-2 text-sm font-normal text-muted-foreground">
+                        {formatPct(rate)}
+                      </span>
+                    ) : null}
+                  </p>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-5 grid gap-2 text-sm text-muted-foreground sm:grid-cols-2 xl:grid-cols-6">
+              <p>Left before trying: {journey.totals.leftBeforeTrying}</p>
+              <p>Demo without signup: {journey.totals.demoAbandoned}</p>
+              <p>Signup without activation: {journey.totals.registrationAbandoned}</p>
+              <p>Activated without card: {journey.totals.activationAbandoned}</p>
+              <p>Card without payment: {journey.totals.cardAbandoned}</p>
+              <p>Client errors: {journey.totals.clientErrors}</p>
+            </div>
+
+            <div className="mt-5 overflow-x-auto rounded-md border border-border">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border bg-muted/30 text-left text-muted-foreground">
+                    <th className="px-3 py-2 font-medium">Cohort week</th>
+                    <th className="px-3 py-2 font-medium">Visit</th>
+                    <th className="px-3 py-2 font-medium">Demo</th>
+                    <th className="px-3 py-2 font-medium">Registered</th>
+                    <th className="px-3 py-2 font-medium">Activated</th>
+                    <th className="px-3 py-2 font-medium">Card</th>
+                    <th className="px-3 py-2 font-medium">Paid</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {journey.weeks.map((week) => (
+                    <tr key={week.weekStart}>
+                      <td className="px-3 py-2 font-medium">{week.weekStart}</td>
+                      <td className="px-3 py-2 tabular-nums">{week.visitors}</td>
+                      <td className="px-3 py-2 tabular-nums">{week.demos}</td>
+                      <td className="px-3 py-2 tabular-nums">{week.registrations}</td>
+                      <td className="px-3 py-2 tabular-nums">{week.activated}</td>
+                      <td className="px-3 py-2 tabular-nums">{week.cardAdded}</td>
+                      <td className="px-3 py-2 tabular-nums">{week.paid}</td>
+                    </tr>
+                  ))}
+                  {journey.weeks.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">
+                        No first-party journey cohorts recorded yet.
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+            <p className="mt-3 text-xs text-muted-foreground">
+              Anonymous first touch is carried across openvpm.com, demo, and signup.
+              Rates are visit-to-step for demo and registration, then step-to-step.
+              {journey.totals.unattributedRegistrations > 0
+                ? ` ${journey.totals.unattributedRegistrations} registration(s) could not be matched to a first touch.`
+                : ""}
+            </p>
+          </>
+        ) : (
+          <p className="mt-3 text-sm text-muted-foreground">
+            {journeyError ? "Could not load journey cohorts." : "Loading journey cohorts..."}
+          </p>
+        )}
+      </div>
+
       <div className="mt-6 rounded-lg border border-border bg-card p-5">
         <div className="flex items-center gap-2 text-muted-foreground">
           <TrendingUp className="h-4 w-4" />

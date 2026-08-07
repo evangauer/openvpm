@@ -43,6 +43,16 @@ describe("buildCloudSignupUrl", () => {
     );
   });
 
+  it("carries the anonymous visitor id into registration", () => {
+    const url = buildCloudSignupUrl({
+      visitorId: "123E4567-E89B-42D3-A456-426614174000",
+    });
+    const params = new URLSearchParams(url.slice("/register?".length));
+    expect(params.get("funnel_id")).toBe(
+      "123e4567-e89b-42d3-a456-426614174000"
+    );
+  });
+
   it("falls back to relative path when origin is invalid", () => {
     const url = buildCloudSignupUrl({
       appOrigin: "not a url",

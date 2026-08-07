@@ -1,6 +1,7 @@
 "use client";
 
 import { fetchWithClientTimeout } from "@/lib/client-fetch";
+import { getFunnelVisitorId } from "@/lib/funnel-visitor";
 
 export function reportClientError(
   source: string,
@@ -13,6 +14,7 @@ export function reportClientError(
     stack: error.stack ?? null,
     digest: error.digest ?? null,
     path: typeof window !== "undefined" ? window.location.pathname : null,
+    anonymousId: getFunnelVisitorId(),
   });
 
   if (typeof navigator !== "undefined" && "sendBeacon" in navigator) {

@@ -135,6 +135,14 @@ CREATE POLICY system_only ON demo_accesses
   USING (app_rls_bypass())
   WITH CHECK (app_rls_bypass());
 
+-- Product-funnel events are global operational telemetry. Browser writes go
+-- through the bounded ingestion route; tenant sessions never query it.
+ALTER TABLE funnel_events ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS system_only ON funnel_events;
+CREATE POLICY system_only ON funnel_events
+  USING (app_rls_bypass())
+  WITH CHECK (app_rls_bypass());
+
 -- 7) Auth-infra tables are NOT tenant-scoped (tokens are used pre-login; the
 --    NextAuth session/verification tables are unused under the JWT strategy). We
 --    don't put tenant RLS on them; instead we revoke the Supabase data-API roles
@@ -148,7 +156,7 @@ BEGIN
   FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format(
-        'REVOKE ALL ON auth_tokens, demo_accesses, sessions, verification_tokens FROM %I', r
+        'REVOKE ALL ON auth_tokens, demo_accesses, funnel_events, sessions, verification_tokens FROM %I', r
       );
     END IF;
   END LOOP;

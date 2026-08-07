@@ -9,6 +9,10 @@ import {
   computeActivationFunnel,
   type ActivationFunnel,
 } from "@/lib/admin/activation-funnel";
+import {
+  computeJourneyFunnel,
+  type JourneyFunnel,
+} from "@/lib/admin/journey-funnel";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -33,13 +37,15 @@ export async function GET(request: Request) {
       return NextResponse.json({ recipients: 0, sent: 0, failed: 0 });
     }
 
-    const [week, month] = await Promise.all([
+    const [week, month, journeyWeek, journeyMonth] = await Promise.all([
       computeActivationFunnel(db, 7),
       computeActivationFunnel(db, 30),
+      computeJourneyFunnel(db, 7),
+      computeJourneyFunnel(db, 30),
     ]);
 
     const subject = `OpenVPM trial funnel: ${week.totals.signups} signups, ${week.totals.activated} activated this week`;
-    const html = digestHtml(week, month);
+    const html = digestHtml(week, month, journeyWeek, journeyMonth);
 
     let sent = 0;
     let failed = 0;
@@ -119,7 +125,48 @@ function funnelSection(title: string, funnel: ActivationFunnel): string {
 </table>`;
 }
 
-function digestHtml(week: ActivationFunnel, month: ActivationFunnel): string {
+function journeySection(title: string, funnel: JourneyFunnel): string {
+  const {
+    visitors,
+    demos,
+    registrations,
+    activated,
+    cardAdded,
+    paid,
+    demoRate,
+    registrationRate,
+    activationRate,
+    cardRate,
+    paidRate,
+  } = funnel.totals;
+  return `<h2 style="margin:24px 0 8px;font-size:16px;color:#111827;">${title}</h2>
+<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;">
+  <tr style="text-align:left;color:#6b7280;font-size:13px;">
+    <th style="padding:4px 12px 4px 0;font-weight:500;">Visit</th>
+    <th style="padding:4px 12px 4px 0;font-weight:500;">Demo</th>
+    <th style="padding:4px 12px 4px 0;font-weight:500;">Registered</th>
+    <th style="padding:4px 12px 4px 0;font-weight:500;">Activated</th>
+    <th style="padding:4px 12px 4px 0;font-weight:500;">Card</th>
+    <th style="padding:4px 0;font-weight:500;">Paid</th>
+  </tr>
+  <tr style="font-size:20px;color:#111827;font-weight:600;">
+    <td style="padding:2px 12px 2px 0;">${visitors}</td>
+    <td style="padding:2px 12px 2px 0;">${demos} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(demoRate)}</span></td>
+    <td style="padding:2px 12px 2px 0;">${registrations} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(registrationRate)}</span></td>
+    <td style="padding:2px 12px 2px 0;">${activated} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(activationRate)}</span></td>
+    <td style="padding:2px 12px 2px 0;">${cardAdded} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(cardRate)}</span></td>
+    <td style="padding:2px 0;">${paid} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(paidRate)}</span></td>
+  </tr>
+</table>
+<p style="margin:8px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Left before trying: ${funnel.totals.leftBeforeTrying} · Demo without signup: ${funnel.totals.demoAbandoned} · Signup without activation: ${funnel.totals.registrationAbandoned} · Activated without card: ${funnel.totals.activationAbandoned} · Card without payment: ${funnel.totals.cardAbandoned} · Client errors: ${funnel.totals.clientErrors}</p>`;
+}
+
+function digestHtml(
+  week: ActivationFunnel,
+  month: ActivationFunnel,
+  journeyWeek: JourneyFunnel,
+  journeyMonth: JourneyFunnel
+): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -139,6 +186,8 @@ function digestHtml(week: ActivationFunnel, month: ActivationFunnel): string {
           </tr>
           <tr>
             <td style="padding:32px;">
+              ${journeySection("Production journey · past 7 days", journeyWeek)}
+              ${journeySection("Production journey · past 30 days", journeyMonth)}
               ${funnelSection("Past 7 days", week)}
               ${funnelSection("Past 30 days", month)}
               <p style="margin:24px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Activated = added a real client and booked a real visit. Billing started = a Stripe subscription exists. Paid active = billing status is active. These are signup-cohort rates; demo data never counts.</p>

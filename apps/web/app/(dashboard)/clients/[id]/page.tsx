@@ -367,7 +367,12 @@ export default function ClientDetailPage() {
               canManageClientDetails
                 ? {
                     label: "Add patient",
-                    onClick: () => router.push("/patients/new"),
+                    onClick: () => {
+                      const ownerName = `${client.firstName} ${client.lastName}`;
+                      router.push(
+                        `/patients/new?clientId=${encodeURIComponent(client.id)}&clientName=${encodeURIComponent(ownerName)}`
+                      );
+                    },
                     icon: Plus,
                   }
                 : undefined

@@ -4,6 +4,7 @@ export interface SignupAcquisition {
   source?: string;
   medium?: string;
   campaign?: string;
+  funnelId?: string;
 }
 
 type SearchParamsReader = {
@@ -23,6 +24,19 @@ export function acquisitionFromSearchParams(
   const source = clean(params.get("source")) ?? clean(params.get("utm_source"));
   const medium = clean(params.get("utm_medium"));
   const campaign = clean(params.get("utm_campaign"));
-  if (!source && !medium && !campaign) return undefined;
-  return { source, medium, campaign };
+  const funnelId = clean(params.get("funnel_id"));
+  const validFunnelId =
+    funnelId &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      funnelId
+    )
+      ? funnelId.toLowerCase()
+      : undefined;
+  if (!source && !medium && !campaign && !validFunnelId) return undefined;
+  return {
+    source,
+    medium,
+    campaign,
+    ...(validFunnelId ? { funnelId: validFunnelId } : {}),
+  };
 }

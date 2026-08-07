@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActivationFunnel } from "@/lib/admin/activation-funnel";
+import type { JourneyFunnel } from "@/lib/admin/journey-funnel";
 
 const mocks = vi.hoisted(() => ({
   db: {},
@@ -8,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   reportCronHeartbeat: vi.fn(async () => undefined),
   sendEmail: vi.fn(async () => ({ success: true, id: "email_123" })),
   computeActivationFunnel: vi.fn(),
+  computeJourneyFunnel: vi.fn(),
 }));
 
 vi.mock("@openpims/db/client", () => ({
@@ -34,6 +36,10 @@ vi.mock("@/lib/admin/activation-funnel", () => ({
   computeActivationFunnel: mocks.computeActivationFunnel,
 }));
 
+vi.mock("@/lib/admin/journey-funnel", () => ({
+  computeJourneyFunnel: mocks.computeJourneyFunnel,
+}));
+
 const { GET } = await import("./route");
 
 function funnel(days: number, totals: Partial<ActivationFunnel["totals"]> = {}): ActivationFunnel {
@@ -53,6 +59,33 @@ function funnel(days: number, totals: Partial<ActivationFunnel["totals"]> = {}):
       billingStartRate: 0.4,
       conversionRate: 0.2,
       ...totals,
+    },
+  };
+}
+
+function journey(days: number): JourneyFunnel {
+  return {
+    days,
+    weeks: [],
+    totals: {
+      visitors: 20,
+      demos: 8,
+      registrations: 5,
+      activated: 2,
+      cardAdded: 1,
+      paid: 1,
+      leftBeforeTrying: 12,
+      demoAbandoned: 3,
+      registrationAbandoned: 3,
+      activationAbandoned: 1,
+      cardAbandoned: 0,
+      unattributedRegistrations: 0,
+      clientErrors: 2,
+      demoRate: 0.4,
+      registrationRate: 0.25,
+      activationRate: 0.4,
+      cardRate: 0.5,
+      paidRate: 1,
     },
   };
 }
@@ -111,6 +144,9 @@ describe("activation digest cron", () => {
     mocks.computeActivationFunnel.mockImplementation(
       async (_db: unknown, days: number) => funnel(days)
     );
+    mocks.computeJourneyFunnel.mockImplementation(
+      async (_db: unknown, days: number) => journey(days)
+    );
 
     const response = await GET(
       new Request("https://openvpm.test/api/cron/activation-digest")
@@ -123,6 +159,8 @@ describe("activation digest cron", () => {
     });
     expect(mocks.computeActivationFunnel).toHaveBeenCalledWith(mocks.db, 7);
     expect(mocks.computeActivationFunnel).toHaveBeenCalledWith(mocks.db, 30);
+    expect(mocks.computeJourneyFunnel).toHaveBeenCalledWith(mocks.db, 7);
+    expect(mocks.computeJourneyFunnel).toHaveBeenCalledWith(mocks.db, 30);
     expect(mocks.sendEmail).toHaveBeenCalledTimes(2);
     expect(mocks.sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -134,6 +172,11 @@ describe("activation digest cron", () => {
     expect(mocks.sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({
         html: expect.stringContaining("Billing started"),
+      })
+    );
+    expect(mocks.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        html: expect.stringContaining("Production journey · past 30 days"),
       })
     );
     expect(mocks.sendEmail).toHaveBeenCalledWith(
@@ -152,6 +195,9 @@ describe("activation digest cron", () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "founder@openvpm.com");
     mocks.computeActivationFunnel.mockImplementation(
       async (_db: unknown, days: number) => funnel(days)
+    );
+    mocks.computeJourneyFunnel.mockImplementation(
+      async (_db: unknown, days: number) => journey(days)
     );
     mocks.sendEmail.mockResolvedValueOnce({
       success: false,

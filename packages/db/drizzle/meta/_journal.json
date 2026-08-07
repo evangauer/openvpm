@@ -246,6 +246,13 @@
       "when": 1786059510075,
       "tag": "0034_stripe_event_endpoint_scope",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1786082165007,
+      "tag": "0035_awesome_reavers",
+      "breakpoints": true
     }
   ]
 }

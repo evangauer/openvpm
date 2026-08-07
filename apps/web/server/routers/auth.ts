@@ -34,6 +34,7 @@ import {
   AUTH_PRACTICE_NAME_MAX_LENGTH,
 } from "@/lib/auth-input-policy";
 import { ACQUISITION_VALUE_MAX_LENGTH } from "@/lib/acquisition";
+import { recordRegistration } from "@/lib/funnel-events-server";
 
 /** Display name from explicit input, else derived from the email local-part. */
 function deriveName(name: string | undefined, email: string): string {
@@ -121,6 +122,7 @@ const signupAcquisitionSchema = z
     source: acquisitionValueSchema.optional(),
     medium: acquisitionValueSchema.optional(),
     campaign: acquisitionValueSchema.optional(),
+    funnelId: z.string().uuid().optional(),
   })
   .strict();
 
@@ -370,6 +372,14 @@ export const authRouter = createRouter({
           .update(practices)
           .set({ settings: practiceSettings })
           .where(eq(practices.id, practice.id));
+      }
+
+      // Durable, privacy-safe registration stage. Non-fatal so telemetry can
+      // never turn a successful account creation into a failed signup.
+      try {
+        await recordRegistration(ctx.db, practice.id);
+      } catch (err) {
+        console.error("[register] funnel event failed:", err);
       }
 
       // On the hosted service, request email verification without blocking the

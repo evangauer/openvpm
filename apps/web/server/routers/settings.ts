@@ -251,6 +251,7 @@ interface PracticeSettings {
     invoiceIds?: string[];
     invoiceItemIds?: string[];
     communicationIds?: string[];
+    productIds?: string[];
   };
   onboardingDraft?: {
     logoName?: string;
@@ -1074,6 +1075,17 @@ export const settingsRouter = createRouter({
       const now = new Date();
       // Soft-delete the clinical and billing records first, then the
       // appointments/patients/clients they hang off of.
+      if (demo.productIds?.length) {
+        await ctx.db
+          .update(products)
+          .set({ deletedAt: now })
+          .where(
+            and(
+              eq(products.practiceId, ctx.practiceId),
+              inArray(products.id, demo.productIds)
+            )
+          );
+      }
       if (demo.communicationIds?.length) {
         await ctx.db
           .update(communications)

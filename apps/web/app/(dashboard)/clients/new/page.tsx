@@ -74,6 +74,7 @@ export default function NewClientPage() {
 
 function NewClientForm() {
   const router = useRouter();
+  const utils = trpc.useUtils();
   const [form, setForm] = useState({
     firstName: "",
     lastName: "",
@@ -88,9 +89,10 @@ function NewClientForm() {
   const [error, setError] = useState<string | null>(null);
 
   const createClient = trpc.clients.create.useMutation({
-    onSuccess: () => {
+    onSuccess: async (client) => {
+      await utils.clients.list.invalidate();
       toast.success("Client created");
-      router.push("/clients");
+      router.push(`/clients/${client.id}`);
     },
     onError: (err) => {
       toast.error(err.message);

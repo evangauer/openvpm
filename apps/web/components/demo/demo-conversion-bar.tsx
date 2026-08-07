@@ -8,6 +8,7 @@ import {
   isDemoMode,
 } from "@/lib/funnel-analytics";
 import { trackFunnelEvent } from "@/lib/track-funnel-event";
+import { useFunnelVisitorId } from "@/lib/funnel-visitor";
 import { usePathname } from "next/navigation";
 
 /**
@@ -16,6 +17,7 @@ import { usePathname } from "next/navigation";
  */
 export function DemoConversionBar() {
   const pathname = usePathname();
+  const visitorId = useFunnelVisitorId();
   if (!isDemoMode()) return null;
 
   const tool = funnelToolFromPath(pathname);
@@ -25,6 +27,7 @@ export function DemoConversionBar() {
     source: "demo",
     medium: "product",
     campaign: `demo_${tool}`,
+    visitorId,
   });
 
   return (

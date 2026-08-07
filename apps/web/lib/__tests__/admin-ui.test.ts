@@ -44,6 +44,20 @@ describe("admin UI", () => {
     expect(source).toContain("Could not load the funnel.");
   });
 
+  it("shows production journey cohorts and abandonment counts", () => {
+    expect(source).toContain(
+      "trpc.admin.journeyFunnel.useQuery({ days: 30 }, { retry: false })"
+    );
+    expect(source).toContain("Production journey cohorts (30 days)");
+    expect(source).toContain("journey.totals.leftBeforeTrying");
+    expect(source).toContain("journey.totals.demoAbandoned");
+    expect(source).toContain("journey.totals.registrationAbandoned");
+    expect(source).toContain("journey.totals.activationAbandoned");
+    expect(source).toContain("journey.totals.cardAbandoned");
+    expect(source).toContain("journey.totals.clientErrors");
+    expect(source).toContain("journey.weeks.map");
+  });
+
   it("shows trial source and setup stage for diagnosing individual drop-off", () => {
     expect(source).toContain("{p.acquisitionSource}");
     expect(source).toContain("{p.onboardingIntent}");

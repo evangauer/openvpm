@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  db: {},
   captureException: vi.fn(async () => undefined),
+  insertFunnelEvent: vi.fn(async () => true),
+  withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
+    fn({})
+  ),
   rateLimit: vi.fn(async () => ({
     success: true,
     remaining: 29,
@@ -20,6 +25,14 @@ const mocks = vi.hoisted(() => ({
       "X-RateLimit-Reset": result.resetAt.toISOString(),
     })
   ),
+}));
+
+vi.mock("@openpims/db/client", () => ({ db: mocks.db }));
+
+vi.mock("@/lib/tenant-db", () => ({ withSystem: mocks.withSystem }));
+
+vi.mock("@/lib/funnel-events-server", () => ({
+  insertFunnelEvent: mocks.insertFunnelEvent,
 }));
 
 vi.mock("@/lib/error-tracking", () => ({
@@ -78,7 +91,8 @@ describe("POST /api/error-report", () => {
           message: "boom",
           stack: "stack",
           digest: "digest",
-          path: "/settings",
+          path: "/patients/323e4567-e89b-42d3-a456-426614174000?tab=records",
+          anonymousId: "123e4567-e89b-42d3-a456-426614174000",
         },
         { "x-forwarded-for": "203.0.113.10, 198.51.100.4" }
       )
@@ -96,8 +110,18 @@ describe("POST /api/error-report", () => {
       message: "boom",
       stack: "stack",
       digest: "digest",
-      path: "/settings",
+      path: "/patients/323e4567-e89b-42d3-a456-426614174000?tab=records",
     });
+    expect(mocks.insertFunnelEvent).toHaveBeenCalledWith(
+      {},
+      {
+        eventName: "client_error",
+        anonymousId: "123e4567-e89b-42d3-a456-426614174000",
+        source: "app-error",
+        path: "/patients/:id",
+        metadata: { digest: "digest" },
+      }
+    );
   });
 
   it("rejects over-limit clients without forwarding the report", async () => {

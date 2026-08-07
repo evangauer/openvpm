@@ -6,6 +6,7 @@ import { db } from "@openpims/db/client";
 import { practices, users, clients, patients, locations } from "@openpims/db";
 import { isPlatformAdmin } from "@/lib/platform-admin";
 import { computeActivationFunnel } from "@/lib/admin/activation-funnel";
+import { computeJourneyFunnel } from "@/lib/admin/journey-funnel";
 import {
   CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD,
   CLOUD_SEAT_UNIT_PRICE_MONTHLY_USD,
@@ -285,4 +286,13 @@ export const adminRouter = createRouter({
         .optional()
     )
     .query(({ input }) => computeActivationFunnel(db, input?.days ?? 30)),
+
+  /** Privacy-safe first-touch cohorts spanning visit through paid. */
+  journeyFunnel: platformAdminProcedure
+    .input(
+      z
+        .object({ days: z.number().int().min(1).max(365).default(30) })
+        .optional()
+    )
+    .query(({ input }) => computeJourneyFunnel(db, input?.days ?? 30)),
 });

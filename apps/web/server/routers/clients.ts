@@ -126,6 +126,10 @@ export const clientsRouter = createRouter({
           or(
             ilike(clients.firstName, `%${input.search}%`),
             ilike(clients.lastName, `%${input.search}%`),
+            ilike(
+              sql`concat_ws(' ', ${clients.firstName}, ${clients.lastName})`,
+              `%${input.search}%`
+            ),
             ilike(clients.email, `%${input.search}%`),
             ilike(clients.phone, `%${input.search}%`)
           )!
@@ -187,6 +191,10 @@ export const clientsRouter = createRouter({
             or(
               ilike(clients.firstName, `%${input.query}%`),
               ilike(clients.lastName, `%${input.query}%`),
+              ilike(
+                sql`concat_ws(' ', ${clients.firstName}, ${clients.lastName})`,
+                `%${input.query}%`
+              ),
               ilike(clients.email, `%${input.query}%`),
               ilike(clients.phone, `%${input.query}%`)
             )

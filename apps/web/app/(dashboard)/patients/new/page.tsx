@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { AlertCircle, ArrowLeft, Check, Loader2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
@@ -91,6 +91,7 @@ function canManagePatientFormRole(role?: string | null): boolean {
 
 function NewPatientForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [form, setForm] = useState({
     clientId: "",
     name: "",
@@ -105,6 +106,8 @@ function NewPatientForm() {
   const [showClientDropdown, setShowClientDropdown] = useState(false);
   const [selectedClientName, setSelectedClientName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const preselectedClientId = searchParams.get("clientId") ?? "";
+  const preselectedClientName = (searchParams.get("clientName") ?? "").trim();
   const trimmedClientSearch = clientSearch.trim();
   const canSearchClients = isClientSearchInputValid(clientSearch);
 
@@ -123,10 +126,28 @@ function NewPatientForm() {
     !clientSearchError &&
     !clientResults;
 
+  useEffect(() => {
+    if (
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        preselectedClientId
+      ) ||
+      !preselectedClientName ||
+      preselectedClientName.length > CLIENT_SEARCH_MAX_LENGTH
+    ) {
+      return;
+    }
+    setForm((current) =>
+      current.clientId
+        ? current
+        : { ...current, clientId: preselectedClientId }
+    );
+    setSelectedClientName((current) => current || preselectedClientName);
+  }, [preselectedClientId, preselectedClientName]);
+
   const createPatient = trpc.patients.create.useMutation({
-    onSuccess: () => {
+    onSuccess: (patient) => {
       toast.success("Patient created");
-      router.push("/patients");
+      router.push(`/patients/${patient.id}`);
     },
     onError: (err) => {
       toast.error(err.message);

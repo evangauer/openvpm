@@ -47,6 +47,7 @@ import {
 } from "@/lib/scheduling/appointment-status";
 import { generateCalendarFeedToken } from "@/lib/calendar/tokens";
 import { appBaseUrl } from "@/lib/app-url";
+import { recordActivationIfReached } from "@/lib/funnel-events-server";
 
 type AppointmentsContext = {
   db: Database;
@@ -725,6 +726,11 @@ export const appointmentsRouter = createRouter({
         "appointment.created",
         appointmentCreatedWebhookPayload(appt!, "dashboard")
       );
+      try {
+        await recordActivationIfReached(ctx.db, ctx.practiceId);
+      } catch (err) {
+        console.error("[appointments.create] funnel event failed:", err);
+      }
       return appt!;
     }),
 

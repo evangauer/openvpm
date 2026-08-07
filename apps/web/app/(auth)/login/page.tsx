@@ -17,6 +17,7 @@ import {
   FUNNEL_EVENTS,
 } from "@/lib/funnel-analytics";
 import { trackFunnelEvent } from "@/lib/track-funnel-event";
+import { useFunnelVisitorId } from "@/lib/funnel-visitor";
 
 const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE?.trim() === "true";
 
@@ -49,6 +50,7 @@ function safeNextPath(value: string | null): string {
 function LoginPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const visitorId = useFunnelVisitorId();
   const nextPath = safeNextPath(searchParams.get("next"));
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -244,6 +246,7 @@ function LoginPageInner() {
                 source: "demo",
                 medium: "product",
                 campaign: "demo_login",
+                visitorId,
               })}
               onClick={() =>
                 trackFunnelEvent(FUNNEL_EVENTS.demoCtaStartClinic, {

@@ -78,6 +78,7 @@ export type CloudSignupUrlOptions = {
   source?: string;
   medium?: string;
   campaign?: string;
+  visitorId?: string | null;
 };
 
 /**
@@ -97,6 +98,15 @@ export function buildCloudSignupUrl(opts: CloudSignupUrlOptions = {}): string {
   params.set("utm_source", source);
   params.set("utm_medium", medium);
   params.set("utm_campaign", campaign);
+  const visitorId = cleanParam(opts.visitorId);
+  if (
+    visitorId &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      visitorId
+    )
+  ) {
+    params.set("funnel_id", visitorId.toLowerCase());
+  }
 
   const path = `/register?${params.toString()}`;
   const origin = opts.appOrigin?.trim().replace(/\/$/, "");

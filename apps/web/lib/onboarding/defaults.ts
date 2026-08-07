@@ -14,6 +14,7 @@ import {
   invoices,
   invoiceItems,
   communications,
+  products,
 } from "@openpims/db";
 
 /**
@@ -122,6 +123,7 @@ export interface DemoDataIds {
   invoiceIds: string[];
   invoiceItemIds: string[];
   communicationIds: string[];
+  productIds: string[];
 }
 
 /**
@@ -382,6 +384,34 @@ export async function seedDemoData(
     ])
     .returning({ id: vaccinationRecords.id });
 
+  // A tiny medication shelf makes the prescription and inventory workflows
+  // usable on a first visit instead of presenting an empty product selector.
+  const insertedProducts = await db
+    .insert(products)
+    .values([
+      {
+        practiceId: opts.practiceId,
+        name: "Carprofen 75 mg tablets",
+        sku: "SAMPLE-CARP-75",
+        category: "Medication",
+        unitPrice: "1.25",
+        costPrice: "0.52",
+        stockQuantity: 100,
+        reorderPoint: 20,
+      },
+      {
+        practiceId: opts.practiceId,
+        name: "Amoxicillin 250 mg capsules",
+        sku: "SAMPLE-AMOX-250",
+        category: "Medication",
+        unitPrice: "0.85",
+        costPrice: "0.31",
+        stockQuantity: 60,
+        reorderPoint: 15,
+      },
+    ])
+    .returning({ id: products.id });
+
   // One problem-list entry so that tab shows content too.
   const insertedProblems = await db
     .insert(problemList)
@@ -520,5 +550,6 @@ export async function seedDemoData(
     invoiceIds,
     invoiceItemIds,
     communicationIds: insertedComms.map((c) => c.id),
+    productIds: insertedProducts.map((product) => product.id),
   };
 }

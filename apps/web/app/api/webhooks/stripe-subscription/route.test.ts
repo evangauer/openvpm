@@ -43,6 +43,7 @@ const mocks = vi.hoisted(() => {
     ),
     sendPaymentReceiptEmail: vi.fn(async () => undefined),
     sendPaymentFailedEmail: vi.fn(async () => undefined),
+    recordPracticeFunnelStage: vi.fn(async () => true),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
       fn(db)
     ),
@@ -85,6 +86,10 @@ vi.mock("@/lib/email", () => ({
 
 vi.mock("@/lib/email-lifecycle", () => ({
   sendLifecycleEmail: mocks.sendLifecycleEmail,
+}));
+
+vi.mock("@/lib/funnel-events-server", () => ({
+  recordPracticeFunnelStage: mocks.recordPracticeFunnelStage,
 }));
 
 const { POST } = await import("./route");
@@ -504,6 +509,18 @@ describe("Stripe subscription webhook", () => {
         billingStatus: "active",
         stripeSubscriptionId: SUBSCRIPTION_ID,
       }),
+    );
+    expect(mocks.recordPracticeFunnelStage).toHaveBeenCalledWith(
+      mocks.db,
+      PRACTICE_ID,
+      "card_added",
+      { stripeStatus: "active" },
+    );
+    expect(mocks.recordPracticeFunnelStage).toHaveBeenCalledWith(
+      mocks.db,
+      PRACTICE_ID,
+      "paid",
+      { stripeStatus: "active" },
     );
     expect(mocks.sendPaymentReceiptEmail).toHaveBeenCalledOnce();
   });

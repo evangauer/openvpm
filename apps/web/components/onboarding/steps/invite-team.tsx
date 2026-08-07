@@ -122,7 +122,7 @@ export function InviteTeamStep({
     <div className="space-y-5">
       <p className="text-sm leading-6 text-slate-600">
         Add the people you work with. We will email them a link to set up their
-        own login. You only pay for staff who actually use it.
+        own login. Every plan includes unlimited staff.
       </p>
 
       <div className="space-y-3">

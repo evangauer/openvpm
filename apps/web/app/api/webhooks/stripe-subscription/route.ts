@@ -20,6 +20,7 @@ import {
   STRIPE_WEBHOOK_BODY_MAX_BYTES,
   stripeWebhookContentLengthTooLarge,
 } from "@/lib/stripe-webhook-limits";
+import { recordPracticeFunnelStage } from "@/lib/funnel-events-server";
 
 function payloadTooLargeResponse() {
   return NextResponse.json(
@@ -263,12 +264,13 @@ async function applySubscription(
       ?.map((item) => tierForStripePrice(item.price?.id))
       .find(Boolean) ?? null;
   const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer?.id;
+  const billingStatus = normalizeBillingStatus(sub.status);
 
   const [practice] = await tx
     .update(practices)
     .set({
       ...(tier ? { subscriptionTier: tier } : {}),
-      billingStatus: normalizeBillingStatus(sub.status),
+      billingStatus,
       stripeSubscriptionId: sub.id,
       ...(customerId ? { stripeCustomerId: customerId } : {}),
       trialEndsAt: sub.trial_end ? new Date(sub.trial_end * 1000) : null,
@@ -288,6 +290,20 @@ async function applySubscription(
     practiceId: practice.id,
     subscriptionId: sub.id,
   });
+  try {
+    await recordPracticeFunnelStage(tx, practice.id, "card_added", {
+      stripeStatus: sub.status,
+    });
+    if (billingStatus === "active") {
+      await recordPracticeFunnelStage(tx, practice.id, "paid", {
+        stripeStatus: sub.status,
+      });
+    }
+  } catch (err) {
+    // Billing reconciliation is authoritative; telemetry must never make the
+    // signed Stripe webhook fail or roll back subscription access.
+    console.error("[Stripe Subscription Webhook] funnel event failed:", err);
+  }
 }
 
 /**

@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useMemo } from "react";
 import { useSession } from "next-auth/react";
+import Link from "next/link";
 import {
   ChevronLeft,
   ChevronRight,
@@ -1101,12 +1102,18 @@ function AppointmentDetailPopover({
         )}
 
         {/* Actions */}
-        {(visibleStatusActions.length > 0 ||
+        {(appointment.patientId ||
+          visibleStatusActions.length > 0 ||
           (canManageSchedule && canMoveAppointment) ||
           (canManageSchedule && appointment.recurringSeriesId) ||
           (canSendReminders &&
             (current === "scheduled" || current === "confirmed"))) && (
           <div className="flex flex-wrap gap-2 border-t border-border px-4 py-3">
+            {appointment.patientId && (
+              <Button size="sm" variant="outline" asChild>
+                <Link href={`/patients/${appointment.patientId}`}>View chart</Link>
+              </Button>
+            )}
             {canManageSchedule && canMoveAppointment && (
               <Button
                 size="sm"
