@@ -1,4 +1,12 @@
-import { pgTable, uuid, varchar, integer, timestamp, index } from "drizzle-orm/pg-core";
+import {
+  pgTable,
+  uuid,
+  varchar,
+  integer,
+  timestamp,
+  index,
+  primaryKey,
+} from "drizzle-orm/pg-core";
 import { baseColumns } from "./common";
 import { practices } from "./practices";
 
@@ -36,17 +44,26 @@ export const usageRecords = pgTable(
 
 /**
  * Durable de-dup ledger for Stripe webhooks. Cross-tenant/system table: webhook
- * handlers insert an event id inside the same transaction as side effects; a
- * duplicate insert means the event has already been processed.
+ * handlers insert an event id + endpoint inside the same transaction as side
+ * effects; a duplicate pair means that endpoint already processed the event.
  */
-export const stripeEvents = pgTable("stripe_events", {
-  eventId: varchar("event_id", { length: 128 }).primaryKey(),
-  endpoint: varchar("endpoint", { length: 64 }).notNull(),
-  eventType: varchar("event_type", { length: 128 }).notNull(),
-  processedAt: timestamp("processed_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const stripeEvents = pgTable(
+  "stripe_events",
+  {
+    eventId: varchar("event_id", { length: 128 }).notNull(),
+    endpoint: varchar("endpoint", { length: 64 }).notNull(),
+    eventType: varchar("event_type", { length: 128 }).notNull(),
+    processedAt: timestamp("processed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    // checkout.session.completed is intentionally delivered to both the
+    // subscription and client-invoice endpoints. Each endpoint must claim it
+    // independently; redelivery to the same endpoint remains idempotent.
+    pk: primaryKey({ columns: [table.eventId, table.endpoint] }),
+  })
+);
 
 /**
  * Durable fixed-window rate-limit buckets. Global/system state because many

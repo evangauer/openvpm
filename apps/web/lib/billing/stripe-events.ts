@@ -4,8 +4,9 @@ import { stripeEvents } from "@openpims/db";
 /**
  * Claim a Stripe webhook event inside the caller's transaction.
  *
- * Returns false for duplicate event ids, allowing webhook handlers to skip
- * money/subscription side effects without treating Stripe redelivery as an error.
+ * Returns false for a duplicate event-id/endpoint pair, allowing each Stripe
+ * surface to inspect shared event types independently while still making
+ * redelivery to the same endpoint idempotent.
  */
 export async function claimStripeEvent(
   db: Database,

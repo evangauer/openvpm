@@ -209,6 +209,11 @@ Subscribe to:
 
 Store this endpoint secret as `STRIPE_SUBSCRIPTION_WEBHOOK_SECRET`.
 
+`checkout.session.completed` is shared by the platform invoice and hosted
+subscription endpoints. OpenVPM de-duplicates it per endpoint, so both webhook
+endpoints must remain configured; each handler ignores sessions that belong to
+the other billing surface.
+
 ## Health Check
 
 Use:

@@ -239,6 +239,13 @@
       "when": 1786053190175,
       "tag": "0033_heavy_giant_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1786059510075,
+      "tag": "0034_stripe_event_endpoint_scope",
+      "breakpoints": true
     }
   ]
 }
