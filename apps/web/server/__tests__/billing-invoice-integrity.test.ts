@@ -422,6 +422,187 @@ describe("billing invoice integrity", () => {
     expect(insertValues).not.toHaveBeenCalled();
   });
 
+  it("replaces unpaid draft lines and reconciles inventory atomically", async () => {
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [
+        [{ id: PRODUCT_ID }],
+        [{ taxRatePercent: "10.00" }],
+        [
+          {
+            id: INVOICE_ID,
+            paidAmount: "0.00",
+            status: "draft",
+            isEstimate: false,
+          },
+        ],
+        [{ itemType: "product", itemId: PRODUCT_ID, quantity: 1 }],
+      ],
+      updateReturns: [
+        [{ id: PRODUCT_ID, stockQuantity: 9 }],
+        [{ id: PRODUCT_ID, stockQuantity: 6 }],
+        [
+          {
+            id: INVOICE_ID,
+            subtotal: "45.00",
+            tax: "4.50",
+            total: "49.50",
+            status: "draft",
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).updateInvoiceItems({
+        id: INVOICE_ID,
+        items: [{ ...productLine, quantity: 3 }],
+      })
+    ).resolves.toMatchObject({
+      id: INVOICE_ID,
+      subtotal: "45.00",
+      tax: "4.50",
+      total: "49.50",
+    });
+
+    expect(db.execute).toHaveBeenCalled();
+    expect(updateSet).toHaveBeenNthCalledWith(1, {
+      stockQuantity: expect.anything(),
+    });
+    expect(updateSet).toHaveBeenNthCalledWith(2, {
+      stockQuantity: expect.anything(),
+    });
+    expect(updateSet).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        subtotal: "45.00",
+        tax: "4.50",
+        total: "49.50",
+      })
+    );
+    expect(updateSet).toHaveBeenNthCalledWith(
+      4,
+      expect.objectContaining({
+        deletedAt: expect.any(Date),
+        updatedAt: expect.any(Date),
+      })
+    );
+    expect(insertValues).toHaveBeenCalledWith([
+      expect.objectContaining({
+        invoiceId: INVOICE_ID,
+        itemType: "product",
+        itemId: PRODUCT_ID,
+        quantity: 3,
+        unitPrice: "15.00",
+        total: "45.00",
+      }),
+    ]);
+  });
+
+  it("does not edit a sent invoice or touch its inventory", async () => {
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [
+        [{ id: PRODUCT_ID }],
+        [{ taxRatePercent: "0.00" }],
+        [
+          {
+            id: INVOICE_ID,
+            paidAmount: "0.00",
+            status: "sent",
+            isEstimate: false,
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).updateInvoiceItems({
+        id: INVOICE_ID,
+        items: [productLine],
+      })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: "Only an unpaid draft invoice can have its line items changed.",
+    });
+
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("keeps estimate editing out of the visit-invoice mutation", async () => {
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [
+        [{ taxRatePercent: "0.00" }],
+        [
+          {
+            id: INVOICE_ID,
+            paidAmount: "0.00",
+            status: "draft",
+            isEstimate: true,
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).updateInvoiceItems({
+        id: INVOICE_ID,
+        items: [
+          {
+            description: "Exam",
+            quantity: 1,
+            unitPrice: "45.00",
+            itemType: "service",
+          },
+        ],
+      })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Convert or replace the estimate before editing visit invoice charges.",
+    });
+
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("fails a stale draft edit before replacing line items", async () => {
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [
+        [{ taxRatePercent: "0.00" }],
+        [
+          {
+            id: INVOICE_ID,
+            paidAmount: "0.00",
+            status: "draft",
+            isEstimate: false,
+          },
+        ],
+        [],
+      ],
+      updateReturns: [[]],
+    });
+
+    await expect(
+      callerWithDb(db).updateInvoiceItems({
+        id: INVOICE_ID,
+        items: [
+          {
+            description: "Exam",
+            quantity: 1,
+            unitPrice: "45.00",
+            itemType: "service",
+          },
+        ],
+      })
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "Invoice state changed while saving charges. Refresh and try again.",
+    });
+
+    expect(updateSet).toHaveBeenCalledTimes(1);
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("deducts product stock when converting an estimate to an invoice", async () => {
     const { db, updateSet } = createDb({
       selectResults: [

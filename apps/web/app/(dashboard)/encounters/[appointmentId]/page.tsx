@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useSession } from "next-auth/react";
@@ -24,6 +24,7 @@ import { trpc } from "@/lib/trpc";
 import { formatCurrency } from "@/lib/locale/format";
 import {
   BILLING_INVOICE_MAX_ITEMS,
+  isBillingInvoiceLineTotalValid,
   isBillingInvoiceSubtotalValid,
 } from "@/lib/billing/policy";
 import { ServicePicker } from "@/components/billing/service-picker";
@@ -47,7 +48,7 @@ type ChargeItem = {
   quantity: number;
   unitPrice: string;
   itemType: "service" | "product";
-  itemId: string;
+  itemId?: string;
 };
 
 const APPOINTMENT_STATUS_LABELS: Record<string, string> = {
@@ -372,7 +373,14 @@ export default function EncounterWorkspacePage() {
           clientId={appointment.clientId}
           patientId={appointment.patientId}
           canManage={canManageBilling(role)}
-          hasActiveInvoice={activeInvoices.length > 0}
+          activeInvoice={
+            activeInvoices[0]
+              ? {
+                  id: activeInvoices[0].id,
+                  status: activeInvoices[0].status,
+                }
+              : null
+          }
           invoiceStateReady={
             Boolean(invoicesQuery.data) && !invoicesQuery.error
           }
@@ -497,7 +505,7 @@ function ChargeCapture({
   clientId,
   patientId,
   canManage,
-  hasActiveInvoice,
+  activeInvoice,
   invoiceStateReady,
   invoiceStateLoading,
 }: {
@@ -505,7 +513,7 @@ function ChargeCapture({
   clientId: string | null;
   patientId: string | null;
   canManage: boolean;
-  hasActiveInvoice: boolean;
+  activeInvoice: { id: string; status: string } | null;
   invoiceStateReady: boolean;
   invoiceStateLoading: boolean;
 }) {
@@ -513,20 +521,71 @@ function ChargeCapture({
   const [selectedCatalogId, setSelectedCatalogId] = useState("");
   const [quantity, setQuantity] = useState(1);
   const [items, setItems] = useState<ChargeItem[]>([]);
+  const [loadedInvoiceId, setLoadedInvoiceId] = useState<string | null>(null);
   const configQuery = trpc.billing.getTaxConfig.useQuery(undefined, {
     staleTime: 5 * 60 * 1000,
   });
   const configReady = Boolean(configQuery.data) && !configQuery.error;
+  const activeInvoiceIsDraft = activeInvoice?.status === "draft";
+  const invoiceDetailQuery = trpc.billing.getInvoice.useQuery(
+    {
+      id:
+        activeInvoice?.id ?? "00000000-0000-0000-0000-000000000000",
+    },
+    { enabled: Boolean(canManage && activeInvoiceIsDraft) }
+  );
+  const invoiceDetailReady =
+    !activeInvoice ||
+    (activeInvoiceIsDraft && Boolean(invoiceDetailQuery.data));
   const servicesQuery = trpc.billing.listServices.useQuery(undefined, {
-    enabled: canManage && configReady && invoiceStateReady && !hasActiveInvoice,
+    enabled:
+      canManage &&
+      configReady &&
+      invoiceStateReady &&
+      (!activeInvoice || (activeInvoiceIsDraft && invoiceDetailReady)),
   });
   const productsQuery = trpc.billing.listProducts.useQuery(
     { limit: 100 },
     {
       enabled:
-        canManage && configReady && invoiceStateReady && !hasActiveInvoice,
+        canManage &&
+        configReady &&
+        invoiceStateReady &&
+        (!activeInvoice || (activeInvoiceIsDraft && invoiceDetailReady)),
     }
   );
+
+  useEffect(() => {
+    if (!activeInvoice) {
+      if (loadedInvoiceId) {
+        setItems([]);
+        setLoadedInvoiceId(null);
+      }
+      return;
+    }
+    if (
+      activeInvoiceIsDraft &&
+      invoiceDetailQuery.data?.id === activeInvoice.id &&
+      loadedInvoiceId !== activeInvoice.id
+    ) {
+      setItems(
+        invoiceDetailQuery.data.items.map((item) => ({
+          key: item.id,
+          description: item.description,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          itemType: item.itemType,
+          itemId: item.itemId ?? undefined,
+        }))
+      );
+      setLoadedInvoiceId(activeInvoice.id);
+    }
+  }, [
+    activeInvoice,
+    activeInvoiceIsDraft,
+    invoiceDetailQuery.data,
+    loadedInvoiceId,
+  ]);
 
   const catalog = useMemo(() => {
     const services = (servicesQuery.data ?? []).map((service) => ({
@@ -576,10 +635,14 @@ function ChargeCapture({
   const canSubmit =
     Boolean(clientId && patientId) &&
     items.length > 0 &&
+    items.every((item) =>
+      isBillingInvoiceLineTotalValid(item.unitPrice, item.quantity)
+    ) &&
     isBillingInvoiceSubtotalValid(items) &&
     configReady &&
     invoiceStateReady &&
-    !hasActiveInvoice;
+    invoiceDetailReady &&
+    (!activeInvoice || activeInvoiceIsDraft);
 
   const createInvoice = trpc.billing.createInvoice.useMutation({
     onSuccess: () => {
@@ -595,6 +658,21 @@ function ChargeCapture({
     },
     onError: (error) => toast.error(error.message),
   });
+  const updateInvoiceItems = trpc.billing.updateInvoiceItems.useMutation({
+    onSuccess: () => {
+      toast.success("Visit invoice charges updated");
+      utils.billing.listInvoices.invalidate({
+        appointmentId,
+        limit: 25,
+        offset: 0,
+      });
+      if (activeInvoice) {
+        utils.billing.getInvoice.invalidate({ id: activeInvoice.id });
+      }
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const isSaving = createInvoice.isPending || updateInvoiceItems.isPending;
 
   function addSelectedItem() {
     if (!selected || !canAdd) return;
@@ -615,19 +693,24 @@ function ChargeCapture({
 
   function saveCharges() {
     if (!clientId || !patientId || !canSubmit) return;
+    const lineItems = items.map(
+      ({ description, quantity, unitPrice, itemType, itemId }) => ({
+        description,
+        quantity,
+        unitPrice,
+        itemType,
+        itemId,
+      })
+    );
+    if (activeInvoice) {
+      updateInvoiceItems.mutate({ id: activeInvoice.id, items: lineItems });
+      return;
+    }
     createInvoice.mutate({
       appointmentId,
       clientId,
       patientId,
-      items: items.map(
-        ({ description, quantity, unitPrice, itemType, itemId }) => ({
-          description,
-          quantity,
-          unitPrice,
-          itemType,
-          itemId,
-        })
-      ),
+      items: lineItems,
       isEstimate: false,
     });
   }
@@ -637,8 +720,9 @@ function ChargeCapture({
       <CardHeader>
         <CardTitle>Charge capture</CardTitle>
         <CardDescription>
-          Add the services and products performed or dispensed during this
-          visit.
+          {activeInvoiceIsDraft
+            ? "Correct or add services and products before this invoice is sent."
+            : "Add the services and products performed or dispensed during this visit."}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -657,10 +741,22 @@ function ChargeCapture({
             Charge capture is locked because invoice state could not be
             confirmed. Refresh before creating charges.
           </div>
-        ) : hasActiveInvoice ? (
+        ) : activeInvoice && !activeInvoiceIsDraft ? (
           <div className="rounded-md border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
-            This visit already has an active invoice. Open it from Invoice state
-            to send, collect payment, or review the balance.
+            This visit invoice is already {activeInvoice.status}. Open it from
+            Invoice state to collect payment or review the balance. Only unpaid
+            draft charges can be edited.
+          </div>
+        ) : activeInvoiceIsDraft && invoiceDetailQuery.isLoading ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading existing visit charges...
+          </div>
+        ) : activeInvoiceIsDraft &&
+          (invoiceDetailQuery.error || !invoiceDetailQuery.data) ? (
+          <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
+            Existing charges could not be loaded. Refresh before editing this
+            draft invoice.
           </div>
         ) : configQuery.isLoading ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -687,7 +783,7 @@ function ChargeCapture({
             <Loader2 className="h-4 w-4 animate-spin" />
             Loading services and products...
           </div>
-        ) : catalog.length === 0 ? (
+        ) : catalog.length === 0 && items.length === 0 ? (
           <EmptyState
             icon={Package}
             title="Charge catalog is empty"
@@ -701,7 +797,7 @@ function ChargeCapture({
                 services={catalog}
                 value={selectedCatalogId}
                 onSelect={setSelectedCatalogId}
-                disabled={createInvoice.isPending}
+                disabled={isSaving}
                 formatPrice={fmt}
               />
               <Input
@@ -718,7 +814,7 @@ function ChargeCapture({
               <Button
                 type="button"
                 variant="outline"
-                disabled={!canAdd || createInvoice.isPending}
+                disabled={!canAdd || isSaving}
                 onClick={addSelectedItem}
               >
                 <Plus className="mr-2 h-4 w-4" />
@@ -741,35 +837,92 @@ function ChargeCapture({
                 {items.map((item) => (
                   <div
                     key={item.key}
-                    className="flex items-center gap-3 rounded-md border border-border p-3"
+                    className="flex flex-col gap-3 rounded-md border border-border p-3 sm:flex-row sm:items-center"
                   >
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium">
                         {item.description}
                       </p>
                       <p className="text-xs capitalize text-muted-foreground">
-                        {item.itemType} · {item.quantity} ×{" "}
-                        {fmt(item.unitPrice)}
+                        {item.itemType}
                       </p>
                     </div>
-                    <span className="text-sm font-medium tabular-nums">
-                      {fmt(item.quantity * Number(item.unitPrice))}
-                    </span>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      aria-label={`Remove ${item.description}`}
-                      onClick={() =>
-                        setItems((current) =>
-                          current.filter(
-                            (candidate) => candidate.key !== item.key
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                        Qty
+                        <Input
+                          type="number"
+                          min={1}
+                          max={10000}
+                          value={item.quantity}
+                          aria-label={`${item.description} quantity`}
+                          className="w-20 text-foreground"
+                          disabled={isSaving}
+                          onChange={(event) =>
+                            setItems((current) =>
+                              current.map((candidate) =>
+                                candidate.key === item.key
+                                  ? {
+                                      ...candidate,
+                                      quantity: Math.max(
+                                        1,
+                                        Number(event.target.value) || 1
+                                      ),
+                                    }
+                                  : candidate
+                              )
+                            )
+                          }
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                        Unit price
+                        <Input
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          value={item.unitPrice}
+                          aria-label={`${item.description} unit price`}
+                          className="w-28 text-foreground"
+                          disabled={isSaving}
+                          onChange={(event) =>
+                            setItems((current) =>
+                              current.map((candidate) =>
+                                candidate.key === item.key
+                                  ? {
+                                      ...candidate,
+                                      unitPrice: event.target.value,
+                                    }
+                                  : candidate
+                              )
+                            )
+                          }
+                        />
+                      </label>
+                      <span className="flex w-24 flex-col gap-1 text-right text-xs text-muted-foreground">
+                        Line total
+                        <span className="text-sm font-medium text-foreground tabular-nums">
+                          {fmt(item.quantity * Number(item.unitPrice || 0))}
+                        </span>
+                      </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="self-end"
+                        aria-label={`Remove ${item.description}`}
+                        disabled={isSaving}
+                        onClick={() =>
+                          setItems((current) =>
+                            current.filter(
+                              (candidate) => candidate.key !== item.key
+                            )
                           )
-                        )
-                      }
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                        }
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -795,19 +948,22 @@ function ChargeCapture({
             ) : null}
 
             <Button
-              disabled={!canSubmit || createInvoice.isPending}
+              disabled={!canSubmit || isSaving}
               onClick={saveCharges}
             >
-              {createInvoice.isPending ? (
+              {isSaving ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (
                 <Receipt className="mr-2 h-4 w-4" />
               )}
-              Create visit invoice
+              {activeInvoiceIsDraft
+                ? "Update visit invoice"
+                : "Create visit invoice"}
             </Button>
             <p className="text-xs text-muted-foreground">
-              This creates a draft linked to the appointment. Product stock is
-              deducted atomically when the invoice is created.
+              {activeInvoiceIsDraft
+                ? "Product stock is restored and re-deducted atomically when draft charges change."
+                : "This creates a draft linked to the appointment. Product stock is deducted atomically when the invoice is created."}
             </p>
           </div>
         )}

@@ -166,6 +166,31 @@ const createInvoiceInput = z
     }
   });
 
+const updateInvoiceItemsInput = z
+  .object({
+    id: z.string().uuid(),
+    items: z
+      .array(invoiceLineInput)
+      .min(1, "An invoice must include at least one line item.")
+      .max(
+        BILLING_INVOICE_MAX_ITEMS,
+        `Invoices can include at most ${BILLING_INVOICE_MAX_ITEMS} items.`
+      ),
+  })
+  .superRefine((input, ctx) => {
+    const subtotalCents = input.items.reduce(
+      (sum, item) => sum + moneyToCents(item.unitPrice) * item.quantity,
+      0
+    );
+    if (subtotalCents > BILLING_MAX_MONEY_CENTS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["items"],
+        message: "Invoice subtotal must fit a currency amount.",
+      });
+    }
+  });
+
 type InvoiceLineInput = {
   description: string;
   quantity: number;
@@ -1292,6 +1317,130 @@ export const billingRouter = createRouter({
         }
 
         return invoice!;
+      });
+    }),
+
+  updateInvoiceItems: protectedProcedure
+    .use(requireRole("admin", "front_desk"))
+    .input(updateInvoiceItemsInput)
+    .mutation(async ({ ctx, input }) => {
+      await assertLineItemReferences(ctx, input.items);
+
+      const subtotalCents = input.items.reduce(
+        (sum, item) => sum + moneyToCents(item.unitPrice) * item.quantity,
+        0
+      );
+      const [practice] = await ctx.db
+        .select({ taxRatePercent: practices.taxRatePercent })
+        .from(practices)
+        .where(activePracticeWhere(ctx.practiceId))
+        .limit(1);
+      if (!practice) {
+        throw practiceNotFound();
+      }
+
+      const taxRatePercent = Number(practice.taxRatePercent ?? "8.00");
+      const taxCents = Math.round((subtotalCents * taxRatePercent) / 100);
+      const totalCents = subtotalCents + taxCents;
+
+      return ctx.db.transaction(async (tx) => {
+        const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${input.id}, 0))`
+        );
+
+        const [existing] = await tx
+          .select({
+            id: invoices.id,
+            status: invoices.status,
+            isEstimate: invoices.isEstimate,
+            paidAmount: invoices.paidAmount,
+          })
+          .from(invoices)
+          .where(
+            and(
+              eq(invoices.id, input.id),
+              eq(invoices.practiceId, ctx.practiceId),
+              isNull(invoices.deletedAt)
+            )
+          )
+          .limit(1);
+
+        if (!existing) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Invoice not found" });
+        }
+        if (existing.isEstimate) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Convert or replace the estimate before editing visit invoice charges.",
+          });
+        }
+        if (existing.status !== "draft" || moneyToCents(existing.paidAmount) > 0) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Only an unpaid draft invoice can have its line items changed.",
+          });
+        }
+
+        const previousItems = await invoiceProductItemsForStock(txCtx, input.id);
+        await restoreProductStock(txCtx, previousItems);
+        await deductProductStock(txCtx, input.items);
+
+        const [invoice] = await tx
+          .update(invoices)
+          .set({
+            subtotal: centsToMoney(subtotalCents),
+            tax: centsToMoney(taxCents),
+            total: centsToMoney(totalCents),
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(invoices.id, input.id),
+              eq(invoices.practiceId, ctx.practiceId),
+              isNull(invoices.deletedAt),
+              eq(invoices.status, "draft"),
+              eq(invoices.isEstimate, existing.isEstimate),
+              eq(invoices.paidAmount, existing.paidAmount ?? "0.00")
+            )
+          )
+          .returning();
+
+        if (!invoice) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "Invoice state changed while saving charges. Refresh and try again.",
+          });
+        }
+
+        const changedAt = new Date();
+        await tx
+          .update(invoiceItems)
+          .set({ deletedAt: changedAt, updatedAt: changedAt })
+          .where(
+            and(
+              eq(invoiceItems.invoiceId, input.id),
+              invoiceItemPracticeScope(txCtx),
+              isNull(invoiceItems.deletedAt)
+            )
+          );
+
+        await tx.insert(invoiceItems).values(
+          input.items.map((item) => ({
+            invoiceId: input.id,
+            description: item.description,
+            quantity: item.quantity,
+            unitPrice: item.unitPrice,
+            total: centsToMoney(moneyToCents(item.unitPrice) * item.quantity),
+            itemType: item.itemType,
+            itemId: item.itemId ?? null,
+          }))
+        );
+
+        return invoice;
       });
     }),
 
