@@ -19,18 +19,14 @@ describe("dashboard onboarding UI states", () => {
   it("surfaces activation checklist query failures before hiding for missing data", () => {
     expect(activationSource).toContain("function ActivationChecklistError");
     expect(activationSource).toContain("function ActivationChecklistLoading");
-    expect(activationSource).toContain(
-      "const loadError = state.error ?? onboarding.error ?? practice.error ?? sub.error"
-    );
+    expect(activationSource).toContain("const loadError =");
     expect(activationSource).toContain("Setup checklist could not load");
     expect(activationSource).toContain("const isChecklistLoading");
     expect(activationSource).toContain("practice.isLoading");
     expect(activationSource).toContain(
       "if (isChecklistLoading) return <ActivationChecklistLoading />"
     );
-    expect(activationSource).toContain(
-      "if (!state.data || !onboarding.data || !practice.data || !sub.data)"
-    );
+    expect(activationSource).toContain("!clientPayments.data");
     expect(activationSource).toContain(
       "Setup checklist data was unavailable. Try loading it again."
     );
@@ -42,15 +38,11 @@ describe("dashboard onboarding UI states", () => {
       activationSource.indexOf("if (isChecklistLoading)")
     );
     expect(activationSource.indexOf("if (isChecklistLoading)")).toBeLessThan(
-      activationSource.indexOf(
-        "if (!state.data || !onboarding.data || !practice.data || !sub.data)"
-      )
+      activationSource.indexOf("!clientPayments.data")
     );
-    expect(
-      activationSource.indexOf(
-        "if (!state.data || !onboarding.data || !practice.data || !sub.data)"
-      )
-    ).toBeLessThan(activationSource.indexOf("const practiceData = practice.data"));
+    expect(activationSource.indexOf("!clientPayments.data")).toBeLessThan(
+      activationSource.indexOf("const practiceData = practice.data")
+    );
     expect(activationSource).toContain("const checklistState = state.data");
     expect(activationSource).toContain("const onboardingData = onboarding.data");
     expect(activationSource).toContain("const practiceData = practice.data");
@@ -62,6 +54,21 @@ describe("dashboard onboarding UI states", () => {
     expect(activationSource).toContain(
       "done: onboardingData.hasRealData || !onboardingData.hasDemoData"
     );
+    expect(activationSource).toContain('label: "Publish online booking"');
+    expect(activationSource).toContain(
+      "done: bookingData.page?.published === true"
+    );
+    expect(activationSource).toContain('label: "Start texting registration"');
+    expect(activationSource).toContain("done: textingData.hasAnyNumber");
+    expect(activationSource).toContain(
+      'label: "Run your first real appointment"'
+    );
+    expect(activationSource).toContain(
+      "done: onboardingData.hasCompletedRealAppointment"
+    );
+    expect(activationSource).toContain('label: "Set up client card payments"');
+    expect(activationSource).toContain("done: clientPaymentData.enabled");
+    expect(activationSource).toContain('pathway.value === "explore"');
     expect(activationSource).not.toContain("practice.data?.");
     expect(activationSource).not.toContain("sub.data.");
     expect(activationSource).not.toContain("onboarding.data.hasDemoData");

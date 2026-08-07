@@ -1093,10 +1093,23 @@ export const recordsRouter = createRouter({
   // patient management (patients.addAllergy): all staff except viewers.
   createCaptureSession: protectedProcedure
     .use(requireRole("admin", "veterinarian", "technician", "front_desk"))
-    .input(z.object({ patientId: z.string().uuid() }))
+    .input(
+      z.object({
+        patientId: z.string().uuid(),
+        appointmentId: z.string().uuid().optional(),
+      })
+    )
     .mutation(async ({ ctx, input }) => {
       await assertPatientBelongsToPractice(ctx, input.patientId);
-      const appointmentId = await findActiveVisitId(ctx, input.patientId);
+      const appointmentId = input.appointmentId
+        ? (
+            await assertAppointmentBelongsToPatient(
+              ctx,
+              input.appointmentId,
+              input.patientId
+            )
+          ).id
+        : await findActiveVisitId(ctx, input.patientId);
       const token = generateCaptureToken();
       const expiresAt = new Date(Date.now() + CAPTURE_TOKEN_TTL_MS);
       await ctx.db
@@ -1270,6 +1283,7 @@ export const recordsRouter = createRouter({
     .input(
       z.object({
         patientId: z.string().uuid(),
+        appointmentId: z.string().uuid().optional(),
         formId: z.string().uuid(),
         title: z.string().trim().min(1).max(CONSENT_TITLE_MAX_LENGTH).optional(),
         bodyText: z.string().trim().min(1).max(CONSENT_BODY_MAX_LENGTH).optional(),
@@ -1299,7 +1313,15 @@ export const recordsRouter = createRouter({
           message: "Consent form not found",
         });
       }
-      const appointmentId = await findActiveVisitId(ctx, input.patientId);
+      const appointmentId = input.appointmentId
+        ? (
+            await assertAppointmentBelongsToPatient(
+              ctx,
+              input.appointmentId,
+              input.patientId
+            )
+          ).id
+        : await findActiveVisitId(ctx, input.patientId);
       const token = generateCaptureToken();
       const expiresAt = new Date(Date.now() + CONSENT_TOKEN_TTL_MS);
       const [created] = await ctx.db

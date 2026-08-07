@@ -98,6 +98,14 @@ describe("billing list input validation", () => {
 
     await expect(
       caller.listInvoices({
+        appointmentId: "not-an-appointment-id",
+        limit: 25,
+        offset: 0,
+      } as never)
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    await expect(
+      caller.listInvoices({
         limit: 1.5,
         offset: 0,
       } as never)

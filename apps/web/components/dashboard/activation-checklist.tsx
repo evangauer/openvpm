@@ -42,9 +42,8 @@ export function ActivationChecklist() {
   const isAdmin =
     status === "authenticated" && session?.user?.role === "admin";
 
-  // No long staleTime: each dashboard mount re-checks, so a milestone you just
-  // completed (uploaded a logo, invited a teammate, asked the AI) shows as done
-  // when you come back here.
+  // No long staleTime: each dashboard mount re-checks, so operational progress
+  // such as publishing booking or completing a visit shows as done immediately.
   const opts = {
     enabled: isAdmin,
     retry: false,
@@ -55,11 +54,23 @@ export function ActivationChecklist() {
   const practice = trpc.settings.getPractice.useQuery(undefined, opts);
   const sub = trpc.subscription.get.useQuery(undefined, opts);
   const texting = trpc.messaging.activationSummary.useQuery(undefined, opts);
+  const booking = trpc.booking.getMyPage.useQuery(undefined, opts);
+  const clientPayments = trpc.billing.paymentAccountStatus.useQuery(
+    undefined,
+    opts
+  );
   const dismiss = trpc.settings.dismissSetup.useMutation();
 
   if (!isAdmin) return null;
 
-  const loadError = state.error ?? onboarding.error ?? practice.error ?? sub.error;
+  const loadError =
+    state.error ??
+    onboarding.error ??
+    practice.error ??
+    sub.error ??
+    texting.error ??
+    booking.error ??
+    clientPayments.error;
   if (loadError) {
     return (
       <ActivationChecklistError
@@ -70,6 +81,9 @@ export function ActivationChecklist() {
             onboarding.refetch(),
             practice.refetch(),
             sub.refetch(),
+            texting.refetch(),
+            booking.refetch(),
+            clientPayments.refetch(),
           ]);
         }}
       />
@@ -80,11 +94,22 @@ export function ActivationChecklist() {
     state.isLoading ||
     onboarding.isLoading ||
     practice.isLoading ||
-    sub.isLoading;
+    sub.isLoading ||
+    texting.isLoading ||
+    booking.isLoading ||
+    clientPayments.isLoading;
 
   // Wait for the core signals before rendering so we never flash a wrong state.
   if (isChecklistLoading) return <ActivationChecklistLoading />;
-  if (!state.data || !onboarding.data || !practice.data || !sub.data) {
+  if (
+    !state.data ||
+    !onboarding.data ||
+    !practice.data ||
+    !sub.data ||
+    !texting.data ||
+    !booking.data ||
+    !clientPayments.data
+  ) {
     return (
       <ActivationChecklistError
         message="Setup checklist data was unavailable. Try loading it again."
@@ -94,6 +119,9 @@ export function ActivationChecklist() {
             onboarding.refetch(),
             practice.refetch(),
             sub.refetch(),
+            texting.refetch(),
+            booking.refetch(),
+            clientPayments.refetch(),
           ]);
         }}
       />
@@ -105,6 +133,9 @@ export function ActivationChecklist() {
   const onboardingData = onboarding.data;
   const practiceData = practice.data;
   const subscriptionData = sub.data;
+  const textingData = texting.data;
+  const bookingData = booking.data;
+  const clientPaymentData = clientPayments.data;
 
   const enforced = subscriptionData.billingEnforced;
   const tourDone =
@@ -117,7 +148,7 @@ export function ActivationChecklist() {
     checklistState.onboardingIntent ?? DEFAULT_ONBOARDING_INTENT
   );
 
-  const standardMilestones: Milestone[] = [
+  const explorationMilestones: Milestone[] = [
     {
       key: "tour",
       label: "Take the 60-second tour",
@@ -146,6 +177,9 @@ export function ActivationChecklist() {
       done: (subscriptionData.usage?.aiRuns ?? 0) > 0,
       href: "/agent",
     },
+  ];
+
+  const goLiveMilestones: Milestone[] = [
     {
       key: "data",
       label: "Bring in your real data",
@@ -154,12 +188,44 @@ export function ActivationChecklist() {
       href: "/settings?tab=data",
     },
     {
+      key: "team",
+      label: "Invite a teammate",
+      hint: "Test the handoff between a doctor and the front desk.",
+      done: (subscriptionData.billableSeatCount ?? 1) > 1,
+      href: "/settings?tab=staff",
+    },
+    {
+      key: "booking",
+      label: "Publish online booking",
+      hint: "Put one appointment type live and test the client booking path.",
+      done: bookingData.page?.published === true,
+      href: "/settings?tab=booking",
+    },
+    {
       key: "texting",
-      label: "Turn on texting",
-      hint: "Add a number for reminders and two-way texts with clients.",
-      done: texting.data?.hasActiveNumber ?? false,
+      label: "Start texting registration",
+      hint: "Choose a number and submit carrier registration. Approval can take 1–2 weeks.",
+      done: textingData.hasAnyNumber,
       href: "/settings?tab=messaging&setup=texting",
     },
+    {
+      key: "firstAppointment",
+      label: "Run your first real appointment",
+      hint: "Check out one real visit while your current PIMS stays in place as a safety net.",
+      done: onboardingData.hasCompletedRealAppointment,
+      href: "/schedule",
+    },
+    ...(clientPaymentData.stripeConfigured
+      ? [
+          {
+            key: "clientPayments",
+            label: "Set up client card payments",
+            hint: "Connect the clinic's Stripe account so pet-owner payments go directly to the clinic.",
+            done: clientPaymentData.enabled,
+            href: "/settings?tab=billing",
+          } as Milestone,
+        ]
+      : []),
     ...(enforced
       ? [
           {
@@ -172,6 +238,29 @@ export function ActivationChecklist() {
         ]
       : []),
   ];
+
+  // Evaluation remains deliberately light. Clinics running alongside or
+  // replacing another PIMS see only the operational go-live path; setup chores
+  // such as branding and trying AI stay in the guided tour instead of diluting
+  // the activation checklist.
+  const standardMilestones =
+    pathway.value === "explore"
+      ? [
+          ...explorationMilestones,
+          goLiveMilestones.find((milestone) => milestone.key === "data")!,
+        ]
+      : pathway.value === "self_host"
+        ? [
+            explorationMilestones.find(
+              (milestone) => milestone.key === "brand"
+            )!,
+            goLiveMilestones.find((milestone) => milestone.key === "data")!,
+            goLiveMilestones.find((milestone) => milestone.key === "team")!,
+            goLiveMilestones.find(
+              (milestone) => milestone.key === "firstAppointment"
+            )!,
+          ]
+        : goLiveMilestones;
   const firstWinBase =
     standardMilestones.find((milestone) => milestone.key === pathway.firstWinTarget) ??
     standardMilestones[0]!;

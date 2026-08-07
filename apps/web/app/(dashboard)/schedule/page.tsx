@@ -15,6 +15,7 @@ import {
   Plus,
   Mail,
   Repeat2,
+  Stethoscope,
 } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
@@ -1102,13 +1103,20 @@ function AppointmentDetailPopover({
         )}
 
         {/* Actions */}
-        {(appointment.patientId ||
+        {(appointment.id ||
+          appointment.patientId ||
           visibleStatusActions.length > 0 ||
           (canManageSchedule && canMoveAppointment) ||
           (canManageSchedule && appointment.recurringSeriesId) ||
           (canSendReminders &&
             (current === "scheduled" || current === "confirmed"))) && (
           <div className="flex flex-wrap gap-2 border-t border-border px-4 py-3">
+            <Button size="sm" asChild>
+              <Link href={`/encounters/${appointment.id}`}>
+                <Stethoscope className="mr-1.5 h-3 w-3" />
+                Open visit
+              </Link>
+            </Button>
             {appointment.patientId && (
               <Button size="sm" variant="outline" asChild>
                 <Link href={`/patients/${appointment.patientId}`}>View chart</Link>

@@ -23,11 +23,13 @@ export function ServicePicker({
   value,
   onSelect,
   disabled,
+  formatPrice,
 }: {
   services: ServicePickerService[];
   value: string;
   onSelect: (serviceId: string) => void;
   disabled?: boolean;
+  formatPrice?: (price: string) => string;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -183,7 +185,9 @@ export function ServicePicker({
                     </span>
                   ) : null}
                   <span className="shrink-0 tabular-nums text-muted-foreground">
-                    ${service.defaultPrice}
+                    {formatPrice
+                      ? formatPrice(service.defaultPrice)
+                      : `$${service.defaultPrice}`}
                   </span>
                 </button>
               ))

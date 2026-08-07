@@ -33,6 +33,7 @@ import {
   emailSuppressionSendBlockMessage,
   normalizeEmailSuppressionAddress,
 } from "@/lib/email-suppression";
+import { automatedAppointmentReminderSuppressionReason } from "@/lib/automated-reminder-policy";
 
 type ReminderChannel = "sms" | "email";
 const REMINDER_PENDING_RECLAIM_MS = 30 * 60 * 1000;
@@ -226,6 +227,14 @@ export async function GET(request: Request) {
           practicePhone: practices.phone,
           practiceTimezone: practices.timezone,
           locationId: rooms.locationId,
+          isSeededDemoClient: sql<boolean>`
+            coalesce(${practices.settings} -> 'demoData' -> 'clientIds', '[]'::jsonb)
+              @> to_jsonb(${appointments.clientId}::text)
+          `,
+          isSeededDemoAppointment: sql<boolean>`
+            coalesce(${practices.settings} -> 'demoData' -> 'appointmentIds', '[]'::jsonb)
+              @> to_jsonb(${appointments.id}::text)
+          `,
         })
         .from(appointments)
         .leftJoin(
@@ -295,6 +304,9 @@ export async function GET(request: Request) {
     let failed = 0;
     let skipped = 0; // SMS-preferred but deferred by quiet hours (no email fallback)
     let deduped = 0;
+    let suppressed = 0; // Seeded demo rows or reserved fixture addresses.
+    let suppressedDemo = 0;
+    let suppressedReservedAddress = 0;
     const senderLocationCache = new Map<string, string | null>();
 
     const activeSenderLocation = async (
@@ -354,6 +366,18 @@ export async function GET(request: Request) {
     };
 
     for (const appt of upcomingAppointments) {
+      const suppressionReason =
+        automatedAppointmentReminderSuppressionReason(appt);
+      if (suppressionReason) {
+        suppressed++;
+        if (suppressionReason === "seeded_demo_data") {
+          suppressedDemo++;
+        } else {
+          suppressedReservedAddress++;
+        }
+        continue;
+      }
+
       if (!appt.clientId) {
         failed++;
         continue;
@@ -529,31 +553,36 @@ export async function GET(request: Request) {
       }
     }
 
+    const eligible = upcomingAppointments.length - suppressed;
     console.log(
-      `Cron reminders completed: ${sent} sent, ${failed} failed, ${skipped} deferred (quiet hours), ${deduped} deduped out of ${upcomingAppointments.length} total`,
+      `Cron reminders completed: ${sent} sent, ${failed} failed, ${skipped} deferred (quiet hours), ${deduped} deduped, ${suppressed} suppressed (${suppressedDemo} demo, ${suppressedReservedAddress} reserved address) out of ${upcomingAppointments.length} total`
     );
 
     if (failed > 0) {
       void alertOps(
         "Appointment reminders had failures",
-        `${failed} of ${upcomingAppointments.length} reminders failed to send (${sent} sent, ${skipped} deferred, ${deduped} deduped).`,
+        `${failed} of ${eligible} eligible reminders failed to send (${sent} sent, ${skipped} deferred, ${deduped} deduped, ${suppressed} suppressed).`
       );
     }
 
     await reportCronHeartbeat({
       job: "reminders",
       status: failed > 0 ? "degraded" : "ok",
-      detail: `${sent} sent, ${failed} failed, ${skipped} deferred, ${deduped} deduped`,
+      detail: `${sent} sent, ${failed} failed, ${skipped} deferred, ${deduped} deduped, ${suppressed} suppressed`,
       metrics: {
         total: upcomingAppointments.length,
+        eligible,
         sent,
         failed,
         skipped,
         deduped,
+        suppressed,
+        suppressedDemo,
+        suppressedReservedAddress,
       },
     });
 
-    return NextResponse.json({ sent, failed, skipped, deduped });
+    return NextResponse.json({ sent, failed, skipped, deduped, suppressed });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     void alertOps(

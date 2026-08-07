@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { randomUUID } from "crypto";
-import { eq, and, isNull, inArray, ne, sql } from "drizzle-orm";
+import { eq, and, isNull, inArray, ne, notInArray, sql } from "drizzle-orm";
 import { hash } from "bcryptjs";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
@@ -799,16 +799,47 @@ export const settingsRouter = createRouter({
     // A practice that already runs on real data (e.g. seeded demo, or a
     // self-host upgrading into the wizard feature) must not be greeted like
     // a brand-new signup, even though it never recorded a completion date.
-    const existingPatients = await ctx.db
-      .select({ id: patients.id })
-      .from(patients)
-      .where(
-        and(
-          eq(patients.practiceId, ctx.practiceId),
-          isNull(patients.deletedAt)
-        )
-      )
-      .limit(ESTABLISHED_PRACTICE_PATIENT_THRESHOLD);
+    const demoAppointmentIds = settings.demoData?.appointmentIds ?? [];
+    const realAppointmentFilter =
+      demoAppointmentIds.length > 0
+        ? notInArray(appointments.id, demoAppointmentIds)
+        : undefined;
+    const [existingPatients, firstRealAppointment, completedRealAppointment] =
+      await Promise.all([
+        ctx.db
+          .select({ id: patients.id })
+          .from(patients)
+          .where(
+            and(
+              eq(patients.practiceId, ctx.practiceId),
+              isNull(patients.deletedAt)
+            )
+          )
+          .limit(ESTABLISHED_PRACTICE_PATIENT_THRESHOLD),
+        ctx.db
+          .select({ id: appointments.id })
+          .from(appointments)
+          .where(
+            and(
+              eq(appointments.practiceId, ctx.practiceId),
+              isNull(appointments.deletedAt),
+              realAppointmentFilter
+            )
+          )
+          .limit(1),
+        ctx.db
+          .select({ id: appointments.id })
+          .from(appointments)
+          .where(
+            and(
+              eq(appointments.practiceId, ctx.practiceId),
+              eq(appointments.status, "checked_out"),
+              isNull(appointments.deletedAt),
+              realAppointmentFilter
+            )
+          )
+          .limit(1),
+      ]);
     const demoPatientIds = new Set(settings.demoData?.patientIds ?? []);
     return {
       completedAt: settings.onboardingCompletedAt ?? null,
@@ -819,6 +850,12 @@ export const settingsRouter = createRouter({
       hasRealData: existingPatients.some(
         (patient) => !demoPatientIds.has(patient.id)
       ),
+      // Scheduling a real appointment is the first operational commitment in
+      // the clinic-ready path. Demo appointments must never complete it.
+      hasRealAppointment: firstRealAppointment.length > 0,
+      // Checked out is the first durable signal that the practice has run the
+      // workflow, rather than merely exploring the calendar.
+      hasCompletedRealAppointment: completedRealAppointment.length > 0,
       onboardingDraft: settings.onboardingDraft ?? null,
       establishedPractice:
         existingPatients.length >= ESTABLISHED_PRACTICE_PATIENT_THRESHOLD,

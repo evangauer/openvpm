@@ -15,7 +15,13 @@ const CAPTURE_POLL_INTERVAL_MS = 5_000;
  * Photos attach to this patient and appear here as thumbnails while the
  * modal is open. Mount only for roles that can manage the patient.
  */
-export function CapturePhotos({ patientId }: { patientId: string }) {
+export function CapturePhotos({
+  patientId,
+  appointmentId,
+}: {
+  patientId: string;
+  appointmentId?: string;
+}) {
   const [open, setOpen] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const baselineCountRef = useRef<number | null>(null);
@@ -66,7 +72,7 @@ export function CapturePhotos({ patientId }: { patientId: string }) {
 
   function handleOpen() {
     setOpen(true);
-    createSession.mutate({ patientId });
+    createSession.mutate({ patientId, appointmentId });
   }
 
   function handleClose() {
@@ -130,7 +136,9 @@ export function CapturePhotos({ patientId }: { patientId: string }) {
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => createSession.mutate({ patientId })}
+                      onClick={() =>
+                        createSession.mutate({ patientId, appointmentId })
+                      }
                     >
                       <RefreshCw className="mr-2 h-4 w-4" />
                       Try again

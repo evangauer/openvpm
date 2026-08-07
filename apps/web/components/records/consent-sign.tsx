@@ -20,7 +20,13 @@ const CONSENT_POLL_INTERVAL_MS = 5_000;
  * a handed-over tablet via the no-login /sign/[token] page. The signed
  * status shows here live. Mount only for roles that can manage the patient.
  */
-export function ConsentSign({ patientId }: { patientId: string }) {
+export function ConsentSign({
+  patientId,
+  appointmentId,
+}: {
+  patientId: string;
+  appointmentId?: string;
+}) {
   const [open, setOpen] = useState(false);
   const [formId, setFormId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
@@ -211,6 +217,7 @@ export function ConsentSign({ patientId }: { patientId: string }) {
                       onClick={() =>
                         createRequest.mutate({
                           patientId,
+                          appointmentId,
                           formId: formId!,
                           title: title.trim(),
                           bodyText: bodyText.trim(),
@@ -234,6 +241,7 @@ export function ConsentSign({ patientId }: { patientId: string }) {
                         onClick={() =>
                           createRequest.mutate({
                             patientId,
+                            appointmentId,
                             formId: formId!,
                             title: title.trim(),
                             bodyText: bodyText.trim(),

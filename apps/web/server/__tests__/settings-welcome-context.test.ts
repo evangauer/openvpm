@@ -141,6 +141,8 @@ describe("settings.onboardingStatus", () => {
     const { db } = createDb([
       [{ settings: demoSettings }],
       [{ id: DEMO_PATIENT_ID }],
+      [],
+      [],
     ]);
 
     await expect(
@@ -152,10 +154,55 @@ describe("settings.onboardingStatus", () => {
     const { db } = createDb([
       [{ settings: demoSettings }],
       [{ id: DEMO_PATIENT_ID }, { id: "real-patient-1" }],
+      [],
+      [],
     ]);
 
     await expect(
       callerWithRole(db, "admin").onboardingStatus()
     ).resolves.toMatchObject({ hasDemoData: true, hasRealData: true });
+  });
+
+  it("does not count seeded appointments as a first live appointment", async () => {
+    const demoAppointmentId = "00000000-0000-0000-0000-000000000099";
+    const { db } = createDb([
+      [
+        {
+          settings: {
+            ...demoSettings,
+            demoData: {
+              ...demoSettings.demoData,
+              appointmentIds: [demoAppointmentId],
+            },
+          },
+        },
+      ],
+      [{ id: DEMO_PATIENT_ID }],
+      [],
+      [],
+    ]);
+
+    await expect(
+      callerWithRole(db, "admin").onboardingStatus()
+    ).resolves.toMatchObject({
+      hasRealAppointment: false,
+      hasCompletedRealAppointment: false,
+    });
+  });
+
+  it("recognizes a completed non-demo appointment", async () => {
+    const { db } = createDb([
+      [{ settings: demoSettings }],
+      [{ id: DEMO_PATIENT_ID }],
+      [{ id: "real-appointment-1" }],
+      [{ id: "real-appointment-1" }],
+    ]);
+
+    await expect(
+      callerWithRole(db, "admin").onboardingStatus()
+    ).resolves.toMatchObject({
+      hasRealAppointment: true,
+      hasCompletedRealAppointment: true,
+    });
   });
 });

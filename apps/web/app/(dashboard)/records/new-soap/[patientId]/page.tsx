@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import dynamic from "next/dynamic";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import {
   AlertCircle,
@@ -63,10 +63,15 @@ function draftTextToHtml(text: string): string {
 export default function NewSoapNotePage() {
   const params = useParams<{ patientId: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { data: session, status } = useSession();
   const userRole = session?.user?.role;
   const canCreateSoapNote = canCreateSoapNoteRole(userRole);
   const accessDenied = status !== "loading" && !canCreateSoapNote;
+  const appointmentId = searchParams.get("appointmentId") ?? undefined;
+  const returnPath = appointmentId
+    ? `/encounters/${encodeURIComponent(appointmentId)}`
+    : "/records";
 
   const [subjective, setSubjective] = useState("");
   const [objective, setObjective] = useState("");
@@ -92,7 +97,7 @@ export default function NewSoapNotePage() {
   const createNote = trpc.records.createSoapNote.useMutation({
     onSuccess: () => {
       toast.success("SOAP note created");
-      router.push("/records");
+      router.push(returnPath);
     },
     onError: (err) => {
       toast.error(err.message);
@@ -137,6 +142,7 @@ export default function NewSoapNotePage() {
     }
     createNote.mutate({
       patientId: params.patientId,
+      appointmentId,
       subjective: normalizeSoapSection(subjective),
       objective: normalizeSoapSection(objective),
       assessment: normalizeSoapSection(assessment),
@@ -173,9 +179,9 @@ export default function NewSoapNotePage() {
         <Button
           variant="outline"
           className="mt-4"
-          onClick={() => router.push("/records")}
+          onClick={() => router.push(returnPath)}
         >
-          Back to Records
+          {appointmentId ? "Back to visit" : "Back to Records"}
         </Button>
       </div>
     );
@@ -222,11 +228,11 @@ export default function NewSoapNotePage() {
       <Button
         variant="ghost"
         size="sm"
-        onClick={() => router.push("/records")}
+        onClick={() => router.push(returnPath)}
         className="mb-4"
       >
         <ArrowLeft className="mr-2 h-4 w-4" />
-        Back to Records
+        {appointmentId ? "Back to visit" : "Back to Records"}
       </Button>
 
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -241,6 +247,11 @@ export default function NewSoapNotePage() {
               {patient.breed ? ` (${patient.breed})` : ""}
             </p>
           )}
+          {appointmentId ? (
+            <p className="text-xs text-muted-foreground">
+              This note will be linked to the current appointment.
+            </p>
+          ) : null}
         </div>
         <div className="flex flex-col items-end gap-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -385,7 +396,7 @@ export default function NewSoapNotePage() {
               Add at least one section to save this note.
             </p>
           )}
-          <Button variant="outline" onClick={() => router.push("/records")}>
+          <Button variant="outline" onClick={() => router.push(returnPath)}>
             Cancel
           </Button>
           {createNote.isError && (

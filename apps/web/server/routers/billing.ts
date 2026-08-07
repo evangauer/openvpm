@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { eq, and, isNull, desc, sql, inArray, ilike, type SQL } from "drizzle-orm";
+import { eq, and, isNull, desc, sql, inArray, ilike, ne, type SQL } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import {
@@ -58,6 +58,7 @@ import {
   practicePaymentAccounts,
   users,
   practices,
+  appointments,
 } from "@openpims/db";
 import {
   clinicalDateInput,
@@ -141,6 +142,7 @@ const createInvoiceInput = z
   .object({
     clientId: z.string().uuid(),
     patientId: z.string().uuid().optional(),
+    appointmentId: z.string().uuid().optional(),
     items: z
       .array(invoiceLineInput)
       .max(
@@ -530,6 +532,38 @@ async function assertPatientBelongsToClient(
   }
 }
 
+async function assertAppointmentBelongsToClientPatient(
+  ctx: BillingContext,
+  appointmentId: string,
+  clientId: string,
+  patientId?: string
+) {
+  const conditions = [
+    eq(appointments.id, appointmentId),
+    eq(appointments.practiceId, ctx.practiceId),
+    eq(appointments.clientId, clientId),
+    isNull(appointments.deletedAt),
+  ];
+  if (patientId) {
+    conditions.push(eq(appointments.patientId, patientId));
+  }
+
+  const [appointment] = await ctx.db
+    .select({ id: appointments.id })
+    .from(appointments)
+    .where(and(...conditions))
+    .limit(1);
+
+  if (!appointment) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "Appointment not found for this client and patient.",
+    });
+  }
+
+  return appointment;
+}
+
 async function assertLineItemReferences(
   ctx: BillingContext,
   items: readonly InvoiceLineInput[]
@@ -850,6 +884,7 @@ export const billingRouter = createRouter({
         status: invoiceStatusSchema.optional(),
         isEstimate: z.boolean().optional(),
         patientId: z.string().uuid().optional(),
+        appointmentId: z.string().uuid().optional(),
         limit: z.number().int().min(1).max(100).default(25),
         offset: listOffsetInput,
       })
@@ -866,6 +901,10 @@ export const billingRouter = createRouter({
 
       if (input.patientId) {
         conditions.push(eq(invoices.patientId, input.patientId));
+      }
+
+      if (input.appointmentId) {
+        conditions.push(eq(invoices.appointmentId, input.appointmentId));
       }
 
       if (input.isEstimate !== undefined) {
@@ -893,6 +932,7 @@ export const billingRouter = createRouter({
             clientFirstName: clients.firstName,
             clientLastName: clients.lastName,
             patientName: patients.name,
+            appointmentId: invoices.appointmentId,
           })
           .from(invoices)
           .leftJoin(
@@ -1160,6 +1200,14 @@ export const billingRouter = createRouter({
       if (input.patientId) {
         await assertPatientBelongsToClient(ctx, input.patientId, input.clientId);
       }
+      if (input.appointmentId) {
+        await assertAppointmentBelongsToClientPatient(
+          ctx,
+          input.appointmentId,
+          input.clientId,
+          input.patientId
+        );
+      }
       await assertLineItemReferences(ctx, input.items);
 
       const subtotal = input.items.reduce((sum, item) => {
@@ -1181,6 +1229,33 @@ export const billingRouter = createRouter({
 
       return ctx.db.transaction(async (tx) => {
         const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
+        if (input.appointmentId) {
+          // Serialize charge capture for one visit so two front-desk tabs
+          // cannot both pass the duplicate check and create competing bills.
+          await tx.execute(
+            sql`select pg_advisory_xact_lock(hashtextextended(${input.appointmentId}, 0))`
+          );
+          const [existingVisitInvoice] = await tx
+            .select({ id: invoices.id })
+            .from(invoices)
+            .where(
+              and(
+                eq(invoices.practiceId, ctx.practiceId),
+                eq(invoices.appointmentId, input.appointmentId),
+                eq(invoices.isEstimate, input.isEstimate ?? false),
+                ne(invoices.status, "void"),
+                isNull(invoices.deletedAt)
+              )
+            )
+            .limit(1);
+          if (existingVisitInvoice) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "This visit already has an active invoice. Open it instead of creating a duplicate.",
+            });
+          }
+        }
         if (!(input.isEstimate ?? false)) {
           await deductProductStock(txCtx, input.items);
         }
@@ -1191,6 +1266,7 @@ export const billingRouter = createRouter({
             practiceId: ctx.practiceId,
             clientId: input.clientId,
             patientId: input.patientId ?? null,
+            appointmentId: input.appointmentId ?? null,
             status: "draft",
             subtotal: subtotal.toFixed(2),
             tax: tax.toFixed(2),

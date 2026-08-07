@@ -116,7 +116,7 @@ function appointment(overrides: Record<string, unknown> = {}) {
     clientId: CLIENT_ID,
     clientFirstName: "Ada",
     clientLastName: "Lovelace",
-    clientEmail: "ada@example.com",
+    clientEmail: "ada@lovelacevet.com",
     emailSuppressionReason: null,
     clientPhone: "(555) 555-0100",
     preferredContactMethod: "sms",
@@ -161,10 +161,69 @@ describe("appointment reminder cron", () => {
       failed: 0,
       skipped: 0,
       deduped: 0,
+      suppressed: 0,
     });
     expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
     expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
     expect(mocks.insertValues).not.toHaveBeenCalled();
+  });
+
+  it("suppresses seeded demo appointments before any provider or delivery claim", async () => {
+    mocks.selectResults.push([
+      appointment({
+        isSeededDemoAppointment: true,
+      }),
+    ]);
+
+    const response = await GET(
+      new Request("https://openvpm.test/api/cron/reminders")
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      sent: 0,
+      failed: 0,
+      skipped: 0,
+      deduped: 0,
+      suppressed: 1,
+    });
+    expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
+    expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
+    expect(mocks.insertValues).not.toHaveBeenCalled();
+    expect(consoleLog).toHaveBeenCalledWith(
+      "Cron reminders completed: 0 sent, 0 failed, 0 deferred (quiet hours), 0 deduped, 1 suppressed (1 demo, 0 reserved address) out of 1 total"
+    );
+    expect(consoleLog).not.toHaveBeenCalledWith(
+      expect.stringContaining("Miso")
+    );
+    expect(consoleLog).not.toHaveBeenCalledWith(
+      expect.stringContaining("lovelacevet.com")
+    );
+  });
+
+  it("suppresses reserved fixture email domains even when SMS is preferred", async () => {
+    mocks.selectResults.push([
+      appointment({
+        clientEmail: " ada@reminders.openvpm.test ",
+      }),
+    ]);
+
+    const response = await GET(
+      new Request("https://openvpm.test/api/cron/reminders")
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      sent: 0,
+      failed: 0,
+      skipped: 0,
+      deduped: 0,
+      suppressed: 1,
+    });
+    expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
+    expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
+    expect(mocks.insertValues).not.toHaveBeenCalled();
+    expect(consoleLog).toHaveBeenCalledWith(
+      "Cron reminders completed: 0 sent, 0 failed, 0 deferred (quiet hours), 0 deduped, 1 suppressed (0 demo, 1 reserved address) out of 1 total"
+    );
   });
 
   it("uses an active practice sender for scheduled SMS reminders", async () => {
@@ -191,6 +250,7 @@ describe("appointment reminder cron", () => {
       failed: 0,
       skipped: 0,
       deduped: 0,
+      suppressed: 0,
     });
     expect(mocks.sendAppointmentReminderSms).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -225,9 +285,10 @@ describe("appointment reminder cron", () => {
       success: true,
       id: "email-cron-1",
     });
-    mocks.selectResults.push([
-      appointment({ clientEmail: " Ada@Example.COM " }),
-    ], []);
+    mocks.selectResults.push(
+      [appointment({ clientEmail: " Ada@LovelaceVet.COM " })],
+      []
+    );
 
     const response = await GET(
       new Request("https://openvpm.test/api/cron/reminders")
@@ -238,10 +299,11 @@ describe("appointment reminder cron", () => {
       failed: 0,
       skipped: 0,
       deduped: 0,
+      suppressed: 0,
     });
     expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
     expect(mocks.sendAppointmentReminder).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "ada@example.com" })
+      expect.objectContaining({ to: "ada@lovelacevet.com" })
     );
     expect(mocks.insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -267,7 +329,7 @@ describe("appointment reminder cron", () => {
     });
     mocks.selectResults.push([
       appointment({
-        clientEmail: " Ada@Example.COM ",
+        clientEmail: " Ada@LovelaceVet.COM ",
         clientPhone: "12345",
       }),
     ]);
@@ -281,10 +343,11 @@ describe("appointment reminder cron", () => {
       failed: 0,
       skipped: 0,
       deduped: 0,
+      suppressed: 0,
     });
     expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
     expect(mocks.sendAppointmentReminder).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "ada@example.com" })
+      expect.objectContaining({ to: "ada@lovelacevet.com" })
     );
     expect(mocks.insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -321,6 +384,7 @@ describe("appointment reminder cron", () => {
       failed: 0,
       skipped: 1,
       deduped: 0,
+      suppressed: 0,
     });
     expect(mocks.insertValues).not.toHaveBeenCalled();
     expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
@@ -346,6 +410,7 @@ describe("appointment reminder cron", () => {
       failed: 1,
       skipped: 0,
       deduped: 0,
+      suppressed: 0,
     });
     expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
     expect(mocks.insertValues).toHaveBeenCalledWith(
@@ -379,6 +444,7 @@ describe("appointment reminder cron", () => {
       failed: 1,
       skipped: 0,
       deduped: 0,
+      suppressed: 0,
     });
     expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
     expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
@@ -411,6 +477,7 @@ describe("appointment reminder cron", () => {
       failed: 0,
       skipped: 0,
       deduped: 1,
+      suppressed: 0,
     });
     expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
     expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
@@ -439,6 +506,7 @@ describe("appointment reminder cron", () => {
       failed: 0,
       skipped: 0,
       deduped: 1,
+      suppressed: 0,
     });
     expect(mocks.deleteRows).not.toHaveBeenCalled();
     expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
@@ -467,6 +535,7 @@ describe("appointment reminder cron", () => {
       failed: 0,
       skipped: 0,
       deduped: 0,
+      suppressed: 0,
     });
     expect(mocks.deleteRows).toHaveBeenCalledOnce();
     expect(mocks.insertReturning).toHaveBeenCalledTimes(2);
@@ -501,6 +570,7 @@ describe("appointment reminder cron", () => {
       failed: 0,
       skipped: 0,
       deduped: 0,
+      suppressed: 0,
     });
     expect(mocks.deleteRows).toHaveBeenCalledOnce();
     expect(mocks.insertReturning).toHaveBeenCalledTimes(2);
@@ -526,6 +596,7 @@ describe("appointment reminder cron", () => {
       failed: 1,
       skipped: 0,
       deduped: 0,
+      suppressed: 0,
     });
     expect(mocks.sendAppointmentReminder).toHaveBeenCalledOnce();
     expect(mocks.sendAppointmentReminder).toHaveBeenCalledWith(
@@ -577,6 +648,13 @@ describe("appointment reminder cron query scoping", () => {
     expect(source).not.toContain(
       "sql`${emailSuppressions.email} = lower(${clients.email})`"
     );
+  });
+
+  it("projects both demo-data markers needed for pre-provider suppression", () => {
+    expect(source).toContain("isSeededDemoClient: sql<boolean>");
+    expect(source).toContain("isSeededDemoAppointment: sql<boolean>");
+    expect(source).toContain("'demoData' -> 'clientIds'");
+    expect(source).toContain("'demoData' -> 'appointmentIds'");
   });
 
   it("formats reminder appointment times in the practice timezone", () => {

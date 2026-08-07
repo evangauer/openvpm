@@ -65,6 +65,12 @@ describe("onboarding UI states", () => {
     expect(settingsRouter).toContain("setOnboardingIntent: adminProcedure");
     expect(settingsRouter).toContain("setJourneyProgress: adminProcedure");
     expect(settingsRouter).toContain("hasRealData: existingPatients.some(");
+    expect(settingsRouter).toContain(
+      "hasRealAppointment: firstRealAppointment.length > 0"
+    );
+    expect(settingsRouter).toContain(
+      "hasCompletedRealAppointment: completedRealAppointment.length > 0"
+    );
   });
 
   it("starts with a persisted adoption pathway and recommends running alongside", () => {

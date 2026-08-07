@@ -16,6 +16,7 @@ const CLIENT_ID = "00000000-0000-0000-0000-000000000002";
 const PATIENT_ID = "00000000-0000-0000-0000-000000000003";
 const PRODUCT_ID = "00000000-0000-0000-0000-000000000004";
 const INVOICE_ID = "00000000-0000-0000-0000-000000000005";
+const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000006";
 
 function callerWithDb(db: Record<string, unknown>, role = "front_desk") {
   const session = {
@@ -231,6 +232,88 @@ describe("billing invoice integrity", () => {
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("rejects an appointment that does not belong to the selected client and patient", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [[{ id: CLIENT_ID }], [{ id: PATIENT_ID }], []],
+    });
+
+    await expect(
+      callerWithDb(db).createInvoice({
+        clientId: CLIENT_ID,
+        patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
+        items: [productLine],
+        isEstimate: false,
+      })
+    ).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      message: "Appointment not found for this client and patient.",
+    });
+
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("stores a verified appointment link and prevents a duplicate active visit invoice", async () => {
+    const first = createDb({
+      selectResults: [
+        [{ id: CLIENT_ID }],
+        [{ id: PATIENT_ID }],
+        [{ id: APPOINTMENT_ID }],
+        [{ id: PRODUCT_ID }],
+        [{ taxRatePercent: "0.00" }],
+        [],
+      ],
+      invoiceInsert: { id: INVOICE_ID, isEstimate: false },
+      updateReturns: [[{ id: PRODUCT_ID, stockQuantity: 8 }]],
+    });
+
+    await callerWithDb(first.db).createInvoice({
+      clientId: CLIENT_ID,
+      patientId: PATIENT_ID,
+      appointmentId: APPOINTMENT_ID,
+      items: [productLine],
+      isEstimate: false,
+    });
+
+    expect(first.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: PRACTICE_ID,
+        clientId: CLIENT_ID,
+        patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
+      })
+    );
+
+    const duplicate = createDb({
+      selectResults: [
+        [{ id: CLIENT_ID }],
+        [{ id: PATIENT_ID }],
+        [{ id: APPOINTMENT_ID }],
+        [{ id: PRODUCT_ID }],
+        [{ taxRatePercent: "0.00" }],
+        [{ id: INVOICE_ID }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(duplicate.db).createInvoice({
+        clientId: CLIENT_ID,
+        patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
+        items: [productLine],
+        isEstimate: false,
+      })
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message:
+        "This visit already has an active invoice. Open it instead of creating a duplicate.",
+    });
+
+    expect(duplicate.db.execute).toHaveBeenCalled();
+    expect(duplicate.updateSet).not.toHaveBeenCalled();
+    expect(duplicate.insertValues).not.toHaveBeenCalled();
   });
 
   it("rejects product line references outside the practice", async () => {

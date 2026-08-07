@@ -845,6 +845,38 @@ describe("capture sessions", () => {
     );
   });
 
+  it("stamps the encounter-selected visit even before check-in", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [patientRow, [{ id: APPOINTMENT_ID }]],
+      insertedRows: [{ id: RECORD_ID }],
+    });
+
+    const result = await callerWithDb(db).createCaptureSession({
+      patientId: PATIENT_ID,
+      appointmentId: APPOINTMENT_ID,
+    });
+
+    expect(result.appointmentId).toBe(APPOINTMENT_ID);
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ appointmentId: APPOINTMENT_ID })
+    );
+  });
+
+  it("rejects an encounter-selected visit outside the patient", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [patientRow, []],
+    });
+
+    await expect(
+      callerWithDb(db).createCaptureSession({
+        patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
+      })
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("leaves the visit blank when the patient has no open visit", async () => {
     const { db, insertValues } = createDb({
       selectResults: [patientRow, []],
@@ -1002,6 +1034,40 @@ describe("consent requests", () => {
     expect(insertValues).toHaveBeenCalledWith(
       expect.objectContaining({ appointmentId: APPOINTMENT_ID })
     );
+  });
+
+  it("stamps the encounter-selected visit on a consent before check-in", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [patientRow, formRow, [{ id: APPOINTMENT_ID }]],
+      insertedRows: [{ id: RECORD_ID }],
+    });
+
+    const result = await callerWithDb(db).createConsentRequest({
+      patientId: PATIENT_ID,
+      appointmentId: APPOINTMENT_ID,
+      formId: FORM_ID,
+    });
+
+    expect(result.appointmentId).toBe(APPOINTMENT_ID);
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ appointmentId: APPOINTMENT_ID })
+    );
+  });
+
+  it("rejects an encounter-selected consent visit outside the patient", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [patientRow, formRow, []],
+    });
+
+    await expect(
+      callerWithDb(db).createConsentRequest({
+        patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
+        formId: FORM_ID,
+      })
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    expect(insertValues).not.toHaveBeenCalled();
   });
 
   it("snapshots custom consent copy onto the request", async () => {
