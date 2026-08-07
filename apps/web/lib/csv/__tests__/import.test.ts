@@ -68,6 +68,31 @@ describe("csvToClientRecords", () => {
     expect(records).toEqual([]);
     expect(errors).toEqual(["CSV has an unterminated quoted field."]);
   });
+
+  it("rejects an empty or header-only file before import", () => {
+    expect(csvToClientRecords("")).toEqual({
+      records: [],
+      errors: ["CSV is empty or is missing a header row."],
+    });
+    expect(csvToClientRecords("First Name,Last Name\n")).toEqual({
+      records: [],
+      errors: ["CSV has a header row but no data rows."],
+    });
+  });
+
+  it("reports missing columns once at file level without echoing row data", () => {
+    const csv =
+      "Full Name,Email\n" +
+      "Sensitive Client Name,sensitive@example.com\n".repeat(100);
+    const { records, errors } = csvToClientRecords(csv);
+
+    expect(records).toEqual([]);
+    expect(errors).toHaveLength(2);
+    expect(errors[0]).toMatch(/missing a recognized client first-name column/i);
+    expect(errors[1]).toMatch(/missing a recognized client last-name column/i);
+    expect(errors.join(" ")).not.toContain("Sensitive Client Name");
+    expect(errors.join(" ")).not.toContain("sensitive@example.com");
+  });
 });
 
 describe("csvToPatientRecords", () => {
@@ -135,6 +160,33 @@ describe("csvToPatientRecords", () => {
     const csv = "clientEmail,name,species,dob\njane@x.com,Rex,canine,last spring";
     const { records } = csvToPatientRecords(csv);
     expect(records[0]!.dob).toBe("last spring");
+  });
+
+  it("stops an ID-linked raw PIMS table before row mapping and explains assisted migration", () => {
+    const csv =
+      "Client ID,Patient Name,Species\n" +
+      "client-4839,Rex,Dog\n".repeat(100);
+    const { records, errors } = csvToPatientRecords(csv);
+
+    expect(records).toEqual([]);
+    expect(errors).toEqual([
+      expect.stringMatching(
+        /owner\/client ID column.*currently links records by owner email.*assisted migration/i
+      ),
+    ]);
+    expect(errors[0]).not.toContain("client-4839");
+    expect(errors[0]).not.toContain("Rex");
+  });
+
+  it("reports absent required headers before producing per-row errors", () => {
+    const { records, errors } = csvToPatientRecords(
+      "Owner Email,Patient Name\nowner@example.com,Rex"
+    );
+
+    expect(records).toEqual([]);
+    expect(errors).toEqual([
+      expect.stringMatching(/missing a recognized species column/i),
+    ]);
   });
 });
 
@@ -208,6 +260,17 @@ describe("csvToVaccinationRecords", () => {
     );
     expect(records).toEqual([]);
     expect(errors).toEqual(["CSV has an unterminated quoted field."]);
+  });
+
+  it("detects an ID-linked export before parsing vaccination rows", () => {
+    const { records, errors } = csvToVaccinationRecords(
+      "Account Number,Patient Name,Vaccine,Date Given\n42,Rex,Rabies,2025-01-01"
+    );
+
+    expect(records).toEqual([]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/owner\/client ID column/i);
+    expect(errors[0]).not.toContain("Rabies");
   });
 });
 
@@ -314,5 +377,18 @@ describe("csvToSoapNoteRecords", () => {
     );
     expect(records).toEqual([]);
     expect(errors).toEqual(["CSV has an unterminated quoted field."]);
+  });
+
+  it("requires a recognized note-content column at file preflight", () => {
+    const { records, errors } = csvToSoapNoteRecords(
+      "Owner Email,Patient Name,Visit Date,Provider\nowner@example.com,Rex,2025-01-01,Dr. Example"
+    );
+
+    expect(records).toEqual([]);
+    expect(errors).toEqual([
+      expect.stringMatching(/missing a recognized medical-note content column/i),
+    ]);
+    expect(errors[0]).not.toContain("owner@example.com");
+    expect(errors[0]).not.toContain("Rex");
   });
 });

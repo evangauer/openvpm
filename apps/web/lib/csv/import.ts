@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { parseCsv, normalizeRow } from "./parse";
+import { parseCsv, normalizeKey, normalizeRow } from "./parse";
 import {
   normalizeDateValue,
   normalizeSexValue,
@@ -145,6 +145,80 @@ const SOAP_PATIENT_NAME_MAX = 128;
 // rejecting the whole file and blocking the dry run.
 const importEmailCheck = z.string().trim().email().max(255);
 
+interface RequiredCsvColumn {
+  label: string;
+  aliases: string[];
+  examples: string;
+  detectExternalClientId?: boolean;
+}
+
+// Raw PIMS exports (including Shepherd's CSV tables) commonly relate tables
+// with an internal client/account ID. OpenVPM's self-serve import deliberately
+// does not guess those relationships: the current persisted link is owner
+// email. Detecting an ID-only export up front gives a clinic a safe assisted-
+// migration path instead of producing one error per patient/history row.
+const EXTERNAL_CLIENT_ID_ALIASES = [
+  "clientid",
+  "ownerid",
+  "accountid",
+  "clientnumber",
+  "ownernumber",
+  "accountnumber",
+];
+
+function hasHeader(headers: string[], aliases: string[]): boolean {
+  const normalized = new Set(headers.map(normalizeKey));
+  return aliases.some((alias) => normalized.has(alias));
+}
+
+function preflightCsvHeaders(
+  headers: string[],
+  rows: Record<string, string>[],
+  required: RequiredCsvColumn[],
+  options?: {
+    contentColumns?: RequiredCsvColumn;
+  }
+): string[] {
+  if (headers.length === 0) {
+    return ["CSV is empty or is missing a header row."];
+  }
+
+  if (rows.length === 0) {
+    return ["CSV has a header row but no data rows."];
+  }
+
+  const errors: string[] = [];
+  for (const column of required) {
+    if (hasHeader(headers, column.aliases)) continue;
+
+    if (
+      column.detectExternalClientId &&
+      hasHeader(headers, EXTERNAL_CLIENT_ID_ALIASES)
+    ) {
+      errors.push(
+        "This CSV has an owner/client ID column but no recognized owner email column. " +
+          "OpenVPM's self-serve import currently links records by owner email; export an owner email with each row or use assisted migration for ID-based table mapping."
+      );
+      continue;
+    }
+
+    errors.push(
+      `CSV is missing a recognized ${column.label} column. Add one of: ${column.examples}.`
+    );
+  }
+
+  if (
+    options?.contentColumns &&
+    !hasHeader(headers, options.contentColumns.aliases)
+  ) {
+    errors.push(
+      `CSV is missing a recognized ${options.contentColumns.label} column. Add one of: ${options.contentColumns.examples}.`
+    );
+  }
+
+  return errors;
+}
+
 function opt(v: string | undefined): string | undefined {
   const t = v?.trim();
   return t ? t : undefined;
@@ -163,12 +237,28 @@ function fromAliases(
 }
 
 export function csvToClientRecords(csv: string): ParseResult<ClientImportRecord> {
-  const { rows, errors: parseErrors } = parseCsv(csv);
+  const { headers, rows, errors: parseErrors } = parseCsv(csv);
   const records: ClientImportRecord[] = [];
   const errors: string[] = [...parseErrors];
 
   if (parseErrors.length > 0) {
     return { records, errors };
+  }
+
+  const preflightErrors = preflightCsvHeaders(headers, rows, [
+    {
+      label: "client first-name",
+      aliases: CLIENT_ALIASES.firstName,
+      examples: "First Name, Client First Name, or Given Name",
+    },
+    {
+      label: "client last-name",
+      aliases: CLIENT_ALIASES.lastName,
+      examples: "Last Name, Client Last Name, or Surname",
+    },
+  ]);
+  if (preflightErrors.length > 0) {
+    return { records, errors: preflightErrors };
   }
 
   rows.forEach((raw, i) => {
@@ -195,12 +285,38 @@ export function csvToClientRecords(csv: string): ParseResult<ClientImportRecord>
 }
 
 export function csvToPatientRecords(csv: string): ParseResult<PatientImportRecord> {
-  const { rows, errors: parseErrors } = parseCsv(csv);
+  const { headers, rows, errors: parseErrors } = parseCsv(csv);
   const records: PatientImportRecord[] = [];
   const errors: string[] = [...parseErrors];
 
   if (parseErrors.length > 0) {
     return { records, errors };
+  }
+
+  const preflightErrors = preflightCsvHeaders(
+    headers,
+    rows,
+    [
+      {
+        label: "owner email",
+        aliases: PATIENT_ALIASES.clientEmail,
+        examples: "Owner Email, Client Email, or Email Address",
+        detectExternalClientId: true,
+      },
+      {
+        label: "patient name",
+        aliases: PATIENT_ALIASES.name,
+        examples: "Patient Name, Pet Name, or Animal Name",
+      },
+      {
+        label: "species",
+        aliases: PATIENT_ALIASES.species,
+        examples: "Species or Animal Type",
+      },
+    ]
+  );
+  if (preflightErrors.length > 0) {
+    return { records, errors: preflightErrors };
   }
 
   rows.forEach((raw, i) => {
@@ -248,12 +364,43 @@ export function csvToPatientRecords(csv: string): ParseResult<PatientImportRecor
 export function csvToVaccinationRecords(
   csv: string
 ): ParseResult<VaccinationImportRecord> {
-  const { rows, errors: parseErrors } = parseCsv(csv);
+  const { headers, rows, errors: parseErrors } = parseCsv(csv);
   const records: VaccinationImportRecord[] = [];
   const errors: string[] = [...parseErrors];
 
   if (parseErrors.length > 0) {
     return { records, errors };
+  }
+
+  const preflightErrors = preflightCsvHeaders(
+    headers,
+    rows,
+    [
+      {
+        label: "owner email",
+        aliases: VACCINATION_ALIASES.clientEmail,
+        examples: "Owner Email, Client Email, or Email Address",
+        detectExternalClientId: true,
+      },
+      {
+        label: "patient name",
+        aliases: VACCINATION_ALIASES.patientName,
+        examples: "Patient Name, Pet Name, or Animal Name",
+      },
+      {
+        label: "vaccine name",
+        aliases: VACCINATION_ALIASES.vaccineName,
+        examples: "Vaccine Name, Vaccine, or Vaccination",
+      },
+      {
+        label: "administered date",
+        aliases: VACCINATION_ALIASES.administeredAt,
+        examples: "Date Given, Vaccination Date, or Date Administered",
+      },
+    ]
+  );
+  if (preflightErrors.length > 0) {
+    return { records, errors: preflightErrors };
   }
 
   rows.forEach((raw, i) => {
@@ -316,12 +463,52 @@ export function csvToVaccinationRecords(
 export function csvToSoapNoteRecords(
   csv: string
 ): ParseResult<SoapNoteImportRecord> {
-  const { rows, errors: parseErrors } = parseCsv(csv);
+  const { headers, rows, errors: parseErrors } = parseCsv(csv);
   const records: SoapNoteImportRecord[] = [];
   const errors: string[] = [...parseErrors];
 
   if (parseErrors.length > 0) {
     return { records, errors };
+  }
+
+  const noteAliases = [
+    ...SOAP_NOTE_ALIASES.subjective,
+    ...SOAP_NOTE_ALIASES.objective,
+    ...SOAP_NOTE_ALIASES.assessment,
+    ...SOAP_NOTE_ALIASES.plan,
+    ...SOAP_NOTE_ALIASES.note,
+  ];
+  const preflightErrors = preflightCsvHeaders(
+    headers,
+    rows,
+    [
+      {
+        label: "owner email",
+        aliases: SOAP_NOTE_ALIASES.clientEmail,
+        examples: "Owner Email, Client Email, or Email Address",
+        detectExternalClientId: true,
+      },
+      {
+        label: "patient name",
+        aliases: SOAP_NOTE_ALIASES.patientName,
+        examples: "Patient Name, Pet Name, or Animal Name",
+      },
+      {
+        label: "visit date",
+        aliases: SOAP_NOTE_ALIASES.date,
+        examples: "Visit Date, Date of Service, or Encounter Date",
+      },
+    ],
+    {
+      contentColumns: {
+        label: "medical-note content",
+        aliases: noteAliases,
+        examples: "Notes, Subjective, Objective, Assessment, or Plan",
+      },
+    }
+  );
+  if (preflightErrors.length > 0) {
+    return { records, errors: preflightErrors };
   }
 
   rows.forEach((raw, i) => {
