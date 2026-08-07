@@ -269,6 +269,7 @@ type AdminPracticeSettings = {
     onboardingIntent?: OnboardingIntent;
     journeyStepId?: string | null;
     journeyDismissed?: boolean;
+    setupHelpRequestedAt?: string | null;
   };
 };
 
@@ -293,12 +294,14 @@ function conversionContext(value: unknown) {
   const state = settings.onboardingState;
   const onboardingIntent = onboardingIntentLabel(state?.onboardingIntent);
   const analyticsExcluded = settings.analyticsExcluded === true;
+  const setupHelpRequestedAt = state?.setupHelpRequestedAt ?? null;
 
   if (settings.onboardingCompletedAt) {
     return {
       acquisitionSource,
       onboardingIntent,
       analyticsExcluded,
+      setupHelpRequestedAt,
       setupStage: "Complete",
     };
   }
@@ -309,6 +312,7 @@ function conversionContext(value: unknown) {
       acquisitionSource,
       onboardingIntent,
       analyticsExcluded,
+      setupHelpRequestedAt,
       setupStage: state?.journeyDismissed ? `Paused at ${label}` : label,
     };
   }
@@ -316,6 +320,7 @@ function conversionContext(value: unknown) {
     acquisitionSource,
     onboardingIntent,
     analyticsExcluded,
+    setupHelpRequestedAt,
     setupStage: "Not started",
   };
 }
@@ -360,16 +365,38 @@ export const adminRouter = createRouter({
       return new Map(res.map((r) => [r.practiceId, Number(r.c)]));
     };
 
-    const [userCounts, clientCounts, patientCounts, locationCounts] =
+    const [userCounts, clientCounts, patientCounts, locationCounts, adminRows] =
       await Promise.all([
         countBy(users),
         countBy(clients),
         countBy(patients),
         countBy(locations),
+        tx
+          .select({
+            practiceId: users.practiceId,
+            name: users.name,
+            email: users.email,
+            emailVerifiedAt: users.emailVerifiedAt,
+            createdAt: users.createdAt,
+          })
+          .from(users)
+          .where(and(eq(users.role, "admin"), isNull(users.deletedAt)))
+          .orderBy(users.practiceId, users.createdAt),
       ]);
+
+    const primaryAdminByPractice = new Map<
+      string,
+      (typeof adminRows)[number]
+    >();
+    for (const admin of adminRows) {
+      if (!primaryAdminByPractice.has(admin.practiceId)) {
+        primaryAdminByPractice.set(admin.practiceId, admin);
+      }
+    }
 
     const practiceRows = rows.map((p) => {
       const { settings, ...practice } = p;
+      const primaryAdmin = primaryAdminByPractice.get(p.id);
       const userCount = userCounts.get(p.id) ?? 0;
       const locationCount = Math.max(1, locationCounts.get(p.id) ?? 0);
       const estimatedMrr =
@@ -385,6 +412,9 @@ export const adminRouter = createRouter({
         estimatedMrr,
         clientCount: clientCounts.get(p.id) ?? 0,
         patientCount: patientCounts.get(p.id) ?? 0,
+        adminName: primaryAdmin?.name ?? null,
+        adminEmail: primaryAdmin?.email ?? null,
+        adminEmailVerifiedAt: primaryAdmin?.emailVerifiedAt ?? null,
       };
     });
 

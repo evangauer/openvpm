@@ -34,9 +34,13 @@ import {
   isRequiredAuthTextValid,
 } from "@/lib/auth-input-policy";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
-import { acquisitionFromSearchParams } from "@/lib/acquisition";
+import {
+  acquisitionFromSearchParams,
+  acquisitionWithFunnelVisitorId,
+} from "@/lib/acquisition";
 import { FUNNEL_EVENTS } from "@/lib/funnel-analytics";
 import { trackFunnelEvent } from "@/lib/track-funnel-event";
+import { getFunnelVisitorId } from "@/lib/funnel-visitor";
 
 export default function RegisterPage() {
   return (
@@ -146,11 +150,15 @@ function RegisterPageInner() {
     }
     setError("");
     setLoading(true);
+    const registrationAcquisition = acquisitionWithFunnelVisitorId(
+      acquisition,
+      getFunnelVisitorId()
+    );
     registerMutation.mutate({
       email: email.trim().toLowerCase(),
       password,
       practiceName: practiceName.trim(),
-      acquisition,
+      acquisition: registrationAcquisition,
     });
   }
 

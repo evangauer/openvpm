@@ -88,6 +88,7 @@ describe("admin overview", () => {
               onboardingIntent: "alongside",
               journeyStepId: "data",
               journeyDismissed: true,
+              setupHelpRequestedAt: "2026-06-15T12:00:00.000Z",
             },
           },
         },
@@ -95,7 +96,16 @@ describe("admin overview", () => {
       [{ practiceId: PRACTICE_ID, c: 3 }],
       [{ practiceId: PRACTICE_ID, c: 25 }],
       [{ practiceId: PRACTICE_ID, c: 40 }],
-      [{ practiceId: PRACTICE_ID, c: 2 }]
+      [{ practiceId: PRACTICE_ID, c: 2 }],
+      [
+        {
+          practiceId: PRACTICE_ID,
+          name: "Clinic Owner",
+          email: "owner@westside.example",
+          emailVerifiedAt: new Date("2026-06-01T03:00:00.000Z"),
+          createdAt: new Date("2026-06-01T02:00:00.000Z"),
+        },
+      ]
     );
 
     const result = await caller().overview();
@@ -107,14 +117,65 @@ describe("admin overview", () => {
       locationCount: 2,
       clientCount: 25,
       patientCount: 40,
+      adminName: "Clinic Owner",
+      adminEmail: "owner@westside.example",
+      adminEmailVerifiedAt: new Date("2026-06-01T03:00:00.000Z"),
       acquisitionSource: "homepage_hero · summer_launch",
       onboardingIntent: "Alongside current PIMS",
       analyticsExcluded: true,
       setupStage: "Paused at Data import",
+      setupHelpRequestedAt: "2026-06-15T12:00:00.000Z",
     });
     expect(mocks.withSystem).toHaveBeenCalledWith(
       mocks.db,
       expect.any(Function)
     );
+  });
+
+  it("uses the first admin as the practice activation contact", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+    mocks.selectResults.push(
+      [
+        {
+          id: PRACTICE_ID,
+          name: "Westside Vet",
+          tier: "free",
+          billingStatus: "trialing",
+          trialEndsAt: null,
+          timezone: "UTC",
+          country: "US",
+          createdAt: new Date("2026-06-01T02:00:00.000Z"),
+          settings: {},
+        },
+      ],
+      [{ practiceId: PRACTICE_ID, c: 2 }],
+      [],
+      [],
+      [],
+      [
+        {
+          practiceId: PRACTICE_ID,
+          name: "First Admin",
+          email: "first@example.com",
+          emailVerifiedAt: null,
+          createdAt: new Date("2026-06-01T02:00:00.000Z"),
+        },
+        {
+          practiceId: PRACTICE_ID,
+          name: "Second Admin",
+          email: "second@example.com",
+          emailVerifiedAt: new Date("2026-06-02T02:00:00.000Z"),
+          createdAt: new Date("2026-06-02T02:00:00.000Z"),
+        },
+      ]
+    );
+
+    const result = await caller().overview();
+
+    expect(result.practices[0]).toMatchObject({
+      adminName: "First Admin",
+      adminEmail: "first@example.com",
+      adminEmailVerifiedAt: null,
+    });
   });
 });

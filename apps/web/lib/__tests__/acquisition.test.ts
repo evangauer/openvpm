@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ACQUISITION_VALUE_MAX_LENGTH,
   acquisitionFromSearchParams,
+  acquisitionWithFunnelVisitorId,
 } from "@/lib/acquisition";
 
 describe("signup acquisition", () => {
@@ -49,5 +50,49 @@ describe("signup acquisition", () => {
       utm_campaign: "x".repeat(ACQUISITION_VALUE_MAX_LENGTH + 1),
     });
     expect(acquisitionFromSearchParams(params)).toBeUndefined();
+  });
+
+  it("uses a first-party visitor id when the registration URL has none", () => {
+    expect(
+      acquisitionWithFunnelVisitorId(
+        undefined,
+        "123E4567-E89B-42D3-A456-426614174000"
+      )
+    ).toEqual({
+      funnelId: "123e4567-e89b-42d3-a456-426614174000",
+    });
+
+    expect(
+      acquisitionWithFunnelVisitorId(
+        { source: "direct", campaign: "register" },
+        "123E4567-E89B-42D3-A456-426614174000"
+      )
+    ).toEqual({
+      source: "direct",
+      campaign: "register",
+      funnelId: "123e4567-e89b-42d3-a456-426614174000",
+    });
+  });
+
+  it("preserves explicit cross-domain attribution over a local fallback", () => {
+    expect(
+      acquisitionWithFunnelVisitorId(
+        {
+          source: "marketing",
+          funnelId: "123e4567-e89b-42d3-a456-426614174000",
+        },
+        "223e4567-e89b-42d3-a456-426614174000"
+      )
+    ).toEqual({
+      source: "marketing",
+      funnelId: "123e4567-e89b-42d3-a456-426614174000",
+    });
+  });
+
+  it("does not persist malformed fallback identities", () => {
+    expect(
+      acquisitionWithFunnelVisitorId({ source: "direct" }, "not-a-uuid")
+    ).toEqual({ source: "direct" });
+    expect(acquisitionWithFunnelVisitorId(undefined, null)).toBeUndefined();
   });
 });

@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Database } from "@openpims/db/client";
 import { funnelEvents, practices } from "@openpims/db";
 import { withSystem } from "@/lib/tenant-db";
@@ -21,6 +21,12 @@ type FunnelPracticeSettings = {
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const FIRST_TOUCH_EVENT_NAMES = [
+  "visit",
+  "demo_land",
+  "demo_gate_viewed",
+  "signup_land",
+];
 
 export async function insertFunnelEvent(
   db: Database,
@@ -54,6 +60,44 @@ export async function insertFunnelEvent(
   return rows.length > 0;
 }
 
+/**
+ * Browser telemetry is best-effort and can be blocked. Registration itself
+ * proves the visitor reached /register, so add a minimal server-owned touch
+ * only when that anonymous UUID has no earlier first-party touch. The UUID,
+ * coarse route, and acquisition source are the complete payload—never contact
+ * or clinic data.
+ */
+export async function ensureRegistrationFirstTouch(
+  db: Database,
+  input: {
+    anonymousId: string;
+    source?: string | null;
+    createdAt: Date;
+  }
+): Promise<boolean> {
+  const [existing] = await db
+    .select({ id: funnelEvents.id })
+    .from(funnelEvents)
+    .where(
+      and(
+        eq(funnelEvents.anonymousId, input.anonymousId),
+        inArray(funnelEvents.eventName, FIRST_TOUCH_EVENT_NAMES),
+        isNull(funnelEvents.deletedAt)
+      )
+    )
+    .limit(1);
+  if (existing) return false;
+
+  return insertFunnelEvent(db, {
+    eventName: "signup_land",
+    anonymousId: input.anonymousId,
+    source: input.source ?? null,
+    path: "/register",
+    metadata: { serverFallback: true },
+    createdAt: input.createdAt,
+  });
+}
+
 export async function recordPracticeFunnelStage(
   db: Database,
   practiceId: string,
@@ -73,10 +117,20 @@ export async function recordPracticeFunnelStage(
   const settings = (practice.settings ?? {}) as FunnelPracticeSettings;
   const acquisition = settings.acquisition;
   const funnelId = acquisition?.funnelId?.trim();
+  const anonymousId =
+    funnelId && UUID_RE.test(funnelId) ? funnelId.toLowerCase() : null;
+
+  if (eventName === "registration" && anonymousId) {
+    await ensureRegistrationFirstTouch(db, {
+      anonymousId,
+      source: acquisition?.source ?? null,
+      createdAt: practice.createdAt,
+    });
+  }
 
   return insertFunnelEvent(db, {
     eventName,
-    anonymousId: funnelId && UUID_RE.test(funnelId) ? funnelId : null,
+    anonymousId,
     practiceId,
     source: acquisition?.source ?? null,
     metadata,

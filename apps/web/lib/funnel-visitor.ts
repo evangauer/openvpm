@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 const FUNNEL_VISITOR_STORAGE_KEY = "openvpm_funnel_id";
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+let volatileFunnelVisitorId: string | null = null;
 
 export function validFunnelVisitorId(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
@@ -18,6 +19,7 @@ export function getFunnelVisitorId(): string | null {
     new URLSearchParams(window.location.search).get("funnel_id")
   );
   if (fromUrl) {
+    volatileFunnelVisitorId = fromUrl;
     try {
       window.localStorage.setItem(FUNNEL_VISITOR_STORAGE_KEY, fromUrl);
     } catch {
@@ -30,13 +32,21 @@ export function getFunnelVisitorId(): string | null {
     const stored = validFunnelVisitorId(
       window.localStorage.getItem(FUNNEL_VISITOR_STORAGE_KEY)
     );
-    if (stored) return stored;
+    if (stored) {
+      volatileFunnelVisitorId = stored;
+      return stored;
+    }
   } catch {
-    // Fall through to an in-memory id for this page.
+    // Fall through to the in-memory id for this page.
   }
 
-  const generated = globalThis.crypto?.randomUUID?.() ?? null;
+  if (volatileFunnelVisitorId) return volatileFunnelVisitorId;
+
+  const generated = validFunnelVisitorId(
+    globalThis.crypto?.randomUUID?.() ?? null
+  );
   if (!generated) return null;
+  volatileFunnelVisitorId = generated;
   try {
     window.localStorage.setItem(FUNNEL_VISITOR_STORAGE_KEY, generated);
   } catch {

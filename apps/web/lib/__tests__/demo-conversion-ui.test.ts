@@ -27,6 +27,9 @@ describe("demo conversion bridge UI", () => {
   it("tracks signup land with acquisition context", () => {
     expect(register).toContain("FUNNEL_EVENTS.signupLand");
     expect(register).toContain("acquisition?.source");
+    expect(register).toContain("acquisitionWithFunnelVisitorId");
+    expect(register).toContain("getFunnelVisitorId()");
+    expect(register).toContain("acquisition: registrationAcquisition");
   });
 
   it("mounts the demo bar and path tracker in the dashboard shell", () => {

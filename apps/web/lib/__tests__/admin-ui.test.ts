@@ -62,12 +62,15 @@ describe("admin UI", () => {
     expect(source).toContain("{p.acquisitionSource}");
     expect(source).toContain("{p.onboardingIntent}");
     expect(source).toContain("{p.setupStage}");
+    expect(source).toContain("{p.setupHelpRequestedAt ? (");
     expect(source).toContain(">Source</th>");
     expect(source).toContain(">Intent</th>");
     expect(source).toContain(">Setup</th>");
     expect(source).toContain(">Metrics</th>");
     expect(source).toContain("setAnalyticsExcluded.mutate({");
     expect(source).toContain('{p.analyticsExcluded ? "Excluded" : "Exclude"}');
+    expect(source).toContain('href={`mailto:${p.adminEmail}`}');
+    expect(source).toContain('!p.adminEmailVerifiedAt ? " · unverified" : ""');
   });
 
   it("renders practice dates in each practice timezone", () => {

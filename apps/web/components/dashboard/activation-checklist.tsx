@@ -7,6 +7,8 @@ import {
   AlertTriangle,
   ArrowRight,
   Check,
+  Headphones,
+  Loader2,
   PartyPopper,
   Sparkles,
   X,
@@ -16,6 +18,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { useTour } from "@/components/tour/tour-provider";
+import { toast } from "sonner";
 import {
   DEFAULT_ONBOARDING_INTENT,
   getOnboardingIntentOption,
@@ -60,6 +63,14 @@ export function ActivationChecklist() {
     opts
   );
   const dismiss = trpc.settings.dismissSetup.useMutation();
+  const utils = trpc.useUtils();
+  const requestSetupHelp = trpc.settings.requestOnboardingHelp.useMutation({
+    onSuccess: async () => {
+      await utils.settings.getOnboardingState.invalidate();
+      toast.success("Setup request received");
+    },
+    onError: (error) => toast.error(error.message),
+  });
 
   if (!isAdmin) return null;
 
@@ -182,10 +193,17 @@ export function ActivationChecklist() {
   const goLiveMilestones: Milestone[] = [
     {
       key: "data",
-      label: "Bring in your real data",
-      hint: "Import a few real clients and pets while you evaluate.",
-      done: onboardingData.hasRealData || !onboardingData.hasDemoData,
-      href: "/settings?tab=data",
+      label: "Add one real client and pet",
+      hint: "Start small: create one client, then add their pet.",
+      done: onboardingData.hasRealData,
+      href: "/clients/new",
+    },
+    {
+      key: "firstAppointment",
+      label: "Book that pet's first appointment",
+      hint: "Put one real appointment on the schedule. Your current PIMS can stay in place.",
+      done: onboardingData.hasRealAppointment,
+      href: "/schedule",
     },
     {
       key: "team",
@@ -207,13 +225,6 @@ export function ActivationChecklist() {
       hint: "Choose a number and submit carrier registration. Approval can take 1–2 weeks.",
       done: textingData.hasAnyNumber,
       href: "/settings?tab=messaging&setup=texting",
-    },
-    {
-      key: "firstAppointment",
-      label: "Run your first real appointment",
-      hint: "Check out one real visit while your current PIMS stays in place as a safety net.",
-      done: onboardingData.hasCompletedRealAppointment,
-      href: "/schedule",
     },
     ...(clientPaymentData.stripeConfigured
       ? [
@@ -278,6 +289,7 @@ export function ActivationChecklist() {
   const doneCount = milestones.filter((m) => m.done).length;
   const pct = total === 0 ? 100 : (doneCount / total) * 100;
   const allDone = doneCount === total;
+  const setupHelpRequestedAt = checklistState.setupHelpRequestedAt ?? null;
 
   // The corner X just hides the checklist for this session — it comes back next
   // visit ("show later"). "Don't show this again" dismisses it for good.
@@ -291,7 +303,7 @@ export function ActivationChecklist() {
 
   if (allDone) {
     return (
-      <div className="fixed bottom-4 right-4 z-[70] hidden w-[340px] sm:block">
+      <div className="relative z-20 w-full sm:fixed sm:bottom-4 sm:right-4 sm:z-[70] sm:w-[340px]">
         <div className="flex items-center gap-3 rounded-2xl border border-zinc-800 bg-zinc-900 p-4 text-zinc-50 shadow-2xl shadow-black/30">
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-500 text-zinc-950">
             <PartyPopper className="h-4 w-4" />
@@ -319,7 +331,7 @@ export function ActivationChecklist() {
   // Docked launcher: a compact dark card pinned bottom-right, out of the way
   // of the day's real work but always one glance from the next setup win.
   return (
-    <div className="fixed bottom-4 right-4 z-[70] hidden w-[340px] sm:block">
+    <div className="relative z-20 w-full sm:fixed sm:bottom-4 sm:right-4 sm:z-[70] sm:w-[340px]">
       <div className="relative rounded-2xl border border-zinc-800 bg-zinc-900 p-4 text-zinc-50 shadow-2xl shadow-black/30">
         <button
           type="button"
@@ -404,7 +416,27 @@ export function ActivationChecklist() {
           })}
         </div>
 
-        <div className="mt-3 flex justify-end border-t border-zinc-800 pt-2.5">
+        <div className="mt-3 flex items-center justify-between gap-3 border-t border-zinc-800 pt-2.5">
+          {setupHelpRequestedAt ? (
+            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-400">
+              <Check className="h-3.5 w-3.5" />
+              Setup help requested
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => requestSetupHelp.mutate()}
+              disabled={requestSetupHelp.isPending}
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-400 transition-colors hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {requestSetupHelp.isPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Headphones className="h-3.5 w-3.5" />
+              )}
+              Help me set this up
+            </button>
+          )}
           <button
             type="button"
             onClick={dontShowAgain}
@@ -417,7 +449,6 @@ export function ActivationChecklist() {
     </div>
   );
 }
-
 function ActivationChecklistLoading() {
   // The docked card simply appears once its data is ready; a floating
   // skeleton in the corner would only draw the eye to nothing.
@@ -432,7 +463,7 @@ function ActivationChecklistError({
   onRetry: () => void;
 }) {
   return (
-    <div className="fixed bottom-4 right-4 z-[70] hidden w-[340px] sm:block">
+    <div className="relative z-20 w-full sm:fixed sm:bottom-4 sm:right-4 sm:z-[70] sm:w-[340px]">
       <div className="flex items-start gap-3 rounded-2xl border border-zinc-800 bg-zinc-900 p-4 text-zinc-50 shadow-2xl shadow-black/30">
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
         <div className="min-w-0 flex-1">

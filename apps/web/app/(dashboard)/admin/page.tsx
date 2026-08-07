@@ -662,7 +662,23 @@ export default function AdminPage() {
           <tbody className="divide-y divide-border">
             {data.practices.map((p) => (
               <tr key={p.id} className="hover:bg-muted/20">
-                <td className="px-4 py-2.5 font-medium">{p.name}</td>
+                <td className="px-4 py-2.5">
+                  <p className="font-medium">{p.name}</p>
+                  {p.adminEmail ? (
+                    <a
+                      href={`mailto:${p.adminEmail}`}
+                      className="mt-0.5 block text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                    >
+                      {p.adminName ? `${p.adminName} · ` : ""}
+                      {p.adminEmail}
+                      {!p.adminEmailVerifiedAt ? " · unverified" : ""}
+                    </a>
+                  ) : (
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      No active admin contact
+                    </p>
+                  )}
+                </td>
                 <td className="px-4 py-2.5 capitalize">{p.tier}</td>
                 <td className="px-4 py-2.5">
                   <span
@@ -680,7 +696,12 @@ export default function AdminPage() {
                   {p.onboardingIntent}
                 </td>
                 <td className="px-4 py-2.5 text-muted-foreground">
-                  {p.setupStage}
+                  <p>{p.setupStage}</p>
+                  {p.setupHelpRequestedAt ? (
+                    <p className="mt-0.5 text-xs font-medium text-emerald-700">
+                      Help requested {formatDate(p.setupHelpRequestedAt, p.timezone)}
+                    </p>
+                  ) : null}
                 </td>
                 <td className="px-4 py-2.5">
                   <button

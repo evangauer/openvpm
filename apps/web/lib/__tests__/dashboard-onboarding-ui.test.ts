@@ -52,7 +52,7 @@ describe("dashboard onboarding UI states", () => {
     );
     expect(activationSource).toContain("done: !!practiceData.logoUrl || !!brandColor");
     expect(activationSource).toContain(
-      "done: onboardingData.hasRealData || !onboardingData.hasDemoData"
+      "done: onboardingData.hasRealData"
     );
     expect(activationSource).toContain('label: "Publish online booking"');
     expect(activationSource).toContain(
@@ -60,11 +60,13 @@ describe("dashboard onboarding UI states", () => {
     );
     expect(activationSource).toContain('label: "Start texting registration"');
     expect(activationSource).toContain("done: textingData.hasAnyNumber");
+    expect(activationSource).toContain('label: "Add one real client and pet"');
+    expect(activationSource).toContain('href: "/clients/new"');
     expect(activationSource).toContain(
-      'label: "Run your first real appointment"'
+      'label: "Book that pet\'s first appointment"'
     );
     expect(activationSource).toContain(
-      "done: onboardingData.hasCompletedRealAppointment"
+      "done: onboardingData.hasRealAppointment"
     );
     expect(activationSource).toContain('label: "Set up client card payments"');
     expect(activationSource).toContain("done: clientPaymentData.enabled");
@@ -122,6 +124,25 @@ describe("dashboard onboarding UI states", () => {
     expect(activationSource).toContain("label: pathway.firstWin");
     expect(activationSource).toContain("hint: pathway.firstWinHint");
     expect(activationSource).toContain("{pathway.shortLabel} · {doneCount}");
+  });
+
+  it("turns the activation checklist into a mobile first-win path with a persisted help request", () => {
+    expect(activationSource).toContain(
+      "trpc.settings.requestOnboardingHelp.useMutation"
+    );
+    expect(activationSource).toContain("Help me set this up");
+    expect(activationSource).toContain("Setup help requested");
+    expect(activationSource).toContain("setupHelpRequestedAt");
+    expect(activationSource).toContain(
+      "relative z-20 w-full sm:fixed sm:bottom-4"
+    );
+    expect(activationSource).not.toContain(
+      "fixed bottom-4 right-4 z-[70] hidden"
+    );
+    expect(settingsRouter).toContain(
+      "requestOnboardingHelp: adminProcedure.mutation"
+    );
+    expect(settingsRouter).toContain('"Hands-on onboarding requested"');
   });
 
   it("auto-opens the wizard for unfinished, non-dismissed onboarding and resumes durably", () => {

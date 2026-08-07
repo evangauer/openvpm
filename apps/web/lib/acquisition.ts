@@ -1,5 +1,8 @@
 export const ACQUISITION_VALUE_MAX_LENGTH = 80;
 
+const FUNNEL_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 export interface SignupAcquisition {
   source?: string;
   medium?: string;
@@ -26,10 +29,7 @@ export function acquisitionFromSearchParams(
   const campaign = clean(params.get("utm_campaign"));
   const funnelId = clean(params.get("funnel_id"));
   const validFunnelId =
-    funnelId &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-      funnelId
-    )
+    funnelId && FUNNEL_ID_RE.test(funnelId)
       ? funnelId.toLowerCase()
       : undefined;
   if (!source && !medium && !campaign && !validFunnelId) return undefined;
@@ -38,5 +38,27 @@ export function acquisitionFromSearchParams(
     medium,
     campaign,
     ...(validFunnelId ? { funnelId: validFunnelId } : {}),
+  };
+}
+
+/**
+ * Attach the first-party visitor UUID when signup did not arrive with one in
+ * the URL. Explicit cross-domain attribution always wins. Invalid values are
+ * ignored, and no identity or contact data is introduced.
+ */
+export function acquisitionWithFunnelVisitorId(
+  acquisition: SignupAcquisition | undefined,
+  visitorId: string | null | undefined
+): SignupAcquisition | undefined {
+  if (acquisition?.funnelId) return acquisition;
+
+  const normalizedVisitorId = visitorId?.trim().toLowerCase();
+  if (!normalizedVisitorId || !FUNNEL_ID_RE.test(normalizedVisitorId)) {
+    return acquisition;
+  }
+
+  return {
+    ...acquisition,
+    funnelId: normalizedVisitorId,
   };
 }

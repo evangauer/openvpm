@@ -276,6 +276,10 @@ interface PracticeSettings {
     journeyStepId?: string | null;
     /** "I'll finish later" — suppresses auto-open without completing onboarding. */
     journeyDismissed?: boolean;
+    /** A clinic-admin request for an OpenVPM-assisted first setup session. */
+    setupHelpRequestedAt?: string;
+    setupHelpRequestedByUserId?: string;
+    setupHelpRequestedByEmail?: string;
   };
   accountDeletionRequest?: {
     status: "requested";
@@ -1082,6 +1086,57 @@ export const settingsRouter = createRouter({
       }
       return { ok: true };
     }),
+
+  /**
+   * Let a stalled clinic ask for hands-on setup without leaving the product.
+   * The durable marker makes retries idempotent and keeps the request visible
+   * even if the optional ops-alert webhook is temporarily unavailable.
+   */
+  requestOnboardingHelp: adminProcedure.mutation(async ({ ctx }) => {
+    const [practice] = await ctx.db
+      .select({ name: practices.name, settings: practices.settings })
+      .from(practices)
+      .where(activePracticeWhere(ctx.practiceId))
+      .limit(1);
+    if (!practice) {
+      throw practiceNotFound();
+    }
+
+    const settings = (practice.settings ?? {}) as PracticeSettings;
+    const existingRequestedAt =
+      settings.onboardingState?.setupHelpRequestedAt;
+    if (existingRequestedAt) {
+      return { requestedAt: existingRequestedAt };
+    }
+
+    const requestedAt = new Date().toISOString();
+    const [updated] = await ctx.db
+      .update(practices)
+      .set({
+        settings: onboardingStateMergePatch({
+          setupHelpRequestedAt: requestedAt,
+          setupHelpRequestedByUserId: ctx.user.id,
+          setupHelpRequestedByEmail: ctx.user.email,
+        }),
+      })
+      .where(activePracticeWhere(ctx.practiceId))
+      .returning({ id: practices.id });
+    if (!updated) {
+      throw practiceNotFound();
+    }
+
+    await alertOps(
+      "Hands-on onboarding requested",
+      [
+        `practice=${ctx.practiceId}`,
+        `practiceName=${practice.name}`,
+        `requestedBy=${ctx.user.email}`,
+        `requestedAt=${requestedAt}`,
+      ].join(" ")
+    );
+
+    return { requestedAt };
+  }),
 
   /** Dismiss the dashboard "finish setup" card. */
   dismissSetup: adminProcedure.mutation(async ({ ctx }) => {
