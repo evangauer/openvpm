@@ -66,6 +66,10 @@ function fileRequest(path: string) {
   return new Request(`https://openvpm.test/api/files/${path}`) as never;
 }
 
+function routeContext(path: string[]) {
+  return { params: Promise.resolve({ path }) };
+}
+
 afterEach(() => {
   vi.clearAllMocks();
   vi.unstubAllEnvs();
@@ -84,9 +88,7 @@ describe("file proxy response headers", () => {
 
     const response = await GET(
       fileRequest(`${mocks.practiceId}/branding/logo.png`),
-      {
-        params: { path: [mocks.practiceId, "branding", "logo.png"] },
-      }
+      routeContext([mocks.practiceId, "branding", "logo.png"])
     );
 
     expect(mocks.getServerSession).not.toHaveBeenCalled();
@@ -112,9 +114,7 @@ describe("file proxy response headers", () => {
 
     const response = await GET(
       fileRequest(`${mocks.practiceId}/branding/logo.pdf`),
-      {
-        params: { path: [mocks.practiceId, "branding", "logo.pdf"] },
-      }
+      routeContext([mocks.practiceId, "branding", "logo.pdf"])
     );
 
     expect(mocks.getServerSession).not.toHaveBeenCalled();
@@ -129,9 +129,7 @@ describe("file proxy response headers", () => {
 
     const response = await GET(
       fileRequest(`${mocks.practiceId}/branding/logo.png`),
-      {
-        params: { path: [mocks.practiceId, "branding", "logo.png"] },
-      }
+      routeContext([mocks.practiceId, "branding", "logo.png"])
     );
 
     expect(mocks.getServerSession).not.toHaveBeenCalled();
@@ -146,9 +144,7 @@ describe("file proxy response headers", () => {
 
     const response = await GET(
       fileRequest(`${mocks.practiceId}/branding/logo.png`),
-      {
-        params: { path: [mocks.practiceId, "branding", "logo.png"] },
-      }
+      routeContext([mocks.practiceId, "branding", "logo.png"])
     );
 
     expect(mocks.getServerSession).not.toHaveBeenCalled();
@@ -159,9 +155,10 @@ describe("file proxy response headers", () => {
   });
 
   it("rejects malformed encoded paths before auth or storage lookup", async () => {
-    const response = await GET(fileRequest(`${mocks.practiceId}/branding/%`), {
-      params: { path: [mocks.practiceId, "branding", "%"] },
-    });
+    const response = await GET(
+      fileRequest(`${mocks.practiceId}/branding/%`),
+      routeContext([mocks.practiceId, "branding", "%"])
+    );
 
     expect(response.status).toBe(404);
     await expect(response.json()).resolves.toEqual({ error: "Not found" });
@@ -173,9 +170,7 @@ describe("file proxy response headers", () => {
   it("rejects encoded path separators before auth or storage lookup", async () => {
     const response = await GET(
       fileRequest(`${mocks.practiceId}/branding/logo%2Fsecret.png`),
-      {
-        params: { path: [mocks.practiceId, "branding", "logo%2Fsecret.png"] },
-      }
+      routeContext([mocks.practiceId, "branding", "logo%2Fsecret.png"])
     );
 
     expect(response.status).toBe(404);
@@ -188,9 +183,7 @@ describe("file proxy response headers", () => {
   it("rejects unsupported categories before auth or storage lookup", async () => {
     const response = await GET(
       fileRequest(`${mocks.practiceId}/exports/backup.json`),
-      {
-        params: { path: [mocks.practiceId, "exports", "backup.json"] },
-      }
+      routeContext([mocks.practiceId, "exports", "backup.json"])
     );
 
     expect(response.status).toBe(404);
@@ -203,11 +196,7 @@ describe("file proxy response headers", () => {
   it("rejects deeper object paths before auth or storage lookup", async () => {
     const response = await GET(
       fileRequest(`${mocks.practiceId}/documents/nested/lab.pdf`),
-      {
-        params: {
-          path: [mocks.practiceId, "documents", "nested", "lab.pdf"],
-        },
-      }
+      routeContext([mocks.practiceId, "documents", "nested", "lab.pdf"])
     );
 
     expect(response.status).toBe(404);
@@ -222,9 +211,7 @@ describe("file proxy response headers", () => {
 
     const response = await GET(
       fileRequest(`${mocks.practiceId}/documents/lab.pdf`),
-      {
-        params: { path: [mocks.practiceId, "documents", "lab.pdf"] },
-      }
+      routeContext([mocks.practiceId, "documents", "lab.pdf"])
     );
 
     expect(response.status).toBe(403);
@@ -242,9 +229,7 @@ describe("file proxy response headers", () => {
 
     const response = await GET(
       fileRequest(`${mocks.practiceId}/documents/lab.pdf`),
-      {
-        params: { path: [mocks.practiceId, "documents", "lab.pdf"] },
-      }
+      routeContext([mocks.practiceId, "documents", "lab.pdf"])
     );
 
     expect(mocks.getServerSession).toHaveBeenCalledTimes(1);
@@ -263,9 +248,7 @@ describe("file proxy response headers", () => {
 
     const response = await GET(
       fileRequest(`${mocks.practiceId}/documents/lab.pdf`),
-      {
-        params: { path: [mocks.practiceId, "documents", "lab.pdf"] },
-      }
+      routeContext([mocks.practiceId, "documents", "lab.pdf"])
     );
 
     expect(response.status).toBe(404);
@@ -281,9 +264,7 @@ describe("file proxy response headers", () => {
 
     const response = await GET(
       fileRequest(`${mocks.practiceId}/documents/lab.pdf`),
-      {
-        params: { path: [mocks.practiceId, "documents", "lab.pdf"] },
-      }
+      routeContext([mocks.practiceId, "documents", "lab.pdf"])
     );
 
     expect(mocks.getServerSession).toHaveBeenCalledTimes(1);
@@ -298,9 +279,7 @@ describe("file proxy response headers", () => {
 
     const response = await GET(
       fileRequest(`${mocks.practiceId}/documents/lab.pdf`),
-      {
-        params: { path: [mocks.practiceId, "documents", "lab.pdf"] },
-      }
+      routeContext([mocks.practiceId, "documents", "lab.pdf"])
     );
 
     expect(response.status).toBe(403);
@@ -319,9 +298,7 @@ describe("file proxy response headers", () => {
 
     const response = await GET(
       fileRequest(`${mocks.practiceId}/documents/lab.pdf`),
-      {
-        params: { path: [mocks.practiceId, "documents", "lab.pdf"] },
-      }
+      routeContext([mocks.practiceId, "documents", "lab.pdf"])
     );
 
     expect(response.status).toBe(403);

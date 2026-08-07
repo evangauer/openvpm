@@ -50,9 +50,9 @@ function notFound(): NextResponse {
 
 export async function POST(
   request: NextRequest,
-  { params }: { params: { token: string } }
+  { params }: { params: Promise<{ token: string }> }
 ) {
-  const token = params.token;
+  const { token } = await params;
   if (!isCaptureTokenShape(token)) {
     return notFound();
   }

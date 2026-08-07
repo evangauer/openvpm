@@ -131,12 +131,14 @@ function viewRequest(tokenParam: string) {
 
 function callPost(tokenParam: string, body?: unknown) {
   return POST(signRequest(tokenParam, body), {
-    params: { token: tokenParam },
+    params: Promise.resolve({ token: tokenParam }),
   });
 }
 
 function callGet(tokenParam: string) {
-  return GET(viewRequest(tokenParam), { params: { token: tokenParam } });
+  return GET(viewRequest(tokenParam), {
+    params: Promise.resolve({ token: tokenParam }),
+  });
 }
 
 function validBody(overrides: Record<string, unknown> = {}) {

@@ -150,9 +150,9 @@ function billingBlocked(session: ConsentLookup): boolean {
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { token: string } }
+  { params }: { params: Promise<{ token: string }> }
 ) {
-  const token = params.token;
+  const { token } = await params;
   if (!isCaptureTokenShape(token)) {
     return notFound();
   }
@@ -177,9 +177,9 @@ export async function GET(
 
 export async function POST(
   request: NextRequest,
-  { params }: { params: { token: string } }
+  { params }: { params: Promise<{ token: string }> }
 ) {
-  const token = params.token;
+  const { token } = await params;
   if (!isCaptureTokenShape(token)) {
     return notFound();
   }

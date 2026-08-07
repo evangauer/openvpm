@@ -25,6 +25,24 @@
     "@playwright/test": "^1.58.2",
     "turbo": "^2.3.0"
   },
+  "pnpm": {
+    "overrides": {
+      "axios": "1.19.0",
+      "brace-expansion": "2.1.4",
+      "dompurify": "3.4.13",
+      "fast-xml-builder": "1.1.7",
+      "fast-xml-parser": "5.10.1",
+      "form-data": "4.0.6",
+      "js-cookie": "3.0.8",
+      "linkify-it": "5.0.2",
+      "lodash": "4.18.1",
+      "postcss": "8.5.26",
+      "prismjs": "1.30.0",
+      "qs": "6.15.2",
+      "sharp": "0.35.3",
+      "uuid": "11.1.1"
+    }
+  },
   "packageManager": "pnpm@9.15.0",
   "engines": {
     "node": ">=20"

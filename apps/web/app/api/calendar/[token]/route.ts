@@ -54,12 +54,13 @@ function notFound(): NextResponse {
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { token: string } }
+  { params }: { params: Promise<{ token: string }> }
 ) {
+  const { token: tokenParam } = await params;
   // Accept both /api/calendar/<token> and the friendlier <token>.ics form.
-  const token = params.token.endsWith(".ics")
-    ? params.token.slice(0, -4)
-    : params.token;
+  const token = tokenParam.endsWith(".ics")
+    ? tokenParam.slice(0, -4)
+    : tokenParam;
   if (!isCalendarFeedTokenShape(token)) {
     return notFound();
   }

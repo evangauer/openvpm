@@ -6,7 +6,7 @@ import { hasBlankConfiguredNextAuthSecret } from "@/lib/auth-secret";
 const handler = NextAuth(authOptions);
 
 type RouteContext = {
-  params: { nextauth: string[] } | Promise<{ nextauth: string[] }>;
+  params: Promise<{ nextauth: string[] }>;
 };
 
 function guardedHandler(request: NextRequest, context: RouteContext) {

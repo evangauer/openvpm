@@ -19,7 +19,7 @@ vi.mock("@/lib/auth", () => ({
 
 const { GET, POST } = await import("./route");
 
-const context = { params: { nextauth: ["session"] } };
+const context = { params: Promise.resolve({ nextauth: ["session"] }) };
 
 afterEach(() => {
   vi.clearAllMocks();

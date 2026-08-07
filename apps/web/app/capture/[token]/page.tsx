@@ -8,10 +8,11 @@ import { CaptureClient } from "./capture-client";
  */
 export const dynamic = "force-dynamic";
 
-export default function CapturePage({
+export default async function CapturePage({
   params,
 }: {
-  params: { token: string };
+  params: Promise<{ token: string }>;
 }) {
-  return <CaptureClient token={params.token} />;
+  const { token } = await params;
+  return <CaptureClient token={token} />;
 }

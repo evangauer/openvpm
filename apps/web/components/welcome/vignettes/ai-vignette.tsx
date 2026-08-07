@@ -14,7 +14,7 @@ import { AI_VIGNETTE } from "../welcome-copy";
  * statically, and the loop pauses while the card is off screen.
  */
 
-function useInViewport(ref: React.RefObject<Element>): boolean {
+function useInViewport(ref: React.RefObject<Element | null>): boolean {
   const [inView, setInView] = useState(true);
   useEffect(() => {
     const el = ref.current;

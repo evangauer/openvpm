@@ -18,11 +18,12 @@ export const dynamic = "force-dynamic";
 // GET /api/v1/clients/:id — fetch a single client scoped to the practice.
 export async function GET(
   req: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
+  const { id } = await params;
   const auth = await authenticateApiKey(req, "clients:read");
   if (!auth.ok) return auth.response;
-  if (!isUuid(params.id)) return apiError("Client id must be a valid UUID", 400);
+  if (!isUuid(id)) return apiError("Client id must be a valid UUID", 400);
 
   return withErrorHandling(() =>
     withTenant(db, auth.ctx.practiceId, async (tx) => {
@@ -34,7 +35,7 @@ export async function GET(
         .from(clients)
         .where(
           and(
-            eq(clients.id, params.id),
+            eq(clients.id, id),
             eq(clients.practiceId, auth.ctx.practiceId),
             isNull(clients.deletedAt)
           )

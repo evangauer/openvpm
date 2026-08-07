@@ -88,9 +88,10 @@ function objectKeyFromPath(path: string[]): string | null {
  */
 export async function GET(
   _req: NextRequest,
-  { params }: { params: { path: string[] } },
+  { params }: { params: Promise<{ path: string[] }> },
 ) {
-  const key = objectKeyFromPath(params.path);
+  const { path } = await params;
+  const key = objectKeyFromPath(path);
   if (!key) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }

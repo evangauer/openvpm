@@ -51,7 +51,7 @@ function request(path: string): NextRequest {
 
 function call(tokenParam: string) {
   return GET(request(`/api/calendar/${tokenParam}`), {
-    params: { token: tokenParam },
+    params: Promise.resolve({ token: tokenParam }),
   });
 }
 

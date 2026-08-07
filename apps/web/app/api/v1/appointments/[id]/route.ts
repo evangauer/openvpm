@@ -18,11 +18,12 @@ export const dynamic = "force-dynamic";
 // GET /api/v1/appointments/:id — fetch a single appointment scoped to the practice.
 export async function GET(
   req: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
+  const { id } = await params;
   const auth = await authenticateApiKey(req, "appointments:read");
   if (!auth.ok) return auth.response;
-  if (!isUuid(params.id)) {
+  if (!isUuid(id)) {
     return apiError("Appointment id must be a valid UUID", 400);
   }
 
@@ -36,7 +37,7 @@ export async function GET(
         .from(appointments)
         .where(
           and(
-            eq(appointments.id, params.id),
+            eq(appointments.id, id),
             eq(appointments.practiceId, auth.ctx.practiceId),
             isNull(appointments.deletedAt)
           )

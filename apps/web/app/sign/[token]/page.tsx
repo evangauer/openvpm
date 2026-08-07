@@ -8,10 +8,11 @@ import { SignClient } from "./sign-client";
  */
 export const dynamic = "force-dynamic";
 
-export default function SignPage({
+export default async function SignPage({
   params,
 }: {
-  params: { token: string };
+  params: Promise<{ token: string }>;
 }) {
-  return <SignClient token={params.token} />;
+  const { token } = await params;
+  return <SignClient token={token} />;
 }

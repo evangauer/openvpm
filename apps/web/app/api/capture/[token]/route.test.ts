@@ -113,7 +113,7 @@ function captureRequest(tokenParam: string, file?: File) {
 
 function call(tokenParam: string, file?: File) {
   return POST(captureRequest(tokenParam, file), {
-    params: { token: tokenParam },
+    params: Promise.resolve({ token: tokenParam }),
   });
 }
 

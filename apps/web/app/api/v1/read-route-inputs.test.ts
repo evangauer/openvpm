@@ -51,6 +51,10 @@ function request(path: string) {
   });
 }
 
+function routeContext(id: string) {
+  return { params: Promise.resolve({ id }) };
+}
+
 function mockActivePracticeQuery(result: unknown[] = ACTIVE_PRACTICE) {
   const builder = {
     from: vi.fn(() => builder),
@@ -95,9 +99,10 @@ describe("REST read route input validation", () => {
   });
 
   it("rejects malformed client path ids before tenant DB work", async () => {
-    const response = await getClient(request("/api/v1/clients/not-a-uuid"), {
-      params: { id: "not-a-uuid" },
-    });
+    const response = await getClient(
+      request("/api/v1/clients/not-a-uuid"),
+      routeContext("not-a-uuid")
+    );
 
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({
@@ -112,9 +117,10 @@ describe("REST read route input validation", () => {
   });
 
   it("rejects malformed patient path ids before tenant DB work", async () => {
-    const response = await getPatient(request("/api/v1/patients/not-a-uuid"), {
-      params: { id: "not-a-uuid" },
-    });
+    const response = await getPatient(
+      request("/api/v1/patients/not-a-uuid"),
+      routeContext("not-a-uuid")
+    );
 
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({
@@ -131,9 +137,7 @@ describe("REST read route input validation", () => {
   it("rejects malformed appointment path ids before tenant DB work", async () => {
     const response = await getAppointment(
       request("/api/v1/appointments/not-a-uuid"),
-      {
-        params: { id: "not-a-uuid" },
-      }
+      routeContext("not-a-uuid")
     );
 
     expect(response.status).toBe(400);
@@ -173,9 +177,10 @@ describe("REST read route input validation", () => {
     {
       label: "client detail",
       call: () =>
-        getClient(request(`/api/v1/clients/${VALID_ID}`), {
-          params: { id: VALID_ID },
-        }),
+        getClient(
+          request(`/api/v1/clients/${VALID_ID}`),
+          routeContext(VALID_ID)
+        ),
     },
     {
       label: "patient list",
@@ -184,16 +189,18 @@ describe("REST read route input validation", () => {
     {
       label: "patient detail",
       call: () =>
-        getPatient(request(`/api/v1/patients/${VALID_ID}`), {
-          params: { id: VALID_ID },
-        }),
+        getPatient(
+          request(`/api/v1/patients/${VALID_ID}`),
+          routeContext(VALID_ID)
+        ),
     },
     {
       label: "appointment detail",
       call: () =>
-        getAppointment(request(`/api/v1/appointments/${VALID_ID}`), {
-          params: { id: VALID_ID },
-        }),
+        getAppointment(
+          request(`/api/v1/appointments/${VALID_ID}`),
+          routeContext(VALID_ID)
+        ),
     },
   ])("rejects $label when the authenticated practice is inactive", async ({ call }) => {
     mockActivePracticeQuery([]);
