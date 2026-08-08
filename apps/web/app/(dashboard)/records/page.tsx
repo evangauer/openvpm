@@ -1,8 +1,8 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import {
   Search,
@@ -480,9 +480,18 @@ function RecordsLoadingPanel({ label }: { label: string }) {
   );
 }
 
-export default function RecordsPage() {
+function RecordsPageContent() {
   const router = useRouter();
+  const utils = trpc.useUtils();
+  const searchParams = useSearchParams();
   const { data: session } = useSession();
+  const linkedPatientId = searchParams.get("patientId") ?? "";
+  const linkedAppointmentId = searchParams.get("appointmentId") ?? "";
+  const shouldOpenPrescription =
+    searchParams.get("tab") === "prescriptions" &&
+    searchParams.get("new") === "1";
+  const appliedVisitLink = useRef(false);
+  const prescriptionOperationId = useRef<string | null>(null);
   const userRole = session?.user?.role;
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedPatient, setSelectedPatient] = useState<{
@@ -517,6 +526,32 @@ export default function RecordsPage() {
   );
   const trimmedSearchQuery = searchQuery.trim();
   const canSearchPatients = isPatientSearchInputValid(searchQuery);
+
+  const linkedPatientQuery = trpc.patients.getById.useQuery(
+    { id: linkedPatientId || "00000000-0000-0000-0000-000000000000" },
+    { enabled: Boolean(linkedPatientId) }
+  );
+
+  useEffect(() => {
+    if (appliedVisitLink.current || !linkedPatientQuery.data) return;
+    const linkedPatient = linkedPatientQuery.data;
+    setSelectedPatient({
+      id: linkedPatient.id,
+      name: linkedPatient.name,
+      species: linkedPatient.species,
+      breed: linkedPatient.breed,
+      clientFirstName: linkedPatient.clientFirstName,
+      clientLastName: linkedPatient.clientLastName,
+    });
+    setSearchQuery(linkedPatient.name);
+    if (searchParams.get("tab") === "prescriptions") {
+      setActiveTab("prescriptions");
+    }
+    if (shouldOpenPrescription) {
+      setShowPrescriptionForm(true);
+    }
+    appliedVisitLink.current = true;
+  }, [linkedPatientQuery.data, searchParams, shouldOpenPrescription]);
 
   const {
     data: searchResults,
@@ -787,8 +822,14 @@ export default function RecordsPage() {
     onSuccess: () => {
       toast.success("Prescription created");
       refetchPrescriptions();
+      if (linkedAppointmentId) {
+        utils.encounters.getCloseout.invalidate({
+          appointmentId: linkedAppointmentId,
+        });
+      }
       setShowPrescriptionForm(false);
       setPrescriptionForm(initialPrescriptionForm(recordsTimeZone));
+      prescriptionOperationId.current = null;
     },
     onError: (err) => {
       toast.error(err.message);
@@ -1439,6 +1480,7 @@ export default function RecordsPage() {
                       variant={showPrescriptionForm ? "outline" : "default"}
                       onClick={() => {
                         if (showPrescriptionForm) {
+                          prescriptionOperationId.current = null;
                           setShowPrescriptionForm(false);
                           setPrescriptionForm((current) => ({
                             ...current,
@@ -1446,6 +1488,7 @@ export default function RecordsPage() {
                           }));
                           return;
                         }
+                        prescriptionOperationId.current = null;
                         setShowPrescriptionForm(true);
                         setPrescriptionForm(
                           initialPrescriptionForm(recordsTimeZone)
@@ -1478,8 +1521,14 @@ export default function RecordsPage() {
                       }
                       if (!canSubmitPrescription) return;
 
+                      prescriptionOperationId.current ??= crypto.randomUUID();
                       createPrescription.mutate({
                         patientId,
+                        operationId: prescriptionOperationId.current,
+                        appointmentId:
+                          linkedAppointmentId && linkedPatientId === patientId
+                            ? linkedAppointmentId
+                            : undefined,
                         medicationName:
                           prescriptionForm.medicationName.trim(),
                         productId: prescriptionForm.productId || undefined,
@@ -1746,6 +1795,7 @@ export default function RecordsPage() {
                         variant="ghost"
                         size="sm"
                         onClick={() => {
+                          prescriptionOperationId.current = null;
                           setShowPrescriptionForm(false);
                           setPrescriptionForm(
                             initialPrescriptionForm(recordsTimeZone)
@@ -2697,5 +2747,13 @@ export default function RecordsPage() {
         />
       )}
     </div>
+  );
+}
+
+export default function RecordsPage() {
+  return (
+    <Suspense fallback={<RecordsLoadingPanel label="Loading records..." />}>
+      <RecordsPageContent />
+    </Suspense>
   );
 }

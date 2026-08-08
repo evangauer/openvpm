@@ -25,6 +25,7 @@ const { billingRouter } = await import("../routers/billing");
 const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const USER_ID = "00000000-0000-0000-0000-000000000001";
 const INVOICE_ID = "00000000-0000-0000-0000-000000000002";
+const OPERATION_ID = "00000000-0000-0000-0000-000000000009";
 
 const baseInvoice = {
   id: INVOICE_ID,
@@ -34,7 +35,10 @@ const baseInvoice = {
   isEstimate: false,
 };
 
-function callerWithDb(db: Record<string, unknown>) {
+function callerWithDb(
+  db: Record<string, unknown>,
+  injectOperationId = true
+) {
   const session = {
     user: {
       id: USER_ID,
@@ -44,7 +48,20 @@ function callerWithDb(db: Record<string, unknown>) {
       practiceId: PRACTICE_ID,
     },
   };
-  return billingRouter.createCaller({ db, session } as never);
+  const caller = billingRouter.createCaller({ db, session } as never);
+  if (!injectOperationId) return caller as any;
+  return new Proxy(caller, {
+    get(target, property, receiver) {
+      if (property === "recordPayment") {
+        return (input: Record<string, unknown>) =>
+          target.recordPayment({
+            operationId: OPERATION_ID,
+            ...input,
+          } as never);
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  }) as any;
 }
 
 function thenableRows(result: unknown[]) {
@@ -58,15 +75,23 @@ function thenableRows(result: unknown[]) {
 function createDb(opts: {
   selectResults: unknown[][];
   payment?: Record<string, unknown>;
+  replayPayment?: Record<string, unknown>;
+  includeOperationLookup?: boolean;
   updateReturns?: unknown[][];
 }) {
-  const selectResults = [...opts.selectResults];
+  const selectResults = [
+    ...(opts.includeOperationLookup === false
+      ? []
+      : [opts.replayPayment ? [opts.replayPayment] : []]),
+    ...opts.selectResults,
+  ];
   const select = vi.fn(() => {
     const result = selectResults.shift() ?? [];
     const afterWhere = thenableRows(result);
     const builder = {
       from: vi.fn(() => builder),
       leftJoin: vi.fn(() => builder),
+      innerJoin: vi.fn(() => builder),
       where: vi.fn(() => afterWhere),
       orderBy: vi.fn(async () => result),
       limit: vi.fn(async () => result),
@@ -107,6 +132,21 @@ afterEach(() => {
 });
 
 describe("billing payments", () => {
+  it("requires an operation ID before payment DB work", async () => {
+    const { db, select, insertValues } = createDb({ selectResults: [] });
+
+    await expect(
+      callerWithDb(db, false).recordPayment({
+        invoiceId: INVOICE_ID,
+        amount: "30.00",
+        method: "cash",
+      })
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    expect(select).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("rejects invalid payment amounts before DB work", async () => {
     const { db, select, insertValues } = createDb({ selectResults: [] });
 
@@ -235,6 +275,7 @@ describe("billing payments", () => {
     await expect(
       callerWithDb(db).recordPayment({
         invoiceId: INVOICE_ID,
+        operationId: OPERATION_ID,
         amount: " 30.00 ",
         method: "cash",
         notes: "  cash drawer  ",
@@ -248,10 +289,67 @@ describe("billing payments", () => {
         method: "cash",
         receivedBy: USER_ID,
         notes: "cash drawer",
+        externalId: `dashboard-payment:${PRACTICE_ID}:${OPERATION_ID}`,
       })
     );
     expect(updateSet).toHaveBeenCalledWith({ paidAmount: "50.00" });
     expect(mocks.dispatchWebhookEvent).not.toHaveBeenCalled();
+  });
+
+  it("returns the original payment for an exact operation retry", async () => {
+    const replayPayment = {
+      id: "00000000-0000-0000-0000-000000000003",
+      invoiceId: INVOICE_ID,
+      amount: "30.00",
+      method: "cash",
+      notes: "cash drawer",
+      receivedBy: USER_ID,
+      externalId: `dashboard-payment:${PRACTICE_ID}:${OPERATION_ID}`,
+    };
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [],
+      replayPayment,
+    });
+
+    await expect(
+      callerWithDb(db).recordPayment({
+        invoiceId: INVOICE_ID,
+        operationId: OPERATION_ID,
+        amount: "30.00",
+        method: "cash",
+        notes: "cash drawer",
+      })
+    ).resolves.toMatchObject(replayPayment);
+
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(mocks.dispatchWebhookEvent).not.toHaveBeenCalled();
+    expect(mocks.loadClientReceipt).not.toHaveBeenCalled();
+  });
+
+  it("rejects reuse of a payment operation ID with changed details", async () => {
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [],
+      replayPayment: {
+        id: "00000000-0000-0000-0000-000000000003",
+        invoiceId: INVOICE_ID,
+        amount: "30.00",
+        method: "cash",
+        notes: null,
+      },
+    });
+
+    await expect(
+      callerWithDb(db).recordPayment({
+        invoiceId: INVOICE_ID,
+        operationId: OPERATION_ID,
+        amount: "35.00",
+        method: "cash",
+      })
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
   });
 
   it("does not insert a payment when the invoice balance changed concurrently", async () => {
@@ -331,7 +429,10 @@ describe("billing payments", () => {
   });
 
   it("requires a payment or adjustment to settle an invoice", async () => {
-    const { db, updateSet } = createDb({ selectResults: [[baseInvoice]] });
+    const { db, updateSet } = createDb({
+      selectResults: [[baseInvoice]],
+      includeOperationLookup: false,
+    });
 
     await expect(
       callerWithDb(db).updateInvoiceStatus({
@@ -350,6 +451,7 @@ describe("billing payments", () => {
   it("does not void an invoice when history changed concurrently", async () => {
     const { db, updateSet } = createDb({
       selectResults: [[{ ...baseInvoice, paidAmount: "0.00" }], []],
+      includeOperationLookup: false,
       updateReturns: [[]],
     });
 
@@ -369,7 +471,10 @@ describe("billing payments", () => {
   });
 
   it("validates invoice ownership before listing payments", async () => {
-    const { db, select } = createDb({ selectResults: [[]] });
+    const { db, select } = createDb({
+      selectResults: [[]],
+      includeOperationLookup: false,
+    });
 
     await expect(
       callerWithDb(db).listPayments({ invoiceId: INVOICE_ID })

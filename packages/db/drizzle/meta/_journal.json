@@ -295,6 +295,20 @@
       "when": 1786186474122,
       "tag": "0041_aromatic_rhino",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1786193220069,
+      "tag": "0042_tough_mattie_franklin",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1786197649043,
+      "tag": "0043_normal_bloodstrike",
+      "breakpoints": true
     }
   ]
 }

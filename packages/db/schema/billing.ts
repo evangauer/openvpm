@@ -13,6 +13,7 @@ import {
   index,
   uniqueIndex,
   check,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { relations, sql } from "drizzle-orm";
 import { baseColumns } from "./common";
@@ -22,6 +23,7 @@ import { clients } from "./clients";
 import { patients } from "./patients";
 import { appointments } from "./scheduling";
 import { users } from "./users";
+import { prescriptions } from "./prescriptions";
 
 export const invoiceStatusEnum = pgEnum("invoice_status", [
   "draft",
@@ -162,6 +164,21 @@ export const invoices = pgTable(
       table.clientId,
       table.deletedAt
     ),
+    appointmentIdx: index("invoices_appointment_idx").on(
+      table.practiceId,
+      table.appointmentId,
+      table.deletedAt,
+      table.isEstimate,
+      table.status
+    ),
+    activeAppointmentUq: uniqueIndex("invoices_active_appointment_uq")
+      .on(table.practiceId, table.appointmentId)
+      .where(
+        sql`${table.appointmentId} is not null
+          and ${table.isEstimate} = false
+          and ${table.status} <> 'void'
+          and ${table.deletedAt} is null`
+      ),
   })
 );
 
@@ -178,6 +195,12 @@ export const invoiceItems = pgTable(
     total: numeric("total", { precision: 10, scale: 2 }).notNull(),
     itemType: invoiceItemTypeEnum("item_type").notNull(),
     itemId: uuid("item_id"),
+    // A visit-linked prescription already owns the inventory deduction. This
+    // source identity lets billing charge it without dispensing the stock a
+    // second time.
+    sourcePrescriptionId: uuid("source_prescription_id").references(
+      (): AnyPgColumn => prescriptions.id
+    ),
   },
   (table) => ({
     invoiceIdx: index("invoice_items_invoice_idx").on(
@@ -189,6 +212,17 @@ export const invoiceItems = pgTable(
       table.deletedAt,
       table.itemId
     ),
+    sourcePrescriptionIdx: index("invoice_items_source_prescription_idx").on(
+      table.sourcePrescriptionId,
+      table.deletedAt
+    ),
+    sourcePrescriptionInvoiceUq: uniqueIndex(
+      "invoice_items_source_prescription_invoice_uq"
+    )
+      .on(table.invoiceId, table.sourcePrescriptionId)
+      .where(
+        sql`${table.sourcePrescriptionId} is not null and ${table.deletedAt} is null`
+      ),
   })
 );
 
@@ -203,11 +237,21 @@ export const invoiceAdjustments = pgTable(
     amount: numeric("amount", { precision: 10, scale: 2 }).notNull(),
     reason: text("reason"),
     createdBy: uuid("created_by").references(() => users.id),
+    operationKey: varchar("operation_key", { length: 160 }),
+    balanceAfter: numeric("balance_after", { precision: 10, scale: 2 }),
   },
   (table) => ({
     invoiceIdx: index("invoice_adjustments_invoice_idx").on(
       table.invoiceId,
       table.deletedAt
+    ),
+    operationKeyUq: uniqueIndex("invoice_adjustments_operation_key_uq").on(
+      table.operationKey
+    ),
+    operationResultCheck: check(
+      "invoice_adjustments_operation_result_check",
+      sql`(${table.operationKey} is null and ${table.balanceAfter} is null)
+        or (${table.operationKey} is not null and ${table.balanceAfter} is not null and ${table.balanceAfter} >= 0)`
     ),
   })
 );
@@ -362,6 +406,10 @@ export const invoiceItemsRelations = relations(invoiceItems, ({ one }) => ({
   invoice: one(invoices, {
     fields: [invoiceItems.invoiceId],
     references: [invoices.id],
+  }),
+  sourcePrescription: one(prescriptions, {
+    fields: [invoiceItems.sourcePrescriptionId],
+    references: [prescriptions.id],
   }),
 }));
 

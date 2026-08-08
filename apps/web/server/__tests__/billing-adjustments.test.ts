@@ -18,6 +18,7 @@ const { billingRouter } = await import("../routers/billing");
 const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const USER_ID = "00000000-0000-0000-0000-000000000001";
 const INVOICE_ID = "00000000-0000-0000-0000-000000000002";
+const OPERATION_ID = "00000000-0000-0000-0000-000000000009";
 
 const baseInvoice = {
   id: INVOICE_ID,
@@ -27,7 +28,10 @@ const baseInvoice = {
   isEstimate: false,
 };
 
-function callerWithDb(db: Record<string, unknown>) {
+function callerWithDb(
+  db: Record<string, unknown>,
+  injectOperationId = true
+) {
   const session = {
     user: {
       id: USER_ID,
@@ -37,7 +41,20 @@ function callerWithDb(db: Record<string, unknown>) {
       practiceId: PRACTICE_ID,
     },
   };
-  return billingRouter.createCaller({ db, session } as never);
+  const caller = billingRouter.createCaller({ db, session } as never);
+  if (!injectOperationId) return caller as any;
+  return new Proxy(caller, {
+    get(target, property, receiver) {
+      if (property === "applyInvoiceAdjustment") {
+        return (input: Record<string, unknown>) =>
+          target.applyInvoiceAdjustment({
+            operationId: OPERATION_ID,
+            ...input,
+          } as never);
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  }) as any;
 }
 
 function thenableRows(result: unknown[]) {
@@ -54,15 +71,23 @@ function thenableRows(result: unknown[]) {
 function createDb(opts: {
   selectResults: unknown[][];
   adjustmentInsert?: Record<string, unknown>;
+  replayAdjustment?: Record<string, unknown>;
+  includeOperationLookup?: boolean;
   updateReturns?: unknown[][];
 }) {
-  const selectResults = [...opts.selectResults];
+  const selectResults = [
+    ...(opts.includeOperationLookup === false
+      ? []
+      : [opts.replayAdjustment ? [opts.replayAdjustment] : []]),
+    ...opts.selectResults,
+  ];
   const select = vi.fn(() => {
     const result = selectResults.shift() ?? [];
     const afterWhere = thenableRows(result);
     const builder = {
       from: vi.fn(() => builder),
       leftJoin: vi.fn(() => builder),
+      innerJoin: vi.fn(() => builder),
       where: vi.fn(() => afterWhere),
       orderBy: vi.fn(async () => result),
       limit: vi.fn(async () => result),
@@ -104,6 +129,21 @@ afterEach(() => {
 });
 
 describe("billing invoice adjustments", () => {
+  it("requires an operation ID before adjustment DB work", async () => {
+    const { db, select, insertValues } = createDb({ selectResults: [] });
+
+    await expect(
+      callerWithDb(db, false).applyInvoiceAdjustment({
+        invoiceId: INVOICE_ID,
+        type: "credit",
+        amount: "10.00",
+      })
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    expect(select).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("rejects invalid adjustment amounts before DB work", async () => {
     const { db, select, insertValues } = createDb({ selectResults: [] });
 
@@ -118,6 +158,7 @@ describe("billing invoice adjustments", () => {
     await expect(
       callerWithDb(db).applyInvoiceAdjustment({
         invoiceId: INVOICE_ID,
+        operationId: OPERATION_ID,
         type: "write_off",
         amount: "100000000",
       })
@@ -200,6 +241,7 @@ describe("billing invoice adjustments", () => {
     await expect(
       callerWithDb(db).applyInvoiceAdjustment({
         invoiceId: INVOICE_ID,
+        operationId: OPERATION_ID,
         type: "write_off",
         amount: "80.00",
         reason: "Bad debt",
@@ -217,6 +259,8 @@ describe("billing invoice adjustments", () => {
         amount: "80.00",
         reason: "Bad debt",
         createdBy: USER_ID,
+        operationKey: `dashboard-adjustment:${PRACTICE_ID}:${OPERATION_ID}`,
+        balanceAfter: "0.00",
       })
     );
     expect(mocks.dispatchWebhookEvent).toHaveBeenCalledWith(
@@ -232,6 +276,62 @@ describe("billing invoice adjustments", () => {
         source: "dashboard",
       }
     );
+  });
+
+  it("returns the original adjustment for an exact operation retry", async () => {
+    const replayAdjustment = {
+      id: "00000000-0000-0000-0000-000000000003",
+      invoiceId: INVOICE_ID,
+      type: "write_off",
+      amount: "80.00",
+      reason: "Bad debt",
+      createdBy: USER_ID,
+      balanceAfter: "0.00",
+    };
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [],
+      replayAdjustment,
+    });
+
+    await expect(
+      callerWithDb(db).applyInvoiceAdjustment({
+        invoiceId: INVOICE_ID,
+        operationId: OPERATION_ID,
+        type: "write_off",
+        amount: "80.00",
+        reason: "Bad debt",
+      })
+    ).resolves.toMatchObject({ ...replayAdjustment, balanceDue: "0.00" });
+
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(mocks.dispatchWebhookEvent).not.toHaveBeenCalled();
+  });
+
+  it("rejects reuse of an adjustment operation ID with changed details", async () => {
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [],
+      replayAdjustment: {
+        id: "00000000-0000-0000-0000-000000000003",
+        invoiceId: INVOICE_ID,
+        type: "credit",
+        amount: "25.00",
+        reason: null,
+        balanceAfter: "55.00",
+      },
+    });
+
+    await expect(
+      callerWithDb(db).applyInvoiceAdjustment({
+        invoiceId: INVOICE_ID,
+        operationId: OPERATION_ID,
+        type: "credit",
+        amount: "30.00",
+      })
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
   });
 
   it("does not insert an adjustment when the invoice balance changed concurrently", async () => {
@@ -293,7 +393,10 @@ describe("billing invoice adjustments", () => {
   });
 
   it("validates invoice ownership before listing adjustments", async () => {
-    const { db, select } = createDb({ selectResults: [[]] });
+    const { db, select } = createDb({
+      selectResults: [[]],
+      includeOperationLookup: false,
+    });
 
     await expect(
       callerWithDb(db).listAdjustments({ invoiceId: INVOICE_ID })
@@ -305,6 +408,7 @@ describe("billing invoice adjustments", () => {
   it("voids only invoices with no payments or adjustments", async () => {
     const { db, updateSet } = createDb({
       selectResults: [[{ ...baseInvoice, paidAmount: "0.00" }], []],
+      includeOperationLookup: false,
       updateReturns: [[{ id: INVOICE_ID, status: "void" }]],
     });
 
@@ -318,6 +422,7 @@ describe("billing invoice adjustments", () => {
   it("does not void when invoice history changed concurrently", async () => {
     const { db, updateSet } = createDb({
       selectResults: [[{ ...baseInvoice, paidAmount: "0.00" }], []],
+      includeOperationLookup: false,
       updateReturns: [[]],
     });
 
@@ -334,6 +439,7 @@ describe("billing invoice adjustments", () => {
   it("rejects voiding invoices with payment history", async () => {
     const { db, updateSet } = createDb({
       selectResults: [[baseInvoice], []],
+      includeOperationLookup: false,
     });
 
     await expect(

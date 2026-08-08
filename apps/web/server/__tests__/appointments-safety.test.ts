@@ -63,6 +63,7 @@ function createDb(opts?: {
     const afterWhere = {
       limit: vi.fn(async () => result),
       orderBy: vi.fn(async () => result),
+      for: vi.fn(async () => result),
       then: (
         resolve: (value: unknown[]) => unknown,
         reject?: (error: unknown) => unknown
@@ -451,6 +452,45 @@ describe("appointments target safety", () => {
       })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("rejects direct checkout so closeout gates cannot be bypassed", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [[{ id: APPOINTMENT_ID, status: "in_exam" }]],
+    });
+
+    await expect(
+      callerWithDb(db).updateStatus({
+        id: APPOINTMENT_ID,
+        status: "checked_out",
+      })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Review and complete the visit closeout before checking out this appointment.",
+    });
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("does not cancel or reopen a clinically finalized visit", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [{ id: APPOINTMENT_ID, status: "in_exam" }],
+        [{ id: "closeout", status: "clinical_finalized" }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).updateStatus({
+        id: APPOINTMENT_ID,
+        status: "cancelled",
+      })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Clinical handoff is finalized. Complete the visit through closeout instead of changing its status.",
+    });
     expect(updateSet).not.toHaveBeenCalled();
   });
 

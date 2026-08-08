@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
@@ -1124,6 +1124,8 @@ function PaymentSection({
   );
   const [adjustmentAmount, setAdjustmentAmount] = useState("");
   const [adjustmentReason, setAdjustmentReason] = useState("");
+  const paymentOperationId = useRef<string | null>(null);
+  const adjustmentOperationId = useRef<string | null>(null);
 
   const utils = trpc.useUtils();
 
@@ -1144,6 +1146,7 @@ function PaymentSection({
       setPaymentAmount("");
       setPaymentMethod("cash");
       setPaymentNotes("");
+      paymentOperationId.current = null;
     },
     onError: (err) => {
       toast.error(err.message);
@@ -1160,6 +1163,7 @@ function PaymentSection({
       setAdjustmentType("credit");
       setAdjustmentAmount("");
       setAdjustmentReason("");
+      adjustmentOperationId.current = null;
     },
     onError: (err) => {
       toast.error(err.message);
@@ -1231,19 +1235,23 @@ function PaymentSection({
     !applyAdjustment.isPending;
 
   const handleOpenForm = () => {
+    paymentOperationId.current = null;
     setPaymentAmount(remaining.toFixed(2));
     setShowPaymentForm(true);
   };
 
   const handleOpenAdjustmentForm = () => {
+    adjustmentOperationId.current = null;
     setAdjustmentAmount(remaining.toFixed(2));
     setShowAdjustmentForm(true);
   };
 
   const handleRecordPayment = () => {
     if (!canRecordPayment) return;
+    paymentOperationId.current ??= crypto.randomUUID();
     recordPayment.mutate({
       invoiceId,
+      operationId: paymentOperationId.current,
       amount: paymentAmount.trim(),
       method: paymentMethod as any,
       notes: paymentNotes.trim() || undefined,
@@ -1252,8 +1260,10 @@ function PaymentSection({
 
   const handleApplyAdjustment = () => {
     if (!canApplyAdjustment) return;
+    adjustmentOperationId.current ??= crypto.randomUUID();
     applyAdjustment.mutate({
       invoiceId,
+      operationId: adjustmentOperationId.current,
       type: adjustmentType,
       amount: adjustmentAmount.trim(),
       reason: adjustmentReason.trim() || undefined,
@@ -1373,7 +1383,10 @@ function PaymentSection({
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => setShowPaymentForm(false)}
+              onClick={() => {
+                paymentOperationId.current = null;
+                setShowPaymentForm(false);
+              }}
             >
               Cancel
             </Button>
@@ -1441,7 +1454,10 @@ function PaymentSection({
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => setShowAdjustmentForm(false)}
+              onClick={() => {
+                adjustmentOperationId.current = null;
+                setShowAdjustmentForm(false);
+              }}
             >
               Cancel
             </Button>

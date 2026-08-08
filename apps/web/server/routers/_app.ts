@@ -16,6 +16,7 @@ import { dataRouter } from "./data";
 import { aiRouter } from "./ai";
 import { webhooksRouter } from "./webhooks";
 import { notificationsRouter } from "./notifications";
+import { encountersRouter } from "./encounters";
 import { templatesRouter } from "./templates";
 import { controlledSubstancesRouter } from "./controlled-substances";
 import { insuranceRouter } from "./insurance";
@@ -49,6 +50,7 @@ export const appRouter = createRouter({
   ai: aiRouter,
   webhooks: webhooksRouter,
   notifications: notificationsRouter,
+  encounters: encountersRouter,
   templates: templatesRouter,
   controlledSubstances: controlledSubstancesRouter,
   insurance: insuranceRouter,

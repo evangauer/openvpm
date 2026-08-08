@@ -1,13 +1,13 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useId, useRef } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import {
   CalendarPlus,
   ClipboardList,
   Clock,
-  FileText,
   Loader2,
   MapPin,
   User,
@@ -45,6 +45,26 @@ type WhiteboardAppointment = {
   typeName: string | null;
   typeColor: string | null;
 };
+
+const DIALOG_FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function focusElementAfterNavigation(elementId: string) {
+  const startedAt = performance.now();
+  function moveFocus() {
+    const target = document.getElementById(elementId);
+    if (target) {
+      if (!target.hasAttribute("tabindex"))
+        target.setAttribute("tabindex", "-1");
+      target.focus({ preventScroll: true });
+      return;
+    }
+    if (performance.now() - startedAt < 5_000) {
+      window.requestAnimationFrame(moveFocus);
+    }
+  }
+  window.requestAnimationFrame(moveFocus);
+}
 
 // --- Constants ---
 
@@ -192,16 +212,6 @@ function formatAppointmentTime(date: Date, timeZone?: string | null): string {
   }
 }
 
-function formatVisitDate(date: Date, timeZone?: string | null): string {
-  try {
-    return date.toLocaleDateString("en-US", {
-      timeZone: timeZone ?? undefined,
-    });
-  } catch {
-    return date.toLocaleDateString("en-US");
-  }
-}
-
 // --- Components ---
 
 function LiveIndicator() {
@@ -303,8 +313,6 @@ function WhiteboardCard({
 function AppointmentDetailModal({
   appointment,
   timeZone,
-  practiceName,
-  practicePhone,
   onClose,
   onStatusChange,
   canUpdateStatus,
@@ -312,32 +320,87 @@ function AppointmentDetailModal({
 }: {
   appointment: WhiteboardAppointment;
   timeZone?: string | null;
-  practiceName: string;
-  practicePhone?: string | null;
   onClose: () => void;
   onStatusChange: (id: string, status: AppointmentStatus) => void;
   canUpdateStatus: boolean;
   isUpdating: boolean;
 }) {
   const modalRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  const restoreFocusRef = useRef(true);
+  const dialogTitleId = useId();
   const start = new Date(appointment.startTime);
 
   useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    const previouslyFocusedElement =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    const focusFrame = window.requestAnimationFrame(() => {
+      modalRef.current?.focus();
+    });
+
     function handleClickOutside(e: MouseEvent) {
       if (modalRef.current && !modalRef.current.contains(e.target as Node)) {
-        onClose();
+        onCloseRef.current();
       }
     }
-    function handleEscape(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (e.key !== "Tab" || !modalRef.current) return;
+
+      const focusableElements = Array.from(
+        modalRef.current.querySelectorAll<HTMLElement>(
+          DIALOG_FOCUSABLE_SELECTOR,
+        ),
+      );
+      if (focusableElements.length === 0) {
+        e.preventDefault();
+        modalRef.current.focus();
+        return;
+      }
+
+      const firstElement = focusableElements[0]!;
+      const lastElement = focusableElements[focusableElements.length - 1]!;
+      const activeElement = document.activeElement;
+      if (activeElement === modalRef.current) {
+        e.preventDefault();
+        (e.shiftKey ? lastElement : firstElement).focus();
+      } else if (
+        e.shiftKey &&
+        (activeElement === firstElement ||
+          !modalRef.current.contains(activeElement))
+      ) {
+        e.preventDefault();
+        lastElement.focus();
+      } else if (
+        !e.shiftKey &&
+        (activeElement === lastElement ||
+          !modalRef.current.contains(activeElement))
+      ) {
+        e.preventDefault();
+        firstElement.focus();
+      }
     }
     document.addEventListener("mousedown", handleClickOutside);
-    document.addEventListener("keydown", handleEscape);
+    document.addEventListener("keydown", handleKeyDown);
     return () => {
+      window.cancelAnimationFrame(focusFrame);
       document.removeEventListener("mousedown", handleClickOutside);
-      document.removeEventListener("keydown", handleEscape);
+      document.removeEventListener("keydown", handleKeyDown);
+      if (restoreFocusRef.current && previouslyFocusedElement?.isConnected) {
+        previouslyFocusedElement.focus();
+      }
     };
-  }, [onClose]);
+  }, []);
 
   const clientName =
     [appointment.clientFirstName, appointment.clientLastName]
@@ -358,45 +421,17 @@ function AppointmentDetailModal({
     statusActions.push({ label: "Cancel", status: "cancelled", variant: "destructive" });
   } else if (current === "checked_in") {
     statusActions.push({ label: "Start Exam", status: "in_exam", variant: "default" });
-    statusActions.push({ label: "Check Out", status: "checked_out", variant: "outline" });
-  } else if (current === "in_exam") {
-    statusActions.push({ label: "Check Out", status: "checked_out", variant: "default" });
   }
   const visibleStatusActions = canUpdateStatus ? statusActions : [];
-
-  const handlePrintDischarge = async () => {
-    try {
-      const { generateDischargeInstructions } = await import("@/lib/pdf");
-      generateDischargeInstructions({
-        practiceName,
-        practicePhone: practicePhone ?? undefined,
-        patientName: appointment.patientName || "Unknown",
-        species: appointment.patientSpecies || "unknown",
-        clientName: clientName,
-        visitDate: formatVisitDate(new Date(appointment.startTime), timeZone),
-        doctorName: appointment.doctorName || undefined,
-        medications: [],
-        instructions: [
-          "Monitor your pet for any changes in behavior or appetite",
-          "Administer all prescribed medications as directed",
-          "Keep the follow-up appointment if one was scheduled",
-          "Ensure fresh water is available at all times",
-        ],
-        emergencyNotes:
-          "If your pet shows signs of difficulty breathing, excessive bleeding, seizures, collapse, or inability to urinate, seek emergency veterinary care immediately.",
-      }).save(
-        `discharge_${(appointment.patientName || "patient").replace(/\s+/g, "_")}.pdf`
-      );
-      toast.success("Discharge instructions downloaded");
-    } catch {
-      toast.error("Failed to generate discharge instructions");
-    }
-  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
       <div
         ref={modalRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={dialogTitleId}
+        tabIndex={-1}
         className="w-full max-w-sm rounded-lg border border-border bg-card shadow-lg"
       >
         {/* Header */}
@@ -409,6 +444,7 @@ function AppointmentDetailModal({
           </div>
           <button
             type="button"
+            aria-label="Close appointment details"
             onClick={onClose}
             className="rounded-md p-1 hover:bg-muted transition-colors"
           >
@@ -423,7 +459,7 @@ function AppointmentDetailModal({
               {getSpeciesEmoji(appointment.patientSpecies)}
             </span>
             <div>
-              <h3 className="font-semibold text-base">
+              <h3 id={dialogTitleId} className="font-semibold text-base">
                 {appointment.patientName || "Unknown Patient"}
               </h3>
               {appointment.patientSpecies && (
@@ -478,8 +514,27 @@ function AppointmentDetailModal({
         </div>
 
         {/* Actions */}
-        {(visibleStatusActions.length > 0 || current === "checked_out") && (
+        {(visibleStatusActions.length > 0 || appointment.id) && (
           <div className="flex flex-wrap gap-2 border-t border-border px-4 py-3">
+            <Button size="sm" asChild>
+              <Link
+                href={
+                  current === "in_exam"
+                    ? `/encounters/${appointment.id}#visit-closeout`
+                    : `/encounters/${appointment.id}`
+                }
+                onNavigate={() => {
+                  restoreFocusRef.current = false;
+                  if (current === "in_exam") {
+                    focusElementAfterNavigation("visit-closeout");
+                  }
+                }}
+              >
+                 {current === "in_exam"
+                   ? "Review closeout"
+                   : "Open visit"}
+              </Link>
+            </Button>
             {visibleStatusActions.map((action) => (
               <Button
                 key={action.status}
@@ -494,16 +549,6 @@ function AppointmentDetailModal({
                 {action.label}
               </Button>
             ))}
-            {current === "checked_out" && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={handlePrintDischarge}
-              >
-                <FileText className="mr-1.5 h-3 w-3" />
-                Print Discharge
-              </Button>
-            )}
           </div>
         )}
       </div>
@@ -731,8 +776,6 @@ export default function WhiteboardPage() {
           <AppointmentDetailModal
             appointment={selectedAppointmentFromList}
             timeZone={verifiedPracticeSettings.timezone}
-            practiceName={verifiedPracticeSettings.name}
-            practicePhone={verifiedPracticeSettings.phone}
             onClose={() => setSelectedAppointment(null)}
             onStatusChange={handleStatusChange}
             canUpdateStatus={canUpdateStatus}

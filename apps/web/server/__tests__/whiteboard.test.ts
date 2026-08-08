@@ -65,6 +65,7 @@ function createStatusDb(opts?: {
     const result = selectResults.shift() ?? [];
     const afterWhere = {
       limit: vi.fn(async () => result),
+      for: vi.fn(async () => result),
     };
     const builder = {
       from: vi.fn(() => builder),
@@ -307,6 +308,24 @@ describe("whiteboard workflows", () => {
       message: "Cannot change appointment status from checked_out to scheduled.",
     });
 
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("rejects direct checkout so closeout gates cannot be bypassed", async () => {
+    const { db, updateSet } = createStatusDb({
+      selectResults: [[{ id: APPOINTMENT_ID, status: "in_exam" }]],
+    });
+
+    await expect(
+      callerWithDb(db).updateStatus({
+        id: APPOINTMENT_ID,
+        status: "checked_out",
+      })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Review and complete the visit closeout before checking out this appointment.",
+    });
     expect(updateSet).not.toHaveBeenCalled();
   });
 

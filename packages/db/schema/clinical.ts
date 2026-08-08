@@ -77,6 +77,11 @@ export const soapNotes = pgTable(
   (table) => ({
     patientIdx: index("soap_notes_patient_idx").on(table.patientId),
     practiceIdx: index("soap_notes_practice_idx").on(table.practiceId, table.deletedAt),
+    appointmentIdx: index("soap_notes_appointment_idx").on(
+      table.practiceId,
+      table.appointmentId,
+      table.deletedAt
+    ),
   })
 );
 

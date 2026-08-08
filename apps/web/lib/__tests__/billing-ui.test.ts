@@ -197,6 +197,15 @@ describe("billing invoice payment actions", () => {
     expect(source).toContain("Take Card");
   });
 
+  it("keeps one operation ID across payment and adjustment retries", () => {
+    expect(source).toContain("paymentOperationId.current ??= crypto.randomUUID()");
+    expect(source).toContain("operationId: paymentOperationId.current");
+    expect(source).toContain(
+      "adjustmentOperationId.current ??= crypto.randomUUID()"
+    );
+    expect(source).toContain("operationId: adjustmentOperationId.current");
+  });
+
   it("disables card checkout when Stripe checkout is not configured", () => {
     expect(source).toContain("trpc.billing.cardPaymentStatus.useQuery");
     expect(source).toContain("const cardPaymentStatusMissing =");

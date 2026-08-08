@@ -13,6 +13,7 @@ import {
   controlledSubstanceLog,
   emailSuppressions,
   invoices,
+  invoiceAdjustments,
   invoiceItems,
   labResults,
   locationMessaging,
@@ -264,7 +265,20 @@ describe("hot table indexes", () => {
     [
       "invoice_items",
       invoiceItems,
-      ["invoice_items_invoice_idx", "invoice_items_item_idx"],
+      [
+        "invoice_items_invoice_idx",
+        "invoice_items_item_idx",
+        "invoice_items_source_prescription_idx",
+        "invoice_items_source_prescription_invoice_uq",
+      ],
+    ],
+    [
+      "invoice_adjustments",
+      invoiceAdjustments,
+      [
+        "invoice_adjustments_invoice_idx",
+        "invoice_adjustments_operation_key_uq",
+      ],
     ],
     [
       "payments",
@@ -278,6 +292,8 @@ describe("hot table indexes", () => {
         "prescriptions_patient_status_idx",
         "prescriptions_practice_status_idx",
         "prescriptions_product_idx",
+        "prescriptions_appointment_idx",
+        "prescriptions_practice_operation_uq",
       ],
     ],
     [

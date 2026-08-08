@@ -22,6 +22,7 @@ const TABLES = [
   "invoices",
   "lab_results",
   "procedures",
+  "visit_closeouts",
   "prescriptions",
   "vaccination_records",
   "soap_notes",

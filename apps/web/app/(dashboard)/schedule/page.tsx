@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useId, useMemo } from "react";
 import { useSession } from "next-auth/react";
 import Link from "next/link";
 import {
@@ -67,6 +67,25 @@ const HOUR_HEIGHT = 60; // px per hour
 const TOTAL_HOURS = END_HOUR - START_HOUR;
 const CALENDAR_HEIGHT = TOTAL_HOURS * HOUR_HEIGHT;
 const DEFAULT_APPOINTMENT_COLOR = "#0d9488";
+const DIALOG_FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function focusElementAfterNavigation(elementId: string) {
+  const startedAt = performance.now();
+  function moveFocus() {
+    const target = document.getElementById(elementId);
+    if (target) {
+      if (!target.hasAttribute("tabindex"))
+        target.setAttribute("tabindex", "-1");
+      target.focus({ preventScroll: true });
+      return;
+    }
+    if (performance.now() - startedAt < 5_000) {
+      window.requestAnimationFrame(moveFocus);
+    }
+  }
+  window.requestAnimationFrame(moveFocus);
+}
 
 type AppointmentStatus =
   | "scheduled"
@@ -877,6 +896,9 @@ function AppointmentDetailPopover({
   isCancellingSeries: boolean;
 }) {
   const popoverRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  const restoreFocusRef = useRef(true);
+  const dialogTitleId = useId();
   const start = new Date(appointment.startTime);
   const end = new Date(appointment.endTime);
   const [showRescheduleForm, setShowRescheduleForm] = useState(false);
@@ -891,21 +913,75 @@ function AppointmentDetailPopover({
   );
 
   useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    const previouslyFocusedElement =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    const focusFrame = window.requestAnimationFrame(() => {
+      popoverRef.current?.focus();
+    });
+
     function handleClickOutside(e: MouseEvent) {
       if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
-        onClose();
+        onCloseRef.current();
       }
     }
-    function handleEscape(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (e.key !== "Tab" || !popoverRef.current) return;
+
+      const focusableElements = Array.from(
+        popoverRef.current.querySelectorAll<HTMLElement>(
+          DIALOG_FOCUSABLE_SELECTOR,
+        ),
+      );
+      if (focusableElements.length === 0) {
+        e.preventDefault();
+        popoverRef.current.focus();
+        return;
+      }
+
+      const firstElement = focusableElements[0]!;
+      const lastElement = focusableElements[focusableElements.length - 1]!;
+      const activeElement = document.activeElement;
+      if (activeElement === popoverRef.current) {
+        e.preventDefault();
+        (e.shiftKey ? lastElement : firstElement).focus();
+      } else if (
+        e.shiftKey &&
+        (activeElement === firstElement ||
+          !popoverRef.current.contains(activeElement))
+      ) {
+        e.preventDefault();
+        lastElement.focus();
+      } else if (
+        !e.shiftKey &&
+        (activeElement === lastElement ||
+          !popoverRef.current.contains(activeElement))
+      ) {
+        e.preventDefault();
+        firstElement.focus();
+      }
     }
     document.addEventListener("mousedown", handleClickOutside);
-    document.addEventListener("keydown", handleEscape);
+    document.addEventListener("keydown", handleKeyDown);
     return () => {
+      window.cancelAnimationFrame(focusFrame);
       document.removeEventListener("mousedown", handleClickOutside);
-      document.removeEventListener("keydown", handleEscape);
+      document.removeEventListener("keydown", handleKeyDown);
+      if (restoreFocusRef.current && previouslyFocusedElement?.isConnected) {
+        previouslyFocusedElement.focus();
+      }
     };
-  }, [onClose]);
+  }, []);
 
   useEffect(() => {
     setShowRescheduleForm(false);
@@ -926,11 +1002,8 @@ function AppointmentDetailPopover({
     statusActions.push({ label: "Check In", status: "checked_in", variant: "default" });
     statusActions.push({ label: "No Show", status: "no_show", variant: "outline" });
     statusActions.push({ label: "Cancel", status: "cancelled", variant: "destructive" });
-  } else if (current === "checked_in" || current === "in_exam") {
-    statusActions.push({ label: "Check Out", status: "checked_out", variant: "default" });
-    if (current === "checked_in") {
-      statusActions.push({ label: "In Exam", status: "in_exam", variant: "outline" });
-    }
+  } else if (current === "checked_in") {
+    statusActions.push({ label: "In Exam", status: "in_exam", variant: "default" });
     statusActions.push({ label: "No Show", status: "no_show", variant: "outline" });
   } else if (current === "no_show" || current === "cancelled") {
     statusActions.push({ label: "Reopen", status: "scheduled", variant: "outline" });
@@ -960,6 +1033,10 @@ function AppointmentDetailPopover({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
       <div
         ref={popoverRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={dialogTitleId}
+        tabIndex={-1}
         className="w-full max-w-sm rounded-lg border border-border bg-card shadow-lg"
       >
         {/* Header */}
@@ -972,6 +1049,7 @@ function AppointmentDetailPopover({
           </div>
           <button
             type="button"
+            aria-label="Close appointment details"
             onClick={onClose}
             className="rounded-md p-1 hover:bg-muted transition-colors"
           >
@@ -982,7 +1060,7 @@ function AppointmentDetailPopover({
         {/* Body */}
         <div className="px-4 py-3 space-y-3">
           <div>
-            <h3 className="font-semibold text-base">
+            <h3 id={dialogTitleId} className="font-semibold text-base">
               {appointment.patientName || "Unknown Patient"}
             </h3>
             {appointment.patientSpecies && (
@@ -1112,14 +1190,35 @@ function AppointmentDetailPopover({
             (current === "scheduled" || current === "confirmed"))) && (
           <div className="flex flex-wrap gap-2 border-t border-border px-4 py-3">
             <Button size="sm" asChild>
-              <Link href={`/encounters/${appointment.id}`}>
+              <Link
+                href={
+                  current === "in_exam"
+                    ? `/encounters/${appointment.id}#visit-closeout`
+                    : `/encounters/${appointment.id}`
+                }
+                onNavigate={() => {
+                  restoreFocusRef.current = false;
+                  if (current === "in_exam") {
+                    focusElementAfterNavigation("visit-closeout");
+                  }
+                }}
+              >
                 <Stethoscope className="mr-1.5 h-3 w-3" />
-                Open visit
+                {current === "in_exam"
+                  ? "Review closeout"
+                  : "Open visit"}
               </Link>
             </Button>
             {appointment.patientId && (
               <Button size="sm" variant="outline" asChild>
-                <Link href={`/patients/${appointment.patientId}`}>View chart</Link>
+                <Link
+                  href={`/patients/${appointment.patientId}`}
+                  onNavigate={() => {
+                    restoreFocusRef.current = false;
+                  }}
+                >
+                  View chart
+                </Link>
               </Button>
             )}
             {canManageSchedule && canMoveAppointment && (

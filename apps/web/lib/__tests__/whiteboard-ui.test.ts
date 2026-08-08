@@ -5,8 +5,11 @@ describe("whiteboard appointment workflow UI", () => {
   it("does not offer status transitions that the appointment lifecycle rejects", () => {
     const source = readFileSync("app/(dashboard)/whiteboard/page.tsx", "utf8");
 
-    expect(source).toContain('current === "checked_out"');
-    expect(source).toContain("Print Discharge");
+    expect(source).toContain("Review closeout");
+    expect(source).toContain("`/encounters/${appointment.id}#visit-closeout`");
+    expect(source).toContain("`/encounters/${appointment.id}`");
+    expect(source).not.toContain('label: "Check Out"');
+    expect(source).not.toContain("generateDischargeInstructions");
     expect(source).not.toContain("Back to Exam");
     expect(source).not.toContain(
       'statusActions.push({ label: "Back to Exam", status: "in_exam"'
@@ -30,16 +33,14 @@ describe("whiteboard appointment workflow UI", () => {
       "const visibleStatusActions = canUpdateStatus ? statusActions : []"
     );
     expect(source).toContain("visibleStatusActions.map");
-    expect(source).toContain("current === \"checked_out\"");
   });
 
-  it("renders whiteboard times and discharge dates in the practice timezone", () => {
+  it("renders whiteboard times in the practice timezone", () => {
     const source = readFileSync("app/(dashboard)/whiteboard/page.tsx", "utf8");
 
     expect(source).toContain("function formatCurrentTime(date: Date, timeZone?: string | null)");
     expect(source).toContain("function formatCurrentDate(date: Date, timeZone?: string | null)");
     expect(source).toContain("function formatAppointmentTime(date: Date, timeZone?: string | null)");
-    expect(source).toContain("function formatVisitDate(date: Date, timeZone?: string | null)");
     expect(source).toContain("trpc.whiteboard.settings.useQuery");
     expect(source).toContain("const settingsQuery = trpc.whiteboard.settings.useQuery()");
     expect(source).toContain("const practiceSettings = settingsQuery.data");
@@ -71,14 +72,9 @@ describe("whiteboard appointment workflow UI", () => {
     expect(source).toContain("formatCurrentDate(currentTime, verifiedPracticeSettings.timezone)");
     expect(source).toContain("appointment={selectedAppointmentFromList}");
     expect(source).toContain("timeZone={verifiedPracticeSettings.timezone}");
-    expect(source).toContain("practiceName={verifiedPracticeSettings.name}");
-    expect(source).toContain("practicePhone={verifiedPracticeSettings.phone}");
     expect(source).toContain("pageReady &&");
     expect(source).toContain("selectedAppointmentStillActive &&");
     expect(source).toContain("formatAppointmentTime(start, timeZone)");
-    expect(source).toContain("formatVisitDate(new Date(appointment.startTime), timeZone)");
-    expect(source).toContain("practiceName,");
-    expect(source).toContain("practicePhone: practicePhone ?? undefined");
     expect(source).not.toContain("settingsQuery.data?.timezone");
     expect(source).not.toContain("settingsQuery.data?.name");
     expect(source).not.toContain("settingsQuery.data?.phone");

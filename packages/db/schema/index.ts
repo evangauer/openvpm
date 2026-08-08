@@ -21,3 +21,4 @@ export * from "./demo-access";
 export * from "./booking";
 export * from "./funnel-events";
 export * from "./migrations";
+export * from "./visit-closeouts";

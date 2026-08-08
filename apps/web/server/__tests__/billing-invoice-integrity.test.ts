@@ -18,6 +18,8 @@ const PRODUCT_ID = "00000000-0000-0000-0000-000000000004";
 const INVOICE_ID = "00000000-0000-0000-0000-000000000005";
 const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000006";
 const SERVICE_ID = "00000000-0000-0000-0000-000000000007";
+const PRESCRIPTION_ID = "00000000-0000-0000-0000-000000000008";
+const UPDATED_AT = new Date("2026-08-08T12:00:00.000Z");
 
 function callerWithDb(db: Record<string, unknown>, role = "front_desk") {
   const session = {
@@ -70,6 +72,7 @@ function createDb(opts: {
     const builder = {
       from: vi.fn(() => builder),
       leftJoin: vi.fn(() => builder),
+      innerJoin: vi.fn(() => builder),
       where: vi.fn(() => afterWhere),
       orderBy: vi.fn(async () => result),
       limit: vi.fn(async () => result),
@@ -294,6 +297,7 @@ describe("billing invoice integrity", () => {
         [{ id: PATIENT_ID }],
         [{ id: APPOINTMENT_ID }],
         [{ taxRatePercent: "0.00" }],
+        [{ id: APPOINTMENT_ID, status: "in_exam" }],
         [],
         [{ id: PRODUCT_ID, deletedAt: null }],
       ],
@@ -324,6 +328,7 @@ describe("billing invoice integrity", () => {
         [{ id: PATIENT_ID }],
         [{ id: APPOINTMENT_ID }],
         [{ taxRatePercent: "0.00" }],
+        [{ id: APPOINTMENT_ID, status: "in_exam" }],
         [{ id: INVOICE_ID }],
       ],
     });
@@ -345,6 +350,35 @@ describe("billing invoice integrity", () => {
     expect(duplicate.db.execute).toHaveBeenCalled();
     expect(duplicate.updateSet).not.toHaveBeenCalled();
     expect(duplicate.insertValues).not.toHaveBeenCalled();
+  });
+
+  it("rechecks and locks the visit before creating a real invoice", async () => {
+    const { db, insertValues, lockCalls } = createDb({
+      selectResults: [
+        [{ id: CLIENT_ID }],
+        [{ id: PATIENT_ID }],
+        [{ id: APPOINTMENT_ID }],
+        [{ taxRatePercent: "0.00" }],
+        [{ id: APPOINTMENT_ID, status: "checked_out" }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).createInvoice({
+        clientId: CLIENT_ID,
+        patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
+        items: [productLine],
+        isEstimate: false,
+      })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: "Start the exam before capturing visit charges.",
+    });
+    expect(lockCalls).toEqual([
+      { mode: "update", inTransaction: true, writesBeforeLock: 0 },
+    ]);
+    expect(insertValues).not.toHaveBeenCalled();
   });
 
   it("rejects product line references outside the practice", async () => {
@@ -500,6 +534,9 @@ describe("billing invoice integrity", () => {
             paidAmount: "0.00",
             status: "draft",
             isEstimate: false,
+            updatedAt: UPDATED_AT,
+            appointmentId: null,
+            patientId: PATIENT_ID,
           },
         ],
         [{ itemType: "product", itemId: PRODUCT_ID, quantity: 1 }],
@@ -523,6 +560,7 @@ describe("billing invoice integrity", () => {
     await expect(
       callerWithDb(db).updateInvoiceItems({
         id: INVOICE_ID,
+        expectedUpdatedAt: UPDATED_AT,
         items: [{ ...productLine, quantity: 3 }],
       })
     ).resolves.toMatchObject({
@@ -577,6 +615,9 @@ describe("billing invoice integrity", () => {
             paidAmount: "0.00",
             status: "draft",
             isEstimate: false,
+            updatedAt: UPDATED_AT,
+            appointmentId: null,
+            patientId: PATIENT_ID,
           },
         ],
         [{ itemType: "service", itemId: SERVICE_ID, quantity: 2 }],
@@ -598,6 +639,7 @@ describe("billing invoice integrity", () => {
     await expect(
       callerWithDb(db).updateInvoiceItems({
         id: INVOICE_ID,
+        expectedUpdatedAt: UPDATED_AT,
         items: [
           {
             description: "Archived exam",
@@ -637,6 +679,9 @@ describe("billing invoice integrity", () => {
               paidAmount: "0.00",
               status: "draft",
               isEstimate: false,
+              updatedAt: UPDATED_AT,
+              appointmentId: null,
+              patientId: PATIENT_ID,
             },
           ],
           previousQuantity === 0
@@ -655,6 +700,7 @@ describe("billing invoice integrity", () => {
       await expect(
         callerWithDb(db).updateInvoiceItems({
           id: INVOICE_ID,
+          expectedUpdatedAt: UPDATED_AT,
           items: [
             {
               description: "Archived exam",
@@ -705,6 +751,78 @@ describe("billing invoice integrity", () => {
     expect(insertValues).not.toHaveBeenCalled();
   });
 
+  it("charges a visit prescription without deducting already-dispensed stock twice", async () => {
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [
+        [{ id: CLIENT_ID }],
+        [{ id: PATIENT_ID }],
+        [{ id: APPOINTMENT_ID }],
+        [{ taxRatePercent: "0.00" }],
+        [{ id: APPOINTMENT_ID, status: "in_exam" }],
+        [],
+        [{ id: PRODUCT_ID, deletedAt: null }],
+        [{ id: PRESCRIPTION_ID, productId: PRODUCT_ID, quantity: 2 }],
+        [],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).createInvoice({
+        clientId: CLIENT_ID,
+        patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
+        items: [
+          {
+            ...productLine,
+            sourcePrescriptionId: PRESCRIPTION_ID,
+          },
+        ],
+        isEstimate: false,
+      })
+    ).resolves.toMatchObject({ id: INVOICE_ID });
+
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).toHaveBeenLastCalledWith([
+      expect.objectContaining({
+        itemId: PRODUCT_ID,
+        sourcePrescriptionId: PRESCRIPTION_ID,
+        quantity: 2,
+      }),
+    ]);
+  });
+
+  it("rejects an unsourced charge for a product already dispensed by the visit prescription", async () => {
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [
+        [{ id: CLIENT_ID }],
+        [{ id: PATIENT_ID }],
+        [{ id: APPOINTMENT_ID }],
+        [{ taxRatePercent: "0.00" }],
+        [{ id: APPOINTMENT_ID, status: "in_exam" }],
+        [],
+        [{ id: PRODUCT_ID, deletedAt: null }],
+        [{ id: PRESCRIPTION_ID, productId: PRODUCT_ID, quantity: 2 }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).createInvoice({
+        clientId: CLIENT_ID,
+        patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
+        items: [productLine],
+        isEstimate: false,
+      })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Charge a visit-dispensed medication from its prescription entry so stock is not deducted twice.",
+    });
+
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("does not edit a sent invoice or touch its inventory", async () => {
     const { db, insertValues, updateSet } = createDb({
       selectResults: [
@@ -715,6 +833,9 @@ describe("billing invoice integrity", () => {
             paidAmount: "0.00",
             status: "sent",
             isEstimate: false,
+            updatedAt: UPDATED_AT,
+            appointmentId: null,
+            patientId: PATIENT_ID,
           },
         ],
       ],
@@ -723,6 +844,7 @@ describe("billing invoice integrity", () => {
     await expect(
       callerWithDb(db).updateInvoiceItems({
         id: INVOICE_ID,
+        expectedUpdatedAt: UPDATED_AT,
         items: [productLine],
       })
     ).rejects.toMatchObject({
@@ -744,6 +866,9 @@ describe("billing invoice integrity", () => {
             paidAmount: "0.00",
             status: "draft",
             isEstimate: true,
+            updatedAt: UPDATED_AT,
+            appointmentId: null,
+            patientId: PATIENT_ID,
           },
         ],
       ],
@@ -752,6 +877,7 @@ describe("billing invoice integrity", () => {
     await expect(
       callerWithDb(db).updateInvoiceItems({
         id: INVOICE_ID,
+        expectedUpdatedAt: UPDATED_AT,
         items: [
           {
             description: "Exam",
@@ -781,6 +907,9 @@ describe("billing invoice integrity", () => {
             paidAmount: "0.00",
             status: "draft",
             isEstimate: false,
+            updatedAt: UPDATED_AT,
+            appointmentId: null,
+            patientId: PATIENT_ID,
           },
         ],
         [],
@@ -791,6 +920,7 @@ describe("billing invoice integrity", () => {
     await expect(
       callerWithDb(db).updateInvoiceItems({
         id: INVOICE_ID,
+        expectedUpdatedAt: UPDATED_AT,
         items: [
           {
             description: "Exam",
@@ -925,6 +1055,7 @@ describe("billing invoice integrity", () => {
           },
         ],
         [],
+        [],
         [{ itemType: "product", itemId: PRODUCT_ID, quantity: 2 }],
       ],
       updateReturns: [
@@ -1003,6 +1134,7 @@ describe("billing invoice integrity", () => {
           },
         ],
         [],
+        [],
         [{ itemType: "product", itemId: PRODUCT_ID, quantity: 2 }],
       ],
       updateReturns: [
@@ -1019,6 +1151,37 @@ describe("billing invoice integrity", () => {
     expect(updateSet).toHaveBeenNthCalledWith(2, {
       stockQuantity: expect.anything(),
     });
+  });
+
+  it("does not void an invoice referenced by a completed visit closeout", async () => {
+    const { db, updateSet, lockCalls } = createDb({
+      selectResults: [
+        [
+          {
+            id: INVOICE_ID,
+            total: "30.00",
+            paidAmount: "0.00",
+            status: "sent",
+            isEstimate: false,
+            appointmentId: APPOINTMENT_ID,
+          },
+        ],
+        [{ id: APPOINTMENT_ID }],
+        [{ id: "closeout" }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).voidInvoice({ id: INVOICE_ID })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message:
+        "This invoice is part of a completed visit. Reconcile it through an attributed closeout amendment.",
+    });
+    expect(lockCalls).toEqual([
+      { mode: "update", inTransaction: true, writesBeforeLock: 0 },
+    ]);
+    expect(updateSet).not.toHaveBeenCalled();
   });
 
   it("does not restore product stock when dedicated void is repeated", async () => {

@@ -4,9 +4,9 @@ import { describe, expect, it } from "vitest";
 const PDF_ACTION_PAGES = [
   "app/(dashboard)/billing/page.tsx",
   "app/(dashboard)/patients/[id]/page.tsx",
+  "app/(dashboard)/encounters/[appointmentId]/page.tsx",
   "app/(dashboard)/records/page.tsx",
   "app/(dashboard)/reports/page.tsx",
-  "app/(dashboard)/whiteboard/page.tsx",
   "app/portal/[token]/pets/[petId]/page.tsx",
 ];
 

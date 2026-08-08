@@ -46,6 +46,7 @@ import {
   users,
   vaccinationRecords,
   vitalSigns,
+  visitCloseouts,
   webhooks,
   wellnessEnrollments,
   wellnessPlans,
@@ -133,6 +134,7 @@ export const PRACTICE_EXPORT_SECTIONS = [
   "treatmentPlans",
   "treatmentPlanItems",
   "prescriptions",
+  "visitCloseouts",
   "files",
   "controlledSubstanceLog",
   "communications",
@@ -142,6 +144,7 @@ export type PracticeExportSection = (typeof PRACTICE_EXPORT_SECTIONS)[number];
 
 const PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS = [
   "emailSuppressions",
+  "visitCloseouts",
 ] as const satisfies readonly PracticeExportSection[];
 
 export type PracticeExport = {
@@ -254,6 +257,7 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
   optionalRef("invoices", "patientId", "patients"),
   optionalRef("invoices", "appointmentId", "appointments"),
   requiredRef("invoiceItems", "invoiceId", "invoices"),
+  optionalRef("invoiceItems", "sourcePrescriptionId", "prescriptions"),
   requiredRef("payments", "invoiceId", "invoices"),
   optionalRef("payments", "receivedBy", "users"),
   requiredRef("invoiceAdjustments", "invoiceId", "invoices"),
@@ -293,8 +297,14 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
   optionalRef("treatmentPlans", "createdBy", "users"),
   requiredRef("treatmentPlanItems", "planId", "treatmentPlans"),
   requiredRef("prescriptions", "patientId", "patients"),
+  optionalRef("prescriptions", "appointmentId", "appointments"),
   optionalRef("prescriptions", "productId", "products"),
   requiredRef("prescriptions", "prescribedBy", "users"),
+  requiredRef("visitCloseouts", "appointmentId", "appointments"),
+  optionalRef("visitCloseouts", "followUpAppointmentId", "appointments"),
+  optionalRef("visitCloseouts", "clinicalFinalizedBy", "users"),
+  optionalRef("visitCloseouts", "invoiceId", "invoices"),
+  optionalRef("visitCloseouts", "completedBy", "users"),
   requiredRef("files", "uploadedBy", "users"),
   optionalRef("controlledSubstanceLog", "patientId", "patients"),
   requiredRef("controlledSubstanceLog", "performedBy", "users"),
@@ -555,6 +565,7 @@ export async function exportPracticeData(
     caseRows,
     treatmentPlanRows,
     prescriptionRows,
+    visitCloseoutRows,
     fileRows,
     controlledSubstanceRows,
     communicationRows,
@@ -595,6 +606,7 @@ export async function exportPracticeData(
     activeRows(db, cases, practiceId),
     activeRows(db, treatmentPlans, practiceId),
     activeRows(db, prescriptions, practiceId),
+    activeRows(db, visitCloseouts, practiceId),
     activeRows(db, files, practiceId),
     activeRows(db, controlledSubstanceLog, practiceId),
     activeRows(db, communications, practiceId),
@@ -735,6 +747,7 @@ export async function exportPracticeData(
     treatmentPlans: treatmentPlanRows,
     treatmentPlanItems: treatmentPlanItemRows,
     prescriptions: prescriptionRows,
+    visitCloseouts: visitCloseoutRows,
     files: fileRows,
     controlledSubstanceLog: controlledSubstanceRows,
     communications: communicationRows,
@@ -820,6 +833,7 @@ async function restorePracticeDataRows(
   await restorePracticeRows("treatmentPlans", treatmentPlans);
   await restoreChildRows("treatmentPlanItems", treatmentPlanItems);
   await restorePracticeRows("prescriptions", prescriptions);
+  await restorePracticeRows("visitCloseouts", visitCloseouts);
   await restorePracticeRows("files", files);
   await restorePracticeRows("controlledSubstanceLog", controlledSubstanceLog);
   await restorePracticeRows("communications", communications);

@@ -57,7 +57,7 @@ DECLARE
     'locations','patients','practice_payment_accounts','prescriptions','problem_list','procedures','products','purchase_orders',
     'recurring_series','rooms','services','sms_suppressions','soap_notes','staff_schedules','suppliers',
     'treatment_plans','treatment_templates','usage_records','users','vaccination_records',
-    'vital_signs','webhooks','wellness_enrollments','wellness_plans'
+    'visit_closeouts','vital_signs','webhooks','wellness_enrollments','wellness_plans'
   ];
 BEGIN
   FOREACH t IN ARRAY tbls LOOP

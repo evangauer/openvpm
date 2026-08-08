@@ -20,6 +20,7 @@ import {
   consentForms,
   consentRequests,
   files,
+  visitCloseouts,
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
@@ -90,7 +91,7 @@ export {
   PROCEDURE_NOTES_MAX_LENGTH,
 } from "@/lib/records/procedure-policy";
 
-type RecordsDb = Pick<Database, "select" | "insert" | "update">;
+type RecordsDb = Pick<Database, "select" | "insert" | "update" | "execute">;
 
 type RecordsContext = {
   db: RecordsDb;
@@ -181,6 +182,8 @@ const createProblemInput = z.object({
 const createPrescriptionInput = z
   .object({
     patientId: z.string().uuid(),
+    appointmentId: z.string().uuid().optional(),
+    operationId: z.string().uuid(),
     medicationName: clinicalTextInput(
       "Medication name",
       PRESCRIPTION_MEDICATION_NAME_MAX_LENGTH
@@ -303,6 +306,58 @@ async function assertAppointmentBelongsToPatient(
   }
 
   return appointment;
+}
+
+async function lockOpenAppointmentForPrescription(
+  ctx: RecordsContext,
+  appointmentId: string,
+  patientId: string
+) {
+  const [appointment] = await ctx.db
+    .select({ id: appointments.id, status: appointments.status })
+    .from(appointments)
+    .where(
+      and(
+        eq(appointments.id, appointmentId),
+        eq(appointments.patientId, patientId),
+        eq(appointments.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(appointments.deletedAt)
+      )
+    )
+    .for("update");
+
+  if (!appointment) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Appointment not found" });
+  }
+  if (appointment.status !== "in_exam") {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "Start the exam before creating a visit-linked prescription.",
+    });
+  }
+
+  const [lockedCloseout] = await ctx.db
+    .select({ status: visitCloseouts.status })
+    .from(visitCloseouts)
+    .where(
+      and(
+        eq(visitCloseouts.appointmentId, appointmentId),
+        eq(visitCloseouts.practiceId, ctx.practiceId),
+        isNull(visitCloseouts.deletedAt)
+      )
+    )
+    .limit(1);
+  if (
+    lockedCloseout?.status === "clinical_finalized" ||
+    lockedCloseout?.status === "completed"
+  ) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Clinical handoff is finalized. Use an attributed amendment before changing visit prescriptions.",
+    });
+  }
 }
 
 /**
@@ -572,13 +627,6 @@ export const recordsRouter = createRouter({
     )
     .mutation(async ({ ctx, input }) => {
       await assertPatientBelongsToPractice(ctx, input.patientId);
-      if (input.appointmentId) {
-        await assertAppointmentBelongsToPatient(
-          ctx,
-          input.appointmentId,
-          input.patientId
-        );
-      }
       const normalizedNote = {
         subjective: normalizeSoapSection(input.subjective),
         objective: normalizeSoapSection(input.objective),
@@ -756,6 +804,7 @@ export const recordsRouter = createRouter({
       return ctx.db
         .select({
           id: prescriptions.id,
+          appointmentId: prescriptions.appointmentId,
           medicationName: prescriptions.medicationName,
           dosage: prescriptions.dosage,
           frequency: prescriptions.frequency,
@@ -823,55 +872,114 @@ export const recordsRouter = createRouter({
     .use(requireRole("admin", "veterinarian"))
     .input(createPrescriptionInput)
     .mutation(async ({ ctx, input }) => {
-      await assertPatientBelongsToPractice(ctx, input.patientId);
-      const safety = await assessPrescriptionSafety(
-        ctx,
-        input.patientId,
-        input.medicationName
-      );
-      if (input.productId) {
-        const product = await assertDispensedProductBelongsToPractice(
-          ctx,
-          input.productId
-        );
-        if (!input.quantity || input.quantity <= 0) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message:
-              "Enter a dispensed quantity before linking inventory stock.",
-          });
-        }
-        if (product.stockQuantity < input.quantity) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message:
-              "Insufficient stock for the dispensed prescription quantity.",
-          });
-        }
-      }
-
-      if (safety.requiresOverride && !input.acknowledgeSafetyWarnings) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message:
-            "Prescription has allergy or interaction warnings that require clinician acknowledgement.",
-        });
-      }
-
-      const prescriptionInput = {
-        patientId: input.patientId,
-        medicationName: input.medicationName,
-        dosage: input.dosage,
-        frequency: input.frequency,
-        quantity: input.quantity,
-        productId: input.productId,
-        refillsRemaining: input.refillsRemaining,
-        startDate: input.startDate,
-        endDate: input.endDate,
-        instructions: input.instructions,
-      };
-      const rx = await ctx.db.transaction(async (tx) => {
+      const result = await ctx.db.transaction(async (tx) => {
         const txCtx: RecordsContext = { db: tx, practiceId: ctx.practiceId };
+        const operationKey = `dashboard-prescription:${ctx.practiceId}:${input.operationId}`;
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${operationKey}, 0))`
+        );
+
+        const [existing] = await tx
+          .select({
+            id: prescriptions.id,
+            practiceId: prescriptions.practiceId,
+            patientId: prescriptions.patientId,
+            appointmentId: prescriptions.appointmentId,
+            medicationName: prescriptions.medicationName,
+            dosage: prescriptions.dosage,
+            frequency: prescriptions.frequency,
+            quantity: prescriptions.quantity,
+            productId: prescriptions.productId,
+            refillsRemaining: prescriptions.refillsRemaining,
+            startDate: prescriptions.startDate,
+            endDate: prescriptions.endDate,
+            status: prescriptions.status,
+            instructions: prescriptions.instructions,
+            prescribedBy: prescriptions.prescribedBy,
+            operationId: prescriptions.operationId,
+            createdAt: prescriptions.createdAt,
+          })
+          .from(prescriptions)
+          .where(
+            and(
+              eq(prescriptions.practiceId, ctx.practiceId),
+              eq(prescriptions.operationId, input.operationId)
+            )
+          )
+          .limit(1);
+        if (existing) {
+          if (
+            existing.patientId !== input.patientId ||
+            (existing.appointmentId ?? null) !== (input.appointmentId ?? null) ||
+            existing.medicationName !== input.medicationName ||
+            existing.dosage !== input.dosage ||
+            existing.frequency !== input.frequency ||
+            (existing.quantity ?? null) !== (input.quantity ?? null) ||
+            (existing.productId ?? null) !== (input.productId ?? null) ||
+            existing.refillsRemaining !== input.refillsRemaining ||
+            existing.startDate !== input.startDate ||
+            (existing.endDate ?? null) !== (input.endDate ?? null) ||
+            (existing.instructions ?? null) !== (input.instructions ?? null)
+          ) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "This prescription operation ID was already used for different details.",
+            });
+          }
+          return { rx: existing, replayed: true as const };
+        }
+
+        await assertPatientBelongsToPractice(txCtx, input.patientId);
+        if (input.appointmentId) {
+          await assertAppointmentBelongsToPatient(
+            txCtx,
+            input.appointmentId,
+            input.patientId
+          );
+        }
+        const safety = await assessPrescriptionSafety(
+          txCtx,
+          input.patientId,
+          input.medicationName
+        );
+        if (input.productId) {
+          const product = await assertDispensedProductBelongsToPractice(
+            txCtx,
+            input.productId
+          );
+          if (!input.quantity || input.quantity <= 0) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message:
+                "Enter a dispensed quantity before linking inventory stock.",
+            });
+          }
+          if (product.stockQuantity < input.quantity) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message:
+                "Insufficient stock for the dispensed prescription quantity.",
+            });
+          }
+        }
+
+        if (safety.requiresOverride && !input.acknowledgeSafetyWarnings) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Prescription has allergy or interaction warnings that require clinician acknowledgement.",
+          });
+        }
+
+        if (input.appointmentId) {
+          await lockOpenAppointmentForPrescription(
+            txCtx,
+            input.appointmentId,
+            input.patientId
+          );
+        }
+
         if (input.productId && input.quantity && input.quantity > 0) {
           await deductDispensedProductStock(
             txCtx,
@@ -883,22 +991,36 @@ export const recordsRouter = createRouter({
         const [rx] = await tx
           .insert(prescriptions)
           .values({
-            ...prescriptionInput,
+            patientId: input.patientId,
+            appointmentId: input.appointmentId,
+            medicationName: input.medicationName,
+            dosage: input.dosage,
+            frequency: input.frequency,
+            quantity: input.quantity,
+            productId: input.productId,
+            refillsRemaining: input.refillsRemaining,
+            startDate: input.startDate,
+            endDate: input.endDate,
+            instructions: input.instructions,
             prescribedBy: ctx.user.id,
             practiceId: ctx.practiceId,
+            operationId: input.operationId,
           })
           .returning();
-        return rx!;
+        return { rx: rx!, replayed: false as const };
       });
-      await dispatchWebhookEvent(ctx.practiceId, "prescription.created", {
-        id: rx.id,
-        patientId: rx.patientId,
-        medicationName: rx.medicationName,
-        prescribedBy: rx.prescribedBy,
-        productId: rx.productId,
-        source: "dashboard",
-      });
-      return rx;
+      if (!result.replayed) {
+        await dispatchWebhookEvent(ctx.practiceId, "prescription.created", {
+          id: result.rx.id,
+          patientId: result.rx.patientId,
+          appointmentId: result.rx.appointmentId,
+          medicationName: result.rx.medicationName,
+          prescribedBy: result.rx.prescribedBy,
+          productId: result.rx.productId,
+          source: "dashboard",
+        });
+      }
+      return result.rx;
     }),
 
   // Lab Results

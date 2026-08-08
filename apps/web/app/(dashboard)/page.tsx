@@ -1,8 +1,11 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  AlertTriangle,
+  ArrowRight,
   Calendar,
   CalendarPlus,
   Clock,
@@ -48,12 +51,12 @@ function DashboardChartsChunkLoading() {
 const DashboardCharts = dynamic(
   () =>
     import("@/components/dashboard/dashboard-charts").then(
-      (mod) => mod.DashboardCharts
+      (mod) => mod.DashboardCharts,
     ),
   {
     ssr: false,
     loading: DashboardChartsChunkLoading,
-  }
+  },
 );
 
 function formatTime(date: Date | string, timeZone?: string | null) {
@@ -72,6 +75,19 @@ function formatTime(date: Date | string, timeZone?: string | null) {
   }
 }
 
+function formatDueDate(dateInput: string) {
+  const [year, month, day] = dateInput.split("-").map(Number);
+  return new Date(Date.UTC(year!, month! - 1, day!)).toLocaleDateString(
+    "en-US",
+    {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      timeZone: "UTC",
+    },
+  );
+}
+
 function addDateInputDays(dateInput: string, days: number): string {
   const [year, month, day] = dateInput.split("-").map(Number) as [
     number,
@@ -81,7 +97,7 @@ function addDateInputDays(dateInput: string, days: number): string {
   const date = new Date(Date.UTC(year, month - 1, day + days));
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(
     2,
-    "0"
+    "0",
   )}-${String(date.getUTCDate()).padStart(2, "0")}`;
 }
 
@@ -154,6 +170,7 @@ export default function DashboardPage() {
   const router = useRouter();
   const stats = trpc.dashboard.getStats.useQuery();
   const charts = trpc.dashboard.getCharts.useQuery();
+  const pendingFollowUps = trpc.encounters.listPendingFollowUps.useQuery();
   const taxConfig = trpc.billing.getTaxConfig.useQuery(undefined, {
     staleTime: 5 * 60 * 1000,
   });
@@ -191,7 +208,7 @@ export default function DashboardPage() {
     },
     {
       enabled: verifiedCalendarSettings !== null,
-    }
+    },
   );
   const upcomingError = calendarSettingsQuery.error ?? upcoming.error;
   const isUpcomingLoading =
@@ -226,7 +243,7 @@ export default function DashboardPage() {
       (a) =>
         a.status !== "checked_out" &&
         a.status !== "cancelled" &&
-        a.status !== "no_show"
+        a.status !== "no_show",
     )
     .slice(0, 5);
 
@@ -240,7 +257,7 @@ export default function DashboardPage() {
     !!chartData &&
     (chartData.speciesDistribution.length > 0 ||
       chartData.appointmentsByDay.some(
-        (d) => d.completed + d.scheduled + d.cancelled > 0
+        (d) => d.completed + d.scheduled + d.cancelled > 0,
       ) ||
       chartData.revenueByDay.some((d) => d.revenue > 0) ||
       chartData.productionByDoctor.some((d) => d.production > 0));
@@ -275,9 +292,7 @@ export default function DashboardPage() {
                     <Icon className="h-5 w-5" />
                   </div>
                   <div>
-                    <p className="text-sm text-muted-foreground">
-                      {kpi.label}
-                    </p>
+                    <p className="text-sm text-muted-foreground">{kpi.label}</p>
                     <p className="font-heading text-2xl font-bold">
                       {kpi.isCurrency ? fmtMoney(value) : String(value)}
                     </p>
@@ -291,6 +306,90 @@ export default function DashboardPage() {
           })}
         </div>
       ) : null}
+
+      <section
+        className="rounded-lg border border-border bg-card"
+        aria-labelledby="pending-follow-ups-heading"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-6 py-4">
+          <div>
+            <h2
+              id="pending-follow-ups-heading"
+              className="font-heading text-lg font-semibold"
+            >
+              Follow-up work queue
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              Signed visit obligations that still need an owner.
+            </p>
+          </div>
+          {pendingFollowUps.data?.length ? (
+            <span className="rounded-full bg-amber-500/15 px-2.5 py-1 text-xs font-medium text-amber-700 dark:text-amber-300">
+              {pendingFollowUps.data.length} open
+            </span>
+          ) : null}
+        </div>
+        <div className="space-y-2 p-4">
+          {pendingFollowUps.error ? (
+            <div className="rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
+              Follow-up obligations could not be loaded. Refresh before ending
+              the shift.
+            </div>
+          ) : pendingFollowUps.isLoading ? (
+            Array.from({ length: 2 }).map((_, index) => (
+              <AppointmentRowSkeleton key={index} />
+            ))
+          ) : pendingFollowUps.data?.length ? (
+            pendingFollowUps.data.map((followUp) => {
+              const dueDate = followUp.dueDate!;
+              const overdue = dueDate < todayStr;
+              return (
+                <div
+                  key={followUp.closeoutId}
+                  className="flex flex-col gap-3 rounded-md border border-border px-4 py-3 sm:flex-row sm:items-center"
+                >
+                  <div className="flex min-w-0 flex-1 items-start gap-3">
+                    <AlertTriangle
+                      className={cn(
+                        "mt-0.5 h-4 w-4 shrink-0",
+                        overdue ? "text-destructive" : "text-amber-600",
+                      )}
+                    />
+                    <div className="min-w-0">
+                      <p className="font-medium">
+                        {followUp.patientName} · due {formatDueDate(dueDate)}
+                      </p>
+                      <p className="text-sm text-muted-foreground">
+                        Owner: {followUp.clientFirstName}{" "}
+                        {followUp.clientLastName}
+                        {followUp.assigneeName
+                          ? ` · Assigned to ${followUp.assigneeName}`
+                          : ""}
+                      </p>
+                      {followUp.followUpNotes ? (
+                        <p className="mt-1 line-clamp-2 text-sm">
+                          {followUp.followUpNotes}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+                  <Link
+                    href={`/encounters/${followUp.appointmentId}#visit-closeout`}
+                    className="inline-flex shrink-0 items-center gap-1 text-sm font-medium text-primary hover:underline"
+                  >
+                    Resolve follow-up
+                    <ArrowRight className="h-4 w-4" />
+                  </Link>
+                </div>
+              );
+            })
+          ) : (
+            <p className="py-4 text-center text-sm text-muted-foreground">
+              No pending follow-up obligations.
+            </p>
+          )}
+        </div>
+      </section>
 
       {/* Recent Appointments */}
       <div className="rounded-lg border border-border bg-card">
@@ -356,7 +455,7 @@ export default function DashboardPage() {
                         ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
                         : appt.status === "in_exam"
                           ? "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
-                          : "bg-muted text-muted-foreground"
+                          : "bg-muted text-muted-foreground",
                   )}
                 >
                   {appt.status.replace("_", " ")}

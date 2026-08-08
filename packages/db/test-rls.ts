@@ -41,6 +41,10 @@ const aUser = randomUUID();
 const bUser = randomUUID();
 const aMigrationRun = randomUUID();
 const bMigrationRun = randomUUID();
+const aAppointment = randomUUID();
+const bAppointment = randomUUID();
+const aCloseout = randomUUID();
+const bCloseout = randomUUID();
 const funnelEventId = randomUUID();
 let failures = 0;
 
@@ -70,6 +74,14 @@ try {
     (${bMigrationRun}, ${bId}, ${bUser}, 'clients', 'other', ${"b".repeat(64)}, 10, now() + interval '1 day')`;
   await owner`insert into funnel_events (id, event_name, practice_id)
     values (${funnelEventId}, 'registration', ${aId})`;
+  await owner`insert into appointments (id, practice_id, client_id, start_time, end_time)
+    select ${aAppointment}::uuid, ${aId}::uuid, id, now(), now() + interval '30 minutes'
+    from clients where practice_id = ${aId}
+    union all
+    select ${bAppointment}::uuid, ${bId}::uuid, id, now(), now() + interval '30 minutes'
+    from clients where practice_id = ${bId}`;
+  await owner`insert into visit_closeouts (id, practice_id, appointment_id)
+    values (${aCloseout}, ${aId}, ${aAppointment}), (${bCloseout}, ${bId}, ${bAppointment})`;
 
   // Tenant A context sees only A's rows.
   const aRows = await appTransaction(async (tx) => {
@@ -100,6 +112,16 @@ try {
     aMigrationRows.length === 1 &&
       aMigrationRows[0]!.id === aMigrationRun &&
       aMigrationRows[0]!.practice_id === aId,
+  );
+  const aCloseoutRows = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id, practice_id from visit_closeouts where id in (${aCloseout}, ${bCloseout})`;
+  });
+  check(
+    "tenant A sees only A's visit closeout",
+    aCloseoutRows.length === 1 &&
+      aCloseoutRows[0]!.id === aCloseout &&
+      aCloseoutRows[0]!.practice_id === aId,
   );
 
   const hiddenMigrationUpdate = await appTransaction(async (tx) => {
@@ -201,9 +223,11 @@ try {
 } finally {
   // Cleanup (as owner).
   await owner`delete from invoice_adjustments where invoice_id in (${aInvoice}, ${bInvoice})`;
+  await owner`delete from visit_closeouts where id in (${aCloseout}, ${bCloseout})`;
   await owner`delete from funnel_events where id = ${funnelEventId}`;
   await owner`delete from invoices where id in (${aInvoice}, ${bInvoice})`;
   await owner`delete from migration_runs where id in (${aMigrationRun}, ${bMigrationRun})`;
+  await owner`delete from appointments where id in (${aAppointment}, ${bAppointment})`;
   await owner`delete from clients where practice_id in (${aId}, ${bId})`;
   await owner`delete from users where id in (${aUser}, ${bUser})`;
   await owner`delete from practices where id in (${aId}, ${bId})`;

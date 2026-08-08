@@ -10,6 +10,7 @@ import {
   users,
   appointmentTypes,
   rooms,
+  visitCloseouts,
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import { dateInputUtcRangeForTimeZone } from "@/lib/date-input";
@@ -18,6 +19,7 @@ import {
   canTransitionAppointmentStatus,
 } from "@/lib/scheduling/appointment-status";
 import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
+import { CLOSEOUT_BYPASS_MESSAGE } from "@/lib/encounters/closeout-policy";
 
 type WhiteboardContext = {
   db: Database;
@@ -169,55 +171,98 @@ export const whiteboardRouter = createRouter({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const [current] = await ctx.db
-        .select({
-          id: appointments.id,
-          status: appointments.status,
-        })
-        .from(appointments)
-        .where(
-          and(
-            eq(appointments.id, input.id),
-            eq(appointments.practiceId, ctx.practiceId),
-            activePracticePredicate(ctx.practiceId),
-            isNull(appointments.deletedAt)
+      const { current, appt } = await ctx.db.transaction(async (tx) => {
+        const [current] = await tx
+          .select({ id: appointments.id, status: appointments.status })
+          .from(appointments)
+          .where(
+            and(
+              eq(appointments.id, input.id),
+              eq(appointments.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(appointments.deletedAt)
+            )
           )
-        )
-        .limit(1);
+          .for("update");
+        if (!current) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Appointment not found",
+          });
+        }
+        if (input.status === "checked_out") {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: CLOSEOUT_BYPASS_MESSAGE,
+          });
+        }
+        if (!canTransitionAppointmentStatus(current.status, input.status)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Cannot change appointment status from ${current.status} to ${input.status}.`,
+          });
+        }
 
-      if (!current) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "Appointment not found",
-        });
-      }
-
-      if (!canTransitionAppointmentStatus(current.status, input.status)) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: `Cannot change appointment status from ${current.status} to ${input.status}.`,
-        });
-      }
-
-      const [appt] = await ctx.db
-        .update(appointments)
-        .set({ status: input.status })
-        .where(
-          and(
-            eq(appointments.id, input.id),
-            eq(appointments.practiceId, ctx.practiceId),
-            eq(appointments.status, current.status),
-            activePracticePredicate(ctx.practiceId),
-            isNull(appointments.deletedAt)
+        const [closeout] = await tx
+          .select({ id: visitCloseouts.id, status: visitCloseouts.status })
+          .from(visitCloseouts)
+          .where(
+            and(
+              eq(visitCloseouts.appointmentId, input.id),
+              eq(visitCloseouts.practiceId, ctx.practiceId),
+              isNull(visitCloseouts.deletedAt)
+            )
           )
-        )
-        .returning();
-      if (!appt) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "Appointment status changed; try again.",
-        });
-      }
+          .limit(1);
+        if (
+          closeout?.status === "clinical_finalized" ||
+          closeout?.status === "completed"
+        ) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Clinical handoff is finalized. Complete the visit through closeout instead of changing its status.",
+          });
+        }
+
+        const [appt] = await tx
+          .update(appointments)
+          .set({ status: input.status })
+          .where(
+            and(
+              eq(appointments.id, input.id),
+              eq(appointments.practiceId, ctx.practiceId),
+              eq(appointments.status, current.status),
+              activePracticePredicate(ctx.practiceId),
+              isNull(appointments.deletedAt)
+            )
+          )
+          .returning();
+        if (!appt) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Appointment status changed; try again.",
+          });
+        }
+        if (
+          closeout?.status === "draft" &&
+          (input.status === "cancelled" || input.status === "no_show")
+        ) {
+          const now = new Date();
+          await tx
+            .update(visitCloseouts)
+            .set({ deletedAt: now, updatedAt: now })
+            .where(
+              and(
+                eq(visitCloseouts.id, closeout.id),
+                eq(visitCloseouts.practiceId, ctx.practiceId),
+                eq(visitCloseouts.status, "draft"),
+                isNull(visitCloseouts.deletedAt)
+              )
+            );
+        }
+        return { current, appt };
+      });
       if (appt.status === "checked_in") {
         await dispatchWebhookEvent(ctx.practiceId, "appointment.checked_in", {
           id: appt.id,
