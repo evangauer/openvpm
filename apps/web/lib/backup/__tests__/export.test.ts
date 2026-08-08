@@ -63,6 +63,72 @@ function restoreDb() {
   return { db, inserted };
 }
 
+const MERGE_OPERATION_ID = "00000000-0000-4000-8000-000000000011";
+
+function patientIdentitySnapshot(id: string, name: string) {
+  return {
+    id,
+    clientId: "client-1",
+    name,
+    species: "canine",
+    breed: null,
+    sex: null,
+    dob: null,
+    microchipNumber: null,
+    externalSource: null,
+    externalId: null,
+  };
+}
+
+function validPatientMergeBackup() {
+  return {
+    practiceId: "practice-1",
+    ...emptyBackup(),
+    users: [
+      {
+        id: "user-1",
+        practiceId: "practice-1",
+        name: "Dr. Rivera",
+      },
+    ],
+    clients: [{ id: "client-1", practiceId: "practice-1" }],
+    patients: [
+      {
+        id: "source-1",
+        practiceId: "practice-1",
+        clientId: "client-1",
+        name: "Roo duplicate",
+        species: "canine",
+        deletedAt: "2026-08-08T14:30:00.000Z",
+      },
+      {
+        id: "target-1",
+        practiceId: "practice-1",
+        clientId: "client-1",
+        name: "Roo",
+        species: "canine",
+        deletedAt: null,
+      },
+    ],
+    patientMergeEvents: [
+      {
+        id: "merge-1",
+        createdAt: "2026-08-08T14:30:00.000Z",
+        practiceId: "practice-1",
+        sourcePatientId: "source-1",
+        targetPatientId: "target-1",
+        clientId: "client-1",
+        performedBy: "user-1",
+        performedByName: "Dr. Rivera",
+        reason: "Duplicate patient identity confirmed by clinic staff.",
+        operationId: MERGE_OPERATION_ID,
+        sourceSnapshot: patientIdentitySnapshot("source-1", "Roo duplicate"),
+        targetSnapshot: patientIdentitySnapshot("target-1", "Roo"),
+      },
+    ],
+  };
+}
+
 describe("summarizePracticeExport", () => {
   it("requires module-owned sections in full-practice backups", () => {
     expect(PRACTICE_EXPORT_SECTIONS).toContain("insurancePolicies");
@@ -122,6 +188,16 @@ describe("summarizePracticeExport", () => {
     expect(summary.missingSections).not.toContain("emailSuppressions");
     expect(summary.counts.emailSuppressions).toBe(0);
   });
+
+  it("allows restoring older backups that predate patient merge events", () => {
+    const backup = emptyBackup();
+    delete (backup as Record<string, unknown>).patientMergeEvents;
+
+    const summary = summarizePracticeExport(backup);
+
+    expect(summary.missingSections).not.toContain("patientMergeEvents");
+    expect(summary.counts.patientMergeEvents).toBe(0);
+  });
 });
 
 describe("exportPracticeData query scoping", () => {
@@ -149,6 +225,16 @@ describe("exportPracticeData query scoping", () => {
     expect(source).toContain(
       "tenantParentChildRows(\n      db,\n      treatmentPlanItems"
     );
+  });
+
+  it("exports complete merge events and retains their deleted source identities", () => {
+    expect(source).toContain(
+      "allPracticeRows(db, patientMergeEvents, practiceId)",
+    );
+    expect(source).toContain("...patientMergeRows.flatMap((event) => [");
+    expect(source).toContain("event.sourcePatientId");
+    expect(source).toContain("event.targetPatientId");
+    expect(source).toContain("patientMergeEvents: patientMergeRows");
   });
 });
 
@@ -277,6 +363,158 @@ describe("restorePracticeData", () => {
       valid: true,
       errors: [],
     });
+  });
+
+  it("validates and restores immutable patient lineage after its parent rows", async () => {
+    const backup = validPatientMergeBackup();
+    // Identity snapshots are historical. A later edit to the canonical chart
+    // must not make an otherwise factual backup unrestorable.
+    backup.patients[1]!.name = "Roo Martinez";
+
+    expect(validatePracticeExportRestore(backup)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const { db, inserted } = restoreDb();
+    await expect(
+      restorePracticeData(db as never, "restored-practice", backup),
+    ).resolves.toMatchObject({ restored: { patientMergeEvents: 1 } });
+
+    const restoredRows = inserted.flatMap(({ rows }) => rows);
+    const sourceIndex = restoredRows.findIndex((row) => row.id === "source-1");
+    const targetIndex = restoredRows.findIndex((row) => row.id === "target-1");
+    const mergeIndex = restoredRows.findIndex((row) => row.id === "merge-1");
+    const mergeEvent = restoredRows[mergeIndex];
+
+    expect(sourceIndex).toBeGreaterThanOrEqual(0);
+    expect(targetIndex).toBeGreaterThanOrEqual(0);
+    expect(mergeIndex).toBeGreaterThan(sourceIndex);
+    expect(mergeIndex).toBeGreaterThan(targetIndex);
+    expect(mergeEvent).toMatchObject({
+      practiceId: "restored-practice",
+      sourcePatientId: "source-1",
+      targetPatientId: "target-1",
+      clientId: "client-1",
+      performedBy: "user-1",
+      operationId: MERGE_OPERATION_ID,
+      sourceSnapshot: patientIdentitySnapshot("source-1", "Roo duplicate"),
+      targetSnapshot: patientIdentitySnapshot("target-1", "Roo"),
+    });
+    expect(mergeEvent?.createdAt).toBeInstanceOf(Date);
+  });
+
+  it("rejects patient lineage with invalid references, snapshots, attribution, or chart state", () => {
+    const backup = validPatientMergeBackup();
+    backup.users[0]!.practiceId = "other-practice";
+    backup.patients[0]!.deletedAt = null;
+    backup.patients[1]!.deletedAt = "2026-08-08T15:00:00.000Z";
+    backup.patientMergeEvents[0]!.reason = "bad";
+    backup.patientMergeEvents[0]!.performedByName = "";
+    backup.patientMergeEvents[0]!.sourceSnapshot = {
+      ...backup.patientMergeEvents[0]!.sourceSnapshot,
+      id: "wrong-source",
+    };
+
+    expect(validatePracticeExportRestore(backup).errors).toEqual(
+      expect.arrayContaining([
+        "patientMergeEvents[merge-1].performedByName must be between 1 and 255 characters.",
+        "patientMergeEvents[merge-1].reason must be between 5 and 500 characters.",
+        "patientMergeEvents[merge-1].sourceSnapshot must be a valid patient identity snapshot.",
+        "patientMergeEvents[merge-1].performedBy must belong to the declared practice.",
+        "patientMergeEvents[merge-1].sourcePatientId must reference a soft-deleted source.",
+        "patientMergeEvents[merge-1].targetPatientId must reference an active target.",
+      ]),
+    );
+  });
+
+  it("requires every patient lineage tenant reference to exist and agree", () => {
+    const missing = validPatientMergeBackup();
+    missing.practiceId = "different-backup-practice";
+    missing.patientMergeEvents[0]!.sourcePatientId = "missing-source";
+    missing.patientMergeEvents[0]!.targetPatientId = "missing-target";
+    missing.patientMergeEvents[0]!.clientId = "missing-client";
+    missing.patientMergeEvents[0]!.performedBy = "missing-user";
+    missing.patientMergeEvents[0]!.sourceSnapshot = patientIdentitySnapshot(
+      "missing-source",
+      "Missing source",
+    );
+    missing.patientMergeEvents[0]!.sourceSnapshot.clientId = "missing-client";
+    missing.patientMergeEvents[0]!.targetSnapshot = patientIdentitySnapshot(
+      "missing-target",
+      "Missing target",
+    );
+    missing.patientMergeEvents[0]!.targetSnapshot.clientId = "missing-client";
+
+    expect(validatePracticeExportRestore(missing).errors).toEqual(
+      expect.arrayContaining([
+        'patientMergeEvents[merge-1].sourcePatientId references missing patients row "missing-source".',
+        'patientMergeEvents[merge-1].targetPatientId references missing patients row "missing-target".',
+        'patientMergeEvents[merge-1].clientId references missing clients row "missing-client".',
+        'patientMergeEvents[merge-1].performedBy references missing users row "missing-user".',
+        "patientMergeEvents[merge-1].practiceId must match the backup practiceId.",
+      ]),
+    );
+
+    const mismatched = validPatientMergeBackup();
+    mismatched.clients[0]!.practiceId = "other-practice";
+    mismatched.users[0]!.practiceId = "other-practice";
+    mismatched.patients[0]!.practiceId = "other-practice";
+    mismatched.patients[1]!.clientId = "client-2";
+    mismatched.clients.push({ id: "client-2", practiceId: "practice-1" });
+
+    expect(validatePracticeExportRestore(mismatched).errors).toEqual(
+      expect.arrayContaining([
+        "patientMergeEvents[merge-1].sourcePatientId must share its client and practice.",
+        "patientMergeEvents[merge-1].targetPatientId must share its client and practice.",
+        "patientMergeEvents[merge-1].clientId must belong to the declared practice.",
+        "patientMergeEvents[merge-1].performedBy must belong to the declared practice.",
+      ]),
+    );
+  });
+
+  it("rejects duplicate and chained patient lineage within a practice", () => {
+    const duplicate = validPatientMergeBackup();
+    duplicate.patientMergeEvents.push({
+      ...duplicate.patientMergeEvents[0]!,
+      id: "merge-2",
+      operationId: "00000000-0000-4000-8000-000000000012",
+    });
+    duplicate.patientMergeEvents.push({
+      ...duplicate.patientMergeEvents[0]!,
+      id: "merge-3",
+      operationId: MERGE_OPERATION_ID,
+    });
+
+    expect(validatePracticeExportRestore(duplicate).errors).toEqual(
+      expect.arrayContaining([
+        "patientMergeEvents[merge-2].sourcePatientId must be unique within its practice.",
+        "patientMergeEvents[merge-3].operationId must be unique within its practice.",
+      ]),
+    );
+
+    const chained = validPatientMergeBackup();
+    chained.patients.push({
+      id: "target-2",
+      practiceId: "practice-1",
+      clientId: "client-1",
+      name: "Roo canonical",
+      species: "canine",
+      deletedAt: null,
+    });
+    chained.patientMergeEvents.push({
+      ...chained.patientMergeEvents[0]!,
+      id: "merge-2",
+      sourcePatientId: "target-1",
+      targetPatientId: "target-2",
+      operationId: "00000000-0000-4000-8000-000000000012",
+      sourceSnapshot: patientIdentitySnapshot("target-1", "Roo"),
+      targetSnapshot: patientIdentitySnapshot("target-2", "Roo canonical"),
+    });
+
+    expect(validatePracticeExportRestore(chained).errors).toContain(
+      "patientMergeEvents[merge-2] cannot use an existing merge target as a source.",
+    );
   });
 
   it("requires correction events to match their typed source patient and appointment", () => {

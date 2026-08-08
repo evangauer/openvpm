@@ -28,6 +28,26 @@ import {
 } from "../records/vitals-policy";
 
 describe("patient detail UI states", () => {
+  it("resolves merged source charts to the canonical identity with attribution", () => {
+    const source = readFileSync("app/(dashboard)/patients/[id]/page.tsx", "utf8");
+
+    expect(source).toContain("const canonicalPatientId = patient?.id ?? params.id");
+    expect(source).toContain("patient?.mergeMetadata");
+    expect(source).toContain("window.history.replaceState(");
+    expect(source).toContain("?mergedFrom=${params.id}");
+    expect(source).toContain(
+      "Opened the canonical chart for a merged patient identity"
+    );
+    expect(source).toContain("patient.mergeMetadata.sourceSnapshot.name");
+    expect(source).toContain("patient.mergeMetadata.performedByName");
+    expect(source).toContain("patient.mergeMetadata.reason");
+    expect(source).toContain("{ patientId: canonicalPatientId }");
+    expect(source).toContain("{ id: canonicalPatientId, photoUrl: data.url }");
+    expect(source).toContain(
+      "Array.from(new Set([params.id, canonicalPatientId]))"
+    );
+  });
+
   it("keeps viewer access read-only for patient detail writes", () => {
     const source = readFileSync("app/(dashboard)/patients/[id]/page.tsx", "utf8");
 
@@ -300,10 +320,8 @@ describe("patient detail UI states", () => {
     // Add + remove both refresh the same getById payload the bar renders from.
     expect(source).toContain("trpc.patients.addAllergy.useMutation");
     expect(source).toContain("trpc.patients.removeAllergy.useMutation");
-    const invalidations = source.match(
-      /utils\.patients\.getById\.invalidate\(\{ id: params\.id \}\)/g
-    );
-    expect(invalidations && invalidations.length).toBeGreaterThanOrEqual(3);
+    const refreshes = source.match(/void refreshPatientDetail\(\)/g);
+    expect(refreshes && refreshes.length).toBeGreaterThanOrEqual(4);
     // Removal is destructive to safety checks; it must be confirmed and
     // both controls stay behind the same role gate as the server.
     expect(source).toContain("window.confirm(");

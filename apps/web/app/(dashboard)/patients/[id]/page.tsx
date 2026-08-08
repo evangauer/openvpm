@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { Fragment, useMemo, useState, useRef } from "react";
+import { Fragment, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import {
@@ -18,6 +18,7 @@ import {
   ExternalLink,
   FileDown,
   FileText,
+  GitMerge,
   Loader2,
   Paperclip,
   Plus,
@@ -264,6 +265,22 @@ export default function PatientDetailPage() {
     { id: params.id },
     { enabled: !!params.id }
   );
+  const canonicalPatientId = patient?.id ?? params.id;
+  const refreshPatientDetail = () =>
+    Promise.all(
+      Array.from(new Set([params.id, canonicalPatientId])).map((id) =>
+        utils.patients.getById.invalidate({ id })
+      )
+    );
+
+  useEffect(() => {
+    if (!patient?.mergeMetadata || patient.id === params.id) return;
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `/patients/${patient.id}?mergedFrom=${params.id}`
+    );
+  }, [params.id, patient?.id, patient?.mergeMetadata]);
   const {
     data: recordsSettings,
     isLoading: recordsSettingsLoading,
@@ -273,7 +290,7 @@ export default function PatientDetailPage() {
   const updatePhotoMutation = trpc.patients.update.useMutation({
     onSuccess: () => {
       toast.success("Patient photo updated");
-      utils.patients.getById.invalidate({ id: params.id });
+      void refreshPatientDetail();
     },
     onError: (err) => {
       toast.error(`Failed to update patient photo: ${err.message}`);
@@ -313,7 +330,7 @@ export default function PatientDetailPage() {
       }
 
       const data = await res.json();
-      updatePhotoMutation.mutate({ id: params.id, photoUrl: data.url });
+      updatePhotoMutation.mutate({ id: canonicalPatientId, photoUrl: data.url });
     } catch {
       toast.error("Failed to upload photo");
     }
@@ -326,19 +343,19 @@ export default function PatientDetailPage() {
 
   // Medical summary PDF data queries (lazy -- only fetched on demand)
   const problemsQuery = trpc.records.listProblems.useQuery(
-    { patientId: params.id },
+    { patientId: canonicalPatientId },
     { enabled: false }
   );
   const vaccinationsQuery = trpc.records.listVaccinations.useQuery(
-    { patientId: params.id },
+    { patientId: canonicalPatientId },
     { enabled: false }
   );
   const soapNotesQuery = trpc.records.listSoapNotes.useQuery(
-    { patientId: params.id },
+    { patientId: canonicalPatientId },
     { enabled: false }
   );
   const prescriptionsQuery = trpc.records.listPrescriptions.useQuery(
-    { patientId: params.id },
+    { patientId: canonicalPatientId },
     { enabled: false }
   );
   const recordsSettingsMissing =
@@ -358,7 +375,7 @@ export default function PatientDetailPage() {
   const addWeight = trpc.patients.addWeight.useMutation({
     onSuccess: () => {
       toast.success("Weight recorded");
-      utils.patients.getById.invalidate({ id: params.id });
+      void refreshPatientDetail();
       setWeightKg("");
     },
     onError: (err) => toast.error(err.message),
@@ -387,7 +404,7 @@ export default function PatientDetailPage() {
   const addAllergy = trpc.patients.addAllergy.useMutation({
     onSuccess: () => {
       toast.success("Allergy recorded");
-      utils.patients.getById.invalidate({ id: params.id });
+      void refreshPatientDetail();
       setAllergyName("");
       setAllergyReaction("");
       setAllergySeverity("moderate");
@@ -398,7 +415,7 @@ export default function PatientDetailPage() {
   const removeAllergy = trpc.patients.removeAllergy.useMutation({
     onSuccess: () => {
       toast.success("Allergy removed");
-      utils.patients.getById.invalidate({ id: params.id });
+      void refreshPatientDetail();
     },
     onError: (err) => toast.error(err.message),
   });
@@ -582,6 +599,31 @@ export default function PatientDetailPage() {
         <ArrowLeft className="mr-2 h-4 w-4" />
         Back to Patients
       </Button>
+
+      {patient.mergeMetadata ? (
+        <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-100">
+          <div className="flex items-start gap-3">
+            <GitMerge className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              <p className="font-semibold">
+                Opened the canonical chart for a merged patient identity
+              </p>
+              <p className="mt-1">
+                {patient.mergeMetadata.sourceSnapshot.name} was merged into this
+                chart by {patient.mergeMetadata.performedByName} on{" "}
+                {formatClinicalDateTime(
+                  patient.mergeMetadata.createdAt,
+                  recordsTimeZone
+                )}
+                .
+              </p>
+              <p className="mt-1 text-blue-800 dark:text-blue-200">
+                Reason: {patient.mergeMetadata.reason}
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Patient Header Card */}
       <div className="rounded-lg border border-border bg-card p-6">

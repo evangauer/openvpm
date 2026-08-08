@@ -1,7 +1,7 @@
 import { eq, and, isNull } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db } from "@openpims/db/client";
-import { patients } from "@openpims/db";
+import { patients, patientMergeEvents } from "@openpims/db";
 import { authenticateApiKey } from "@/lib/api-auth";
 import { withTenant } from "@/lib/tenant-db";
 import {
@@ -32,7 +32,7 @@ export async function GET(
       const activePractice = await assertActivePractice(tx, auth.ctx.practiceId);
       if (!activePractice.ok) return activePractice.response;
 
-      const [row] = await tx
+      let [row] = await tx
         .select()
         .from(patients)
         .where(
@@ -44,8 +44,59 @@ export async function GET(
         )
         .limit(1);
 
-      if (!row) return notFound("Patient");
-      return NextResponse.json({ data: toApiPatient(row) });
+      let mergeMetadata: {
+        sourcePatientId: string;
+        targetPatientId: string;
+        sourceSnapshot: unknown;
+        performedByName: string;
+        reason: string;
+        createdAt: Date;
+      } | null = null;
+      if (!row) {
+        const [mergeEvent] = await tx
+          .select({
+            sourcePatientId: patientMergeEvents.sourcePatientId,
+            targetPatientId: patientMergeEvents.targetPatientId,
+            sourceSnapshot: patientMergeEvents.sourceSnapshot,
+            performedByName: patientMergeEvents.performedByName,
+            reason: patientMergeEvents.reason,
+            createdAt: patientMergeEvents.createdAt,
+          })
+          .from(patientMergeEvents)
+          .where(
+            and(
+              eq(patientMergeEvents.practiceId, auth.ctx.practiceId),
+              eq(patientMergeEvents.sourcePatientId, id),
+            ),
+          )
+          .limit(1);
+        if (!mergeEvent) return notFound("Patient");
+
+        [row] = await tx
+          .select()
+          .from(patients)
+          .where(
+            and(
+              eq(patients.id, mergeEvent.targetPatientId),
+              eq(patients.practiceId, auth.ctx.practiceId),
+              isNull(patients.deletedAt),
+            ),
+          )
+          .limit(1);
+        if (!row) {
+          return apiError("Canonical patient record is unavailable", 409);
+        }
+        mergeMetadata = mergeEvent;
+      }
+
+      return NextResponse.json({
+        data: toApiPatient(row),
+        meta: {
+          requestedPatientId: id,
+          canonicalPatientId: row.id,
+          mergeMetadata,
+        },
+      });
     })
   );
 }

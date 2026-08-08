@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
-import { Search, Plus, PawPrint } from "lucide-react";
+import { Search, Plus, PawPrint, GitMerge } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -71,6 +71,7 @@ export default function PatientsPage() {
   const hasSearch = trimmedSearch.length > 0;
   const hasFilters = hasSearch || Boolean(species);
   const canManagePatients = canManagePatientsRole(session?.user?.role);
+  const canReviewDuplicates = session?.user?.role === "admin";
 
   const { data, isLoading, error } = trpc.patients.list.useQuery({
     search: hasSearch ? trimmedSearch : undefined,
@@ -89,12 +90,23 @@ export default function PatientsPage() {
             Manage patient records
           </p>
         </div>
-        {canManagePatients && (
-          <Button onClick={() => router.push("/patients/new")}>
-            <Plus className="mr-2 h-4 w-4" />
-            New Patient
-          </Button>
-        )}
+        <div className="flex items-center gap-2">
+          {canReviewDuplicates ? (
+            <Button
+              variant="outline"
+              onClick={() => router.push("/patients/duplicates")}
+            >
+              <GitMerge className="mr-2 h-4 w-4" />
+              Review duplicates
+            </Button>
+          ) : null}
+          {canManagePatients && (
+            <Button onClick={() => router.push("/patients/new")}>
+              <Plus className="mr-2 h-4 w-4" />
+              New Patient
+            </Button>
+          )}
+        </div>
       </div>
 
       <div className="mt-6 flex items-center gap-4">

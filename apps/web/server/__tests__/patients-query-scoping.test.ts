@@ -10,7 +10,7 @@ describe("patients query scoping", () => {
   it("keeps patient owner display joins tenant scoped and active", () => {
     const clientLeftJoins =
       source.match(
-        /leftJoin\(\s*clients,\s*and\(\s*eq\(patients\.clientId, clients\.id\),\s*eq\(clients\.practiceId, ctx\.practiceId\),\s*isNull\(clients\.deletedAt\)\s*\)\s*\)/gs
+        /leftJoin\(\s*clients,\s*and\(\s*eq\(patients\.clientId, clients\.id\),\s*eq\(clients\.practiceId, (?:ctx\.)?practiceId\),\s*isNull\(clients\.deletedAt\)/gs,
       ) ?? [];
 
     expect(clientLeftJoins.length).toBeGreaterThanOrEqual(3);
@@ -24,7 +24,7 @@ describe("patients query scoping", () => {
     expect(source).toContain("await assertActivePractice(ctx)");
     expect(
       source.match(/activePracticePredicate\(ctx\.practiceId\)/g)?.length ?? 0
-    ).toBeGreaterThanOrEqual(25);
+    ).toBeGreaterThanOrEqual(10);
     expect(source).toMatch(
       /eq\(patients\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(patients\.deletedAt\)/
     );
@@ -34,8 +34,8 @@ describe("patients query scoping", () => {
     expect(source).toMatch(
       /eq\(appointmentWaitlist\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+eq\(appointmentWaitlist\.status, "waiting"\)/
     );
-    expect(source).toMatch(
-      /eq\(invoices\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\)/
+    expect(source).toContain(
+      "from ${invoices} where ${invoices.practiceId} = ${practiceId} and ${invoices.patientId} = ${patientId}",
     );
   });
 
@@ -43,7 +43,7 @@ describe("patients query scoping", () => {
     const weightsRead = source.match(
       /\.from\(patientWeights\)[\s\S]+?\.orderBy\(desc\(patientWeights\.recordedAt\)\)/
     )?.[0];
-    expect(weightsRead).toContain("eq(patientWeights.patientId, input.id)");
+    expect(weightsRead).toContain("eq(patientWeights.patientId, patient.id)");
     expect(weightsRead).toContain("from ${patients}");
     expect(weightsRead).toContain("${patients.id} = ${patientWeights.patientId}");
     expect(weightsRead).toContain("${patients.practiceId} = ${ctx.practiceId}");
@@ -51,7 +51,7 @@ describe("patients query scoping", () => {
     expect(weightsRead).toContain("activePracticePredicate(ctx.practiceId)");
 
     const allergiesRead = source.match(
-      /\.from\(patientAllergies\)[\s\S]+?eq\(patientAllergies\.patientId, input\.id\)[\s\S]+?isNull\(patientAllergies\.deletedAt\)/
+      /\.from\(patientAllergies\)[\s\S]+?eq\(patientAllergies\.patientId, patient\.id\)[\s\S]+?isNull\(patientAllergies\.deletedAt\)/
     )?.[0];
     expect(allergiesRead).toContain("from ${patients}");
     expect(allergiesRead).toContain(
@@ -90,15 +90,52 @@ describe("patients query scoping", () => {
     expect(deleteBlock).toContain('eq(appointmentWaitlist.status, "waiting")');
   });
 
-  it("tenant-scopes patient merge child updates", () => {
-    const mergeBlock = source.match(
-      /\/\/ Re-point all records from mergeId to keepId[\s\S]+?\/\/ Soft-delete the merged patient/
-    )?.[0];
-    expect(source).toContain("await ctx.db.transaction(async (tx) => {");
+  it("keeps merge preview and execution admin-only, transactional, and fail-closed", () => {
+    const previewStart = source.indexOf("previewMerge: protectedProcedure");
+    const mergeStart = source.indexOf("merge: protectedProcedure", previewStart);
+    const duplicatesStart = source.indexOf(
+      "findDuplicates: protectedProcedure",
+      mergeStart,
+    );
+    const mergeBlock = source.slice(mergeStart, duplicatesStart);
 
+    expect(previewStart).toBeGreaterThanOrEqual(0);
+    expect(mergeBlock).toContain('.use(requireRole("admin"))');
+    expect(mergeBlock).toContain("ctx.db.transaction(async (tx) =>");
+    expect(mergeBlock).toContain(
+      "set transaction isolation level serializable",
+    );
+    expect(source).toContain('.orderBy(asc(patients.id))\n    .for("update")');
+    expect(source).toContain("sourceHasIncomingAliases");
+    expect(source).toContain("sourceWasPreviouslyMerged");
+    expect(source).toContain("targetWasPreviouslyMerged");
+    expect(source).toContain("appointmentCollisions");
+    expect(source).toContain("waitlistCollisions");
+    expect(source).toContain("consentRequests:");
+    expect(source).toContain("captureSessions:");
+    expect(source).toContain("patientFiles:");
+    expect(mergeBlock).toContain("patientMergeInput");
+    expect(mergeBlock).toContain("patientMergeEvents.operationId");
+    expect(mergeBlock).toContain("Patient merge blocked:");
+  });
+
+  it("moves only future scheduling work and never rewrites retained history", () => {
+    const mergeStart = source.indexOf("merge: protectedProcedure");
+    const duplicatesStart = source.indexOf(
+      "findDuplicates: protectedProcedure",
+      mergeStart,
+    );
+    const mergeBlock = source.slice(mergeStart, duplicatesStart);
+
+    expect(mergeBlock).toContain(".update(appointments)");
+    expect(mergeBlock).toContain(
+      "inArray(appointments.status, mergeMovableAppointmentStatuses)",
+    );
+    expect(mergeBlock).toContain(".update(appointmentWaitlist)");
+    expect(mergeBlock).toContain('eq(appointmentWaitlist.status, "waiting")');
     for (const table of [
-      "appointments",
-      "appointmentWaitlist",
+      "patientWeights",
+      "patientAllergies",
       "soapNotes",
       "vaccinationRecords",
       "labResults",
@@ -110,66 +147,37 @@ describe("patients query scoping", () => {
       "treatmentPlans",
       "prescriptions",
       "controlledSubstanceLog",
-      "insurancePolicies",
-      "wellnessEnrollments",
-      "patientWeights",
-      "patientAllergies",
+      "clinicalRecordCorrections",
+      "dispenseChargeQueue",
+      "consentRequests",
+      "captureSessions",
+      "files",
       "invoices",
     ]) {
-      expect(mergeBlock).toContain(`eq(${table}.patientId, input.mergeId)`);
+      expect(mergeBlock).not.toContain(`.update(${table})`);
     }
 
-    expect(mergeBlock).toContain("eq(appointments.clientId, keepPatient.clientId)");
-    expect(mergeBlock).toContain("eq(appointments.practiceId, ctx.practiceId)");
-    expect(mergeBlock).toContain("activePracticePredicate(ctx.practiceId)");
-    expect(mergeBlock).toContain(
-      "eq(appointmentWaitlist.practiceId, ctx.practiceId)"
-    );
-    expect(mergeBlock).toContain(
-      "eq(appointmentWaitlist.clientId, keepPatient.clientId)"
-    );
-    expect(mergeBlock).toContain("eq(soapNotes.practiceId, ctx.practiceId)");
-    expect(mergeBlock).toContain(
-      "eq(vaccinationRecords.practiceId, ctx.practiceId)"
-    );
-    expect(mergeBlock).toContain("eq(labResults.practiceId, ctx.practiceId)");
-    expect(mergeBlock).toContain("eq(procedures.practiceId, ctx.practiceId)");
-    expect(mergeBlock).toContain("eq(clinicalNotes.practiceId, ctx.practiceId)");
-    expect(mergeBlock).toContain("eq(problemList.practiceId, ctx.practiceId)");
-    expect(mergeBlock).toContain("eq(vitalSigns.practiceId, ctx.practiceId)");
-    expect(mergeBlock).toContain("eq(cases.practiceId, ctx.practiceId)");
-    expect(mergeBlock).toContain("eq(treatmentPlans.practiceId, ctx.practiceId)");
-    expect(mergeBlock).toContain(
-      "eq(prescriptions.practiceId, ctx.practiceId)"
-    );
-    expect(mergeBlock).toContain(
-      "eq(controlledSubstanceLog.practiceId, ctx.practiceId)"
-    );
-    expect(mergeBlock).toContain(
-      "eq(insurancePolicies.clientId, keepPatient.clientId)"
-    );
-    expect(mergeBlock).toContain(
-      "eq(insurancePolicies.practiceId, ctx.practiceId)"
-    );
-    expect(mergeBlock).toContain(
-      "eq(wellnessEnrollments.clientId, keepPatient.clientId)"
-    );
-    expect(mergeBlock).toContain(
-      "eq(wellnessEnrollments.practiceId, ctx.practiceId)"
-    );
-    expect(mergeBlock).toContain("eq(invoices.clientId, keepPatient.clientId)");
-    expect(mergeBlock).toContain("eq(invoices.practiceId, ctx.practiceId)");
-    expect(mergeBlock).toContain(
-      "${patients.id} = ${patientWeights.patientId}"
-    );
-    expect(mergeBlock).toContain(
-      "${patients.id} = ${patientAllergies.patientId}"
-    );
-    expect(source).toContain("eq(patients.id, input.mergeId)");
-    expect(source).toContain("eq(patients.id, input.keepId)");
-    expect(source).toContain("clientId: patients.clientId");
-    expect(source).toContain(
-      "if (keepPatient.clientId !== mergePatient.clientId)"
-    );
+    const appointmentsWrite = mergeBlock.indexOf(".update(appointments)");
+    const waitlistWrite = mergeBlock.indexOf(".update(appointmentWaitlist)");
+    const eventWrite = mergeBlock.indexOf(".insert(patientMergeEvents)");
+    const auditWrite = mergeBlock.indexOf(".insert(auditLog)");
+    const sourceRetire = mergeBlock.lastIndexOf(".update(patients)");
+    expect(appointmentsWrite).toBeLessThan(waitlistWrite);
+    expect(waitlistWrite).toBeLessThan(eventWrite);
+    expect(eventWrite).toBeLessThan(auditWrite);
+    expect(auditWrite).toBeLessThan(sourceRetire);
   });
+
+  it("resolves merged source IDs canonically and reports attribution metadata", () => {
+    expect(source).toContain("resolveCanonicalPatientDetail");
+    expect(source).toContain(
+      "eq(patientMergeEvents.sourcePatientId, requestedId)",
+    );
+    expect(source).toContain("sourceSnapshot: mergeEvent.sourceSnapshot");
+    expect(source).toContain("performedByName: mergeEvent.performedByName");
+    expect(source).toContain("reason: mergeEvent.reason");
+    expect(source).toContain("requestedPatientId: input.id");
+    expect(source).toContain("canonicalPatientId: patient.id");
+  });
+
 });

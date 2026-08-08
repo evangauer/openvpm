@@ -27,6 +27,7 @@ import {
   locationMessaging,
   locations,
   patientAllergies,
+  patientMergeEvents,
   patientWeights,
   patients,
   payments,
@@ -107,6 +108,7 @@ export const PRACTICE_EXPORT_SECTIONS = [
   "recurringSeries",
   "clients",
   "patients",
+  "patientMergeEvents",
   "insurancePolicies",
   "wellnessPlans",
   "wellnessEnrollments",
@@ -155,6 +157,8 @@ const PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS = [
   // prescription lifecycle ledger was introduced.
   "prescriptionEvents",
   "dispenseChargeQueue",
+  // Backward compatibility for backups created before durable patient lineage.
+  "patientMergeEvents",
   "visitCloseouts",
   "clinicalRecordCorrections",
 ] as const satisfies readonly PracticeExportSection[];
@@ -247,6 +251,10 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
   optionalRef("users", "locationId", "locations"),
   optionalRef("rooms", "locationId", "locations"),
   requiredRef("patients", "clientId", "clients"),
+  requiredRef("patientMergeEvents", "sourcePatientId", "patients"),
+  requiredRef("patientMergeEvents", "targetPatientId", "patients"),
+  requiredRef("patientMergeEvents", "clientId", "clients"),
+  requiredRef("patientMergeEvents", "performedBy", "users"),
   requiredRef("patientWeights", "patientId", "patients"),
   optionalRef("patientWeights", "recordedBy", "users"),
   requiredRef("patientAllergies", "patientId", "patients"),
@@ -399,6 +407,75 @@ function rowLabel(row: Row, index: number): string {
   return typeof row.id === "string" ? row.id : `#${index + 1}`;
 }
 
+const PATIENT_IDENTITY_SPECIES = new Set([
+  "canine",
+  "feline",
+  "avian",
+  "rabbit",
+  "reptile",
+  "equine",
+  "other",
+]);
+const PATIENT_IDENTITY_SEX = new Set([
+  "male",
+  "female",
+  "male_neutered",
+  "female_spayed",
+]);
+
+function isNullableBoundedString(value: unknown, maxLength: number): boolean {
+  return value == null || (typeof value === "string" && value.length <= maxLength);
+}
+
+function isValidCalendarDate(value: unknown): boolean {
+  if (value == null) return true;
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function isValidPatientIdentitySnapshot(
+  value: unknown,
+  patientId: unknown,
+  clientId: unknown,
+): value is Row {
+  if (!isRecord(value)) return false;
+  const externalPairIsComplete =
+    (value.externalSource == null) === (value.externalId == null);
+  return (
+    value.id === patientId &&
+    value.clientId === clientId &&
+    typeof value.name === "string" &&
+    value.name.trim().length > 0 &&
+    value.name.length <= 128 &&
+    typeof value.species === "string" &&
+    PATIENT_IDENTITY_SPECIES.has(value.species) &&
+    Object.prototype.hasOwnProperty.call(value, "breed") &&
+    isNullableBoundedString(value.breed, 128) &&
+    Object.prototype.hasOwnProperty.call(value, "sex") &&
+    (value.sex == null ||
+      (typeof value.sex === "string" && PATIENT_IDENTITY_SEX.has(value.sex))) &&
+    Object.prototype.hasOwnProperty.call(value, "dob") &&
+    isValidCalendarDate(value.dob) &&
+    Object.prototype.hasOwnProperty.call(value, "microchipNumber") &&
+    isNullableBoundedString(value.microchipNumber, 64) &&
+    Object.prototype.hasOwnProperty.call(value, "externalSource") &&
+    isNullableBoundedString(value.externalSource, 64) &&
+    Object.prototype.hasOwnProperty.call(value, "externalId") &&
+    isNullableBoundedString(value.externalId, 160) &&
+    externalPairIsComplete
+  );
+}
+
+function isRestoredTimestamp(value: unknown): boolean {
+  return (
+    value instanceof Date ||
+    (typeof value === "string" && !Number.isNaN(new Date(value).getTime()))
+  );
+}
+
 function validateRestoreRows(data: unknown, pushError: (message: string) => void) {
   const record = isRecord(data) ? data : {};
 
@@ -506,6 +583,142 @@ export function validatePracticeExportRestore(data: unknown): {
   }
 
   const record = isRecord(data) ? data : {};
+  if (Array.isArray(record.patientMergeEvents)) {
+    const patientRows = rowsById("patients");
+    const clientRows = rowsById("clients");
+    const userRows = rowsById("users");
+    const mergeRows = rowsFor(data, "patientMergeEvents");
+    const incomingTargetIds = new Set(
+      mergeRows
+        .map((row) => row.targetPatientId)
+        .filter((id): id is string => typeof id === "string"),
+    );
+    const sourceKeys = new Set<string>();
+    const operationKeys = new Set<string>();
+
+    mergeRows.forEach((row, index) => {
+      const label = `patientMergeEvents[${rowLabel(row, index)}]`;
+      const practiceId = row.practiceId;
+      const sourcePatient =
+        typeof row.sourcePatientId === "string"
+          ? patientRows.get(row.sourcePatientId)
+          : undefined;
+      const targetPatient =
+        typeof row.targetPatientId === "string"
+          ? patientRows.get(row.targetPatientId)
+          : undefined;
+      const client =
+        typeof row.clientId === "string"
+          ? clientRows.get(row.clientId)
+          : undefined;
+      const actor =
+        typeof row.performedBy === "string"
+          ? userRows.get(row.performedBy)
+          : undefined;
+
+      if (
+        typeof practiceId !== "string" ||
+        practiceId.length === 0 ||
+        typeof record.practiceId !== "string" ||
+        record.practiceId !== practiceId
+      ) {
+        pushError(`${label}.practiceId must match the backup practiceId.`);
+      }
+      if (row.sourcePatientId === row.targetPatientId) {
+        pushError(`${label} cannot merge a patient into itself.`);
+      }
+      if (
+        typeof row.sourcePatientId === "string" &&
+        incomingTargetIds.has(row.sourcePatientId)
+      ) {
+        pushError(`${label} cannot use an existing merge target as a source.`);
+      }
+
+      if (typeof practiceId === "string" && typeof row.sourcePatientId === "string") {
+        const sourceKey = `${practiceId}:${row.sourcePatientId}`;
+        if (sourceKeys.has(sourceKey)) {
+          pushError(`${label}.sourcePatientId must be unique within its practice.`);
+        }
+        sourceKeys.add(sourceKey);
+      }
+      if (
+        typeof row.operationId !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          row.operationId,
+        )
+      ) {
+        pushError(`${label}.operationId must be a UUID.`);
+      } else if (typeof practiceId === "string") {
+        const operationKey = `${practiceId}:${row.operationId}`;
+        if (operationKeys.has(operationKey)) {
+          pushError(`${label}.operationId must be unique within its practice.`);
+        }
+        operationKeys.add(operationKey);
+      }
+
+      if (
+        typeof row.performedByName !== "string" ||
+        row.performedByName.trim().length === 0 ||
+        row.performedByName.length > 255
+      ) {
+        pushError(`${label}.performedByName must be between 1 and 255 characters.`);
+      }
+      if (
+        typeof row.reason !== "string" ||
+        row.reason.trim().length < 5 ||
+        row.reason.length > 500
+      ) {
+        pushError(`${label}.reason must be between 5 and 500 characters.`);
+      }
+
+      if (
+        !isValidPatientIdentitySnapshot(
+          row.sourceSnapshot,
+          row.sourcePatientId,
+          row.clientId,
+        )
+      ) {
+        pushError(`${label}.sourceSnapshot must be a valid patient identity snapshot.`);
+      }
+      if (
+        !isValidPatientIdentitySnapshot(
+          row.targetSnapshot,
+          row.targetPatientId,
+          row.clientId,
+        )
+      ) {
+        pushError(`${label}.targetSnapshot must be a valid patient identity snapshot.`);
+      }
+
+      if (
+        sourcePatient &&
+        (sourcePatient.clientId !== row.clientId ||
+          sourcePatient.practiceId !== practiceId)
+      ) {
+        pushError(`${label}.sourcePatientId must share its client and practice.`);
+      }
+      if (
+        targetPatient &&
+        (targetPatient.clientId !== row.clientId ||
+          targetPatient.practiceId !== practiceId)
+      ) {
+        pushError(`${label}.targetPatientId must share its client and practice.`);
+      }
+      if (client && client.practiceId !== practiceId) {
+        pushError(`${label}.clientId must belong to the declared practice.`);
+      }
+      if (actor && actor.practiceId !== practiceId) {
+        pushError(`${label}.performedBy must belong to the declared practice.`);
+      }
+      if (sourcePatient && !isRestoredTimestamp(sourcePatient.deletedAt)) {
+        pushError(`${label}.sourcePatientId must reference a soft-deleted source.`);
+      }
+      if (targetPatient && targetPatient.deletedAt != null) {
+        pushError(`${label}.targetPatientId must reference an active target.`);
+      }
+    });
+  }
+
   if (Array.isArray(record.prescriptionEvents)) {
     const prescriptionRows = rowsFor(data, "prescriptions");
     const prescriptionById = new Map(
@@ -800,6 +1013,7 @@ export async function exportPracticeData(
     allRecurringSeriesRows,
     allClientRows,
     allPatientRows,
+    patientMergeRows,
     allAppointmentRows,
     appointmentWaitlistRows,
     staffScheduleRows,
@@ -844,6 +1058,7 @@ export async function exportPracticeData(
     allPracticeRows(db, recurringSeries, practiceId),
     allPracticeRows(db, clients, practiceId),
     allPracticeRows(db, patients, practiceId),
+    allPracticeRows(db, patientMergeEvents, practiceId),
     allPracticeRows(db, appointments, practiceId),
     activeRows(db, appointmentWaitlist, practiceId),
     activeRows(db, staffSchedules, practiceId),
@@ -921,6 +1136,10 @@ export async function exportPracticeData(
       ...soapNoteRows.map((note) => note.patientId),
       ...vitalRows.map((vital) => vital.patientId),
       ...appointmentRows.map((appointment) => appointment.patientId),
+      ...patientMergeRows.flatMap((event) => [
+        event.sourcePatientId,
+        event.targetPatientId,
+      ]),
     ].filter((id): id is string => typeof id === "string"),
   );
   const patientRows = allPatientRows.filter(
@@ -945,6 +1164,7 @@ export async function exportPracticeData(
       ...soapNoteRows.map((note) => note.authorId),
       ...vitalRows.map((vital) => vital.recordedBy),
       ...appointmentRows.map((appointment) => appointment.doctorId),
+      ...patientMergeRows.map((event) => event.performedBy),
     ].filter((id): id is string => typeof id === "string"),
   );
   const userRows = allUserRows.filter(
@@ -954,6 +1174,7 @@ export async function exportPracticeData(
     [
       ...patientRows.map((patient) => patient.clientId),
       ...appointmentRows.map((appointment) => appointment.clientId),
+      ...patientMergeRows.map((event) => event.clientId),
     ].filter((id): id is string => typeof id === "string"),
   );
   const clientRows = allClientRows.filter(
@@ -1106,6 +1327,7 @@ export async function exportPracticeData(
     recurringSeries: recurringSeriesRows,
     clients: sanitizePracticeExportRows("clients", clientRows),
     patients: patientRows,
+    patientMergeEvents: patientMergeRows,
     insurancePolicies: insurancePolicyRows,
     wellnessPlans: wellnessPlanRows,
     wellnessEnrollments: wellnessEnrollmentRows,
@@ -1208,6 +1430,7 @@ async function restorePracticeDataRows(
   await restorePracticeRows("recurringSeries", recurringSeries);
   await restorePracticeRows("clients", clients);
   await restorePracticeRows("patients", patients);
+  await restorePracticeRows("patientMergeEvents", patientMergeEvents);
   await restorePracticeRows("insurancePolicies", insurancePolicies);
   await restorePracticeRows("wellnessPlans", wellnessPlans);
   await restorePracticeRows("wellnessEnrollments", wellnessEnrollments);

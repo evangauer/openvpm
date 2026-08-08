@@ -35,6 +35,8 @@ const app = postgres(appUrl, { max: 1 });
 
 const aId = randomUUID();
 const bId = randomUUID();
+const aClient = randomUUID();
+const bClient = randomUUID();
 const aInvoice = randomUUID();
 const bInvoice = randomUUID();
 const aUser = randomUUID();
@@ -47,6 +49,13 @@ const aCloseout = randomUUID();
 const bCloseout = randomUUID();
 const aPatient = randomUUID();
 const bPatient = randomUUID();
+const aMergeTargetPatient = randomUUID();
+const bMergeTargetPatient = randomUUID();
+const aLineageCandidatePatient = randomUUID();
+const aPatientMergeEvent = randomUUID();
+const bPatientMergeEvent = randomUUID();
+const aPatientMergeOperation = randomUUID();
+const bPatientMergeOperation = randomUUID();
 const aProduct = randomUUID();
 const bProduct = randomUUID();
 const aPrescription = randomUUID();
@@ -72,8 +81,8 @@ function check(name: string, ok: boolean) {
 try {
   // Arrange (as owner — bypasses RLS).
   await owner`insert into practices (id, name) values (${aId}, 'RLS Test A'), (${bId}, 'RLS Test B')`;
-  await owner`insert into clients (practice_id, first_name, last_name) values
-    (${aId}, 'Alice', 'A'), (${bId}, 'Bob', 'B')`;
+  await owner`insert into clients (id, practice_id, first_name, last_name) values
+    (${aClient}, ${aId}, 'Alice', 'A'), (${bClient}, ${bId}, 'Bob', 'B')`;
   await owner`insert into users (id, email, password_hash, name, role, practice_id) values
     (${aUser}, ${`rls-${aUser}@example.com`}, 'not-a-real-hash', 'RLS Admin A', 'admin', ${aId}),
     (${bUser}, ${`rls-${bUser}@example.com`}, 'not-a-real-hash', 'RLS Admin B', 'admin', ${bId})`;
@@ -83,6 +92,33 @@ try {
   await owner`insert into patients (id, practice_id, client_id, name, species)
     select ${bPatient}, ${bId}, id, 'RLS Pet B', 'feline'
     from clients where practice_id = ${bId}`;
+  await owner`insert into patients (id, practice_id, client_id, name, species)
+    select ${aMergeTargetPatient}, ${aId}, id, 'RLS Canonical Pet A', 'canine'
+    from clients where practice_id = ${aId}`;
+  await owner`insert into patients (id, practice_id, client_id, name, species)
+    select ${bMergeTargetPatient}, ${bId}, id, 'RLS Canonical Pet B', 'feline'
+    from clients where practice_id = ${bId}`;
+  await owner`insert into patients (id, practice_id, client_id, name, species)
+    select ${aLineageCandidatePatient}, ${aId}, id, 'RLS Lineage Candidate A', 'canine'
+    from clients where practice_id = ${aId}`;
+  await owner`insert into patient_merge_events
+    (id, practice_id, source_patient_id, target_patient_id, client_id,
+     performed_by, performed_by_name, reason, operation_id,
+     source_snapshot, target_snapshot)
+    select ${aPatientMergeEvent}, ${aId}, ${aPatient}, ${aMergeTargetPatient}, client_id,
+      ${aUser}, 'RLS Admin A', 'Duplicate patient identity corrected.',
+      ${aPatientMergeOperation}, jsonb_build_object('id', ${aPatient}::text),
+      jsonb_build_object('id', ${aMergeTargetPatient}::text)
+    from patients where id = ${aPatient}`;
+  await owner`insert into patient_merge_events
+    (id, practice_id, source_patient_id, target_patient_id, client_id,
+     performed_by, performed_by_name, reason, operation_id,
+     source_snapshot, target_snapshot)
+    select ${bPatientMergeEvent}, ${bId}, ${bPatient}, ${bMergeTargetPatient}, client_id,
+      ${bUser}, 'RLS Admin B', 'Duplicate patient identity corrected.',
+      ${bPatientMergeOperation}, jsonb_build_object('id', ${bPatient}::text),
+      jsonb_build_object('id', ${bMergeTargetPatient}::text)
+    from patients where id = ${bPatient}`;
   await owner`insert into products (id, practice_id, name, category, unit_price, stock_quantity) values
     (${aProduct}, ${aId}, 'RLS Drug A', 'medication', 1, 10),
     (${bProduct}, ${bId}, 'RLS Drug B', 'medication', 1, 10)`;
@@ -148,6 +184,84 @@ try {
     aDispenseCharges.length === 1 &&
       aDispenseCharges[0]!.id === aDispenseCharge,
   );
+
+  const aPatientMergeEvents = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id, practice_id from patient_merge_events where id in (${aPatientMergeEvent}, ${bPatientMergeEvent})`;
+  });
+  check(
+    "tenant A sees only A's patient merge events",
+    aPatientMergeEvents.length === 1 &&
+      aPatientMergeEvents[0]!.id === aPatientMergeEvent &&
+      aPatientMergeEvents[0]!.practice_id === aId,
+  );
+
+  let patientMergeUpdateBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`update patient_merge_events set reason = 'Tampered identity correction.' where id = ${aPatientMergeEvent}`;
+    });
+  } catch {
+    patientMergeUpdateBlocked = true;
+  }
+  check(
+    "application role cannot rewrite patient merge history",
+    patientMergeUpdateBlocked,
+  );
+
+  let patientMergeDeleteBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`delete from patient_merge_events where id = ${aPatientMergeEvent}`;
+    });
+  } catch {
+    patientMergeDeleteBlocked = true;
+  }
+  check(
+    "application role cannot delete patient merge history",
+    patientMergeDeleteBlocked,
+  );
+
+  let canonicalRetirementBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into patient_merge_events
+        (practice_id, source_patient_id, target_patient_id, client_id,
+         performed_by, performed_by_name, reason, operation_id,
+         source_snapshot, target_snapshot)
+        values (${aId}, ${aMergeTargetPatient}, ${aLineageCandidatePatient}, ${aClient},
+          ${aUser}, 'RLS Admin A', 'Canonical patient cannot be retired.',
+          ${randomUUID()}, jsonb_build_object('id', ${aMergeTargetPatient}::text),
+          jsonb_build_object('id', ${aLineageCandidatePatient}::text))`;
+    });
+  } catch {
+    canonicalRetirementBlocked = true;
+  }
+  check(
+    "canonical patient with incoming aliases cannot be retired",
+    canonicalRetirementBlocked,
+  );
+
+  let aliasTargetBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into patient_merge_events
+        (practice_id, source_patient_id, target_patient_id, client_id,
+         performed_by, performed_by_name, reason, operation_id,
+         source_snapshot, target_snapshot)
+        values (${aId}, ${aLineageCandidatePatient}, ${aPatient}, ${aClient},
+          ${aUser}, 'RLS Admin A', 'Merge target cannot already be an alias.',
+          ${randomUUID()}, jsonb_build_object('id', ${aLineageCandidatePatient}::text),
+          jsonb_build_object('id', ${aPatient}::text))`;
+    });
+  } catch {
+    aliasTargetBlocked = true;
+  }
+  check("merge alias cannot be used as a target", aliasTargetBlocked);
 
   let dispenseSnapshotUpdateBlocked = false;
   try {
@@ -259,6 +373,53 @@ try {
       correctionPrivileges[0]!.can_insert === true &&
       correctionPrivileges[0]!.can_update === false &&
       correctionPrivileges[0]!.can_delete === false,
+  );
+
+  const patientMergeRls = await owner`
+    select c.relrowsecurity as enabled
+    from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public' and c.relname = 'patient_merge_events'
+  `;
+  check(
+    "patient merge ledger has RLS enabled",
+    patientMergeRls.length === 1 && patientMergeRls[0]!.enabled === true,
+  );
+  const patientMergePrivileges = await owner`
+    select
+      has_table_privilege('openpims_app', 'patient_merge_events', 'SELECT') as can_select,
+      has_table_privilege('openpims_app', 'patient_merge_events', 'INSERT') as can_insert,
+      has_table_privilege('openpims_app', 'patient_merge_events', 'UPDATE') as can_update,
+      has_table_privilege('openpims_app', 'patient_merge_events', 'DELETE') as can_delete
+  `;
+  check(
+    "app role can append/read but cannot mutate patient merge events",
+    patientMergePrivileges.length === 1 &&
+      patientMergePrivileges[0]!.can_select === true &&
+      patientMergePrivileges[0]!.can_insert === true &&
+      patientMergePrivileges[0]!.can_update === false &&
+      patientMergePrivileges[0]!.can_delete === false,
+  );
+
+  let crossTenantPatientMergeInsertBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into patient_merge_events
+        (practice_id, source_patient_id, target_patient_id, client_id,
+         performed_by, performed_by_name, reason, operation_id,
+         source_snapshot, target_snapshot)
+        values (${bId}, ${bPatient}, ${bMergeTargetPatient}, ${bClient},
+          ${bUser}, 'RLS Admin B', 'Cross-tenant merge must be rejected.',
+          ${randomUUID()}, jsonb_build_object('id', ${bPatient}::text),
+          jsonb_build_object('id', ${bMergeTargetPatient}::text))`;
+    });
+  } catch {
+    crossTenantPatientMergeInsertBlocked = true;
+  }
+  check(
+    "cross-tenant patient merge INSERT is blocked",
+    crossTenantPatientMergeInsertBlocked,
   );
 
   const hiddenMigrationUpdate = await appTransaction(async (tx) => {
@@ -377,6 +538,7 @@ try {
   await owner.begin(async (tx) => {
     const cleanup = tx as unknown as typeof owner;
     await cleanup`select set_config('app.ledger_maintenance', 'on', true)`;
+    await cleanup`delete from patient_merge_events where id in (${aPatientMergeEvent}, ${bPatientMergeEvent})`;
     await cleanup`delete from dispense_charge_queue where id in (${aDispenseCharge}, ${bDispenseCharge})`;
     await cleanup`delete from invoice_adjustments where invoice_id in (${aInvoice}, ${bInvoice})`;
     await cleanup`delete from prescription_events where id in (${aPrescriptionEvent}, ${bPrescriptionEvent})`;
@@ -387,7 +549,7 @@ try {
     await cleanup`delete from appointments where id in (${aAppointment}, ${bAppointment})`;
     await cleanup`delete from prescriptions where id in (${aPrescription}, ${bPrescription})`;
     await cleanup`delete from products where id in (${aProduct}, ${bProduct})`;
-    await cleanup`delete from patients where id in (${aPatient}, ${bPatient})`;
+    await cleanup`delete from patients where id in (${aPatient}, ${bPatient}, ${aMergeTargetPatient}, ${bMergeTargetPatient}, ${aLineageCandidatePatient})`;
     await cleanup`delete from clients where practice_id in (${aId}, ${bId})`;
     await cleanup`delete from users where id in (${aUser}, ${bUser})`;
     await cleanup`delete from practices where id in (${aId}, ${bId})`;

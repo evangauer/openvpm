@@ -54,7 +54,7 @@ DECLARE
     'api_keys','appointment_types','appointment_waitlist','appointments','audit_log','booking_pages',
     'capture_sessions','cases','clients','clinical_notes','clinical_record_corrections','communications','consent_forms','consent_requests','controlled_substance_log','dispense_charge_queue','email_suppressions',
     'files','insurance_claims','insurance_policies','invoices','lab_results','location_messaging','messaging_registrations','migration_runs',
-    'locations','patients','practice_payment_accounts','prescription_events','prescriptions','problem_list','procedures','products','purchase_orders',
+    'locations','patient_merge_events','patients','practice_payment_accounts','prescription_events','prescriptions','problem_list','procedures','products','purchase_orders',
     'recurring_series','rooms','services','sms_suppressions','soap_notes','staff_schedules','suppliers',
     'treatment_plans','treatment_templates','usage_records','users','vaccination_records',
     'visit_closeouts','visit_work_items','vital_signs','webhooks','wellness_enrollments','wellness_plans'
@@ -82,6 +82,11 @@ REVOKE UPDATE, DELETE ON clinical_record_corrections FROM openpims_app;
 -- service, but even the application role cannot rewrite or remove history.
 REVOKE ALL ON prescription_events FROM openpims_app;
 GRANT SELECT, INSERT ON prescription_events TO openpims_app;
+
+-- Patient merge events are an append-only identity correction ledger. The app
+-- can create and read attributed events but cannot rewrite or remove lineage.
+REVOKE ALL ON patient_merge_events FROM openpims_app;
+GRANT SELECT, INSERT ON patient_merge_events TO openpims_app;
 
 -- Dispense charge snapshots are durable revenue work. The app may advance or
 -- reopen their attributed workflow status, while database triggers prevent
@@ -173,7 +178,7 @@ BEGIN
   FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format(
-        'REVOKE ALL ON auth_tokens, clinical_record_corrections, demo_accesses, dispense_charge_queue, funnel_events, prescription_events, sessions, verification_tokens FROM %I', r
+        'REVOKE ALL ON auth_tokens, clinical_record_corrections, demo_accesses, dispense_charge_queue, funnel_events, patient_merge_events, prescription_events, sessions, verification_tokens FROM %I', r
       );
     END IF;
   END LOOP;

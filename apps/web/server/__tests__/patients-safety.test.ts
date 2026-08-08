@@ -31,6 +31,8 @@ const OTHER_CLIENT_ID = "00000000-0000-0000-0000-000000000005";
 const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000006";
 const WAITLIST_ID = "00000000-0000-0000-0000-000000000007";
 const ALLERGY_ID = "00000000-0000-0000-0000-000000000008";
+const MERGE_OPERATION_ID = "00000000-0000-0000-0000-000000000009";
+const MERGE_EVENT_ID = "00000000-0000-0000-0000-000000000010";
 
 function callerWithDb(db: Record<string, unknown>, role = "admin") {
   const session = {
@@ -49,23 +51,24 @@ function createDb(opts?: {
   selectResults?: unknown[][];
   insertedRows?: unknown[];
   updatedRows?: unknown[];
+  updatedResults?: unknown[][];
 }) {
   const selectResults = [...(opts?.selectResults ?? [])];
   const select = vi.fn(() => {
     const result = selectResults.shift() ?? [];
-    const afterWhere = {
-      limit: vi.fn(async () => result),
+    const builder: Record<string, unknown> = {
       then: (
         resolve: (value: unknown[]) => unknown,
         reject?: (error: unknown) => unknown
       ) => Promise.resolve(result).then(resolve, reject),
     };
-    const builder = {
-      from: vi.fn(() => builder),
-      where: vi.fn(() => afterWhere),
-      orderBy: vi.fn(() => builder),
-      limit: vi.fn(async () => result),
-    };
+    builder.from = vi.fn(() => builder);
+    builder.leftJoin = vi.fn(() => builder);
+    builder.innerJoin = vi.fn(() => builder);
+    builder.where = vi.fn(() => builder);
+    builder.orderBy = vi.fn(() => builder);
+    builder.limit = vi.fn(async () => result);
+    builder.for = vi.fn(async () => result);
     return builder;
   });
 
@@ -73,21 +76,27 @@ function createDb(opts?: {
   const insertValues = vi.fn(() => ({ returning: insertReturning }));
   const insert = vi.fn(() => ({ values: insertValues }));
 
-  const updateReturning = vi.fn(async () => opts?.updatedRows ?? []);
+  const updatedResults = [...(opts?.updatedResults ?? [])];
+  const updateReturning = vi.fn(async () =>
+    updatedResults.length > 0
+      ? updatedResults.shift()!
+      : (opts?.updatedRows ?? []),
+  );
   const updateWhere = vi.fn(() => ({ returning: updateReturning }));
   const updateSet = vi.fn(() => ({ where: updateWhere }));
   const update = vi.fn(() => ({ set: updateSet }));
 
   const transaction = vi.fn(async (fn: (tx: unknown) => unknown) => fn(db));
+  const execute = vi.fn(async () => undefined);
   const db: Record<string, unknown> = {
     transaction,
-    execute: vi.fn(async () => undefined),
+    execute,
     select,
     insert,
     update,
   };
 
-  return { db, select, insertValues, updateSet, transaction };
+  return { db, select, insertValues, updateSet, transaction, execute };
 }
 
 afterEach(() => {
@@ -616,20 +625,36 @@ describe("patients mutation safety", () => {
     expect(updateSet).not.toHaveBeenCalled();
   });
 
-  it("rejects patient merges across clients before child records are repointed", async () => {
+  it("previews cross-client patient merges as blocked before any write", async () => {
     const { db, updateSet, transaction } = createDb({
       selectResults: [
-        [{ id: PATIENT_ID, clientId: CLIENT_ID }],
-        [{ id: MERGE_PATIENT_ID, clientId: OTHER_CLIENT_ID }],
+        [{ id: PRACTICE_ID }],
+        [
+          {
+            id: PATIENT_ID,
+            practiceId: PRACTICE_ID,
+            clientId: CLIENT_ID,
+          },
+          {
+            id: MERGE_PATIENT_ID,
+            practiceId: PRACTICE_ID,
+            clientId: OTHER_CLIENT_ID,
+          },
+        ],
+        [{}],
       ],
     });
 
     await expect(
-      callerWithDb(db).merge({
+      callerWithDb(db).previewMerge({
         keepId: PATIENT_ID,
         mergeId: MERGE_PATIENT_ID,
       })
-    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    ).resolves.toMatchObject({
+      allowed: false,
+      blockerCounts: { differentClient: 1 },
+      blockingTotal: 1,
+    });
 
     expect(transaction).toHaveBeenCalled();
     expect(updateSet).not.toHaveBeenCalled();
@@ -638,9 +663,22 @@ describe("patients mutation safety", () => {
   it("fails closed before merging a patient with retained clinical or prescription history", async () => {
     const { db, updateSet } = createDb({
       selectResults: [
-        [{ id: PATIENT_ID, clientId: CLIENT_ID }],
-        [{ id: MERGE_PATIENT_ID, clientId: CLIENT_ID }],
-        [{ exists: true }],
+        [{ id: PRACTICE_ID }],
+        [],
+        [{ id: PRACTICE_ID }],
+        [
+          {
+            id: PATIENT_ID,
+            practiceId: PRACTICE_ID,
+            clientId: CLIENT_ID,
+          },
+          {
+            id: MERGE_PATIENT_ID,
+            practiceId: PRACTICE_ID,
+            clientId: CLIENT_ID,
+          },
+        ],
+        [{ prescriptionEvents: 1 }],
       ],
     });
 
@@ -648,9 +686,146 @@ describe("patients mutation safety", () => {
       callerWithDb(db).merge({
         keepId: PATIENT_ID,
         mergeId: MERGE_PATIENT_ID,
+        reason: "Duplicate chart created during intake.",
+        operationId: MERGE_OPERATION_ID,
       }),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("atomically records and retires a history-free duplicate patient", async () => {
+    const mergedAt = new Date("2026-08-08T18:00:00.000Z");
+    const keepPatient = {
+      id: PATIENT_ID,
+      practiceId: PRACTICE_ID,
+      clientId: CLIENT_ID,
+      name: "Biscuit",
+      species: "canine",
+      breed: "Beagle",
+      sex: "female_spayed",
+      dob: "2020-03-01",
+      color: "tricolor",
+      microchipNumber: "985141000000001",
+      photoUrl: null,
+      status: "active",
+      externalSource: null,
+      externalId: null,
+      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      clientFirstName: "Avery",
+      clientLastName: "Rivera",
+      clientEmail: "avery@example.com",
+      clientPhone: "555-0100",
+    };
+    const mergePatient = {
+      ...keepPatient,
+      id: MERGE_PATIENT_ID,
+      name: "Biscuit duplicate",
+      createdAt: new Date("2026-08-01T00:00:00.000Z"),
+    };
+    const { db, insertValues, updateSet, transaction, execute } = createDb({
+      selectResults: [
+        [{ id: PRACTICE_ID }],
+        [],
+        [{ id: PRACTICE_ID }],
+        [keepPatient, mergePatient],
+        [{}],
+        [keepPatient],
+      ],
+      insertedRows: [{ id: MERGE_EVENT_ID, createdAt: mergedAt }],
+      updatedResults: [[], [], [{ id: MERGE_PATIENT_ID }]],
+    });
+    const reason = "Duplicate chart verified by microchip and owner.";
+
+    await expect(
+      callerWithDb(db).merge({
+        keepId: PATIENT_ID,
+        mergeId: MERGE_PATIENT_ID,
+        reason,
+        operationId: MERGE_OPERATION_ID,
+      }),
+    ).resolves.toMatchObject({
+      id: PATIENT_ID,
+      mergeMetadata: {
+        eventId: MERGE_EVENT_ID,
+        sourcePatientId: MERGE_PATIENT_ID,
+        canonicalId: PATIENT_ID,
+        replayed: false,
+      },
+    });
+
+    expect(transaction).toHaveBeenCalled();
+    expect(execute).toHaveBeenCalled();
+    expect(insertValues).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        sourcePatientId: MERGE_PATIENT_ID,
+        targetPatientId: PATIENT_ID,
+        performedBy: USER_ID,
+        performedByName: "Patient User",
+        reason,
+        operationId: MERGE_OPERATION_ID,
+      }),
+    );
+    expect(insertValues).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        action: "merged",
+        entityType: "patient",
+        entityId: PATIENT_ID,
+      }),
+    );
+    expect(updateSet).toHaveBeenNthCalledWith(1, { patientId: PATIENT_ID });
+    expect(updateSet).toHaveBeenNthCalledWith(2, { patientId: PATIENT_ID });
+    expect(updateSet).toHaveBeenNthCalledWith(3, {
+      deletedAt: expect.any(Date),
+    });
+  });
+
+  it("replays an identical merge operation without moving or retiring twice", async () => {
+    const mergedAt = new Date("2026-08-08T18:00:00.000Z");
+    const reason = "Duplicate chart verified by microchip and owner.";
+    const canonical = {
+      id: PATIENT_ID,
+      practiceId: PRACTICE_ID,
+      clientId: CLIENT_ID,
+      name: "Biscuit",
+      species: "canine",
+    };
+    const { db, insertValues, updateSet, execute } = createDb({
+      selectResults: [
+        [{ id: PRACTICE_ID }],
+        [
+          {
+            id: MERGE_EVENT_ID,
+            sourcePatientId: MERGE_PATIENT_ID,
+            targetPatientId: PATIENT_ID,
+            clientId: CLIENT_ID,
+            reason,
+            createdAt: mergedAt,
+          },
+        ],
+        [canonical],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).merge({
+        keepId: PATIENT_ID,
+        mergeId: MERGE_PATIENT_ID,
+        reason,
+        operationId: MERGE_OPERATION_ID,
+      }),
+    ).resolves.toMatchObject({
+      id: PATIENT_ID,
+      mergeMetadata: {
+        eventId: MERGE_EVENT_ID,
+        replayed: true,
+      },
+    });
+
+    expect(execute).toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
     expect(updateSet).not.toHaveBeenCalled();
   });
 });

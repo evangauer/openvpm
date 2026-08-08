@@ -54,6 +54,10 @@ export const clients = pgTable(
     accessToken: varchar("access_token", { length: 64 }).unique(),
   },
   (table) => ({
+    practiceIdUq: uniqueIndex("clients_practice_id_uq").on(
+      table.practiceId,
+      table.id,
+    ),
     practiceIdx: index("clients_practice_idx").on(
       table.practiceId,
       table.deletedAt,
