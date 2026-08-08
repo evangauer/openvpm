@@ -21,6 +21,7 @@ import {
   consentRequests,
   files,
   visitWorkItems,
+  clinicalRecordCorrections,
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
@@ -84,6 +85,10 @@ import { appBaseUrl } from "@/lib/app-url";
 import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
 import { lockOpenVisitForClinicalAppend } from "@/lib/records/visit-integrity";
 import { positiveIntegerColumnInput } from "./storage-bounds";
+import {
+  CLINICAL_CORRECTION_REASON_MAX_LENGTH,
+  CLINICAL_CORRECTION_REASON_MIN_LENGTH,
+} from "@/lib/records/clinical-correction-policy";
 
 export { PRESCRIPTION_INSTRUCTIONS_MAX_LENGTH } from "@/lib/records/prescription-policy";
 export {
@@ -600,6 +605,8 @@ export const recordsRouter = createRouter({
       return ctx.db
         .select({
           id: soapNotes.id,
+          patientId: soapNotes.patientId,
+          appointmentId: soapNotes.appointmentId,
           subjective: soapNotes.subjective,
           objective: soapNotes.objective,
           assessment: soapNotes.assessment,
@@ -607,6 +614,12 @@ export const recordsRouter = createRouter({
           authorName: users.name,
           imported: soapNotes.imported,
           createdAt: soapNotes.createdAt,
+          correctionId: clinicalRecordCorrections.id,
+          correctionAction: clinicalRecordCorrections.action,
+          correctionReason: clinicalRecordCorrections.reason,
+          correctedAt: clinicalRecordCorrections.createdAt,
+          correctedBy: clinicalRecordCorrections.correctedBy,
+          correctedByName: clinicalRecordCorrections.correctedByName,
         })
         .from(soapNotes)
         .leftJoin(
@@ -615,6 +628,13 @@ export const recordsRouter = createRouter({
             eq(soapNotes.authorId, users.id),
             eq(users.practiceId, ctx.practiceId),
             isNull(users.deletedAt)
+          )
+        )
+        .leftJoin(
+          clinicalRecordCorrections,
+          and(
+            eq(clinicalRecordCorrections.soapNoteId, soapNotes.id),
+            eq(clinicalRecordCorrections.practiceId, ctx.practiceId)
           )
         )
         .where(
@@ -627,6 +647,82 @@ export const recordsRouter = createRouter({
         )
         .orderBy(desc(soapNotes.createdAt));
     }),
+
+  markSoapNoteEnteredInError: protectedProcedure
+    .use(requireRole("admin", "veterinarian"))
+    .input(
+      z.object({
+        patientId: z.string().uuid(),
+        recordId: z.string().uuid(),
+        reason: z
+          .string()
+          .trim()
+          .min(CLINICAL_CORRECTION_REASON_MIN_LENGTH)
+          .max(CLINICAL_CORRECTION_REASON_MAX_LENGTH),
+      })
+    )
+    .mutation(async ({ ctx, input }) =>
+      ctx.db.transaction(async (tx) => {
+        const [source] = await tx
+          .select({
+            id: soapNotes.id,
+            patientId: soapNotes.patientId,
+            appointmentId: soapNotes.appointmentId,
+          })
+          .from(soapNotes)
+          .where(
+            and(
+              eq(soapNotes.id, input.recordId),
+              eq(soapNotes.patientId, input.patientId),
+              eq(soapNotes.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(soapNotes.deletedAt)
+            )
+          )
+          .limit(1);
+
+        if (!source) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Clinical record not found",
+          });
+        }
+
+        const [created] = await tx
+          .insert(clinicalRecordCorrections)
+          .values({
+            practiceId: ctx.practiceId,
+            recordType: "soap_note",
+            action: "entered_in_error",
+            soapNoteId: source.id,
+            patientId: source.patientId,
+            appointmentId: source.appointmentId,
+            reason: input.reason,
+            correctedBy: ctx.user.id,
+            correctedByName: ctx.user.name,
+          })
+          .onConflictDoNothing()
+          .returning();
+        if (created) return created;
+
+        const [existing] = await tx
+          .select()
+          .from(clinicalRecordCorrections)
+          .where(
+            and(
+              eq(clinicalRecordCorrections.practiceId, ctx.practiceId),
+              eq(clinicalRecordCorrections.soapNoteId, source.id)
+            )
+          )
+          .limit(1);
+        if (existing) return existing;
+
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "Clinical correction changed; refresh and retry.",
+        });
+      })
+    ),
 
   createSoapNote: protectedProcedure
     .use(requireRole("admin", "veterinarian"))

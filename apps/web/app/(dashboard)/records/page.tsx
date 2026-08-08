@@ -27,6 +27,7 @@ import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/common/empty-state";
+import { ClinicalCorrectionControl } from "@/components/records/clinical-correction-control";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import {
@@ -599,6 +600,13 @@ function RecordsPageContent() {
   );
   const soapNotesMissing =
     Boolean(patientId) && !isLoadingSoapNotes && !soapNotesError && !soapNotes;
+  const correctSoap = trpc.records.markSoapNoteEnteredInError.useMutation({
+    onSuccess: async () => {
+      toast.success("SOAP note retained and marked entered in error");
+      await utils.records.listSoapNotes.invalidate({ patientId });
+    },
+    onError: (error) => toast.error(error.message),
+  });
   const {
     data: vaccinations,
     isLoading: isLoadingVaccinations,
@@ -674,6 +682,8 @@ function RecordsPageContent() {
     !proceduresError &&
     !proceduresList;
   const canPrescribe = userRole === "admin" || userRole === "veterinarian";
+  const canCorrectClinicalRecords =
+    userRole === "admin" || userRole === "veterinarian";
   const canCreateVaccinations =
     userRole === "admin" ||
     userRole === "veterinarian" ||
@@ -1124,7 +1134,11 @@ function RecordsPageContent() {
                       return (
                         <div
                           key={note.id}
-                          className="rounded-lg border border-border bg-card"
+                          className={cn(
+                            "rounded-lg border border-border bg-card",
+                            note.correctionId &&
+                              "border-destructive/40 bg-destructive/5"
+                          )}
                         >
                           <button
                             onClick={() =>
@@ -1147,6 +1161,11 @@ function RecordsPageContent() {
                                   {note.imported ? (
                                     <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
                                       Imported
+                                    </span>
+                                  ) : null}
+                                  {note.correctionId ? (
+                                    <span className="rounded-full bg-destructive/10 px-2 py-0.5 text-[11px] font-medium text-destructive">
+                                      Entered in error
                                     </span>
                                   ) : null}
                                 </div>
@@ -1204,6 +1223,32 @@ function RecordsPageContent() {
                                 </h4>
                                 <p className="text-sm">{note.plan || "--"}</p>
                               </div>
+                              <ClinicalCorrectionControl
+                                correction={
+                                  note.correctionId &&
+                                  note.correctionReason &&
+                                  note.correctedAt
+                                    ? {
+                                        id: note.correctionId,
+                                        reason: note.correctionReason,
+                                        correctedAt: note.correctedAt,
+                                        correctedByName: note.correctedByName,
+                                      }
+                                    : null
+                                }
+                                canCorrect={canCorrectClinicalRecords}
+                                isPending={
+                                  correctSoap.isPending &&
+                                  correctSoap.variables?.recordId === note.id
+                                }
+                                onCorrect={(reason) =>
+                                  correctSoap.mutateAsync({
+                                    patientId,
+                                    recordId: note.id,
+                                    reason,
+                                  })
+                                }
+                              />
                             </div>
                           )}
                         </div>

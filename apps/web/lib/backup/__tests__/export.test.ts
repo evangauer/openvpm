@@ -279,6 +279,131 @@ describe("restorePracticeData", () => {
     });
   });
 
+  it("requires correction events to match their typed source patient and appointment", () => {
+    const backup = {
+      ...emptyBackup(),
+      users: [{ id: "user-1" }],
+      clients: [{ id: "client-1" }],
+      patients: [
+        { id: "patient-1", clientId: "client-1" },
+        { id: "patient-2", clientId: "client-1" },
+      ],
+      appointments: [
+        {
+          id: "appointment-1",
+          clientId: "client-1",
+          patientId: "patient-1",
+        },
+        {
+          id: "appointment-2",
+          clientId: "client-1",
+          patientId: "patient-2",
+        },
+      ],
+      soapNotes: [
+        {
+          id: "soap-1",
+          patientId: "patient-1",
+          appointmentId: "appointment-1",
+          authorId: "user-1",
+        },
+      ],
+      vitalSigns: [
+        {
+          id: "vital-1",
+          patientId: "patient-1",
+          appointmentId: null,
+          recordedBy: "user-1",
+        },
+      ],
+      clinicalRecordCorrections: [
+        {
+          id: "correction-1",
+          recordType: "soap_note",
+          soapNoteId: "soap-1",
+          vitalSignId: null,
+          patientId: "patient-1",
+          appointmentId: "appointment-1",
+          correctedBy: "user-1",
+        },
+        {
+          id: "correction-2",
+          recordType: "vital_sign",
+          soapNoteId: null,
+          vitalSignId: "vital-1",
+          patientId: "patient-1",
+          appointmentId: null,
+          correctedBy: "user-1",
+        },
+      ],
+    };
+
+    expect(validatePracticeExportRestore(backup)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    expect(
+      validatePracticeExportRestore({
+        ...backup,
+        clinicalRecordCorrections: [
+          {
+            ...backup.clinicalRecordCorrections[0],
+            patientId: "patient-2",
+            appointmentId: "appointment-2",
+          },
+        ],
+      }).errors
+    ).toContain(
+      "clinicalRecordCorrections[correction-1] must match its source record patientId and appointmentId exactly."
+    );
+
+    expect(
+      validatePracticeExportRestore({
+        ...backup,
+        clinicalRecordCorrections: [
+          {
+            ...backup.clinicalRecordCorrections[0],
+            recordType: "lab_result",
+          },
+        ],
+      }).errors
+    ).toContain(
+      "clinicalRecordCorrections[correction-1].recordType must be soap_note or vital_sign."
+    );
+  });
+
+  it("rejects a SOAP or vital appointment owned by another patient", () => {
+    const backup = {
+      ...emptyBackup(),
+      users: [{ id: "user-1" }],
+      clients: [{ id: "client-1" }],
+      patients: [
+        { id: "patient-1", clientId: "client-1" },
+        { id: "patient-2", clientId: "client-1" },
+      ],
+      appointments: [
+        {
+          id: "appointment-1",
+          clientId: "client-1",
+          patientId: "patient-2",
+        },
+      ],
+      soapNotes: [
+        {
+          id: "soap-1",
+          patientId: "patient-1",
+          appointmentId: "appointment-1",
+          authorId: "user-1",
+        },
+      ],
+    };
+
+    expect(validatePracticeExportRestore(backup).errors).toContain(
+      "soapNotes[soap-1].appointmentId must reference an appointment for the same patient."
+    );
+  });
+
   it("reports malformed restore references before inserts run", async () => {
     const backup = {
       ...emptyBackup(),

@@ -198,7 +198,9 @@ describe("patient detail UI states", () => {
     expect(source).toContain(
       "<VaccinationsTab patientId={patient.id} timeZone={recordsTimeZone} />"
     );
-    expect(source).toContain("buildVitalTrend(vitals ?? [], timeZone)");
+    expect(source).toContain(
+      "(vitals ?? []).filter((vital) => !vital.correctionId)"
+    );
     expect(source).toContain(
       "formatClinicalDateTime(v.recordedAt, timeZone"
     );

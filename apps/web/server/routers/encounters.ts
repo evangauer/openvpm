@@ -17,6 +17,7 @@ import {
   appointments,
   appointmentTypes,
   auditLog,
+  clinicalRecordCorrections,
   clients,
   invoiceAdjustments,
   invoiceItems,
@@ -713,7 +714,13 @@ export const encountersRouter = createRouter({
               and(
                 eq(soapNotes.appointmentId, input.appointmentId),
                 eq(soapNotes.practiceId, ctx.practiceId),
-                isNull(soapNotes.deletedAt)
+                isNull(soapNotes.deletedAt),
+                sql`not exists (
+                  select 1
+                  from ${clinicalRecordCorrections}
+                  where ${clinicalRecordCorrections.practiceId} = ${ctx.practiceId}
+                    and ${clinicalRecordCorrections.soapNoteId} = ${soapNotes.id}
+                )`
               )
             ),
           ctx.db
@@ -1430,7 +1437,13 @@ export const encountersRouter = createRouter({
             and(
               eq(soapNotes.appointmentId, input.appointmentId),
               eq(soapNotes.practiceId, ctx.practiceId),
-              isNull(soapNotes.deletedAt)
+              isNull(soapNotes.deletedAt),
+              sql`not exists (
+                select 1
+                from ${clinicalRecordCorrections}
+                where ${clinicalRecordCorrections.practiceId} = ${ctx.practiceId}
+                  and ${clinicalRecordCorrections.soapNoteId} = ${soapNotes.id}
+              )`
             )
           )
           .limit(1);

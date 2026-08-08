@@ -16,6 +16,7 @@ import {
   vitalSigns,
   clients,
   appointments,
+  clinicalRecordCorrections,
   invoices,
   practices,
 } from "@openpims/db";
@@ -326,7 +327,13 @@ export const aiRouter = createRouter({
                 eq(vitalSigns.patientId, input.patientId),
                 eq(vitalSigns.practiceId, ctx.practiceId),
                 activePracticePredicate(ctx.practiceId),
-                isNull(vitalSigns.deletedAt)
+                isNull(vitalSigns.deletedAt),
+                sql`not exists (
+                  select 1
+                  from ${clinicalRecordCorrections}
+                  where ${clinicalRecordCorrections.practiceId} = ${ctx.practiceId}
+                    and ${clinicalRecordCorrections.vitalSignId} = ${vitalSigns.id}
+                )`
               )
             )
             .orderBy(desc(vitalSigns.recordedAt))
@@ -573,6 +580,12 @@ export const aiRouter = createRouter({
             eq(soapNotes.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
             isNull(soapNotes.deletedAt),
+            sql`not exists (
+              select 1
+              from ${clinicalRecordCorrections}
+              where ${clinicalRecordCorrections.practiceId} = ${ctx.practiceId}
+                and ${clinicalRecordCorrections.soapNoteId} = ${soapNotes.id}
+            )`,
             gte(soapNotes.createdAt, today.start),
             lt(soapNotes.createdAt, today.end)
           )

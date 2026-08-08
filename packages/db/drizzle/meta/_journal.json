@@ -330,6 +330,13 @@
       "when": 1786215894384,
       "tag": "0046_encounter_vitals_index",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1786220000000,
+      "tag": "0047_clinical_record_corrections",
+      "breakpoints": true
     }
   ]
 }

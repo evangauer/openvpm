@@ -78,12 +78,30 @@ export const soapNotes = pgTable(
   },
   (table) => ({
     patientIdx: index("soap_notes_patient_idx").on(table.patientId),
+    practiceRecordUq: uniqueIndex("soap_notes_practice_record_uq").on(
+      table.practiceId,
+      table.id
+    ),
     practiceIdx: index("soap_notes_practice_idx").on(table.practiceId, table.deletedAt),
     appointmentIdx: index("soap_notes_appointment_idx").on(
       table.practiceId,
       table.appointmentId,
       table.deletedAt
     ),
+    patientPracticeFk: foreignKey({
+      columns: [table.practiceId, table.patientId],
+      foreignColumns: [patients.practiceId, patients.id],
+      name: "soap_notes_practice_patient_fk",
+    }),
+    appointmentPracticeFk: foreignKey({
+      columns: [table.practiceId, table.appointmentId, table.patientId],
+      foreignColumns: [
+        appointments.practiceId,
+        appointments.id,
+        appointments.patientId,
+      ],
+      name: "soap_notes_practice_appointment_fk",
+    }),
   })
 );
 
@@ -314,6 +332,10 @@ export const vitalSigns = pgTable(
   },
   (table) => ({
     patientIdx: index("vital_signs_patient_idx").on(table.patientId, table.recordedAt),
+    practiceRecordUq: uniqueIndex("vital_signs_practice_record_uq").on(
+      table.practiceId,
+      table.id
+    ),
     practiceIdx: index("vital_signs_practice_idx").on(table.practiceId, table.deletedAt),
     appointmentIdx: index("vital_signs_appointment_idx").on(
       table.practiceId,
@@ -321,6 +343,20 @@ export const vitalSigns = pgTable(
       table.deletedAt,
       table.recordedAt
     ),
+    patientPracticeFk: foreignKey({
+      columns: [table.practiceId, table.patientId],
+      foreignColumns: [patients.practiceId, patients.id],
+      name: "vital_signs_practice_patient_fk",
+    }),
+    appointmentPracticeFk: foreignKey({
+      columns: [table.practiceId, table.appointmentId, table.patientId],
+      foreignColumns: [
+        appointments.practiceId,
+        appointments.id,
+        appointments.patientId,
+      ],
+      name: "vital_signs_practice_appointment_fk",
+    }),
   })
 );
 

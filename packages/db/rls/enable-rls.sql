@@ -52,7 +52,7 @@ DECLARE
   t text;
   tbls text[] := array[
     'api_keys','appointment_types','appointment_waitlist','appointments','audit_log','booking_pages',
-    'capture_sessions','cases','clients','clinical_notes','communications','consent_forms','consent_requests','controlled_substance_log','email_suppressions',
+    'capture_sessions','cases','clients','clinical_notes','clinical_record_corrections','communications','consent_forms','consent_requests','controlled_substance_log','email_suppressions',
     'files','insurance_claims','insurance_policies','invoices','lab_results','location_messaging','messaging_registrations','migration_runs',
     'locations','patients','practice_payment_accounts','prescriptions','problem_list','procedures','products','purchase_orders',
     'recurring_series','rooms','services','sms_suppressions','soap_notes','staff_schedules','suppliers',
@@ -71,6 +71,11 @@ BEGIN
     );
   END LOOP;
 END$$;
+
+-- Clinical correction events are a legal/clinical history ledger. The app may
+-- append and read them, but even a future generic repository path must not
+-- gain UPDATE or DELETE through the broad table grant above.
+REVOKE UPDATE, DELETE ON clinical_record_corrections FROM openpims_app;
 
 -- 5) Child tables without their own practice_id are isolated by joining to the
 --    parent row, which carries practice_id and its own tenant RLS.
@@ -156,7 +161,7 @@ BEGIN
   FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format(
-        'REVOKE ALL ON auth_tokens, demo_accesses, funnel_events, sessions, verification_tokens FROM %I', r
+        'REVOKE ALL ON auth_tokens, clinical_record_corrections, demo_accesses, funnel_events, sessions, verification_tokens FROM %I', r
       );
     END IF;
   END LOOP;

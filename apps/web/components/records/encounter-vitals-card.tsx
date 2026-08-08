@@ -43,6 +43,8 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { ClinicalCorrectionControl } from "@/components/records/clinical-correction-control";
+import { cn } from "@/lib/utils";
 
 type VitalsFormState = {
   temperatureC: string;
@@ -145,6 +147,7 @@ export function EncounterVitalsCard({
   patientId,
   appointmentId,
   canRecord,
+  canCorrect,
   visitStateReady,
   visitOpen,
   timeZone,
@@ -152,6 +155,7 @@ export function EncounterVitalsCard({
   patientId: string;
   appointmentId: string;
   canRecord: boolean;
+  canCorrect: boolean;
   visitStateReady: boolean;
   visitOpen: boolean;
   timeZone?: string | null;
@@ -167,6 +171,16 @@ export function EncounterVitalsCard({
     onSuccess: async () => {
       setForm({ ...EMPTY_VITALS_FORM });
       toast.success("Visit vitals recorded");
+      await Promise.all([
+        utils.vitals.listByAppointment.invalidate({ appointmentId }),
+        utils.vitals.listByPatient.invalidate({ patientId }),
+      ]);
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const correctVital = trpc.vitals.markEnteredInError.useMutation({
+    onSuccess: async () => {
+      toast.success("Vital signs retained and marked entered in error");
       await Promise.all([
         utils.vitals.listByAppointment.invalidate({ appointmentId }),
         utils.vitals.listByPatient.invalidate({ patientId }),
@@ -382,7 +396,10 @@ export function EncounterVitalsCard({
               {vitals.map((vital) => (
                 <div
                   key={vital.id}
-                  className="rounded-md border border-border bg-muted/10 p-3"
+                  className={cn(
+                    "rounded-md border border-border bg-muted/10 p-3",
+                    vital.correctionId && "border-destructive/40 bg-destructive/5",
+                  )}
                 >
                   <p className="mb-2 text-xs font-medium text-muted-foreground">
                     {formatRecordedAt(vital.recordedAt, timeZone)}
@@ -426,6 +443,32 @@ export function EncounterVitalsCard({
                       {vital.notes}
                     </p>
                   ) : null}
+                  <ClinicalCorrectionControl
+                    correction={
+                      vital.correctionId &&
+                      vital.correctionReason &&
+                      vital.correctedAt
+                        ? {
+                            id: vital.correctionId,
+                            reason: vital.correctionReason,
+                            correctedAt: vital.correctedAt,
+                            correctedByName: vital.correctedByName,
+                          }
+                        : null
+                    }
+                    canCorrect={canCorrect}
+                    isPending={
+                      correctVital.isPending &&
+                      correctVital.variables?.recordId === vital.id
+                    }
+                    onCorrect={(reason) =>
+                      correctVital.mutateAsync({
+                        patientId,
+                        recordId: vital.id,
+                        reason,
+                      })
+                    }
+                  />
                 </div>
               ))}
             </div>

@@ -9,6 +9,7 @@ import {
   auditLog,
   caseEntries,
   cases,
+  clinicalRecordCorrections,
   clinicalNotes,
   clients,
   communications,
@@ -129,6 +130,7 @@ export const PRACTICE_EXPORT_SECTIONS = [
   "clinicalNotes",
   "problemList",
   "vitalSigns",
+  "clinicalRecordCorrections",
   "cases",
   "caseEntries",
   "treatmentPlans",
@@ -145,6 +147,7 @@ export type PracticeExportSection = (typeof PRACTICE_EXPORT_SECTIONS)[number];
 const PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS = [
   "emailSuppressions",
   "visitCloseouts",
+  "clinicalRecordCorrections",
 ] as const satisfies readonly PracticeExportSection[];
 
 export type PracticeExport = {
@@ -288,6 +291,15 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
   requiredRef("vitalSigns", "patientId", "patients"),
   optionalRef("vitalSigns", "appointmentId", "appointments"),
   optionalRef("vitalSigns", "recordedBy", "users"),
+  requiredRef("clinicalRecordCorrections", "patientId", "patients"),
+  optionalRef(
+    "clinicalRecordCorrections",
+    "appointmentId",
+    "appointments"
+  ),
+  requiredRef("clinicalRecordCorrections", "correctedBy", "users"),
+  optionalRef("clinicalRecordCorrections", "soapNoteId", "soapNotes"),
+  optionalRef("clinicalRecordCorrections", "vitalSignId", "vitalSigns"),
   requiredRef("cases", "patientId", "patients"),
   optionalRef("cases", "primaryVetId", "users"),
   requiredRef("caseEntries", "caseId", "cases"),
@@ -438,6 +450,80 @@ export function validatePracticeExportRestore(data: unknown): {
     });
   }
 
+  const rowsById = (section: PracticeExportSection) =>
+    new Map(
+      rowsFor(data, section)
+        .filter((row): row is Row & { id: string } =>
+          Boolean(typeof row.id === "string" && row.id.length > 0)
+        )
+        .map((row) => [row.id, row])
+    );
+  const appointmentRows = rowsById("appointments");
+
+  for (const section of ["soapNotes", "vitalSigns"] as const) {
+    rowsFor(data, section).forEach((row, index) => {
+      if (typeof row.appointmentId !== "string") return;
+      const appointment = appointmentRows.get(row.appointmentId);
+      if (!appointment) return;
+
+      if (appointment.patientId !== row.patientId) {
+        pushError(
+          `${section}[${rowLabel(row, index)}].appointmentId must reference an appointment for the same patient.`
+        );
+      }
+    });
+  }
+
+  const soapRows = rowsById("soapNotes");
+  const vitalRows = rowsById("vitalSigns");
+  rowsFor(data, "clinicalRecordCorrections").forEach((row, index) => {
+    const label = `clinicalRecordCorrections[${rowLabel(row, index)}]`;
+    let source: Row | undefined;
+
+    if (row.recordType === "soap_note") {
+      if (typeof row.soapNoteId !== "string" || row.soapNoteId.length === 0) {
+        pushError(`${label}.soapNoteId is required for recordType soap_note.`);
+        return;
+      }
+      if (row.vitalSignId != null) {
+        pushError(`${label}.vitalSignId must be null for recordType soap_note.`);
+        return;
+      }
+      source = soapRows.get(row.soapNoteId);
+    } else if (row.recordType === "vital_sign") {
+      if (
+        typeof row.vitalSignId !== "string" ||
+        row.vitalSignId.length === 0
+      ) {
+        pushError(
+          `${label}.vitalSignId is required for recordType vital_sign.`
+        );
+        return;
+      }
+      if (row.soapNoteId != null) {
+        pushError(`${label}.soapNoteId must be null for recordType vital_sign.`);
+        return;
+      }
+      source = vitalRows.get(row.vitalSignId);
+    } else {
+      pushError(`${label}.recordType must be soap_note or vital_sign.`);
+      return;
+    }
+
+    if (!source) return;
+
+    const correctionAppointmentId = row.appointmentId ?? null;
+    const sourceAppointmentId = source.appointmentId ?? null;
+    if (
+      source.patientId !== row.patientId ||
+      sourceAppointmentId !== correctionAppointmentId
+    ) {
+      pushError(
+        `${label} must match its source record patientId and appointmentId exactly.`
+      );
+    }
+  });
+
   return { valid: errors.length === 0, errors };
 }
 
@@ -446,6 +532,10 @@ async function activeRows(db: Database, table: any, practiceId: string) {
     .select()
     .from(table)
     .where(and(eq(table.practiceId, practiceId), isNull(table.deletedAt)));
+}
+
+async function allPracticeRows(db: Database, table: any, practiceId: string) {
+  return db.select().from(table).where(eq(table.practiceId, practiceId));
 }
 
 async function tenantParentChildRows(
@@ -562,6 +652,7 @@ export async function exportPracticeData(
     clinicalNoteRows,
     problemRows,
     vitalRows,
+    clinicalCorrectionRows,
     caseRows,
     treatmentPlanRows,
     prescriptionRows,
@@ -603,6 +694,7 @@ export async function exportPracticeData(
     activeRows(db, clinicalNotes, practiceId),
     activeRows(db, problemList, practiceId),
     activeRows(db, vitalSigns, practiceId),
+    allPracticeRows(db, clinicalRecordCorrections, practiceId),
     activeRows(db, cases, practiceId),
     activeRows(db, treatmentPlans, practiceId),
     activeRows(db, prescriptions, practiceId),
@@ -742,6 +834,7 @@ export async function exportPracticeData(
     clinicalNotes: clinicalNoteRows,
     problemList: problemRows,
     vitalSigns: vitalRows,
+    clinicalRecordCorrections: clinicalCorrectionRows,
     cases: caseRows,
     caseEntries: caseEntryRows,
     treatmentPlans: treatmentPlanRows,
@@ -828,6 +921,10 @@ async function restorePracticeDataRows(
   await restorePracticeRows("procedures", procedures);
   await restorePracticeRows("clinicalNotes", clinicalNotes);
   await restorePracticeRows("vitalSigns", vitalSigns);
+  await restorePracticeRows(
+    "clinicalRecordCorrections",
+    clinicalRecordCorrections
+  );
   await restorePracticeRows("cases", cases);
   await restoreChildRows("caseEntries", caseEntries);
   await restorePracticeRows("treatmentPlans", treatmentPlans);

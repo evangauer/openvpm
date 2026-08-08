@@ -440,6 +440,7 @@ export default function EncounterWorkspacePage() {
               patientId={appointment.patientId}
               appointmentId={appointment.id}
               canRecord={visitOpenForClinicalEntry && canRecordVitals(role)}
+              canCorrect={canCreateSoap(role)}
               visitStateReady={visitClinicalStateReady}
               visitOpen={visitOpenForClinicalEntry}
               timeZone={taxConfigQuery.data?.timezone}

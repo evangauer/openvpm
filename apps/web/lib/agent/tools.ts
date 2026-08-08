@@ -13,6 +13,7 @@ import {
   inArray,
   not,
   gt,
+  sql,
 } from "drizzle-orm";
 import type { Database } from "@openpims/db/client";
 import {
@@ -27,6 +28,7 @@ import {
   users,
   rooms,
   practices,
+  clinicalRecordCorrections,
 } from "@openpims/db";
 import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
 import { appointmentCreatedWebhookPayload } from "@/lib/appointment-webhooks";
@@ -362,7 +364,13 @@ const getPatientSummary: AgentTool = {
           and(
             eq(vitalSigns.patientId, patientId),
             eq(vitalSigns.practiceId, ctx.practiceId),
-            isNull(vitalSigns.deletedAt)
+            isNull(vitalSigns.deletedAt),
+            sql`not exists (
+              select 1
+              from ${clinicalRecordCorrections}
+              where ${clinicalRecordCorrections.practiceId} = ${ctx.practiceId}
+                and ${clinicalRecordCorrections.vitalSignId} = ${vitalSigns.id}
+            )`
           )
         )
         .orderBy(desc(vitalSigns.recordedAt))

@@ -1,8 +1,13 @@
 import { z } from "zod";
-import { eq, and, isNull, desc, sql } from "drizzle-orm";
+import { eq, and, isNull, desc, getTableColumns, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
-import { patients, practices, vitalSigns } from "@openpims/db";
+import {
+  clinicalRecordCorrections,
+  patients,
+  practices,
+  vitalSigns,
+} from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import {
   clinicalDecimalInput,
@@ -29,8 +34,13 @@ import {
   VITALS_WEIGHT_SCALE,
 } from "@/lib/records/vitals-policy";
 import { lockOpenVisitForClinicalAppend } from "@/lib/records/visit-integrity";
+import {
+  CLINICAL_CORRECTION_REASON_MAX_LENGTH,
+  CLINICAL_CORRECTION_REASON_MIN_LENGTH,
+} from "@/lib/records/clinical-correction-policy";
 
 const recordRole = requireRole("admin", "veterinarian", "technician");
+const correctionRole = requireRole("admin", "veterinarian");
 const temperatureInput = clinicalDecimalInput("Temperature", {
   min: VITALS_TEMPERATURE_MIN_C,
   max: VITALS_TEMPERATURE_MAX_C,
@@ -119,8 +129,23 @@ export const vitalsRouter = createRouter({
     )
     .query(async ({ ctx, input }) => {
       return ctx.db
-        .select()
+        .select({
+          ...getTableColumns(vitalSigns),
+          correctionId: clinicalRecordCorrections.id,
+          correctionAction: clinicalRecordCorrections.action,
+          correctionReason: clinicalRecordCorrections.reason,
+          correctedAt: clinicalRecordCorrections.createdAt,
+          correctedBy: clinicalRecordCorrections.correctedBy,
+          correctedByName: clinicalRecordCorrections.correctedByName,
+        })
         .from(vitalSigns)
+        .leftJoin(
+          clinicalRecordCorrections,
+          and(
+            eq(clinicalRecordCorrections.vitalSignId, vitalSigns.id),
+            eq(clinicalRecordCorrections.practiceId, ctx.practiceId)
+          )
+        )
         .where(
           and(
             eq(vitalSigns.patientId, input.patientId),
@@ -143,8 +168,23 @@ export const vitalsRouter = createRouter({
     )
     .query(async ({ ctx, input }) => {
       return ctx.db
-        .select()
+        .select({
+          ...getTableColumns(vitalSigns),
+          correctionId: clinicalRecordCorrections.id,
+          correctionAction: clinicalRecordCorrections.action,
+          correctionReason: clinicalRecordCorrections.reason,
+          correctedAt: clinicalRecordCorrections.createdAt,
+          correctedBy: clinicalRecordCorrections.correctedBy,
+          correctedByName: clinicalRecordCorrections.correctedByName,
+        })
         .from(vitalSigns)
+        .leftJoin(
+          clinicalRecordCorrections,
+          and(
+            eq(clinicalRecordCorrections.vitalSignId, vitalSigns.id),
+            eq(clinicalRecordCorrections.practiceId, ctx.practiceId)
+          )
+        )
         .where(
           and(
             eq(vitalSigns.appointmentId, input.appointmentId),
@@ -156,6 +196,82 @@ export const vitalsRouter = createRouter({
         .orderBy(desc(vitalSigns.recordedAt))
         .limit(input.limit);
     }),
+
+  markEnteredInError: protectedProcedure
+    .use(correctionRole)
+    .input(
+      z.object({
+        patientId: z.string().uuid(),
+        recordId: z.string().uuid(),
+        reason: z
+          .string()
+          .trim()
+          .min(CLINICAL_CORRECTION_REASON_MIN_LENGTH)
+          .max(CLINICAL_CORRECTION_REASON_MAX_LENGTH),
+      })
+    )
+    .mutation(async ({ ctx, input }) =>
+      ctx.db.transaction(async (tx) => {
+        const [source] = await tx
+          .select({
+            id: vitalSigns.id,
+            patientId: vitalSigns.patientId,
+            appointmentId: vitalSigns.appointmentId,
+          })
+          .from(vitalSigns)
+          .where(
+            and(
+              eq(vitalSigns.id, input.recordId),
+              eq(vitalSigns.patientId, input.patientId),
+              eq(vitalSigns.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(vitalSigns.deletedAt)
+            )
+          )
+          .limit(1);
+
+        if (!source) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Clinical record not found",
+          });
+        }
+
+        const [created] = await tx
+          .insert(clinicalRecordCorrections)
+          .values({
+            practiceId: ctx.practiceId,
+            recordType: "vital_sign",
+            action: "entered_in_error",
+            vitalSignId: source.id,
+            patientId: source.patientId,
+            appointmentId: source.appointmentId,
+            reason: input.reason,
+            correctedBy: ctx.user.id,
+            correctedByName: ctx.user.name,
+          })
+          .onConflictDoNothing()
+          .returning();
+        if (created) return created;
+
+        const [existing] = await tx
+          .select()
+          .from(clinicalRecordCorrections)
+          .where(
+            and(
+              eq(clinicalRecordCorrections.practiceId, ctx.practiceId),
+              eq(clinicalRecordCorrections.vitalSignId, source.id)
+            )
+          )
+          .limit(1);
+        if (existing) return existing;
+
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "Clinical correction changed; refresh and retry.",
+        });
+      })
+    ),
 
   record: protectedProcedure
     .use(recordRole)

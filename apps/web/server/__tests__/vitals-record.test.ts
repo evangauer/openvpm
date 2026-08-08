@@ -57,6 +57,7 @@ function createDb(opts: {
     const afterWhere = thenableRows(result);
     const builder = {
       from: vi.fn(() => builder),
+      leftJoin: vi.fn(() => builder),
       where: vi.fn(() => afterWhere),
       orderBy: vi.fn(() => builder),
       limit: vi.fn(async () => result),

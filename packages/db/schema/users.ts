@@ -6,6 +6,7 @@ import {
   text,
   timestamp,
   index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { baseColumns } from "./common";
@@ -40,6 +41,10 @@ export const users = pgTable(
     emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
   },
   (table) => ({
+    practiceIdUq: uniqueIndex("users_practice_id_uq").on(
+      table.practiceId,
+      table.id
+    ),
     practiceIdx: index("users_practice_idx").on(
       table.practiceId,
       table.deletedAt

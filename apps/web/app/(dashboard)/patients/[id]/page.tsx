@@ -32,6 +32,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { Button } from "@/components/ui/button";
 import { CapturePhotos } from "@/components/records/capture-photos";
 import { ConsentSign } from "@/components/records/consent-sign";
+import { ClinicalCorrectionControl } from "@/components/records/clinical-correction-control";
 import { cn } from "@/lib/utils";
 import {
   CLIENT_UPLOAD_TIMEOUT_MS,
@@ -196,6 +197,10 @@ function canRecordVitalsRole(role?: string | null): boolean {
   );
 }
 
+function canCorrectClinicalRecordRole(role?: string | null): boolean {
+  return role === "admin" || role === "veterinarian";
+}
+
 type VitalsFormState = {
   temperatureC: string;
   heartRateBpm: string;
@@ -251,6 +256,9 @@ export default function PatientDetailPage() {
     session?.user?.role
   );
   const canRecordVitals = canRecordVitalsRole(session?.user?.role);
+  const canCorrectClinicalRecords = canCorrectClinicalRecordRole(
+    session?.user?.role
+  );
 
   const { data: patient, isLoading, error } = trpc.patients.getById.useQuery(
     { id: params.id },
@@ -526,7 +534,10 @@ export default function PatientDetailPage() {
             ? formatClinicalDate(v.nextDueDate, recordsTimeZone)
             : undefined,
         })),
-        recentNotes: soapNotes.slice(0, 5).map((n) => ({
+        recentNotes: soapNotes
+          .filter((note) => !note.correctionId)
+          .slice(0, 5)
+          .map((n) => ({
           date: n.createdAt
             ? formatClinicalDate(n.createdAt, recordsTimeZone, "Unknown")
             : "Unknown",
@@ -535,7 +546,7 @@ export default function PatientDetailPage() {
           assessment: n.assessment ?? undefined,
           plan: n.plan ?? undefined,
           imported: n.imported,
-        })),
+          })),
         prescriptions: prescriptions.map((rx) => ({
           medication: rx.medicationName,
           dosage: rx.dosage ?? "",
@@ -968,6 +979,7 @@ export default function PatientDetailPage() {
             patientId={patient.id}
             timeZone={recordsTimeZone}
             canRecordVitals={canRecordVitals}
+            canCorrectClinicalRecords={canCorrectClinicalRecords}
           />
         )}
 
@@ -979,6 +991,7 @@ export default function PatientDetailPage() {
           <MedicalRecordsTab
             patientId={patient.id}
             timeZone={recordsTimeZone}
+            canCorrectClinicalRecords={canCorrectClinicalRecords}
           />
         )}
 
@@ -1003,17 +1016,23 @@ function VitalsTab({
   patientId,
   timeZone,
   canRecordVitals,
+  canCorrectClinicalRecords,
 }: {
   patientId: string;
   timeZone?: string | null;
   canRecordVitals: boolean;
+  canCorrectClinicalRecords: boolean;
 }) {
   const utils = trpc.useUtils();
   const { data: vitals, isLoading, error } =
     trpc.vitals.listByPatient.useQuery({ patientId });
   const vitalsMissing = !isLoading && !error && !vitals;
   const vitalTrend = useMemo(
-    () => buildVitalTrend(vitals ?? [], timeZone),
+    () =>
+      buildVitalTrend(
+        (vitals ?? []).filter((vital) => !vital.correctionId),
+        timeZone
+      ),
     [vitals, timeZone]
   );
   const record = trpc.vitals.record.useMutation({
@@ -1021,6 +1040,13 @@ function VitalsTab({
       toast.success("Vitals recorded");
       utils.vitals.listByPatient.invalidate({ patientId });
       setForm(initialVitalsForm());
+    },
+    onError: (err) => toast.error(err.message),
+  });
+  const correctVital = trpc.vitals.markEnteredInError.useMutation({
+    onSuccess: async () => {
+      toast.success("Vital signs retained and marked entered in error");
+      await utils.vitals.listByPatient.invalidate({ patientId });
     },
     onError: (err) => toast.error(err.message),
   });
@@ -1246,11 +1272,18 @@ function VitalsTab({
                   <th className="px-3 py-2 font-medium">Weight</th>
                   <th className="px-3 py-2 font-medium">BCS</th>
                   <th className="px-3 py-2 font-medium">Pain</th>
+                  <th className="px-3 py-2 font-medium">Chart status</th>
                 </tr>
               </thead>
               <tbody>
                 {vitals.map((v) => (
-                  <tr key={v.id} className="border-b border-border last:border-0">
+                  <tr
+                    key={v.id}
+                    className={cn(
+                      "border-b border-border last:border-0",
+                      v.correctionId && "bg-destructive/5"
+                    )}
+                  >
                     <td className="px-3 py-2">
                       {formatClinicalDateTime(v.recordedAt, timeZone, "—")}
                     </td>
@@ -1260,6 +1293,34 @@ function VitalsTab({
                     <td className="px-3 py-2">{v.weightKg ?? "—"}</td>
                     <td className="px-3 py-2">{v.bodyConditionScore ?? "—"}</td>
                     <td className="px-3 py-2">{v.painScore ?? "—"}</td>
+                    <td className="min-w-64 px-3 py-2">
+                      <ClinicalCorrectionControl
+                        correction={
+                          v.correctionId &&
+                          v.correctionReason &&
+                          v.correctedAt
+                            ? {
+                                id: v.correctionId,
+                                reason: v.correctionReason,
+                                correctedAt: v.correctedAt,
+                                correctedByName: v.correctedByName,
+                              }
+                            : null
+                        }
+                        canCorrect={canCorrectClinicalRecords}
+                        isPending={
+                          correctVital.isPending &&
+                          correctVital.variables?.recordId === v.id
+                        }
+                        onCorrect={(reason) =>
+                          correctVital.mutateAsync({
+                            patientId,
+                            recordId: v.id,
+                            reason,
+                          })
+                        }
+                      />
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -1358,12 +1419,22 @@ function VaccinationsTab({
 function MedicalRecordsTab({
   patientId,
   timeZone,
+  canCorrectClinicalRecords,
 }: {
   patientId: string;
   timeZone?: string | null;
+  canCorrectClinicalRecords: boolean;
 }) {
+  const utils = trpc.useUtils();
   const { data: notes, isLoading, error } =
     trpc.records.listSoapNotes.useQuery({ patientId });
+  const correctSoap = trpc.records.markSoapNoteEnteredInError.useMutation({
+    onSuccess: async () => {
+      toast.success("SOAP note retained and marked entered in error");
+      await utils.records.listSoapNotes.invalidate({ patientId });
+    },
+    onError: (err) => toast.error(err.message),
+  });
   const notesMissing = !isLoading && !error && !notes;
 
   if (error) {
@@ -1396,7 +1467,10 @@ function MedicalRecordsTab({
       {notes.map((note) => (
         <div
           key={note.id}
-          className="rounded-lg border border-border bg-card p-4"
+          className={cn(
+            "rounded-lg border border-border bg-card p-4",
+            note.correctionId && "border-destructive/40 bg-destructive/5"
+          )}
         >
           <div className="mb-3 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
@@ -1438,6 +1512,32 @@ function MedicalRecordsTab({
               ) : null
             )}
           </dl>
+          <ClinicalCorrectionControl
+            correction={
+              note.correctionId &&
+              note.correctionReason &&
+              note.correctedAt
+                ? {
+                    id: note.correctionId,
+                    reason: note.correctionReason,
+                    correctedAt: note.correctedAt,
+                    correctedByName: note.correctedByName,
+                  }
+                : null
+            }
+            canCorrect={canCorrectClinicalRecords}
+            isPending={
+              correctSoap.isPending &&
+              correctSoap.variables?.recordId === note.id
+            }
+            onCorrect={(reason) =>
+              correctSoap.mutateAsync({
+                patientId,
+                recordId: note.id,
+                reason,
+              })
+            }
+          />
         </div>
       ))}
     </div>

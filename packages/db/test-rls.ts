@@ -123,6 +123,31 @@ try {
       aCloseoutRows[0]!.id === aCloseout &&
       aCloseoutRows[0]!.practice_id === aId,
   );
+  const correctionRls = await owner`
+    select c.relrowsecurity as enabled
+    from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public' and c.relname = 'clinical_record_corrections'
+  `;
+  check(
+    "clinical correction ledger has RLS enabled",
+    correctionRls.length === 1 && correctionRls[0]!.enabled === true,
+  );
+  const correctionPrivileges = await owner`
+    select
+      has_table_privilege('openpims_app', 'clinical_record_corrections', 'SELECT') as can_select,
+      has_table_privilege('openpims_app', 'clinical_record_corrections', 'INSERT') as can_insert,
+      has_table_privilege('openpims_app', 'clinical_record_corrections', 'UPDATE') as can_update,
+      has_table_privilege('openpims_app', 'clinical_record_corrections', 'DELETE') as can_delete
+  `;
+  check(
+    "app role can append/read but cannot mutate correction events",
+    correctionPrivileges.length === 1 &&
+      correctionPrivileges[0]!.can_select === true &&
+      correctionPrivileges[0]!.can_insert === true &&
+      correctionPrivileges[0]!.can_update === false &&
+      correctionPrivileges[0]!.can_delete === false,
+  );
 
   const hiddenMigrationUpdate = await appTransaction(async (tx) => {
     await tx`select set_config('app.current_practice_id', ${aId}, true)`;
