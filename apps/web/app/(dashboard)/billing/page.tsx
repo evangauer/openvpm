@@ -225,7 +225,7 @@ export default function BillingPage() {
   const handleStatusChange = (
     e: React.MouseEvent,
     id: string,
-    status: "sent" | "paid"
+    status: "sent"
   ) => {
     e.stopPropagation();
     updateStatus.mutate({ id, status });
@@ -657,7 +657,7 @@ function InvoiceRow({
   onStatusChange: (
     e: React.MouseEvent,
     id: string,
-    status: "sent" | "paid"
+    status: "sent"
   ) => void;
   onConvertEstimate: (e: React.MouseEvent, id: string) => void;
   onVoidInvoice: (e: React.MouseEvent, id: string) => void;
@@ -762,15 +762,6 @@ function InvoiceRow({
                       <Send className="h-3.5 w-3.5" />
                     </Button>
                   )}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={isMutating}
-                    onClick={(e) => onStatusChange(e, invoice.id, "paid")}
-                    title="Mark as Paid"
-                  >
-                    <CheckCircle className="h-3.5 w-3.5" />
-                  </Button>
                 </>
               )}
             {canManageBilling &&

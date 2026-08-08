@@ -295,7 +295,7 @@ describe("billing payments", () => {
   });
 
   it("marks the invoice paid when payment reaches the balance", async () => {
-    const { db, updateSet } = createDb({
+    const { db, insertValues, updateSet } = createDb({
       selectResults: [[baseInvoice]],
     });
 
@@ -309,6 +309,14 @@ describe("billing payments", () => {
       paidAmount: "100.00",
       status: "paid",
     });
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        invoiceId: INVOICE_ID,
+        amount: "80.00",
+        method: "credit_card",
+        receivedBy: USER_ID,
+      })
+    );
     expect(mocks.dispatchWebhookEvent).toHaveBeenCalledWith(
       PRACTICE_ID,
       "invoice.paid",
@@ -322,38 +330,8 @@ describe("billing payments", () => {
     );
   });
 
-  it("emits invoice.paid when manually marking an invoice paid", async () => {
-    const { db, updateSet } = createDb({
-      selectResults: [[baseInvoice], []],
-      updateReturns: [[{ id: INVOICE_ID, status: "paid" }]],
-    });
-
-    await callerWithDb(db).updateInvoiceStatus({
-      id: INVOICE_ID,
-      status: "paid",
-    });
-
-    expect(updateSet).toHaveBeenCalledWith({
-      status: "paid",
-      paidAmount: "100.00",
-    });
-    expect(mocks.dispatchWebhookEvent).toHaveBeenCalledWith(
-      PRACTICE_ID,
-      "invoice.paid",
-      {
-        id: INVOICE_ID,
-        paidAmount: "100.00",
-        total: "100.00",
-        source: "dashboard",
-      }
-    );
-  });
-
-  it("does not mark an invoice paid when the invoice changed concurrently", async () => {
-    const { db, updateSet } = createDb({
-      selectResults: [[baseInvoice], []],
-      updateReturns: [[]],
-    });
+  it("requires a payment or adjustment to settle an invoice", async () => {
+    const { db, updateSet } = createDb({ selectResults: [[baseInvoice]] });
 
     await expect(
       callerWithDb(db).updateInvoiceStatus({
@@ -362,38 +340,10 @@ describe("billing payments", () => {
       })
     ).rejects.toMatchObject({
       code: "BAD_REQUEST",
-      message:
-        "Invoice status changed while updating. Refresh and try again.",
+      message: "Record a payment or apply an adjustment to settle this invoice.",
     });
 
-    expect(updateSet).toHaveBeenCalledWith({
-      status: "paid",
-      paidAmount: "100.00",
-    });
-    expect(mocks.dispatchWebhookEvent).not.toHaveBeenCalled();
-  });
-
-  it("does not mark an invoice paid when adjustment history changed concurrently", async () => {
-    const { db, updateSet } = createDb({
-      selectResults: [[baseInvoice], [{ amount: "10.00", type: "write_off" }]],
-      updateReturns: [[]],
-    });
-
-    await expect(
-      callerWithDb(db).updateInvoiceStatus({
-        id: INVOICE_ID,
-        status: "paid",
-      })
-    ).rejects.toMatchObject({
-      code: "BAD_REQUEST",
-      message:
-        "Invoice status changed while updating. Refresh and try again.",
-    });
-
-    expect(updateSet).toHaveBeenCalledWith({
-      status: "paid",
-      paidAmount: "90.00",
-    });
+    expect(updateSet).not.toHaveBeenCalled();
     expect(mocks.dispatchWebhookEvent).not.toHaveBeenCalled();
   });
 
@@ -415,25 +365,6 @@ describe("billing payments", () => {
     });
 
     expect(updateSet).toHaveBeenCalledWith({ status: "void" });
-    expect(mocks.dispatchWebhookEvent).not.toHaveBeenCalled();
-  });
-
-  it("rejects marking draft invoices paid directly", async () => {
-    const { db, updateSet } = createDb({
-      selectResults: [[{ ...baseInvoice, status: "draft" }]],
-    });
-
-    await expect(
-      callerWithDb(db).updateInvoiceStatus({
-        id: INVOICE_ID,
-        status: "paid",
-      })
-    ).rejects.toMatchObject({
-      code: "BAD_REQUEST",
-      message: "Mark the invoice as sent before marking it paid.",
-    });
-
-    expect(updateSet).not.toHaveBeenCalled();
     expect(mocks.dispatchWebhookEvent).not.toHaveBeenCalled();
   });
 

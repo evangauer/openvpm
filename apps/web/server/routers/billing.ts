@@ -1274,6 +1274,13 @@ export const billingRouter = createRouter({
     )
     .mutation(async ({ ctx, input }) => {
       const existing = await getInvoiceForPractice(ctx, input.id);
+      if (input.status === "paid") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "Record a payment or apply an adjustment to settle this invoice.",
+        });
+      }
       if (existing.isEstimate && input.status !== "void") {
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -1289,13 +1296,6 @@ export const billingRouter = createRouter({
       if (existing.status === "void" && input.status === "void") {
         return existing;
       }
-      if (existing.status === "draft" && input.status === "paid") {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "Mark the invoice as sent before marking it paid.",
-        });
-      }
-
       const updates: Record<string, any> = { status: input.status };
       const updateConditions: SQL[] = [
         eq(invoices.id, input.id),
@@ -1305,29 +1305,18 @@ export const billingRouter = createRouter({
         eq(invoices.isEstimate, existing.isEstimate),
         eq(invoices.paidAmount, existing.paidAmount ?? "0"),
       ];
-      if (input.status === "paid" || input.status === "void") {
+      if (input.status === "void") {
         const adjustedCents = await getInvoiceAdjustmentTotalCents(ctx, input.id);
-        if (
-          input.status === "void" &&
-          (moneyToCents(existing.paidAmount) > 0 || adjustedCents > 0)
-        ) {
+        if (moneyToCents(existing.paidAmount) > 0 || adjustedCents > 0) {
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: "Cannot void an invoice with payments or adjustments.",
           });
         }
-        if (input.status === "paid") {
-          updates.paidAmount = centsToMoney(
-            Math.max(0, moneyToCents(existing.total) - adjustedCents)
-          );
-          updateConditions.push(invoiceAdjustmentTotalMatches(adjustedCents));
-        }
-        if (input.status === "void") {
-          updateConditions.push(
-            noActivePaymentsForInvoice(),
-            noActiveAdjustmentsForInvoice()
-          );
-        }
+        updateConditions.push(
+          noActivePaymentsForInvoice(),
+          noActiveAdjustmentsForInvoice()
+        );
       }
 
       if (input.status === "void") {
@@ -1366,14 +1355,6 @@ export const billingRouter = createRouter({
           code: "BAD_REQUEST",
           message:
             "Invoice status changed while updating. Refresh and try again.",
-        });
-      }
-      if (input.status === "paid" && existing.status !== "paid") {
-        await dispatchWebhookEvent(ctx.practiceId, "invoice.paid", {
-          id: input.id,
-          paidAmount: updates.paidAmount,
-          total: existing.total,
-          source: "dashboard",
         });
       }
       return invoice!;

@@ -533,10 +533,11 @@ const sections: Section[] = [
       {
         name: "billing.updateInvoiceStatus",
         method: "POST",
-        description: "Update invoice status.",
+        description:
+          "Update a workflow status. Paid is derived from recorded payments or adjustments and cannot be set directly.",
         input: `{
   id: string,
-  status: "draft" | "sent" | "paid" | "overdue" | "void"
+  status: "draft" | "sent" | "overdue" | "void"
 }`,
         response: `Invoice`,
       },

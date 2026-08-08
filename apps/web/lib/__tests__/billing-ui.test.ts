@@ -190,6 +190,13 @@ describe("billing invoice payment actions", () => {
     );
   });
 
+  it("does not offer a status-only path for settling an invoice", () => {
+    expect(source).not.toContain('title="Mark as Paid"');
+    expect(source).not.toContain('onStatusChange(e, invoice.id, "paid")');
+    expect(source).toContain("Record Payment");
+    expect(source).toContain("Take Card");
+  });
+
   it("disables card checkout when Stripe checkout is not configured", () => {
     expect(source).toContain("trpc.billing.cardPaymentStatus.useQuery");
     expect(source).toContain("const cardPaymentStatusMissing =");

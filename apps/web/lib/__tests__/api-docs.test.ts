@@ -166,6 +166,24 @@ describe("API reference docs", () => {
     expect(appointmentSection).not.toContain('"completed"');
   });
 
+  it("documents paid invoices as payment-derived", () => {
+    const source = readFileSync("app/api-docs/page.tsx", "utf8");
+    const billingSection = source.slice(
+      source.indexOf('id: "billing"'),
+      source.indexOf('id: "inventory"')
+    );
+
+    expect(billingSection).toContain(
+      "Paid is derived from recorded payments or adjustments and cannot be set directly."
+    );
+    expect(billingSection).toContain(
+      'status: "draft" | "sent" | "overdue" | "void"'
+    );
+    expect(billingSection).not.toContain(
+      'status: "draft" | "sent" | "paid" | "overdue" | "void"'
+    );
+  });
+
   it("keeps inventory docs aligned to the live router contract", () => {
     const source = readFileSync("app/api-docs/page.tsx", "utf8");
     const inventorySection = source.slice(
