@@ -45,6 +45,16 @@ import {
   isImportCsvSizeValid,
 } from "@/lib/import/policy";
 import { clinicalDateInput } from "@/lib/records/clinical-inputs";
+import {
+  MigrationPreviewError,
+  claimMigrationPreview,
+  completeMigrationRun,
+  createMigrationPreview,
+  lockMigrationPractice,
+  type MigrationClaimResult,
+  type MigrationPreviewSummary,
+  type MigrationRunMode,
+} from "@/lib/import/run-ledger";
 
 const adminProcedure = protectedProcedure.use(requireRole("admin"));
 export { IMPORT_CSV_MAX_BYTES, IMPORT_MAX_ROWS } from "@/lib/import/policy";
@@ -239,19 +249,133 @@ const soapNoteImportRecordsInput = z
   );
 const importCsvTextInput = z
   .string()
-  .min(1)
+  .min(1, "Choose a non-empty CSV file.")
   .max(IMPORT_CSV_MAX_BYTES, "CSV imports must be 5 MB or less.")
   .refine(isImportCsvSizeValid, "CSV imports must be 5 MB or less.");
 const importCsvInput = z.object({
   csv: importCsvTextInput,
+  // Keep the pre-ledger default during the compatibility rollout so a browser
+  // tab loaded before this deploy does not silently switch a commit to preview.
   dryRun: z.boolean().optional().default(false),
   source: importSourceInput,
-});
-const importPatientsCsvInput = importCsvInput.extend({
-  /** Optional during dry-run so a two-file onboarding preview can resolve pets
-   * against owners that the client file will create without writing either file. */
+  previewToken: z.string().uuid().optional(),
+  migrationProtocol: z.literal("reviewed-v1").optional(),
+  // Accepted only so a pre-deploy onboarding tab receives an explicit refresh
+  // instruction instead of a misleading pet preview.
   clientCsv: importCsvTextInput.optional(),
 });
+
+type CsvImportIntent = z.infer<typeof importCsvInput>;
+
+const LEGACY_IMPORT_COMPATIBILITY_END_MS = Date.parse("2026-08-15T00:00:00Z");
+
+export function legacyImportCompatibilityOpen(
+  now = Date.now(),
+  nodeEnv = process.env.NODE_ENV,
+): boolean {
+  return nodeEnv === "test" || now < LEGACY_IMPORT_COMPATIBILITY_END_MS;
+}
+
+function requireValidImportIntent(input: CsvImportIntent): void {
+  if (
+    input.migrationProtocol !== "reviewed-v1" &&
+    !input.previewToken &&
+    !legacyImportCompatibilityOpen()
+  ) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message:
+        "This import session is out of date. Refresh OpenVPM and check the file again.",
+    });
+  }
+  if (input.dryRun && input.previewToken) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Start a new preview without an existing preview token.",
+    });
+  }
+  if (
+    input.migrationProtocol === "reviewed-v1" &&
+    !input.dryRun &&
+    !input.previewToken
+  ) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Check this exact CSV first, then confirm its import.",
+    });
+  }
+}
+
+async function createCsvImportPreview(
+  ctx: DataContext & { user: { id: string } },
+  input: CsvImportIntent,
+  mode: MigrationRunMode,
+  summary: MigrationPreviewSummary,
+): Promise<string> {
+  return createMigrationPreview(ctx.db, {
+    practiceId: ctx.practiceId,
+    createdBy: ctx.user.id,
+    mode,
+    source: input.source,
+    csv: input.csv,
+    summary,
+  });
+}
+
+async function claimCsvImportPreview(
+  db: Database,
+  practiceId: string,
+  input: CsvImportIntent,
+  mode: MigrationRunMode,
+  summary: MigrationPreviewSummary,
+): Promise<MigrationClaimResult> {
+  // One rollout keeps legacy, already-loaded browser bundles working. Every
+  // newly shipped caller identifies the reviewed protocol and must provide the
+  // exact preview token. Remove this branch after the compatibility window.
+  if (input.migrationProtocol !== "reviewed-v1" && !input.previewToken) {
+    return { alreadyCommitted: false };
+  }
+  try {
+    return await claimMigrationPreview(db, {
+      practiceId,
+      previewToken: input.previewToken!,
+      mode,
+      source: input.source,
+      csv: input.csv,
+      summary,
+    });
+  } catch (error) {
+    if (error instanceof MigrationPreviewError) {
+      throw new TRPCError({ code: "CONFLICT", message: error.message });
+    }
+    throw error;
+  }
+}
+
+async function finishCsvImportRun(
+  db: Database,
+  practiceId: string,
+  previewToken: string | undefined,
+  importedCount: number,
+  committedBy: string,
+  reconciledCount = 0,
+): Promise<void> {
+  if (!previewToken) return;
+  try {
+    await completeMigrationRun(db, {
+      practiceId,
+      previewToken,
+      importedCount,
+      reconciledCount,
+      committedBy,
+    });
+  } catch (error) {
+    if (error instanceof MigrationPreviewError) {
+      throw new TRPCError({ code: "CONFLICT", message: error.message });
+    }
+    throw error;
+  }
+}
 
 function activePracticeWhere(practiceId: string) {
   return and(eq(practices.id, practiceId), isNull(practices.deletedAt));
@@ -1729,13 +1853,27 @@ export const dataRouter = createRouter({
   importClientsCsv: adminProcedure
     .input(importCsvInput)
     .mutation(async ({ ctx, input }) => {
+      requireValidImportIntent(input);
       const { records, errors } = csvToClientRecords(input.csv);
       const validRecords = parseClientImportRecords(records);
 
       if (validRecords.length === 0 && errors.length > 0) {
         if (input.dryRun) {
+          await assertActivePractice(ctx);
+          const summary: MigrationPreviewSummary = {
+            sourceRowCount: 0,
+            plannedInsertCount: 0,
+            errorCount: errors.length,
+          };
+          const previewToken = await createCsvImportPreview(
+            ctx,
+            input,
+            "clients",
+            summary,
+          );
           return {
             dryRun: true as const,
+            previewToken,
             total: 0,
             willInsert: 0,
             willReconcile: 0,
@@ -1743,10 +1881,14 @@ export const dataRouter = createRouter({
             errors,
           };
         }
-        return { imported: 0, reconciled: 0, errors };
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "This CSV has no importable client rows. Check it again.",
+        });
       }
 
       await assertActivePractice(ctx);
+      await lockMigrationPractice(ctx.db, ctx.practiceId);
 
       const existing = await ctx.db
         .select({
@@ -1764,19 +1906,49 @@ export const dataRouter = createRouter({
           ),
         );
       const plan = planClientCsvImport(validRecords, input.source, existing);
+      const combinedErrors = [...errors, ...plan.errors];
+      const summary: MigrationPreviewSummary = {
+        sourceRowCount: validRecords.length,
+        plannedInsertCount: plan.rows.length,
+        plannedReconcileCount: plan.identityUpdates.length,
+        duplicateCount: plan.duplicates,
+        errorCount: combinedErrors.length,
+      };
 
       if (input.dryRun) {
+        const previewToken = await createCsvImportPreview(
+          ctx,
+          input,
+          "clients",
+          summary,
+        );
         return {
           dryRun: true as const,
+          previewToken,
           total: validRecords.length,
           willInsert: plan.rows.length,
           willReconcile: plan.identityUpdates.length,
           duplicates: plan.duplicates,
-          errors: [...errors, ...plan.errors],
+          errors: combinedErrors,
         };
       }
 
+      let replay:
+        | Extract<MigrationClaimResult, { alreadyCommitted: true }>
+        | undefined;
       await ctx.db.transaction(async (tx) => {
+        const migrationDb = tx as unknown as Database;
+        const claim = await claimCsvImportPreview(
+          migrationDb,
+          ctx.practiceId,
+          input,
+          "clients",
+          summary,
+        );
+        if (claim.alreadyCommitted) {
+          replay = claim;
+          return;
+        }
         for (const update of plan.identityUpdates) {
           const updated = await tx
             .update(clients)
@@ -1811,24 +1983,62 @@ export const dataRouter = createRouter({
             })),
           );
         }
+        await finishCsvImportRun(
+          migrationDb,
+          ctx.practiceId,
+          input.previewToken!,
+          plan.rows.length,
+          ctx.user.id,
+          plan.identityUpdates.length,
+        );
       });
+      if (replay) {
+        return {
+          imported: replay.importedCount,
+          reconciled: replay.reconciledCount,
+          errors: [] as string[],
+          alreadyCommitted: true as const,
+          migrationRunId: input.previewToken!,
+        };
+      }
       return {
         imported: plan.rows.length,
         reconciled: plan.identityUpdates.length,
-        errors: [...errors, ...plan.errors],
+        errors: combinedErrors,
       };
     }),
 
   importPatientsCsv: adminProcedure
-    .input(importPatientsCsvInput)
+    .input(importCsvInput)
     .mutation(async ({ ctx, input }) => {
+      requireValidImportIntent(input);
+      if (input.clientCsv) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "This onboarding import session is out of date. Refresh OpenVPM to check clients before pets.",
+        });
+      }
       const { records, errors } = csvToPatientRecords(input.csv);
       const validRecords = parsePatientImportRecords(records);
 
       if (validRecords.length === 0 && errors.length > 0) {
         if (input.dryRun) {
+          await assertActivePractice(ctx);
+          const summary: MigrationPreviewSummary = {
+            sourceRowCount: 0,
+            plannedInsertCount: 0,
+            errorCount: errors.length,
+          };
+          const previewToken = await createCsvImportPreview(
+            ctx,
+            input,
+            "patients",
+            summary,
+          );
           return {
             dryRun: true as const,
+            previewToken,
             total: 0,
             willInsert: 0,
             willReconcile: 0,
@@ -1837,10 +2047,14 @@ export const dataRouter = createRouter({
             errors,
           };
         }
-        return { imported: 0, reconciled: 0, errors };
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "This CSV has no importable patient rows. Check it again.",
+        });
       }
 
       await assertActivePractice(ctx);
+      await lockMigrationPractice(ctx.db, ctx.practiceId);
 
       const clientRows = await ctx.db
         .select({
@@ -1857,26 +2071,6 @@ export const dataRouter = createRouter({
             activePracticePredicate(ctx.practiceId),
           ),
         );
-      if (input.dryRun && input.clientCsv) {
-        const clientCsv = csvToClientRecords(input.clientCsv);
-        const plannedClientRecords = parseClientImportRecords(
-          clientCsv.records,
-        );
-        const clientPlan = planClientCsvImport(
-          plannedClientRecords,
-          input.source,
-          clientRows,
-        );
-        clientRows.push(
-          ...clientPlan.rows.map((client, index) => ({
-            id: `planned-client:${index}`,
-            email: client.email ?? null,
-            externalSource: client.externalSource ?? null,
-            externalId: client.externalId ?? null,
-            deletedAt: null,
-          })),
-        );
-      }
       const clientLookup = createClientReferenceLookup(clientRows);
 
       const existingPatients = await ctx.db
@@ -1905,20 +2099,51 @@ export const dataRouter = createRouter({
         clientLookup,
         existingPatients,
       );
+      const combinedErrors = [...errors, ...plan.errors];
+      const summary: MigrationPreviewSummary = {
+        sourceRowCount: validRecords.length,
+        plannedInsertCount: plan.rows.length,
+        plannedReconcileCount: plan.identityUpdates.length,
+        duplicateCount: plan.duplicates,
+        unmatchedCount: plan.unmatchedClient,
+        errorCount: combinedErrors.length,
+      };
 
       if (input.dryRun) {
+        const previewToken = await createCsvImportPreview(
+          ctx,
+          input,
+          "patients",
+          summary,
+        );
         return {
           dryRun: true as const,
+          previewToken,
           total: validRecords.length,
           willInsert: plan.rows.length,
           willReconcile: plan.identityUpdates.length,
           unmatchedClient: plan.unmatchedClient,
           duplicates: plan.duplicates,
-          errors: [...errors, ...plan.errors],
+          errors: combinedErrors,
         };
       }
 
+      let replay:
+        | Extract<MigrationClaimResult, { alreadyCommitted: true }>
+        | undefined;
       await ctx.db.transaction(async (tx) => {
+        const migrationDb = tx as unknown as Database;
+        const claim = await claimCsvImportPreview(
+          migrationDb,
+          ctx.practiceId,
+          input,
+          "patients",
+          summary,
+        );
+        if (claim.alreadyCommitted) {
+          replay = claim;
+          return;
+        }
         for (const update of plan.identityUpdates) {
           const updated = await tx
             .update(patients)
@@ -1953,11 +2178,28 @@ export const dataRouter = createRouter({
             })),
           );
         }
+        await finishCsvImportRun(
+          migrationDb,
+          ctx.practiceId,
+          input.previewToken!,
+          plan.rows.length,
+          ctx.user.id,
+          plan.identityUpdates.length,
+        );
       });
+      if (replay) {
+        return {
+          imported: replay.importedCount,
+          reconciled: replay.reconciledCount,
+          errors: [] as string[],
+          alreadyCommitted: true as const,
+          migrationRunId: input.previewToken!,
+        };
+      }
       return {
         imported: plan.rows.length,
         reconciled: plan.identityUpdates.length,
-        errors: [...errors, ...plan.errors],
+        errors: combinedErrors,
       };
     }),
 
@@ -1969,13 +2211,27 @@ export const dataRouter = createRouter({
   importVaccinationsCsv: adminProcedure
     .input(importCsvInput)
     .mutation(async ({ ctx, input }) => {
+      requireValidImportIntent(input);
       const { records, errors } = csvToVaccinationRecords(input.csv);
       const validRecords = parseVaccinationImportRecords(records);
 
       if (validRecords.length === 0 && errors.length > 0) {
         if (input.dryRun) {
+          await assertActivePractice(ctx);
+          const summary: MigrationPreviewSummary = {
+            sourceRowCount: 0,
+            plannedInsertCount: 0,
+            errorCount: errors.length,
+          };
+          const previewToken = await createCsvImportPreview(
+            ctx,
+            input,
+            "vaccinations",
+            summary,
+          );
           return {
             dryRun: true as const,
+            previewToken,
             total: 0,
             willInsert: 0,
             unmatchedPatient: 0,
@@ -1983,10 +2239,15 @@ export const dataRouter = createRouter({
             errors,
           };
         }
-        return { imported: 0, errors };
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "This CSV has no importable vaccination rows. Check it again.",
+        });
       }
 
       await assertActivePractice(ctx);
+      await lockMigrationPractice(ctx.db, ctx.practiceId);
 
       const patientRows = await ctx.db
         .select({
@@ -2032,28 +2293,75 @@ export const dataRouter = createRouter({
         input.source,
         existingDoses,
       );
+      const combinedErrors = [...errors, ...deduped.errors];
+      const summary: MigrationPreviewSummary = {
+        sourceRowCount: validRecords.length,
+        plannedInsertCount: deduped.rows.length,
+        duplicateCount: deduped.duplicates,
+        unmatchedCount: deduped.unmatchedPatient,
+        errorCount: combinedErrors.length,
+      };
 
       if (input.dryRun) {
+        const previewToken = await createCsvImportPreview(
+          ctx,
+          input,
+          "vaccinations",
+          summary,
+        );
         return {
           dryRun: true as const,
+          previewToken,
           total: validRecords.length,
           willInsert: deduped.rows.length,
           unmatchedPatient: deduped.unmatchedPatient,
           duplicates: deduped.duplicates,
-          errors: [...errors, ...deduped.errors],
+          errors: combinedErrors,
         };
       }
 
-      if (deduped.rows.length > 0) {
-        await ctx.db
-          .insert(vaccinationRecords)
-          .values(
-            deduped.rows.map((v) => ({ ...v, practiceId: ctx.practiceId })),
-          );
+      let replay:
+        | Extract<MigrationClaimResult, { alreadyCommitted: true }>
+        | undefined;
+      await ctx.db.transaction(async (tx) => {
+        const migrationDb = tx as unknown as Database;
+        const claim = await claimCsvImportPreview(
+          migrationDb,
+          ctx.practiceId,
+          input,
+          "vaccinations",
+          summary,
+        );
+        if (claim.alreadyCommitted) {
+          replay = claim;
+          return;
+        }
+        if (deduped.rows.length > 0) {
+          await tx
+            .insert(vaccinationRecords)
+            .values(
+              deduped.rows.map((v) => ({ ...v, practiceId: ctx.practiceId })),
+            );
+        }
+        await finishCsvImportRun(
+          migrationDb,
+          ctx.practiceId,
+          input.previewToken!,
+          deduped.rows.length,
+          ctx.user.id,
+        );
+      });
+      if (replay) {
+        return {
+          imported: replay.importedCount,
+          errors: [] as string[],
+          alreadyCommitted: true as const,
+          migrationRunId: input.previewToken!,
+        };
       }
       return {
         imported: deduped.rows.length,
-        errors: [...errors, ...deduped.errors],
+        errors: combinedErrors,
       };
     }),
 
@@ -2068,13 +2376,27 @@ export const dataRouter = createRouter({
   importSoapNotesCsv: adminProcedure
     .input(importCsvInput)
     .mutation(async ({ ctx, input }) => {
+      requireValidImportIntent(input);
       const { records, errors } = csvToSoapNoteRecords(input.csv);
       const validRecords = parseSoapNoteImportRecords(records);
 
       if (validRecords.length === 0 && errors.length > 0) {
         if (input.dryRun) {
+          await assertActivePractice(ctx);
+          const summary: MigrationPreviewSummary = {
+            sourceRowCount: 0,
+            plannedInsertCount: 0,
+            errorCount: errors.length,
+          };
+          const previewToken = await createCsvImportPreview(
+            ctx,
+            input,
+            "soap_notes",
+            summary,
+          );
           return {
             dryRun: true as const,
+            previewToken,
             total: 0,
             willInsert: 0,
             unmatchedPatient: 0,
@@ -2082,10 +2404,15 @@ export const dataRouter = createRouter({
             errors,
           };
         }
-        return { imported: 0, errors };
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "This CSV has no importable medical history rows. Check it again.",
+        });
       }
 
       await assertActivePractice(ctx);
+      await lockMigrationPractice(ctx.db, ctx.practiceId);
 
       const patientRows = await ctx.db
         .select({
@@ -2134,33 +2461,80 @@ export const dataRouter = createRouter({
         input.source,
         existingNotes,
       );
+      const combinedErrors = [...errors, ...deduped.errors];
+      const summary: MigrationPreviewSummary = {
+        sourceRowCount: validRecords.length,
+        plannedInsertCount: deduped.rows.length,
+        duplicateCount: deduped.duplicates,
+        unmatchedCount: deduped.unmatchedPatient,
+        errorCount: combinedErrors.length,
+      };
 
       if (input.dryRun) {
+        const previewToken = await createCsvImportPreview(
+          ctx,
+          input,
+          "soap_notes",
+          summary,
+        );
         return {
           dryRun: true as const,
+          previewToken,
           total: validRecords.length,
           willInsert: deduped.rows.length,
           unmatchedPatient: deduped.unmatchedPatient,
           duplicates: deduped.duplicates,
-          errors: [...errors, ...deduped.errors],
+          errors: combinedErrors,
         };
       }
 
-      if (deduped.rows.length > 0) {
-        await ctx.db.insert(soapNotes).values(
-          deduped.rows.map((n) => ({
-            ...n,
-            practiceId: ctx.practiceId,
-            authorId: ctx.user.id,
-            // Mark as migrated so the record shows "Imported" rather than
-            // implying the importing admin authored this historical note.
-            imported: true,
-          })),
+      let replay:
+        | Extract<MigrationClaimResult, { alreadyCommitted: true }>
+        | undefined;
+      await ctx.db.transaction(async (tx) => {
+        const migrationDb = tx as unknown as Database;
+        const claim = await claimCsvImportPreview(
+          migrationDb,
+          ctx.practiceId,
+          input,
+          "soap_notes",
+          summary,
         );
+        if (claim.alreadyCommitted) {
+          replay = claim;
+          return;
+        }
+        if (deduped.rows.length > 0) {
+          await tx.insert(soapNotes).values(
+            deduped.rows.map((n) => ({
+              ...n,
+              practiceId: ctx.practiceId,
+              authorId: ctx.user.id,
+              // Mark as migrated so the record shows "Imported" rather than
+              // implying the importing admin authored this historical note.
+              imported: true,
+            })),
+          );
+        }
+        await finishCsvImportRun(
+          migrationDb,
+          ctx.practiceId,
+          input.previewToken!,
+          deduped.rows.length,
+          ctx.user.id,
+        );
+      });
+      if (replay) {
+        return {
+          imported: replay.importedCount,
+          errors: [] as string[],
+          alreadyCommitted: true as const,
+          migrationRunId: input.previewToken!,
+        };
       }
       return {
         imported: deduped.rows.length,
-        errors: [...errors, ...deduped.errors],
+        errors: combinedErrors,
       };
     }),
 });

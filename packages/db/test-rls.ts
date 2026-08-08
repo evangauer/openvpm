@@ -37,6 +37,10 @@ const aId = randomUUID();
 const bId = randomUUID();
 const aInvoice = randomUUID();
 const bInvoice = randomUUID();
+const aUser = randomUUID();
+const bUser = randomUUID();
+const aMigrationRun = randomUUID();
+const bMigrationRun = randomUUID();
 const funnelEventId = randomUUID();
 let failures = 0;
 
@@ -56,6 +60,14 @@ try {
   await owner`insert into practices (id, name) values (${aId}, 'RLS Test A'), (${bId}, 'RLS Test B')`;
   await owner`insert into clients (practice_id, first_name, last_name) values
     (${aId}, 'Alice', 'A'), (${bId}, 'Bob', 'B')`;
+  await owner`insert into users (id, email, password_hash, name, role, practice_id) values
+    (${aUser}, ${`rls-${aUser}@example.com`}, 'not-a-real-hash', 'RLS Admin A', 'admin', ${aId}),
+    (${bUser}, ${`rls-${bUser}@example.com`}, 'not-a-real-hash', 'RLS Admin B', 'admin', ${bId})`;
+  await owner`insert into migration_runs
+    (id, practice_id, created_by, mode, source, file_hash, file_size_bytes, preview_expires_at)
+    values
+    (${aMigrationRun}, ${aId}, ${aUser}, 'clients', 'other', ${"a".repeat(64)}, 10, now() + interval '1 day'),
+    (${bMigrationRun}, ${bId}, ${bUser}, 'clients', 'other', ${"b".repeat(64)}, 10, now() + interval '1 day')`;
   await owner`insert into funnel_events (id, event_name, practice_id)
     values (${funnelEventId}, 'registration', ${aId})`;
 
@@ -64,14 +76,53 @@ try {
     await tx`select set_config('app.current_practice_id', ${aId}, true)`;
     return tx`select practice_id from clients where practice_id in (${aId}, ${bId})`;
   });
-  check("tenant A sees only A's clients", aRows.length === 1 && aRows[0]!.practice_id === aId);
+  check(
+    "tenant A sees only A's clients",
+    aRows.length === 1 && aRows[0]!.practice_id === aId,
+  );
 
   // Tenant B context sees only B's rows.
   const bRows = await appTransaction(async (tx) => {
     await tx`select set_config('app.current_practice_id', ${bId}, true)`;
     return tx`select practice_id from clients where practice_id in (${aId}, ${bId})`;
   });
-  check("tenant B sees only B's clients", bRows.length === 1 && bRows[0]!.practice_id === bId);
+  check(
+    "tenant B sees only B's clients",
+    bRows.length === 1 && bRows[0]!.practice_id === bId,
+  );
+
+  const aMigrationRows = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id, practice_id from migration_runs where id in (${aMigrationRun}, ${bMigrationRun})`;
+  });
+  check(
+    "tenant A sees only A's migration run",
+    aMigrationRows.length === 1 &&
+      aMigrationRows[0]!.id === aMigrationRun &&
+      aMigrationRows[0]!.practice_id === aId,
+  );
+
+  const hiddenMigrationUpdate = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`update migration_runs set source = 'hidden-update' where id = ${bMigrationRun} returning id`;
+  });
+  check(
+    "tenant A cannot update B's migration run",
+    hiddenMigrationUpdate.length === 0,
+  );
+
+  let migrationInsertBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into migration_runs
+        (practice_id, created_by, mode, source, file_hash, file_size_bytes, preview_expires_at)
+        values (${bId}, ${bUser}, 'patients', 'other', ${"c".repeat(64)}, 10, now() + interval '1 day')`;
+    });
+  } catch {
+    migrationInsertBlocked = true;
+  }
+  check("cross-tenant migration run INSERT is blocked", migrationInsertBlocked);
 
   // Child tables without practice_id isolate via the parent join policy.
   // invoice_adjustments is the representative (regression: it was missing
@@ -104,8 +155,15 @@ try {
   check("cross-tenant INSERT is blocked", writeBlocked);
 
   // No tenant context → deny by default.
-  const noneRows = await app`select practice_id from clients where practice_id in (${aId}, ${bId})`;
+  const noneRows =
+    await app`select practice_id from clients where practice_id in (${aId}, ${bId})`;
   check("no tenant context → zero rows", noneRows.length === 0);
+  const noContextMigrationRows =
+    await app`select id from migration_runs where id in (${aMigrationRun}, ${bMigrationRun})`;
+  check(
+    "no tenant context hides migration runs",
+    noContextMigrationRows.length === 0,
+  );
 
   // Product analytics is system-only even with a valid tenant context. The
   // public ingestion route writes under an explicit system transaction.
@@ -124,14 +182,19 @@ try {
     return tx`select practice_id from clients where practice_id in (${aId}, ${bId})`;
   });
   check("system bypass sees both practices", allRows.length === 2);
+  const allMigrationRows = await appTransaction(async (tx) => {
+    await tx`select set_config('app.rls_bypass', 'on', true)`;
+    return tx`select id from migration_runs where id in (${aMigrationRun}, ${bMigrationRun})`;
+  });
+  check(
+    "system bypass sees both migration runs",
+    allMigrationRows.length === 2,
+  );
   const systemFunnelRows = await appTransaction(async (tx) => {
     await tx`select set_config('app.rls_bypass', 'on', true)`;
     return tx`select id from funnel_events where id = ${funnelEventId}`;
   });
-  check(
-    "system bypass can read funnel events",
-    systemFunnelRows.length === 1,
-  );
+  check("system bypass can read funnel events", systemFunnelRows.length === 1);
 } catch (err) {
   console.error("Unexpected error:", err);
   failures++;
@@ -140,7 +203,9 @@ try {
   await owner`delete from invoice_adjustments where invoice_id in (${aInvoice}, ${bInvoice})`;
   await owner`delete from funnel_events where id = ${funnelEventId}`;
   await owner`delete from invoices where id in (${aInvoice}, ${bInvoice})`;
+  await owner`delete from migration_runs where id in (${aMigrationRun}, ${bMigrationRun})`;
   await owner`delete from clients where practice_id in (${aId}, ${bId})`;
+  await owner`delete from users where id in (${aUser}, ${bUser})`;
   await owner`delete from practices where id in (${aId}, ${bId})`;
   await owner.end();
   await app.end();

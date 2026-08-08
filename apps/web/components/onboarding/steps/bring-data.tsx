@@ -24,11 +24,17 @@ import type { StepHandle, StepProps } from "../journey-types";
 
 type Choice = "import" | "api" | "keep";
 type CsvPreview = {
+  previewToken: string;
   total: number;
   willInsert: number;
   willReconcile?: number;
   duplicates?: number;
   unmatchedClient?: number;
+  errors: string[];
+};
+type CommittedCsvImport = {
+  imported: number;
+  reconciled: number;
   errors: string[];
 };
 
@@ -54,6 +60,29 @@ function readFileText(file: File): Promise<string> {
   });
 }
 
+function isPreviewConflict(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const data = "data" in error ? error.data : null;
+  return Boolean(
+    data &&
+    typeof data === "object" &&
+    "code" in data &&
+    data.code === "CONFLICT",
+  );
+}
+
+function downloadIssueReport(errors: string[], fileName: string) {
+  const blob = new Blob([`${errors.join("\n")}\n`], {
+    type: "text/plain;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
 /**
  * Step 4: choose how real data gets in. Import from a file now, connect by API
  * later, or keep the sample data for now (the default and the skip behavior).
@@ -72,19 +101,31 @@ export function BringDataStep({ register, state, setState }: StepProps) {
   const [petsFileName, setPetsFileName] = useState("");
   const [clientsPreview, setClientsPreview] = useState<CsvPreview | null>(null);
   const [petsPreview, setPetsPreview] = useState<CsvPreview | null>(null);
+  const [committedClients, setCommittedClients] =
+    useState<CommittedCsvImport | null>(null);
+  const [importRecoveryMessage, setImportRecoveryMessage] = useState("");
   const importReviewVersionRef = useRef(0);
   const fileReadVersionRef = useRef({ clients: 0, pets: 0 });
+  const [fileReadPending, setFileReadPending] = useState({
+    clients: false,
+    pets: false,
+  });
   const [result, setResult] = useState<{
     clients: number;
     pets: number;
     reconciled: number;
     errors: string[];
   } | null>(null);
+  const importing = importClientsCsv.isPending || importPatientsCsv.isPending;
+  const readingFiles = fileReadPending.clients || fileReadPending.pets;
+  const importInputsBusy = importing || readingFiles;
 
   function clearImportReview() {
     importReviewVersionRef.current += 1;
     setClientsPreview(null);
     setPetsPreview(null);
+    setCommittedClients(null);
+    setImportRecoveryMessage("");
     setResult(null);
   }
 
@@ -97,7 +138,14 @@ export function BringDataStep({ register, state, setState }: StepProps) {
   function updatePetsCsv(value: string) {
     fileReadVersionRef.current.pets += 1;
     setPetsCsv(value);
-    clearImportReview();
+    clearPetReview();
+  }
+
+  function clearPetReview() {
+    importReviewVersionRef.current += 1;
+    setPetsPreview(null);
+    setImportRecoveryMessage("");
+    setResult(null);
   }
 
   function invalidatePendingFileReads() {
@@ -112,12 +160,19 @@ export function BringDataStep({ register, state, setState }: StepProps) {
   ) {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (which === "clients") clearImportReview();
+    else clearPetReview();
+    setFileReadPending((current) => ({ ...current, [which]: true }));
     const readVersion = ++fileReadVersionRef.current[which];
+    function finishFileRead() {
+      setFileReadPending((current) => ({ ...current, [which]: false }));
+    }
     function clearPickedFile() {
       setCsv("");
       if (which === "clients") setClientsFileName("");
       else setPetsFileName("");
       e.target.value = "";
+      finishFileRead();
     }
     if (file.size > IMPORT_CSV_MAX_BYTES) {
       clearPickedFile();
@@ -135,8 +190,10 @@ export function BringDataStep({ register, state, setState }: StepProps) {
       setCsv(text);
       if (which === "clients") setClientsFileName(file.name);
       else setPetsFileName(file.name);
+      finishFileRead();
     } catch {
       if (fileReadVersionRef.current[which] !== readVersion) return;
+      finishFileRead();
       toast.error("Could not read that file. Try again.");
     }
   }
@@ -153,24 +210,47 @@ export function BringDataStep({ register, state, setState }: StepProps) {
   const hasClientsCsv = clientsCsv.trim().length > 0;
   const hasPetsCsv = petsCsv.trim().length > 0;
   const hasImportCsv = choice === "import" && (hasClientsCsv || hasPetsCsv);
-  const needsDryRun =
-    (hasClientsCsv && !clientsPreview) || (hasPetsCsv && !petsPreview);
-  const previewReady = hasImportCsv && !needsDryRun;
+  const needsClientPreview =
+    hasClientsCsv && !clientsPreview && !committedClients;
+  const needsClientCommit =
+    hasClientsCsv && Boolean(clientsPreview) && !committedClients;
+  const needsPetsPreview = hasPetsCsv && !petsPreview;
+  const previewReady = Boolean(clientsPreview || petsPreview);
   const previewWillInsert =
     (clientsPreview?.willInsert ?? 0) + (petsPreview?.willInsert ?? 0);
   const previewWillReconcile =
     (clientsPreview?.willReconcile ?? 0) + (petsPreview?.willReconcile ?? 0);
+  const previewChangeCount = previewWillInsert + previewWillReconcile;
+  const continueLabel =
+    choice !== "import" || !hasImportCsv || result
+      ? "Continue"
+      : needsClientPreview
+        ? "Check client file"
+        : needsClientCommit
+          ? `Import ${previewChangeCount.toLocaleString()} client changes`
+          : needsPetsPreview
+            ? "Check pet file"
+            : previewChangeCount > 0
+              ? `Import ${previewChangeCount.toLocaleString()} pet changes`
+              : "Review import";
 
   // Finish only clears sample data after real rows have imported. Checking a
   // CSV or connecting later leaves the demo clinic intact.
   const hasImportedRows =
-    choice === "import" && Boolean(result && result.clients + result.pets > 0);
+    choice === "import" &&
+    Boolean(
+      (result && result.clients + result.pets + result.reconciled > 0) ||
+      (committedClients &&
+        committedClients.imported + committedClients.reconciled > 0),
+    );
   useEffect(() => {
     setState({ keepSampleData: !hasImportedRows });
   }, [hasImportedRows, setState]);
 
   useEffect(() => {
     register({
+      continueLabel,
+      continueDisabled: readingFiles,
       async onContinue() {
         // Only the file path does extra work on Continue; the others just move on.
         if (choice !== "import") return true;
@@ -181,35 +261,119 @@ export function BringDataStep({ register, state, setState }: StepProps) {
           return false;
         }
 
-        if (needsDryRun) {
+        if (needsClientPreview) {
           const reviewVersion = importReviewVersionRef.current;
-          if (hasClientsCsv) {
-            const r = await importClientsCsv.mutateAsync({
-              csv: clientsCsv.trim(),
-              dryRun: true,
-              source: migrationSource,
+          setImportRecoveryMessage("");
+          const r = await importClientsCsv.mutateAsync({
+            csv: clientsCsv.trim(),
+            dryRun: true,
+            source: migrationSource,
+            migrationProtocol: "reviewed-v1",
+          });
+          if (importReviewVersionRef.current !== reviewVersion) return false;
+          if ("dryRun" in r && r.dryRun) {
+            setClientsPreview({
+              previewToken: r.previewToken,
+              total: r.total,
+              willInsert: r.willInsert,
+              willReconcile: r.willReconcile,
+              duplicates: r.duplicates,
+              errors: r.errors,
             });
-            if (importReviewVersionRef.current !== reviewVersion) return false;
-            if ("dryRun" in r && r.dryRun) {
-              setClientsPreview({
-                total: r.total,
-                willInsert: r.willInsert,
-                willReconcile: r.willReconcile,
-                duplicates: r.duplicates,
-                errors: r.errors,
+          }
+          toast.success(
+            "Client CSV checked. Review the plan before importing.",
+          );
+          return false;
+        }
+
+        if (needsClientCommit) {
+          const preview = clientsPreview!;
+          if (preview.willInsert + (preview.willReconcile ?? 0) === 0) {
+            const committed = {
+              imported: 0,
+              reconciled: 0,
+              errors: preview.errors,
+            };
+            setCommittedClients(committed);
+            setClientsPreview(null);
+            if (hasPetsCsv) {
+              setImportRecoveryMessage(
+                "No client changes were needed. Check the pet file next.",
+              );
+            } else {
+              setResult({
+                clients: 0,
+                pets: 0,
+                reconciled: 0,
+                errors: [
+                  ...preview.errors,
+                  "No new client rows were found to import.",
+                ],
               });
             }
+            return false;
           }
-          if (hasPetsCsv) {
+
+          try {
+            const reviewVersion = importReviewVersionRef.current;
+            const r = await importClientsCsv.mutateAsync({
+              csv: clientsCsv.trim(),
+              dryRun: false,
+              source: migrationSource,
+              previewToken: preview.previewToken,
+              migrationProtocol: "reviewed-v1",
+            });
+            if (importReviewVersionRef.current !== reviewVersion) return false;
+            const committed = {
+              imported: r.imported ?? 0,
+              reconciled: r.reconciled ?? 0,
+              errors: r.errors ?? [],
+            };
+            setCommittedClients(committed);
+            setClientsPreview(null);
+            if (hasPetsCsv) {
+              setImportRecoveryMessage(
+                `Clients imported (${committed.imported}). Check the pet file next.`,
+              );
+            } else {
+              setResult({
+                clients: committed.imported,
+                pets: 0,
+                reconciled: committed.reconciled,
+                errors: committed.errors,
+              });
+              toast.success(`Added ${committed.imported} clients`);
+            }
+          } catch (error) {
+            if (isPreviewConflict(error)) {
+              setClientsPreview(null);
+              setImportRecoveryMessage(
+                "Nothing was imported because the client preview expired or changed. Check the same file again.",
+              );
+            } else {
+              setImportRecoveryMessage(
+                "We could not confirm the client import response. Retry the same import; it is safe and will not add the rows twice.",
+              );
+            }
+          }
+          return false;
+        }
+
+        if (needsPetsPreview) {
+          const reviewVersion = importReviewVersionRef.current;
+          setImportRecoveryMessage("");
+          try {
             const r = await importPatientsCsv.mutateAsync({
               csv: petsCsv.trim(),
               dryRun: true,
               source: migrationSource,
-              clientCsv: hasClientsCsv ? clientsCsv.trim() : undefined,
+              migrationProtocol: "reviewed-v1",
             });
             if (importReviewVersionRef.current !== reviewVersion) return false;
             if ("dryRun" in r && r.dryRun) {
               setPetsPreview({
+                previewToken: r.previewToken,
                 total: r.total,
                 willInsert: r.willInsert,
                 willReconcile: r.willReconcile,
@@ -217,16 +381,23 @@ export function BringDataStep({ register, state, setState }: StepProps) {
                 errors: r.errors,
               });
             }
+            toast.success("Pet CSV checked. Review the plan before importing.");
+          } catch {
+            setPetsPreview(null);
+            setImportRecoveryMessage(
+              committedClients
+                ? `Clients imported (${committedClients.imported}); pets were not checked. Try the pet file again.`
+                : "Pets were not checked. Try the pet file again.",
+            );
           }
-          toast.success("CSV checked. Review the plan before importing.");
           return false;
         }
 
-        if (previewWillInsert + previewWillReconcile === 0) {
+        if (previewChangeCount === 0) {
           setResult({
-            clients: 0,
+            clients: committedClients?.imported ?? 0,
             pets: 0,
-            reconciled: 0,
+            reconciled: committedClients?.reconciled ?? 0,
             errors: [
               "No new rows were found to import. You can adjust the CSV or continue with sample data.",
             ],
@@ -234,40 +405,46 @@ export function BringDataStep({ register, state, setState }: StepProps) {
           return false;
         }
 
-        const errors: string[] = [];
-        let clientsImported = 0;
-        let petsImported = 0;
-        let reconciled = 0;
-
-        if (hasClientsCsv) {
-          const r = await importClientsCsv.mutateAsync({
-            csv: clientsCsv.trim(),
-            dryRun: false,
-            source: migrationSource,
-          });
-          clientsImported = r.imported ?? 0;
-          reconciled += r.reconciled ?? 0;
-          if (r.errors?.length) errors.push(...r.errors);
-        }
-        if (hasPetsCsv) {
+        try {
+          const reviewVersion = importReviewVersionRef.current;
           const r = await importPatientsCsv.mutateAsync({
             csv: petsCsv.trim(),
             dryRun: false,
             source: migrationSource,
+            previewToken: petsPreview!.previewToken,
+            migrationProtocol: "reviewed-v1",
           });
-          petsImported = r.imported ?? 0;
-          reconciled += r.reconciled ?? 0;
-          if (r.errors?.length) errors.push(...r.errors);
+          if (importReviewVersionRef.current !== reviewVersion) return false;
+          const clientsImported = committedClients?.imported ?? 0;
+          const petsImported = r.imported ?? 0;
+          const reconciled =
+            (committedClients?.reconciled ?? 0) + (r.reconciled ?? 0);
+          setImportRecoveryMessage("");
+          setResult({
+            clients: clientsImported,
+            pets: petsImported,
+            reconciled,
+            errors: [...(committedClients?.errors ?? []), ...(r.errors ?? [])],
+          });
+          toast.success(
+            `Added ${clientsImported} clients and ${petsImported} pets${reconciled > 0 ? `; connected ${reconciled} IDs` : ""}`,
+          );
+        } catch (error) {
+          if (isPreviewConflict(error)) {
+            setPetsPreview(null);
+            setImportRecoveryMessage(
+              committedClients
+                ? `Clients imported (${committedClients.imported}); nothing was imported from the pet file because its preview expired or changed. Check the pet file again.`
+                : "Nothing was imported because the pet preview expired or changed. Check the pet file again.",
+            );
+          } else {
+            setImportRecoveryMessage(
+              committedClients
+                ? `Clients imported (${committedClients.imported}); we could not confirm the pet import response. Retry the same pet import—it is safe and will not add rows twice.`
+                : "We could not confirm the pet import response. Retry the same import; it is safe and will not add rows twice.",
+            );
+          }
         }
-        setResult({
-          clients: clientsImported,
-          pets: petsImported,
-          reconciled,
-          errors,
-        });
-        toast.success(
-          `Added ${clientsImported} clients and ${petsImported} pets${reconciled > 0 ? `; connected ${reconciled} IDs` : ""}`,
-        );
         // Stay on the step so they can see the result before moving on.
         return false;
       },
@@ -281,17 +458,25 @@ export function BringDataStep({ register, state, setState }: StepProps) {
     hasPetsCsv,
     hasImportCsvSizeError,
     importCsvSizeError,
-    needsDryRun,
-    previewWillInsert,
-    previewWillReconcile,
+    needsClientPreview,
+    needsClientCommit,
+    needsPetsPreview,
+    previewChangeCount,
+    continueLabel,
+    readingFiles,
+    clientsPreview,
+    petsPreview,
+    committedClients,
     migrationSource,
     result,
     importClientsCsv,
     importPatientsCsv,
   ]);
 
-  const importing = importClientsCsv.isPending || importPatientsCsv.isPending;
   const pathway = getOnboardingIntentOption(state.onboardingIntent);
+  const selectedMigrationSource = MIGRATION_SOURCES.find(
+    (source) => source.id === migrationSource,
+  )!;
   const pathwayIntro =
     pathway.value === "alongside"
       ? "Start small: bring in a few real clients and pets while your current PIMS stays in place."
@@ -314,10 +499,20 @@ export function BringDataStep({ register, state, setState }: StepProps) {
           title="Import from a file"
           subtitle="Paste your clients and pets from a spreadsheet."
           onClick={() => {
+            if (
+              importInputsBusy ||
+              choice === "import" ||
+              committedClients ||
+              result
+            )
+              return;
             invalidatePendingFileReads();
             setChoice("import");
             clearImportReview();
           }}
+          disabled={
+            importInputsBusy || Boolean(committedClients) || Boolean(result)
+          }
         />
         {choice === "import" ? (
           <div className="space-y-4 rounded-lg border border-slate-200 bg-slate-50/70 p-4">
@@ -333,6 +528,11 @@ export function BringDataStep({ register, state, setState }: StepProps) {
               <span>Which system are you moving from?</span>
               <select
                 value={migrationSource}
+                disabled={
+                  importInputsBusy ||
+                  Boolean(committedClients) ||
+                  Boolean(result)
+                }
                 onChange={(event) => {
                   invalidatePendingFileReads();
                   setMigrationSource(
@@ -350,6 +550,17 @@ export function BringDataStep({ register, state, setState }: StepProps) {
                 ))}
               </select>
             </label>
+            <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+              <p>{selectedMigrationSource.exportHint}</p>
+              {migrationSource === "shepherd" ? (
+                <a
+                  href="mailto:support@openvpm.com?subject=Assisted%20Shepherd%20migration"
+                  className="mt-2 inline-flex font-medium text-emerald-700 hover:underline"
+                >
+                  Request a migration review before the full import
+                </a>
+              ) : null}
+            </div>
             <div className="space-y-1.5">
               <span className="text-sm font-medium text-slate-700">
                 Clients
@@ -359,6 +570,11 @@ export function BringDataStep({ register, state, setState }: StepProps) {
               </p>
               <input
                 type="file"
+                disabled={
+                  importInputsBusy ||
+                  Boolean(committedClients) ||
+                  Boolean(result)
+                }
                 accept=".csv,text/csv"
                 onChange={(e) => onPickFile(e, updateClientsCsv, "clients")}
                 className={fileInputClass}
@@ -373,6 +589,11 @@ export function BringDataStep({ register, state, setState }: StepProps) {
                 rows={4}
                 className={textareaClass}
                 value={clientsCsv}
+                disabled={
+                  importInputsBusy ||
+                  Boolean(committedClients) ||
+                  Boolean(result)
+                }
                 maxLength={IMPORT_CSV_MAX_BYTES}
                 aria-invalid={clientsCsvTooLarge || undefined}
                 aria-describedby={
@@ -392,6 +613,7 @@ export function BringDataStep({ register, state, setState }: StepProps) {
               <p className="text-xs text-slate-500">Columns: {PET_COLUMNS}</p>
               <input
                 type="file"
+                disabled={importInputsBusy || Boolean(result)}
                 accept=".csv,text/csv"
                 onChange={(e) => onPickFile(e, updatePetsCsv, "pets")}
                 className={fileInputClass}
@@ -406,6 +628,7 @@ export function BringDataStep({ register, state, setState }: StepProps) {
                 rows={4}
                 className={textareaClass}
                 value={petsCsv}
+                disabled={importInputsBusy || Boolean(result)}
                 maxLength={IMPORT_CSV_MAX_BYTES}
                 aria-invalid={petsCsvTooLarge || undefined}
                 aria-describedby={
@@ -427,8 +650,8 @@ export function BringDataStep({ register, state, setState }: StepProps) {
                     Dry-run preview
                   </p>
                   <p className="mt-1 text-xs text-slate-500">
-                    No data has been imported yet. Review the counts, then press
-                    Continue again to import.
+                    No data in this preview has been imported yet. Only the
+                    listed changes will be saved; issue rows will be skipped.
                   </p>
                 </div>
                 {clientsPreview ? (
@@ -449,11 +672,21 @@ export function BringDataStep({ register, state, setState }: StepProps) {
                 ) : null}
               </div>
             ) : null}
-            {importing ? (
+            {readingFiles ? (
+              <p className="flex items-center gap-2 text-xs text-slate-500">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Reading the selected file
+              </p>
+            ) : importing ? (
               <p className="flex items-center gap-2 text-xs text-slate-500">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 {previewReady ? "Importing your data" : "Checking your data"}
               </p>
+            ) : null}
+            {importRecoveryMessage ? (
+              <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                {importRecoveryMessage}
+              </div>
             ) : null}
             {result ? (
               <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900">
@@ -465,14 +698,10 @@ export function BringDataStep({ register, state, setState }: StepProps) {
                 </p>
                 {result.errors.length > 0 ? (
                   <>
-                    <ul className="mt-2 list-disc space-y-0.5 pl-4 text-amber-800">
-                      {result.errors.slice(0, 5).map((e, i) => (
-                        <li key={i}>{e}</li>
-                      ))}
-                      {result.errors.length > 5 ? (
-                        <li>and {result.errors.length - 5} more</li>
-                      ) : null}
-                    </ul>
+                    <ImportIssues
+                      errors={result.errors}
+                      fileName="openvpm-import-issues.txt"
+                    />
                     <p className="mt-2">Press Continue when you are ready.</p>
                   </>
                 ) : (
@@ -480,7 +709,8 @@ export function BringDataStep({ register, state, setState }: StepProps) {
                 )}
               </div>
             ) : null}
-            {importClientsCsv.error || importPatientsCsv.error ? (
+            {!importRecoveryMessage &&
+            (importClientsCsv.error || importPatientsCsv.error) ? (
               <p className="text-xs text-red-700">
                 {importClientsCsv.error?.message ??
                   importPatientsCsv.error?.message}
@@ -495,10 +725,14 @@ export function BringDataStep({ register, state, setState }: StepProps) {
           title="Connect later by API"
           subtitle="Move data in from another system whenever you want."
           onClick={() => {
+            if (importInputsBusy || committedClients || result) return;
             invalidatePendingFileReads();
             setChoice("api");
             clearImportReview();
           }}
+          disabled={
+            importInputsBusy || Boolean(committedClients) || Boolean(result)
+          }
         />
         {choice === "api" ? (
           <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-4 text-sm text-slate-600">
@@ -522,10 +756,14 @@ export function BringDataStep({ register, state, setState }: StepProps) {
           title="Keep the sample data for now"
           subtitle="Explore with the example pets we set up for you."
           onClick={() => {
+            if (importInputsBusy || committedClients || result) return;
             invalidatePendingFileReads();
             setChoice("keep");
             clearImportReview();
           }}
+          disabled={
+            importInputsBusy || Boolean(committedClients) || Boolean(result)
+          }
         />
       </div>
     </div>
@@ -547,10 +785,19 @@ function CsvPreviewCard({
     <div className="rounded-md border border-slate-200 bg-white p-3">
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm font-medium text-slate-800">{title}</p>
-        <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
-          {preview.willInsert + (preview.willReconcile ?? 0) > 0
-            ? "Ready"
-            : "Review"}
+        <span
+          className={cn(
+            "rounded-full px-2 py-0.5 text-xs font-medium",
+            preview.errors.length > 0 || duplicateValue > 0
+              ? "bg-amber-50 text-amber-700"
+              : "bg-emerald-50 text-emerald-700",
+          )}
+        >
+          {preview.errors.length > 0 || duplicateValue > 0
+            ? "Ready with skipped rows"
+            : preview.willInsert + (preview.willReconcile ?? 0) > 0
+              ? "Ready"
+              : "Review"}
         </span>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -566,14 +813,38 @@ function CsvPreviewCard({
         <ImportStat label="Issues" value={preview.errors.length} />
       </div>
       {preview.errors.length > 0 ? (
-        <ul className="mt-3 max-h-24 space-y-0.5 overflow-y-auto text-xs text-amber-800">
-          {preview.errors.slice(0, 5).map((error, index) => (
-            <li key={index}>{error}</li>
-          ))}
-          {preview.errors.length > 5 ? (
-            <li>and {preview.errors.length - 5} more</li>
-          ) : null}
-        </ul>
+        <ImportIssues
+          errors={preview.errors}
+          fileName={`openvpm-${title.toLowerCase()}-preview-issues.txt`}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function ImportIssues({
+  errors,
+  fileName,
+}: {
+  errors: string[];
+  fileName: string;
+}) {
+  const visibleErrors = errors.slice(0, 5);
+  return (
+    <div className="mt-3 text-xs text-amber-800">
+      <ul className="max-h-24 list-disc space-y-0.5 overflow-y-auto pl-4">
+        {visibleErrors.map((error, index) => (
+          <li key={index}>{error}</li>
+        ))}
+      </ul>
+      {errors.length > visibleErrors.length ? (
+        <button
+          type="button"
+          className="mt-2 font-medium text-amber-900 underline underline-offset-2"
+          onClick={() => downloadIssueReport(errors, fileName)}
+        >
+          Download all {errors.length} issues
+        </button>
       ) : null}
     </div>
   );
@@ -596,19 +867,22 @@ function ChoiceCard({
   title,
   subtitle,
   onClick,
+  disabled = false,
 }: {
   active: boolean;
   icon: React.ReactNode;
   title: string;
   subtitle: string;
   onClick: () => void;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
       className={cn(
-        "flex items-start gap-3 rounded-lg border bg-white p-4 text-left transition-colors",
+        "flex items-start gap-3 rounded-lg border bg-white p-4 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
         active
           ? "border-emerald-300 ring-1 ring-emerald-300"
           : "border-slate-200 hover:border-slate-300",

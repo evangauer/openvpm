@@ -498,4 +498,33 @@ describe("committed Drizzle migrations", () => {
       'ON "email_suppressions" USING btree ("practice_id","deleted_at")'
     );
   });
+
+  it("commits the tenant-scoped exact-file migration run ledger", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json")
+    ) as { entries?: Array<{ tag?: string }> };
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0041_aromatic_rhino"
+    );
+
+    const sql = readRepoFile(
+      "packages/db/drizzle/0041_aromatic_rhino.sql"
+    );
+    expect(sql).toContain('CREATE TABLE "migration_runs"');
+    expect(sql).toContain(
+      'CREATE TYPE "public"."migration_run_mode" AS ENUM(\'clients\', \'patients\', \'vaccinations\', \'soap_notes\')'
+    );
+    expect(sql).toContain("'previewed', 'superseded', 'committing'");
+    expect(sql).toContain('CONSTRAINT "migration_runs_file_hash_check"');
+    expect(sql).toContain('CONSTRAINT "migration_runs_counts_check"');
+    expect(sql).toContain(
+      'CREATE UNIQUE INDEX "migration_runs_active_preview_uq"'
+    );
+    expect(sql).toContain(
+      'WHERE "migration_runs"."status" = \'previewed\' and "migration_runs"."deleted_at" is null'
+    );
+
+    const rls = readRepoFile("packages/db/rls/enable-rls.sql");
+    expect(rls).toContain("'migration_runs'");
+  });
 });

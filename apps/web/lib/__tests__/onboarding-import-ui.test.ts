@@ -23,14 +23,31 @@ describe("onboarding import UI", () => {
     expect(source).toContain("dryRun: false");
     expect(source).toContain("setClientsPreview");
     expect(source).toContain("setPetsPreview");
+    expect(source).toContain("previewToken: string;");
+    expect(source.match(/previewToken: r\.previewToken/g)).toHaveLength(2);
+    expect(source).toContain("previewToken: preview.previewToken");
+    expect(source).toContain("previewToken: petsPreview!.previewToken");
     expect(source).toContain("if (result) return true");
-    expect(source).toContain("Continue again to import.");
+    expect(source).toContain("Only the");
+    expect(source).toContain("issue rows will be skipped.");
     expect(source).toContain("source: migrationSource");
+    expect(source.match(/migrationProtocol: "reviewed-v1"/g)).toHaveLength(4);
     expect(source).toContain("Which system are you moving from?");
     expect(source).toContain("MIGRATION_SOURCES.map");
+    expect(source).not.toContain("clientCsv:");
+    expect(source).toContain('? "Check client file"');
+    expect(source).toContain('"Check pet file"');
+    expect(source).toContain("setCommittedClients(committed)");
+    expect(source).toContain("Retry the same import; it is safe");
+    expect(source).toContain("Download all {errors.length} issues");
     expect(source).toContain(
-      "clientCsv: hasClientsCsv ? clientsCsv.trim() : undefined",
+      "const importInputsBusy = importing || readingFiles",
     );
+    expect(source).toContain("continueDisabled: readingFiles");
+    expect(source).toContain("if (which === \"clients\") clearImportReview()");
+    expect(source).toContain("else clearPetReview()");
+    expect(source).toContain("setFileReadPending");
+    expect(source).toContain("Request a migration review before the full import");
     expect(source).toContain("willReconcile");
     expect(source).toContain(
       "const fileReadVersionRef = useRef({ clients: 0, pets: 0 })",

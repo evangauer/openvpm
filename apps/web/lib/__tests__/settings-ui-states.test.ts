@@ -359,6 +359,12 @@ describe("settings UI states", () => {
     expect(source).toContain("importClientsCsv.mutate({");
     expect(source).toContain("importPatientsCsv.mutate({");
     expect(source).toContain("source: importSource");
+    expect(source.match(/migrationProtocol: "reviewed-v1"/g)).toHaveLength(5);
+    expect(source).toContain("previewToken: string;");
+    expect(source.match(/previewToken: data\.previewToken/g)).toHaveLength(4);
+    expect(
+      source.match(/previewToken: importPreview\.previewToken/g),
+    ).toHaveLength(4);
     expect(source).toContain("duplicates: data.duplicates");
     expect(source).toContain('label="Row issues"');
     expect(source).toContain("IDs to connect");

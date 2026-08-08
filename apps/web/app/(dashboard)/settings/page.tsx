@@ -2768,6 +2768,7 @@ function downloadJSON(data: unknown, filename: string) {
 
 type ImportPreview = {
   requestKey: string;
+  previewToken: string;
   total: number;
   willInsert: number;
   willReconcile?: number;
@@ -2820,6 +2821,7 @@ function DataTab() {
     reconciled?: number;
     errors?: string[];
   } | null>(null);
+  const [importRecoveryMessage, setImportRecoveryMessage] = useState("");
   const [backupFileName, setBackupFileName] = useState("");
   const [backupPayload, setBackupPayload] = useState<Record<
     string,
@@ -2910,6 +2912,22 @@ function DataTab() {
     ? verifiedPracticeSettings.timezone
     : null;
 
+  function handleCsvImportError(err: {
+    data?: { code?: string | null } | null;
+    message: string;
+  }) {
+    if (err.data?.code === "CONFLICT") {
+      importRequestKeyRef.current = null;
+      setImportPreview(null);
+      setImportRecoveryMessage(
+        "This preview expired or the clinic data changed. Nothing new was imported by this attempt. Check the same file again.",
+      );
+      toast.error("Check the CSV again before importing.");
+      return;
+    }
+    toast.error(err.message);
+  }
+
   const importClientsCsv = trpc.data.importClientsCsv.useMutation({
     onSuccess: (data, variables) => {
       if ("dryRun" in data && data.dryRun) {
@@ -2921,12 +2939,14 @@ function DataTab() {
         if (importRequestKeyRef.current !== requestKey) return;
         setImportPreview({
           requestKey,
+          previewToken: data.previewToken,
           total: data.total,
           willInsert: data.willInsert,
           willReconcile: data.willReconcile,
           duplicates: data.duplicates,
           errors: data.errors,
         });
+        setImportRecoveryMessage("");
         setImportResult(null);
         toast.success("Client CSV checked");
         return;
@@ -2940,11 +2960,10 @@ function DataTab() {
       setImportPreview(null);
       setCsvText("");
       setCsvFileName("");
+      setImportRecoveryMessage("");
       toast.success("Clients imported");
     },
-    onError: (err) => {
-      toast.error(err.message);
-    },
+    onError: handleCsvImportError,
   });
   const importPatientsCsv = trpc.data.importPatientsCsv.useMutation({
     onSuccess: (data, variables) => {
@@ -2957,6 +2976,7 @@ function DataTab() {
         if (importRequestKeyRef.current !== requestKey) return;
         setImportPreview({
           requestKey,
+          previewToken: data.previewToken,
           total: data.total,
           willInsert: data.willInsert,
           willReconcile: data.willReconcile,
@@ -2964,6 +2984,7 @@ function DataTab() {
           unmatchedClient: data.unmatchedClient,
           errors: data.errors,
         });
+        setImportRecoveryMessage("");
         setImportResult(null);
         toast.success("Patient CSV checked");
         return;
@@ -2977,11 +2998,10 @@ function DataTab() {
       setImportPreview(null);
       setCsvText("");
       setCsvFileName("");
+      setImportRecoveryMessage("");
       toast.success("Patients imported");
     },
-    onError: (err) => {
-      toast.error(err.message);
-    },
+    onError: handleCsvImportError,
   });
   const importVaccinationsCsv = trpc.data.importVaccinationsCsv.useMutation({
     onSuccess: (data, variables) => {
@@ -2994,12 +3014,14 @@ function DataTab() {
         if (importRequestKeyRef.current !== requestKey) return;
         setImportPreview({
           requestKey,
+          previewToken: data.previewToken,
           total: data.total,
           willInsert: data.willInsert,
           duplicates: data.duplicates,
           unmatchedPatient: data.unmatchedPatient,
           errors: data.errors,
         });
+        setImportRecoveryMessage("");
         setImportResult(null);
         toast.success("Vaccination CSV checked");
         return;
@@ -3009,11 +3031,10 @@ function DataTab() {
       setImportPreview(null);
       setCsvText("");
       setCsvFileName("");
+      setImportRecoveryMessage("");
       toast.success("Vaccine history imported");
     },
-    onError: (err) => {
-      toast.error(err.message);
-    },
+    onError: handleCsvImportError,
   });
   const importSoapNotesCsv = trpc.data.importSoapNotesCsv.useMutation({
     onSuccess: (data, variables) => {
@@ -3026,12 +3047,14 @@ function DataTab() {
         if (importRequestKeyRef.current !== requestKey) return;
         setImportPreview({
           requestKey,
+          previewToken: data.previewToken,
           total: data.total,
           willInsert: data.willInsert,
           duplicates: data.duplicates,
           unmatchedPatient: data.unmatchedPatient,
           errors: data.errors,
         });
+        setImportRecoveryMessage("");
         setImportResult(null);
         toast.success("Medical history CSV checked");
         return;
@@ -3041,11 +3064,10 @@ function DataTab() {
       setImportPreview(null);
       setCsvText("");
       setCsvFileName("");
+      setImportRecoveryMessage("");
       toast.success("Medical history imported");
     },
-    onError: (err) => {
-      toast.error(err.message);
-    },
+    onError: handleCsvImportError,
   });
 
   const requestAccountDeletion =
@@ -3242,9 +3264,48 @@ function DataTab() {
     requestAccountDeletion,
   ]);
 
+  const runImportPreview = useCallback(
+    (text: string) => {
+      if (!importMode || !migrationSource) {
+        toast.error("Choose the system you are moving from first.");
+        return;
+      }
+      setImportPreview(null);
+      setImportResult(null);
+      setImportRecoveryMessage("");
+      importRequestKeyRef.current = importPreviewRequestKey(
+        importMode,
+        migrationSource,
+        text,
+      );
+      const input = {
+        csv: text,
+        dryRun: true as const,
+        source: migrationSource,
+        migrationProtocol: "reviewed-v1" as const,
+      };
+      if (importMode === "clients") importClientsCsv.mutate(input);
+      else if (importMode === "patients") importPatientsCsv.mutate(input);
+      else if (importMode === "vaccinations")
+        importVaccinationsCsv.mutate(input);
+      else importSoapNotesCsv.mutate(input);
+    },
+    [
+      importClientsCsv,
+      importMode,
+      importPatientsCsv,
+      importSoapNotesCsv,
+      importVaccinationsCsv,
+      migrationSource,
+    ],
+  );
+
   const handleFileSelect = useCallback(
     (file: File) => {
-      if (!importMode) return;
+      if (!importMode || !migrationSource) {
+        toast.error("Choose the system you are moving from first.");
+        return;
+      }
       const readVersion = ++importFileReadVersionRef.current;
       function clearImportFile() {
         importRequestKeyRef.current = null;
@@ -3252,6 +3313,7 @@ function DataTab() {
         setCsvText("");
         setImportPreview(null);
         setImportResult(null);
+        setImportRecoveryMessage("");
       }
 
       if (file.size > IMPORT_CSV_MAX_BYTES) {
@@ -3264,6 +3326,7 @@ function DataTab() {
       setCsvText("");
       setImportPreview(null);
       setImportResult(null);
+      setImportRecoveryMessage("");
       const reader = new FileReader();
       reader.onload = (e) => {
         if (importFileReadVersionRef.current !== readVersion) return;
@@ -3280,36 +3343,7 @@ function DataTab() {
         }
 
         setCsvText(text);
-        importRequestKeyRef.current = importPreviewRequestKey(
-          importMode,
-          importSource,
-          text,
-        );
-        if (importMode === "clients") {
-          importClientsCsv.mutate({
-            csv: text,
-            dryRun: true,
-            source: importSource,
-          });
-        } else if (importMode === "patients") {
-          importPatientsCsv.mutate({
-            csv: text,
-            dryRun: true,
-            source: importSource,
-          });
-        } else if (importMode === "vaccinations") {
-          importVaccinationsCsv.mutate({
-            csv: text,
-            dryRun: true,
-            source: importSource,
-          });
-        } else {
-          importSoapNotesCsv.mutate({
-            csv: text,
-            dryRun: true,
-            source: importSource,
-          });
-        }
+        runImportPreview(text);
       };
       reader.onerror = () => {
         if (importFileReadVersionRef.current !== readVersion) return;
@@ -3318,14 +3352,7 @@ function DataTab() {
       };
       reader.readAsText(file);
     },
-    [
-      importClientsCsv,
-      importSource,
-      importMode,
-      importPatientsCsv,
-      importVaccinationsCsv,
-      importSoapNotesCsv,
-    ],
+    [importMode, migrationSource, runImportPreview],
   );
 
   const handleDrop = useCallback(
@@ -3362,24 +3389,32 @@ function DataTab() {
         csv: csvText,
         dryRun: false,
         source: importSource,
+        previewToken: importPreview.previewToken,
+        migrationProtocol: "reviewed-v1",
       });
     } else if (importMode === "patients") {
       importPatientsCsv.mutate({
         csv: csvText,
         dryRun: false,
         source: importSource,
+        previewToken: importPreview.previewToken,
+        migrationProtocol: "reviewed-v1",
       });
     } else if (importMode === "vaccinations") {
       importVaccinationsCsv.mutate({
         csv: csvText,
         dryRun: false,
         source: importSource,
+        previewToken: importPreview.previewToken,
+        migrationProtocol: "reviewed-v1",
       });
     } else {
       importSoapNotesCsv.mutate({
         csv: csvText,
         dryRun: false,
         source: importSource,
+        previewToken: importPreview.previewToken,
+        migrationProtocol: "reviewed-v1",
       });
     }
   }, [
@@ -3827,9 +3862,10 @@ function DataTab() {
           Moving from another system? Import clients first, then patients, then
           vaccine history, then medical history (visit notes). Every file is
           dry-run first so you see duplicates and missing matches before
-          anything is saved. Common column names from AVImark, Cornerstone,
-          ezyVet, and Shepherd exports are understood automatically. Owner and
-          patient IDs stay linked across files, even when an owner has no email.
+          anything is saved. Common column names from AVImark, Cornerstone, and
+          ezyVet are recognized. Shepherd migrations are currently guided so we
+          can verify the clinic's exact export format. Owner and patient IDs
+          stay linked across files, even when an owner has no email.
         </p>
 
         {/* Where the data is coming from (export instructions per source) */}
@@ -3844,13 +3880,13 @@ function DataTab() {
               onClick={() => {
                 importFileReadVersionRef.current += 1;
                 importRequestKeyRef.current = null;
-                setMigrationSource(
-                  migrationSource === source.id ? null : source.id,
-                );
+                setMigrationSource(source.id);
+                setImportMode(null);
                 setCsvText("");
                 setCsvFileName("");
                 setImportPreview(null);
                 setImportResult(null);
+                setImportRecoveryMessage("");
               }}
               className={cn(
                 "rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors",
@@ -3864,13 +3900,27 @@ function DataTab() {
           ))}
         </div>
         {migrationSource ? (
-          <p className="mb-4 max-w-2xl rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-            {
-              MIGRATION_SOURCES.find((s) => s.id === migrationSource)!
-                .exportHint
-            }
+          <div className="mb-4 max-w-2xl rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            <p>
+              {
+                MIGRATION_SOURCES.find((s) => s.id === migrationSource)!
+                  .exportHint
+              }
+            </p>
+            {migrationSource === "shepherd" ? (
+              <a
+                href="mailto:support@openvpm.com?subject=Assisted%20Shepherd%20migration"
+                className="mt-2 inline-flex font-medium text-primary hover:underline"
+              >
+                Request a migration review before the full import
+              </a>
+            ) : null}
+          </div>
+        ) : (
+          <p className="mb-4 text-xs font-medium text-amber-700">
+            Choose the system you are moving from before selecting an import.
           </p>
-        ) : null}
+        )}
 
         {/* Import mode selector */}
         <div className="flex flex-wrap gap-2 mb-4">
@@ -3890,14 +3940,15 @@ function DataTab() {
               key={mode}
               variant={importMode === mode ? "default" : "outline"}
               size="sm"
+              disabled={!migrationSource}
               onClick={() => {
                 importFileReadVersionRef.current += 1;
-                importRequestKeyRef.current = null;
                 setImportMode(mode);
                 setCsvText("");
                 setCsvFileName("");
                 setImportPreview(null);
                 setImportResult(null);
+                setImportRecoveryMessage("");
               }}
             >
               <Upload className="mr-2 h-4 w-4" />
@@ -3961,6 +4012,25 @@ function DataTab() {
                 <span className="font-medium">{csvFileName}</span>
               </p>
             )}
+
+            {importRecoveryMessage && csvText ? (
+              <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                <p>{importRecoveryMessage}</p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="mt-2"
+                  disabled={isImportPending}
+                  onClick={() => runImportPreview(csvText)}
+                >
+                  {isImportPending ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : null}
+                  Check again
+                </Button>
+              </div>
+            ) : null}
 
             {importPreview && (
               <div className="space-y-3">
@@ -4030,6 +4100,13 @@ function DataTab() {
                       </ul>
                     </div>
                   )}
+                  <p className="mt-4 text-xs text-muted-foreground">
+                    Only the{" "}
+                    {importPreview.willInsert +
+                      (importPreview.willReconcile ?? 0)}{" "}
+                    listed changes will be saved. {importPreview.errors.length}{" "}
+                    issue row(s) will be skipped.
+                  </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Button
@@ -4061,6 +4138,7 @@ function DataTab() {
                       setCsvText("");
                       setCsvFileName("");
                       setImportPreview(null);
+                      setImportRecoveryMessage("");
                     }}
                   >
                     Cancel

@@ -12,6 +12,10 @@ export interface JourneyState {
 }
 
 export interface StepHandle {
+  /** Optional action label for steps that perform a material operation. */
+  continueLabel?: string;
+  /** Prevent advancing while a step is still preparing local input. */
+  continueDisabled?: boolean;
   /**
    * Runs when the user presses Continue (or Finish). Do the step's own server
    * work here and return true to advance. Returning false (or throwing) keeps

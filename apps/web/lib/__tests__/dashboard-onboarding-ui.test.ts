@@ -106,7 +106,8 @@ describe("dashboard onboarding UI states", () => {
     expect(journeyProviderSource).toContain("if (!isAdmin) return;");
     expect(journeyProviderSource).toContain("const isOpen = isAdmin && index !== null");
     expect(journeyProviderSource).toContain("value={{ openJourney, isOpen }}");
-    expect(journeyProviderSource).toContain("<JourneyShell steps={steps}");
+    expect(journeyProviderSource).toMatch(/<JourneyShell\s+steps=\{steps\}/);
+    expect(journeyProviderSource).toContain("disabled={busy || continueDisabled}");
     expect(journeyProviderSource).toContain(
       "trpc.settings.completeOnboarding.useMutation"
     );

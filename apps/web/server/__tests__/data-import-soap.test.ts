@@ -4,11 +4,31 @@ vi.mock("@/lib/audit", () => ({
   recordAuditLog: vi.fn(async () => undefined),
 }));
 
+const migrationRunMocks = vi.hoisted(() => ({
+  createMigrationPreview: vi.fn(
+    async () => "00000000-0000-0000-0000-0000000000f1",
+  ),
+  claimMigrationPreview: vi.fn(async () => ({
+    alreadyCommitted: false,
+    importedCount: 0,
+    reconciledCount: 0,
+    errorCount: 0,
+  })),
+  completeMigrationRun: vi.fn(async () => undefined),
+  lockMigrationPractice: vi.fn(async () => undefined),
+}));
+
+vi.mock("@/lib/import/run-ledger", () => ({
+  MigrationPreviewError: class MigrationPreviewError extends Error {},
+  ...migrationRunMocks,
+}));
+
 const { IMPORT_CSV_MAX_BYTES, dataRouter } = await import("../routers/data");
 
 const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const USER_ID = "00000000-0000-0000-0000-000000000001";
 const PATIENT_ID = "00000000-0000-0000-0000-0000000000p1";
+const PREVIEW_TOKEN = "00000000-0000-0000-0000-0000000000f1";
 
 function callerWithDb(db: Record<string, unknown>, role = "admin") {
   const session = {
@@ -100,16 +120,22 @@ describe("medical history (SOAP notes) import", () => {
     expect(select).not.toHaveBeenCalled();
   });
 
-  it("returns parse errors for malformed CSV without touching the DB", async () => {
+  it("records malformed CSV as a preview without domain writes", async () => {
     const { db, select, insertValues } = createDb([]);
     const result = await callerWithDb(db).importSoapNotesCsv({
       csv: `${HEADER}\n"jane@x.com,Rex`,
+      dryRun: true,
     });
     expect(result).toEqual({
-      imported: 0,
+      dryRun: true,
+      previewToken: PREVIEW_TOKEN,
+      total: 0,
+      willInsert: 0,
+      unmatchedPatient: 0,
+      duplicates: 0,
       errors: ["CSV has an unterminated quoted field."],
     });
-    expect(select).not.toHaveBeenCalled();
+    expect(select).toHaveBeenCalledTimes(1);
     expect(insertValues).not.toHaveBeenCalled();
   });
 
@@ -153,6 +179,8 @@ describe("medical history (SOAP notes) import", () => {
 
     const result = await callerWithDb(db).importSoapNotesCsv({
       csv: `${HEADER}\n${REX_ROW}`,
+      dryRun: false,
+      previewToken: PREVIEW_TOKEN,
     });
 
     expect(result).toMatchObject({ imported: 1 });
@@ -184,6 +212,8 @@ describe("medical history (SOAP notes) import", () => {
       csv:
         "clientEmail,patientName,date,notes\n" +
         "jane@x.com,Rex,2024-03-05,Wellness exam. All normal.",
+      dryRun: false,
+      previewToken: PREVIEW_TOKEN,
     });
 
     expect(result).toMatchObject({ imported: 1 });
@@ -263,6 +293,8 @@ describe("medical history (SOAP notes) import", () => {
     const result = await callerWithDb(db).importSoapNotesCsv({
       csv: "Patient ID,Visit Date,Notes\nP-9,2025-02-03,Annual exam",
       source: "shepherd",
+      dryRun: false,
+      previewToken: PREVIEW_TOKEN,
     });
 
     expect(result).toMatchObject({ imported: 1, errors: [] });

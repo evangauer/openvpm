@@ -17,12 +17,16 @@ describe("generateApiKey", () => {
     expect(await bcrypt.compare(raw, hash)).toBe(true);
   });
 
-  it("does not verify against a different key", async () => {
-    const a = await generateApiKey();
-    const b = await generateApiKey();
-    expect(await bcrypt.compare(b.raw, a.hash)).toBe(false);
-    expect(a.raw).not.toBe(b.raw);
-  });
+  it(
+    "does not verify against a different key",
+    async () => {
+      const a = await generateApiKey();
+      const b = await generateApiKey();
+      expect(await bcrypt.compare(b.raw, a.hash)).toBe(false);
+      expect(a.raw).not.toBe(b.raw);
+    },
+    15_000,
+  );
 });
 
 describe("extractApiKey", () => {

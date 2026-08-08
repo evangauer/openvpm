@@ -80,3 +80,5 @@ jobs:
       - run: pnpm --filter @openpims/db db:rls
 
       - run: pnpm --filter @openpims/db db:rls:test
+
+      - run: pnpm --filter @openpims/db db:migration-runs:test

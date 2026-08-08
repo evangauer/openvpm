@@ -42,7 +42,7 @@ export const MIGRATION_SOURCES: MigrationSource[] = [
     id: "other",
     name: "Another system or spreadsheet",
     exportHint:
-      "Any CSV works. We read the common column names automatically, and the dry run shows exactly what will import before anything is saved.",
+      "Use a CSV with the columns shown below. The dry run shows exactly what will import before anything is saved.",
   },
 ];
 

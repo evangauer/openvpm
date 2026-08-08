@@ -99,8 +99,7 @@ export function OnboardingJourneyProvider({
   children: React.ReactNode;
 }) {
   const { data: session, status } = useSession();
-  const isAdmin =
-    status === "authenticated" && session?.user?.role === "admin";
+  const isAdmin = status === "authenticated" && session?.user?.role === "admin";
 
   const onboardingStatus = trpc.settings.onboardingStatus.useQuery(undefined, {
     enabled: isAdmin,
@@ -149,7 +148,7 @@ export function OnboardingJourneyProvider({
     window.history.replaceState(
       null,
       "",
-      window.location.pathname + (rest ? `?${rest}` : "")
+      window.location.pathname + (rest ? `?${rest}` : ""),
     );
     setIndex(resumeIndex);
   }, [isAdmin, index, onboardingState.data, resumeIndex]);
@@ -162,11 +161,7 @@ export function OnboardingJourneyProvider({
     // restores this auto-open exactly.
     if (firstRunMode() === "welcome") return;
     // Wait until all gates are loaded so the step list + resume point are stable.
-    if (
-      !onboardingStatus.data ||
-      !onboardingState.data ||
-      !subscription.data
-    ) {
+    if (!onboardingStatus.data || !onboardingState.data || !subscription.data) {
       return;
     }
     const notFinished = onboardingStatus.data.completedAt == null;
@@ -193,7 +188,8 @@ export function OnboardingJourneyProvider({
     <OnboardingJourneyContext.Provider value={{ openJourney, isOpen }}>
       {children}
       {isOpen ? (
-        <JourneyShell steps={steps}
+        <JourneyShell
+          steps={steps}
           index={index!}
           setIndex={setIndex}
           initialIntent={onboardingIntent ?? DEFAULT_ONBOARDING_INTENT}
@@ -233,13 +229,17 @@ function JourneyShell({
   const setState = useCallback(
     (patch: Partial<JourneyState>) =>
       setStateRaw((prev) => ({ ...prev, ...patch })),
-    []
+    [],
   );
 
   // The active step registers its Continue handler here.
   const handleRef = useRef<StepHandle | null>(null);
+  const [continueLabel, setContinueLabel] = useState<string | null>(null);
+  const [continueDisabled, setContinueDisabled] = useState(false);
   const register = useCallback((h: StepHandle) => {
     handleRef.current = h;
+    setContinueLabel(h.continueLabel ?? null);
+    setContinueDisabled(h.continueDisabled ?? false);
   }, []);
 
   const [busy, setBusy] = useState(false);
@@ -251,11 +251,11 @@ function JourneyShell({
   const persistCursor = useCallback(
     (stepId: string) => {
       utils.settings.getOnboardingState.setData(undefined, (prev) =>
-        prev ? { ...prev, journeyStepId: stepId } : prev
+        prev ? { ...prev, journeyStepId: stepId } : prev,
       );
       setJourneyProgress.mutate({ stepId });
     },
-    [utils, setJourneyProgress]
+    [utils, setJourneyProgress],
   );
 
   const finish = useCallback(async () => {
@@ -287,7 +287,7 @@ function JourneyShell({
   ]);
 
   const handleContinue = useCallback(async () => {
-    if (busy) return;
+    if (busy || continueDisabled) return;
     setBusy(true);
     try {
       const advance = handleRef.current
@@ -298,38 +298,51 @@ function JourneyShell({
         await finish();
       } else {
         handleRef.current = null;
+        setContinueLabel(null);
+        setContinueDisabled(false);
         const next = index + 1;
         persistCursor(steps[next]!.id);
         setIndex(next);
       }
     } catch (err) {
       toast.error(
-        err instanceof Error ? err.message : "Something went wrong. Try again."
+        err instanceof Error ? err.message : "Something went wrong. Try again.",
       );
     } finally {
       setBusy(false);
     }
-  }, [busy, isLast, finish, index, steps, persistCursor, setIndex]);
+  }, [
+    busy,
+    continueDisabled,
+    isLast,
+    finish,
+    index,
+    steps,
+    persistCursor,
+    setIndex,
+  ]);
 
   const handleBack = useCallback(() => {
-    if (busy || index === 0) return;
+    if (busy || continueDisabled || index === 0) return;
     handleRef.current = null;
+    setContinueLabel(null);
+    setContinueDisabled(false);
     const prev = index - 1;
     persistCursor(steps[prev]!.id);
     setIndex(prev);
-  }, [busy, index, steps, persistCursor, setIndex]);
+  }, [busy, continueDisabled, index, steps, persistCursor, setIndex]);
 
   const handleFinishLater = useCallback(() => {
-    if (busy) return;
+    if (busy || continueDisabled) return;
     // Not the same as finishing: record where we are and that it was dismissed,
     // WITHOUT marking onboarding complete. The checklist keeps nudging and the
     // user can resume from here later.
     utils.settings.getOnboardingState.setData(undefined, (prev) =>
-      prev ? { ...prev, journeyStepId: step.id, journeyDismissed: true } : prev
+      prev ? { ...prev, journeyStepId: step.id, journeyDismissed: true } : prev,
     );
     setJourneyProgress.mutate({ stepId: step.id, dismissed: true });
     setIndex(null);
-  }, [busy, step.id, utils, setJourneyProgress, setIndex]);
+  }, [busy, continueDisabled, step.id, utils, setJourneyProgress, setIndex]);
 
   return (
     <div
@@ -357,7 +370,7 @@ function JourneyShell({
                 key={s.id}
                 className={cn(
                   "h-1.5 flex-1 rounded-full transition-colors",
-                  i <= index ? "bg-emerald-500" : "bg-slate-200"
+                  i <= index ? "bg-emerald-500" : "bg-slate-200",
                 )}
               />
             ))}
@@ -383,9 +396,7 @@ function JourneyShell({
             {step.id === "branding" ? (
               <BrandingStep register={register} />
             ) : null}
-            {step.id === "team" ? (
-              <InviteTeamStep register={register} />
-            ) : null}
+            {step.id === "team" ? <InviteTeamStep register={register} /> : null}
             {step.id === "data" ? (
               <BringDataStep
                 register={register}
@@ -393,9 +404,7 @@ function JourneyShell({
                 setState={setState}
               />
             ) : null}
-            {step.id === "agent" ? (
-              <TryAgentStep register={register} />
-            ) : null}
+            {step.id === "agent" ? <TryAgentStep register={register} /> : null}
             {step.id === "phone" ? (
               <SetUpTextingStep register={register} />
             ) : null}
@@ -403,7 +412,11 @@ function JourneyShell({
               <AddACardStep register={register} />
             ) : null}
             {step.id === "allSet" ? (
-              <AllSetStep register={register} state={state} setState={setState} />
+              <AllSetStep
+                register={register}
+                state={state}
+                setState={setState}
+              />
             ) : null}
           </div>
 
@@ -415,7 +428,7 @@ function JourneyShell({
                   type="button"
                   variant="ghost"
                   onClick={handleBack}
-                  disabled={busy}
+                  disabled={busy || continueDisabled}
                 >
                   <ArrowLeft className="mr-1.5 h-4 w-4" />
                   Back
@@ -425,7 +438,7 @@ function JourneyShell({
                 <button
                   type="button"
                   onClick={handleFinishLater}
-                  disabled={busy}
+                  disabled={busy || continueDisabled}
                   className="text-sm font-medium text-slate-500 hover:text-slate-700 disabled:opacity-50"
                 >
                   I&apos;ll finish later
@@ -433,11 +446,13 @@ function JourneyShell({
               ) : null}
             </div>
 
-            <Button type="button" onClick={handleContinue} disabled={busy}>
-              {busy ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : null}
-              {isLast ? "Finish" : "Continue"}
+            <Button
+              type="button"
+              onClick={handleContinue}
+              disabled={busy || continueDisabled}
+            >
+              {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              {isLast ? "Finish" : (continueLabel ?? "Continue")}
               {!isLast && !busy ? (
                 <ArrowRight className="ml-2 h-4 w-4" />
               ) : null}

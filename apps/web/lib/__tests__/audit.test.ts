@@ -77,9 +77,13 @@ describe("redactSecrets", () => {
     const onboarding = redactSecrets({
       csv: "patient rows",
       clientCsv: "client rows with PII",
+      previewToken: "opaque-migration-run-id",
+      source: "shepherd",
     })!;
     expect(onboarding.csv).toBe("[redacted-bulk-payload]");
     expect(onboarding.clientCsv).toBe("[redacted-bulk-payload]");
+    expect(onboarding.previewToken).toBe("[redacted]");
+    expect(onboarding.source).toBe("shepherd");
     expect(out.dryRun).toBe(true);
 
     const restore = redactSecrets({

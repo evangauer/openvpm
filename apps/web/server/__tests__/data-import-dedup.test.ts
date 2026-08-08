@@ -4,11 +4,32 @@ vi.mock("@/lib/audit", () => ({
   recordAuditLog: vi.fn(async () => undefined),
 }));
 
-const { IMPORT_CSV_MAX_BYTES, dataRouter } = await import("../routers/data");
+const migrationRunMocks = vi.hoisted(() => ({
+  createMigrationPreview: vi.fn(
+    async () => "00000000-0000-0000-0000-0000000000f1",
+  ),
+  claimMigrationPreview: vi.fn(async () => ({
+    alreadyCommitted: false,
+    importedCount: 0,
+    reconciledCount: 0,
+    errorCount: 0,
+  })),
+  completeMigrationRun: vi.fn(async () => undefined),
+  lockMigrationPractice: vi.fn(async () => undefined),
+}));
+
+vi.mock("@/lib/import/run-ledger", () => ({
+  MigrationPreviewError: class MigrationPreviewError extends Error {},
+  ...migrationRunMocks,
+}));
+
+const { IMPORT_CSV_MAX_BYTES, dataRouter, legacyImportCompatibilityOpen } =
+  await import("../routers/data");
 
 const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const USER_ID = "00000000-0000-0000-0000-000000000001";
 const CLIENT_ID = "00000000-0000-0000-0000-0000000000c1";
+const PREVIEW_TOKEN = "00000000-0000-0000-0000-0000000000f1";
 
 function callerWithDb(db: Record<string, unknown>) {
   const session = {
@@ -74,6 +95,40 @@ afterEach(() => {
 });
 
 describe("data import duplicate handling", () => {
+  it("bounds compatibility for pre-deploy import tabs", () => {
+    expect(
+      legacyImportCompatibilityOpen(
+        Date.parse("2026-08-14T23:59:59Z"),
+        "production",
+      ),
+    ).toBe(true);
+    expect(
+      legacyImportCompatibilityOpen(
+        Date.parse("2026-08-15T00:00:00Z"),
+        "production",
+      ),
+    ).toBe(false);
+  });
+
+  it("requires old two-file onboarding tabs to refresh before pet review", async () => {
+    const { db, insertValues, select } = createDb([]);
+
+    await expect(
+      callerWithDb(db).importPatientsCsv({
+        csv: "clientEmail,name,species\nowner@example.com,Rex,canine",
+        clientCsv: "firstName,lastName,email\nAda,Client,owner@example.com",
+        dryRun: true,
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message:
+        "This onboarding import session is out of date. Refresh OpenVPM to check clients before pets.",
+    });
+
+    expect(select).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("rejects invalid client import fields before DB work", async () => {
     const { db, insertValues } = createDb([]);
 
@@ -137,6 +192,52 @@ describe("data import duplicate handling", () => {
     expect(insertValues).not.toHaveBeenCalled();
   });
 
+  it("rejects any commit that has not supplied a server preview token", async () => {
+    const { db, insertValues, select } = createDb([]);
+
+    await expect(
+      callerWithDb(db).importClientsCsv({
+        csv: "firstName,lastName,email\nAda,Client,ada@example.com",
+        dryRun: false,
+        migrationProtocol: "reviewed-v1",
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "Check this exact CSV first, then confirm its import.",
+    });
+
+    expect(select).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("returns the saved result when an exact committed request is retried", async () => {
+    migrationRunMocks.claimMigrationPreview.mockResolvedValueOnce({
+      alreadyCommitted: true,
+      importedCount: 7,
+      reconciledCount: 2,
+      errorCount: 0,
+    });
+    const { db, insertValues } = createDb([[]]);
+
+    await expect(
+      callerWithDb(db).importClientsCsv({
+        csv: "firstName,lastName,email\nAda,Client,ada@example.com",
+        source: "shepherd",
+        dryRun: false,
+        previewToken: PREVIEW_TOKEN,
+      }),
+    ).resolves.toEqual({
+      imported: 7,
+      reconciled: 2,
+      errors: [],
+      alreadyCommitted: true,
+      migrationRunId: PREVIEW_TOKEN,
+    });
+
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(migrationRunMocks.completeMigrationRun).not.toHaveBeenCalled();
+  });
+
   it("rejects imports when the practice is missing or deleted", async () => {
     const { db, insertValues } = createDb([], []);
 
@@ -164,20 +265,25 @@ describe("data import duplicate handling", () => {
     expect(insertValues).not.toHaveBeenCalled();
   });
 
-  it("reports malformed client CSV before DB work", async () => {
+  it("records malformed client CSV as a preview without domain writes", async () => {
     const { db, insertValues, select } = createDb([]);
 
     await expect(
       callerWithDb(db).importClientsCsv({
         csv: 'firstName,lastName,email\n"Jane,Doe,jane@example.com',
+        dryRun: true,
       }),
     ).resolves.toEqual({
-      imported: 0,
-      reconciled: 0,
+      dryRun: true,
+      previewToken: PREVIEW_TOKEN,
+      total: 0,
+      willInsert: 0,
+      willReconcile: 0,
+      duplicates: 0,
       errors: ["CSV has an unterminated quoted field."],
     });
 
-    expect(select).not.toHaveBeenCalled();
+    expect(select).toHaveBeenCalledTimes(1);
     expect(insertValues).not.toHaveBeenCalled();
   });
 
@@ -255,6 +361,8 @@ describe("data import duplicate handling", () => {
           "New,Client,new@example.com",
           "Again,Client, New@example.com ",
         ].join("\n"),
+        dryRun: false,
+        previewToken: PREVIEW_TOKEN,
       }),
     ).resolves.toMatchObject({
       imported: 1,
@@ -297,6 +405,7 @@ describe("data import duplicate handling", () => {
       }),
     ).resolves.toEqual({
       dryRun: true,
+      previewToken: PREVIEW_TOKEN,
       total: 3,
       willInsert: 1,
       willReconcile: 0,
@@ -317,6 +426,8 @@ describe("data import duplicate handling", () => {
       callerWithDb(db).importClientsCsv({
         csv: "Owner ID,First Name,Last Name\n00AbC-19,Jane,Doe",
         source: "shepherd",
+        dryRun: false,
+        previewToken: PREVIEW_TOKEN,
       }),
     ).resolves.toMatchObject({ imported: 1, reconciled: 0, errors: [] });
 
@@ -342,6 +453,8 @@ describe("data import duplicate handling", () => {
         "C-42,Jane,Doe,jane@example.com",
       ].join("\n"),
       source: "shepherd",
+      dryRun: false,
+      previewToken: PREVIEW_TOKEN,
     });
 
     expect(result).toMatchObject({ imported: 1, reconciled: 0, errors: [] });
@@ -391,6 +504,8 @@ describe("data import duplicate handling", () => {
       callerWithDb(commitDb.db).importClientsCsv({
         csv: "Client ID,First Name,Last Name,Email\nC-42,Ada,Client,owner@example.com",
         source: "shepherd",
+        dryRun: false,
+        previewToken: PREVIEW_TOKEN,
       }),
     ).resolves.toMatchObject({ imported: 0, reconciled: 1, errors: [] });
     expect(commitDb.updateSet).toHaveBeenCalledWith({
@@ -418,6 +533,8 @@ describe("data import duplicate handling", () => {
       callerWithDb(db).importClientsCsv({
         csv: "Client ID,First Name,Last Name,Email\nC-42,Ada,Client,owner@example.com",
         source: "shepherd",
+        dryRun: false,
+        previewToken: PREVIEW_TOKEN,
       }),
     ).rejects.toMatchObject({
       code: "CONFLICT",
@@ -568,6 +685,7 @@ describe("data import duplicate handling", () => {
       }),
     ).resolves.toEqual({
       dryRun: true,
+      previewToken: PREVIEW_TOKEN,
       total: 2,
       willInsert: 1,
       willReconcile: 0,
@@ -599,6 +717,8 @@ describe("data import duplicate handling", () => {
       callerWithDb(db).importPatientsCsv({
         csv: "Client ID,Patient ID,Patient Name,Species\nC-42,P-9,Rex,Dog",
         source: "shepherd",
+        dryRun: false,
+        previewToken: PREVIEW_TOKEN,
       }),
     ).resolves.toMatchObject({ imported: 1, reconciled: 0, errors: [] });
 
@@ -614,12 +734,11 @@ describe("data import duplicate handling", () => {
     ]);
   });
 
-  it("previews patients against clients planned by the same onboarding import", async () => {
+  it("requires clients to be committed before a patient preview can match them", async () => {
     const { db, insertValues } = createDb([[], []]);
 
     const result = await callerWithDb(db).importPatientsCsv({
       csv: "Client ID,Patient ID,Patient Name,Species\nC-42,P-9,Rex,Dog",
-      clientCsv: "Client ID,First Name,Last Name\nC-42,Jane,Doe",
       source: "other",
       dryRun: true,
     });
@@ -627,9 +746,11 @@ describe("data import duplicate handling", () => {
     expect(result).toMatchObject({
       dryRun: true,
       total: 1,
-      willInsert: 1,
-      unmatchedClient: 0,
-      errors: [],
+      willInsert: 0,
+      unmatchedClient: 1,
+      errors: [
+        "Row 1: No matching client was found for the supplied owner reference.",
+      ],
     });
     expect(insertValues).not.toHaveBeenCalled();
   });
@@ -655,6 +776,8 @@ describe("data import duplicate handling", () => {
         "owner@example.com,P-9,Rex,Dog",
       ].join("\n"),
       source: "shepherd",
+      dryRun: false,
+      previewToken: PREVIEW_TOKEN,
     });
 
     expect(result).toMatchObject({ imported: 1, reconciled: 0, errors: [] });
@@ -873,20 +996,26 @@ describe("data import duplicate handling", () => {
     expect(insertValues).not.toHaveBeenCalled();
   });
 
-  it("reports malformed patient CSV before DB work", async () => {
+  it("records malformed patient CSV as a preview without domain writes", async () => {
     const { db, insertValues, select } = createDb([]);
 
     await expect(
       callerWithDb(db).importPatientsCsv({
         csv: 'clientEmail,name,species\n"owner@example.com,Rex,canine',
+        dryRun: true,
       }),
     ).resolves.toEqual({
-      imported: 0,
-      reconciled: 0,
+      dryRun: true,
+      previewToken: PREVIEW_TOKEN,
+      total: 0,
+      willInsert: 0,
+      willReconcile: 0,
+      unmatchedClient: 0,
+      duplicates: 0,
       errors: ["CSV has an unterminated quoted field."],
     });
 
-    expect(select).not.toHaveBeenCalled();
+    expect(select).toHaveBeenCalledTimes(1);
     expect(insertValues).not.toHaveBeenCalled();
   });
 
@@ -916,6 +1045,7 @@ describe("data import duplicate handling", () => {
       }),
     ).resolves.toEqual({
       dryRun: true,
+      previewToken: PREVIEW_TOKEN,
       total: 3,
       willInsert: 1,
       willReconcile: 0,

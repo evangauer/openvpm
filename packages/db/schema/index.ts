@@ -20,3 +20,4 @@ export * from "./messaging";
 export * from "./demo-access";
 export * from "./booking";
 export * from "./funnel-events";
+export * from "./migrations";
