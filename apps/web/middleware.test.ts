@@ -80,6 +80,23 @@ describe("middleware security headers", () => {
     expectSecurityHeaders(lookalikeResponse);
   });
 
+  it("allows public SMS program pages without exposing lookalike routes", async () => {
+    mocks.getToken.mockResolvedValue(null);
+
+    const programResponse = await middleware(
+      request("/sms/00000000-0000-4000-8000-000000000000/privacy")
+    );
+    const lookalikeResponse = await middleware(request("/sms-settings"));
+
+    expect(mocks.getToken).toHaveBeenCalledTimes(1);
+    expect(programResponse.headers.get("location")).toBeNull();
+    expect(lookalikeResponse.headers.get("location")).toBe(
+      "https://openvpm.test/login?next=%2Fsms-settings"
+    );
+    expectSecurityHeaders(programResponse);
+    expectSecurityHeaders(lookalikeResponse);
+  });
+
   it("allows Vercel observability proxy paths without session lookup", async () => {
     const insights = await middleware(request("/_vercel/insights/view"));
     const proxied = await middleware(request("/5691167a7e0cfa40/view"));
