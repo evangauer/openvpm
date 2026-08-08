@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { SOAP_SECTION_MAX_LENGTH } from "@/lib/records/soap-content";
+import { SOAP_NOTE_TEMPLATES } from "@/lib/records/soap-templates";
 import {
   LAB_RESULT_VALUE_MAX_LENGTH,
   LAB_TEST_NAME_MAX_LENGTH,
@@ -446,6 +447,25 @@ describe("records target safety", () => {
       })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(mocks.dispatchWebhookEvent).not.toHaveBeenCalled();
+  });
+
+  it("rejects unresolved template prompts before DB work", async () => {
+    const { db, select, insertValues } = createDb();
+
+    await expect(
+      callerWithDb(db).createSoapNote({
+        patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
+        subjective: SOAP_NOTE_TEMPLATES[0]!.sections.subjective,
+      })
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "Replace or delete every SOAP template prompt before saving.",
+    });
+
+    expect(select).not.toHaveBeenCalled();
     expect(insertValues).not.toHaveBeenCalled();
     expect(mocks.dispatchWebhookEvent).not.toHaveBeenCalled();
   });

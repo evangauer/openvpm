@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { soapSectionText } from "../soap-content";
 import {
   SOAP_NOTE_TEMPLATES,
+  SOAP_TEMPLATE_PROMPT_MARKER,
   applySoapTemplateToSections,
   getSoapTemplateById,
+  hasUnresolvedSoapTemplatePrompts,
   soapTemplateSectionsFit,
 } from "../soap-templates";
 
@@ -21,6 +23,59 @@ describe("SOAP note templates", () => {
       expect(soapSectionText(template.sections.assessment)).not.toBe("");
       expect(soapSectionText(template.sections.plan)).not.toBe("");
     }
+  });
+
+  it("uses unresolved drafting prompts instead of affirmative clinical claims", () => {
+    for (const template of SOAP_NOTE_TEMPLATES) {
+      for (const section of Object.values(template.sections)) {
+        const sectionText = soapSectionText(section);
+        const promptCount = sectionText.split(SOAP_TEMPLATE_PROMPT_MARKER).length - 1;
+        const itemCount = section.match(/<li>/g)?.length ?? 0;
+
+        expect(promptCount).toBe(itemCount);
+        expect(promptCount).toBeGreaterThan(0);
+        expect(sectionText).not.toMatch(
+          /\b(vitals? (?:and (?:pain score|weight) )?recorded|exam performed|findings reviewed|needs assessed|procedure completed|instructions (?:reviewed|provided))\b/i
+        );
+      }
+
+      expect(hasUnresolvedSoapTemplatePrompts(template.sections)).toBe(true);
+    }
+  });
+
+  it("detects prompt bodies even if their visual markers are removed", () => {
+    const template = getSoapTemplateById("wellness-exam");
+    expect(template).toBeDefined();
+    expect(hasUnresolvedSoapTemplatePrompts(template!.sections)).toBe(true);
+    expect(
+      hasUnresolvedSoapTemplatePrompts({
+        subjective: template!.sections.subjective.replaceAll(
+          SOAP_TEMPLATE_PROMPT_MARKER,
+          ""
+        ),
+        objective: template!.sections.objective.replaceAll(
+          SOAP_TEMPLATE_PROMPT_MARKER,
+          ""
+        ),
+        assessment: template!.sections.assessment.replaceAll(
+          SOAP_TEMPLATE_PROMPT_MARKER,
+          ""
+        ),
+        plan: template!.sections.plan.replaceAll(
+          SOAP_TEMPLATE_PROMPT_MARKER,
+          ""
+        ),
+      })
+    ).toBe(true);
+
+    expect(
+      hasUnresolvedSoapTemplatePrompts({
+        subjective: "<p>Owner reports normal appetite.</p>",
+        objective: "<p>T 101.2 F; HR 88; RR 20.</p>",
+        assessment: "<p>Healthy adult dog.</p>",
+        plan: "<p>Return in 12 months.</p>",
+      })
+    ).toBe(false);
   });
 
   it("fills blank SOAP sections without overwriting drafted sections by default", () => {

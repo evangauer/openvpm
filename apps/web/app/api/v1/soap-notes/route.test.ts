@@ -84,6 +84,7 @@ const { POST } = await import("./route");
 const { appointments, patients, practices, users } =
   await import("@openpims/db");
 const { SOAP_SECTION_MAX_LENGTH } = await import("@/lib/records/soap-content");
+const { SOAP_NOTE_TEMPLATES } = await import("@/lib/records/soap-templates");
 const { JSON_REQUEST_BODY_MAX_BYTES } = await import("@/lib/request-json");
 
 const PRACTICE_ID = "00000000-0000-0000-0000-000000000001";
@@ -204,6 +205,27 @@ describe("POST /api/v1/soap-notes", () => {
     expect(json.error.fields.subjective).toEqual([expect.any(String)]);
     expect(mocks.withTenant).not.toHaveBeenCalled();
     expect(mocks.db.insert).not.toHaveBeenCalled();
+  });
+
+  it("rejects unresolved template prompts before tenant work", async () => {
+    const response = await POST(
+      request(
+        soapBody({
+          author_id: AUTHOR_ID,
+          subjective: SOAP_NOTE_TEMPLATES[0]!.sections.subjective,
+        })
+      )
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        message: "Replace or delete every SOAP template prompt before saving.",
+      },
+    });
+    expect(mocks.withTenant).not.toHaveBeenCalled();
+    expect(mocks.db.insert).not.toHaveBeenCalled();
+    expect(mocks.dispatchWebhookEvent).not.toHaveBeenCalled();
   });
 
   it("requires an appointment before tenant work", async () => {

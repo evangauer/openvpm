@@ -72,14 +72,21 @@ describe("SOAP note editor UX", () => {
     expect(source).not.toContain("`<p>${placeholder}</p>`");
   });
 
-  it("disables SOAP note save until at least one section has content", () => {
+  it("disables SOAP note save until content exists and template prompts are resolved", () => {
     const source = readFileSync(
       "app/(dashboard)/records/new-soap/[patientId]/page.tsx",
       "utf8"
     );
 
     expect(source).toContain("const canSave = hasSoapContent");
-    expect(source).toContain("disabled={createNote.isPending || !canSave}");
+    expect(source).toContain(
+      "const hasTemplatePrompts = hasUnresolvedSoapTemplatePrompts"
+    );
+    expect(source).toContain("const canSubmit = canSave && !hasTemplatePrompts");
+    expect(source).toContain("disabled={createNote.isPending || !canSubmit}");
+    expect(source).toContain(
+      "Replace or delete every draft prompt before saving"
+    );
     expect(source).toContain("normalizeSoapSection(subjective)");
   });
 
@@ -103,6 +110,9 @@ describe("SOAP note editor UX", () => {
     expect(source).toContain("setPlan(next.plan)");
     expect(source).toContain("Replace existing content");
     expect(source).toContain("Apply template");
+    expect(source).toContain(
+      "Templates add drafting prompts, not assumed findings"
+    );
   });
 
   it("keeps the SOAP author access gate after hooks are declared", () => {

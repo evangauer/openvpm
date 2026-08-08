@@ -39,6 +39,7 @@ import {
 } from "@/lib/records/soap-content";
 import { optionalClinicalTextInput } from "@/lib/records/clinical-inputs";
 import { lockOpenVisitForClinicalAppend } from "@/lib/records/visit-integrity";
+import { hasUnresolvedSoapTemplatePrompts } from "@/lib/records/soap-templates";
 import { AI_SOURCE_MAX_LENGTH } from "@/lib/ai/soap";
 
 export { AI_SOURCE_MAX_LENGTH };
@@ -195,6 +196,12 @@ export const aiRouter = createRouter({
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "SOAP note must include at least one section.",
+        });
+      }
+      if (hasUnresolvedSoapTemplatePrompts(normalizedNote)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Replace or delete every SOAP template prompt before saving.",
         });
       }
       await assertActivePractice(ctx);

@@ -23,6 +23,7 @@ import {
 } from "@/lib/records/soap-content";
 import { assertActivePractice } from "@/lib/compat/shared/active-practice";
 import { lockOpenVisitForClinicalAppend } from "@/lib/records/visit-integrity";
+import { hasUnresolvedSoapTemplatePrompts } from "@/lib/records/soap-templates";
 
 export const dynamic = "force-dynamic";
 
@@ -122,6 +123,12 @@ export async function POST(req: Request) {
     };
     if (!hasSoapContent(normalizedNote)) {
       return apiError("SOAP note must include at least one section.", 400);
+    }
+    if (hasUnresolvedSoapTemplatePrompts(normalizedNote)) {
+      return apiError(
+        "Replace or delete every SOAP template prompt before saving.",
+        400
+      );
     }
     const result = await withTenant(db, auth.ctx.practiceId, async (tx) => {
       const activePractice = await assertActivePractice(tx, auth.ctx.practiceId);

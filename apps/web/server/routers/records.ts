@@ -29,6 +29,7 @@ import {
   normalizeSoapSection,
   SOAP_SECTION_MAX_LENGTH,
 } from "@/lib/records/soap-content";
+import { hasUnresolvedSoapTemplatePrompts } from "@/lib/records/soap-templates";
 import {
   clinicalDateInput,
   clinicalTextInput,
@@ -659,6 +660,12 @@ export const recordsRouter = createRouter({
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "SOAP note must include at least one section.",
+        });
+      }
+      if (hasUnresolvedSoapTemplatePrompts(normalizedNote)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Replace or delete every SOAP template prompt before saving.",
         });
       }
       await assertPatientBelongsToPractice(ctx, input.patientId);

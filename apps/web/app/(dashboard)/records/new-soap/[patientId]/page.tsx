@@ -27,6 +27,7 @@ import {
   SOAP_NOTE_TEMPLATES,
   applySoapTemplateToSections,
   getSoapTemplateById,
+  hasUnresolvedSoapTemplatePrompts,
 } from "@/lib/records/soap-templates";
 
 const SoapNoteEditor = dynamic(
@@ -82,6 +83,13 @@ export default function NewSoapNotePage() {
   );
   const [replaceTemplateContent, setReplaceTemplateContent] = useState(false);
   const canSave = hasSoapContent({ subjective, objective, assessment, plan });
+  const hasTemplatePrompts = hasUnresolvedSoapTemplatePrompts({
+    subjective,
+    objective,
+    assessment,
+    plan,
+  });
+  const canSubmit = canSave && !hasTemplatePrompts;
   const selectedTemplate = getSoapTemplateById(selectedTemplateId);
 
   const {
@@ -144,6 +152,10 @@ export default function NewSoapNotePage() {
       toast.error("Add at least one SOAP section before saving");
       return;
     }
+    if (hasTemplatePrompts) {
+      toast.error("Replace or delete every draft prompt before saving");
+      return;
+    }
     createNote.mutate({
       patientId: params.patientId,
       appointmentId,
@@ -165,10 +177,10 @@ export default function NewSoapNotePage() {
     setObjective(next.objective);
     setAssessment(next.assessment);
     setPlan(next.plan);
-    toast.success(
+    toast.info(
       replaceTemplateContent || !canSave
-        ? `${selectedTemplate.name} template applied`
-        : `${selectedTemplate.name} template filled blank sections`
+        ? `${selectedTemplate.name} draft prompts applied`
+        : `${selectedTemplate.name} draft prompts filled blank sections`
     );
   }
 
@@ -335,7 +347,22 @@ export default function NewSoapNotePage() {
               Apply template
             </Button>
           </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Templates add drafting prompts, not assumed findings. Replace or
+            delete every prompt before saving the clinical record.
+          </p>
         </div>
+
+        {hasTemplatePrompts ? (
+          <div
+            role="alert"
+            className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100"
+          >
+            This draft still contains template prompts. Replace each prompt
+            with findings verified during this visit, or delete it if it does
+            not apply.
+          </div>
+        ) : null}
 
         <div className="rounded-lg border border-border bg-card p-6 space-y-6">
           {/* Subjective */}
@@ -403,16 +430,20 @@ export default function NewSoapNotePage() {
         <div className="flex items-center gap-3">
           <Button
             onClick={handleSave}
-            disabled={createNote.isPending || !canSave}
+            disabled={createNote.isPending || !canSubmit}
           >
             <Save className="mr-2 h-4 w-4" />
             {createNote.isPending ? "Saving..." : "Save Note"}
           </Button>
-          {!canSave && (
+          {!canSave ? (
             <p className="text-sm text-muted-foreground">
               Add at least one section to save this note.
             </p>
-          )}
+          ) : hasTemplatePrompts ? (
+            <p className="text-sm text-amber-700 dark:text-amber-300">
+              Replace or delete every draft prompt before saving.
+            </p>
+          ) : null}
           <Button variant="outline" onClick={() => router.push(returnPath)}>
             Cancel
           </Button>
