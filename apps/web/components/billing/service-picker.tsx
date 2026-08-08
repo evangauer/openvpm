@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 export interface ServicePickerService {
   id: string;
   name: string;
+  code?: string | null;
   category?: string | null;
   defaultPrice: string;
 }
@@ -47,9 +48,15 @@ export function ServicePicker({
     const contains: ServicePickerService[] = [];
     for (const s of services) {
       const name = s.name.toLowerCase();
+      const code = s.code?.toLowerCase() ?? "";
       const category = s.category?.toLowerCase() ?? "";
-      if (name.startsWith(q)) starts.push(s);
-      else if (name.includes(q) || category.includes(q)) contains.push(s);
+      if (name.startsWith(q) || code.startsWith(q)) starts.push(s);
+      else if (
+        name.includes(q) ||
+        code.includes(q) ||
+        category.includes(q)
+      )
+        contains.push(s);
     }
     return [...starts, ...contains];
   }, [services, query]);
@@ -179,6 +186,11 @@ export function ServicePicker({
                   <span className="min-w-0 flex-1 truncate font-medium">
                     {service.name}
                   </span>
+                  {service.code ? (
+                    <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                      {service.code}
+                    </span>
+                  ) : null}
                   {service.category ? (
                     <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
                       {service.category}

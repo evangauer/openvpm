@@ -12,8 +12,9 @@ import {
   timestamp,
   index,
   uniqueIndex,
+  check,
 } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import { baseColumns } from "./common";
 import { practices } from "./practices";
 import { locations } from "./practices";
@@ -111,6 +112,10 @@ export const services = pgTable(
       table.practiceId,
       table.deletedAt,
       table.name
+    ),
+    defaultPriceNonnegative: check(
+      "services_default_price_nonnegative",
+      sql`${table.defaultPrice} >= 0`
     ),
   })
 );

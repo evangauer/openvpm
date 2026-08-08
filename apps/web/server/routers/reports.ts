@@ -10,7 +10,6 @@ import {
 import {
   invoices,
   invoiceItems,
-  services,
   products,
   appointments,
   users,
@@ -269,7 +268,7 @@ export const reportsRouter = createRouter({
       const range = await getReportDateRange(ctx, input);
       const rows = await ctx.db
         .select({
-          name: sql<string>`coalesce(${services.name}, ${invoiceItems.description})`,
+          name: invoiceItems.description,
           count: sql<number>`count(*)::int`,
           revenue: sql<string>`coalesce(sum(${invoiceItems.total}::numeric), 0)`,
         })
@@ -281,16 +280,6 @@ export const reportsRouter = createRouter({
             eq(invoices.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
             isNull(invoices.deletedAt)
-          )
-        )
-        .leftJoin(
-          services,
-          and(
-            eq(invoiceItems.itemId, services.id),
-            eq(invoiceItems.itemType, "service"),
-            eq(services.practiceId, ctx.practiceId),
-            activePracticePredicate(ctx.practiceId),
-            isNull(services.deletedAt)
           )
         )
         .where(
@@ -306,7 +295,7 @@ export const reportsRouter = createRouter({
             lt(invoices.createdAt, range.endExclusive)
           )
         )
-        .groupBy(services.name, invoiceItems.description)
+        .groupBy(invoiceItems.description)
         .orderBy(sql`count(*) desc`)
         .limit(10);
 

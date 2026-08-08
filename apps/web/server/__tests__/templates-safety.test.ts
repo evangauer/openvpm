@@ -18,6 +18,8 @@ const ITEM_ID = "00000000-0000-0000-0000-000000000003";
 const PRODUCT_ID = "00000000-0000-0000-0000-000000000004";
 const SERVICE_ID = "00000000-0000-0000-0000-000000000005";
 const INVOICE_ID = "00000000-0000-0000-0000-000000000006";
+const SECOND_SERVICE_ID = "00000000-0000-0000-0000-000000000007";
+const SECOND_PRODUCT_ID = "00000000-0000-0000-0000-000000000008";
 
 function callerWithDb(db: Record<string, unknown>) {
   const session = {
@@ -39,16 +41,28 @@ function createDb(opts?: {
   updateResults?: unknown[][];
 }) {
   const selectResults = [...(opts?.selectResults ?? [])];
+  const lockFor = vi.fn(() => afterWhereForCurrentSelect);
+  let afterWhereForCurrentSelect: {
+    limit: ReturnType<typeof vi.fn>;
+    orderBy: ReturnType<typeof vi.fn>;
+    for: ReturnType<typeof vi.fn>;
+    then: (
+      resolve: (value: unknown[]) => unknown,
+      reject?: (error: unknown) => unknown
+    ) => Promise<unknown>;
+  };
   const select = vi.fn(() => {
     const result = selectResults.shift() ?? [];
     const afterWhere = {
       limit: vi.fn(async () => result),
       orderBy: vi.fn(() => afterWhere),
+      for: lockFor,
       then: (
         resolve: (value: unknown[]) => unknown,
         reject?: (error: unknown) => unknown
       ) => Promise.resolve(result).then(resolve, reject),
     };
+    afterWhereForCurrentSelect = afterWhere;
     const builder = {
       from: vi.fn(() => builder),
       innerJoin: vi.fn(() => builder),
@@ -72,15 +86,24 @@ function createDb(opts?: {
   const update = vi.fn(() => ({ set: updateSet }));
 
   const transaction = vi.fn(async (fn: (tx: unknown) => unknown) => fn(db));
+  const execute = vi.fn(async () => undefined);
   const db: Record<string, unknown> = {
     transaction,
-    execute: vi.fn(async () => undefined),
+    execute,
     select,
     insert,
     update,
   };
 
-  return { db, select, insertValues, updateSet, transaction };
+  return {
+    db,
+    select,
+    insertValues,
+    updateSet,
+    transaction,
+    lockFor,
+    execute,
+  };
 }
 
 afterEach(() => {
@@ -348,7 +371,7 @@ describe("treatment template safety", () => {
   });
 
   it("applies a template to a tenant invoice and recalculates active items", async () => {
-    const { db, insertValues, updateSet } = createDb({
+    const { db, insertValues, updateSet, lockFor, execute } = createDb({
       selectResults: [
         [{ id: PRACTICE_ID }],
         [{ id: TEMPLATE_ID }],
@@ -369,6 +392,7 @@ describe("treatment template safety", () => {
             itemId: SERVICE_ID,
           },
         ],
+        [{ id: SERVICE_ID }],
         [{ quantity: 2, unitPrice: "75.00" }],
         [{ taxRatePercent: "10.00" }],
       ],
@@ -404,10 +428,104 @@ describe("treatment template safety", () => {
       tax: "15.00",
       total: "165.00",
     });
+    expect(lockFor).toHaveBeenCalledTimes(1);
+    expect(lockFor).toHaveBeenCalledWith("share");
+    expect(execute).toHaveBeenCalled();
+  });
+
+  it("batch-locks unique service and product references before inserting", async () => {
+    const templateItems = [
+      {
+        description: "Exam",
+        defaultQuantity: 1,
+        defaultUnitPrice: "60.00",
+        itemType: "service" as const,
+        itemId: SERVICE_ID,
+      },
+      {
+        description: "Recheck",
+        defaultQuantity: 1,
+        defaultUnitPrice: "40.00",
+        itemType: "service" as const,
+        itemId: SECOND_SERVICE_ID,
+      },
+      {
+        description: "Exam follow-up",
+        defaultQuantity: 1,
+        defaultUnitPrice: "60.00",
+        itemType: "service" as const,
+        itemId: SERVICE_ID,
+      },
+      {
+        description: "Medication",
+        defaultQuantity: 1,
+        defaultUnitPrice: "10.00",
+        itemType: "product" as const,
+        itemId: PRODUCT_ID,
+      },
+      {
+        description: "Supplement",
+        defaultQuantity: 1,
+        defaultUnitPrice: "15.00",
+        itemType: "product" as const,
+        itemId: SECOND_PRODUCT_ID,
+      },
+    ];
+    const { db, select, insertValues, lockFor } = createDb({
+      selectResults: [
+        [{ id: PRACTICE_ID }],
+        [{ id: TEMPLATE_ID }],
+        [
+          {
+            id: INVOICE_ID,
+            status: "draft",
+            paidAmount: "0.00",
+            isEstimate: true,
+          },
+        ],
+        templateItems,
+        [{ id: SERVICE_ID }, { id: SECOND_SERVICE_ID }],
+        [{ id: PRODUCT_ID }, { id: SECOND_PRODUCT_ID }],
+        templateItems.map((item) => ({
+          quantity: item.defaultQuantity,
+          unitPrice: item.defaultUnitPrice,
+        })),
+        [{ taxRatePercent: "0.00" }],
+      ],
+      updatedRows: [
+        {
+          id: INVOICE_ID,
+          subtotal: "185.00",
+          tax: "0.00",
+          total: "185.00",
+        },
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).applyToInvoice({
+        templateId: TEMPLATE_ID,
+        invoiceId: INVOICE_ID,
+      })
+    ).resolves.toMatchObject({ id: INVOICE_ID, total: "185.00" });
+
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ itemId: SERVICE_ID }),
+        expect.objectContaining({ itemId: SECOND_SERVICE_ID }),
+        expect.objectContaining({ itemId: PRODUCT_ID }),
+        expect.objectContaining({ itemId: SECOND_PRODUCT_ID }),
+      ])
+    );
+    expect(lockFor).toHaveBeenCalledTimes(2);
+    expect(lockFor).toHaveBeenNthCalledWith(1, "share");
+    expect(lockFor).toHaveBeenNthCalledWith(2, "share");
+    // Four request setup/read queries + two catalog batches + totals + tax.
+    expect(select).toHaveBeenCalledTimes(8);
   });
 
   it("deducts product stock when applying a template to a real invoice", async () => {
-    const { db, insertValues, updateSet } = createDb({
+    const { db, insertValues, updateSet, lockFor } = createDb({
       selectResults: [
         [{ id: PRACTICE_ID }],
         [{ id: TEMPLATE_ID }],
@@ -428,6 +546,7 @@ describe("treatment template safety", () => {
             itemId: PRODUCT_ID,
           },
         ],
+        [{ id: PRODUCT_ID }],
         [{ quantity: 3, unitPrice: "12.00" }],
         [{ taxRatePercent: "0.00" }],
       ],
@@ -463,6 +582,7 @@ describe("treatment template safety", () => {
       tax: "0.00",
       total: "36.00",
     });
+    expect(lockFor).toHaveBeenCalledWith("update");
   });
 
   it("does not deduct product stock when applying a template to an estimate", async () => {
@@ -487,6 +607,7 @@ describe("treatment template safety", () => {
             itemId: PRODUCT_ID,
           },
         ],
+        [{ id: PRODUCT_ID }],
         [{ quantity: 3, unitPrice: "12.00" }],
         [{ taxRatePercent: "0.00" }],
       ],
@@ -532,6 +653,7 @@ describe("treatment template safety", () => {
             itemId: PRODUCT_ID,
           },
         ],
+        [{ id: PRODUCT_ID }],
       ],
       updatedRows: [],
     });
@@ -627,6 +749,7 @@ describe("treatment template safety", () => {
             itemId: SERVICE_ID,
           },
         ],
+        [{ id: SERVICE_ID }],
       ],
     });
 
@@ -639,6 +762,112 @@ describe("treatment template safety", () => {
 
     expect(insertValues).not.toHaveBeenCalled();
     expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("rejects a template that still references an archived service", async () => {
+    const { db, insertValues, updateSet, lockFor } = createDb({
+      selectResults: [
+        [{ id: PRACTICE_ID }],
+        [{ id: TEMPLATE_ID }],
+        [
+          {
+            id: INVOICE_ID,
+            status: "draft",
+            paidAmount: "0.00",
+            isEstimate: false,
+          },
+        ],
+        [
+          {
+            description: "Archived exam",
+            defaultQuantity: 1,
+            defaultUnitPrice: "75.00",
+            itemType: "service",
+            itemId: SERVICE_ID,
+          },
+        ],
+        [],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).applyToInvoice({
+        templateId: TEMPLATE_ID,
+        invoiceId: INVOICE_ID,
+      })
+    ).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      message: "Service not found",
+    });
+
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(lockFor).toHaveBeenCalledTimes(1);
+    expect(lockFor).toHaveBeenCalledWith("share");
+  });
+
+  it("rejects product references that are not active in the tenant", async () => {
+    const { db, insertValues, updateSet, lockFor } = createDb({
+      selectResults: [
+        [{ id: PRACTICE_ID }],
+        [{ id: TEMPLATE_ID }],
+        [
+          {
+            id: INVOICE_ID,
+            status: "draft",
+            paidAmount: "0.00",
+            isEstimate: true,
+          },
+        ],
+        [
+          {
+            description: "Other-clinic product",
+            defaultQuantity: 1,
+            defaultUnitPrice: "12.00",
+            itemType: "product",
+            itemId: PRODUCT_ID,
+          },
+        ],
+        [],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).applyToInvoice({
+        templateId: TEMPLATE_ID,
+        invoiceId: INVOICE_ID,
+      })
+    ).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      message: "Product not found",
+    });
+
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(lockFor).toHaveBeenCalledTimes(1);
+    expect(lockFor).toHaveBeenCalledWith("share");
+  });
+
+  it("keeps batched catalog locks active, tenant-scoped, and deterministic", () => {
+    const source = readFileSync("server/routers/templates.ts", "utf8");
+    const block = source.slice(
+      source.indexOf("async function lockActiveTemplateCatalogItems"),
+      source.indexOf("async function deductTemplateProductStock")
+    );
+
+    expect(block).toContain("inArray(services.id, serviceIds)");
+    expect(block).toContain("eq(services.practiceId, ctx.practiceId)");
+    expect(block).toContain("isNull(services.deletedAt)");
+    expect(block).toContain(".orderBy(asc(services.id))");
+    expect(block).toContain("inArray(products.id, productIds)");
+    expect(block).toContain("eq(products.practiceId, ctx.practiceId)");
+    expect(block).toContain("isNull(products.deletedAt)");
+    expect(block).toContain(".orderBy(asc(products.id))");
+    expect(block).toContain('.for("share")');
+    expect(block).toContain('lockProductsForStock ? "update" : "share"');
+    const applyBlock = source.slice(source.indexOf("applyToInvoice:"));
+    expect(applyBlock).toContain("pg_advisory_xact_lock");
+    expect(applyBlock).toContain("hashtextextended(${input.invoiceId}, 0)");
   });
 
   it("rejects template reads and writes when the practice is missing or deleted", async () => {

@@ -32,6 +32,7 @@ import {
   Star,
   HeartPulse,
   Compass,
+  ReceiptText,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -42,6 +43,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { AccentColorPicker } from "@/components/brand/accent-color-picker";
 import { MessagingTab } from "@/components/settings/messaging-tab";
 import { BookingTab } from "@/components/settings/booking-tab";
+import { ServicesTab } from "@/components/settings/services-tab";
 import { useWelcome } from "@/components/welcome/welcome-provider";
 import { cn, isValidEmail } from "@/lib/utils";
 import { toast } from "sonner";
@@ -118,6 +120,7 @@ type Tab =
   | "staff"
   | "appointmentTypes"
   | "rooms"
+  | "services"
   | "data"
   | "templates"
   | "wellness"
@@ -131,6 +134,7 @@ const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: "staff", label: "Staff", icon: Users },
   { id: "appointmentTypes", label: "Appointment Types", icon: Calendar },
   { id: "rooms", label: "Rooms", icon: DoorOpen },
+  { id: "services", label: "Services & Pricing", icon: ReceiptText },
   { id: "data", label: "Data", icon: Database },
   { id: "templates", label: "Templates", icon: Layers },
   { id: "wellness", label: "Wellness Plans", icon: HeartPulse },
@@ -385,6 +389,7 @@ function SettingsPageInner() {
           {activeTab === "staff" && <StaffTab />}
           {activeTab === "appointmentTypes" && <AppointmentTypesTab />}
           {activeTab === "rooms" && <RoomsTab />}
+          {activeTab === "services" && <ServicesTab />}
           {activeTab === "data" && <DataTab />}
           {activeTab === "templates" && <TemplatesTab />}
           {activeTab === "wellness" && <WellnessPlansTab />}

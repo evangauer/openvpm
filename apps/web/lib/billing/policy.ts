@@ -11,6 +11,9 @@ export const BILLING_CURRENCY_AMOUNT_PATTERN = /^\d{1,8}(?:\.\d{1,2})?$/;
 export const BILLING_NOTES_MAX_LENGTH = 2000;
 export const BILLING_INVOICE_SEARCH_MAX_LENGTH = 120;
 export const BILLING_ADJUSTMENT_REASON_MAX_LENGTH = 500;
+export const BILLING_SERVICE_NAME_MAX_LENGTH = 255;
+export const BILLING_SERVICE_CODE_MAX_LENGTH = 32;
+export const BILLING_SERVICE_CATEGORY_MAX_LENGTH = 128;
 
 export function isBillingInvoiceLineQuantityValid(value: number): boolean {
   return (
@@ -26,6 +29,10 @@ export function isBillingCurrencyAmountInputValid(value: string): boolean {
     BILLING_CURRENCY_AMOUNT_PATTERN.test(trimmed) &&
     moneyToCents(trimmed) <= BILLING_MAX_MONEY_CENTS
   );
+}
+
+export function isBillingServicePriceInputValid(value: string): boolean {
+  return isBillingCurrencyAmountInputValid(value);
 }
 
 export function isBillingPositiveAmountInputValid(value: string): boolean {

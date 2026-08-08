@@ -593,6 +593,7 @@ function ChargeCapture({
       itemId: service.id,
       itemType: "service" as const,
       name: service.name,
+      code: service.code,
       category: ["Service", service.category].filter(Boolean).join(" · "),
       defaultPrice: service.defaultPrice,
       stockQuantity: null as number | null,

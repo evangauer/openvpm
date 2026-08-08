@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { eq, and, isNull, asc, sql } from "drizzle-orm";
+import { eq, and, isNull, asc, inArray, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import {
@@ -180,6 +180,73 @@ async function assertTemplateItemsBelongToPractice(
 ) {
   for (const item of items) {
     await assertCatalogItemBelongsToPractice(ctx, item.itemType, item.itemId);
+  }
+}
+
+async function lockActiveTemplateCatalogItems(
+  ctx: TemplatesContext,
+  items: Array<{ itemType: "service" | "product"; itemId?: string }>,
+  options: { lockProductsForStock?: boolean } = {}
+) {
+  const serviceIds = [
+    ...new Set(
+      items
+        .filter((item) => item.itemType === "service" && item.itemId)
+        .map((item) => item.itemId!)
+    ),
+  ];
+  const productIds = [
+    ...new Set(
+      items
+        .filter((item) => item.itemType === "product" && item.itemId)
+        .map((item) => item.itemId!)
+    ),
+  ];
+
+  // Keep lock acquisition deterministic: services first, then products, with
+  // rows ordered by ID inside each table. Catalog locks prevent a row from
+  // being archived between validation and invoice-item insertion. Real
+  // invoices take product update locks because stock changes in this write.
+  const lockedServices =
+    serviceIds.length === 0
+      ? []
+      : await ctx.db
+          .select({ id: services.id })
+          .from(services)
+          .where(
+            and(
+              inArray(services.id, serviceIds),
+              eq(services.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(services.deletedAt)
+            )
+          )
+          .orderBy(asc(services.id))
+          .for("share");
+
+  if (lockedServices.length !== serviceIds.length) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Service not found" });
+  }
+
+  const lockedProducts =
+    productIds.length === 0
+      ? []
+      : await ctx.db
+          .select({ id: products.id })
+          .from(products)
+          .where(
+            and(
+              inArray(products.id, productIds),
+              eq(products.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(products.deletedAt)
+            )
+          )
+          .orderBy(asc(products.id))
+          .for(options.lockProductsForStock ? "update" : "share");
+
+  if (lockedProducts.length !== productIds.length) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Product not found" });
   }
 }
 
@@ -543,6 +610,12 @@ export const templatesRouter = createRouter({
       }
 
       return ctx.db.transaction(async (tx) => {
+        // Share the invoice serialization key used by direct charge edits so
+        // concurrent template applications cannot calculate competing totals.
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${input.invoiceId}, 0))`
+        );
+
         // Fetch template items
         const items = await tx
           .select()
@@ -561,6 +634,19 @@ export const templatesRouter = createRouter({
             message: "Template has no items",
           });
         }
+
+        // Templates snapshot descriptions and prices, but active catalog
+        // references still need to be valid when the template is used. This
+        // prevents archived services or products from silently being charged
+        // on new invoices.
+        await lockActiveTemplateCatalogItems(
+          { db: tx, practiceId: ctx.practiceId },
+          items.map((item) => ({
+            itemType: item.itemType,
+            itemId: item.itemId ?? undefined,
+          })),
+          { lockProductsForStock: !invoice.isEstimate }
+        );
 
         const invoiceItemRows = items.map((item) => {
           const totalCents =

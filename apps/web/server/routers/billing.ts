@@ -1,5 +1,17 @@
 import { z } from "zod";
-import { eq, and, isNull, desc, sql, inArray, ilike, ne, type SQL } from "drizzle-orm";
+import {
+  eq,
+  and,
+  isNull,
+  isNotNull,
+  desc,
+  sql,
+  inArray,
+  ilike,
+  ne,
+  or,
+  type SQL,
+} from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import {
@@ -42,6 +54,9 @@ import {
   BILLING_INVOICE_SEARCH_MAX_LENGTH,
   BILLING_MAX_MONEY_CENTS,
   BILLING_NOTES_MAX_LENGTH,
+  BILLING_SERVICE_CATEGORY_MAX_LENGTH,
+  BILLING_SERVICE_CODE_MAX_LENGTH,
+  BILLING_SERVICE_NAME_MAX_LENGTH,
 } from "@/lib/billing/policy";
 import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
 import { POSTGRES_INTEGER_MAX } from "./storage-bounds";
@@ -68,6 +83,7 @@ import {
 import { listOffsetInput } from "./pagination";
 
 type BillingDb = Pick<Database, "select" | "insert" | "update">;
+type ServiceCatalogDb = Pick<Database, "select" | "execute">;
 
 type BillingContext = {
   db: BillingDb;
@@ -86,6 +102,8 @@ type InvoiceAdjustmentType = "credit" | "write_off";
 
 type PaymentAccountRow = typeof practicePaymentAccounts.$inferSelect;
 
+const billingAdminProcedure = protectedProcedure.use(requireRole("admin"));
+
 const invoiceStatusSchema = z.enum([
   "draft",
   "sent",
@@ -103,6 +121,85 @@ const paymentAmountSchema = currencyAmountSchema.refine((value) => {
 }, "Amount must be greater than zero.");
 
 const nonNegativeMoneySchema = currencyAmountSchema;
+
+const optionalServiceTextInput = (label: string, max: number) =>
+  optionalClinicalTextInput(label, max).transform(
+    (value) => value || undefined
+  );
+
+const servicePriceInput = nonNegativeMoneySchema.transform((value) =>
+  centsToMoney(moneyToCents(value))
+);
+
+const serviceInput = z.object({
+  name: clinicalTextInput("Service name", BILLING_SERVICE_NAME_MAX_LENGTH),
+  code: optionalServiceTextInput(
+    "Service code",
+    BILLING_SERVICE_CODE_MAX_LENGTH
+  ),
+  category: optionalServiceTextInput(
+    "Service category",
+    BILLING_SERVICE_CATEGORY_MAX_LENGTH
+  ),
+  defaultPrice: servicePriceInput,
+});
+
+type ServiceSnapshot = z.infer<typeof serviceInput>;
+
+function serviceSnapshotConditions(expected: ServiceSnapshot) {
+  return [
+    eq(services.name, expected.name),
+    expected.code === undefined
+      ? isNull(services.code)
+      : eq(services.code, expected.code),
+    expected.category === undefined
+      ? isNull(services.category)
+      : eq(services.category, expected.category),
+    eq(services.defaultPrice, expected.defaultPrice),
+  ];
+}
+
+async function lockServiceCatalog(
+  database: ServiceCatalogDb,
+  practiceId: string
+) {
+  await database.execute(
+    sql`select pg_advisory_xact_lock(hashtext(${`service-catalog:${practiceId}`}::text))`
+  );
+}
+
+async function assertServiceIdentityAvailable(
+  database: ServiceCatalogDb,
+  practiceId: string,
+  input: ServiceSnapshot,
+  excludeId?: string
+) {
+  const [collision] = await database
+    .select({ id: services.id })
+    .from(services)
+    .where(
+      and(
+        eq(services.practiceId, practiceId),
+        isNull(services.deletedAt),
+        excludeId ? ne(services.id, excludeId) : undefined,
+        or(
+          sql`lower(${services.name}) = lower(${input.name})`,
+          input.code
+            ? sql`lower(${services.code}) = lower(${input.code})`
+            : undefined
+        )
+      )
+    )
+    .limit(1);
+
+  if (collision) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message:
+        "An active service already uses that name or code. Edit or archive it before continuing.",
+    });
+  }
+}
 
 const billingNotesInput = optionalClinicalTextInput(
   "Notes",
@@ -205,6 +302,67 @@ function activePracticeWhere(practiceId: string) {
 
 function practiceNotFound(): TRPCError {
   return new TRPCError({ code: "NOT_FOUND", message: "Practice not found" });
+}
+
+async function assertActivePractice(ctx: BillingContext) {
+  const [practice] = await ctx.db
+    .select({ id: practices.id })
+    .from(practices)
+    .where(activePracticeWhere(ctx.practiceId))
+    .limit(1);
+  if (!practice) throw practiceNotFound();
+}
+
+async function throwServiceMutationMiss(
+  ctx: BillingContext,
+  serviceId: string
+): Promise<never> {
+  const [current] = await ctx.db
+    .select({ id: services.id })
+    .from(services)
+    .where(
+      and(
+        eq(services.id, serviceId),
+        eq(services.practiceId, ctx.practiceId),
+        isNull(services.deletedAt)
+      )
+    )
+    .limit(1);
+
+  if (current) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "Service changed. Refresh and try again.",
+    });
+  }
+
+  throw new TRPCError({ code: "NOT_FOUND", message: "Service not found" });
+}
+
+async function throwArchivedServiceMutationMiss(
+  ctx: BillingContext,
+  serviceId: string
+): Promise<never> {
+  const [current] = await ctx.db
+    .select({ id: services.id })
+    .from(services)
+    .where(
+      and(
+        eq(services.id, serviceId),
+        eq(services.practiceId, ctx.practiceId),
+        isNotNull(services.deletedAt)
+      )
+    )
+    .limit(1);
+
+  if (current) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "Service changed. Refresh and try again.",
+    });
+  }
+
+  throw new TRPCError({ code: "NOT_FOUND", message: "Service not found" });
 }
 
 async function getInvoiceForPractice(
@@ -591,49 +749,66 @@ async function assertAppointmentBelongsToClientPatient(
 
 async function assertLineItemReferences(
   ctx: BillingContext,
-  items: readonly InvoiceLineInput[]
+  items: readonly InvoiceLineInput[],
+  options: {
+    previousItems?: readonly DispensableItem[];
+    lockProductsForStock?: boolean;
+  } = {}
 ) {
-  const serviceIds = [
-    ...new Set(
-      items
-        .filter((item) => item.itemType === "service" && item.itemId)
-        .map((item) => item.itemId!)
-    ),
-  ];
-  const productIds = [
-    ...new Set(
-      items
-        .filter((item) => item.itemType === "product" && item.itemId)
-        .map((item) => item.itemId!)
-    ),
-  ];
+  const quantitiesFor = (
+    source: readonly DispensableItem[],
+    itemType: DispensableItem["itemType"]
+  ) => {
+    const quantities = new Map<string, number>();
+    for (const item of source) {
+      if (item.itemType !== itemType || !item.itemId) continue;
+      quantities.set(
+        item.itemId,
+        (quantities.get(item.itemId) ?? 0) + item.quantity
+      );
+    }
+    return quantities;
+  };
 
-  const [serviceRows, productRows] = await Promise.all([
+  const serviceQuantities = quantitiesFor(items, "service");
+  const productQuantities = quantitiesFor(items, "product");
+  const serviceIds = [...serviceQuantities.keys()].sort();
+  const productIds = [...productQuantities.keys()].sort();
+
+  // Lock in a stable service-then-product order. The lock and lifecycle check
+  // must stay in the invoice transaction so a catalog row cannot be archived
+  // after validation but before the invoice lines are written.
+  const serviceRows =
     serviceIds.length === 0
-      ? Promise.resolve([])
-      : ctx.db
-          .select({ id: services.id })
+      ? []
+      : await ctx.db
+          .select({ id: services.id, deletedAt: services.deletedAt })
           .from(services)
           .where(
             and(
               inArray(services.id, serviceIds),
-              eq(services.practiceId, ctx.practiceId),
-              isNull(services.deletedAt)
+              eq(services.practiceId, ctx.practiceId)
             )
-          ),
-    productIds.length === 0
-      ? Promise.resolve([])
-      : ctx.db
-          .select({ id: products.id })
-          .from(products)
-          .where(
-            and(
-              inArray(products.id, productIds),
-              eq(products.practiceId, ctx.practiceId),
-              isNull(products.deletedAt)
-            )
-          ),
-  ]);
+          )
+          .orderBy(services.id)
+          .for("share");
+
+  let productRows: Array<{ id: string; deletedAt: Date | null }> = [];
+  if (productIds.length > 0) {
+    const productQuery = ctx.db
+      .select({ id: products.id, deletedAt: products.deletedAt })
+      .from(products)
+      .where(
+        and(
+          inArray(products.id, productIds),
+          eq(products.practiceId, ctx.practiceId)
+        )
+      )
+      .orderBy(products.id);
+    productRows = options.lockProductsForStock
+      ? await productQuery.for("update")
+      : await productQuery.for("share");
+  }
 
   if (serviceRows.length !== serviceIds.length) {
     throw new TRPCError({
@@ -641,7 +816,27 @@ async function assertLineItemReferences(
       message: "One or more services were not found",
     });
   }
-  if (productRows.length !== productIds.length) {
+  const previousServiceQuantities = quantitiesFor(
+    options.previousItems ?? [],
+    "service"
+  );
+  if (
+    serviceRows.some(
+      (row) =>
+        row.deletedAt != null &&
+        (serviceQuantities.get(row.id) ?? 0) >
+          (previousServiceQuantities.get(row.id) ?? 0)
+    )
+  ) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "One or more services were not found",
+    });
+  }
+  if (
+    productRows.length !== productIds.length ||
+    productRows.some((row) => row.deletedAt != null)
+  ) {
     throw new TRPCError({
       code: "NOT_FOUND",
       message: "One or more products were not found",
@@ -1185,17 +1380,163 @@ export const billingRouter = createRouter({
     }),
 
   listServices: protectedProcedure.query(async ({ ctx }) => {
+    await assertActivePractice(ctx);
+    return ctx.db
+      .select()
+      .from(services)
+      .where(
+        and(eq(services.practiceId, ctx.practiceId), isNull(services.deletedAt))
+      )
+      .orderBy(services.name);
+  }),
+
+  listArchivedServices: billingAdminProcedure.query(async ({ ctx }) => {
+    await assertActivePractice(ctx);
     return ctx.db
       .select()
       .from(services)
       .where(
         and(
           eq(services.practiceId, ctx.practiceId),
-          isNull(services.deletedAt)
+          isNotNull(services.deletedAt)
         )
       )
       .orderBy(services.name);
   }),
+
+  createService: billingAdminProcedure
+    .input(serviceInput)
+    .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
+      const service = await ctx.db.transaction(async (tx) => {
+        await lockServiceCatalog(tx, ctx.practiceId);
+        await assertServiceIdentityAvailable(tx, ctx.practiceId, input);
+        const [created] = await tx
+          .insert(services)
+          .values({
+            practiceId: ctx.practiceId,
+            name: input.name,
+            code: input.code ?? null,
+            category: input.category ?? null,
+            defaultPrice: input.defaultPrice,
+          })
+          .returning();
+        return created;
+      });
+      if (!service) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Service could not be created.",
+        });
+      }
+      return service;
+    }),
+
+  updateService: billingAdminProcedure
+    .input(
+      serviceInput.extend({
+        id: z.string().uuid(),
+        expected: serviceInput,
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
+      const updated = await ctx.db.transaction(async (tx) => {
+        await lockServiceCatalog(tx, ctx.practiceId);
+        await assertServiceIdentityAvailable(
+          tx,
+          ctx.practiceId,
+          input,
+          input.id
+        );
+        const [result] = await tx
+          .update(services)
+          .set({
+            name: input.name,
+            code: input.code ?? null,
+            category: input.category ?? null,
+            defaultPrice: input.defaultPrice,
+          })
+          .where(
+            and(
+              eq(services.id, input.id),
+              eq(services.practiceId, ctx.practiceId),
+              isNull(services.deletedAt),
+              ...serviceSnapshotConditions(input.expected)
+            )
+          )
+          .returning();
+        return result;
+      });
+      if (!updated) {
+        await throwServiceMutationMiss(ctx, input.id);
+      }
+      return updated;
+    }),
+
+  archiveService: billingAdminProcedure
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        expected: serviceInput,
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
+      const [archived] = await ctx.db
+        .update(services)
+        .set({ deletedAt: new Date() })
+        .where(
+          and(
+            eq(services.id, input.id),
+            eq(services.practiceId, ctx.practiceId),
+            isNull(services.deletedAt),
+            ...serviceSnapshotConditions(input.expected)
+          )
+        )
+        .returning({ id: services.id });
+      if (!archived) {
+        await throwServiceMutationMiss(ctx, input.id);
+      }
+      return { success: true };
+    }),
+
+  restoreService: billingAdminProcedure
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        expected: serviceInput,
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
+      const restored = await ctx.db.transaction(async (tx) => {
+        await lockServiceCatalog(tx, ctx.practiceId);
+        await assertServiceIdentityAvailable(
+          tx,
+          ctx.practiceId,
+          input.expected,
+          input.id
+        );
+        const [result] = await tx
+          .update(services)
+          .set({ deletedAt: null })
+          .where(
+            and(
+              eq(services.id, input.id),
+              eq(services.practiceId, ctx.practiceId),
+              isNotNull(services.deletedAt),
+              ...serviceSnapshotConditions(input.expected)
+            )
+          )
+          .returning({ id: services.id });
+        return result;
+      });
+      if (!restored) {
+        await throwArchivedServiceMutationMiss(ctx, input.id);
+      }
+      return { success: true };
+    }),
 
   patientsByClient: protectedProcedure
     .input(z.object({ clientId: z.string().uuid() }))
@@ -1233,8 +1574,6 @@ export const billingRouter = createRouter({
           input.patientId
         );
       }
-      await assertLineItemReferences(ctx, input.items);
-
       const subtotal = input.items.reduce((sum, item) => {
         return sum + item.quantity * parseFloat(item.unitPrice);
       }, 0);
@@ -1281,6 +1620,9 @@ export const billingRouter = createRouter({
             });
           }
         }
+        await assertLineItemReferences(txCtx, input.items, {
+          lockProductsForStock: !(input.isEstimate ?? false),
+        });
         if (!(input.isEstimate ?? false)) {
           await deductProductStock(txCtx, input.items);
         }
@@ -1324,8 +1666,6 @@ export const billingRouter = createRouter({
     .use(requireRole("admin", "front_desk"))
     .input(updateInvoiceItemsInput)
     .mutation(async ({ ctx, input }) => {
-      await assertLineItemReferences(ctx, input.items);
-
       const subtotalCents = input.items.reduce(
         (sum, item) => sum + moneyToCents(item.unitPrice) * item.quantity,
         0
@@ -1385,6 +1725,10 @@ export const billingRouter = createRouter({
         }
 
         const previousItems = await invoiceProductItemsForStock(txCtx, input.id);
+        await assertLineItemReferences(txCtx, input.items, {
+          previousItems,
+          lockProductsForStock: true,
+        });
         await restoreProductStock(txCtx, previousItems);
         await deductProductStock(txCtx, input.items);
 

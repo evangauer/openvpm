@@ -606,6 +606,42 @@ const sections: Section[] = [
         response: `Service[]`,
       },
       {
+        name: "billing.listArchivedServices",
+        method: "GET",
+        description: "List archived services for administrator recovery.",
+        response: `Service[]`,
+      },
+      {
+        name: "billing.createService",
+        method: "POST",
+        description: "Create a service in the practice charge catalog.",
+        input: `{ name: string, code?: string, category?: string, defaultPrice: string }`,
+        response: `Service`,
+      },
+      {
+        name: "billing.updateService",
+        method: "POST",
+        description:
+          "Update a service if its browser version is still current.",
+        input: `{ id: string, expected: { name: string, code?: string, category?: string, defaultPrice: string }, name: string, code?: string, category?: string, defaultPrice: string }`,
+        response: `Service`,
+      },
+      {
+        name: "billing.archiveService",
+        method: "POST",
+        description:
+          "Remove a service from future charge pickers without changing historical invoices.",
+        input: `{ id: string, expected: { name: string, code?: string, category?: string, defaultPrice: string } }`,
+        response: `{ success: true }`,
+      },
+      {
+        name: "billing.restoreService",
+        method: "POST",
+        description: "Restore an archived service to future charge pickers.",
+        input: `{ id: string, expected: { name: string, code?: string, category?: string, defaultPrice: string } }`,
+        response: `{ success: true }`,
+      },
+      {
         name: "billing.listProducts",
         method: "GET",
         description: "List products available for invoicing.",

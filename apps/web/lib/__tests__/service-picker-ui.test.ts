@@ -21,8 +21,10 @@ describe("service picker UI states", () => {
     expect(newInvoicePage).not.toContain("Select a service...");
   });
 
-  it("ranks prefix matches first and searches categories too", () => {
+  it("ranks prefix matches first and searches codes and categories too", () => {
     expect(picker).toContain("name.startsWith(q)");
+    expect(picker).toContain("code.startsWith(q)");
+    expect(picker).toContain("code.includes(q)");
     expect(picker).toContain("category.includes(q)");
     expect(picker).toMatch(/\[\.\.\.starts, \.\.\.contains\]/);
   });
@@ -35,7 +37,8 @@ describe("service picker UI states", () => {
     expect(picker).toContain('role="option"');
   });
 
-  it("shows category and price on every row", () => {
+  it("shows codes, categories, and prices on result rows", () => {
+    expect(picker).toContain("service.code");
     expect(picker).toContain("service.category");
     expect(picker).toContain("${service.defaultPrice}");
     expect(picker).toContain("tabular-nums");

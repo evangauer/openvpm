@@ -17,6 +17,7 @@ const PATIENT_ID = "00000000-0000-0000-0000-000000000003";
 const PRODUCT_ID = "00000000-0000-0000-0000-000000000004";
 const INVOICE_ID = "00000000-0000-0000-0000-000000000005";
 const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000006";
+const SERVICE_ID = "00000000-0000-0000-0000-000000000007";
 
 function callerWithDb(db: Record<string, unknown>, role = "front_desk") {
   const session = {
@@ -45,9 +46,27 @@ function createDb(opts: {
   updateReturns?: unknown[][];
 }) {
   const selectResults = [...opts.selectResults];
+  let transactionDepth = 0;
+  let writeCount = 0;
+  const lockCalls: Array<{
+    mode: string;
+    inTransaction: boolean;
+    writesBeforeLock: number;
+  }> = [];
   const select = vi.fn(() => {
     const result = selectResults.shift() ?? [];
-    const afterWhere = thenableRows(result);
+    const afterWhere = {
+      ...thenableRows(result),
+      orderBy: vi.fn(() => afterWhere),
+      for: vi.fn(async (mode: string) => {
+        lockCalls.push({
+          mode,
+          inTransaction: transactionDepth > 0,
+          writesBeforeLock: writeCount,
+        });
+        return result;
+      }),
+    };
     const builder = {
       from: vi.fn(() => builder),
       leftJoin: vi.fn(() => builder),
@@ -64,29 +83,42 @@ function createDb(opts: {
     clientId: CLIENT_ID,
     isEstimate: false,
   };
-  const insertValues = vi.fn((values: unknown) => ({
-    returning: vi.fn(async () => [invoiceInsert]),
-    values,
-  }));
+  const insertValues = vi.fn((values: unknown) => {
+    writeCount += 1;
+    return {
+      returning: vi.fn(async () => [invoiceInsert]),
+      values,
+    };
+  });
   const insert = vi.fn(() => ({ values: insertValues }));
 
   const updateReturns = [...(opts.updateReturns ?? [[]])];
-  const updateSet = vi.fn(() => ({
-    where: vi.fn(() => ({
-      returning: vi.fn(async () => updateReturns.shift() ?? []),
-    })),
-  }));
+  const updateSet = vi.fn(() => {
+    writeCount += 1;
+    return {
+      where: vi.fn(() => ({
+        returning: vi.fn(async () => updateReturns.shift() ?? []),
+      })),
+    };
+  });
   const update = vi.fn(() => ({ set: updateSet }));
 
   const db: Record<string, unknown> = {
-    transaction: async (fn: (tx: unknown) => unknown) => fn(db),
+    transaction: async (fn: (tx: unknown) => unknown) => {
+      transactionDepth += 1;
+      try {
+        return await fn(db);
+      } finally {
+        transactionDepth -= 1;
+      }
+    },
     execute: vi.fn(async () => undefined),
     select,
     insert,
     update,
   };
 
-  return { db, select, insertValues, update, updateSet };
+  return { db, select, insertValues, update, updateSet, lockCalls };
 }
 
 const productLine = {
@@ -261,9 +293,9 @@ describe("billing invoice integrity", () => {
         [{ id: CLIENT_ID }],
         [{ id: PATIENT_ID }],
         [{ id: APPOINTMENT_ID }],
-        [{ id: PRODUCT_ID }],
         [{ taxRatePercent: "0.00" }],
         [],
+        [{ id: PRODUCT_ID, deletedAt: null }],
       ],
       invoiceInsert: { id: INVOICE_ID, isEstimate: false },
       updateReturns: [[{ id: PRODUCT_ID, stockQuantity: 8 }]],
@@ -291,7 +323,6 @@ describe("billing invoice integrity", () => {
         [{ id: CLIENT_ID }],
         [{ id: PATIENT_ID }],
         [{ id: APPOINTMENT_ID }],
-        [{ id: PRODUCT_ID }],
         [{ taxRatePercent: "0.00" }],
         [{ id: INVOICE_ID }],
       ],
@@ -318,7 +349,11 @@ describe("billing invoice integrity", () => {
 
   it("rejects product line references outside the practice", async () => {
     const { db, insertValues } = createDb({
-      selectResults: [[{ id: CLIENT_ID }], []],
+      selectResults: [
+        [{ id: CLIENT_ID }],
+        [{ taxRatePercent: "0.00" }],
+        [],
+      ],
     });
 
     await expect(
@@ -336,8 +371,8 @@ describe("billing invoice integrity", () => {
     const { db, insertValues, update } = createDb({
       selectResults: [
         [{ id: CLIENT_ID }],
-        [{ id: PRODUCT_ID }],
         [{ taxRatePercent: "0.00" }],
+        [{ id: PRODUCT_ID, deletedAt: null }],
       ],
       invoiceInsert: { id: INVOICE_ID, isEstimate: false },
       updateReturns: [[{ id: PRODUCT_ID, stockQuantity: 8 }]],
@@ -380,9 +415,42 @@ describe("billing invoice integrity", () => {
     expect(update).toHaveBeenCalledTimes(1);
   });
 
+  it("locks referenced catalog rows inside the invoice transaction before writes", async () => {
+    const { db, lockCalls } = createDb({
+      selectResults: [
+        [{ id: CLIENT_ID }],
+        [{ taxRatePercent: "0.00" }],
+        [{ id: SERVICE_ID, deletedAt: null }],
+        [{ id: PRODUCT_ID, deletedAt: null }],
+      ],
+      invoiceInsert: { id: INVOICE_ID, isEstimate: false },
+      updateReturns: [[{ id: PRODUCT_ID, stockQuantity: 8 }]],
+    });
+
+    await callerWithDb(db).createInvoice({
+      clientId: CLIENT_ID,
+      items: [
+        {
+          description: "Wellness exam",
+          quantity: 1,
+          unitPrice: "50.00",
+          itemType: "service",
+          itemId: SERVICE_ID,
+        },
+        productLine,
+      ],
+      isEstimate: false,
+    });
+
+    expect(lockCalls).toEqual([
+      { mode: "share", inTransaction: true, writesBeforeLock: 0 },
+      { mode: "update", inTransaction: true, writesBeforeLock: 0 },
+    ]);
+  });
+
   it("rejects invoice creation before inventory or invoice writes when the practice is inactive", async () => {
     const { db, insertValues, updateSet } = createDb({
-      selectResults: [[{ id: CLIENT_ID }], [{ id: PRODUCT_ID }], []],
+      selectResults: [[{ id: CLIENT_ID }], []],
     });
 
     await expect(
@@ -404,8 +472,8 @@ describe("billing invoice integrity", () => {
     const { db, insertValues, updateSet } = createDb({
       selectResults: [
         [{ id: CLIENT_ID }],
-        [{ id: PRODUCT_ID }],
         [{ taxRatePercent: "0.00" }],
+        [{ id: PRODUCT_ID, deletedAt: null }],
       ],
       updateReturns: [[]],
     });
@@ -425,7 +493,6 @@ describe("billing invoice integrity", () => {
   it("replaces unpaid draft lines and reconciles inventory atomically", async () => {
     const { db, insertValues, updateSet } = createDb({
       selectResults: [
-        [{ id: PRODUCT_ID }],
         [{ taxRatePercent: "10.00" }],
         [
           {
@@ -436,6 +503,7 @@ describe("billing invoice integrity", () => {
           },
         ],
         [{ itemType: "product", itemId: PRODUCT_ID, quantity: 1 }],
+        [{ id: PRODUCT_ID, deletedAt: null }],
       ],
       updateReturns: [
         [{ id: PRODUCT_ID, stockQuantity: 9 }],
@@ -498,10 +566,148 @@ describe("billing invoice integrity", () => {
     ]);
   });
 
+  it("allows an unchanged archived service reference already on the draft", async () => {
+    const archivedAt = new Date("2026-08-01T00:00:00.000Z");
+    const { db, insertValues, lockCalls } = createDb({
+      selectResults: [
+        [{ taxRatePercent: "0.00" }],
+        [
+          {
+            id: INVOICE_ID,
+            paidAmount: "0.00",
+            status: "draft",
+            isEstimate: false,
+          },
+        ],
+        [{ itemType: "service", itemId: SERVICE_ID, quantity: 2 }],
+        [{ id: SERVICE_ID, deletedAt: archivedAt }],
+      ],
+      updateReturns: [
+        [
+          {
+            id: INVOICE_ID,
+            subtotal: "80.00",
+            tax: "0.00",
+            total: "80.00",
+            status: "draft",
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).updateInvoiceItems({
+        id: INVOICE_ID,
+        items: [
+          {
+            description: "Archived exam",
+            quantity: 2,
+            unitPrice: "40.00",
+            itemType: "service",
+            itemId: SERVICE_ID,
+          },
+        ],
+      })
+    ).resolves.toMatchObject({ id: INVOICE_ID, total: "80.00" });
+
+    expect(lockCalls).toEqual([
+      { mode: "share", inTransaction: true, writesBeforeLock: 0 },
+    ]);
+    expect(insertValues).toHaveBeenCalledWith([
+      expect.objectContaining({
+        itemType: "service",
+        itemId: SERVICE_ID,
+        quantity: 2,
+      }),
+    ]);
+  });
+
+  it.each([
+    { scenario: "newly adds", previousQuantity: 0, incomingQuantity: 1 },
+    { scenario: "increases", previousQuantity: 1, incomingQuantity: 2 },
+  ])(
+    "rejects a draft edit that $scenario an archived service reference",
+    async ({ previousQuantity, incomingQuantity }) => {
+      const { db, insertValues, updateSet, lockCalls } = createDb({
+        selectResults: [
+          [{ taxRatePercent: "0.00" }],
+          [
+            {
+              id: INVOICE_ID,
+              paidAmount: "0.00",
+              status: "draft",
+              isEstimate: false,
+            },
+          ],
+          previousQuantity === 0
+            ? []
+            : [
+                {
+                  itemType: "service",
+                  itemId: SERVICE_ID,
+                  quantity: previousQuantity,
+                },
+              ],
+          [{ id: SERVICE_ID, deletedAt: new Date("2026-08-01") }],
+        ],
+      });
+
+      await expect(
+        callerWithDb(db).updateInvoiceItems({
+          id: INVOICE_ID,
+          items: [
+            {
+              description: "Archived exam",
+              quantity: incomingQuantity,
+              unitPrice: "40.00",
+              itemType: "service",
+              itemId: SERVICE_ID,
+            },
+          ],
+        })
+      ).rejects.toMatchObject({
+        code: "NOT_FOUND",
+        message: "One or more services were not found",
+      });
+
+      expect(lockCalls).toEqual([
+        { mode: "share", inTransaction: true, writesBeforeLock: 0 },
+      ]);
+      expect(updateSet).not.toHaveBeenCalled();
+      expect(insertValues).not.toHaveBeenCalled();
+    }
+  );
+
+  it("rejects an archived product reference before inventory or invoice writes", async () => {
+    const { db, insertValues, updateSet, lockCalls } = createDb({
+      selectResults: [
+        [{ id: CLIENT_ID }],
+        [{ taxRatePercent: "0.00" }],
+        [{ id: PRODUCT_ID, deletedAt: new Date("2026-08-01") }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).createInvoice({
+        clientId: CLIENT_ID,
+        items: [productLine],
+        isEstimate: false,
+      })
+    ).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      message: "One or more products were not found",
+    });
+
+    expect(lockCalls).toEqual([
+      { mode: "update", inTransaction: true, writesBeforeLock: 0 },
+    ]);
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("does not edit a sent invoice or touch its inventory", async () => {
     const { db, insertValues, updateSet } = createDb({
       selectResults: [
-        [{ id: PRODUCT_ID }],
         [{ taxRatePercent: "0.00" }],
         [
           {

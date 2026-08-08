@@ -269,14 +269,17 @@ describe("reports", () => {
     expect(source).toContain('message: "Practice not found"');
     expect(
       source.match(/activePracticePredicate\(ctx\.practiceId\)/g)?.length ?? 0
-    ).toBeGreaterThanOrEqual(7);
+    ).toBeGreaterThanOrEqual(6);
     expect(source).toContain("eq(users.practiceId, ctx.practiceId)");
     expect(source).toContain("isNull(users.deletedAt)");
-    expect(source).toContain("eq(services.practiceId, ctx.practiceId)");
-    expect(source).toContain("isNull(services.deletedAt)");
     expect(source).toContain("isNull(invoiceItems.deletedAt)");
+    expect(source).toContain("name: invoiceItems.description");
+    expect(source).toContain(".groupBy(invoiceItems.description)");
+    expect(source).not.toContain(
+      "coalesce(${services.name}, ${invoiceItems.description})"
+    );
     expect(source).toMatch(
-      /innerJoin\(\s*invoices,\s*and\(\s*eq\(invoiceItems\.invoiceId, invoices\.id\),\s*eq\(invoices\.practiceId, ctx\.practiceId\),\s*activePracticePredicate\(ctx\.practiceId\),\s*isNull\(invoices\.deletedAt\)\s*\)\s*\)/s
+      /\.from\(invoiceItems\)[\s\S]*?eq\(invoiceItems\.invoiceId, invoices\.id\)[\s\S]*?eq\(invoices\.practiceId, ctx\.practiceId\)[\s\S]*?isNull\(invoices\.deletedAt\)/
     );
     expect(source).toMatch(
       /eq\(appointments\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(appointments\.deletedAt\)/
