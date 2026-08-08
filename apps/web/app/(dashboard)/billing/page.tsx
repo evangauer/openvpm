@@ -19,6 +19,8 @@ import {
   Ban,
   CreditCard,
   CalendarClock,
+  Pill,
+  Undo2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
@@ -146,6 +148,7 @@ export default function BillingPage() {
   const { data: session } = useSession();
   const formatCurrency = useCurrencyFormatter();
   const canManageBilling = canManageBillingRole(session?.user?.role);
+  const canWaiveDispenseCharges = session?.user?.role === "admin";
   const [activeTab, setActiveTab] = useState(0);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
@@ -216,6 +219,7 @@ export default function BillingPage() {
       toast.success("Invoice voided");
       utils.billing.listInvoices.invalidate();
       utils.billing.getInvoice.invalidate();
+      utils.billing.listDispenseChargeQueue.invalidate();
     },
     onError: (err) => {
       toast.error(err.message);
@@ -238,8 +242,11 @@ export default function BillingPage() {
 
   const handleVoidInvoice = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    if (!window.confirm("Void this invoice?")) return;
-    voidInvoice.mutate({ id });
+    const reason = window.prompt(
+      "Why is this invoice being voided? Dispensed medication charges will return to the work queue.",
+    );
+    if (!reason?.trim()) return;
+    voidInvoice.mutate({ id, reason: reason.trim() });
   };
 
   return (
@@ -260,6 +267,13 @@ export default function BillingPage() {
           </Button>
         )}
       </div>
+
+      <DispenseChargeQueuePanel
+        canManage={canManageBilling}
+        canWaive={canWaiveDispenseCharges}
+        billingTimeZone={billingTimeZone}
+        onInvoiceCreated={setExpandedId}
+      />
 
       <WellnessBillingPanel
         billingTimeZone={billingTimeZone}
@@ -449,6 +463,216 @@ export default function BillingPage() {
         />
       )}
     </div>
+  );
+}
+
+function DispenseChargeQueuePanel({
+  canManage,
+  canWaive,
+  billingTimeZone,
+  onInvoiceCreated,
+}: {
+  canManage: boolean;
+  canWaive: boolean;
+  billingTimeZone?: string | null;
+  onInvoiceCreated: (invoiceId: string) => void;
+}) {
+  const router = useRouter();
+  const formatCurrency = useCurrencyFormatter();
+  const utils = trpc.useUtils();
+  const pending = trpc.billing.listDispenseChargeQueue.useQuery({
+    status: "pending",
+    limit: 50,
+    offset: 0,
+  });
+  const waived = trpc.billing.listDispenseChargeQueue.useQuery(
+    { status: "waived", limit: 25, offset: 0 },
+    { enabled: canWaive },
+  );
+  const createInvoice = trpc.billing.createDispenseChargeInvoice.useMutation({
+    onSuccess: async ({ invoiceId }) => {
+      toast.success("Medication dispense added to a draft invoice");
+      onInvoiceCreated(invoiceId);
+      await Promise.all([
+        utils.billing.listDispenseChargeQueue.invalidate(),
+        utils.billing.listInvoices.invalidate(),
+      ]);
+      router.push(`/billing?expand=${invoiceId}`);
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const waiveCharge = trpc.billing.waiveDispenseCharge.useMutation({
+    onSuccess: async () => {
+      toast.success("Medication charge waived with an audit record");
+      await utils.billing.listDispenseChargeQueue.invalidate();
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const reopenCharge = trpc.billing.reopenDispenseCharge.useMutation({
+    onSuccess: async () => {
+      toast.success("Medication charge returned to the work queue");
+      await utils.billing.listDispenseChargeQueue.invalidate();
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const isMutating =
+    createInvoice.isPending || waiveCharge.isPending || reopenCharge.isPending;
+
+  function waive(id: string) {
+    const reason = window.prompt(
+      "Why should this clinic-stock dispense not be charged?",
+    );
+    if (!reason?.trim()) return;
+    waiveCharge.mutate({ id, reason: reason.trim() });
+  }
+
+  function createDraftForDispense(item: {
+    id: string;
+    legacyReview: boolean;
+  }) {
+    if (
+      item.legacyReview &&
+      !window.confirm(
+        "This dispense predates the billing ledger. Verify it was not already billed before creating a draft invoice.",
+      )
+    ) {
+      return;
+    }
+    createInvoice.mutate({
+      id: item.id,
+      acknowledgeLegacyReview: item.legacyReview,
+    });
+  }
+
+  return (
+    <section className="mt-6 rounded-lg border border-border bg-card">
+      <div className="flex items-start justify-between gap-4 border-b border-border p-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <Pill className="h-4 w-4 text-primary" />
+            <h3 className="font-heading font-semibold">
+              Unbilled medication dispenses
+            </h3>
+            {pending.data ? (
+              <Badge
+                variant={pending.data.total > 0 ? "destructive" : "secondary"}
+              >
+                {pending.data.total}
+              </Badge>
+            ) : null}
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Every clinic-stock fill stays here until billing creates a draft
+            invoice or an admin records why it is no-charge. Inventory has
+            already been deducted and will not move again.
+          </p>
+        </div>
+      </div>
+      {pending.isError ? (
+        <div className="p-4 text-sm text-destructive">
+          Unable to load medication billing work. {pending.error.message}
+        </div>
+      ) : pending.isLoading ? (
+        <div className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading medication billing work...
+        </div>
+      ) : pending.data && pending.data.items.length > 0 ? (
+        <div className="divide-y divide-border">
+          {pending.data.items.map((item) => (
+            <div
+              key={item.id}
+              className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-medium">{item.description}</p>
+                  {item.legacyReview ? (
+                    <Badge variant="outline">Legacy review</Badge>
+                  ) : null}
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  {item.patientName} · {item.clientFirstName}{" "}
+                  {item.clientLastName} · Qty {item.quantity} at{" "}
+                  {formatCurrency(item.unitPrice)} · dispensed{" "}
+                  {formatBillingInstantDate(item.createdAt, billingTimeZone)}
+                  {item.appointmentId ? (
+                    <>
+                      {" "}·{" "}
+                      <Link
+                        href={`/encounters/${item.appointmentId}#charge-capture`}
+                        className="underline underline-offset-2"
+                      >
+                        Open visit
+                      </Link>
+                    </>
+                  ) : (
+                    <> · Standalone refill</>
+                  )}
+                </p>
+              </div>
+              {canManage ? (
+                <div className="flex shrink-0 gap-2">
+                  <Button
+                    size="sm"
+                    disabled={isMutating}
+                    onClick={() => createDraftForDispense(item)}
+                  >
+                    {item.legacyReview ? "Review & create" : "Create draft"}
+                  </Button>
+                  {canWaive ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={isMutating}
+                      onClick={() => waive(item.id)}
+                    >
+                      Waive
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
+          <CheckCircle className="h-4 w-4 text-green-600" />
+          No clinic-stock dispenses are waiting for billing.
+        </div>
+      )}
+      {canWaive && waived.data && waived.data.items.length > 0 ? (
+        <details className="border-t border-border p-4">
+          <summary className="cursor-pointer text-sm font-medium">
+            Recently waived ({waived.data.total})
+          </summary>
+          <div className="mt-3 space-y-3">
+            {waived.data.items.map((item) => (
+              <div
+                key={item.id}
+                className="flex items-center justify-between gap-3 text-sm"
+              >
+                <div>
+                  <p className="font-medium">{item.description}</p>
+                  <p className="text-muted-foreground">
+                    {item.patientName} · {item.resolutionReason}
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={isMutating}
+                  onClick={() => reopenCharge.mutate({ id: item.id })}
+                >
+                  <Undo2 className="mr-1 h-3.5 w-3.5" />
+                  Reopen
+                </Button>
+              </div>
+            ))}
+          </div>
+        </details>
+      ) : null}
+    </section>
   );
 }
 

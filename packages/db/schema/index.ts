@@ -8,6 +8,7 @@ export * from "./clinical-corrections";
 export * from "./prescriptions";
 export * from "./prescription-events";
 export * from "./billing";
+export * from "./dispense-charge-queue";
 export * from "./communications";
 export * from "./auth";
 export * from "./controlled-substances";

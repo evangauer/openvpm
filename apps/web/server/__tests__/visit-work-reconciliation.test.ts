@@ -15,6 +15,8 @@ const CLIENT_ID = "00000000-0000-0000-0000-000000000005";
 const WORK_ITEM_ID = "00000000-0000-0000-0000-000000000006";
 const INVOICE_ID = "00000000-0000-0000-0000-000000000007";
 const INVOICE_ITEM_ID = "00000000-0000-0000-0000-000000000008";
+const PRESCRIPTION_ID = "00000000-0000-0000-0000-000000000009";
+const DISPENSE_CHARGE_ID = "00000000-0000-0000-0000-00000000000a";
 
 const openAppointment = {
   id: APPOINTMENT_ID,
@@ -36,15 +38,15 @@ const unresolvedWork = {
   voidReason: null,
 };
 
-function callerWithDb(db: Record<string, unknown>) {
+function callerWithDb(db: Record<string, unknown>, role = "admin") {
   return encountersRouter.createCaller({
     db,
     session: {
       user: {
         id: USER_ID,
-        email: "admin@example.com",
+        email: `${role}@example.com`,
         name: "Clinic Admin",
-        role: "admin",
+        role,
         practiceId: PRACTICE_ID,
       },
     },
@@ -226,6 +228,91 @@ describe("visit work reconciliation", () => {
     );
   });
 
+  it("waives the exact pending dispense when medication work is no charge", async () => {
+    const prescriptionWork = {
+      ...unresolvedWork,
+      prescriptionId: PRESCRIPTION_ID,
+    };
+    const resolved = {
+      ...prescriptionWork,
+      status: "no_charge",
+      noChargeReason: "Manufacturer replacement supplied",
+      resolvedBy: USER_ID,
+    };
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [openAppointment],
+        [{ id: PATIENT_ID }],
+        [prescriptionWork],
+        [
+          {
+            id: DISPENSE_CHARGE_ID,
+            status: "pending",
+            invoiceId: null,
+            invoiceItemId: null,
+            resolutionReason: null,
+          },
+        ],
+      ],
+      updateResults: [[{ id: DISPENSE_CHARGE_ID }], [resolved]],
+    });
+
+    await expect(
+      callerWithDb(db).resolveVisitWork({
+        appointmentId: APPOINTMENT_ID,
+        workItemId: WORK_ITEM_ID,
+        resolution: {
+          status: "no_charge",
+          reason: "Manufacturer replacement supplied",
+        },
+      }),
+    ).resolves.toMatchObject({ status: "no_charge" });
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "waived",
+        resolvedBy: USER_ID,
+        resolvedByName: "Clinic Admin",
+        resolutionReason: "Manufacturer replacement supplied",
+      }),
+    );
+  });
+
+  it("requires an administrator to waive dispensed medication from a visit", async () => {
+    const prescriptionWork = {
+      ...unresolvedWork,
+      prescriptionId: PRESCRIPTION_ID,
+    };
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [openAppointment],
+        [{ id: PATIENT_ID }],
+        [prescriptionWork],
+        [
+          {
+            id: DISPENSE_CHARGE_ID,
+            status: "pending",
+            invoiceId: null,
+            invoiceItemId: null,
+            resolutionReason: null,
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db, "front_desk").resolveVisitWork({
+        appointmentId: APPOINTMENT_ID,
+        workItemId: WORK_ITEM_ID,
+        resolution: {
+          status: "no_charge",
+          reason: "Manufacturer replacement supplied",
+        },
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
   it("is idempotent for an identical resolution replay", async () => {
     const existing = {
       ...unresolvedWork,
@@ -292,6 +379,56 @@ describe("visit work reconciliation", () => {
         invoiceId: null,
         invoiceItemId: null,
         resolvedBy: null,
+      }),
+    );
+  });
+
+  it("returns a waived medication dispense to pending when reopening no-charge work", async () => {
+    const noChargeWork = {
+      ...unresolvedWork,
+      prescriptionId: PRESCRIPTION_ID,
+      status: "no_charge",
+      noChargeReason: "Manufacturer replacement supplied",
+      resolvedBy: USER_ID,
+      resolvedAt: new Date("2026-08-08T17:00:00.000Z"),
+    };
+    const reopened = {
+      ...unresolvedWork,
+      prescriptionId: PRESCRIPTION_ID,
+    };
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [openAppointment],
+        [{ id: PATIENT_ID }],
+        [noChargeWork],
+        [
+          {
+            id: DISPENSE_CHARGE_ID,
+            status: "waived",
+            invoiceId: null,
+            invoiceItemId: null,
+            resolutionReason: "Manufacturer replacement supplied",
+          },
+        ],
+      ],
+      updateResults: [[{ id: DISPENSE_CHARGE_ID }], [reopened]],
+    });
+
+    await expect(
+      callerWithDb(db).reopenVisitWork({
+        appointmentId: APPOINTMENT_ID,
+        workItemId: WORK_ITEM_ID,
+        reason: "Charge should be reviewed again",
+      }),
+    ).resolves.toMatchObject({ status: "unresolved" });
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "pending",
+        invoiceId: null,
+        invoiceItemId: null,
+        resolvedBy: null,
+        resolutionReason: null,
       }),
     );
   });

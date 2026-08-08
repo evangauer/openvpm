@@ -685,4 +685,54 @@ describe("committed Drizzle migrations", () => {
       "REVOKE ALL ON prescription_events FROM authenticated",
     );
   });
+
+  it("adds a durable tenant-bound dispense-to-charge queue", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries?: Array<{ tag?: string }> };
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0049_dispense_charge_queue",
+    );
+
+    const sql = readRepoFile(
+      "packages/db/drizzle/0049_dispense_charge_queue.sql",
+    );
+    expect(sql).toContain('CREATE TABLE "dispense_charge_queue"');
+    expect(sql).toContain('ADD COLUMN "source_dispense_charge_id" uuid');
+    expect(sql).toContain("dispense_charge_queue_shape_check");
+    expect(sql).toContain("dispense_charge_queue_practice_event_fk");
+    expect(sql.indexOf("prescription_events_practice_id_uq")).toBeLessThan(
+      sql.indexOf("dispense_charge_queue_practice_event_fk"),
+    );
+    expect(sql).toContain("dispense_charge_queue_validate_source");
+    expect(sql).toContain("invoice_items_validate_dispense_charge");
+    expect(sql).toContain("dispense_charge_queue_protect");
+    expect(sql).toContain("dispense_charge_queue_no_delete");
+    expect(sql).toContain("invoice_items_reopen_dispense_charge");
+    expect(sql).toContain("invoices_reopen_dispense_charges");
+    expect(sql).toContain("legacy_review");
+    expect(sql).toContain(
+      "charged prescription work does not match an active dispense invoice line",
+    );
+    expect(sql).toContain(
+      "prescription invoice target does not match its dispense patient and visit",
+    );
+    expect(sql).toContain(
+      "invoice.appointment_id IS DISTINCT FROM prescription.appointment_id",
+    );
+    expect(sql).toContain(
+      "source_queue.appointment_id IS DISTINCT FROM target_invoice.appointment_id",
+    );
+    expect(sql).toContain("invalid medication dispense charge resolver");
+    expect(sql).toContain(
+      "ALTER TABLE dispense_charge_queue ENABLE ROW LEVEL SECURITY",
+    );
+    expect(sql).toContain(
+      "GRANT SELECT, INSERT, UPDATE ON dispense_charge_queue TO openpims_app",
+    );
+    expect(sql).toContain("REVOKE ALL ON dispense_charge_queue FROM anon");
+    expect(sql).toContain(
+      "REVOKE ALL ON dispense_charge_queue FROM authenticated",
+    );
+  });
 });

@@ -20,6 +20,7 @@ import {
   problemList,
   prescriptions,
   prescriptionEvents,
+  dispenseChargeQueue,
   drugInteractions,
   patients,
   patientAllergies,
@@ -532,6 +533,7 @@ async function assertDispensedProductBelongsToPractice(
     .select({
       id: products.id,
       name: products.name,
+      unitPrice: products.unitPrice,
       stockQuantity: products.stockQuantity,
     })
     .from(products)
@@ -550,6 +552,50 @@ async function assertDispensedProductBelongsToPractice(
   }
 
   return product;
+}
+
+async function createDispenseChargeWork(
+  ctx: RecordsContext,
+  input: {
+    prescriptionEventId: string;
+    prescriptionId: string;
+    patientId: string;
+    appointmentId?: string | null;
+    productId: string;
+    quantity: number;
+    medicationName: string;
+  },
+) {
+  const [[patient], product] = await Promise.all([
+    ctx.db
+      .select({ clientId: patients.clientId })
+      .from(patients)
+      .where(
+        and(
+          eq(patients.id, input.patientId),
+          eq(patients.practiceId, ctx.practiceId),
+          isNull(patients.deletedAt),
+        ),
+      )
+      .for("share"),
+    assertDispensedProductBelongsToPractice(ctx, input.productId),
+  ]);
+  if (!patient) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Patient not found" });
+  }
+  const description = `${product.name} — ${input.medicationName}`.slice(0, 500);
+  await ctx.db.insert(dispenseChargeQueue).values({
+    practiceId: ctx.practiceId,
+    prescriptionEventId: input.prescriptionEventId,
+    prescriptionId: input.prescriptionId,
+    patientId: input.patientId,
+    clientId: patient.clientId,
+    appointmentId: input.appointmentId ?? null,
+    productId: input.productId,
+    quantity: input.quantity,
+    descriptionSnapshot: description,
+    unitPriceSnapshot: product.unitPrice,
+  });
 }
 
 async function deductDispensedProductStock(
@@ -589,6 +635,7 @@ type LockedPrescription = {
   refillsRemaining: number;
   status: PrescriptionStatus;
   endDate: string | null;
+  medicationName: string;
 };
 
 async function lockPrescriptionForLifecycle(
@@ -604,6 +651,7 @@ async function lockPrescriptionForLifecycle(
       refillsRemaining: prescriptions.refillsRemaining,
       status: prescriptions.status,
       endDate: prescriptions.endDate,
+      medicationName: prescriptions.medicationName,
     })
     .from(prescriptions)
     .where(
@@ -630,6 +678,7 @@ async function lifecycleOperationReplay(
     operationId: string;
     eventTypes: PrescriptionEventType[];
     reason: string | null;
+    appointmentId?: string | null;
   }
 ) {
   const [event] = await ctx.db
@@ -679,6 +728,25 @@ async function lifecycleOperationReplay(
       message:
         "This prescription operation ID was already used for different details.",
     });
+  }
+  if (event.eventType === "refill_dispensed") {
+    const [charge] = await ctx.db
+      .select({ appointmentId: dispenseChargeQueue.appointmentId })
+      .from(dispenseChargeQueue)
+      .where(
+        and(
+          eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+          eq(dispenseChargeQueue.prescriptionEventId, event.id),
+        ),
+      )
+      .limit(1);
+    if (!charge || charge.appointmentId !== (input.appointmentId ?? null)) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message:
+          "This prescription operation ID was already used for different visit details.",
+      });
+    }
   }
   return { prescription, event, replayed: true as const };
 }
@@ -1256,8 +1324,18 @@ export const recordsRouter = createRouter({
           reason: prescriptionEvents.reason,
           actorName: prescriptionEvents.actorName,
           createdAt: prescriptionEvents.createdAt,
+          dispenseChargeId: dispenseChargeQueue.id,
+          dispenseChargeStatus: dispenseChargeQueue.status,
+          dispenseChargeInvoiceId: dispenseChargeQueue.invoiceId,
         })
         .from(prescriptionEvents)
+        .leftJoin(
+          dispenseChargeQueue,
+          and(
+            eq(dispenseChargeQueue.prescriptionEventId, prescriptionEvents.id),
+            eq(dispenseChargeQueue.practiceId, ctx.practiceId)
+          )
+        )
         .where(
           and(
             eq(prescriptionEvents.practiceId, ctx.practiceId),
@@ -1452,22 +1530,36 @@ export const recordsRouter = createRouter({
             prescriptionId: rx.id,
           });
         }
-        await tx.insert(prescriptionEvents).values({
-          practiceId: ctx.practiceId,
-          prescriptionId: rx!.id,
-          patientId: rx!.patientId,
-          productId: rx!.productId,
-          quantity: rx!.quantity,
-          eventType: "created",
-          statusBefore: null,
-          statusAfter: "active",
-          refillsBefore: null,
-          refillsAfter: rx!.refillsRemaining,
-          reason: null,
-          actorId: ctx.user.id,
-          actorName: ctx.user.name,
-          operationId: input.operationId,
-        });
+        const [createdEvent] = await tx
+          .insert(prescriptionEvents)
+          .values({
+            practiceId: ctx.practiceId,
+            prescriptionId: rx!.id,
+            patientId: rx!.patientId,
+            productId: rx!.productId,
+            quantity: rx!.quantity,
+            eventType: "created",
+            statusBefore: null,
+            statusAfter: "active",
+            refillsBefore: null,
+            refillsAfter: rx!.refillsRemaining,
+            reason: null,
+            actorId: ctx.user.id,
+            actorName: ctx.user.name,
+            operationId: input.operationId,
+          })
+          .returning({ id: prescriptionEvents.id });
+        if (rx!.productId && rx!.quantity) {
+          await createDispenseChargeWork(txCtx, {
+            prescriptionEventId: createdEvent!.id,
+            prescriptionId: rx!.id,
+            patientId: rx!.patientId,
+            appointmentId: rx!.appointmentId,
+            productId: rx!.productId,
+            quantity: rx!.quantity,
+            medicationName: rx!.medicationName,
+          });
+        }
         return { rx: rx!, replayed: false as const };
       });
       if (!result.replayed) {
@@ -1490,6 +1582,7 @@ export const recordsRouter = createRouter({
       z.object({
         id: z.string().uuid(),
         operationId: z.string().uuid(),
+        appointmentId: z.string().uuid().optional(),
         note: z
           .string()
           .trim()
@@ -1509,10 +1602,24 @@ export const recordsRouter = createRouter({
           operationId: input.operationId,
           eventTypes: ["refill_dispensed", "refill_authorized"],
           reason: input.note?.trim() || null,
+          appointmentId: input.appointmentId,
         });
         if (replay) return replay;
 
         const prescription = await lockPrescriptionForLifecycle(txCtx, input.id);
+        if (input.appointmentId) {
+          await assertAppointmentBelongsToPatient(
+            txCtx,
+            input.appointmentId,
+            prescription.patientId,
+          );
+          await lockOpenAppointmentForClinicalWork(
+            txCtx,
+            input.appointmentId,
+            prescription.patientId,
+            "prescriptions",
+          );
+        }
         const today = await practiceDateInput(txCtx);
         const effectiveStatus = effectivePrescriptionStatus({
           status: prescription.status,
@@ -1594,6 +1701,21 @@ export const recordsRouter = createRouter({
             operationId: input.operationId,
           })
           .returning();
+        if (
+          event?.eventType === "refill_dispensed" &&
+          event.productId &&
+          event.quantity
+        ) {
+          await createDispenseChargeWork(txCtx, {
+            prescriptionEventId: event.id,
+            prescriptionId: prescription.id,
+            patientId: prescription.patientId,
+            appointmentId: input.appointmentId,
+            productId: event.productId,
+            quantity: event.quantity,
+            medicationName: prescription.medicationName,
+          });
+        }
         return { prescription: updated, event: event!, replayed: false as const };
       });
       if (!result.replayed) {

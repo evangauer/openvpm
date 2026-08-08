@@ -1,7 +1,14 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Check, ChevronDown, ChevronUp, Loader2, RotateCcw, X } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Loader2,
+  RotateCcw,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -73,7 +80,7 @@ export function PrescriptionLifecycleControl({
     onSuccess: (result) =>
       finishAction(
         result.event.eventType === "refill_dispensed"
-          ? "Clinic-stock refill dispensed"
+          ? "Clinic-stock refill dispensed; billing work created"
           : "External refill authorized",
       ),
     onError: (error) => toast.error(error.message),
@@ -91,12 +98,10 @@ export function PrescriptionLifecycleControl({
   const isExternalPrescription = !prescription.productId;
   const hasInvalidInventoryLink = Boolean(
     prescription.productId &&
-      (!prescription.quantity || prescription.quantity <= 0),
+    (!prescription.quantity || prescription.quantity <= 0),
   );
   const canRefill =
-    isActive &&
-    prescription.refillsRemaining > 0 &&
-    !hasInvalidInventoryLink;
+    isActive && prescription.refillsRemaining > 0 && !hasInvalidInventoryLink;
 
   const openAction = (nextMode: ActionMode) => {
     setMode(nextMode);
@@ -200,7 +205,7 @@ export function PrescriptionLifecycleControl({
             {mode === "refill"
               ? isExternalPrescription
                 ? "This records authorization and uses one refill. It does not dispense stock or contact the pharmacy. An optional note is retained in history."
-                : "This deducts the original quantity from stock, records the refill, and uses one refill. It does not create a client charge; add the refill charge in Billing."
+                : "This deducts the original quantity from stock, records the refill, uses one refill, and creates an unbilled dispense in Billing. Billing staff still confirm the draft invoice or an admin records a no-charge reason."
               : "Enter a clinical reason (at least 5 characters). The status change is permanent and audited."}
           </p>
           <Textarea
@@ -250,7 +255,9 @@ export function PrescriptionLifecycleControl({
               }
               onClick={submitAction}
             >
-              {isPending ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : null}
+              {isPending ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : null}
               Confirm
             </Button>
           </div>
@@ -266,18 +273,29 @@ export function PrescriptionLifecycleControl({
           ) : history.error || !history.data ? (
             <div className="space-y-2">
               <p className="text-xs text-destructive">
-                {history.error?.message ?? "Unable to load prescription history."}
+                {history.error?.message ??
+                  "Unable to load prescription history."}
               </p>
-              <Button type="button" variant="outline" size="sm" onClick={() => history.refetch()}>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => history.refetch()}
+              >
                 Retry
               </Button>
             </div>
           ) : history.data.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No lifecycle history recorded.</p>
+            <p className="text-xs text-muted-foreground">
+              No lifecycle history recorded.
+            </p>
           ) : (
             <ol className="space-y-3">
               {history.data.map((event) => (
-                <li key={event.id} className="border-l-2 border-border pl-3 text-xs">
+                <li
+                  key={event.id}
+                  className="border-l-2 border-border pl-3 text-xs"
+                >
                   <p className="font-medium">
                     {prescriptionLifecycleHistoryLabel({
                       eventType: event.eventType,
@@ -286,7 +304,8 @@ export function PrescriptionLifecycleControl({
                     })}
                   </p>
                   <p className="text-muted-foreground">
-                    {formatEventTime(event.createdAt, timeZone)} · {event.actorName}
+                    {formatEventTime(event.createdAt, timeZone)} ·{" "}
+                    {event.actorName}
                   </p>
                   {event.eventType === "refill_dispensed" ? (
                     <p className="text-muted-foreground">
@@ -297,6 +316,12 @@ export function PrescriptionLifecycleControl({
                     <p className="text-muted-foreground">
                       External refill authorized; {event.refillsAfter} refill
                       {event.refillsAfter === 1 ? "" : "s"} remaining
+                    </p>
+                  ) : null}
+                  {event.dispenseChargeStatus ? (
+                    <p className="mt-1 font-medium">
+                      Billing: {event.dispenseChargeStatus}
+                      {event.dispenseChargeInvoiceId ? " on invoice" : ""}
                     </p>
                   ) : null}
                   {event.reason ? <p className="mt-1">{event.reason}</p> : null}

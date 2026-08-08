@@ -15,6 +15,7 @@ import {
   clients,
   communications,
   controlledSubstanceLog,
+  dispenseChargeQueue,
   emailSuppressions,
   files,
   invoiceAdjustments,
@@ -139,6 +140,7 @@ export const PRACTICE_EXPORT_SECTIONS = [
   "treatmentPlanItems",
   "prescriptions",
   "prescriptionEvents",
+  "dispenseChargeQueue",
   "visitCloseouts",
   "files",
   "controlledSubstanceLog",
@@ -152,6 +154,7 @@ const PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS = [
   // Backward compatibility for backups created before the immutable
   // prescription lifecycle ledger was introduced.
   "prescriptionEvents",
+  "dispenseChargeQueue",
   "visitCloseouts",
   "clinicalRecordCorrections",
 ] as const satisfies readonly PracticeExportSection[];
@@ -267,6 +270,7 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
   optionalRef("invoices", "appointmentId", "appointments"),
   requiredRef("invoiceItems", "invoiceId", "invoices"),
   optionalRef("invoiceItems", "sourcePrescriptionId", "prescriptions"),
+  optionalRef("invoiceItems", "sourceDispenseChargeId", "dispenseChargeQueue"),
   requiredRef("payments", "invoiceId", "invoices"),
   optionalRef("payments", "receivedBy", "users"),
   requiredRef("invoiceAdjustments", "invoiceId", "invoices"),
@@ -322,6 +326,19 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
   requiredRef("prescriptionEvents", "patientId", "patients"),
   optionalRef("prescriptionEvents", "productId", "products"),
   optionalRef("prescriptionEvents", "actorId", "users"),
+  requiredRef(
+    "dispenseChargeQueue",
+    "prescriptionEventId",
+    "prescriptionEvents",
+  ),
+  requiredRef("dispenseChargeQueue", "prescriptionId", "prescriptions"),
+  requiredRef("dispenseChargeQueue", "patientId", "patients"),
+  requiredRef("dispenseChargeQueue", "clientId", "clients"),
+  optionalRef("dispenseChargeQueue", "appointmentId", "appointments"),
+  requiredRef("dispenseChargeQueue", "productId", "products"),
+  optionalRef("dispenseChargeQueue", "invoiceId", "invoices"),
+  optionalRef("dispenseChargeQueue", "invoiceItemId", "invoiceItems"),
+  optionalRef("dispenseChargeQueue", "resolvedBy", "users"),
   requiredRef("visitCloseouts", "appointmentId", "appointments"),
   optionalRef("visitCloseouts", "followUpAppointmentId", "appointments"),
   optionalRef("visitCloseouts", "clinicalFinalizedBy", "users"),
@@ -519,6 +536,79 @@ export function validatePracticeExportRestore(data: unknown): {
         pushError(
           `prescriptions[${rowLabel(prescription, index)}] must have exactly one created prescription event.`,
         );
+      }
+    });
+  }
+
+  if (Array.isArray(record.dispenseChargeQueue)) {
+    const invoiceItemsByDispense = new Map<string, Row[]>();
+    rowsFor(data, "invoiceItems").forEach((item) => {
+      if (typeof item.sourceDispenseChargeId !== "string") return;
+      const rows = invoiceItemsByDispense.get(item.sourceDispenseChargeId) ?? [];
+      rows.push(item);
+      invoiceItemsByDispense.set(item.sourceDispenseChargeId, rows);
+    });
+    rowsFor(data, "dispenseChargeQueue").forEach((row, index) => {
+      const label = `dispenseChargeQueue[${rowLabel(row, index)}]`;
+      const sourceItems =
+        typeof row.id === "string"
+          ? invoiceItemsByDispense.get(row.id) ?? []
+          : [];
+      if (
+        row.status !== "pending" &&
+        row.status !== "invoiced" &&
+        row.status !== "waived"
+      ) {
+        pushError(`${label}.status is invalid.`);
+        return;
+      }
+      if (row.status === "pending") {
+        if (
+          row.invoiceId != null ||
+          row.invoiceItemId != null ||
+          row.resolvedBy != null ||
+          row.resolvedByName != null ||
+          row.resolvedAt != null ||
+          row.resolutionReason != null ||
+          sourceItems.length > 0
+        ) {
+          pushError(`${label} pending state must be completely unresolved.`);
+        }
+        return;
+      }
+      if (
+        typeof row.resolvedBy !== "string" ||
+        typeof row.resolvedByName !== "string" ||
+        row.resolvedByName.trim().length === 0 ||
+        (typeof row.resolvedAt !== "string" &&
+          !(row.resolvedAt instanceof Date))
+      ) {
+        pushError(`${label} resolved state requires attribution.`);
+      }
+      if (row.status === "invoiced") {
+        if (
+          typeof row.invoiceId !== "string" ||
+          typeof row.invoiceItemId !== "string" ||
+          row.resolutionReason != null ||
+          sourceItems.length !== 1 ||
+          sourceItems[0]?.id !== row.invoiceItemId ||
+          sourceItems[0]?.invoiceId !== row.invoiceId
+        ) {
+          pushError(
+            `${label} invoiced state must identify its exact sourced invoice line.`,
+          );
+        }
+        return;
+      }
+      if (
+        row.invoiceId != null ||
+        row.invoiceItemId != null ||
+        sourceItems.length > 0 ||
+        typeof row.resolutionReason !== "string" ||
+        row.resolutionReason.trim().length < 5 ||
+        row.resolutionReason.length > 1000
+      ) {
+        pushError(`${label} waived state requires one bounded reason and no invoice.`);
       }
     });
   }
@@ -735,6 +825,7 @@ export async function exportPracticeData(
     treatmentPlanRows,
     allPrescriptionRows,
     prescriptionEventRows,
+    dispenseChargeRows,
     visitCloseoutRows,
     fileRows,
     controlledSubstanceRows,
@@ -778,6 +869,7 @@ export async function exportPracticeData(
     activeRows(db, treatmentPlans, practiceId),
     allPracticeRows(db, prescriptions, practiceId),
     allPracticeRows(db, prescriptionEvents, practiceId),
+    allPracticeRows(db, dispenseChargeQueue, practiceId),
     activeRows(db, visitCloseouts, practiceId),
     activeRows(db, files, practiceId),
     activeRows(db, controlledSubstanceLog, practiceId),
@@ -1047,6 +1139,7 @@ export async function exportPracticeData(
     treatmentPlanItems: treatmentPlanItemRows,
     prescriptions: prescriptionRows,
     prescriptionEvents: prescriptionEventRows,
+    dispenseChargeQueue: dispenseChargeRows,
     visitCloseouts: visitCloseoutRows,
     files: fileRows,
     controlledSubstanceLog: controlledSubstanceRows,
@@ -1085,6 +1178,12 @@ async function restorePracticeDataRows(
       `Backup contains invalid restore data: ${validation.errors.join("; ")}`
     );
   }
+  const backupRecord = isRecord(data) ? data : {};
+  const hasDispenseChargeQueue = Object.prototype.hasOwnProperty.call(
+    backupRecord,
+    "dispenseChargeQueue",
+  );
+  const dispenseChargeRestoreRows = rowsFor(data, "dispenseChargeQueue");
 
   const restored = {} as Record<PracticeExportSection, number>;
   const restorePracticeRows = async (section: PracticeExportSection, table: any) => {
@@ -1124,7 +1223,18 @@ async function restorePracticeDataRows(
   await restorePracticeRows("suppliers", suppliers);
   await restorePracticeRows("purchaseOrders", purchaseOrders);
   await restorePracticeRows("invoices", invoices);
-  await restoreChildRows("invoiceItems", invoiceItems);
+  const invoiceItemRestoreRows = rowsFor(data, "invoiceItems");
+  restored.invoiceItems = await restoreRows(
+    db,
+    invoiceItems,
+    "invoiceItems",
+    hasDispenseChargeQueue
+      ? invoiceItemRestoreRows.map((row) => ({
+          ...row,
+          sourceDispenseChargeId: null,
+        }))
+      : invoiceItemRestoreRows,
+  );
   await restoreChildRows("payments", payments);
   await restoreChildRows("invoiceAdjustments", invoiceAdjustments);
   await restorePracticeRows("insuranceClaims", insuranceClaims);
@@ -1144,7 +1254,6 @@ async function restorePracticeDataRows(
   await restorePracticeRows("treatmentPlans", treatmentPlans);
   await restoreChildRows("treatmentPlanItems", treatmentPlanItems);
   await restorePracticeRows("prescriptions", prescriptions);
-  const backupRecord = isRecord(data) ? data : {};
   const prescriptionEventRows = Object.prototype.hasOwnProperty.call(
     backupRecord,
     "prescriptionEvents",
@@ -1158,6 +1267,76 @@ async function restorePracticeDataRows(
     prescriptionEventRows,
     { practiceId },
   );
+  // Restore every queue row as pending first. Invoiced rows form an intentional
+  // cycle with invoice_items, and the database protection trigger should see
+  // the exact active source line before accepting their final status.
+  restored.dispenseChargeQueue = await restoreRows(
+    db,
+    dispenseChargeQueue,
+    "dispenseChargeQueue",
+    dispenseChargeRestoreRows.map((row) => ({
+      ...row,
+      status: "pending",
+      invoiceId: null,
+      invoiceItemId: null,
+      resolvedBy: null,
+      resolvedByName: null,
+      resolvedAt: null,
+      resolutionReason: null,
+    })),
+    { practiceId },
+  );
+  if (hasDispenseChargeQueue) {
+    for (const row of invoiceItemRestoreRows) {
+      if (
+        typeof row.id === "string" &&
+        typeof row.sourceDispenseChargeId === "string"
+      ) {
+        await db
+          .update(invoiceItems)
+          .set({ sourceDispenseChargeId: row.sourceDispenseChargeId })
+          .where(eq(invoiceItems.id, row.id));
+      }
+    }
+    for (const row of coerceRowDates(
+      dispenseChargeQueue,
+      dispenseChargeRestoreRows,
+    )) {
+      if (
+        typeof row.id !== "string" ||
+        (row.status !== "invoiced" && row.status !== "waived")
+      ) {
+        continue;
+      }
+      await db
+        .update(dispenseChargeQueue)
+        .set({
+          status: row.status,
+          invoiceId: typeof row.invoiceId === "string" ? row.invoiceId : null,
+          invoiceItemId:
+            typeof row.invoiceItemId === "string" ? row.invoiceItemId : null,
+          resolvedBy:
+            typeof row.resolvedBy === "string" ? row.resolvedBy : null,
+          resolvedByName:
+            typeof row.resolvedByName === "string"
+              ? row.resolvedByName
+              : null,
+          resolvedAt: row.resolvedAt instanceof Date ? row.resolvedAt : null,
+          resolutionReason:
+            typeof row.resolutionReason === "string"
+              ? row.resolutionReason
+              : null,
+          updatedAt:
+            row.updatedAt instanceof Date ? row.updatedAt : new Date(),
+        })
+        .where(
+          and(
+            eq(dispenseChargeQueue.id, row.id),
+            eq(dispenseChargeQueue.practiceId, practiceId),
+          ),
+        );
+    }
+  }
   await restorePracticeRows("visitCloseouts", visitCloseouts);
   await restorePracticeRows("files", files);
   await restorePracticeRows("controlledSubstanceLog", controlledSubstanceLog);

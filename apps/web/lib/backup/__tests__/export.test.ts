@@ -423,6 +423,81 @@ describe("restorePracticeData", () => {
     expect(inserted).toEqual([]);
   });
 
+  it("rejects a pending dispense queue row already linked to an invoice item", () => {
+    const backup = {
+      ...emptyBackup(),
+      users: [{ id: "user-1" }],
+      clients: [{ id: "client-1" }],
+      patients: [{ id: "patient-1", clientId: "client-1" }],
+      appointments: [
+        {
+          id: "appointment-1",
+          clientId: "client-1",
+          patientId: "patient-1",
+        },
+      ],
+      products: [{ id: "product-1" }],
+      prescriptions: [
+        {
+          id: "prescription-1",
+          patientId: "patient-1",
+          appointmentId: "appointment-1",
+          productId: "product-1",
+          quantity: 1,
+          prescribedBy: "user-1",
+        },
+      ],
+      prescriptionEvents: [
+        {
+          id: "event-1",
+          prescriptionId: "prescription-1",
+          patientId: "patient-1",
+          productId: "product-1",
+          quantity: 1,
+          eventType: "created",
+          actorId: "user-1",
+        },
+      ],
+      invoices: [
+        {
+          id: "invoice-1",
+          clientId: "client-1",
+          patientId: "patient-1",
+          appointmentId: "appointment-1",
+        },
+      ],
+      invoiceItems: [
+        {
+          id: "invoice-item-1",
+          invoiceId: "invoice-1",
+          sourceDispenseChargeId: "dispense-1",
+        },
+      ],
+      dispenseChargeQueue: [
+        {
+          id: "dispense-1",
+          prescriptionEventId: "event-1",
+          prescriptionId: "prescription-1",
+          patientId: "patient-1",
+          clientId: "client-1",
+          appointmentId: "appointment-1",
+          productId: "product-1",
+          status: "pending",
+          invoiceId: null,
+          invoiceItemId: null,
+          resolvedBy: null,
+          resolvedByName: null,
+          resolvedAt: null,
+          resolutionReason: null,
+        },
+      ],
+    };
+
+    expect(validatePracticeExportRestore(backup).errors).toContain(
+      "dispenseChargeQueue[dispense-1] pending state must be completely unresolved.",
+    );
+  });
+
   it("rejects a present prescription ledger that omits a created event", () => {
     const backup = {
       ...emptyBackup(),

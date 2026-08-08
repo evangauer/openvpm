@@ -10,11 +10,11 @@ describe("billing query scoping", () => {
   it("keeps invoice client and patient display joins tenant scoped and active", () => {
     const clientLeftJoins =
       source.match(
-        /leftJoin\(\s*clients,\s*and\(\s*eq\(invoices\.clientId, clients\.id\),\s*eq\(clients\.practiceId, ctx\.practiceId\),\s*isNull\(clients\.deletedAt\)\s*\)\s*\)/gs
+        /leftJoin\(\s*clients,\s*and\(\s*eq\(invoices\.clientId, clients\.id\),\s*eq\(clients\.practiceId, ctx\.practiceId\),\s*isNull\(clients\.deletedAt\)\s*,?\s*\)\s*,?\s*\)/gs
       ) ?? [];
     const patientLeftJoins =
       source.match(
-        /leftJoin\(\s*patients,\s*and\(\s*eq\(invoices\.patientId, patients\.id\),\s*eq\(patients\.clientId, invoices\.clientId\),\s*eq\(patients\.practiceId, ctx\.practiceId\),\s*isNull\(patients\.deletedAt\)\s*\)\s*\)/gs
+        /leftJoin\(\s*patients,\s*and\(\s*eq\(invoices\.patientId, patients\.id\),\s*eq\(patients\.clientId, invoices\.clientId\),\s*eq\(patients\.practiceId, ctx\.practiceId\),\s*isNull\(patients\.deletedAt\)\s*,?\s*\)\s*,?\s*\)/gs
       ) ?? [];
 
     expect(clientLeftJoins.length).toBeGreaterThanOrEqual(2);
@@ -23,10 +23,10 @@ describe("billing query scoping", () => {
 
   it("keeps checkout client and practice joins tenant scoped and active", () => {
     expect(source).toMatch(
-      /innerJoin\(\s*clients,\s*and\(\s*eq\(invoices\.clientId, clients\.id\),\s*eq\(clients\.practiceId, ctx\.practiceId\),\s*isNull\(clients\.deletedAt\)\s*\)\s*\)/s
+      /innerJoin\(\s*clients,\s*and\(\s*eq\(invoices\.clientId, clients\.id\),\s*eq\(clients\.practiceId, ctx\.practiceId\),\s*isNull\(clients\.deletedAt\)\s*,?\s*\)\s*,?\s*\)/s
     );
     expect(source).toMatch(
-      /leftJoin\(\s*practices,\s*and\(\s*eq\(invoices\.practiceId, practices\.id\),\s*eq\(practices\.id, ctx\.practiceId\),\s*isNull\(practices\.deletedAt\)\s*\)\s*\)/s
+      /leftJoin\(\s*practices,\s*and\(\s*eq\(invoices\.practiceId, practices\.id\),\s*eq\(practices\.id, ctx\.practiceId\),\s*isNull\(practices\.deletedAt\)\s*,?\s*\)\s*,?\s*\)/s
     );
   });
 
@@ -52,10 +52,10 @@ describe("billing query scoping", () => {
 
   it("keeps billing staff display joins tenant scoped and active", () => {
     expect(source).toMatch(
-      /leftJoin\(\s*users,\s*and\(\s*eq\(payments\.receivedBy, users\.id\),\s*eq\(users\.practiceId, ctx\.practiceId\),\s*isNull\(users\.deletedAt\)\s*\)\s*\)/s
+      /leftJoin\(\s*users,\s*and\(\s*eq\(payments\.receivedBy, users\.id\),\s*eq\(users\.practiceId, ctx\.practiceId\),\s*isNull\(users\.deletedAt\)\s*,?\s*\)\s*,?\s*\)/s
     );
     expect(source).toMatch(
-      /leftJoin\(\s*users,\s*and\(\s*eq\(invoiceAdjustments\.createdBy, users\.id\),\s*eq\(users\.practiceId, ctx\.practiceId\),\s*isNull\(users\.deletedAt\)\s*\)\s*\)/s
+      /leftJoin\(\s*users,\s*and\(\s*eq\(invoiceAdjustments\.createdBy, users\.id\),\s*eq\(users\.practiceId, ctx\.practiceId\),\s*isNull\(users\.deletedAt\)\s*,?\s*\)\s*,?\s*\)/s
     );
   });
 

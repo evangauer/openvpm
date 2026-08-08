@@ -56,6 +56,7 @@ function queuedDb(input: {
     builder.from = vi.fn(() => builder);
     builder.leftJoin = vi.fn(() => builder);
     builder.where = vi.fn(() => builder);
+    builder.for = vi.fn(async () => result);
     builder.orderBy = vi.fn(() => builder);
     builder.limit = vi.fn(() => afterLimit);
     builder.then = (
@@ -105,6 +106,7 @@ function activePrescription(overrides: Record<string, unknown> = {}) {
     refillsRemaining: 2,
     status: "active",
     endDate: "2026-12-31",
+    medicationName: "Carprofen",
     ...overrides,
   };
 }
@@ -120,13 +122,31 @@ describe("prescription lifecycle mutations", () => {
       id: "event-1",
       prescriptionId: PRESCRIPTION_ID,
       eventType: "refill_dispensed",
+      productId: PRODUCT_ID,
+      quantity: 10,
     };
     const { db, insertValues, updateValues } = queuedDb({
       selects: [
         [],
         [activePrescription()],
         [{ name: "Clinic", phone: null, timezone: "UTC" }],
-        [{ id: PRODUCT_ID, name: "Carprofen", stockQuantity: 40 }],
+        [
+          {
+            id: PRODUCT_ID,
+            name: "Carprofen",
+            stockQuantity: 40,
+            unitPrice: "12.50",
+          },
+        ],
+        [{ clientId: "00000000-0000-0000-0000-000000000006" }],
+        [
+          {
+            id: PRODUCT_ID,
+            name: "Carprofen",
+            stockQuantity: 30,
+            unitPrice: "12.50",
+          },
+        ],
       ],
       updates: [[{ id: PRODUCT_ID, stockQuantity: 30 }], [updated]],
       inserts: [[event]],
@@ -160,6 +180,19 @@ describe("prescription lifecycle mutations", () => {
       actorName: "Doctor Rivera",
       operationId: OPERATION_ID,
     });
+    expect(insertValues).toContainEqual(
+      expect.objectContaining({
+        practiceId: PRACTICE_ID,
+        prescriptionEventId: "event-1",
+        prescriptionId: PRESCRIPTION_ID,
+        patientId: PATIENT_ID,
+        productId: PRODUCT_ID,
+        quantity: 10,
+        descriptionSnapshot: "Carprofen — Carprofen",
+        unitPriceSnapshot: "12.50",
+        appointmentId: null,
+      }),
+    );
     expect(mocks.dispatchWebhookEvent).toHaveBeenCalledOnce();
   });
 
@@ -171,7 +204,11 @@ describe("prescription lifecycle mutations", () => {
       operationId: OPERATION_ID,
     };
     const { db, update, insert } = queuedDb({
-      selects: [[existingEvent], [activePrescription({ refillsRemaining: 1 })]],
+      selects: [
+        [existingEvent],
+        [activePrescription({ refillsRemaining: 1 })],
+        [{ appointmentId: null }],
+      ],
     });
 
     await expect(

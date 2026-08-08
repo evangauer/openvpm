@@ -18,6 +18,7 @@ const TABLES = [
   "api_keys",
   "treatment_template_items",
   "treatment_templates",
+  "dispense_charge_queue",
   "invoice_items",
   "invoices",
   "lab_results",
@@ -45,7 +46,9 @@ async function reset() {
   console.log("Truncating all tables...");
   // Single statement — TRUNCATE ... CASCADE handles FK dependencies.
   const tableList = TABLES.join(", ");
-  await db.execute(sql.raw(`TRUNCATE TABLE ${tableList} RESTART IDENTITY CASCADE`));
+  await db.execute(
+    sql.raw(`TRUNCATE TABLE ${tableList} RESTART IDENTITY CASCADE`),
+  );
   console.log(`Truncated ${TABLES.length} tables`);
 }
 

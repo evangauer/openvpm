@@ -179,7 +179,8 @@ describe("clinic encounter workspace", () => {
 
   it("links prescriptions to the visit and preserves their inventory ownership", () => {
     expect(workspaceSource).toContain("tab=prescriptions&new=1");
-    expect(workspaceSource).toContain("sourcePrescriptionId");
+    expect(workspaceSource).toContain("sourceDispenseChargeId");
+    expect(workspaceSource).toContain('dispenseChargeStatus === "pending"');
     expect(workspaceSource).toContain("inventory already dispensed");
     expect(workspaceSource).toContain("expectedUpdatedAt");
   });

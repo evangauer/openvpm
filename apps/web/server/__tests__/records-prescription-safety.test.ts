@@ -691,7 +691,7 @@ describe("records list query scoping", () => {
           `leftJoin\\(\\s*users,\\s*and\\(\\s*eq\\(${foreignKey.replace(
             ".",
             "\\.",
-          )}, users\\.id\\),\\s*eq\\(users\\.practiceId, ctx\\.practiceId\\),\\s*isNull\\(users\\.deletedAt\\)\\s*\\)\\s*\\)`,
+          )}, users\\.id\\),\\s*eq\\(users\\.practiceId, ctx\\.practiceId\\),\\s*isNull\\(users\\.deletedAt\\)\\s*,?\\s*\\)\\s*,?\\s*\\)`,
           "s",
         ),
       );
@@ -700,7 +700,7 @@ describe("records list query scoping", () => {
 
   it("keeps prescription inventory joins tenant scoped and active", () => {
     expect(source).toMatch(
-      /leftJoin\(\s*products,\s*and\(\s*eq\(prescriptions\.productId, products\.id\),\s*eq\(products\.practiceId, ctx\.practiceId\),\s*isNull\(products\.deletedAt\)\s*\)\s*\)/s,
+      /leftJoin\(\s*products,\s*and\(\s*eq\(prescriptions\.productId, products\.id\),\s*eq\(products\.practiceId, ctx\.practiceId\),\s*isNull\(products\.deletedAt\)\s*,?\s*\)\s*,?\s*\)/s,
     );
   });
 

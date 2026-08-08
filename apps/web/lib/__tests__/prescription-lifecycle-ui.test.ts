@@ -19,8 +19,9 @@ describe("prescription lifecycle UI safety", () => {
     );
     expect(source).toContain("Authorize external-pharmacy refill");
     expect(source).toContain("does not dispense stock or contact the pharmacy");
-    expect(source).toContain("does not create a client charge");
-    expect(source).toContain("add the refill charge in Billing");
+    expect(source).toContain("creates an unbilled dispense in Billing");
+    expect(source).toContain("billing work created");
+    expect(source).toContain("Billing: {event.dispenseChargeStatus}");
   });
 
   it("resets the idempotency key when lifecycle intent changes", () => {

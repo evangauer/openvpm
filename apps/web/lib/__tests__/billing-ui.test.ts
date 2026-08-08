@@ -68,18 +68,24 @@ describe("billing invoice form UX", () => {
     expect(source).toContain(
       'import { formatDateInputForTimeZone } from "@/lib/date-input"'
     );
-    expect(source).toContain("function defaultDueDate(timeZone?: string | null)");
     expect(source).toContain(
-      "const today = formatDateInputForTimeZone(new Date(), timeZone)"
+      "function defaultDueDate(timeZone?: string | null)",
+    );
+    expect(source).toContain(
+      "const today = formatDateInputForTimeZone(new Date(), timeZone)",
     );
     expect(source).toContain("return addDateInputDays(today, 30)");
-    expect(source).toContain("const [dueDate, setDueDate] = useState(\"\")");
-    expect(source).toContain("const [dueDateTouched, setDueDateTouched] = useState(false)");
+    expect(source).toContain('const [dueDate, setDueDate] = useState("")');
+    expect(source).toContain(
+      "const [dueDateTouched, setDueDateTouched] = useState(false)",
+    );
     expect(source).toContain("const taxConfig = taxConfigQuery.data");
     expect(source).toContain(
-      "const taxConfigReady = taxConfig !== undefined && !taxConfigQuery.error"
+      "const taxConfigReady = taxConfig !== undefined && !taxConfigQuery.error",
     );
-    expect(source).toContain("if (!dueDateTouched && taxConfigReady && taxConfig)");
+    expect(source).toContain(
+      "if (!dueDateTouched && taxConfigReady && taxConfig)",
+    );
     expect(source).toContain("setDueDate(defaultDueDate(taxConfig.timezone))");
     expect(source).toContain("dueDate.trim().length > 0");
     expect(source).toContain("setDueDateTouched(true)");
@@ -183,7 +189,7 @@ describe("billing invoice payment actions", () => {
 
   it("only offers payment collection for sent or overdue invoice balances", () => {
     expect(source).toContain(
-      "canManageBilling &&\n    (invoiceStatus === \"sent\" || invoiceStatus === \"overdue\") &&\n    remaining > 0"
+      'canManageBilling &&\n    (invoiceStatus === "sent" || invoiceStatus === "overdue") &&\n    remaining > 0',
     );
     expect(source).not.toContain(
       'invoiceStatus !== "paid" && invoiceStatus !== "void" && remaining > 0'
@@ -281,36 +287,36 @@ describe("billing invoice payment actions", () => {
   });
 
   it("renders billing dates from the practice timezone contract", () => {
-    expect(source).toContain("const billingConfig = trpc.billing.getTaxConfig.useQuery");
-    expect(source).toContain("const verifiedBillingConfig =");
-    expect(source).toContain("const billingSettingsReady = verifiedBillingConfig !== null");
     expect(source).toContain(
-      "const billingTimeZone = verifiedBillingConfig\n    ? verifiedBillingConfig.timezone\n    : null"
+      "const billingConfig = trpc.billing.getTaxConfig.useQuery",
+    );
+    expect(source).toContain("const verifiedBillingConfig =");
+    expect(source).toContain(
+      "const billingSettingsReady = verifiedBillingConfig !== null",
+    );
+    expect(source).toContain(
+      "const billingTimeZone = verifiedBillingConfig\n    ? verifiedBillingConfig.timezone\n    : null",
     );
     expect(source).toContain("const listError = billingConfig.error ?? error");
     expect(source).toContain(
-      "const isListLoading = billingConfig.isLoading || isLoading"
+      "const isListLoading = billingConfig.isLoading || isLoading",
     );
     expect(source).toContain("billingTimeZone={billingTimeZone}");
     expect(source).toContain("settingsReady={billingSettingsReady}");
     expect(source).toContain(
-      "formatBillingDateInput(invoice.dueDate, billingTimeZone)"
+      "formatBillingDateInput(invoice.dueDate, billingTimeZone)",
     );
     expect(source).toContain(
-      "formatBillingInstantDate(invoice.createdAt, billingTimeZone)"
+      "formatBillingInstantDate(invoice.createdAt, billingTimeZone)",
     );
-    expect(source).toContain(
-      "formatBillingDateInput(\n                      row.nextBillingDate"
+    expect(source).toMatch(/formatBillingDateInput\(\s*row\.nextBillingDate/);
+    expect(source).toMatch(
+      /formatBillingInstantDate\(\s*payment\.receivedAt/,
     );
-    expect(source).toContain(
-      "formatBillingInstantDate(\n                        payment.receivedAt"
+    expect(source).toMatch(
+      /formatBillingInstantDate\(\s*adjustment\.createdAt/,
     );
-    expect(source).toContain(
-      "formatBillingInstantDate(\n                        adjustment.createdAt"
-    );
-    expect(source).toContain(
-      "formatBillingDateInput(\n                                  d.dueDate"
-    );
+    expect(source).toMatch(/formatBillingDateInput\(\s*d\.dueDate/);
     expect(source).not.toContain(
       "new Date(invoice.dueDate).toLocaleDateString"
     );
@@ -321,5 +327,35 @@ describe("billing invoice payment actions", () => {
       "new Date(adjustment.createdAt).toLocaleDateString"
     );
     expect(source).not.toContain("billingConfig.data?.timezone");
+  });
+});
+
+describe("medication dispense billing queue", () => {
+  const source = readFileSync("app/(dashboard)/billing/page.tsx", "utf8");
+
+  it("shows every pending clinic-stock dispense with explicit outcomes", () => {
+    expect(source).toContain("Unbilled medication dispenses");
+    expect(source).toContain("trpc.billing.listDispenseChargeQueue.useQuery");
+    expect(source).toContain(
+      "trpc.billing.createDispenseChargeInvoice.useMutation",
+    );
+    expect(source).toContain("trpc.billing.waiveDispenseCharge.useMutation");
+    expect(source).toContain("trpc.billing.reopenDispenseCharge.useMutation");
+    expect(source).toContain("Create draft");
+    expect(source).toContain("Review & create");
+    expect(source).toContain("Verify it was not already billed");
+    expect(source).toContain("Open visit");
+    expect(source).toContain("Standalone refill");
+    expect(source).toContain("Waive");
+    expect(source).toContain("Inventory has");
+    expect(source).toContain("already been deducted and will not move again");
+  });
+
+  it("limits no-charge decisions and reopening to admins", () => {
+    expect(source).toContain(
+      'const canWaiveDispenseCharges = session?.user?.role === "admin"',
+    );
+    expect(source).toContain("canWaive={canWaiveDispenseCharges}");
+    expect(source).toContain("Recently waived");
   });
 });

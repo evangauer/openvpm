@@ -27,6 +27,8 @@ import {
   patients,
   practices,
   prescriptions,
+  prescriptionEvents,
+  dispenseChargeQueue,
   products,
   procedures,
   labResults,
@@ -561,6 +563,40 @@ async function syncVisitWorkItems(
   `);
 }
 
+async function lockInitialDispenseCharge(
+  ctx: EncounterContext,
+  prescriptionId: string,
+  appointmentId: string
+) {
+  const [charge] = await ctx.db
+    .select({
+      id: dispenseChargeQueue.id,
+      status: dispenseChargeQueue.status,
+      invoiceId: dispenseChargeQueue.invoiceId,
+      invoiceItemId: dispenseChargeQueue.invoiceItemId,
+      resolutionReason: dispenseChargeQueue.resolutionReason,
+    })
+    .from(dispenseChargeQueue)
+    .innerJoin(
+      prescriptionEvents,
+      and(
+        eq(dispenseChargeQueue.prescriptionEventId, prescriptionEvents.id),
+        eq(prescriptionEvents.practiceId, ctx.practiceId),
+        eq(prescriptionEvents.eventType, "created")
+      )
+    )
+    .where(
+      and(
+        eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+        eq(dispenseChargeQueue.prescriptionId, prescriptionId),
+        eq(dispenseChargeQueue.appointmentId, appointmentId)
+      )
+    )
+    .limit(1)
+    .for("update");
+  return charge ?? null;
+}
+
 async function assertNoUnresolvedVisitWork(
   ctx: EncounterContext,
   appointmentId: string
@@ -735,7 +771,10 @@ export const encountersRouter = createRouter({
               quantity: prescriptions.quantity,
               productId: prescriptions.productId,
               productName: products.name,
-              productUnitPrice: products.unitPrice,
+              productUnitPrice: dispenseChargeQueue.unitPriceSnapshot,
+              dispenseChargeId: dispenseChargeQueue.id,
+              dispenseChargeStatus: dispenseChargeQueue.status,
+              dispenseChargeDescription: dispenseChargeQueue.descriptionSnapshot,
               status: prescriptions.status,
               endDate: prescriptions.endDate,
             })
@@ -746,6 +785,24 @@ export const encountersRouter = createRouter({
                 eq(prescriptions.productId, products.id),
                 eq(products.practiceId, ctx.practiceId),
                 isNull(products.deletedAt)
+              )
+            )
+            .leftJoin(
+              prescriptionEvents,
+              and(
+                eq(prescriptionEvents.prescriptionId, prescriptions.id),
+                eq(prescriptionEvents.practiceId, ctx.practiceId),
+                eq(prescriptionEvents.eventType, "created")
+              )
+            )
+            .leftJoin(
+              dispenseChargeQueue,
+              and(
+                eq(
+                  dispenseChargeQueue.prescriptionEventId,
+                  prescriptionEvents.id
+                ),
+                eq(dispenseChargeQueue.practiceId, ctx.practiceId)
               )
             )
             .where(
@@ -1135,6 +1192,14 @@ export const encountersRouter = createRouter({
           });
         }
 
+        const dispenseCharge = workItem.prescriptionId
+          ? await lockInitialDispenseCharge(
+              txCtx,
+              workItem.prescriptionId,
+              input.appointmentId
+            )
+          : null;
+
         let values:
           | {
               status: "charged";
@@ -1158,7 +1223,10 @@ export const encountersRouter = createRouter({
         const resolvedAt = new Date();
         if (input.resolution.status === "charged") {
           const [charge] = await tx
-            .select({ invoiceId: invoices.id })
+            .select({
+              invoiceId: invoices.id,
+              sourceDispenseChargeId: invoiceItems.sourceDispenseChargeId,
+            })
             .from(invoiceItems)
             .innerJoin(
               invoices,
@@ -1184,6 +1252,19 @@ export const encountersRouter = createRouter({
               message: "Choose an active charge from this visit invoice.",
             });
           }
+          if (
+            dispenseCharge &&
+            (dispenseCharge.status !== "invoiced" ||
+              dispenseCharge.invoiceId !== charge.invoiceId ||
+              dispenseCharge.invoiceItemId !== input.resolution.invoiceItemId ||
+              charge.sourceDispenseChargeId !== dispenseCharge.id)
+          ) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "Add this dispensed medication from visit charge capture before marking it charged.",
+            });
+          }
           values = {
             status: "charged",
             invoiceId: charge.invoiceId,
@@ -1192,6 +1273,30 @@ export const encountersRouter = createRouter({
             resolvedAt,
           };
         } else if (input.resolution.status === "no_charge") {
+          if (dispenseCharge && ctx.user.role !== "admin") {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message:
+                "Only an administrator can waive a dispensed medication charge.",
+            });
+          }
+          if (dispenseCharge?.status === "invoiced") {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "Remove or void the medication invoice line before waiving the dispense.",
+            });
+          }
+          if (
+            dispenseCharge?.status === "waived" &&
+            dispenseCharge.resolutionReason !== input.resolution.reason
+          ) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "This medication charge was already waived with a different reason.",
+            });
+          }
           values = {
             status: "no_charge",
             noChargeReason: input.resolution.reason,
@@ -1199,12 +1304,68 @@ export const encountersRouter = createRouter({
             resolvedAt,
           };
         } else {
+          if (dispenseCharge && ctx.user.role !== "admin") {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message:
+                "Only an administrator can waive a dispensed medication charge.",
+            });
+          }
+          if (dispenseCharge?.status === "invoiced") {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "Remove or void the medication invoice line before voiding this work.",
+            });
+          }
+          if (
+            dispenseCharge?.status === "waived" &&
+            dispenseCharge.resolutionReason !== input.resolution.reason
+          ) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "This medication charge was already waived with a different reason.",
+            });
+          }
           values = {
             status: "voided",
             voidReason: input.resolution.reason,
             resolvedBy: ctx.user.id,
             resolvedAt,
           };
+        }
+
+        if (
+          dispenseCharge?.status === "pending" &&
+          input.resolution.status !== "charged"
+        ) {
+          const [waived] = await tx
+            .update(dispenseChargeQueue)
+            .set({
+              status: "waived",
+              invoiceId: null,
+              invoiceItemId: null,
+              resolvedBy: ctx.user.id,
+              resolvedByName: ctx.user.name,
+              resolvedAt,
+              resolutionReason: input.resolution.reason,
+              updatedAt: resolvedAt,
+            })
+            .where(
+              and(
+                eq(dispenseChargeQueue.id, dispenseCharge.id),
+                eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+                eq(dispenseChargeQueue.status, "pending")
+              )
+            )
+            .returning({ id: dispenseChargeQueue.id });
+          if (!waived) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "Medication charge changed; refresh and retry.",
+            });
+          }
         }
 
         const [resolved] = await tx
@@ -1265,6 +1426,30 @@ export const encountersRouter = createRouter({
         }
         if (workItem.status === "unresolved") return workItem;
 
+        const dispenseCharge =
+          workItem.prescriptionId &&
+          (workItem.status === "no_charge" || workItem.status === "voided")
+            ? await lockInitialDispenseCharge(
+                txCtx,
+                workItem.prescriptionId,
+                input.appointmentId
+              )
+            : null;
+        if (dispenseCharge && ctx.user.role !== "admin") {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message:
+              "Only an administrator can reopen a dispensed medication charge.",
+          });
+        }
+        if (dispenseCharge?.status === "invoiced") {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Remove or void the medication invoice line before reopening this reconciliation.",
+          });
+        }
+
         await tx.insert(auditLog).values({
           practiceId: ctx.practiceId,
           userId: ctx.user.id,
@@ -1282,6 +1467,35 @@ export const encountersRouter = createRouter({
             priorResolvedAt: workItem.resolvedAt?.toISOString() ?? null,
           },
         });
+
+        if (dispenseCharge?.status === "waived") {
+          const [reopenedCharge] = await tx
+            .update(dispenseChargeQueue)
+            .set({
+              status: "pending",
+              invoiceId: null,
+              invoiceItemId: null,
+              resolvedBy: null,
+              resolvedByName: null,
+              resolvedAt: null,
+              resolutionReason: null,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(dispenseChargeQueue.id, dispenseCharge.id),
+                eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+                eq(dispenseChargeQueue.status, "waived")
+              )
+            )
+            .returning({ id: dispenseChargeQueue.id });
+          if (!reopenedCharge) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "Medication charge changed; refresh and retry.",
+            });
+          }
+        }
 
         const [reopened] = await tx
           .update(visitWorkItems)

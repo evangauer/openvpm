@@ -70,6 +70,7 @@ type ChargeItem = {
   itemType: "service" | "product";
   itemId?: string;
   sourcePrescriptionId?: string;
+  sourceDispenseChargeId?: string;
 };
 
 const APPOINTMENT_STATUS_LABELS: Record<string, string> = {
@@ -2384,6 +2385,9 @@ function ChargeCapture({
     productId: string | null;
     productName: string | null;
     productUnitPrice: string | null;
+    dispenseChargeId: string | null;
+    dispenseChargeStatus: "pending" | "invoiced" | "waived" | null;
+    dispenseChargeDescription: string | null;
   }>;
 }) {
   const utils = trpc.useUtils();
@@ -2445,6 +2449,7 @@ function ChargeCapture({
           itemType: item.itemType,
           itemId: item.itemId ?? undefined,
           sourcePrescriptionId: item.sourcePrescriptionId ?? undefined,
+          sourceDispenseChargeId: item.sourceDispenseChargeId ?? undefined,
         })),
       );
       setLoadedInvoiceId(activeInvoice.id);
@@ -2468,6 +2473,7 @@ function ChargeCapture({
       stockQuantity: null as number | null,
       quantity: null as number | null,
       sourcePrescriptionId: undefined as string | undefined,
+      sourceDispenseChargeId: undefined as string | undefined,
     }));
     const linkedProductIds = new Set(
       linkedPrescriptions
@@ -2478,20 +2484,23 @@ function ChargeCapture({
       .filter(
         (prescription) =>
           prescription.productId &&
-          prescription.productName &&
           prescription.productUnitPrice &&
-          prescription.quantity,
+          prescription.quantity &&
+          prescription.dispenseChargeId &&
+          prescription.dispenseChargeStatus === "pending" &&
+          prescription.dispenseChargeDescription,
       )
       .map((prescription) => ({
         id: `prescription:${prescription.id}`,
         itemId: prescription.productId!,
         itemType: "product" as const,
-        name: `${prescription.productName} — ${prescription.medicationName}`,
+        name: prescription.dispenseChargeDescription!,
         category: "Visit prescription · inventory already dispensed",
         defaultPrice: prescription.productUnitPrice!,
         stockQuantity: null as number | null,
         quantity: prescription.quantity!,
-        sourcePrescriptionId: prescription.id,
+        sourcePrescriptionId: undefined as string | undefined,
+        sourceDispenseChargeId: prescription.dispenseChargeId!,
       }));
     const products = (productsQuery.data ?? [])
       .filter((product) => !linkedProductIds.has(product.id))
@@ -2505,6 +2514,7 @@ function ChargeCapture({
         stockQuantity: product.stockQuantity,
         quantity: null as number | null,
         sourcePrescriptionId: undefined as string | undefined,
+        sourceDispenseChargeId: undefined as string | undefined,
       }));
     return [...prescriptionCharges, ...services, ...products];
   }, [linkedPrescriptions, productsQuery.data, servicesQuery.data]);
@@ -2529,6 +2539,7 @@ function ChargeCapture({
   const selectedHasStock =
     selected?.itemType !== "product" ||
     Boolean(selected.sourcePrescriptionId) ||
+    Boolean(selected.sourceDispenseChargeId) ||
     (selected.stockQuantity !== null && quantity <= selected.stockQuantity);
   const canAdd =
     Boolean(selected) &&
@@ -2592,6 +2603,7 @@ function ChargeCapture({
         itemType: selected.itemType,
         itemId: selected.itemId,
         sourcePrescriptionId: selected.sourcePrescriptionId,
+        sourceDispenseChargeId: selected.sourceDispenseChargeId,
       },
     ]);
     setSelectedCatalogId("");
@@ -2608,6 +2620,7 @@ function ChargeCapture({
         itemType,
         itemId,
         sourcePrescriptionId,
+        sourceDispenseChargeId,
       }) => ({
         description,
         quantity,
@@ -2615,6 +2628,7 @@ function ChargeCapture({
         itemType,
         itemId,
         sourcePrescriptionId,
+        sourceDispenseChargeId,
       }),
     );
     if (activeInvoice) {

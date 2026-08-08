@@ -206,6 +206,9 @@ export const invoiceItems = pgTable(
     sourcePrescriptionId: uuid("source_prescription_id").references(
       (): AnyPgColumn => prescriptions.id
     ),
+    // Durable per-dispensation billing identity. Unlike a prescription, this
+    // distinguishes the initial fill from every later clinic-stock refill.
+    sourceDispenseChargeId: uuid("source_dispense_charge_id"),
   },
   (table) => ({
     invoiceIdx: index("invoice_items_invoice_idx").on(
@@ -227,6 +230,16 @@ export const invoiceItems = pgTable(
       .on(table.invoiceId, table.sourcePrescriptionId)
       .where(
         sql`${table.sourcePrescriptionId} is not null and ${table.deletedAt} is null`
+      ),
+    sourceDispenseChargeIdx: index(
+      "invoice_items_source_dispense_charge_idx"
+    ).on(table.sourceDispenseChargeId, table.deletedAt),
+    sourceDispenseChargeInvoiceUq: uniqueIndex(
+      "invoice_items_source_dispense_charge_invoice_uq"
+    )
+      .on(table.invoiceId, table.sourceDispenseChargeId)
+      .where(
+        sql`${table.sourceDispenseChargeId} is not null and ${table.deletedAt} is null`
       ),
     invoiceItemTargetUq: uniqueIndex("invoice_items_invoice_item_target_uq").on(
       table.invoiceId,

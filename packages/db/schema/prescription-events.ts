@@ -13,10 +13,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { relations, sql } from "drizzle-orm";
 import { patients } from "./patients";
-import {
-  prescriptions,
-  prescriptionStatusEnum,
-} from "./prescriptions";
+import { prescriptions, prescriptionStatusEnum } from "./prescriptions";
 import { practices } from "./practices";
 import { products } from "./billing";
 import { users } from "./users";
@@ -80,9 +77,11 @@ export const prescriptionEvents = pgTable(
       .where(sql`${table.eventType} = 'created'`),
     terminalUq: uniqueIndex("prescription_events_terminal_uq")
       .on(table.practiceId, table.prescriptionId)
-      .where(
-        sql`${table.eventType} in ('completed', 'cancelled', 'expired')`,
-      ),
+      .where(sql`${table.eventType} in ('completed', 'cancelled', 'expired')`),
+    practiceIdUq: uniqueIndex("prescription_events_practice_id_uq").on(
+      table.practiceId,
+      table.id,
+    ),
     prescriptionTenantFk: foreignKey({
       columns: [table.practiceId, table.prescriptionId],
       foreignColumns: [prescriptions.practiceId, prescriptions.id],

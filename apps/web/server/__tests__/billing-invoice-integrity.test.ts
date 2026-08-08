@@ -19,6 +19,7 @@ const INVOICE_ID = "00000000-0000-0000-0000-000000000005";
 const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000006";
 const SERVICE_ID = "00000000-0000-0000-0000-000000000007";
 const PRESCRIPTION_ID = "00000000-0000-0000-0000-000000000008";
+const DISPENSE_CHARGE_ID = "00000000-0000-0000-0000-000000000009";
 const UPDATED_AT = new Date("2026-08-08T12:00:00.000Z");
 
 function callerWithDb(db: Record<string, unknown>, role = "front_desk") {
@@ -60,6 +61,7 @@ function createDb(opts: {
     const result = selectResults.shift() ?? [];
     const afterWhere = {
       ...thenableRows(result),
+      limit: vi.fn(() => afterWhere),
       orderBy: vi.fn(() => afterWhere),
       for: vi.fn(async (mode: string) => {
         lockCalls.push({
@@ -827,6 +829,416 @@ describe("billing invoice integrity", () => {
         quantity: 2,
       }),
     ]);
+  });
+
+  it("charges a dispense-time snapshot without deducting stock and resolves visit work", async () => {
+    const description = "Cerenia 24mg — Cerenia";
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [
+        [{ id: CLIENT_ID }],
+        [{ id: PATIENT_ID }],
+        [{ id: APPOINTMENT_ID }],
+        [{ taxRatePercent: "0.00" }],
+        [{ id: APPOINTMENT_ID, status: "in_exam" }],
+        [],
+        [{ id: PRODUCT_ID, deletedAt: null }],
+        [],
+        [
+          {
+            id: DISPENSE_CHARGE_ID,
+            prescriptionId: PRESCRIPTION_ID,
+            patientId: PATIENT_ID,
+            clientId: CLIENT_ID,
+            appointmentId: APPOINTMENT_ID,
+            productId: PRODUCT_ID,
+            quantity: 2,
+            descriptionSnapshot: description,
+            unitPriceSnapshot: "15.00",
+            status: "pending",
+            invoiceId: null,
+          },
+        ],
+      ],
+      updateReturns: [
+        [
+          {
+            id: DISPENSE_CHARGE_ID,
+            prescriptionId: PRESCRIPTION_ID,
+            appointmentId: APPOINTMENT_ID,
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).createInvoice({
+        clientId: CLIENT_ID,
+        patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
+        items: [
+          {
+            description,
+            quantity: 2,
+            unitPrice: "15.00",
+            itemType: "product",
+            itemId: PRODUCT_ID,
+            sourceDispenseChargeId: DISPENSE_CHARGE_ID,
+          },
+        ],
+        isEstimate: false,
+      }),
+    ).resolves.toMatchObject({ id: INVOICE_ID });
+
+    expect(insertValues).toHaveBeenLastCalledWith([
+      expect.objectContaining({
+        invoiceId: INVOICE_ID,
+        itemId: PRODUCT_ID,
+        sourceDispenseChargeId: DISPENSE_CHARGE_ID,
+        quantity: 2,
+        unitPrice: "15.00",
+      }),
+    ]);
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "invoiced",
+        invoiceId: INVOICE_ID,
+      }),
+    );
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "charged",
+        invoiceId: INVOICE_ID,
+      }),
+    );
+    expect(updateSet).not.toHaveBeenCalledWith(
+      expect.objectContaining({ stockQuantity: expect.anything() }),
+    );
+  });
+
+  it("rejects client-tampered dispense quantity, price, or description", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [
+        [{ id: CLIENT_ID }],
+        [{ id: PATIENT_ID }],
+        [{ taxRatePercent: "0.00" }],
+        [{ id: PRODUCT_ID, deletedAt: null }],
+        [
+          {
+            id: DISPENSE_CHARGE_ID,
+            prescriptionId: PRESCRIPTION_ID,
+            patientId: PATIENT_ID,
+            clientId: CLIENT_ID,
+            appointmentId: null,
+            productId: PRODUCT_ID,
+            quantity: 2,
+            descriptionSnapshot: "Cerenia 24mg — Cerenia",
+            unitPriceSnapshot: "15.00",
+            status: "pending",
+            invoiceId: null,
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).createInvoice({
+        clientId: CLIENT_ID,
+        patientId: PATIENT_ID,
+        items: [
+          {
+            ...productLine,
+            description: "Tampered medication",
+            sourceDispenseChargeId: DISPENSE_CHARGE_ID,
+          },
+        ],
+        isEstimate: false,
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("requires the invoice to preserve the dispense appointment exactly", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [
+        [{ id: CLIENT_ID }],
+        [{ id: PATIENT_ID }],
+        [{ taxRatePercent: "0.00" }],
+        [{ id: PRODUCT_ID, deletedAt: null }],
+        [
+          {
+            id: DISPENSE_CHARGE_ID,
+            prescriptionId: PRESCRIPTION_ID,
+            patientId: PATIENT_ID,
+            clientId: CLIENT_ID,
+            appointmentId: APPOINTMENT_ID,
+            productId: PRODUCT_ID,
+            quantity: 2,
+            descriptionSnapshot: "Cerenia 24mg — Cerenia",
+            unitPriceSnapshot: "15.00",
+            status: "pending",
+            invoiceId: null,
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).createInvoice({
+        clientId: CLIENT_ID,
+        patientId: PATIENT_ID,
+        items: [
+          {
+            description: "Cerenia 24mg — Cerenia",
+            quantity: 2,
+            unitPrice: "15.00",
+            itemType: "product",
+            itemId: PRODUCT_ID,
+            sourceDispenseChargeId: DISPENSE_CHARGE_ID,
+          },
+        ],
+        isEstimate: false,
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("creates an appointment-linked draft from pending dispense work", async () => {
+    const description = "Cerenia 24mg — Cerenia";
+    const source = {
+      id: DISPENSE_CHARGE_ID,
+      prescriptionId: PRESCRIPTION_ID,
+      patientId: PATIENT_ID,
+      clientId: CLIENT_ID,
+      appointmentId: APPOINTMENT_ID,
+      productId: PRODUCT_ID,
+      quantity: 2,
+      descriptionSnapshot: description,
+      unitPriceSnapshot: "15.00",
+      status: "pending",
+      invoiceId: null,
+      legacyReview: false,
+    };
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [
+        [{ appointmentId: APPOINTMENT_ID }],
+        [{ id: APPOINTMENT_ID }],
+        [source],
+        [{ taxRatePercent: "0.00" }],
+        [],
+      ],
+      updateReturns: [
+        [
+          {
+            id: DISPENSE_CHARGE_ID,
+            prescriptionId: PRESCRIPTION_ID,
+            appointmentId: APPOINTMENT_ID,
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).createDispenseChargeInvoice({
+        id: DISPENSE_CHARGE_ID,
+        acknowledgeLegacyReview: false,
+      }),
+    ).resolves.toEqual({ invoiceId: INVOICE_ID, replayed: false });
+
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        appointmentId: APPOINTMENT_ID,
+        clientId: CLIENT_ID,
+        patientId: PATIENT_ID,
+      }),
+    );
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        invoiceId: INVOICE_ID,
+        sourceDispenseChargeId: DISPENSE_CHARGE_ID,
+      }),
+    );
+    expect(updateSet).not.toHaveBeenCalledWith(
+      expect.objectContaining({ stockQuantity: expect.anything() }),
+    );
+  });
+
+  it("adds pending visit dispense work to the existing editable draft", async () => {
+    const description = "Cerenia 24mg — Cerenia";
+    const source = {
+      id: DISPENSE_CHARGE_ID,
+      prescriptionId: PRESCRIPTION_ID,
+      patientId: PATIENT_ID,
+      clientId: CLIENT_ID,
+      appointmentId: APPOINTMENT_ID,
+      productId: PRODUCT_ID,
+      quantity: 2,
+      descriptionSnapshot: description,
+      unitPriceSnapshot: "15.00",
+      status: "pending",
+      invoiceId: null,
+      legacyReview: false,
+    };
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [
+        [{ appointmentId: APPOINTMENT_ID }],
+        [{ id: APPOINTMENT_ID }],
+        [source],
+        [{ taxRatePercent: "10.00" }],
+        [
+          {
+            id: INVOICE_ID,
+            clientId: CLIENT_ID,
+            patientId: PATIENT_ID,
+            status: "draft",
+            subtotal: "50.00",
+            paidAmount: "0.00",
+          },
+        ],
+      ],
+      updateReturns: [
+        [{ id: INVOICE_ID }],
+        [
+          {
+            id: DISPENSE_CHARGE_ID,
+            prescriptionId: PRESCRIPTION_ID,
+            appointmentId: APPOINTMENT_ID,
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).createDispenseChargeInvoice({
+        id: DISPENSE_CHARGE_ID,
+        acknowledgeLegacyReview: false,
+      }),
+    ).resolves.toEqual({ invoiceId: INVOICE_ID, replayed: false });
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subtotal: "80.00",
+        tax: "8.00",
+        total: "88.00",
+      }),
+    );
+    expect(insertValues).toHaveBeenCalledTimes(1);
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        invoiceId: INVOICE_ID,
+        sourceDispenseChargeId: DISPENSE_CHARGE_ID,
+      }),
+    );
+  });
+
+  it("waives appointment-linked dispense and visit work as one decision", async () => {
+    const pendingCharge = {
+      id: DISPENSE_CHARGE_ID,
+      prescriptionId: PRESCRIPTION_ID,
+      appointmentId: APPOINTMENT_ID,
+      status: "pending",
+    };
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [{ appointmentId: APPOINTMENT_ID }],
+        [{ id: APPOINTMENT_ID }],
+        [pendingCharge],
+        [
+          {
+            id: "00000000-0000-0000-0000-00000000000a",
+            status: "unresolved",
+          },
+        ],
+      ],
+      updateReturns: [
+        [{ id: "00000000-0000-0000-0000-00000000000a" }],
+        [{ id: DISPENSE_CHARGE_ID }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db, "admin").waiveDispenseCharge({
+        id: DISPENSE_CHARGE_ID,
+        reason: "Manufacturer replacement supplied",
+      }),
+    ).resolves.toEqual({ id: DISPENSE_CHARGE_ID });
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "no_charge",
+        noChargeReason: "Manufacturer replacement supplied",
+        resolvedBy: USER_ID,
+      }),
+    );
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "waived",
+        resolutionReason: "Manufacturer replacement supplied",
+        resolvedBy: USER_ID,
+      }),
+    );
+  });
+
+  it("reopens appointment-linked waiver and visit work as one correction", async () => {
+    const waiverReason = "Manufacturer replacement supplied";
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [
+        [{ appointmentId: APPOINTMENT_ID }],
+        [{ id: APPOINTMENT_ID }],
+        [
+          {
+            id: DISPENSE_CHARGE_ID,
+            prescriptionId: PRESCRIPTION_ID,
+            appointmentId: APPOINTMENT_ID,
+            status: "waived",
+            resolutionReason: waiverReason,
+          },
+        ],
+        [
+          {
+            id: "00000000-0000-0000-0000-00000000000a",
+            status: "no_charge",
+            invoiceId: null,
+            invoiceItemId: null,
+            noChargeReason: waiverReason,
+            voidReason: null,
+            resolvedBy: USER_ID,
+            resolvedAt: UPDATED_AT,
+          },
+        ],
+      ],
+      updateReturns: [
+        [{ id: "00000000-0000-0000-0000-00000000000a" }],
+        [{ id: DISPENSE_CHARGE_ID }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db, "admin").reopenDispenseCharge({
+        id: DISPENSE_CHARGE_ID,
+      }),
+    ).resolves.toEqual({ id: DISPENSE_CHARGE_ID });
+
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "reopened",
+        entityType: "visit_work_item",
+        changes: expect.objectContaining({ priorStatus: "no_charge" }),
+      }),
+    );
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "unresolved",
+        noChargeReason: null,
+        resolvedBy: null,
+      }),
+    );
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "pending",
+        resolutionReason: null,
+        resolvedBy: null,
+      }),
+    );
   });
 
   it("rejects an unsourced charge for a product already dispensed by the visit prescription", async () => {

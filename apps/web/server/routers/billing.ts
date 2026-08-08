@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { randomUUID } from "node:crypto";
 import {
   eq,
   and,
@@ -77,6 +78,8 @@ import {
   prescriptions,
   visitCloseouts,
   visitWorkItems,
+  dispenseChargeQueue,
+  auditLog,
 } from "@openpims/db";
 import {
   clinicalDateInput,
@@ -268,6 +271,7 @@ const invoiceLineInput = z
     itemType: z.enum(["service", "product"]),
     itemId: z.string().uuid().optional(),
     sourcePrescriptionId: z.string().uuid().optional(),
+    sourceDispenseChargeId: z.string().uuid().optional(),
   })
   .superRefine((item, ctx) => {
     const totalCents = moneyToCents(item.unitPrice) * item.quantity;
@@ -279,13 +283,20 @@ const invoiceLineInput = z
       });
     }
     if (
-      item.sourcePrescriptionId &&
+      (item.sourcePrescriptionId || item.sourceDispenseChargeId) &&
       (item.itemType !== "product" || !item.itemId)
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["sourcePrescriptionId"],
         message: "A prescription charge must reference its dispensed product.",
+      });
+    }
+    if (item.sourcePrescriptionId && item.sourceDispenseChargeId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["sourceDispenseChargeId"],
+        message: "Choose one medication dispense source for this line.",
       });
     }
   });
@@ -351,6 +362,7 @@ type InvoiceLineInput = {
   itemType: "service" | "product";
   itemId?: string | null;
   sourcePrescriptionId?: string | null;
+  sourceDispenseChargeId?: string | null;
 };
 
 function activePracticeWhere(practiceId: string) {
@@ -1001,7 +1013,9 @@ function stockOwnedItems(
   items: readonly InvoiceLineInput[]
 ): DispensableItem[] {
   return items
-    .filter((item) => !item.sourcePrescriptionId)
+    .filter(
+      (item) => !item.sourcePrescriptionId && !item.sourceDispenseChargeId,
+    )
     .map((item) => ({
       itemType: item.itemType,
       itemId: item.itemId,
@@ -1061,6 +1075,7 @@ async function assertPrescriptionChargeSources(
 
   for (const item of items) {
     if (item.itemType !== "product" || !item.itemId) continue;
+    if (item.sourceDispenseChargeId) continue;
     if (!item.sourcePrescriptionId) {
       if (visitProductIds.has(item.itemId)) {
         throw new TRPCError({
@@ -1104,10 +1119,305 @@ async function assertPrescriptionChargeSources(
     if (alreadyCharged) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "A visit prescription has already been charged on another invoice.",
+        message:
+          "A visit prescription has already been charged on another invoice.",
       });
     }
   }
+}
+
+type DispenseChargeSource = {
+  id: string;
+  prescriptionId: string;
+  patientId: string;
+  clientId: string;
+  appointmentId: string | null;
+  productId: string;
+  quantity: number;
+  descriptionSnapshot: string;
+  unitPriceSnapshot: string;
+  status: "pending" | "invoiced" | "waived";
+  invoiceId: string | null;
+};
+
+async function assertDispenseChargeSources(
+  ctx: BillingContext,
+  items: readonly InvoiceLineInput[],
+  options: {
+    clientId: string;
+    patientId?: string | null;
+    appointmentId?: string | null;
+    currentInvoiceId?: string;
+    isEstimate?: boolean;
+  },
+): Promise<Map<string, DispenseChargeSource>> {
+  const sourcedItems = items.filter((item) => item.sourceDispenseChargeId);
+  const sourceIds = sourcedItems.map((item) => item.sourceDispenseChargeId!);
+  const unsourcedProductIds = items
+    .filter(
+      (item) =>
+        item.itemType === "product" &&
+        item.itemId &&
+        !item.sourcePrescriptionId &&
+        !item.sourceDispenseChargeId,
+    )
+    .map((item) => item.itemId!);
+  if (
+    !options.isEstimate &&
+    options.patientId &&
+    unsourcedProductIds.length > 0
+  ) {
+    const [unresolvedDispense] = await ctx.db
+      .select({ id: dispenseChargeQueue.id })
+      .from(dispenseChargeQueue)
+      .where(
+        and(
+          eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+          eq(dispenseChargeQueue.patientId, options.patientId),
+          inArray(dispenseChargeQueue.productId, unsourcedProductIds),
+          inArray(dispenseChargeQueue.status, ["pending", "waived"]),
+        ),
+      )
+      .limit(1);
+    if (unresolvedDispense) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message:
+          "Charge this patient's already-dispensed medication from the medication billing queue so inventory is not deducted twice.",
+      });
+    }
+  }
+  if (sourceIds.length === 0) return new Map();
+  if (options.isEstimate) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message:
+        "A dispensed medication can be attached only to an invoice, not an estimate.",
+    });
+  }
+  if (!options.patientId) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Dispensed medication charges require their patient.",
+    });
+  }
+  if (new Set(sourceIds).size !== sourceIds.length) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "A medication dispense can appear only once on an invoice.",
+    });
+  }
+
+  const sources = await ctx.db
+    .select({
+      id: dispenseChargeQueue.id,
+      prescriptionId: dispenseChargeQueue.prescriptionId,
+      patientId: dispenseChargeQueue.patientId,
+      clientId: dispenseChargeQueue.clientId,
+      appointmentId: dispenseChargeQueue.appointmentId,
+      productId: dispenseChargeQueue.productId,
+      quantity: dispenseChargeQueue.quantity,
+      descriptionSnapshot: dispenseChargeQueue.descriptionSnapshot,
+      unitPriceSnapshot: dispenseChargeQueue.unitPriceSnapshot,
+      status: dispenseChargeQueue.status,
+      invoiceId: dispenseChargeQueue.invoiceId,
+    })
+    .from(dispenseChargeQueue)
+    .where(
+      and(
+        eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+        inArray(dispenseChargeQueue.id, [...sourceIds].sort()),
+      ),
+    )
+    .orderBy(dispenseChargeQueue.id)
+    .for("update");
+  if (sources.length !== sourceIds.length) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "One or more medication dispenses were not found.",
+    });
+  }
+  const byId = new Map(sources.map((source) => [source.id, source]));
+  for (const item of sourcedItems) {
+    const source = byId.get(item.sourceDispenseChargeId!);
+    if (
+      !source ||
+      source.clientId !== options.clientId ||
+      source.patientId !== options.patientId ||
+      source.appointmentId !== (options.appointmentId ?? null) ||
+      item.itemType !== "product" ||
+      item.itemId !== source.productId ||
+      item.quantity !== source.quantity ||
+      item.description !== source.descriptionSnapshot ||
+      moneyToCents(item.unitPrice) !== moneyToCents(source.unitPriceSnapshot)
+    ) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message:
+          "Medication charge no longer matches its dispense-time record.",
+      });
+    }
+    if (source.status === "waived") {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message:
+          "This medication dispense was waived. Reopen it before charging.",
+      });
+    }
+    if (
+      source.status === "invoiced" &&
+      source.invoiceId !== options.currentInvoiceId
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "This medication dispense is already on another invoice.",
+      });
+    }
+  }
+  return byId;
+}
+
+async function markDispenseChargesInvoiced(
+  ctx: BillingContext,
+  assignments: readonly {
+    chargeId: string;
+    invoiceId: string;
+    invoiceItemId: string;
+  }[],
+  actor: { id: string; name: string },
+) {
+  for (const assignment of assignments) {
+    const [updated] = await ctx.db
+      .update(dispenseChargeQueue)
+      .set({
+        status: "invoiced",
+        invoiceId: assignment.invoiceId,
+        invoiceItemId: assignment.invoiceItemId,
+        resolvedBy: actor.id,
+        resolvedByName: actor.name,
+        resolvedAt: new Date(),
+        resolutionReason: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(dispenseChargeQueue.id, assignment.chargeId),
+          eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+          eq(dispenseChargeQueue.status, "pending"),
+          isNull(dispenseChargeQueue.invoiceId),
+          isNull(dispenseChargeQueue.invoiceItemId),
+        ),
+      )
+      .returning({
+        id: dispenseChargeQueue.id,
+        prescriptionId: dispenseChargeQueue.prescriptionId,
+        appointmentId: dispenseChargeQueue.appointmentId,
+      });
+    if (!updated) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "Medication charge state changed. Refresh and try again.",
+      });
+    }
+    if (updated.appointmentId) {
+      await ctx.db
+        .update(visitWorkItems)
+        .set({
+          status: "charged",
+          invoiceId: assignment.invoiceId,
+          invoiceItemId: assignment.invoiceItemId,
+          noChargeReason: null,
+          voidReason: null,
+          resolvedBy: actor.id,
+          resolvedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(visitWorkItems.practiceId, ctx.practiceId),
+            eq(visitWorkItems.appointmentId, updated.appointmentId),
+            eq(visitWorkItems.prescriptionId, updated.prescriptionId),
+            eq(visitWorkItems.status, "unresolved"),
+            isNull(visitWorkItems.deletedAt),
+          ),
+        );
+    }
+  }
+}
+
+async function reopenInvoiceDispenseCharges(
+  ctx: BillingContext,
+  invoiceId: string,
+) {
+  await ctx.db
+    .update(dispenseChargeQueue)
+    .set({
+      status: "pending",
+      invoiceId: null,
+      invoiceItemId: null,
+      resolvedBy: null,
+      resolvedByName: null,
+      resolvedAt: null,
+      resolutionReason: null,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+        eq(dispenseChargeQueue.invoiceId, invoiceId),
+        eq(dispenseChargeQueue.status, "invoiced"),
+      ),
+    );
+}
+
+async function lockDispenseChargeWorkflow(
+  ctx: BillingContext,
+  chargeId: string,
+) {
+  const [identity] = await ctx.db
+    .select({ appointmentId: dispenseChargeQueue.appointmentId })
+    .from(dispenseChargeQueue)
+    .where(
+      and(
+        eq(dispenseChargeQueue.id, chargeId),
+        eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+      ),
+    )
+    .limit(1);
+  if (!identity) return null;
+  if (identity.appointmentId) {
+    await ctx.db.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${identity.appointmentId}, 0))`,
+    );
+    const [appointment] = await ctx.db
+      .select({ id: appointments.id })
+      .from(appointments)
+      .where(
+        and(
+          eq(appointments.id, identity.appointmentId),
+          eq(appointments.practiceId, ctx.practiceId),
+        ),
+      )
+      .for("update");
+    if (!appointment) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "The linked appointment is no longer available.",
+      });
+    }
+  }
+  const [charge] = await ctx.db
+    .select()
+    .from(dispenseChargeQueue)
+    .where(
+      and(
+        eq(dispenseChargeQueue.id, chargeId),
+        eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  return charge ?? null;
 }
 
 async function deductProductStock(
@@ -1156,6 +1466,7 @@ async function invoiceProductItemsForStock(
         eq(invoiceItems.invoiceId, invoiceId),
         invoiceItemPracticeScope(ctx),
         isNull(invoiceItems.sourcePrescriptionId),
+        isNull(invoiceItems.sourceDispenseChargeId),
         isNull(invoiceItems.deletedAt)
       )
     );
@@ -1363,6 +1674,514 @@ export const billingRouter = createRouter({
         console.warn("[Stripe Connect] no login link for account", err);
       }
       return { url: "https://dashboard.stripe.com/login" };
+    }),
+
+  listDispenseChargeQueue: protectedProcedure
+    .input(
+      z.object({
+        status: z.enum(["pending", "invoiced", "waived"]).default("pending"),
+        limit: z.number().int().min(1).max(100).default(50),
+        offset: listOffsetInput,
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const conditions = and(
+        eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+        eq(dispenseChargeQueue.status, input.status),
+      );
+      const [items, countRows] = await Promise.all([
+        ctx.db
+          .select({
+            id: dispenseChargeQueue.id,
+            prescriptionEventId: dispenseChargeQueue.prescriptionEventId,
+            prescriptionId: dispenseChargeQueue.prescriptionId,
+            patientId: dispenseChargeQueue.patientId,
+            patientName: patients.name,
+            clientId: dispenseChargeQueue.clientId,
+            clientFirstName: clients.firstName,
+            clientLastName: clients.lastName,
+            appointmentId: dispenseChargeQueue.appointmentId,
+            productId: dispenseChargeQueue.productId,
+            quantity: dispenseChargeQueue.quantity,
+            description: dispenseChargeQueue.descriptionSnapshot,
+            unitPrice: dispenseChargeQueue.unitPriceSnapshot,
+            status: dispenseChargeQueue.status,
+            invoiceId: dispenseChargeQueue.invoiceId,
+            resolutionReason: dispenseChargeQueue.resolutionReason,
+            resolvedByName: dispenseChargeQueue.resolvedByName,
+            resolvedAt: dispenseChargeQueue.resolvedAt,
+            legacyReview: dispenseChargeQueue.legacyReview,
+            createdAt: dispenseChargeQueue.createdAt,
+          })
+          .from(dispenseChargeQueue)
+          .innerJoin(
+            patients,
+            and(
+              eq(dispenseChargeQueue.patientId, patients.id),
+              eq(patients.practiceId, ctx.practiceId),
+            ),
+          )
+          .innerJoin(
+            clients,
+            and(
+              eq(dispenseChargeQueue.clientId, clients.id),
+              eq(clients.practiceId, ctx.practiceId),
+            ),
+          )
+          .where(conditions)
+          .orderBy(
+            desc(dispenseChargeQueue.createdAt),
+            desc(dispenseChargeQueue.id),
+          )
+          .limit(input.limit)
+          .offset(input.offset),
+        ctx.db
+          .select({ count: sql<number>`count(*)` })
+          .from(dispenseChargeQueue)
+          .where(conditions),
+      ]);
+      return { items, total: Number(countRows[0]?.count ?? 0) };
+    }),
+
+  createDispenseChargeInvoice: protectedProcedure
+    .use(requireRole("admin", "front_desk"))
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        acknowledgeLegacyReview: z.boolean().default(false),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const result = await ctx.db.transaction(async (tx) => {
+        const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
+        const [sourceIdentity] = await tx
+          .select({ appointmentId: dispenseChargeQueue.appointmentId })
+          .from(dispenseChargeQueue)
+          .where(
+            and(
+              eq(dispenseChargeQueue.id, input.id),
+              eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+            ),
+          )
+          .limit(1);
+        if (!sourceIdentity) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Medication dispense not found.",
+          });
+        }
+        if (sourceIdentity.appointmentId) {
+          // Match createInvoice's lock order: appointment first, then the
+          // dispense row. This prevents duplicate visit invoices and avoids a
+          // lock-order inversion when two front-desk tabs charge the same fill.
+          await tx.execute(
+            sql`select pg_advisory_xact_lock(hashtextextended(${sourceIdentity.appointmentId}, 0))`,
+          );
+          await lockAppointmentForInvoiceMutation(
+            txCtx,
+            sourceIdentity.appointmentId,
+          );
+        }
+        const [source] = await tx
+          .select()
+          .from(dispenseChargeQueue)
+          .where(
+            and(
+              eq(dispenseChargeQueue.id, input.id),
+              eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+            ),
+          )
+          .limit(1)
+          .for("update");
+        if (!source) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Medication dispense not found.",
+          });
+        }
+        if (source.status === "invoiced" && source.invoiceId) {
+          return { invoiceId: source.invoiceId, replayed: true as const };
+        }
+        if (source.status === "waived") {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "This medication dispense was waived. Reopen it before charging.",
+          });
+        }
+        if (source.legacyReview && !input.acknowledgeLegacyReview) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Confirm this legacy dispense should be billed before creating an invoice.",
+          });
+        }
+        const [practice] = await tx
+          .select({ taxRatePercent: practices.taxRatePercent })
+          .from(practices)
+          .where(activePracticeWhere(ctx.practiceId))
+          .limit(1);
+        if (!practice) throw practiceNotFound();
+        const subtotalCents =
+          moneyToCents(source.unitPriceSnapshot) * source.quantity;
+        let invoiceId: string;
+        const [existingVisitInvoice] = source.appointmentId
+          ? await tx
+              .select({
+                id: invoices.id,
+                clientId: invoices.clientId,
+                patientId: invoices.patientId,
+                status: invoices.status,
+                subtotal: invoices.subtotal,
+                paidAmount: invoices.paidAmount,
+              })
+              .from(invoices)
+              .where(
+                and(
+                  eq(invoices.practiceId, ctx.practiceId),
+                  eq(invoices.appointmentId, source.appointmentId),
+                  eq(invoices.isEstimate, false),
+                  ne(invoices.status, "void"),
+                  isNull(invoices.deletedAt),
+                ),
+              )
+              .limit(1)
+              .for("update")
+          : [];
+        if (existingVisitInvoice) {
+          if (
+            existingVisitInvoice.clientId !== source.clientId ||
+            existingVisitInvoice.patientId !== source.patientId
+          ) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "The visit invoice no longer matches this medication dispense.",
+            });
+          }
+          if (
+            existingVisitInvoice.status !== "draft" ||
+            moneyToCents(existingVisitInvoice.paidAmount) !== 0
+          ) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "This visit already has a finalized invoice. Correct that invoice or waive this pending dispense with a reason.",
+            });
+          }
+          const combinedSubtotalCents =
+            moneyToCents(existingVisitInvoice.subtotal) + subtotalCents;
+          const combinedTaxCents = Math.round(
+            (combinedSubtotalCents *
+              Number(practice.taxRatePercent ?? "8.00")) /
+              100,
+          );
+          const [updatedInvoice] = await tx
+            .update(invoices)
+            .set({
+              subtotal: centsToMoney(combinedSubtotalCents),
+              tax: centsToMoney(combinedTaxCents),
+              total: centsToMoney(combinedSubtotalCents + combinedTaxCents),
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(invoices.id, existingVisitInvoice.id),
+                eq(invoices.practiceId, ctx.practiceId),
+                eq(invoices.status, "draft"),
+                eq(invoices.paidAmount, "0.00"),
+                isNull(invoices.deletedAt),
+              ),
+            )
+            .returning({ id: invoices.id });
+          if (!updatedInvoice) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "Visit invoice changed. Refresh and try again.",
+            });
+          }
+          invoiceId = updatedInvoice.id;
+        } else {
+          const taxCents = Math.round(
+            (subtotalCents * Number(practice.taxRatePercent ?? "8.00")) / 100,
+          );
+          const [invoice] = await tx
+            .insert(invoices)
+            .values({
+              practiceId: ctx.practiceId,
+              clientId: source.clientId,
+              patientId: source.patientId,
+              appointmentId: source.appointmentId,
+              status: "draft",
+              subtotal: centsToMoney(subtotalCents),
+              tax: centsToMoney(taxCents),
+              total: centsToMoney(subtotalCents + taxCents),
+              paidAmount: "0.00",
+              dueDate: null,
+              isEstimate: false,
+            })
+            .returning({ id: invoices.id });
+          invoiceId = invoice!.id;
+        }
+        const invoiceItemId = randomUUID();
+        await tx.insert(invoiceItems).values({
+          id: invoiceItemId,
+          invoiceId,
+          description: source.descriptionSnapshot,
+          quantity: source.quantity,
+          unitPrice: source.unitPriceSnapshot,
+          total: centsToMoney(subtotalCents),
+          itemType: "product",
+          itemId: source.productId,
+          sourceDispenseChargeId: source.id,
+        });
+        await markDispenseChargesInvoiced(
+          txCtx,
+          [{ chargeId: source.id, invoiceId, invoiceItemId }],
+          ctx.user,
+        );
+        return { invoiceId, replayed: false as const };
+      });
+      return result;
+    }),
+
+  waiveDispenseCharge: protectedProcedure
+    .use(requireRole("admin"))
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        reason: z.string().trim().min(5).max(500),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      return ctx.db.transaction(async (tx) => {
+        const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
+        const charge = await lockDispenseChargeWorkflow(txCtx, input.id);
+        if (!charge) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Medication dispense not found.",
+          });
+        }
+        if (charge.status !== "pending") {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Medication charge state changed. Refresh and try again.",
+          });
+        }
+        const resolvedAt = new Date();
+        if (charge.appointmentId) {
+          const [workItem] = await tx
+            .select()
+            .from(visitWorkItems)
+            .where(
+              and(
+                eq(visitWorkItems.practiceId, ctx.practiceId),
+                eq(visitWorkItems.appointmentId, charge.appointmentId),
+                eq(visitWorkItems.prescriptionId, charge.prescriptionId),
+                isNull(visitWorkItems.deletedAt),
+              ),
+            )
+            .limit(1)
+            .for("update");
+          if (
+            workItem &&
+            workItem.status !== "unresolved" &&
+            !(
+              workItem.status === "no_charge" &&
+              workItem.noChargeReason === input.reason
+            )
+          ) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "Correct the visit reconciliation before waiving this medication charge.",
+            });
+          }
+          if (workItem?.status === "unresolved") {
+            const [resolvedWork] = await tx
+              .update(visitWorkItems)
+              .set({
+                status: "no_charge",
+                invoiceId: null,
+                invoiceItemId: null,
+                noChargeReason: input.reason,
+                voidReason: null,
+                resolvedBy: ctx.user.id,
+                resolvedAt,
+                updatedAt: resolvedAt,
+              })
+              .where(
+                and(
+                  eq(visitWorkItems.id, workItem.id),
+                  eq(visitWorkItems.practiceId, ctx.practiceId),
+                  eq(visitWorkItems.status, "unresolved"),
+                  isNull(visitWorkItems.deletedAt),
+                ),
+              )
+              .returning({ id: visitWorkItems.id });
+            if (!resolvedWork) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: "Visit reconciliation changed. Refresh and try again.",
+              });
+            }
+          }
+        }
+        const [updated] = await tx
+          .update(dispenseChargeQueue)
+          .set({
+            status: "waived",
+            invoiceId: null,
+            invoiceItemId: null,
+            resolvedBy: ctx.user.id,
+            resolvedByName: ctx.user.name,
+            resolvedAt,
+            resolutionReason: input.reason,
+            updatedAt: resolvedAt,
+          })
+          .where(
+            and(
+              eq(dispenseChargeQueue.id, input.id),
+              eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+              eq(dispenseChargeQueue.status, "pending"),
+            ),
+          )
+          .returning({ id: dispenseChargeQueue.id });
+        if (!updated) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Medication charge state changed. Refresh and try again.",
+          });
+        }
+        return updated;
+      });
+    }),
+
+  reopenDispenseCharge: protectedProcedure
+    .use(requireRole("admin"))
+    .input(z.object({ id: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      return ctx.db.transaction(async (tx) => {
+        const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
+        const charge = await lockDispenseChargeWorkflow(txCtx, input.id);
+        if (!charge) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Medication dispense not found.",
+          });
+        }
+        if (charge.status !== "waived") {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Medication charge state changed. Refresh and try again.",
+          });
+        }
+        if (charge.appointmentId) {
+          const [workItem] = await tx
+            .select()
+            .from(visitWorkItems)
+            .where(
+              and(
+                eq(visitWorkItems.practiceId, ctx.practiceId),
+                eq(visitWorkItems.appointmentId, charge.appointmentId),
+                eq(visitWorkItems.prescriptionId, charge.prescriptionId),
+                isNull(visitWorkItems.deletedAt),
+              ),
+            )
+            .limit(1)
+            .for("update");
+          if (
+            workItem &&
+            workItem.status !== "unresolved" &&
+            !(
+              (workItem.status === "no_charge" &&
+                workItem.noChargeReason === charge.resolutionReason) ||
+              (workItem.status === "voided" &&
+                workItem.voidReason === charge.resolutionReason)
+            )
+          ) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "Correct the visit reconciliation before reopening this medication charge.",
+            });
+          }
+          if (workItem && workItem.status !== "unresolved") {
+            await tx.insert(auditLog).values({
+              practiceId: ctx.practiceId,
+              userId: ctx.user.id,
+              action: "reopened",
+              entityType: "visit_work_item",
+              entityId: workItem.id,
+              changes: {
+                reason: "Medication charge reopened from billing queue.",
+                priorStatus: workItem.status,
+                priorInvoiceId: workItem.invoiceId,
+                priorInvoiceItemId: workItem.invoiceItemId,
+                priorNoChargeReason: workItem.noChargeReason,
+                priorVoidReason: workItem.voidReason,
+                priorResolvedBy: workItem.resolvedBy,
+                priorResolvedAt: workItem.resolvedAt?.toISOString() ?? null,
+              },
+            });
+            const [reopenedWork] = await tx
+              .update(visitWorkItems)
+              .set({
+                status: "unresolved",
+                invoiceId: null,
+                invoiceItemId: null,
+                noChargeReason: null,
+                voidReason: null,
+                resolvedBy: null,
+                resolvedAt: null,
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(visitWorkItems.id, workItem.id),
+                  eq(visitWorkItems.practiceId, ctx.practiceId),
+                  eq(visitWorkItems.status, workItem.status),
+                  isNull(visitWorkItems.deletedAt),
+                ),
+              )
+              .returning({ id: visitWorkItems.id });
+            if (!reopenedWork) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: "Visit reconciliation changed. Refresh and try again.",
+              });
+            }
+          }
+        }
+        const [updated] = await tx
+          .update(dispenseChargeQueue)
+          .set({
+            status: "pending",
+            invoiceId: null,
+            invoiceItemId: null,
+            resolvedBy: null,
+            resolvedByName: null,
+            resolvedAt: null,
+            resolutionReason: null,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(dispenseChargeQueue.id, input.id),
+              eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+              eq(dispenseChargeQueue.status, "waived"),
+            ),
+          )
+          .returning({ id: dispenseChargeQueue.id });
+        if (!updated) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Medication charge state changed. Refresh and try again.",
+          });
+        }
+        return updated;
+      });
     }),
 
   listInvoices: protectedProcedure
@@ -1895,6 +2714,12 @@ export const billingRouter = createRouter({
           appointmentId: input.appointmentId,
           patientId: input.patientId,
         });
+        await assertDispenseChargeSources(txCtx, input.items, {
+          clientId: input.clientId,
+          patientId: input.patientId,
+          appointmentId: input.appointmentId,
+          isEstimate: input.isEstimate ?? false,
+        });
         if (!(input.isEstimate ?? false)) {
           await deductProductStock(txCtx, stockOwnedItems(input.items));
         }
@@ -1917,8 +2742,13 @@ export const billingRouter = createRouter({
           .returning();
 
         if (input.items.length > 0) {
+          const preparedItems = input.items.map((item) => ({
+            id: randomUUID(),
+            ...item,
+          }));
           await tx.insert(invoiceItems).values(
-            input.items.map((item) => ({
+            preparedItems.map((item) => ({
+              id: item.id,
               invoiceId: invoice!.id,
               description: item.description,
               quantity: item.quantity,
@@ -1927,7 +2757,19 @@ export const billingRouter = createRouter({
               itemType: item.itemType as "service" | "product",
               itemId: item.itemId ?? null,
               sourcePrescriptionId: item.sourcePrescriptionId ?? null,
-            }))
+              sourceDispenseChargeId: item.sourceDispenseChargeId ?? null,
+            })),
+          );
+          await markDispenseChargesInvoiced(
+            txCtx,
+            preparedItems
+              .filter((item) => item.sourceDispenseChargeId)
+              .map((item) => ({
+                chargeId: item.sourceDispenseChargeId!,
+                invoiceId: invoice!.id,
+                invoiceItemId: item.id,
+              })),
+            ctx.user,
           );
         }
 
@@ -1970,6 +2812,7 @@ export const billingRouter = createRouter({
             paidAmount: invoices.paidAmount,
             appointmentId: invoices.appointmentId,
             patientId: invoices.patientId,
+            clientId: invoices.clientId,
             updatedAt: invoices.updatedAt,
           })
           .from(invoices)
@@ -2046,6 +2889,13 @@ export const billingRouter = createRouter({
           patientId: existing.patientId,
           currentInvoiceId: existing.id,
         });
+        await assertDispenseChargeSources(txCtx, input.items, {
+          clientId: existing.clientId,
+          patientId: existing.patientId,
+          appointmentId: existing.appointmentId,
+          currentInvoiceId: existing.id,
+          isEstimate: existing.isEstimate,
+        });
         await restoreProductStock(txCtx, previousItems);
         await deductProductStock(txCtx, stockOwnedItems(input.items));
 
@@ -2092,8 +2942,15 @@ export const billingRouter = createRouter({
             )
           );
 
+        await reopenInvoiceDispenseCharges(txCtx, input.id);
+
+        const preparedItems = input.items.map((item) => ({
+          id: randomUUID(),
+          ...item,
+        }));
         await tx.insert(invoiceItems).values(
-          input.items.map((item) => ({
+          preparedItems.map((item) => ({
+            id: item.id,
             invoiceId: input.id,
             description: item.description,
             quantity: item.quantity,
@@ -2102,7 +2959,19 @@ export const billingRouter = createRouter({
             itemType: item.itemType,
             itemId: item.itemId ?? null,
             sourcePrescriptionId: item.sourcePrescriptionId ?? null,
-          }))
+            sourceDispenseChargeId: item.sourceDispenseChargeId ?? null,
+          })),
+        );
+        await markDispenseChargesInvoiced(
+          txCtx,
+          preparedItems
+            .filter((item) => item.sourceDispenseChargeId)
+            .map((item) => ({
+              chargeId: item.sourceDispenseChargeId!,
+              invoiceId: input.id,
+              invoiceItemId: item.id,
+            })),
+          ctx.user,
         );
 
         return invoice;
@@ -2891,7 +3760,17 @@ export const billingRouter = createRouter({
 
   voidInvoice: protectedProcedure
     .use(requireRole("admin", "front_desk"))
-    .input(z.object({ id: z.string().uuid() }))
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        reason: z
+          .string()
+          .trim()
+          .min(5, "Explain why the invoice is being voided.")
+          .max(500)
+          .default("Invoice voided by billing staff."),
+      }),
+    )
     .mutation(async ({ ctx, input }) => {
       const invoice = await getInvoiceForPractice(ctx, input.id);
       if (invoice.status === "paid") {
@@ -2947,6 +3826,7 @@ export const billingRouter = createRouter({
           const items = await invoiceProductItemsForStock(txCtx, input.id);
           await restoreProductStock(txCtx, items);
         }
+        await reopenInvoiceDispenseCharges(txCtx, input.id);
 
         return updated!;
       });

@@ -52,7 +52,7 @@ DECLARE
   t text;
   tbls text[] := array[
     'api_keys','appointment_types','appointment_waitlist','appointments','audit_log','booking_pages',
-    'capture_sessions','cases','clients','clinical_notes','clinical_record_corrections','communications','consent_forms','consent_requests','controlled_substance_log','email_suppressions',
+    'capture_sessions','cases','clients','clinical_notes','clinical_record_corrections','communications','consent_forms','consent_requests','controlled_substance_log','dispense_charge_queue','email_suppressions',
     'files','insurance_claims','insurance_policies','invoices','lab_results','location_messaging','messaging_registrations','migration_runs',
     'locations','patients','practice_payment_accounts','prescription_events','prescriptions','problem_list','procedures','products','purchase_orders',
     'recurring_series','rooms','services','sms_suppressions','soap_notes','staff_schedules','suppliers',
@@ -82,6 +82,12 @@ REVOKE UPDATE, DELETE ON clinical_record_corrections FROM openpims_app;
 -- service, but even the application role cannot rewrite or remove history.
 REVOKE ALL ON prescription_events FROM openpims_app;
 GRANT SELECT, INSERT ON prescription_events TO openpims_app;
+
+-- Dispense charge snapshots are durable revenue work. The app may advance or
+-- reopen their attributed workflow status, while database triggers prevent
+-- snapshot changes and all deletion.
+REVOKE ALL ON dispense_charge_queue FROM openpims_app;
+GRANT SELECT, INSERT, UPDATE ON dispense_charge_queue TO openpims_app;
 
 -- 5) Child tables without their own practice_id are isolated by joining to the
 --    parent row, which carries practice_id and its own tenant RLS.
@@ -167,7 +173,7 @@ BEGIN
   FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format(
-        'REVOKE ALL ON auth_tokens, clinical_record_corrections, demo_accesses, funnel_events, prescription_events, sessions, verification_tokens FROM %I', r
+        'REVOKE ALL ON auth_tokens, clinical_record_corrections, demo_accesses, dispense_charge_queue, funnel_events, prescription_events, sessions, verification_tokens FROM %I', r
       );
     END IF;
   END LOOP;

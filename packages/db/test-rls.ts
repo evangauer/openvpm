@@ -53,6 +53,8 @@ const aPrescription = randomUUID();
 const bPrescription = randomUUID();
 const aPrescriptionEvent = randomUUID();
 const bPrescriptionEvent = randomUUID();
+const aDispenseCharge = randomUUID();
+const bDispenseCharge = randomUUID();
 const funnelEventId = randomUUID();
 let failures = 0;
 
@@ -94,6 +96,14 @@ try {
     values
     (${aPrescriptionEvent}, ${aId}, ${aPrescription}, ${aPatient}, ${aProduct}, 'created', 1, 'active', 1, ${aUser}, 'RLS Admin A'),
     (${bPrescriptionEvent}, ${bId}, ${bPrescription}, ${bPatient}, ${bProduct}, 'created', 1, 'active', 1, ${bUser}, 'RLS Admin B')`;
+  await owner`insert into dispense_charge_queue
+    (id, practice_id, prescription_event_id, prescription_id, patient_id, client_id, product_id, quantity, description_snapshot, unit_price_snapshot)
+    select ${aDispenseCharge}, ${aId}, ${aPrescriptionEvent}, ${aPrescription}, ${aPatient}, client_id, ${aProduct}, 1, 'RLS Drug A', 1
+    from patients where id = ${aPatient}`;
+  await owner`insert into dispense_charge_queue
+    (id, practice_id, prescription_event_id, prescription_id, patient_id, client_id, product_id, quantity, description_snapshot, unit_price_snapshot)
+    select ${bDispenseCharge}, ${bId}, ${bPrescriptionEvent}, ${bPrescription}, ${bPatient}, client_id, ${bProduct}, 1, 'RLS Drug B', 1
+    from patients where id = ${bPatient}`;
   await owner`insert into migration_runs
     (id, practice_id, created_by, mode, source, file_hash, reviewed_plan_hash, file_size_bytes, preview_expires_at)
     values
@@ -128,6 +138,43 @@ try {
     "tenant A sees only A's prescription events",
     aPrescriptionEvents.length === 1 &&
       aPrescriptionEvents[0]!.id === aPrescriptionEvent,
+  );
+  const aDispenseCharges = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id, practice_id from dispense_charge_queue where id in (${aDispenseCharge}, ${bDispenseCharge})`;
+  });
+  check(
+    "tenant A sees only A's dispense charge work",
+    aDispenseCharges.length === 1 &&
+      aDispenseCharges[0]!.id === aDispenseCharge,
+  );
+
+  let dispenseSnapshotUpdateBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`update dispense_charge_queue set quantity = 2 where id = ${aDispenseCharge}`;
+    });
+  } catch {
+    dispenseSnapshotUpdateBlocked = true;
+  }
+  check(
+    "application role cannot rewrite dispense charge snapshots",
+    dispenseSnapshotUpdateBlocked,
+  );
+
+  let dispenseDeleteBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`delete from dispense_charge_queue where id = ${aDispenseCharge}`;
+    });
+  } catch {
+    dispenseDeleteBlocked = true;
+  }
+  check(
+    "application role cannot delete dispense charge work",
+    dispenseDeleteBlocked,
   );
 
   let prescriptionEventUpdateBlocked = false;
@@ -330,6 +377,7 @@ try {
   await owner.begin(async (tx) => {
     const cleanup = tx as unknown as typeof owner;
     await cleanup`select set_config('app.ledger_maintenance', 'on', true)`;
+    await cleanup`delete from dispense_charge_queue where id in (${aDispenseCharge}, ${bDispenseCharge})`;
     await cleanup`delete from invoice_adjustments where invoice_id in (${aInvoice}, ${bInvoice})`;
     await cleanup`delete from prescription_events where id in (${aPrescriptionEvent}, ${bPrescriptionEvent})`;
     await cleanup`delete from visit_closeouts where id in (${aCloseout}, ${bCloseout})`;
