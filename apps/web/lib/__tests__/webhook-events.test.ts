@@ -15,6 +15,7 @@ describe("webhook event catalog", () => {
       "app/api/webhooks/stripe/route.ts",
       "server/routers/portal.ts",
       "lib/agent/tools.ts",
+      "app/api/cron/prescription-expiry/route.ts",
     ]
       .map((file) => readFileSync(file, "utf8"))
       .join("\n");
@@ -30,6 +31,11 @@ describe("webhook event catalog", () => {
       "vaccination.recorded",
       "problem.created",
       "prescription.created",
+      "prescription.refill_dispensed",
+      "prescription.refill_authorized",
+      "prescription.completed",
+      "prescription.cancelled",
+      "prescription.expired",
       "lab_result.created",
       "procedure.created",
       "invoice.paid",
@@ -55,7 +61,7 @@ describe("webhook event catalog", () => {
     expect(apiDocs).toContain("WEBHOOK_EVENT_DEFINITIONS");
     expect(aiDocs).toContain("WEBHOOK_EVENT_DEFINITIONS");
     for (const [, event] of readmeWebhooks.matchAll(
-      /"([a-z_]+(?:\.[a-z_]+)+)"/g
+      /"([a-z_]+(?:\.[a-z_]+)+)"/g,
     )) {
       expect(WEBHOOK_EVENTS).toContain(event);
     }

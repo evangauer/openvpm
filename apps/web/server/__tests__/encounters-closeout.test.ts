@@ -183,6 +183,41 @@ describe("encounter closeout database locking", () => {
   });
 });
 
+describe("encounter prescription lifecycle semantics", () => {
+  it("retains all visit prescriptions for history but snapshots only effective-active take-home medication", () => {
+    const routerSource = readFileSync(
+      new URL("../routers/encounters.ts", import.meta.url),
+      "utf8",
+    );
+    const finalizeMedicationQuery = routerSource.match(
+      /const medicationSnapshot = await tx[\s\S]+?\.orderBy\(prescriptions\.createdAt\);/,
+    )?.[0];
+    expect(finalizeMedicationQuery).toContain(
+      'eq(prescriptions.status, "active")',
+    );
+    expect(finalizeMedicationQuery).toContain("prescriptions.endDate");
+    expect(finalizeMedicationQuery).toContain("appointment.practiceTimezone");
+    expect(routerSource).toContain("medications: medicationHistory");
+    expect(routerSource).toContain(
+      'medication.effectiveStatus === "active"',
+    );
+
+    const pageSource = readFileSync(
+      new URL(
+        "../../app/(dashboard)/encounters/[appointmentId]/page.tsx",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    expect(pageSource).toContain(
+      "linkedPrescriptions={closeoutQuery.data?.medications ?? []}",
+    );
+    expect(pageSource).toContain(
+      "linkedMedicationCount={data.activeMedications.length}",
+    );
+  });
+});
+
 describe("encounter closeout safety", () => {
   it("blocks checkout when performed visit work is unresolved", async () => {
     const { db, updateSet, execute } = createDb({

@@ -854,8 +854,8 @@ function VisitCloseout({
           <ReadinessTile
             label="Visit medications"
             value={
-              data.medications.length > 0
-                ? `${data.medications.length} linked prescription${data.medications.length === 1 ? "" : "s"}`
+              data.activeMedications.length > 0
+                ? `${data.activeMedications.length} active linked prescription${data.activeMedications.length === 1 ? "" : "s"}`
                 : "None linked"
             }
           />
@@ -900,7 +900,7 @@ function VisitCloseout({
               documentationExceptionReason={documentationExceptionReason}
               setDocumentationExceptionReason={setDocumentationExceptionReason}
               linkedSoapCount={data.linkedSoapCount}
-              linkedMedicationCount={data.medications.length}
+              linkedMedicationCount={data.activeMedications.length}
               followUpAppointments={data.followUpAppointments}
               followUpAssignees={data.followUpAssignees}
               timeZone={data.practice.timezone}

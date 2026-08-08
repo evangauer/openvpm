@@ -88,6 +88,10 @@ export const prescriptions = pgTable(
       table.practiceId,
       table.operationId
     ),
+    practiceIdUq: uniqueIndex("prescriptions_practice_id_uq").on(
+      table.practiceId,
+      table.id
+    ),
   })
 );
 

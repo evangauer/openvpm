@@ -8,6 +8,8 @@ import {
   inArray,
   isNull,
   ne,
+  or,
+  gte,
   sql,
 } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
@@ -50,6 +52,7 @@ import {
 import { canTransitionAppointmentStatus } from "@/lib/scheduling/appointment-status";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
 import { clinicalDateInput } from "@/lib/records/clinical-inputs";
+import { effectivePrescriptionStatus } from "@/lib/records/prescription-lifecycle";
 import { rowsFromExecute } from "@/lib/db/execute-rows";
 
 type EncounterDb = Pick<Database, "select" | "insert" | "update" | "execute">;
@@ -698,7 +701,6 @@ export const encountersRouter = createRouter({
       if (!appointment) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Appointment not found" });
       }
-
       const [
         closeout,
         linkedSoapRows,
@@ -734,6 +736,8 @@ export const encountersRouter = createRouter({
               productId: prescriptions.productId,
               productName: products.name,
               productUnitPrice: products.unitPrice,
+              status: prescriptions.status,
+              endDate: prescriptions.endDate,
             })
             .from(prescriptions)
             .leftJoin(
@@ -810,6 +814,18 @@ export const encountersRouter = createRouter({
       const invoiceSummaries = await Promise.all(
         rawInvoices.map((invoice) => invoiceReadiness(ctx, invoice))
       );
+      const practiceToday = formatDateInputForTimeZone(
+        new Date(),
+        appointment.practiceTimezone,
+      );
+      const medicationHistory = medications.map((medication) => ({
+        ...medication,
+        effectiveStatus: effectivePrescriptionStatus({
+          status: medication.status,
+          endDate: medication.endDate,
+          today: practiceToday,
+        }),
+      }));
 
       return {
         closeout,
@@ -819,7 +835,10 @@ export const encountersRouter = createRouter({
           timezone: appointment.practiceTimezone,
         },
         linkedSoapCount: linkedSoapRows.length,
-        medications,
+        medications: medicationHistory,
+        activeMedications: medicationHistory.filter(
+          (medication) => medication.effectiveStatus === "active",
+        ),
         followUpAppointments,
         followUpAssignees,
         invoices: invoiceSummaries,
@@ -1470,6 +1489,16 @@ export const encountersRouter = createRouter({
               eq(prescriptions.patientId, appointment.patientId),
               eq(prescriptions.practiceId, ctx.practiceId),
               eq(prescriptions.status, "active"),
+              or(
+                isNull(prescriptions.endDate),
+                gte(
+                  prescriptions.endDate,
+                  formatDateInputForTimeZone(
+                    new Date(),
+                    appointment.practiceTimezone,
+                  ),
+                ),
+              ),
               isNull(prescriptions.deletedAt)
             )
           )

@@ -309,6 +309,10 @@ export const products = pgTable(
       table.deletedAt,
       table.stockQuantity
     ),
+    practiceIdUq: uniqueIndex("products_practice_id_uq").on(
+      table.practiceId,
+      table.id
+    ),
   })
 );
 

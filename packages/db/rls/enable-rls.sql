@@ -54,7 +54,7 @@ DECLARE
     'api_keys','appointment_types','appointment_waitlist','appointments','audit_log','booking_pages',
     'capture_sessions','cases','clients','clinical_notes','clinical_record_corrections','communications','consent_forms','consent_requests','controlled_substance_log','email_suppressions',
     'files','insurance_claims','insurance_policies','invoices','lab_results','location_messaging','messaging_registrations','migration_runs',
-    'locations','patients','practice_payment_accounts','prescriptions','problem_list','procedures','products','purchase_orders',
+    'locations','patients','practice_payment_accounts','prescription_events','prescriptions','problem_list','procedures','products','purchase_orders',
     'recurring_series','rooms','services','sms_suppressions','soap_notes','staff_schedules','suppliers',
     'treatment_plans','treatment_templates','usage_records','users','vaccination_records',
     'visit_closeouts','visit_work_items','vital_signs','webhooks','wellness_enrollments','wellness_plans'
@@ -76,6 +76,12 @@ END$$;
 -- append and read them, but even a future generic repository path must not
 -- gain UPDATE or DELETE through the broad table grant above.
 REVOKE UPDATE, DELETE ON clinical_record_corrections FROM openpims_app;
+
+-- Prescription lifecycle events are an append-only clinical ledger. Tenant
+-- users may read and append attributed events through the transactional app
+-- service, but even the application role cannot rewrite or remove history.
+REVOKE ALL ON prescription_events FROM openpims_app;
+GRANT SELECT, INSERT ON prescription_events TO openpims_app;
 
 -- 5) Child tables without their own practice_id are isolated by joining to the
 --    parent row, which carries practice_id and its own tenant RLS.
@@ -161,7 +167,7 @@ BEGIN
   FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format(
-        'REVOKE ALL ON auth_tokens, clinical_record_corrections, demo_accesses, funnel_events, sessions, verification_tokens FROM %I', r
+        'REVOKE ALL ON auth_tokens, clinical_record_corrections, demo_accesses, funnel_events, prescription_events, sessions, verification_tokens FROM %I', r
       );
     END IF;
   END LOOP;

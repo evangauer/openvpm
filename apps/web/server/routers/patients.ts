@@ -19,8 +19,10 @@ import {
   cases,
   treatmentPlans,
   prescriptions,
+  prescriptionEvents,
   invoices,
   controlledSubstanceLog,
+  clinicalRecordCorrections,
   insurancePolicies,
   wellnessEnrollments,
   practices,
@@ -129,6 +131,40 @@ function activePracticePredicate(practiceId: string) {
     where ${practices.id} = ${practiceId}
       and ${practices.deletedAt} is null
   )`;
+}
+
+function retainedPatientHistoryPredicate(
+  practiceId: string,
+  patientId: string,
+) {
+  return sql<boolean>`
+    exists (
+      select 1
+      from ${prescriptionEvents}
+      where ${prescriptionEvents.practiceId} = ${practiceId}
+        and ${prescriptionEvents.patientId} = ${patientId}
+    )
+    or exists (
+      select 1
+      from ${clinicalRecordCorrections}
+      where ${clinicalRecordCorrections.practiceId} = ${practiceId}
+        and ${clinicalRecordCorrections.patientId} = ${patientId}
+    )
+    or exists (
+      select 1
+      from ${soapNotes}
+      where ${soapNotes.practiceId} = ${practiceId}
+        and ${soapNotes.patientId} = ${patientId}
+        and ${soapNotes.appointmentId} is not null
+    )
+    or exists (
+      select 1
+      from ${vitalSigns}
+      where ${vitalSigns.practiceId} = ${practiceId}
+        and ${vitalSigns.patientId} = ${patientId}
+        and ${vitalSigns.appointmentId} is not null
+    )
+  `;
 }
 
 async function assertActivePractice(ctx: PatientsContext) {
@@ -519,6 +555,28 @@ export const patientsRouter = createRouter({
           });
         }
 
+        const [retainedHistory] = await tx
+          .select({
+            exists: retainedPatientHistoryPredicate(ctx.practiceId, input.id),
+          })
+          .from(patients)
+          .where(
+            and(
+              eq(patients.id, input.id),
+              eq(patients.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+            ),
+          )
+          .limit(1);
+
+        if (retainedHistory?.exists) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "This patient has retained clinical or prescription history and cannot be deleted. Mark the patient inactive or deceased instead.",
+          });
+        }
+
         const [patient] = await tx
           .update(patients)
           .set({ deletedAt: new Date() })
@@ -663,6 +721,27 @@ export const patientsRouter = createRouter({
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "Patients must belong to the same client to merge.",
+        });
+      }
+
+      const [retainedHistory] = await ctx.db
+        .select({
+          exists: retainedPatientHistoryPredicate(ctx.practiceId, input.mergeId),
+        })
+        .from(patients)
+        .where(
+          and(
+            eq(patients.id, input.mergeId),
+            eq(patients.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+          ),
+        )
+        .limit(1);
+      if (retainedHistory?.exists) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "This patient has retained clinical or prescription history and cannot be merged. Keep both chart identities and contact support for a supervised correction.",
         });
       }
 

@@ -23,6 +23,7 @@ const TABLES = [
   "lab_results",
   "procedures",
   "visit_closeouts",
+  "prescription_events",
   "prescriptions",
   "vaccination_records",
   "soap_notes",

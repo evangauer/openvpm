@@ -423,6 +423,103 @@ describe("restorePracticeData", () => {
     expect(inserted).toEqual([]);
   });
 
+  it("rejects a present prescription ledger that omits a created event", () => {
+    const backup = {
+      ...emptyBackup(),
+      users: [{ id: "user-1" }],
+      clients: [{ id: "client-1" }],
+      patients: [{ id: "patient-1", clientId: "client-1" }],
+      prescriptions: [
+        {
+          id: "rx-1",
+          patientId: "patient-1",
+          prescribedBy: "user-1",
+          productId: null,
+          quantity: 30,
+        },
+      ],
+      prescriptionEvents: [],
+    };
+
+    expect(validatePracticeExportRestore(backup)).toMatchObject({
+      valid: false,
+      errors: [
+        "prescriptions[rx-1] must have exactly one created prescription event.",
+      ],
+    });
+  });
+
+  it("synthesizes a factual created event for a legacy backup", async () => {
+    const current = {
+      ...emptyBackup(),
+      users: [{ id: "user-1", name: "Dr. Rivera" }],
+      clients: [{ id: "client-1" }],
+      patients: [{ id: "patient-1", clientId: "client-1" }],
+      prescriptions: [
+        {
+          id: "rx-1",
+          practiceId: "source-practice",
+          createdAt: "2026-08-01T12:00:00.000Z",
+          patientId: "patient-1",
+          productId: null,
+          medicationName: "Carprofen",
+          quantity: 30,
+          refillsRemaining: 2,
+          prescribedBy: "user-1",
+          operationId: "00000000-0000-0000-0000-000000000009",
+        },
+      ],
+    };
+    const { prescriptionEvents: _omitted, ...legacy } = current as Record<
+      string,
+      unknown
+    >;
+    const { db, inserted } = restoreDb();
+
+    await expect(
+      restorePracticeData(db as never, "target-practice", legacy),
+    ).resolves.toMatchObject({
+      restored: { prescriptionEvents: 1 },
+    });
+    const createdEvent = inserted
+      .flatMap(({ rows }) => rows)
+      .find((row) => row.prescriptionId === "rx-1");
+    expect(createdEvent).toMatchObject({
+      practiceId: "target-practice",
+      prescriptionId: "rx-1",
+      patientId: "patient-1",
+      productId: null,
+      quantity: 30,
+      eventType: "created",
+      statusBefore: null,
+      statusAfter: "active",
+      refillsBefore: null,
+      refillsAfter: 2,
+      reason:
+        "Restored from pre-ledger backup; earlier refill history unavailable.",
+      actorId: "user-1",
+      actorName: "Dr. Rivera",
+      operationId: "00000000-0000-0000-0000-000000000009",
+    });
+    expect(createdEvent?.createdAt).toBeInstanceOf(Date);
+  });
+
+  it("rejects a malformed present prescription ledger instead of treating it as legacy", async () => {
+    const backup = {
+      ...emptyBackup(),
+      prescriptionEvents: { malformed: true },
+    };
+    const { db, inserted } = restoreDb();
+
+    expect(summarizePracticeExport(backup).missingSections).toContain(
+      "prescriptionEvents",
+    );
+    await expect(
+      restorePracticeData(db as never, "target-practice", backup),
+    ).rejects.toThrow("Backup is missing required sections: prescriptionEvents");
+    expect(inserted).toEqual([]);
+  });
+
   it("reports malformed restore rows before inserts run", async () => {
     const backup = {
       ...emptyBackup(),

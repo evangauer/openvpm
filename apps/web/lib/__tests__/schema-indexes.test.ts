@@ -23,6 +23,7 @@ import {
   patientWeights,
   payments,
   practicePaymentAccounts,
+  prescriptionEvents,
   prescriptions,
   problemList,
   procedures,
@@ -315,6 +316,17 @@ describe("hot table indexes", () => {
         "prescriptions_appointment_idx",
         "prescriptions_practice_operation_uq",
         "prescriptions_visit_source_uq",
+      ],
+    ],
+    [
+      "prescription_events",
+      prescriptionEvents,
+      [
+        "prescription_events_prescription_history_idx",
+        "prescription_events_practice_time_idx",
+        "prescription_events_practice_operation_uq",
+        "prescription_events_created_uq",
+        "prescription_events_terminal_uq",
       ],
     ],
     [

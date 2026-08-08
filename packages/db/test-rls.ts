@@ -45,6 +45,14 @@ const aAppointment = randomUUID();
 const bAppointment = randomUUID();
 const aCloseout = randomUUID();
 const bCloseout = randomUUID();
+const aPatient = randomUUID();
+const bPatient = randomUUID();
+const aProduct = randomUUID();
+const bProduct = randomUUID();
+const aPrescription = randomUUID();
+const bPrescription = randomUUID();
+const aPrescriptionEvent = randomUUID();
+const bPrescriptionEvent = randomUUID();
 const funnelEventId = randomUUID();
 let failures = 0;
 
@@ -67,6 +75,25 @@ try {
   await owner`insert into users (id, email, password_hash, name, role, practice_id) values
     (${aUser}, ${`rls-${aUser}@example.com`}, 'not-a-real-hash', 'RLS Admin A', 'admin', ${aId}),
     (${bUser}, ${`rls-${bUser}@example.com`}, 'not-a-real-hash', 'RLS Admin B', 'admin', ${bId})`;
+  await owner`insert into patients (id, practice_id, client_id, name, species)
+    select ${aPatient}, ${aId}, id, 'RLS Pet A', 'canine'
+    from clients where practice_id = ${aId}`;
+  await owner`insert into patients (id, practice_id, client_id, name, species)
+    select ${bPatient}, ${bId}, id, 'RLS Pet B', 'feline'
+    from clients where practice_id = ${bId}`;
+  await owner`insert into products (id, practice_id, name, category, unit_price, stock_quantity) values
+    (${aProduct}, ${aId}, 'RLS Drug A', 'medication', 1, 10),
+    (${bProduct}, ${bId}, 'RLS Drug B', 'medication', 1, 10)`;
+  await owner`insert into prescriptions
+    (id, practice_id, patient_id, product_id, medication_name, dosage, frequency, quantity, refills_remaining, prescribed_by, start_date)
+    values
+    (${aPrescription}, ${aId}, ${aPatient}, ${aProduct}, 'RLS Drug A', '1 tablet', 'daily', 1, 1, ${aUser}, current_date),
+    (${bPrescription}, ${bId}, ${bPatient}, ${bProduct}, 'RLS Drug B', '1 tablet', 'daily', 1, 1, ${bUser}, current_date)`;
+  await owner`insert into prescription_events
+    (id, practice_id, prescription_id, patient_id, product_id, event_type, quantity, status_after, refills_after, actor_id, actor_name)
+    values
+    (${aPrescriptionEvent}, ${aId}, ${aPrescription}, ${aPatient}, ${aProduct}, 'created', 1, 'active', 1, ${aUser}, 'RLS Admin A'),
+    (${bPrescriptionEvent}, ${bId}, ${bPrescription}, ${bPatient}, ${bProduct}, 'created', 1, 'active', 1, ${bUser}, 'RLS Admin B')`;
   await owner`insert into migration_runs
     (id, practice_id, created_by, mode, source, file_hash, reviewed_plan_hash, file_size_bytes, preview_expires_at)
     values
@@ -91,6 +118,44 @@ try {
   check(
     "tenant A sees only A's clients",
     aRows.length === 1 && aRows[0]!.practice_id === aId,
+  );
+
+  const aPrescriptionEvents = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id, practice_id from prescription_events where id in (${aPrescriptionEvent}, ${bPrescriptionEvent})`;
+  });
+  check(
+    "tenant A sees only A's prescription events",
+    aPrescriptionEvents.length === 1 &&
+      aPrescriptionEvents[0]!.id === aPrescriptionEvent,
+  );
+
+  let prescriptionEventUpdateBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`update prescription_events set actor_name = 'tampered' where id = ${aPrescriptionEvent}`;
+    });
+  } catch {
+    prescriptionEventUpdateBlocked = true;
+  }
+  check(
+    "application role cannot rewrite prescription history",
+    prescriptionEventUpdateBlocked,
+  );
+
+  let prescriptionEventDeleteBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`delete from prescription_events where id = ${aPrescriptionEvent}`;
+    });
+  } catch {
+    prescriptionEventDeleteBlocked = true;
+  }
+  check(
+    "application role cannot delete prescription history",
+    prescriptionEventDeleteBlocked,
   );
 
   // Tenant B context sees only B's rows.
@@ -242,20 +307,43 @@ try {
     return tx`select id from funnel_events where id = ${funnelEventId}`;
   });
   check("system bypass can read funnel events", systemFunnelRows.length === 1);
+
+  let bypassCannotDeletePrescriptionHistory = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`select set_config('app.ledger_maintenance', 'on', true)`;
+      await tx`delete from prescription_events where id = ${aPrescriptionEvent}`;
+    });
+  } catch {
+    bypassCannotDeletePrescriptionHistory = true;
+  }
+  check(
+    "application role cannot delete prescription history even with bypass GUCs",
+    bypassCannotDeletePrescriptionHistory,
+  );
 } catch (err) {
   console.error("Unexpected error:", err);
   failures++;
 } finally {
   // Cleanup (as owner).
-  await owner`delete from invoice_adjustments where invoice_id in (${aInvoice}, ${bInvoice})`;
-  await owner`delete from visit_closeouts where id in (${aCloseout}, ${bCloseout})`;
-  await owner`delete from funnel_events where id = ${funnelEventId}`;
-  await owner`delete from invoices where id in (${aInvoice}, ${bInvoice})`;
-  await owner`delete from migration_runs where id in (${aMigrationRun}, ${bMigrationRun})`;
-  await owner`delete from appointments where id in (${aAppointment}, ${bAppointment})`;
-  await owner`delete from clients where practice_id in (${aId}, ${bId})`;
-  await owner`delete from users where id in (${aUser}, ${bUser})`;
-  await owner`delete from practices where id in (${aId}, ${bId})`;
+  await owner.begin(async (tx) => {
+    const cleanup = tx as unknown as typeof owner;
+    await cleanup`select set_config('app.ledger_maintenance', 'on', true)`;
+    await cleanup`delete from invoice_adjustments where invoice_id in (${aInvoice}, ${bInvoice})`;
+    await cleanup`delete from prescription_events where id in (${aPrescriptionEvent}, ${bPrescriptionEvent})`;
+    await cleanup`delete from visit_closeouts where id in (${aCloseout}, ${bCloseout})`;
+    await cleanup`delete from funnel_events where id = ${funnelEventId}`;
+    await cleanup`delete from invoices where id in (${aInvoice}, ${bInvoice})`;
+    await cleanup`delete from migration_runs where id in (${aMigrationRun}, ${bMigrationRun})`;
+    await cleanup`delete from appointments where id in (${aAppointment}, ${bAppointment})`;
+    await cleanup`delete from prescriptions where id in (${aPrescription}, ${bPrescription})`;
+    await cleanup`delete from products where id in (${aProduct}, ${bProduct})`;
+    await cleanup`delete from patients where id in (${aPatient}, ${bPatient})`;
+    await cleanup`delete from clients where practice_id in (${aId}, ${bId})`;
+    await cleanup`delete from users where id in (${aUser}, ${bUser})`;
+    await cleanup`delete from practices where id in (${aId}, ${bId})`;
+  });
   await owner.end();
   await app.end();
 }

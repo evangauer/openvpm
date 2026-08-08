@@ -6,6 +6,7 @@ export * from "./scheduling";
 export * from "./clinical";
 export * from "./clinical-corrections";
 export * from "./prescriptions";
+export * from "./prescription-events";
 export * from "./billing";
 export * from "./communications";
 export * from "./auth";

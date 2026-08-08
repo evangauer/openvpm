@@ -1,4 +1,5 @@
 import { eq, and, isNull, inArray, sql, getTableColumns } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 import type { Database } from "@openpims/db/client";
 import { redactSecrets } from "@/lib/audit";
 import {
@@ -28,6 +29,7 @@ import {
   patientWeights,
   patients,
   payments,
+  prescriptionEvents,
   prescriptions,
   problemList,
   procedures,
@@ -136,6 +138,7 @@ export const PRACTICE_EXPORT_SECTIONS = [
   "treatmentPlans",
   "treatmentPlanItems",
   "prescriptions",
+  "prescriptionEvents",
   "visitCloseouts",
   "files",
   "controlledSubstanceLog",
@@ -146,6 +149,9 @@ export type PracticeExportSection = (typeof PRACTICE_EXPORT_SECTIONS)[number];
 
 const PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS = [
   "emailSuppressions",
+  // Backward compatibility for backups created before the immutable
+  // prescription lifecycle ledger was introduced.
+  "prescriptionEvents",
   "visitCloseouts",
   "clinicalRecordCorrections",
 ] as const satisfies readonly PracticeExportSection[];
@@ -312,6 +318,10 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
   optionalRef("prescriptions", "appointmentId", "appointments"),
   optionalRef("prescriptions", "productId", "products"),
   requiredRef("prescriptions", "prescribedBy", "users"),
+  requiredRef("prescriptionEvents", "prescriptionId", "prescriptions"),
+  requiredRef("prescriptionEvents", "patientId", "patients"),
+  optionalRef("prescriptionEvents", "productId", "products"),
+  optionalRef("prescriptionEvents", "actorId", "users"),
   requiredRef("visitCloseouts", "appointmentId", "appointments"),
   optionalRef("visitCloseouts", "followUpAppointmentId", "appointments"),
   optionalRef("visitCloseouts", "clinicalFinalizedBy", "users"),
@@ -346,9 +356,13 @@ export function summarizePracticeExport(data: unknown): {
 } {
   const record = isRecord(data) ? data : {};
   const missingSections = PRACTICE_EXPORT_SECTIONS.filter(
-    (section) =>
-      !Array.isArray(record[section]) &&
-      !PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS.includes(section as never)
+    (section) => {
+      if (Array.isArray(record[section])) return false;
+      const isBackwardCompatibleAbsence =
+        !Object.prototype.hasOwnProperty.call(record, section) &&
+        PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS.includes(section as never);
+      return !isBackwardCompatibleAbsence;
+    },
   );
   const counts = Object.fromEntries(
     PRACTICE_EXPORT_SECTIONS.map((section) => [
@@ -474,6 +488,41 @@ export function validatePracticeExportRestore(data: unknown): {
     });
   }
 
+  const record = isRecord(data) ? data : {};
+  if (Array.isArray(record.prescriptionEvents)) {
+    const prescriptionRows = rowsFor(data, "prescriptions");
+    const prescriptionById = new Map(
+      prescriptionRows.map((prescription) => [prescription.id, prescription]),
+    );
+    const createdCounts = new Map<string, number>();
+    rowsFor(data, "prescriptionEvents").forEach((event, index) => {
+      const prescription = prescriptionById.get(event.prescriptionId);
+      if (!prescription) return;
+      if (
+        event.patientId !== prescription.patientId ||
+        (event.productId ?? null) !== (prescription.productId ?? null) ||
+        (event.quantity ?? null) !== (prescription.quantity ?? null)
+      ) {
+        pushError(
+          `prescriptionEvents[${rowLabel(event, index)}] does not exactly match its prescription patient, product, and quantity.`,
+        );
+      }
+      if (event.eventType === "created") {
+        createdCounts.set(
+          String(event.prescriptionId),
+          (createdCounts.get(String(event.prescriptionId)) ?? 0) + 1,
+        );
+      }
+    });
+    prescriptionRows.forEach((prescription, index) => {
+      if (createdCounts.get(String(prescription.id)) !== 1) {
+        pushError(
+          `prescriptions[${rowLabel(prescription, index)}] must have exactly one created prescription event.`,
+        );
+      }
+    });
+  }
+
   const soapRows = rowsById("soapNotes");
   const vitalRows = rowsById("vitalSigns");
   rowsFor(data, "clinicalRecordCorrections").forEach((row, index) => {
@@ -525,6 +574,35 @@ export function validatePracticeExportRestore(data: unknown): {
   });
 
   return { valid: errors.length === 0, errors };
+}
+
+export function synthesizeLegacyPrescriptionEvents(data: unknown): Row[] {
+  const actorNames = new Map(
+    rowsFor(data, "users").map((user) => [user.id, user.name]),
+  );
+  return rowsFor(data, "prescriptions").map((prescription) => ({
+    id: randomUUID(),
+    createdAt: prescription.createdAt,
+    practiceId: prescription.practiceId,
+    prescriptionId: prescription.id,
+    patientId: prescription.patientId,
+    productId: prescription.productId ?? null,
+    eventType: "created",
+    quantity: prescription.quantity ?? null,
+    statusBefore: null,
+    statusAfter: "active",
+    refillsBefore: null,
+    refillsAfter:
+      typeof prescription.refillsRemaining === "number"
+        ? prescription.refillsRemaining
+        : 0,
+    reason:
+      "Restored from pre-ledger backup; earlier refill history unavailable.",
+    actorId: prescription.prescribedBy,
+    actorName:
+      actorNames.get(prescription.prescribedBy) ?? "Imported prescriber",
+    operationId: prescription.operationId ?? null,
+  }));
 }
 
 async function activeRows(db: Database, table: any, practiceId: string) {
@@ -619,24 +697,24 @@ export async function exportPracticeData(
   exportedAt: string
 ): Promise<PracticeExport> {
   const [
-    locationRows,
+    allLocationRows,
     locationMessagingRows,
     smsSuppressionRows,
     emailSuppressionRows,
     webhookRows,
     apiKeyRows,
-    userRows,
+    allUserRows,
     auditLogRows,
-    appointmentTypeRows,
-    roomRows,
-    recurringSeriesRows,
-    clientRows,
-    patientRows,
-    appointmentRows,
+    allAppointmentTypeRows,
+    allRoomRows,
+    allRecurringSeriesRows,
+    allClientRows,
+    allPatientRows,
+    allAppointmentRows,
     appointmentWaitlistRows,
     staffScheduleRows,
     serviceRows,
-    productRows,
+    allProductRows,
     treatmentTemplateRows,
     supplierRows,
     purchaseOrderRows,
@@ -645,40 +723,41 @@ export async function exportPracticeData(
     insuranceClaimRows,
     wellnessPlanRows,
     wellnessEnrollmentRows,
-    soapNoteRows,
+    allSoapNoteRows,
     vaccinationRows,
     labRows,
     procedureRows,
     clinicalNoteRows,
     problemRows,
-    vitalRows,
+    allVitalRows,
     clinicalCorrectionRows,
     caseRows,
     treatmentPlanRows,
-    prescriptionRows,
+    allPrescriptionRows,
+    prescriptionEventRows,
     visitCloseoutRows,
     fileRows,
     controlledSubstanceRows,
     communicationRows,
   ] = await Promise.all([
-    activeRows(db, locations, practiceId),
+    allPracticeRows(db, locations, practiceId),
     activeRows(db, locationMessaging, practiceId),
     activeRows(db, smsSuppressions, practiceId),
     activeRows(db, emailSuppressions, practiceId),
     activeRows(db, webhooks, practiceId),
     activeRows(db, apiKeys, practiceId),
-    activeRows(db, users, practiceId),
+    allPracticeRows(db, users, practiceId),
     activeRows(db, auditLog, practiceId),
-    activeRows(db, appointmentTypes, practiceId),
-    activeRows(db, rooms, practiceId),
-    activeRows(db, recurringSeries, practiceId),
-    activeRows(db, clients, practiceId),
-    activeRows(db, patients, practiceId),
-    activeRows(db, appointments, practiceId),
+    allPracticeRows(db, appointmentTypes, practiceId),
+    allPracticeRows(db, rooms, practiceId),
+    allPracticeRows(db, recurringSeries, practiceId),
+    allPracticeRows(db, clients, practiceId),
+    allPracticeRows(db, patients, practiceId),
+    allPracticeRows(db, appointments, practiceId),
     activeRows(db, appointmentWaitlist, practiceId),
     activeRows(db, staffSchedules, practiceId),
     activeRows(db, services, practiceId),
-    activeRows(db, products, practiceId),
+    allPracticeRows(db, products, practiceId),
     activeRows(db, treatmentTemplates, practiceId),
     activeRows(db, suppliers, practiceId),
     activeRows(db, purchaseOrders, practiceId),
@@ -687,22 +766,149 @@ export async function exportPracticeData(
     activeRows(db, insuranceClaims, practiceId),
     activeRows(db, wellnessPlans, practiceId),
     activeRows(db, wellnessEnrollments, practiceId),
-    activeRows(db, soapNotes, practiceId),
+    allPracticeRows(db, soapNotes, practiceId),
     activeRows(db, vaccinationRecords, practiceId),
     activeRows(db, labResults, practiceId),
     activeRows(db, procedures, practiceId),
     activeRows(db, clinicalNotes, practiceId),
     activeRows(db, problemList, practiceId),
-    activeRows(db, vitalSigns, practiceId),
+    allPracticeRows(db, vitalSigns, practiceId),
     allPracticeRows(db, clinicalRecordCorrections, practiceId),
     activeRows(db, cases, practiceId),
     activeRows(db, treatmentPlans, practiceId),
-    activeRows(db, prescriptions, practiceId),
+    allPracticeRows(db, prescriptions, practiceId),
+    allPracticeRows(db, prescriptionEvents, practiceId),
     activeRows(db, visitCloseouts, practiceId),
     activeRows(db, files, practiceId),
     activeRows(db, controlledSubstanceLog, practiceId),
     activeRows(db, communications, practiceId),
   ]);
+
+  const referencedPrescriptionIds = new Set(
+    prescriptionEventRows.map((event) => event.prescriptionId),
+  );
+  const prescriptionRows = allPrescriptionRows.filter(
+    (prescription) =>
+      prescription.deletedAt == null ||
+      referencedPrescriptionIds.has(prescription.id),
+  );
+  const referencedSoapNoteIds = new Set(
+    clinicalCorrectionRows
+      .map((correction) => correction.soapNoteId)
+      .filter((id): id is string => typeof id === "string"),
+  );
+  const soapNoteRows = allSoapNoteRows.filter(
+    (note) => note.deletedAt == null || referencedSoapNoteIds.has(note.id),
+  );
+  const referencedVitalSignIds = new Set(
+    clinicalCorrectionRows
+      .map((correction) => correction.vitalSignId)
+      .filter((id): id is string => typeof id === "string"),
+  );
+  const vitalRows = allVitalRows.filter(
+    (vital) => vital.deletedAt == null || referencedVitalSignIds.has(vital.id),
+  );
+  const referencedAppointmentIds = new Set(
+    [
+      ...prescriptionRows.map((prescription) => prescription.appointmentId),
+      ...clinicalCorrectionRows.map((correction) => correction.appointmentId),
+      ...soapNoteRows.map((note) => note.appointmentId),
+      ...vitalRows.map((vital) => vital.appointmentId),
+    ].filter((id): id is string => typeof id === "string"),
+  );
+  const appointmentRows = allAppointmentRows.filter(
+    (appointment) =>
+      appointment.deletedAt == null ||
+      referencedAppointmentIds.has(appointment.id),
+  );
+  const referencedPatientIds = new Set(
+    [
+      ...prescriptionEventRows.map((event) => event.patientId),
+      ...prescriptionRows.map((prescription) => prescription.patientId),
+      ...clinicalCorrectionRows.map((correction) => correction.patientId),
+      ...soapNoteRows.map((note) => note.patientId),
+      ...vitalRows.map((vital) => vital.patientId),
+      ...appointmentRows.map((appointment) => appointment.patientId),
+    ].filter((id): id is string => typeof id === "string"),
+  );
+  const patientRows = allPatientRows.filter(
+    (patient) =>
+      patient.deletedAt == null || referencedPatientIds.has(patient.id),
+  );
+  const referencedProductIds = new Set(
+    [
+      ...prescriptionEventRows.map((event) => event.productId),
+      ...prescriptionRows.map((prescription) => prescription.productId),
+    ].filter((id): id is string => typeof id === "string"),
+  );
+  const productRows = allProductRows.filter(
+    (product) =>
+      product.deletedAt == null || referencedProductIds.has(product.id),
+  );
+  const referencedUserIds = new Set(
+    [
+      ...prescriptionEventRows.map((event) => event.actorId),
+      ...prescriptionRows.map((prescription) => prescription.prescribedBy),
+      ...clinicalCorrectionRows.map((correction) => correction.correctedBy),
+      ...soapNoteRows.map((note) => note.authorId),
+      ...vitalRows.map((vital) => vital.recordedBy),
+      ...appointmentRows.map((appointment) => appointment.doctorId),
+    ].filter((id): id is string => typeof id === "string"),
+  );
+  const userRows = allUserRows.filter(
+    (user) => user.deletedAt == null || referencedUserIds.has(user.id),
+  );
+  const referencedClientIds = new Set(
+    [
+      ...patientRows.map((patient) => patient.clientId),
+      ...appointmentRows.map((appointment) => appointment.clientId),
+    ].filter((id): id is string => typeof id === "string"),
+  );
+  const clientRows = allClientRows.filter(
+    (client) =>
+      client.deletedAt == null || referencedClientIds.has(client.id),
+  );
+  const referencedLocationIds = new Set(
+    [
+      ...productRows.map((product) => product.locationId),
+      ...userRows.map((user) => user.locationId),
+      ...allRoomRows.map((room) =>
+        appointmentRows.some((appointment) => appointment.roomId === room.id)
+          ? room.locationId
+          : null,
+      ),
+    ].filter((id): id is string => typeof id === "string"),
+  );
+  const locationRows = allLocationRows.filter(
+    (location) =>
+      location.deletedAt == null || referencedLocationIds.has(location.id),
+  );
+  const referencedAppointmentTypeIds = new Set(
+    appointmentRows
+      .map((appointment) => appointment.typeId)
+      .filter((id): id is string => typeof id === "string"),
+  );
+  const appointmentTypeRows = allAppointmentTypeRows.filter(
+    (type) =>
+      type.deletedAt == null || referencedAppointmentTypeIds.has(type.id),
+  );
+  const referencedRoomIds = new Set(
+    appointmentRows
+      .map((appointment) => appointment.roomId)
+      .filter((id): id is string => typeof id === "string"),
+  );
+  const roomRows = allRoomRows.filter(
+    (room) => room.deletedAt == null || referencedRoomIds.has(room.id),
+  );
+  const referencedRecurringSeriesIds = new Set(
+    appointmentRows
+      .map((appointment) => appointment.recurringSeriesId)
+      .filter((id): id is string => typeof id === "string"),
+  );
+  const recurringSeriesRows = allRecurringSeriesRows.filter(
+    (series) =>
+      series.deletedAt == null || referencedRecurringSeriesIds.has(series.id),
+  );
 
   const patientIds = patientRows.map((r) => r.id);
   const invoiceIds = invoiceRows.map((r) => r.id);
@@ -840,18 +1046,26 @@ export async function exportPracticeData(
     treatmentPlans: treatmentPlanRows,
     treatmentPlanItems: treatmentPlanItemRows,
     prescriptions: prescriptionRows,
+    prescriptionEvents: prescriptionEventRows,
     visitCloseouts: visitCloseoutRows,
     files: fileRows,
     controlledSubstanceLog: controlledSubstanceRows,
     communications: communicationRows,
   };
 
-  return {
+  const exported = {
     practiceId,
     exportedAt,
     counts: countsFor(sections),
     ...sections,
   };
+  const validation = validatePracticeExportRestore(exported);
+  if (!validation.valid) {
+    throw new Error(
+      `Generated backup failed restore validation: ${validation.errors.join("; ")}`,
+    );
+  }
+  return exported;
 }
 
 async function restorePracticeDataRows(
@@ -930,6 +1144,20 @@ async function restorePracticeDataRows(
   await restorePracticeRows("treatmentPlans", treatmentPlans);
   await restoreChildRows("treatmentPlanItems", treatmentPlanItems);
   await restorePracticeRows("prescriptions", prescriptions);
+  const backupRecord = isRecord(data) ? data : {};
+  const prescriptionEventRows = Object.prototype.hasOwnProperty.call(
+    backupRecord,
+    "prescriptionEvents",
+  )
+    ? rowsFor(data, "prescriptionEvents")
+    : synthesizeLegacyPrescriptionEvents(data);
+  restored.prescriptionEvents = await restoreRows(
+    db,
+    prescriptionEvents,
+    "prescriptionEvents",
+    prescriptionEventRows,
+    { practiceId },
+  );
   await restorePracticeRows("visitCloseouts", visitCloseouts);
   await restorePracticeRows("files", files);
   await restorePracticeRows("controlledSubstanceLog", controlledSubstanceLog);

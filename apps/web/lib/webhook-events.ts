@@ -40,6 +40,26 @@ export const WEBHOOK_EVENT_DEFINITIONS = [
     description: "Prescription created",
   },
   {
+    event: "prescription.refill_dispensed",
+    description: "Prescription refill dispensed",
+  },
+  {
+    event: "prescription.refill_authorized",
+    description: "External prescription refill authorized",
+  },
+  {
+    event: "prescription.completed",
+    description: "Prescription completed",
+  },
+  {
+    event: "prescription.cancelled",
+    description: "Prescription cancelled",
+  },
+  {
+    event: "prescription.expired",
+    description: "Prescription expired",
+  },
+  {
     event: "lab_result.created",
     description: "Lab result created",
   },

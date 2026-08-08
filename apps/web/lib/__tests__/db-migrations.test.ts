@@ -643,4 +643,46 @@ describe("committed Drizzle migrations", () => {
       '("practice_id","appointment_id","deleted_at","recorded_at")',
     );
   });
+
+  it("adds an append-only tenant-bound prescription lifecycle ledger", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries?: Array<{ tag?: string }> };
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0048_prescription_lifecycle",
+    );
+
+    const sql = readRepoFile(
+      "packages/db/drizzle/0048_prescription_lifecycle.sql",
+    );
+    const tableDefinition = sql.match(
+      /CREATE TABLE "prescription_events" \([\s\S]*?\n\);/,
+    )?.[0];
+
+    expect(sql).toContain("'refill_authorized'");
+    expect(tableDefinition).toBeDefined();
+    expect(tableDefinition).not.toContain('"updated_at"');
+    expect(tableDefinition).not.toContain('"deleted_at"');
+    expect(sql).toContain("prescription_events_shape_check");
+    expect(sql).toContain("prescription_events_practice_prescription_fk");
+    expect(sql).toContain("prescription_events_practice_operation_uq");
+    expect(sql).toContain("prescription_events_validate_source");
+    expect(sql).toContain("source.patient_id = NEW.patient_id");
+    expect(sql).toContain(
+      "source.product_id IS NOT DISTINCT FROM NEW.product_id",
+    );
+    expect(sql).toContain(
+      "source.quantity IS NOT DISTINCT FROM NEW.quantity",
+    );
+    expect(sql).toContain("prescription_events_immutable");
+    expect(sql).toContain("app.ledger_maintenance");
+    expect(sql).toContain("ALTER TABLE prescription_events ENABLE ROW LEVEL SECURITY");
+    expect(sql).toContain(
+      "GRANT SELECT, INSERT ON prescription_events TO openpims_app",
+    );
+    expect(sql).toContain("REVOKE ALL ON prescription_events FROM anon");
+    expect(sql).toContain(
+      "REVOKE ALL ON prescription_events FROM authenticated",
+    );
+  });
 });

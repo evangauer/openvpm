@@ -47,6 +47,8 @@ import { COMMUNICATION_CONTENT_MAX_LENGTH } from "@/lib/communications/policy";
 import { latestAssignedToForClient } from "@/lib/communications/assignment";
 import { stripeConfigured } from "@/lib/stripe-config";
 import { not, inArray, lt, gt } from "drizzle-orm";
+import { gte, or } from "drizzle-orm";
+import { formatDateInputForTimeZone } from "@/lib/date-input";
 
 const portalBookingDateInput = clinicalDateInput("Booking date");
 const portalBookingTimeInput = z
@@ -352,6 +354,10 @@ export const portalRouter = createRouter({
       await assertPortalReadRateLimit(input.token);
       const client = await getClientByToken(ctx.db, input.token);
       const practice = await practicePortalProfile(ctx.db, client.practiceId);
+      const practiceToday = formatDateInputForTimeZone(
+        new Date(),
+        practice.timezone
+      );
 
       const [patient] = await ctx.db
         .select()
@@ -486,6 +492,10 @@ export const portalRouter = createRouter({
               eq(prescriptions.patientId, input.patientId),
               eq(prescriptions.practiceId, client.practiceId),
               eq(prescriptions.status, "active"),
+              or(
+                isNull(prescriptions.endDate),
+                gte(prescriptions.endDate, practiceToday)
+              ),
               isNull(prescriptions.deletedAt)
             )
           ),

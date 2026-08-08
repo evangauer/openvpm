@@ -235,7 +235,7 @@ describe("records.createPrescription safety enforcement", () => {
       operationId: OPERATION_ID,
     };
     const { db, insertValues, updateSet } = createDb({
-      selectResults: [],
+      selectResults: [[{ refillsAfter: 0 }]],
       existingPrescription,
     });
 
@@ -259,7 +259,7 @@ describe("records.createPrescription safety enforcement", () => {
 
   it("rejects reuse of a prescription operation ID with changed details", async () => {
     const { db, insertValues, updateSet } = createDb({
-      selectResults: [],
+      selectResults: [[{ refillsAfter: 0 }]],
       existingPrescription: {
         id: "00000000-0000-0000-0000-000000000003",
         practiceId: PRACTICE_ID,
@@ -292,6 +292,48 @@ describe("records.createPrescription safety enforcement", () => {
 
     expect(updateSet).not.toHaveBeenCalled();
     expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("replays creation after a refill using the immutable initial refill snapshot", async () => {
+    const existingPrescription = {
+      id: "00000000-0000-0000-0000-000000000003",
+      practiceId: PRACTICE_ID,
+      patientId: PATIENT_ID,
+      appointmentId: null,
+      medicationName: "Carprofen 75 mg",
+      dosage: "75 mg",
+      frequency: "Every 12 hours",
+      quantity: 10,
+      productId: PRODUCT_ID,
+      refillsRemaining: 1,
+      startDate: "2026-06-27",
+      endDate: null,
+      instructions: null,
+      prescribedBy: USER_ID,
+      operationId: OPERATION_ID,
+    };
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [[{ refillsAfter: 2 }]],
+      existingPrescription,
+    });
+
+    await expect(
+      callerWithDb(db).createPrescription({
+        patientId: PATIENT_ID,
+        operationId: OPERATION_ID,
+        medicationName: "Carprofen 75 mg",
+        dosage: "75 mg",
+        frequency: "Every 12 hours",
+        quantity: 10,
+        productId: PRODUCT_ID,
+        refillsRemaining: 2,
+        startDate: "2026-06-27",
+      }),
+    ).resolves.toMatchObject({ refillsRemaining: 1 });
+
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(mocks.dispatchWebhookEvent).not.toHaveBeenCalled();
   });
 
   it("links a prescription only to a visit for the same tenant and patient", async () => {

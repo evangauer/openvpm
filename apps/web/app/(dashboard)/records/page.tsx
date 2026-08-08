@@ -109,6 +109,10 @@ function RecordsChartChunkLoading() {
   );
 }
 
+function PrescriptionLifecycleChunkLoading() {
+  return <div className="h-8 w-24 animate-pulse rounded bg-muted" />;
+}
+
 const LabTrendCharts = dynamic(
   () =>
     import("@/components/patients/patient-trend-charts").then(
@@ -118,6 +122,17 @@ const LabTrendCharts = dynamic(
     ssr: false,
     loading: RecordsChartChunkLoading,
   }
+);
+
+const PrescriptionLifecycleControl = dynamic(
+  () =>
+    import("@/components/records/prescription-lifecycle-control").then(
+      (mod) => mod.PrescriptionLifecycleControl,
+    ),
+  {
+    ssr: false,
+    loading: PrescriptionLifecycleChunkLoading,
+  },
 );
 
 const CLINICAL_DATE_FORMAT: Intl.DateTimeFormatOptions = {
@@ -1770,6 +1785,11 @@ function RecordsPageContent() {
                     </div>
 
                     <div className="mt-4 space-y-3">
+                      <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                        Controlled-substance recordkeeping is not automated.
+                        When applicable, complete the clinic&apos;s required
+                        controlled drug log separately.
+                      </p>
                       <PrescriptionSafetyPanel
                         medicationName={medicationNameForSafety}
                         isLoading={prescriptionSafety.isFetching}
@@ -1903,21 +1923,27 @@ function RecordsPageContent() {
                               <span
                                 className={cn(
                                   "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize",
-                                  getPrescriptionStatusBadge(rx.status)
+                                  getPrescriptionStatusBadge(rx.effectiveStatus)
                                 )}
                               >
-                                {rx.status ?? "unknown"}
+                                {rx.effectiveStatus ?? "unknown"}
                               </span>
                             </td>
                             <td className="px-4 py-3">
                               {rx.refillsRemaining ?? 0}
                             </td>
-                            <td className="px-4 py-3 text-right">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                title="Print Label"
-                                onClick={async () => {
+                            <td className="space-y-2 px-4 py-3 text-right align-top">
+                              <div>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  title={
+                                    rx.effectiveStatus === "active"
+                                      ? "Print Label"
+                                      : "Only active prescriptions can print a dispensing label"
+                                  }
+                                  disabled={rx.effectiveStatus !== "active"}
+                                  onClick={async () => {
                                   const clientName = [
                                     selectedPatient?.clientFirstName,
                                     selectedPatient?.clientLastName,
@@ -1955,11 +1981,31 @@ function RecordsPageContent() {
                                   }).save(
                                     `label-${rx.medicationName.replace(/\s+/g, "-").toLowerCase()}.pdf`
                                   );
+                                  }}
+                                >
+                                  <Tag className="mr-1 h-3.5 w-3.5" />
+                                  Print Label
+                                </Button>
+                              </div>
+                              <PrescriptionLifecycleControl
+                                prescription={{
+                                  id: rx.id,
+                                  effectiveStatus: rx.effectiveStatus,
+                                  productId: rx.productId,
+                                  quantity: rx.quantity,
+                                  refillsRemaining: rx.refillsRemaining,
                                 }}
-                              >
-                                <Tag className="mr-1 h-3.5 w-3.5" />
-                                Print Label
-                              </Button>
+                                canManage={canPrescribe}
+                                timeZone={recordsTimeZone}
+                                onChanged={async () => {
+                                  await refetchPrescriptions();
+                                  if (linkedAppointmentId) {
+                                    await utils.encounters.getCloseout.invalidate({
+                                      appointmentId: linkedAppointmentId,
+                                    });
+                                  }
+                                }}
+                              />
                             </td>
                           </tr>
                         ))}

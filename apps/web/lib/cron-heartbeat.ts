@@ -11,6 +11,7 @@ export const CRON_HEARTBEAT_JOBS = [
   "wellness-billing",
   "rate-limit-cleanup",
   "auth-cleanup",
+  "prescription-expiry",
   "activation-digest",
 ] as const;
 

@@ -600,6 +600,22 @@ describe("patients mutation safety", () => {
     expect(updateSet).toHaveBeenCalledWith({ deletedAt: expect.any(Date) });
   });
 
+  it("does not delete a patient with retained clinical or prescription history", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [{ id: PATIENT_ID }],
+        [],
+        [],
+        [{ exists: true }],
+      ],
+    });
+
+    await expect(callerWithDb(db).delete({ id: PATIENT_ID })).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
   it("rejects patient merges across clients before child records are repointed", async () => {
     const { db, updateSet, transaction } = createDb({
       selectResults: [
@@ -616,6 +632,25 @@ describe("patients mutation safety", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(transaction).toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("fails closed before merging a patient with retained clinical or prescription history", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [{ id: PATIENT_ID, clientId: CLIENT_ID }],
+        [{ id: MERGE_PATIENT_ID, clientId: CLIENT_ID }],
+        [{ exists: true }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).merge({
+        keepId: PATIENT_ID,
+        mergeId: MERGE_PATIENT_ID,
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
     expect(updateSet).not.toHaveBeenCalled();
   });
 });

@@ -551,7 +551,7 @@ export default function PatientDetailPage() {
           medication: rx.medicationName,
           dosage: rx.dosage ?? "",
           frequency: rx.frequency ?? "",
-          status: rx.status ?? "active",
+          status: rx.effectiveStatus ?? "active",
         })),
         generatedDate: formatClinicalDate(new Date(), recordsTimeZone),
       }).save(`${patientData.name.replace(/\s+/g, "_")}_medical_summary.pdf`);

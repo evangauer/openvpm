@@ -106,8 +106,8 @@ describe("clinical correction schema and migration", () => {
     );
 
     const appointmentTuple = (table: typeof soapNotes | typeof vitalSigns) => {
-      const reference = getTableConfig(table).foreignKeys
-        .find((foreignKey) =>
+      const reference = getTableConfig(table)
+        .foreignKeys.find((foreignKey) =>
           foreignKey.reference().name?.endsWith("practice_appointment_fk"),
         )
         ?.reference();
@@ -227,6 +227,10 @@ describe("clinical correction consumers", () => {
     expect(backup).toContain(
       "allPracticeRows(db, clinicalRecordCorrections, practiceId)",
     );
+    expect(backup).toContain("allPracticeRows(db, soapNotes, practiceId)");
+    expect(backup).toContain("allPracticeRows(db, vitalSigns, practiceId)");
+    expect(backup).toContain("referencedSoapNoteIds");
+    expect(backup).toContain("referencedVitalSignIds");
     expect(backup).toContain(
       'await restorePracticeRows(\n    "clinicalRecordCorrections"',
     );

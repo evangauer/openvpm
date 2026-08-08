@@ -1,5 +1,15 @@
 import { z } from "zod";
-import { eq, and, isNull, desc, inArray, like, sql } from "drizzle-orm";
+import {
+  eq,
+  and,
+  isNull,
+  desc,
+  inArray,
+  like,
+  sql,
+  or,
+  gte,
+} from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import {
@@ -9,6 +19,7 @@ import {
   procedures,
   problemList,
   prescriptions,
+  prescriptionEvents,
   drugInteractions,
   patients,
   patientAllergies,
@@ -89,6 +100,13 @@ import {
   CLINICAL_CORRECTION_REASON_MAX_LENGTH,
   CLINICAL_CORRECTION_REASON_MIN_LENGTH,
 } from "@/lib/records/clinical-correction-policy";
+import {
+  effectivePrescriptionStatus,
+  PRESCRIPTION_LIFECYCLE_REASON_MAX_LENGTH,
+  PRESCRIPTION_LIFECYCLE_REASON_MIN_LENGTH,
+  type PrescriptionEventType,
+  type PrescriptionStatus,
+} from "@/lib/records/prescription-lifecycle";
 
 export { PRESCRIPTION_INSTRUCTIONS_MAX_LENGTH } from "@/lib/records/prescription-policy";
 export {
@@ -160,6 +178,30 @@ async function practiceTimeZone(ctx: RecordsContext): Promise<string | null> {
 
 async function practiceDateInput(ctx: RecordsContext): Promise<string> {
   return formatDateInputForTimeZone(new Date(), await practiceTimeZone(ctx));
+}
+
+function practiceTodayExpression(practiceId: string) {
+  return sql<string>`(
+    now() at time zone coalesce(
+      (
+        select nullif(btrim(${practices.timezone}), '')
+        from ${practices}
+        where ${practices.id} = ${practiceId}
+          and ${practices.deletedAt} is null
+      ),
+      'UTC'
+    )
+  )::date`;
+}
+
+function effectivePrescriptionStatusExpression(practiceId: string) {
+  return sql<PrescriptionStatus>`case
+    when ${prescriptions.status} = 'active'
+      and ${prescriptions.endDate} is not null
+      and ${prescriptions.endDate} < ${practiceTodayExpression(practiceId)}
+    then 'expired'::prescription_status
+    else ${prescriptions.status}
+  end`;
 }
 
 const createVaccinationInput = z.object({
@@ -452,6 +494,13 @@ async function assessPrescriptionSafety(
           eq(prescriptions.practiceId, ctx.practiceId),
           eq(prescriptions.patientId, patientId),
           eq(prescriptions.status, "active"),
+          or(
+            isNull(prescriptions.endDate),
+            gte(
+              prescriptions.endDate,
+              practiceTodayExpression(ctx.practiceId),
+            )
+          ),
           activePracticePredicate(ctx.practiceId),
           isNull(prescriptions.deletedAt)
         )
@@ -530,6 +579,197 @@ async function deductDispensedProductStock(
       message: "Insufficient stock for the dispensed prescription quantity.",
     });
   }
+}
+
+type LockedPrescription = {
+  id: string;
+  patientId: string;
+  productId: string | null;
+  quantity: number | null;
+  refillsRemaining: number;
+  status: PrescriptionStatus;
+  endDate: string | null;
+};
+
+async function lockPrescriptionForLifecycle(
+  ctx: RecordsContext,
+  prescriptionId: string
+): Promise<LockedPrescription> {
+  const [prescription] = await ctx.db
+    .select({
+      id: prescriptions.id,
+      patientId: prescriptions.patientId,
+      productId: prescriptions.productId,
+      quantity: prescriptions.quantity,
+      refillsRemaining: prescriptions.refillsRemaining,
+      status: prescriptions.status,
+      endDate: prescriptions.endDate,
+    })
+    .from(prescriptions)
+    .where(
+      and(
+        eq(prescriptions.id, prescriptionId),
+        eq(prescriptions.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(prescriptions.deletedAt)
+      )
+    )
+    .limit(1)
+    .for("update");
+
+  if (!prescription) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Prescription not found" });
+  }
+  return prescription;
+}
+
+async function lifecycleOperationReplay(
+  ctx: RecordsContext,
+  input: {
+    prescriptionId: string;
+    operationId: string;
+    eventTypes: PrescriptionEventType[];
+    reason: string | null;
+  }
+) {
+  const [event] = await ctx.db
+    .select()
+    .from(prescriptionEvents)
+    .where(
+      and(
+        eq(prescriptionEvents.practiceId, ctx.practiceId),
+        eq(prescriptionEvents.operationId, input.operationId)
+      )
+    )
+    .limit(1);
+  if (!event) return null;
+  if (event.prescriptionId !== input.prescriptionId) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "This prescription operation ID was already used for another change.",
+    });
+  }
+
+  const [prescription] = await ctx.db
+    .select()
+    .from(prescriptions)
+    .where(
+      and(
+        eq(prescriptions.id, input.prescriptionId),
+        eq(prescriptions.practiceId, ctx.practiceId),
+        isNull(prescriptions.deletedAt)
+      )
+    )
+    .limit(1);
+  if (!prescription) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Prescription not found" });
+  }
+  const expectedEventType =
+    input.eventTypes.length === 2
+      ? prescription.productId
+        ? "refill_dispensed"
+        : "refill_authorized"
+      : input.eventTypes[0];
+  if (
+    event.eventType !== expectedEventType ||
+    (event.reason ?? null) !== input.reason
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message:
+        "This prescription operation ID was already used for different details.",
+    });
+  }
+  return { prescription, event, replayed: true as const };
+}
+
+const prescriptionLifecycleReasonInput = z
+  .string()
+  .trim()
+  .min(
+    PRESCRIPTION_LIFECYCLE_REASON_MIN_LENGTH,
+    "Explain the prescription lifecycle change."
+  )
+  .max(PRESCRIPTION_LIFECYCLE_REASON_MAX_LENGTH);
+
+async function transitionPrescription(
+  ctx: RecordsContext & { user: { id: string; name: string } },
+  input: {
+    id: string;
+    operationId: string;
+    reason: string;
+    targetStatus: "completed" | "cancelled";
+  }
+) {
+  const eventType = input.targetStatus;
+  return (ctx.db as Database).transaction(async (tx) => {
+    const txCtx = { db: tx, practiceId: ctx.practiceId };
+    const operationKey = `prescription-lifecycle:${ctx.practiceId}:${input.operationId}`;
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${operationKey}, 0))`
+    );
+    const replay = await lifecycleOperationReplay(txCtx, {
+      prescriptionId: input.id,
+      operationId: input.operationId,
+      eventTypes: [eventType],
+      reason: input.reason,
+    });
+    if (replay) return replay;
+
+    const prescription = await lockPrescriptionForLifecycle(txCtx, input.id);
+    const today = await practiceDateInput(txCtx);
+    const effectiveStatus = effectivePrescriptionStatus({
+      status: prescription.status,
+      endDate: prescription.endDate,
+      today,
+    });
+    if (effectiveStatus !== "active") {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `Prescription is already ${effectiveStatus}.`,
+      });
+    }
+
+    const [updated] = await tx
+      .update(prescriptions)
+      .set({ status: input.targetStatus, updatedAt: new Date() })
+      .where(
+        and(
+          eq(prescriptions.id, prescription.id),
+          eq(prescriptions.practiceId, ctx.practiceId),
+          eq(prescriptions.status, "active"),
+          isNull(prescriptions.deletedAt)
+        )
+      )
+      .returning();
+    if (!updated) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "Prescription changed while updating. Refresh and try again.",
+      });
+    }
+
+    const [event] = await tx
+      .insert(prescriptionEvents)
+      .values({
+        practiceId: ctx.practiceId,
+        prescriptionId: prescription.id,
+        patientId: prescription.patientId,
+        productId: prescription.productId,
+        quantity: prescription.quantity,
+        eventType,
+        statusBefore: "active",
+        statusAfter: input.targetStatus,
+        refillsBefore: prescription.refillsRemaining,
+        refillsAfter: prescription.refillsRemaining,
+        reason: input.reason,
+        actorId: ctx.user.id,
+        actorName: ctx.user.name,
+        operationId: input.operationId,
+      })
+      .returning();
+    return { prescription: updated, event: event!, replayed: false as const };
+  });
 }
 
 async function getProblemStatusForUpdate(
@@ -965,6 +1205,9 @@ export const recordsRouter = createRouter({
           startDate: prescriptions.startDate,
           endDate: prescriptions.endDate,
           status: prescriptions.status,
+          effectiveStatus: effectivePrescriptionStatusExpression(
+            ctx.practiceId,
+          ),
           instructions: prescriptions.instructions,
           prescriberName: users.name,
           createdAt: prescriptions.createdAt,
@@ -995,6 +1238,34 @@ export const recordsRouter = createRouter({
           )
         )
         .orderBy(desc(prescriptions.createdAt));
+    }),
+
+  listPrescriptionEvents: protectedProcedure
+    .input(z.object({ prescriptionId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      return ctx.db
+        .select({
+          id: prescriptionEvents.id,
+          eventType: prescriptionEvents.eventType,
+          productId: prescriptionEvents.productId,
+          quantity: prescriptionEvents.quantity,
+          statusBefore: prescriptionEvents.statusBefore,
+          statusAfter: prescriptionEvents.statusAfter,
+          refillsBefore: prescriptionEvents.refillsBefore,
+          refillsAfter: prescriptionEvents.refillsAfter,
+          reason: prescriptionEvents.reason,
+          actorName: prescriptionEvents.actorName,
+          createdAt: prescriptionEvents.createdAt,
+        })
+        .from(prescriptionEvents)
+        .where(
+          and(
+            eq(prescriptionEvents.practiceId, ctx.practiceId),
+            eq(prescriptionEvents.prescriptionId, input.prescriptionId),
+            activePracticePredicate(ctx.practiceId)
+          )
+        )
+        .orderBy(desc(prescriptionEvents.createdAt), desc(prescriptionEvents.id));
     }),
 
   checkPrescriptionSafety: protectedProcedure
@@ -1057,7 +1328,21 @@ export const recordsRouter = createRouter({
           )
           .limit(1);
         if (existing) {
+          const [createdEvent] = await tx
+            .select({
+              refillsAfter: prescriptionEvents.refillsAfter,
+            })
+            .from(prescriptionEvents)
+            .where(
+              and(
+                eq(prescriptionEvents.practiceId, ctx.practiceId),
+                eq(prescriptionEvents.prescriptionId, existing.id),
+                eq(prescriptionEvents.eventType, "created"),
+              ),
+            )
+            .limit(1);
           if (
+            !createdEvent ||
             existing.patientId !== input.patientId ||
             (existing.appointmentId ?? null) !== (input.appointmentId ?? null) ||
             existing.medicationName !== input.medicationName ||
@@ -1065,7 +1350,7 @@ export const recordsRouter = createRouter({
             existing.frequency !== input.frequency ||
             (existing.quantity ?? null) !== (input.quantity ?? null) ||
             (existing.productId ?? null) !== (input.productId ?? null) ||
-            existing.refillsRemaining !== input.refillsRemaining ||
+            createdEvent.refillsAfter !== input.refillsRemaining ||
             existing.startDate !== input.startDate ||
             (existing.endDate ?? null) !== (input.endDate ?? null) ||
             (existing.instructions ?? null) !== (input.instructions ?? null)
@@ -1167,6 +1452,22 @@ export const recordsRouter = createRouter({
             prescriptionId: rx.id,
           });
         }
+        await tx.insert(prescriptionEvents).values({
+          practiceId: ctx.practiceId,
+          prescriptionId: rx!.id,
+          patientId: rx!.patientId,
+          productId: rx!.productId,
+          quantity: rx!.quantity,
+          eventType: "created",
+          statusBefore: null,
+          statusAfter: "active",
+          refillsBefore: null,
+          refillsAfter: rx!.refillsRemaining,
+          reason: null,
+          actorId: ctx.user.id,
+          actorName: ctx.user.name,
+          operationId: input.operationId,
+        });
         return { rx: rx!, replayed: false as const };
       });
       if (!result.replayed) {
@@ -1181,6 +1482,183 @@ export const recordsRouter = createRouter({
         });
       }
       return result.rx;
+    }),
+
+  recordPrescriptionRefill: protectedProcedure
+    .use(requireRole("admin", "veterinarian"))
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        operationId: z.string().uuid(),
+        note: z
+          .string()
+          .trim()
+          .max(PRESCRIPTION_LIFECYCLE_REASON_MAX_LENGTH)
+          .optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const result = await ctx.db.transaction(async (tx) => {
+        const txCtx = { db: tx, practiceId: ctx.practiceId };
+        const operationKey = `prescription-lifecycle:${ctx.practiceId}:${input.operationId}`;
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${operationKey}, 0))`
+        );
+        const replay = await lifecycleOperationReplay(txCtx, {
+          prescriptionId: input.id,
+          operationId: input.operationId,
+          eventTypes: ["refill_dispensed", "refill_authorized"],
+          reason: input.note?.trim() || null,
+        });
+        if (replay) return replay;
+
+        const prescription = await lockPrescriptionForLifecycle(txCtx, input.id);
+        const today = await practiceDateInput(txCtx);
+        const effectiveStatus = effectivePrescriptionStatus({
+          status: prescription.status,
+          endDate: prescription.endDate,
+          today,
+        });
+        if (effectiveStatus !== "active") {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: `Prescription is ${effectiveStatus}; a refill cannot be recorded.`,
+          });
+        }
+        if (prescription.refillsRemaining < 1) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "Prescription has no remaining refills.",
+          });
+        }
+        if (prescription.productId && !prescription.quantity) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "This prescription links clinic inventory without a positive dispensing quantity. Correct the prescription before recording a refill.",
+          });
+        }
+
+        const eventType = prescription.productId
+          ? "refill_dispensed"
+          : "refill_authorized";
+        if (prescription.productId && prescription.quantity) {
+          await assertDispensedProductBelongsToPractice(
+            txCtx,
+            prescription.productId
+          );
+          await deductDispensedProductStock(
+            txCtx,
+            prescription.productId,
+            prescription.quantity
+          );
+        }
+        const [updated] = await tx
+          .update(prescriptions)
+          .set({
+            refillsRemaining: sql`${prescriptions.refillsRemaining} - 1`,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(prescriptions.id, prescription.id),
+              eq(prescriptions.practiceId, ctx.practiceId),
+              eq(prescriptions.status, "active"),
+              eq(prescriptions.refillsRemaining, prescription.refillsRemaining),
+              isNull(prescriptions.deletedAt)
+            )
+          )
+          .returning();
+        if (!updated) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Prescription changed while dispensing. Refresh and try again.",
+          });
+        }
+        const [event] = await tx
+          .insert(prescriptionEvents)
+          .values({
+            practiceId: ctx.practiceId,
+            prescriptionId: prescription.id,
+            patientId: prescription.patientId,
+            productId: prescription.productId,
+            quantity: prescription.quantity,
+            eventType,
+            statusBefore: "active",
+            statusAfter: "active",
+            refillsBefore: prescription.refillsRemaining,
+            refillsAfter: prescription.refillsRemaining - 1,
+            reason: input.note || null,
+            actorId: ctx.user.id,
+            actorName: ctx.user.name,
+            operationId: input.operationId,
+          })
+          .returning();
+        return { prescription: updated, event: event!, replayed: false as const };
+      });
+      if (!result.replayed) {
+        const webhookEvent =
+          result.event.eventType === "refill_dispensed"
+            ? "prescription.refill_dispensed"
+            : "prescription.refill_authorized";
+        await dispatchWebhookEvent(ctx.practiceId, webhookEvent, {
+          id: result.prescription.id,
+          patientId: result.prescription.patientId,
+          productId: result.prescription.productId,
+          quantity: result.prescription.quantity,
+          refillsRemaining: result.prescription.refillsRemaining,
+          source: "dashboard",
+        });
+      }
+      return result;
+    }),
+
+  completePrescription: protectedProcedure
+    .use(requireRole("admin", "veterinarian"))
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        operationId: z.string().uuid(),
+        reason: prescriptionLifecycleReasonInput,
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const result = await transitionPrescription(
+        { db: ctx.db, practiceId: ctx.practiceId, user: ctx.user },
+        { ...input, targetStatus: "completed" }
+      );
+      if (!result.replayed) {
+        await dispatchWebhookEvent(ctx.practiceId, "prescription.completed", {
+          id: result.prescription.id,
+          patientId: result.prescription.patientId,
+          source: "dashboard",
+        });
+      }
+      return result;
+    }),
+
+  cancelPrescription: protectedProcedure
+    .use(requireRole("admin", "veterinarian"))
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        operationId: z.string().uuid(),
+        reason: prescriptionLifecycleReasonInput,
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const result = await transitionPrescription(
+        { db: ctx.db, practiceId: ctx.practiceId, user: ctx.user },
+        { ...input, targetStatus: "cancelled" }
+      );
+      if (!result.replayed) {
+        await dispatchWebhookEvent(ctx.practiceId, "prescription.cancelled", {
+          id: result.prescription.id,
+          patientId: result.prescription.patientId,
+          source: "dashboard",
+        });
+      }
+      return result;
     }),
 
   // Lab Results
