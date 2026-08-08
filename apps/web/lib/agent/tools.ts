@@ -27,7 +27,6 @@ import {
   users,
   rooms,
   practices,
-  soapNotes,
 } from "@openpims/db";
 import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
 import { appointmentCreatedWebhookPayload } from "@/lib/appointment-webhooks";
@@ -57,11 +56,6 @@ import {
   clinicalDecimalInput,
   optionalClinicalTextInput,
 } from "@/lib/records/clinical-inputs";
-import {
-  hasSoapContent,
-  normalizeSoapSection,
-  SOAP_SECTION_MAX_LENGTH,
-} from "@/lib/records/soap-content";
 
 /**
  * The agent's "hands": typed tools that operate the practice's data, always
@@ -188,26 +182,6 @@ async function activePatient(
     )
     .limit(1);
   return patient ?? null;
-}
-
-async function activeAppointmentForPatient(
-  ctx: AgentToolContext,
-  appointmentId: string,
-  patientId: string
-): Promise<boolean> {
-  const [appointment] = await ctx.db
-    .select({ id: appointments.id })
-    .from(appointments)
-    .where(
-      and(
-        eq(appointments.id, appointmentId),
-        eq(appointments.patientId, patientId),
-        eq(appointments.practiceId, ctx.practiceId),
-        isNull(appointments.deletedAt)
-      )
-    )
-    .limit(1);
-  return Boolean(appointment);
 }
 
 async function activeDoctorExists(
@@ -803,104 +777,6 @@ const recordVitalSigns: AgentTool = {
   },
 };
 
-const recordSoapNote: AgentTool = {
-  name: "record_soap_note",
-  description:
-    "Create a SOAP note for a patient. Use only after grounding the note in the chart or staff-provided transcript.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      patientId: { type: "string", description: "Patient UUID" },
-      appointmentId: {
-        type: "string",
-        description: "Optional appointment UUID",
-      },
-      subjective: { type: "string", maxLength: SOAP_SECTION_MAX_LENGTH },
-      objective: { type: "string", maxLength: SOAP_SECTION_MAX_LENGTH },
-      assessment: { type: "string", maxLength: SOAP_SECTION_MAX_LENGTH },
-      plan: { type: "string", maxLength: SOAP_SECTION_MAX_LENGTH },
-    },
-    required: ["patientId"],
-  },
-  zod: z.object({
-    patientId: z.string().uuid(),
-    appointmentId: z.string().uuid().optional(),
-    subjective: optionalClinicalTextInput(
-      "SOAP subjective",
-      SOAP_SECTION_MAX_LENGTH
-    ),
-    objective: optionalClinicalTextInput(
-      "SOAP objective",
-      SOAP_SECTION_MAX_LENGTH
-    ),
-    assessment: optionalClinicalTextInput(
-      "SOAP assessment",
-      SOAP_SECTION_MAX_LENGTH
-    ),
-    plan: optionalClinicalTextInput("SOAP plan", SOAP_SECTION_MAX_LENGTH),
-  }),
-  readOnly: false,
-  requiredApiScopes: ["records:write"],
-  async execute(args, ctx) {
-    const input = this.zod.parse(args) as {
-      patientId: string;
-      appointmentId?: string;
-      subjective?: string;
-      objective?: string;
-      assessment?: string;
-      plan?: string;
-    };
-    if (!(await activePatient(ctx, input.patientId))) {
-      return { error: "Patient not found" };
-    }
-    if (
-      input.appointmentId &&
-      !(await activeAppointmentForPatient(
-        ctx,
-        input.appointmentId,
-        input.patientId
-      ))
-    ) {
-      return { error: "Appointment not found" };
-    }
-
-    const normalizedNote = {
-      subjective: normalizeSoapSection(input.subjective),
-      objective: normalizeSoapSection(input.objective),
-      assessment: normalizeSoapSection(input.assessment),
-      plan: normalizeSoapSection(input.plan),
-    };
-    if (!hasSoapContent(normalizedNote)) {
-      return { error: "SOAP note must include at least one section." };
-    }
-
-    const [note] = await ctx.db
-      .insert(soapNotes)
-      .values({
-        practiceId: ctx.practiceId,
-        patientId: input.patientId,
-        appointmentId: input.appointmentId ?? null,
-        authorId: ctx.userId,
-        ...normalizedNote,
-      })
-      .returning({
-        id: soapNotes.id,
-        patientId: soapNotes.patientId,
-        appointmentId: soapNotes.appointmentId,
-        authorId: soapNotes.authorId,
-      });
-
-    await dispatchWebhookEvent(ctx.practiceId, "soap_note.created", {
-      id: note!.id,
-      patientId: note!.patientId,
-      appointmentId: note!.appointmentId,
-      authorId: note!.authorId,
-      source: "agent",
-    });
-    return { id: note!.id, patientId: note!.patientId };
-  },
-};
-
 const findOpenSlotsTool: AgentTool = {
   name: "find_open_slots",
   description:
@@ -987,7 +863,6 @@ export const AGENT_TOOLS: AgentTool[] = [
   calculateDrugDose,
   listTreatmentPlans,
   recordVitalSigns,
-  recordSoapNote,
 ];
 
 export function getTool(name: string): AgentTool | undefined {

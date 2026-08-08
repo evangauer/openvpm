@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => {
   const selectBuilders: Array<{
     from: ReturnType<typeof vi.fn>;
     where: ReturnType<typeof vi.fn>;
+    for: ReturnType<typeof vi.fn>;
     limit: ReturnType<typeof vi.fn>;
   }> = [];
   const insertRow = {
@@ -29,6 +30,7 @@ const mocks = vi.hoisted(() => {
       const builder = {
         from: vi.fn(() => builder),
         where: vi.fn(() => builder),
+        for: vi.fn(async () => result),
         limit: vi.fn(async () => result),
       };
       selectBuilders.push(builder);
@@ -171,7 +173,6 @@ describe("POST /api/v1/soap-notes", () => {
     const response = await POST(
       request(
         soapBody({
-          appointment_id: undefined,
           subjective: "<p><br></p>",
           plan: "&nbsp;",
           author_id: AUTHOR_ID,
@@ -205,19 +206,35 @@ describe("POST /api/v1/soap-notes", () => {
     expect(mocks.db.insert).not.toHaveBeenCalled();
   });
 
-  it("requires an explicit author when no appointment doctor can be inferred", async () => {
+  it("requires an appointment before tenant work", async () => {
     const response = await POST(
       request(soapBody({ appointment_id: undefined, author_id: undefined }))
     );
 
     expect(response.status).toBe(400);
+    const json = await response.json();
+    expect(json.error.message).toBe("Validation failed");
+    expect(json.error.fields.appointment_id).toEqual([expect.any(String)]);
+    expect(mocks.withTenant).not.toHaveBeenCalled();
+  });
+
+  it("requires an explicit clinician when the appointment has no assigned doctor", async () => {
+    mocks.selectResults.push(
+      ACTIVE_PRACTICE,
+      [{ id: PATIENT_ID }],
+      [{ id: APPOINTMENT_ID, doctorId: null, status: "in_exam" }],
+      []
+    );
+
+    const response = await POST(request(soapBody({ author_id: undefined })));
+
+    expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({
       error: {
-        message:
-          "author_id is required unless appointment_id has an assigned doctor.",
+        message: "author_id is required when the appointment has no assigned doctor.",
       },
     });
-    expect(mocks.withTenant).not.toHaveBeenCalled();
+    expect(mocks.db.insert).not.toHaveBeenCalled();
   });
 
   it("rejects unowned or deleted patients before inserting", async () => {
@@ -283,7 +300,8 @@ describe("POST /api/v1/soap-notes", () => {
     mocks.selectResults.push(
       ACTIVE_PRACTICE,
       [{ id: PATIENT_ID }],
-      [{ id: APPOINTMENT_ID, doctorId: AUTHOR_ID }],
+      [{ id: APPOINTMENT_ID, doctorId: AUTHOR_ID, status: "in_exam" }],
+      [],
       []
     );
 
@@ -296,7 +314,7 @@ describe("POST /api/v1/soap-notes", () => {
     expect(mocks.db.insert).not.toHaveBeenCalled();
     expect(mocks.dispatchWebhookEvent).not.toHaveBeenCalled();
 
-    const authorCondition = mocks.selectBuilders[3]?.where.mock.calls[0]?.[0];
+    const authorCondition = mocks.selectBuilders[4]?.where.mock.calls[0]?.[0];
     expect(sqlIncludesColumn(authorCondition, users.practiceId)).toBe(true);
     expect(sqlIncludesColumn(authorCondition, users.deletedAt)).toBe(true);
   });
@@ -305,7 +323,8 @@ describe("POST /api/v1/soap-notes", () => {
     mocks.selectResults.push(
       ACTIVE_PRACTICE,
       [{ id: PATIENT_ID }],
-      [{ id: APPOINTMENT_ID, doctorId: AUTHOR_ID }],
+      [{ id: APPOINTMENT_ID, doctorId: AUTHOR_ID, status: "in_exam" }],
+      [],
       [{ id: AUTHOR_ID }]
     );
 

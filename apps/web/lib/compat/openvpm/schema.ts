@@ -127,7 +127,7 @@ export const AppointmentCreateSchema = z
 /** Inbound body for POST /api/v1/soap-notes. */
 export const SoapNoteCreateSchema = z.object({
   patient_id: z.string().uuid(),
-  appointment_id: z.string().uuid().optional(),
+  appointment_id: z.string().uuid(),
   author_id: z.string().uuid().optional(),
   subjective: ApiSoapSectionInputSchema,
   objective: ApiSoapSectionInputSchema,

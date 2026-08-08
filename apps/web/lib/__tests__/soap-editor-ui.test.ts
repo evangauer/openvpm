@@ -124,8 +124,10 @@ describe("SOAP note editor UX", () => {
       'const accessDenied = status !== "loading" && !canCreateSoapNote'
     );
     expect(source).toContain(
-      "{ enabled: !!params.patientId && canCreateSoapNote }"
+      "{ enabled: !!params.patientId && canCreateSoapNote && !!appointmentId }"
     );
+    expect(source).toContain('title="Open an active visit first"');
+    expect(source).toContain("if (!appointmentId)");
     expect(source).toContain('if (status === "loading")');
     expect(source).toContain("Checking SOAP note access");
     expect(source.indexOf("const [subjective")).toBeLessThan(
@@ -491,9 +493,11 @@ describe("records page state handling", () => {
   it("keeps Records write controls aligned to clinical role gates", () => {
     const source = readFileSync("app/(dashboard)/records/page.tsx", "utf8");
 
-    expect(source).toContain("const canCreateSoapNotes =");
-    expect(source).toContain("selectedPatient && canCreateSoapNotes");
-    expect(source).toContain("canCreateSoapNotes\n                        ? {");
+    expect(source).not.toContain("const canCreateSoapNotes =");
+    expect(source).not.toContain("/records/new-soap/");
+    expect(source).toContain(
+      "SOAP notes are created from an active visit so documentation stays attached to the correct encounter."
+    );
     expect(source).toContain("const canPrescribe =");
     expect(source).toContain("const canCreateVaccinations =");
     expect(source).toContain("const canManageProblems =");

@@ -369,7 +369,7 @@ function AgentRunner() {
                 disabled={!canRun || run.isPending}
                 className="h-3.5 w-3.5 rounded border-border"
               />
-              Allow writes: appointments, vitals, and SOAP notes
+              Allow writes: appointments and patient vitals
             </label>
             <Button
               type="button"
@@ -391,8 +391,8 @@ function AgentRunner() {
           <div className="mt-2 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <p>
-              Write mode can create appointments, record vitals, or save SOAP
-              notes. It turns off automatically after this run.
+              Write mode can create appointments or record patient vitals. It
+              turns off automatically after this run.
             </p>
           </div>
         ) : null}

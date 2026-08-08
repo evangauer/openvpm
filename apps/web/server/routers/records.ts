@@ -20,7 +20,6 @@ import {
   consentForms,
   consentRequests,
   files,
-  visitCloseouts,
   visitWorkItems,
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
@@ -82,6 +81,7 @@ import { CONSENT_FORM_LIBRARY } from "@/lib/consult/consent-form-library";
 import { PATIENT_PHOTO_CATEGORY } from "@/lib/records/file-kinds";
 import { appBaseUrl } from "@/lib/app-url";
 import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
+import { lockOpenVisitForClinicalAppend } from "@/lib/records/visit-integrity";
 import { positiveIntegerColumnInput } from "./storage-bounds";
 
 export { PRESCRIPTION_INSTRUCTIONS_MAX_LENGTH } from "@/lib/records/prescription-policy";
@@ -317,45 +317,21 @@ async function lockOpenAppointmentForClinicalWork(
   patientId: string,
   workLabel: string
 ) {
-  const [appointment] = await ctx.db
-    .select({ id: appointments.id, status: appointments.status })
-    .from(appointments)
-    .where(
-      and(
-        eq(appointments.id, appointmentId),
-        eq(appointments.patientId, patientId),
-        eq(appointments.practiceId, ctx.practiceId),
-        activePracticePredicate(ctx.practiceId),
-        isNull(appointments.deletedAt)
-      )
-    )
-    .for("update");
-
-  if (!appointment) {
+  const visit = await lockOpenVisitForClinicalAppend(ctx.db as Database, {
+    practiceId: ctx.practiceId,
+    appointmentId,
+    patientId,
+  });
+  if (!visit.ok && visit.reason === "appointment_not_found") {
     throw new TRPCError({ code: "NOT_FOUND", message: "Appointment not found" });
   }
-  if (appointment.status !== "in_exam") {
+  if (!visit.ok && visit.reason === "visit_not_open") {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message: `Start the exam before recording visit-linked ${workLabel}.`,
     });
   }
-
-  const [lockedCloseout] = await ctx.db
-    .select({ status: visitCloseouts.status })
-    .from(visitCloseouts)
-    .where(
-      and(
-        eq(visitCloseouts.appointmentId, appointmentId),
-        eq(visitCloseouts.practiceId, ctx.practiceId),
-        isNull(visitCloseouts.deletedAt)
-      )
-    )
-    .limit(1);
-  if (
-    lockedCloseout?.status === "clinical_finalized" ||
-    lockedCloseout?.status === "completed"
-  ) {
+  if (!visit.ok) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message: `Clinical handoff is finalized. Use an attributed amendment before changing visit ${workLabel}.`,
@@ -656,7 +632,7 @@ export const recordsRouter = createRouter({
     .input(
       z.object({
         patientId: z.string().uuid(),
-        appointmentId: z.string().uuid().optional(),
+        appointmentId: z.string().uuid(),
         subjective: optionalClinicalTextInput(
           "SOAP subjective",
           SOAP_SECTION_MAX_LENGTH
@@ -673,7 +649,6 @@ export const recordsRouter = createRouter({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      await assertPatientBelongsToPractice(ctx, input.patientId);
       const normalizedNote = {
         subjective: normalizeSoapSection(input.subjective),
         objective: normalizeSoapSection(input.objective),
@@ -686,6 +661,13 @@ export const recordsRouter = createRouter({
           message: "SOAP note must include at least one section.",
         });
       }
+      await assertPatientBelongsToPractice(ctx, input.patientId);
+      await lockOpenAppointmentForClinicalWork(
+        ctx,
+        input.appointmentId,
+        input.patientId,
+        "SOAP documentation"
+      );
       const [note] = await ctx.db
         .insert(soapNotes)
         .values({

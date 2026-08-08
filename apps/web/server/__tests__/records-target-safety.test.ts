@@ -113,7 +113,23 @@ afterEach(() => {
 
 describe("records target safety", () => {
   const patientRow = [{ id: PATIENT_ID }];
-  const appointmentRow = [{ id: APPOINTMENT_ID }];
+  const appointmentRow = [
+    { id: APPOINTMENT_ID, doctorId: USER_ID, status: "in_exam" },
+  ];
+
+  it("rejects a patient-only live SOAP note before querying", async () => {
+    const { db, select, insertValues } = createDb();
+
+    await expect(
+      callerWithDb(db).createSoapNote({
+        patientId: PATIENT_ID,
+        subjective: "Eating well",
+      } as never)
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    expect(select).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
 
   it("returns active practice identity for Records date rendering and PDFs", async () => {
     const { db, select } = createDb({
@@ -181,6 +197,7 @@ describe("records target safety", () => {
     await expect(
       callerWithDb(db).createSoapNote({
         patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
         subjective: "Eating well",
       })
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
@@ -375,7 +392,7 @@ describe("records target safety", () => {
 
   it("creates a SOAP note after validating patient and appointment ownership", async () => {
     const { db, insertValues } = createDb({
-      selectResults: [patientRow, appointmentRow],
+      selectResults: [patientRow, appointmentRow, []],
       insertedRows: [
         {
           id: RECORD_ID,
@@ -423,6 +440,7 @@ describe("records target safety", () => {
     await expect(
       callerWithDb(db).createSoapNote({
         patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
         subjective: "<p><br></p>",
         objective: "<ul><li>&nbsp;</li></ul>",
       })
@@ -438,6 +456,7 @@ describe("records target safety", () => {
     await expect(
       callerWithDb(db).createSoapNote({
         patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
         subjective: "A".repeat(SOAP_SECTION_MAX_LENGTH + 1),
       })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
@@ -445,6 +464,7 @@ describe("records target safety", () => {
     await expect(
       callerWithDb(db).createSoapNote({
         patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
         objective: "A".repeat(SOAP_SECTION_MAX_LENGTH + 1),
       })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
@@ -452,6 +472,7 @@ describe("records target safety", () => {
     await expect(
       callerWithDb(db).createSoapNote({
         patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
         assessment: "A".repeat(SOAP_SECTION_MAX_LENGTH + 1),
       })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
@@ -459,6 +480,7 @@ describe("records target safety", () => {
     await expect(
       callerWithDb(db).createSoapNote({
         patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
         plan: "A".repeat(SOAP_SECTION_MAX_LENGTH + 1),
       })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "@openpims/db/client";
 import type { Database } from "@openpims/db/client";
-import { appointments, patients, soapNotes, users } from "@openpims/db";
+import { patients, soapNotes, users } from "@openpims/db";
 import { authenticateApiKey } from "@/lib/api-auth";
 import { withTenant } from "@/lib/tenant-db";
 import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
@@ -22,11 +22,12 @@ import {
   normalizeSoapSection,
 } from "@/lib/records/soap-content";
 import { assertActivePractice } from "@/lib/compat/shared/active-practice";
+import { lockOpenVisitForClinicalAppend } from "@/lib/records/visit-integrity";
 
 export const dynamic = "force-dynamic";
 
 const AUTHOR_REQUIRED_MESSAGE =
-  "author_id is required unless appointment_id has an assigned doctor.";
+  "author_id is required when the appointment has no assigned doctor.";
 
 type TargetValidationResult =
   | { ok: true; authorId: string }
@@ -53,28 +54,25 @@ async function validateSoapTargets(
     return { ok: false, response: apiError("Patient not found", 404) };
   }
 
-  let appointmentDoctorId: string | null = null;
-  if (input.appointment_id) {
-    const [appointment] = await tx
-      .select({ id: appointments.id, doctorId: appointments.doctorId })
-      .from(appointments)
-      .where(
-        and(
-          eq(appointments.id, input.appointment_id),
-          eq(appointments.patientId, input.patient_id),
-          eq(appointments.practiceId, practiceId),
-          isNull(appointments.deletedAt)
-        )
-      )
-      .limit(1);
-
-    if (!appointment) {
-      return { ok: false, response: apiError("Appointment not found", 404) };
-    }
-    appointmentDoctorId = appointment.doctorId;
+  const visit = await lockOpenVisitForClinicalAppend(tx, {
+    practiceId,
+    patientId: input.patient_id,
+    appointmentId: input.appointment_id,
+  });
+  if (!visit.ok && visit.reason === "appointment_not_found") {
+    return { ok: false, response: apiError("Appointment not found", 404) };
+  }
+  if (!visit.ok) {
+    return {
+      ok: false,
+      response: apiError(
+        "SOAP notes can only be added while the visit is in exam.",
+        409
+      ),
+    };
   }
 
-  const authorId = input.author_id ?? appointmentDoctorId;
+  const authorId = input.author_id ?? visit.appointment.doctorId;
   if (!authorId) {
     return { ok: false, response: apiError(AUTHOR_REQUIRED_MESSAGE, 400) };
   }
@@ -125,10 +123,6 @@ export async function POST(req: Request) {
     if (!hasSoapContent(normalizedNote)) {
       return apiError("SOAP note must include at least one section.", 400);
     }
-    if (!parsed.data.author_id && !parsed.data.appointment_id) {
-      return apiError(AUTHOR_REQUIRED_MESSAGE, 400);
-    }
-
     const result = await withTenant(db, auth.ctx.practiceId, async (tx) => {
       const activePractice = await assertActivePractice(tx, auth.ctx.practiceId);
       if (!activePractice.ok) {
@@ -148,7 +142,7 @@ export async function POST(req: Request) {
         .insert(soapNotes)
         .values({
           patientId: parsed.data.patient_id,
-          appointmentId: parsed.data.appointment_id ?? null,
+          appointmentId: parsed.data.appointment_id,
           authorId: targets.authorId,
           ...normalizedNote,
           practiceId: auth.ctx.practiceId,

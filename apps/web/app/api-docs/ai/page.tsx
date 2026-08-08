@@ -90,7 +90,7 @@ Content-Type: application/json`}
           <CodeBlock>
             {`{
   "patient_id": "uuid",          // Required - the patient record
-  "appointment_id": "uuid",      // Optional - link to appointment
+  "appointment_id": "uuid",      // Required - active in-exam appointment
   "author_id": "uuid",           // Optional if appointment has a doctor
   "subjective": "string",        // Patient history, owner complaints
   "objective": "string",         // Physical exam findings, vitals

@@ -38,11 +38,11 @@ describe("agent UI states", () => {
 
   it("makes clinical write mode explicit and one-run only", () => {
     expect(source).toContain(
-      "Allow writes: appointments, vitals, and SOAP notes"
+      "Allow writes: appointments and patient vitals"
     );
     expect(source).toContain("Write mode can create appointments");
-    expect(source).toContain("record vitals");
-    expect(source).toContain("save SOAP");
+    expect(source).toContain("record patient vitals");
+    expect(source).not.toContain("save SOAP");
     expect(source).toContain("turns off automatically after this run");
     expect(source).not.toContain("Allow writes (e.g. booking appointments)");
   });

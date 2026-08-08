@@ -36,6 +36,7 @@ function callerWithDb(db: Record<string, unknown>, role = "technician") {
 function thenableRows(result: unknown[]) {
   return {
     limit: vi.fn(async () => result),
+    for: vi.fn(async () => result),
     then: (resolve: (value: unknown[]) => unknown, reject?: (e: unknown) => unknown) =>
       Promise.resolve(result).then(resolve, reject),
   };
@@ -188,20 +189,24 @@ describe("vitals.record tenant safety", () => {
       new URL("../routers/vitals.ts", import.meta.url),
       "utf8"
     );
+    const visitIntegritySource = readFileSync(
+      new URL("../../lib/records/visit-integrity.ts", import.meta.url),
+      "utf8"
+    );
 
     expect(source).toContain("function activePracticePredicate");
     expect(source).toContain("from ${practices}");
     expect(source).toContain("${practices.deletedAt} is null");
     expect(
       source.match(/activePracticePredicate\(practiceId\)/g)?.length ?? 0
-    ).toBeGreaterThanOrEqual(2);
+    ).toBeGreaterThanOrEqual(1);
     expect(source).toContain("activePracticePredicate(ctx.practiceId)");
     expect(source).toMatch(
       /eq\(patients\.practiceId, practiceId\),\s+activePracticePredicate\(practiceId\),\s+isNull\(patients\.deletedAt\)/
     );
-    expect(source).toMatch(
-      /eq\(appointments\.practiceId, practiceId\),\s+activePracticePredicate\(practiceId\),\s+isNull\(appointments\.deletedAt\)/
-    );
+    expect(source).toContain("lockOpenVisitForClinicalAppend");
+    expect(visitIntegritySource).toContain("from ${practices}");
+    expect(visitIntegritySource).toContain("${practices.deletedAt} is null");
     expect(source).toMatch(
       /eq\(vitalSigns\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(vitalSigns\.deletedAt\)/
     );
@@ -251,7 +256,11 @@ describe("vitals.record tenant safety", () => {
 
   it("records appointment-linked vitals after validating patient and appointment", async () => {
     const { db, insertValues } = createDb({
-      selectResults: [[{ id: PATIENT_ID }], [{ id: APPOINTMENT_ID }]],
+      selectResults: [
+        [{ id: PATIENT_ID }],
+        [{ id: APPOINTMENT_ID, doctorId: USER_ID, status: "in_exam" }],
+        [],
+      ],
     });
 
     await expect(

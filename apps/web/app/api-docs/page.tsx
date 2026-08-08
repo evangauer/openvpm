@@ -342,9 +342,10 @@ const sections: Section[] = [
       {
         name: "records.createSoapNote",
         method: "POST",
-        description: "Create a SOAP note.",
+        description: "Create a SOAP note for an active in-exam appointment.",
         input: `{
   patientId: string,
+  appointmentId: string,
   subjective: string,
   objective: string,
   assessment: string,
@@ -891,10 +892,10 @@ const sections: Section[] = [
         name: "POST /api/v1/soap-notes",
         method: "POST",
         description:
-          "Create a SOAP note for an external AI scribe and emit the soap_note.created webhook.",
+          "Create a SOAP note for an external AI scribe during an active in-exam appointment and emit the soap_note.created webhook.",
         input: `{
   patient_id: string,
-  appointment_id?: string,
+  appointment_id: string,
   author_id?: string,
   subjective?: string,
   objective?: string,

@@ -98,6 +98,7 @@ describe("API reference docs", () => {
     expect(source).toContain("### `POST /api/v1/soap-notes`");
     expect(source).toContain("Scope `records:write`");
     expect(source).toContain("`soap_note.created` webhook");
+    expect(source).toContain("active in-exam appointment");
     expect(source).toContain(
       "`instruction` must contain non-whitespace text and is trimmed"
     );

@@ -155,4 +155,13 @@ describe("SoapNoteCreateSchema validation", () => {
     });
     expect(r.success).toBe(false);
   });
+
+  it("rejects patient-only live SOAP notes without an appointment", () => {
+    const r = SoapNoteCreateSchema.safeParse({
+      patient_id: "22222222-2222-2222-2222-222222222222",
+      subjective: "Eating well",
+      source: "scribenote",
+    });
+    expect(r.success).toBe(false);
+  });
 });

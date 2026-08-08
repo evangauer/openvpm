@@ -673,8 +673,6 @@ function RecordsPageContent() {
     !isLoadingProcedures &&
     !proceduresError &&
     !proceduresList;
-  const canCreateSoapNotes =
-    userRole === "admin" || userRole === "veterinarian";
   const canPrescribe = userRole === "admin" || userRole === "veterinarian";
   const canCreateVaccinations =
     userRole === "admin" ||
@@ -938,16 +936,6 @@ function RecordsPageContent() {
             Clinical documentation and patient history
           </p>
         </div>
-        {selectedPatient && canCreateSoapNotes && (
-          <Button
-            onClick={() =>
-              router.push(`/records/new-soap/${selectedPatient.id}`)
-            }
-          >
-            <Plus className="mr-2 h-4 w-4" />
-            New SOAP Note
-          </Button>
-        )}
       </div>
 
       {/* Patient Search */}
@@ -1226,18 +1214,7 @@ function RecordsPageContent() {
                   <EmptyState
                     icon={FileText}
                     title="No SOAP notes yet"
-                    action={
-                      canCreateSoapNotes
-                        ? {
-                            label: "Create first note",
-                            onClick: () =>
-                              router.push(
-                                `/records/new-soap/${selectedPatient.id}`
-                              ),
-                            icon: Plus,
-                          }
-                        : undefined
-                    }
+                    description="SOAP notes are created from an active visit so documentation stays attached to the correct encounter."
                   />
                 )}
               </div>

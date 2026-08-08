@@ -187,8 +187,9 @@ Scope `records:write`. Create a SOAP note from an external AI scribe. Body:
 }
 ```
 
-`patient_id` and `source` are required. `appointment_id` is optional and must
-belong to the same patient/practice. `author_id` is optional when the linked
+`patient_id`, `appointment_id`, and `source` are required. The appointment must
+belong to the same patient/practice and be an active in-exam appointment whose
+clinical closeout has not been finalized. `author_id` is optional when the
 appointment has an assigned doctor; otherwise it must identify an active admin
 or veterinarian in the authenticated practice. At least one SOAP section must
 contain clinical text. Returns `201` with `{ data: <soap_note> }` and fires the
@@ -204,10 +205,10 @@ practice. Body:
 
 `instruction` must contain non-whitespace text and is trimmed before the agent
 runs. `allow_writes` (default `false`) gates write tools such as booking
-appointments, recording vitals, and drafting SOAP notes. Requests with
+appointments and recording vitals. Requests with
 `allow_writes: true` also require `agent:write`; when the agent invokes a write
 tool, the key must also carry that tool's resource scope, such as
-`appointments:write` for booking or `records:write` for vitals/SOAP notes. Returns
+`appointments:write` for booking or `records:write` for vitals. Returns
 `{ data: { text, toolCalls, iterations, stopReason } }`, where `toolCalls`
 traces every tool the agent invoked. Returns `503` if the configured model
 provider is missing its key (`GOOGLE_API_KEY` or legacy

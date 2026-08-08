@@ -40,6 +40,7 @@ function createDb(opts?: {
     const result = selectResults.shift() ?? [];
     const afterWhere = {
       limit: vi.fn(async () => result),
+      for: vi.fn(async () => result),
       groupBy: vi.fn(async () => result),
       orderBy: vi.fn(async () => result),
       then: (
@@ -79,6 +80,21 @@ afterEach(() => {
 });
 
 describe("AI SOAP note safety", () => {
+  it("rejects a patient-only live AI SOAP note before querying", async () => {
+    const { db, select, insertValues } = createDb();
+
+    await expect(
+      callerWithDb(db).createSoapFromAI({
+        patientId: PATIENT_ID,
+        subjective: "Eating well",
+        source: "scribe",
+      } as never)
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    expect(select).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("requires a tenant-owned patient before creating an AI SOAP note", async () => {
     const { db, insertValues } = createDb({
       selectResults: [[{ id: PRACTICE_ID }], []],
@@ -87,6 +103,7 @@ describe("AI SOAP note safety", () => {
     await expect(
       callerWithDb(db).createSoapFromAI({
         patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
         subjective: "Eating well",
         source: "scribe",
       })
@@ -95,7 +112,7 @@ describe("AI SOAP note safety", () => {
     expect(insertValues).not.toHaveBeenCalled();
   });
 
-  it("requires optional appointments to belong to the selected patient", async () => {
+  it("requires the appointment to belong to the selected patient", async () => {
     const { db, insertValues } = createDb({
       selectResults: [[{ id: PRACTICE_ID }], [{ id: PATIENT_ID }], []],
     });
@@ -117,7 +134,8 @@ describe("AI SOAP note safety", () => {
       selectResults: [
         [{ id: PRACTICE_ID }],
         [{ id: PATIENT_ID }],
-        [{ id: APPOINTMENT_ID }],
+        [{ id: APPOINTMENT_ID, doctorId: USER_ID, status: "in_exam" }],
+        [],
       ],
       insertedRows: [{ id: NOTE_ID, patientId: PATIENT_ID }],
     });
@@ -153,6 +171,7 @@ describe("AI SOAP note safety", () => {
     await expect(
       callerWithDb(db).createSoapFromAI({
         patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
         subjective: "<p><br></p>",
         plan: "&nbsp;",
         source: "scribe",
@@ -168,6 +187,7 @@ describe("AI SOAP note safety", () => {
     await expect(
       callerWithDb(db).createSoapFromAI({
         patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
         subjective: "A".repeat(SOAP_SECTION_MAX_LENGTH + 1),
         source: "scribe",
       })
@@ -176,6 +196,7 @@ describe("AI SOAP note safety", () => {
     await expect(
       callerWithDb(db).createSoapFromAI({
         patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
         objective: "A".repeat(SOAP_SECTION_MAX_LENGTH + 1),
         source: "scribe",
       })
@@ -184,6 +205,7 @@ describe("AI SOAP note safety", () => {
     await expect(
       callerWithDb(db).createSoapFromAI({
         patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
         assessment: "A".repeat(SOAP_SECTION_MAX_LENGTH + 1),
         source: "scribe",
       })
@@ -192,6 +214,7 @@ describe("AI SOAP note safety", () => {
     await expect(
       callerWithDb(db).createSoapFromAI({
         patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
         plan: "A".repeat(SOAP_SECTION_MAX_LENGTH + 1),
         source: "scribe",
       })
@@ -207,6 +230,7 @@ describe("AI SOAP note safety", () => {
     await expect(
       callerWithDb(db).createSoapFromAI({
         patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
         subjective: "Eating well",
         source: "A".repeat(AI_SOURCE_MAX_LENGTH + 1),
       })
@@ -222,6 +246,7 @@ describe("AI SOAP note safety", () => {
     await expect(
       callerWithDb(db).createSoapFromAI({
         patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
         subjective: "Eating well",
         source: "scribe",
       })

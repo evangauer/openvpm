@@ -91,7 +91,7 @@ export default function NewSoapNotePage() {
   } =
     trpc.patients.getById.useQuery(
       { id: params.patientId },
-      { enabled: !!params.patientId && canCreateSoapNote }
+      { enabled: !!params.patientId && canCreateSoapNote && !!appointmentId }
     );
 
   const createNote = trpc.records.createSoapNote.useMutation({
@@ -106,7 +106,7 @@ export default function NewSoapNotePage() {
 
   // AI draft availability mirrors the OpenVPM Agent (same key + model config).
   const agentStatus = trpc.agent.status.useQuery(undefined, {
-    enabled: canCreateSoapNote,
+    enabled: canCreateSoapNote && !!appointmentId,
   });
   const aiConfigured = agentStatus.data?.configured ?? false;
   const draftWithAi = trpc.ai.draftSoapNote.useMutation({
@@ -132,6 +132,10 @@ export default function NewSoapNotePage() {
   }
 
   function handleSave() {
+    if (!appointmentId) {
+      toast.error("Open an active visit before creating a SOAP note");
+      return;
+    }
     if (!params.patientId || !patient) {
       toast.error("Load the patient before saving a SOAP note");
       return;
@@ -196,6 +200,21 @@ export default function NewSoapNotePage() {
     );
   }
 
+  if (!appointmentId) {
+    return (
+      <EmptyState
+        icon={ClipboardList}
+        title="Open an active visit first"
+        description="SOAP notes must be attached to a visit that is currently in exam. Open the appointment from the schedule, start the exam, and write the note from the encounter workspace."
+        action={{
+          label: "Back to Records",
+          onClick: () => router.push("/records"),
+          icon: ArrowLeft,
+        }}
+      />
+    );
+  }
+
   if (patientLoading) {
     return (
       <div className="flex items-center justify-center gap-2 rounded-lg border border-border bg-card p-8 text-sm text-muted-foreground">
@@ -232,7 +251,7 @@ export default function NewSoapNotePage() {
         className="mb-4"
       >
         <ArrowLeft className="mr-2 h-4 w-4" />
-        {appointmentId ? "Back to visit" : "Back to Records"}
+        Back to visit
       </Button>
 
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -247,11 +266,9 @@ export default function NewSoapNotePage() {
               {patient.breed ? ` (${patient.breed})` : ""}
             </p>
           )}
-          {appointmentId ? (
-            <p className="text-xs text-muted-foreground">
-              This note will be linked to the current appointment.
-            </p>
-          ) : null}
+          <p className="text-xs text-muted-foreground">
+            This note will be linked to the current appointment.
+          </p>
         </div>
         <div className="flex flex-col items-end gap-1">
           <div className="flex flex-wrap items-center gap-2">

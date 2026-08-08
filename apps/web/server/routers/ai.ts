@@ -38,6 +38,7 @@ import {
   SOAP_SECTION_MAX_LENGTH,
 } from "@/lib/records/soap-content";
 import { optionalClinicalTextInput } from "@/lib/records/clinical-inputs";
+import { lockOpenVisitForClinicalAppend } from "@/lib/records/visit-integrity";
 import { AI_SOURCE_MAX_LENGTH } from "@/lib/ai/soap";
 
 export { AI_SOURCE_MAX_LENGTH };
@@ -129,28 +130,25 @@ async function assertAppointmentBelongsToPatient(
   appointmentId: string,
   patientId: string
 ) {
-  const [appointment] = await ctx.db
-    .select({ id: appointments.id })
-    .from(appointments)
-    .where(
-      and(
-        eq(appointments.id, appointmentId),
-        eq(appointments.patientId, patientId),
-        eq(appointments.practiceId, ctx.practiceId),
-        activePracticePredicate(ctx.practiceId),
-        isNull(appointments.deletedAt)
-      )
-    )
-    .limit(1);
-
-  if (!appointment) {
+  const visit = await lockOpenVisitForClinicalAppend(ctx.db, {
+    practiceId: ctx.practiceId,
+    appointmentId,
+    patientId,
+  });
+  if (!visit.ok && visit.reason === "appointment_not_found") {
     throw new TRPCError({
       code: "NOT_FOUND",
       message: "Appointment not found",
     });
   }
+  if (!visit.ok) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "SOAP notes can only be added while the visit is in exam.",
+    });
+  }
 
-  return appointment;
+  return visit.appointment;
 }
 
 export const aiRouter = createRouter({
@@ -160,10 +158,11 @@ export const aiRouter = createRouter({
    * to auto-populate SOAP notes for a patient visit.
    */
   createSoapFromAI: protectedProcedure
+    .use(requireRole("admin", "veterinarian"))
     .input(
       z.object({
         patientId: z.string().uuid(),
-        appointmentId: z.string().uuid().optional(),
+        appointmentId: z.string().uuid(),
         subjective: optionalClinicalTextInput(
           "SOAP subjective",
           SOAP_SECTION_MAX_LENGTH
@@ -186,15 +185,6 @@ export const aiRouter = createRouter({
     )
     .mutation(async ({ ctx, input }) => {
       const { source, ...noteData } = input;
-      await assertActivePractice(ctx);
-      await assertPatientBelongsToPractice(ctx, input.patientId);
-      if (input.appointmentId) {
-        await assertAppointmentBelongsToPatient(
-          ctx,
-          input.appointmentId,
-          input.patientId
-        );
-      }
       const normalizedNote = {
         subjective: normalizeSoapSection(input.subjective),
         objective: normalizeSoapSection(input.objective),
@@ -207,6 +197,13 @@ export const aiRouter = createRouter({
           message: "SOAP note must include at least one section.",
         });
       }
+      await assertActivePractice(ctx);
+      await assertPatientBelongsToPractice(ctx, input.patientId);
+      await assertAppointmentBelongsToPatient(
+        ctx,
+        input.appointmentId,
+        input.patientId
+      );
       const [note] = await ctx.db
         .insert(soapNotes)
         .values({

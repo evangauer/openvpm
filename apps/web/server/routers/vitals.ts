@@ -2,7 +2,7 @@ import { z } from "zod";
 import { eq, and, isNull, desc, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
-import { appointments, patients, practices, vitalSigns } from "@openpims/db";
+import { patients, practices, vitalSigns } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import {
   clinicalDecimalInput,
@@ -28,6 +28,7 @@ import {
   VITALS_WEIGHT_MAX_KG,
   VITALS_WEIGHT_SCALE,
 } from "@/lib/records/vitals-policy";
+import { lockOpenVisitForClinicalAppend } from "@/lib/records/visit-integrity";
 
 const recordRole = requireRole("admin", "veterinarian", "technician");
 const temperatureInput = clinicalDecimalInput("Temperature", {
@@ -88,24 +89,21 @@ async function assertAppointmentBelongsToPatient(
   appointmentId: string,
   patientId: string
 ) {
-  const [appointment] = await db
-    .select({ id: appointments.id })
-    .from(appointments)
-    .where(
-      and(
-        eq(appointments.id, appointmentId),
-        eq(appointments.patientId, patientId),
-        eq(appointments.practiceId, practiceId),
-        activePracticePredicate(practiceId),
-        isNull(appointments.deletedAt)
-      )
-    )
-    .limit(1);
-
-  if (!appointment) {
+  const visit = await lockOpenVisitForClinicalAppend(db, {
+    practiceId,
+    appointmentId,
+    patientId,
+  });
+  if (!visit.ok && visit.reason === "appointment_not_found") {
     throw new TRPCError({
       code: "NOT_FOUND",
       message: "Appointment not found",
+    });
+  }
+  if (!visit.ok) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "Vitals can only be added while the visit is in exam.",
     });
   }
 }

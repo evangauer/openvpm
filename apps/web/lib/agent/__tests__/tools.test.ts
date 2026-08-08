@@ -27,7 +27,6 @@ import {
   DOSING_WEIGHT_MAX_KG,
   FORMULARY_DRUG_ID_MAX_LENGTH,
 } from "@/lib/dosing";
-import { SOAP_SECTION_MAX_LENGTH } from "@/lib/records/soap-content";
 
 // The DB is never touched by these tests — only pure tools (calculate_drug_dose)
 // are executed; DB-backed tools are exercised at the validation layer.
@@ -84,7 +83,6 @@ describe("agent tool registry", () => {
     const writeTools = AGENT_TOOLS.filter((t) => !t.readOnly).map((t) => t.name).sort();
     expect(writeTools).toEqual([
       "book_appointment",
-      "record_soap_note",
       "record_vital_signs",
     ]);
   });
@@ -99,7 +97,6 @@ describe("agent tool registry", () => {
 
     expect(writeToolScopes).toEqual({
       book_appointment: ["appointments:write"],
-      record_soap_note: ["records:write"],
       record_vital_signs: ["records:write"],
     });
   });
@@ -114,6 +111,7 @@ describe("agent tool registry", () => {
 
   it("getTool resolves by name and returns undefined otherwise", () => {
     expect(getTool("find_client")?.name).toBe("find_client");
+    expect(getTool("record_soap_note")).toBeUndefined();
     expect(getTool("nope")).toBeUndefined();
   });
 });
@@ -194,7 +192,6 @@ describe("agent tool input bounds", () => {
     const findClient = getTool("find_client")!;
     const bookAppointment = getTool("book_appointment")!;
     const recordVitals = getTool("record_vital_signs")!;
-    const recordSoapNote = getTool("record_soap_note")!;
 
     const query = findClient.zod.safeParse({ query: "  Ada  " });
     expect(query.success).toBe(true);
@@ -222,12 +219,6 @@ describe("agent tool input bounds", () => {
       }).success
     ).toBe(false);
 
-    expect(
-      recordSoapNote.zod.safeParse({
-        patientId: PATIENT_ID,
-        subjective: "A".repeat(SOAP_SECTION_MAX_LENGTH + 1),
-      }).success
-    ).toBe(false);
   });
 });
 
@@ -447,109 +438,6 @@ describe("record_vital_signs validation", () => {
         weightKg: "12.3",
         notes: "Bright and alert",
       })
-    );
-  });
-});
-
-describe("record_soap_note validation", () => {
-  const tool = getTool("record_soap_note")!;
-  const SOAP_ID = "00000000-0000-0000-0000-0000000000d1";
-  const APPOINTMENT_ID = "00000000-0000-0000-0000-0000000000d2";
-
-  it("rejects notes with only empty rich-text markup before inserting", async () => {
-    const { ctx, insert } = toolDb([[{ id: PATIENT_ID, clientId: CLIENT_ID }]], {});
-
-    const result = await tool.execute(
-      {
-        patientId: PATIENT_ID,
-        subjective: "<p><br></p>",
-        objective: "<ul><li>&nbsp;</li></ul>",
-      },
-      ctx
-    );
-
-    expect(result).toEqual({
-      error: "SOAP note must include at least one section.",
-    });
-    expect(insert).not.toHaveBeenCalled();
-    expect(webhookMocks.dispatchWebhookEvent).not.toHaveBeenCalled();
-  });
-
-  it("rejects missing or inactive patients before inserting a SOAP note", async () => {
-    const { ctx, insert } = toolDb([[]], {});
-
-    const result = await tool.execute(
-      { patientId: PATIENT_ID, subjective: "Eating well" },
-      ctx
-    );
-
-    expect(result).toEqual({ error: "Patient not found" });
-    expect(insert).not.toHaveBeenCalled();
-    expect(webhookMocks.dispatchWebhookEvent).not.toHaveBeenCalled();
-  });
-
-  it("rejects stale or non-patient appointments before inserting a SOAP note", async () => {
-    const { ctx, insert } = toolDb(
-      [[{ id: PATIENT_ID, clientId: CLIENT_ID }], []],
-      {}
-    );
-
-    const result = await tool.execute(
-      {
-        patientId: PATIENT_ID,
-        appointmentId: APPOINTMENT_ID,
-        subjective: "Eating well",
-      },
-      ctx
-    );
-
-    expect(result).toEqual({ error: "Appointment not found" });
-    expect(insert).not.toHaveBeenCalled();
-    expect(webhookMocks.dispatchWebhookEvent).not.toHaveBeenCalled();
-  });
-
-  it("creates a SOAP note with the current user as author after target validation", async () => {
-    const { ctx, insertValues } = toolDb(
-      [[{ id: PATIENT_ID, clientId: CLIENT_ID }], [{ id: APPOINTMENT_ID }]],
-      {
-        id: SOAP_ID,
-        patientId: PATIENT_ID,
-        appointmentId: APPOINTMENT_ID,
-        authorId: "agent-user",
-      }
-    );
-
-    const result = await tool.execute(
-      {
-        patientId: PATIENT_ID,
-        appointmentId: APPOINTMENT_ID,
-        subjective: " Eating well ",
-        assessment: "<p>Stable.</p>",
-      },
-      ctx
-    );
-
-    expect(result).toEqual({ id: SOAP_ID, patientId: PATIENT_ID });
-    expect(insertValues).toHaveBeenCalledWith(
-      expect.objectContaining({
-        practiceId: PRACTICE_ID,
-        patientId: PATIENT_ID,
-        appointmentId: APPOINTMENT_ID,
-        authorId: "agent-user",
-        subjective: "Eating well",
-        assessment: "<p>Stable.</p>",
-      })
-    );
-    expect(webhookMocks.dispatchWebhookEvent).toHaveBeenCalledWith(
-      PRACTICE_ID,
-      "soap_note.created",
-      {
-        id: SOAP_ID,
-        patientId: PATIENT_ID,
-        appointmentId: APPOINTMENT_ID,
-        authorId: "agent-user",
-        source: "agent",
-      }
     );
   });
 });

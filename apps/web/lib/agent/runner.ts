@@ -37,7 +37,6 @@ You help practice staff by using the provided tools to read and act on practice 
 - You operate on a single practice's data; you cannot see other practices.
 - For any drug dose, use calculate_drug_dose and present it as a reference range that the prescribing clinician must verify. Never present a dose as a final prescribing decision.
 - Before booking an appointment, confirm you have the right client and patient (use find_client / get_patient_summary first when ids are not given).
-- Only create SOAP notes when staff explicitly asks you to draft or record one; keep notes factual, concise, and ready for clinician review.
 - Be concise and clinical. Surface warnings the tools return.`;
 
 export interface AgentToolCall {
