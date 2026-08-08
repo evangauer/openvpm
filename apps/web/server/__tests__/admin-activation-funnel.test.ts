@@ -72,27 +72,29 @@ describe("admin activation funnel", () => {
   it("sums weekly rows and computes activation and conversion rates", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
     mocks.executeResults.push([
-      { weekStart: "2026-06-15", signups: 4, setupStarted: 3, setupCompleted: 1, activated: 2, billingStarted: 2, subscribed: 1 },
-      { weekStart: "2026-06-22", signups: 6, setupStarted: 4, setupCompleted: 2, activated: 3, billingStarted: 4, subscribed: 2 },
+      { weekStart: "2026-06-15", signups: 4, setupStarted: 3, setupCompleted: 1, activated: 2, firstVisitCompleted: 1, billingStarted: 2, subscribed: 1 },
+      { weekStart: "2026-06-22", signups: 6, setupStarted: 4, setupCompleted: 2, activated: 3, firstVisitCompleted: 2, billingStarted: 4, subscribed: 2 },
     ]);
 
     const result = await caller().activationFunnel({ days: 30 });
 
     expect(result.days).toBe(30);
     expect(result.weeks).toEqual([
-      { weekStart: "2026-06-15", signups: 4, setupStarted: 3, setupCompleted: 1, activated: 2, billingStarted: 2, subscribed: 1 },
-      { weekStart: "2026-06-22", signups: 6, setupStarted: 4, setupCompleted: 2, activated: 3, billingStarted: 4, subscribed: 2 },
+      { weekStart: "2026-06-15", signups: 4, setupStarted: 3, setupCompleted: 1, activated: 2, firstVisitCompleted: 1, billingStarted: 2, subscribed: 1 },
+      { weekStart: "2026-06-22", signups: 6, setupStarted: 4, setupCompleted: 2, activated: 3, firstVisitCompleted: 2, billingStarted: 4, subscribed: 2 },
     ]);
     expect(result.totals).toEqual({
       signups: 10,
       setupStarted: 7,
       setupCompleted: 3,
       activated: 5,
+      firstVisitCompleted: 3,
       billingStarted: 6,
       subscribed: 3,
       setupStartRate: 0.7,
       setupCompletionRate: 0.3,
       activationRate: 0.5,
+      firstVisitCompletionRate: 0.6,
       billingStartRate: 0.6,
       conversionRate: 0.3,
     });
@@ -122,11 +124,13 @@ describe("admin activation funnel", () => {
       setupStarted: 0,
       setupCompleted: 0,
       activated: 0,
+      firstVisitCompleted: 0,
       billingStarted: 0,
       subscribed: 0,
       setupStartRate: 0,
       setupCompletionRate: 0,
       activationRate: 0,
+      firstVisitCompletionRate: 0,
       billingStartRate: 0,
       conversionRate: 0,
     });
@@ -135,13 +139,15 @@ describe("admin activation funnel", () => {
   it("coerces string counts from the driver into numbers", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
     mocks.executeResults.push([
-      { weekStart: "2026-06-29", signups: "2", setupStarted: "1", setupCompleted: "0", activated: "1", billingStarted: "1", subscribed: "0" },
+      { weekStart: "2026-06-29", signups: "2", setupStarted: "1", setupCompleted: "0", activated: "1", firstVisitCompleted: "1", billingStarted: "1", subscribed: "0" },
     ]);
 
     const result = await caller().activationFunnel({ days: 30 });
 
     expect(result.totals.signups).toBe(2);
     expect(result.totals.activated).toBe(1);
+    expect(result.totals.firstVisitCompleted).toBe(1);
+    expect(result.totals.firstVisitCompletionRate).toBe(1);
     expect(result.totals.billingStarted).toBe(1);
     expect(result.totals.activationRate).toBe(0.5);
   });
@@ -168,6 +174,14 @@ describe("admin activation funnel", () => {
     // Activation only counts rows created after the practice signed up.
     expect(source).toContain("c.created_at >= s.created_at");
     expect(source).toContain("a.created_at >= s.created_at");
+
+    // First-visit completion requires a completed, tenant-owned closeout for a
+    // real appointment and uses the same post-signup/demo exclusions.
+    expect(source).toContain("from visit_closeouts vc");
+    expect(source).toContain("a.practice_id = s.id");
+    expect(source).toContain("vc.practice_id = s.id");
+    expect(source).toContain("vc.status = 'completed'");
+    expect(source).toContain("vc.deleted_at is null");
 
     // Subscribed means an active subscription, not a running trial.
     expect(source).toContain("where s.billing_status = 'active'");

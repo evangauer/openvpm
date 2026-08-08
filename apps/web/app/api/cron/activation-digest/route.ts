@@ -96,11 +96,13 @@ function funnelSection(title: string, funnel: ActivationFunnel): string {
     setupStarted,
     setupCompleted,
     activated,
+    firstVisitCompleted,
     billingStarted,
     subscribed,
     setupStartRate,
     setupCompletionRate,
     activationRate,
+    firstVisitCompletionRate,
     billingStartRate,
     conversionRate,
   } = funnel.totals;
@@ -111,6 +113,7 @@ function funnelSection(title: string, funnel: ActivationFunnel): string {
     <th style="padding:4px 12px 4px 0;font-weight:500;">Setup started</th>
     <th style="padding:4px 12px 4px 0;font-weight:500;">Setup complete</th>
     <th style="padding:4px 12px 4px 0;font-weight:500;">Activated</th>
+    <th style="padding:4px 12px 4px 0;font-weight:500;">First visit done</th>
     <th style="padding:4px 12px 4px 0;font-weight:500;">Billing started</th>
     <th style="padding:4px 0;font-weight:500;">Paid active</th>
   </tr>
@@ -119,6 +122,7 @@ function funnelSection(title: string, funnel: ActivationFunnel): string {
     <td style="padding:2px 12px 2px 0;">${setupStarted} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(setupStartRate)}</span></td>
     <td style="padding:2px 12px 2px 0;">${setupCompleted} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(setupCompletionRate)}</span></td>
     <td style="padding:2px 12px 2px 0;">${activated} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(activationRate)}</span></td>
+    <td style="padding:2px 12px 2px 0;">${firstVisitCompleted} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(firstVisitCompletionRate)}</span></td>
     <td style="padding:2px 12px 2px 0;">${billingStarted} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(billingStartRate)}</span></td>
     <td style="padding:2px 0;">${subscribed} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(conversionRate)}</span></td>
   </tr>
@@ -190,7 +194,7 @@ function digestHtml(
               ${journeySection("Production journey · past 30 days", journeyMonth)}
               ${funnelSection("Past 7 days", week)}
               ${funnelSection("Past 30 days", month)}
-              <p style="margin:24px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Activated = added a real client and booked a real visit. Billing started = a Stripe subscription exists. Paid active = billing status is active. These are signup-cohort rates; demo data never counts.</p>
+              <p style="margin:24px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Activated = added a real client and booked a real visit. First visit done = completed the clinical and billing closeout; its rate is measured from activated clinics. Billing started = a Stripe subscription exists. Paid active = billing status is active. All other rates use the signup cohort; demo data never counts.</p>
             </td>
           </tr>
           <tr>

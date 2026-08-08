@@ -206,6 +206,15 @@ export function ActivationChecklist() {
       href: "/schedule",
     },
     {
+      key: "firstVisit",
+      label: "Complete your first visit",
+      hint: "Check in, start the exam, finalize the owner handoff, save the charge or no-charge reason, and complete checkout.",
+      done: onboardingData.hasCompletedRealVisit,
+      href: onboardingData.nextRealAppointmentId
+        ? `/encounters/${onboardingData.nextRealAppointmentId}`
+        : "/schedule",
+    },
+    {
       key: "team",
       label: "Invite a teammate",
       hint: "Test the handoff between a doctor and the front desk.",
@@ -269,6 +278,9 @@ export function ActivationChecklist() {
             goLiveMilestones.find((milestone) => milestone.key === "team")!,
             goLiveMilestones.find(
               (milestone) => milestone.key === "firstAppointment"
+            )!,
+            goLiveMilestones.find(
+              (milestone) => milestone.key === "firstVisit"
             )!,
           ]
         : goLiveMilestones;

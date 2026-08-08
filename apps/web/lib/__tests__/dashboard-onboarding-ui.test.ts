@@ -68,6 +68,17 @@ describe("dashboard onboarding UI states", () => {
     expect(activationSource).toContain(
       "done: onboardingData.hasRealAppointment"
     );
+    expect(activationSource).toContain('label: "Complete your first visit"');
+    expect(activationSource).toContain(
+      "done: onboardingData.hasCompletedRealVisit"
+    );
+    expect(activationSource).toContain(
+      "`/encounters/${onboardingData.nextRealAppointmentId}`"
+    );
+    expect(activationSource).toContain(': "/schedule"');
+    expect(activationSource.indexOf('key: "firstAppointment"')).toBeLessThan(
+      activationSource.indexOf('key: "firstVisit"')
+    );
     expect(activationSource).toContain('label: "Set up client card payments"');
     expect(activationSource).toContain("done: clientPaymentData.enabled");
     expect(activationSource).toContain('pathway.value === "explore"');
@@ -163,6 +174,20 @@ describe("dashboard onboarding UI states", () => {
       "onboardingStatus.data.establishedPractice === true"
     );
     expect(settingsRouter).toContain("ESTABLISHED_PRACTICE_PATIENT_THRESHOLD");
+    expect(settingsRouter).toContain(
+      "eq(visitCloseouts.practiceId, ctx.practiceId)"
+    );
+    expect(settingsRouter).toContain(
+      'eq(visitCloseouts.status, "completed")'
+    );
+    expect(settingsRouter).toContain("isNull(visitCloseouts.deletedAt)");
+    expect(settingsRouter).toContain(
+      "eq(appointments.practiceId, ctx.practiceId)"
+    );
+    expect(settingsRouter).toContain("realAppointmentFilter");
+    expect(settingsRouter).toContain("when 'in_exam' then 0");
+    expect(settingsRouter).toContain("asc(appointments.startTime)");
+    expect(settingsRouter).toContain("asc(appointments.id)");
     // Resume from the durable cursor rather than always step 0.
     expect(journeyProviderSource).toContain(
       "steps.findIndex((s) => s.id === journeyStepId)"

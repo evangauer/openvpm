@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { randomUUID } from "crypto";
-import { eq, and, isNull, inArray, ne, notInArray, sql } from "drizzle-orm";
+import { asc, eq, and, isNull, inArray, ne, notInArray, sql } from "drizzle-orm";
 import { hash } from "bcryptjs";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
@@ -23,6 +23,7 @@ import {
   products,
   locations,
   locationMessaging,
+  visitCloseouts,
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import { regionDefaults } from "@/lib/locale/format";
@@ -808,8 +809,13 @@ export const settingsRouter = createRouter({
       demoAppointmentIds.length > 0
         ? notInArray(appointments.id, demoAppointmentIds)
         : undefined;
-    const [existingPatients, firstRealAppointment, completedRealAppointment] =
-      await Promise.all([
+    const [
+      existingPatients,
+      firstRealAppointment,
+      completedRealAppointment,
+      completedRealVisit,
+      nextRealAppointment,
+    ] = await Promise.all([
         ctx.db
           .select({ id: patients.id })
           .from(patients)
@@ -843,6 +849,49 @@ export const settingsRouter = createRouter({
             )
           )
           .limit(1),
+        ctx.db
+          .select({ id: visitCloseouts.id })
+          .from(visitCloseouts)
+          .innerJoin(
+            appointments,
+            and(
+              eq(appointments.id, visitCloseouts.appointmentId),
+              eq(appointments.practiceId, ctx.practiceId),
+              isNull(appointments.deletedAt),
+              realAppointmentFilter
+            )
+          )
+          .where(
+            and(
+              eq(visitCloseouts.practiceId, ctx.practiceId),
+              eq(visitCloseouts.status, "completed"),
+              isNull(visitCloseouts.deletedAt)
+            )
+          )
+          .limit(1),
+        ctx.db
+          .select({ id: appointments.id })
+          .from(appointments)
+          .where(
+            and(
+              eq(appointments.practiceId, ctx.practiceId),
+              inArray(appointments.status, activeSchedulingStatuses),
+              isNull(appointments.deletedAt),
+              realAppointmentFilter
+            )
+          )
+          .orderBy(
+            sql`case ${appointments.status}
+              when 'in_exam' then 0
+              when 'checked_in' then 1
+              when 'confirmed' then 2
+              when 'scheduled' then 3
+              else 4
+            end`,
+            asc(appointments.startTime),
+            asc(appointments.id)
+          )
+          .limit(1),
       ]);
     const demoPatientIds = new Set(settings.demoData?.patientIds ?? []);
     return {
@@ -858,8 +907,15 @@ export const settingsRouter = createRouter({
       // the clinic-ready path. Demo appointments must never complete it.
       hasRealAppointment: firstRealAppointment.length > 0,
       // Checked out is the first durable signal that the practice has run the
-      // workflow, rather than merely exploring the calendar.
+      // legacy workflow, rather than merely exploring the calendar.
       hasCompletedRealAppointment: completedRealAppointment.length > 0,
+      // The clinic-ready activation gate is stronger: the closeout constraint
+      // proves clinical finalization, owner handoff, and an attributable
+      // paid/AR/no-charge disposition for a real tenant-owned appointment.
+      hasCompletedRealVisit: completedRealVisit.length > 0,
+      // Resume the most advanced nonterminal visit without adding another
+      // client request. Stable status/time/id ordering keeps the CTA durable.
+      nextRealAppointmentId: nextRealAppointment[0]?.id ?? null,
       onboardingDraft: settings.onboardingDraft ?? null,
       establishedPractice:
         existingPatients.length >= ESTABLISHED_PRACTICE_PATIENT_THRESHOLD,

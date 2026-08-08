@@ -11,6 +11,9 @@ import { withSystem } from "@/lib/tenant-db";
  *   least one real (non-demo) appointment created after signup. Demo rows are
  *   the ids recorded in practices.settings -> 'demoData' when sample data is
  *   seeded, so they never count toward activation.
+ * - first visit completed: a real appointment has a completed visit_closeout.
+ *   This is the durable clinic-use signal because closeout constraints require
+ *   finalized clinical handoff plus an attributable charge disposition.
  * - billing started: a Stripe subscription exists and local status is trialing
  *   or active. This captures card-on-file commitment before the first charge.
  * - paid active: billingStatus = 'active'. A trialing subscription is not paid.
@@ -28,6 +31,7 @@ export interface ActivationFunnelWeek {
   setupStarted: number;
   setupCompleted: number;
   activated: number;
+  firstVisitCompleted: number;
   billingStarted: number;
   subscribed: number;
 }
@@ -37,6 +41,7 @@ export interface ActivationFunnelTotals {
   setupStarted: number;
   setupCompleted: number;
   activated: number;
+  firstVisitCompleted: number;
   billingStarted: number;
   subscribed: number;
   /** setupStarted / signups; 0 when there are no signups. */
@@ -45,6 +50,8 @@ export interface ActivationFunnelTotals {
   setupCompletionRate: number;
   /** activated / signups; 0 when there are no signups. */
   activationRate: number;
+  /** firstVisitCompleted / activated; 0 when there are no activated clinics. */
+  firstVisitCompletionRate: number;
   /** billingStarted / signups; 0 when there are no signups. */
   billingStartRate: number;
   /** subscribed / signups; 0 when there are no signups. */
@@ -68,6 +75,7 @@ interface FunnelRow {
   setupStarted: number | string;
   setupCompleted: number | string;
   activated: number | string;
+  firstVisitCompleted: number | string;
   billingStarted: number | string;
   subscribed: number | string;
 }
@@ -135,6 +143,21 @@ export async function computeActivationFunnel(
           )
         )::int as "activated",
         count(*) filter (
+          where exists (
+            select 1
+            from visit_closeouts vc
+            join appointments a
+              on a.id = vc.appointment_id
+             and a.practice_id = s.id
+             and a.deleted_at is null
+            where vc.practice_id = s.id
+              and vc.status = 'completed'
+              and vc.deleted_at is null
+              and a.created_at >= s.created_at
+              and not (s.demo_appointment_ids @> to_jsonb(a.id::text))
+          )
+        )::int as "firstVisitCompleted",
+        count(*) filter (
           where s.stripe_subscription_id is not null
             and s.billing_status in ('trialing', 'active')
         )::int as "billingStarted",
@@ -152,6 +175,7 @@ export async function computeActivationFunnel(
       setupStarted: Number(row.setupStarted) || 0,
       setupCompleted: Number(row.setupCompleted) || 0,
       activated: Number(row.activated) || 0,
+      firstVisitCompleted: Number(row.firstVisitCompleted) || 0,
       billingStarted: Number(row.billingStarted) || 0,
       subscribed: Number(row.subscribed) || 0,
     })
@@ -164,6 +188,10 @@ export async function computeActivationFunnel(
     0
   );
   const activated = weeks.reduce((sum, week) => sum + week.activated, 0);
+  const firstVisitCompleted = weeks.reduce(
+    (sum, week) => sum + week.firstVisitCompleted,
+    0
+  );
   const billingStarted = weeks.reduce(
     (sum, week) => sum + week.billingStarted,
     0
@@ -178,11 +206,13 @@ export async function computeActivationFunnel(
       setupStarted,
       setupCompleted,
       activated,
+      firstVisitCompleted,
       billingStarted,
       subscribed,
       setupStartRate: funnelRate(setupStarted, signups),
       setupCompletionRate: funnelRate(setupCompleted, signups),
       activationRate: funnelRate(activated, signups),
+      firstVisitCompletionRate: funnelRate(firstVisitCompleted, activated),
       billingStartRate: funnelRate(billingStarted, signups),
       conversionRate: funnelRate(subscribed, signups),
     },

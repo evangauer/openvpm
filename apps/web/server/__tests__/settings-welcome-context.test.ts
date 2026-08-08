@@ -33,13 +33,14 @@ function callerWithRole(db: Record<string, unknown>, role: string) {
 /** Sequenced select mock: each select() call consumes the next result set. */
 function createDb(selectResults: unknown[][]) {
   const remaining = [...selectResults];
-  const select = vi.fn(() => ({
-    from: vi.fn(() => ({
-      where: vi.fn(() => ({
-        limit: vi.fn(async () => remaining.shift() ?? []),
-      })),
-    })),
-  }));
+  const select = vi.fn(() => {
+    const query: Record<string, ReturnType<typeof vi.fn>> = {};
+    query.innerJoin = vi.fn(() => query);
+    query.where = vi.fn(() => query);
+    query.orderBy = vi.fn(() => query);
+    query.limit = vi.fn(async () => remaining.shift() ?? []);
+    return { from: vi.fn(() => query) };
+  });
   const db: Record<string, unknown> = {
     transaction: async (fn: (tx: unknown) => unknown) => fn(db),
     execute: vi.fn(async () => undefined),
@@ -143,6 +144,8 @@ describe("settings.onboardingStatus", () => {
       [{ id: DEMO_PATIENT_ID }],
       [],
       [],
+      [],
+      [],
     ]);
 
     await expect(
@@ -154,6 +157,8 @@ describe("settings.onboardingStatus", () => {
     const { db } = createDb([
       [{ settings: demoSettings }],
       [{ id: DEMO_PATIENT_ID }, { id: "real-patient-1" }],
+      [],
+      [],
       [],
       [],
     ]);
@@ -180,6 +185,8 @@ describe("settings.onboardingStatus", () => {
       [{ id: DEMO_PATIENT_ID }],
       [],
       [],
+      [],
+      [],
     ]);
 
     await expect(
@@ -196,6 +203,8 @@ describe("settings.onboardingStatus", () => {
       [{ id: DEMO_PATIENT_ID }],
       [{ id: "real-appointment-1" }],
       [{ id: "real-appointment-1" }],
+      [],
+      [],
     ]);
 
     await expect(
@@ -203,6 +212,47 @@ describe("settings.onboardingStatus", () => {
     ).resolves.toMatchObject({
       hasRealAppointment: true,
       hasCompletedRealAppointment: true,
+      hasCompletedRealVisit: false,
+      nextRealAppointmentId: null,
+    });
+  });
+
+  it("requires a completed closeout instead of treating legacy checkout as a completed visit", async () => {
+    const { db } = createDb([
+      [{ settings: demoSettings }],
+      [{ id: DEMO_PATIENT_ID }],
+      [{ id: "real-appointment-1" }],
+      [{ id: "real-appointment-1" }],
+      [],
+      [{ id: "real-appointment-2" }],
+    ]);
+
+    await expect(
+      callerWithRole(db, "admin").onboardingStatus()
+    ).resolves.toMatchObject({
+      hasCompletedRealAppointment: true,
+      hasCompletedRealVisit: false,
+      nextRealAppointmentId: "real-appointment-2",
+    });
+  });
+
+  it("recognizes a completed closeout as the durable first-visit milestone", async () => {
+    const { db } = createDb([
+      [{ settings: demoSettings }],
+      [{ id: DEMO_PATIENT_ID }, { id: "real-patient-1" }],
+      [{ id: "real-appointment-1" }],
+      [{ id: "real-appointment-1" }],
+      [{ id: "closeout-1" }],
+      [],
+    ]);
+
+    await expect(
+      callerWithRole(db, "admin").onboardingStatus()
+    ).resolves.toMatchObject({
+      hasRealAppointment: true,
+      hasCompletedRealAppointment: true,
+      hasCompletedRealVisit: true,
+      nextRealAppointmentId: null,
     });
   });
 });

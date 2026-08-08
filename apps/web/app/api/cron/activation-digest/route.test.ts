@@ -51,11 +51,13 @@ function funnel(days: number, totals: Partial<ActivationFunnel["totals"]> = {}):
       setupStarted: 3,
       setupCompleted: 2,
       activated: 2,
+      firstVisitCompleted: 1,
       billingStarted: 2,
       subscribed: 1,
       setupStartRate: 0.6,
       setupCompletionRate: 0.4,
       activationRate: 0.4,
+      firstVisitCompletionRate: 0.5,
       billingStartRate: 0.4,
       conversionRate: 0.2,
       ...totals,
@@ -172,6 +174,18 @@ describe("activation digest cron", () => {
     expect(mocks.sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({
         html: expect.stringContaining("Billing started"),
+      })
+    );
+    expect(mocks.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        html: expect.stringContaining("First visit done"),
+      })
+    );
+    expect(mocks.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        html: expect.stringContaining(
+          "its rate is measured from activated clinics"
+        ),
       })
     );
     expect(mocks.sendEmail).toHaveBeenCalledWith(
