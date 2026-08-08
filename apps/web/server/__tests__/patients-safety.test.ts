@@ -534,6 +534,25 @@ describe("patients mutation safety", () => {
     expect(updateSet).toHaveBeenCalledWith({ name: "Biscuit" });
   });
 
+  it("persists a valid DOB and explicitly clears it with null", async () => {
+    const { db, updateSet } = createDb({
+      updatedRows: [{ id: PATIENT_ID, name: "Biscuit" }],
+    });
+    const caller = callerWithDb(db);
+
+    await caller.update({
+      id: PATIENT_ID,
+      dob: "2021-08-08",
+    });
+    expect(updateSet).toHaveBeenLastCalledWith({ dob: "2021-08-08" });
+
+    await caller.update({
+      id: PATIENT_ID,
+      dob: null,
+    });
+    expect(updateSet).toHaveBeenLastCalledWith({ dob: null });
+  });
+
   it("rejects stale or cross-tenant patient deletes", async () => {
     const { db, updateSet } = createDb({ selectResults: [[]] });
 

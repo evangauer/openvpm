@@ -72,6 +72,9 @@ const patientManagerProcedure = protectedProcedure.use(
   requireRole("admin", "veterinarian", "technician", "front_desk")
 );
 const patientDobInput = clinicalDateInput("Date of birth").optional();
+const patientDobUpdateInput = clinicalDateInput("Date of birth")
+  .nullable()
+  .optional();
 const patientSearchInput = z
   .string()
   .trim()
@@ -420,7 +423,7 @@ export const patientsRouter = createRouter({
         species: patientMutableInput.species.optional(),
         breed: patientMutableInput.breed,
         sex: patientMutableInput.sex,
-        dob: patientMutableInput.dob,
+        dob: patientDobUpdateInput,
         color: patientMutableInput.color,
         microchipNumber: patientMutableInput.microchipNumber,
         status: patientStatusInput.optional(),

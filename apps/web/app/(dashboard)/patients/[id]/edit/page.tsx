@@ -104,6 +104,7 @@ function canManagePatientFormRole(role?: string | null): boolean {
 function EditPatientForm() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
+  const utils = trpc.useUtils();
   const [form, setForm] = useState({
     name: "",
     species: "canine" as string,
@@ -141,7 +142,12 @@ function EditPatientForm() {
   }, [patient]);
 
   const updatePatient = trpc.patients.update.useMutation({
-    onSuccess: () => {
+    onSuccess: (updatedPatient) => {
+      utils.patients.getById.setData({ id: params.id }, (currentPatient) =>
+        currentPatient
+          ? { ...currentPatient, ...updatedPatient }
+          : currentPatient
+      );
       toast.success("Patient updated");
       router.push(`/patients/${params.id}`);
     },
@@ -160,9 +166,13 @@ function EditPatientForm() {
       PATIENT_MICROCHIP_NUMBER_MAX_LENGTH
     );
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError(null);
+
+    const submittedDob = (
+      e.currentTarget.elements.namedItem("dob") as HTMLInputElement | null
+    )?.value ?? form.dob;
 
     if (!patient) {
       setError("Load the patient before saving changes.");
@@ -183,7 +193,7 @@ function EditPatientForm() {
       species: form.species as any,
       breed: form.breed.trim() || undefined,
       sex: form.sex ? (form.sex as any) : undefined,
-      dob: form.dob || undefined,
+      dob: submittedDob || null,
       color: form.color.trim() || undefined,
       microchipNumber: form.microchipNumber.trim() || undefined,
       status: form.status as any,
@@ -313,6 +323,7 @@ function EditPatientForm() {
             </label>
             <Input
               id="dob"
+              name="dob"
               type="date"
               value={form.dob}
               onChange={(e) => updateField("dob", e.target.value)}

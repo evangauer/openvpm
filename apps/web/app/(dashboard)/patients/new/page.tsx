@@ -165,9 +165,13 @@ function NewPatientForm() {
       PATIENT_MICROCHIP_NUMBER_MAX_LENGTH
     );
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError(null);
+
+    const submittedDob = (
+      e.currentTarget.elements.namedItem("dob") as HTMLInputElement | null
+    )?.value ?? form.dob;
 
     if (!form.clientId) {
       setError("Please select an owner (client).");
@@ -188,7 +192,7 @@ function NewPatientForm() {
       species: form.species as any,
       breed: form.breed.trim() || undefined,
       sex: form.sex ? (form.sex as any) : undefined,
-      dob: form.dob || undefined,
+      dob: submittedDob || undefined,
       color: form.color.trim() || undefined,
       microchipNumber: form.microchipNumber.trim() || undefined,
     });
@@ -383,6 +387,7 @@ function NewPatientForm() {
             </label>
             <Input
               id="dob"
+              name="dob"
               type="date"
               value={form.dob}
               onChange={(e) => updateField("dob", e.target.value)}

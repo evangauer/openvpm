@@ -371,7 +371,15 @@ describe("client and patient form UI states", () => {
       expect(source).toContain("isOptionalPatientTextValid(");
       expect(source).toContain("form.microchipNumber");
       expect(source).toContain("Check required fields and field lengths.");
+      expect(source).toContain('name="dob"');
+      expect(source).toContain(
+        'e.currentTarget.elements.namedItem("dob")'
+      );
     }
+
+    expect(newPatient).toContain("dob: submittedDob || undefined");
+    expect(editPatient).toContain("dob: submittedDob || null");
+    expect(editPatient).toContain("utils.patients.getById.setData");
 
     expect(newPatient).toContain(
       "disabled={!canSubmit || createPatient.isPending}"
