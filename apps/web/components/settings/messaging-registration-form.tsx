@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
+  ExternalLink,
   Loader2,
   ShieldCheck,
 } from "lucide-react";
@@ -52,30 +53,52 @@ const EMPTY_FORM: FormState = {
 
 export function MessagingRegistrationForm() {
   const utils = trpc.useUtils();
-  const { data, isLoading, error } = trpc.messaging.getRegistration.useQuery();
+  const registrationQuery = trpc.messaging.getRegistration.useQuery();
+  const defaultsQuery = trpc.messaging.getRegistrationDefaults.useQuery();
+  const data = registrationQuery.data;
+  const defaults = defaultsQuery.data;
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [attested, setAttested] = useState(false);
+  const appliedInitialValues = useRef(false);
 
   useEffect(() => {
-    if (!data) return;
-    setForm({
-      entityType: data.entityType,
-      displayName: data.displayName,
-      legalName: data.legalName,
-      taxId: "",
-      contactFirstName: data.contactFirstName,
-      contactLastName: data.contactLastName,
-      contactEmail: data.contactEmail,
-      businessPhone: data.businessPhone,
-      street: data.street,
-      city: data.city,
-      state: data.state,
-      postalCode: data.postalCode,
-      website: data.website,
-      privacyPolicyUrl: data.privacyPolicyUrl,
-      termsUrl: data.termsUrl,
-    });
-  }, [data]);
+    if (appliedInitialValues.current) return;
+    if (data) {
+      setForm({
+        entityType: data.entityType,
+        displayName: data.displayName,
+        legalName: data.legalName,
+        taxId: "",
+        contactFirstName: data.contactFirstName,
+        contactLastName: data.contactLastName,
+        contactEmail: data.contactEmail,
+        businessPhone: data.businessPhone,
+        street: data.street,
+        city: data.city,
+        state: data.state,
+        postalCode: data.postalCode,
+        website: data.website,
+        privacyPolicyUrl: data.privacyPolicyUrl,
+        termsUrl: data.termsUrl,
+      });
+      appliedInitialValues.current = true;
+      return;
+    }
+    if (data === null && defaults) {
+      setForm((current) => ({
+        ...current,
+        displayName: defaults.displayName,
+        contactFirstName: defaults.contactFirstName,
+        contactLastName: defaults.contactLastName,
+        contactEmail: defaults.contactEmail,
+        businessPhone: defaults.businessPhone,
+        website: defaults.website,
+        privacyPolicyUrl: defaults.privacyPolicyUrl,
+        termsUrl: defaults.termsUrl,
+      }));
+      appliedInitialValues.current = true;
+    }
+  }, [data, defaults]);
 
   const submitted = Boolean(
     data?.providerBrandStatus || data?.providerCampaignStatus
@@ -94,7 +117,7 @@ export function MessagingRegistrationForm() {
     setForm((current) => ({ ...current, [key]: value }));
   }
 
-  if (isLoading) {
+  if (registrationQuery.isLoading || defaultsQuery.isLoading) {
     return (
       <div className="flex items-center gap-2 rounded-lg border border-border p-5 text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" /> Loading carrier
@@ -102,10 +125,11 @@ export function MessagingRegistrationForm() {
       </div>
     );
   }
-  if (error) {
+  const queryError = registrationQuery.error || defaultsQuery.error;
+  if (queryError) {
     return (
       <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
-        <AlertTriangle className="mr-2 inline h-4 w-4" /> {error.message}
+        <AlertTriangle className="mr-2 inline h-4 w-4" /> {queryError.message}
       </div>
     );
   }
@@ -149,6 +173,45 @@ export function MessagingRegistrationForm() {
           {data.lastSyncedAt
             ? ` Last checked ${new Date(data.lastSyncedAt).toLocaleString()}.`
             : ""}
+        </div>
+      ) : null}
+
+      {defaults ? (
+        <div className="rounded-lg border border-primary/20 bg-primary/5 p-4">
+          <p className="text-sm font-medium text-foreground">
+            Your clinic&apos;s SMS policies are ready
+          </p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            OpenVPM hosts the privacy policy, messaging terms, and exact consent
+            disclosure carriers need to review. You can use these links now or
+            replace them with your own public HTTPS pages.
+          </p>
+          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2 text-xs">
+            <a
+              href={defaults.privacyPolicyUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-primary hover:underline"
+            >
+              Privacy policy <ExternalLink className="h-3 w-3" />
+            </a>
+            <a
+              href={defaults.termsUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-primary hover:underline"
+            >
+              Messaging terms <ExternalLink className="h-3 w-3" />
+            </a>
+            <a
+              href={defaults.optInUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-primary hover:underline"
+            >
+              Consent disclosure <ExternalLink className="h-3 w-3" />
+            </a>
+          </div>
         </div>
       ) : null}
 
@@ -248,25 +311,28 @@ export function MessagingRegistrationForm() {
           disabled={submitted}
         />
         <TextField
-          label="Clinic website (HTTPS)"
+          label="Clinic website or professional profile (HTTPS)"
           type="url"
           value={form.website}
           onChange={(v) => update("website", v)}
           disabled={submitted}
+          description="A public clinic website, Google Business short link, or professional profile (100 characters max)."
         />
         <TextField
-          label="SMS privacy policy URL"
+          label="SMS privacy policy URL (optional)"
           type="url"
           value={form.privacyPolicyUrl}
           onChange={(v) => update("privacyPolicyUrl", v)}
           disabled={submitted}
+          description="Leave blank to use the OpenVPM-hosted clinic policy."
         />
         <TextField
-          label="SMS terms URL"
+          label="SMS terms URL (optional)"
           type="url"
           value={form.termsUrl}
           onChange={(v) => update("termsUrl", v)}
           disabled={submitted}
+          description="Leave blank to use the OpenVPM-hosted clinic terms."
         />
       </div>
 
@@ -281,7 +347,8 @@ export function MessagingRegistrationForm() {
             />
             <span>
               I certify these details are accurate, clients consent before any
-              SMS is sent, and the linked policies explain message frequency,
+              SMS is sent, SMS opt-in data is not sold or shared for third-party
+              marketing, and the linked policies explain message frequency,
               message/data rates, HELP, and STOP opt-out.
             </span>
           </label>
@@ -331,12 +398,14 @@ function TextField({
   onChange,
   type = "text",
   disabled,
+  description,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   type?: "text" | "email" | "tel" | "url";
   disabled?: boolean;
+  description?: string;
 }) {
   return (
     <Field label={label}>
@@ -346,6 +415,11 @@ function TextField({
         onChange={(event) => onChange(event.target.value)}
         disabled={disabled}
       />
+      {description ? (
+        <span className="block text-xs font-normal leading-4 text-muted-foreground">
+          {description}
+        </span>
+      ) : null}
     </Field>
   );
 }

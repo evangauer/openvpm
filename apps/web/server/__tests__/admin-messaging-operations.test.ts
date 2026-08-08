@@ -63,7 +63,7 @@ vi.mock("@/lib/messaging/telnyx-provisioning", () => ({
   TelnyxError: mocks.MockTelnyxError,
 }));
 
-const { adminRouter } = await import("../routers/admin");
+const { adminRouter, messagingCampaignCopy } = await import("../routers/admin");
 
 const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const USER_ID = "00000000-0000-0000-0000-000000000001";
@@ -90,6 +90,99 @@ afterEach(() => {
 });
 
 describe("platform messaging operations", () => {
+  it("describes the actual clinic-recorded opt-in flow and required disclosures", () => {
+    const copy = messagingCampaignCopy({
+      displayName: "Healthy Pets",
+      businessPhone: "+15555550100",
+      website: "https://healthypets.example",
+      programUrl:
+        "https://app.openvpm.com/sms/00000000-0000-0000-0000-0000000000aa",
+      privacyPolicyUrl:
+        "https://app.openvpm.com/sms/00000000-0000-0000-0000-0000000000aa/privacy",
+      termsUrl:
+        "https://app.openvpm.com/sms/00000000-0000-0000-0000-0000000000aa/terms",
+      optInUrl:
+        "https://app.openvpm.com/sms/00000000-0000-0000-0000-0000000000aa/opt-in",
+    });
+
+    expect(copy.messageFlow).toContain("phone or in-person intake");
+    expect(copy.messageFlow).toContain("optional and unchecked by default");
+    expect(copy.messageFlow).toContain("Consent is not a condition of purchase");
+    expect(copy.messageFlow).toContain("/opt-in");
+    expect(copy.messageFlow).toContain("/privacy");
+    expect(copy.messageFlow).toContain("/terms");
+    expect(copy.messageFlow).not.toContain("online booking");
+    expect(copy.sample1).toContain("+15555550100");
+    expect(copy.sample3).toContain("https://app.openvpm.com/sms/");
+    expect(copy.helpMessage).toContain("https://healthypets.example");
+    expect(JSON.stringify(copy)).not.toContain("Reply C");
+    expect(JSON.stringify(copy)).not.toContain("invoice");
+    expect(copy.messageFlow).not.toContain("staff member");
+  });
+
+  it("wires stored policies and hosted consent pages into the provider campaign", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+    vi.stubEnv("MESSAGING_PROVISIONING_ENABLED", "true");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.openvpm.com");
+    mocks.selectResults.push([
+      {
+        id: "00000000-0000-0000-0000-000000000008",
+        practiceId: PRACTICE_ID,
+        providerBrandId: "brand-123",
+        providerCampaignId: null,
+        displayName: "Healthy Pets",
+        businessPhone: "+15555550100",
+        website: "https://healthypets.example",
+        privacyPolicyUrl: "https://healthypets.example/sms-privacy",
+        termsUrl: "https://healthypets.example/sms-terms",
+      },
+    ]);
+    mocks.getA2pBrand.mockResolvedValue({
+      brandId: "brand-123",
+      identityStatus: "VERIFIED",
+    });
+    mocks.findA2pCampaignByReference.mockResolvedValue(null);
+    mocks.createA2pCampaign.mockResolvedValue({
+      campaignId: "campaign-123",
+      campaignStatus: "PENDING",
+    });
+
+    await expect(
+      caller().submitMessagingCampaign({
+        practiceId: PRACTICE_ID,
+        confirmProviderCharges: true,
+        retryAfterProviderReview: false,
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      providerCampaignId: "campaign-123",
+      reused: false,
+    });
+
+    expect(mocks.createA2pCampaign).toHaveBeenCalledWith(
+      expect.objectContaining({
+        brandId: "brand-123",
+        referenceId: `openvpm-clinic-${PRACTICE_ID}`,
+        privacyPolicyUrl: "https://healthypets.example/sms-privacy",
+        termsUrl: "https://healthypets.example/sms-terms",
+        sample3: expect.stringContaining(
+          `https://app.openvpm.com/sms/${PRACTICE_ID}`
+        ),
+        messageFlow: expect.stringContaining(
+          `https://app.openvpm.com/sms/${PRACTICE_ID}/opt-in`
+        ),
+        webhookUrl: "https://app.openvpm.com/api/webhooks/telnyx",
+      })
+    );
+    const payload = mocks.createA2pCampaign.mock.calls[0]?.[0];
+    expect(payload.messageFlow).toContain(
+      "https://healthypets.example/sms-privacy"
+    );
+    expect(payload.messageFlow).toContain(
+      "https://healthypets.example/sms-terms"
+    );
+  });
+
   it("blocks fee-bearing provider work before DB reads while the kill-switch is off", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
     vi.stubEnv("MESSAGING_PROVISIONING_ENABLED", "false");

@@ -31,11 +31,12 @@ import {
   createHostedOrder,
   TelnyxNotConfiguredError,
 } from "@/lib/messaging/telnyx-provisioning";
-import { normalizeAppBaseUrl } from "@/lib/app-url";
+import { appBaseUrl, normalizeAppBaseUrl } from "@/lib/app-url";
 import {
   encryptRegistrationTaxId,
   MessagingRegistrationEncryptionError,
 } from "@/lib/messaging/registration-crypto";
+import { messagingProgramUrls } from "@/lib/messaging/public-program";
 
 const adminOnly = protectedProcedure.use(requireRole("admin"));
 const MESSAGING_REGISTRATION_PENDING_DETAIL =
@@ -73,9 +74,23 @@ const httpsUrlInput = z
     message: "Use a public HTTPS URL.",
   });
 
+const optionalHttpsUrlInput = z
+  .union([httpsUrlInput, z.literal("")])
+  .optional();
+
+const registrationDisplayNameInput = z.string().trim().min(2).max(100);
+const registrationContactNameInput = z.string().trim().min(1).max(100);
+const registrationContactEmailInput = z.string().trim().email().max(100);
+const registrationWebsiteInput = httpsUrlInput.refine(
+  (value) => value.length <= 100,
+  {
+    message: "Website URL must be 100 characters or fewer.",
+  }
+);
+
 const a2pRegistrationInput = z.object({
   entityType: z.enum(["PRIVATE_PROFIT", "NON_PROFIT"]),
-  displayName: z.string().trim().min(2).max(100),
+  displayName: registrationDisplayNameInput,
   legalName: z.string().trim().min(2).max(100),
   taxId: z
     .string()
@@ -83,9 +98,9 @@ const a2pRegistrationInput = z.object({
     .regex(/^(?:\d[ -]?){8}\d$/, "Enter a valid 9-digit US tax ID.")
     .transform((value) => value.replace(/\D/g, ""))
     .optional(),
-  contactFirstName: z.string().trim().min(1).max(100),
-  contactLastName: z.string().trim().min(1).max(100),
-  contactEmail: z.string().trim().email().max(100),
+  contactFirstName: registrationContactNameInput,
+  contactLastName: registrationContactNameInput,
+  contactEmail: registrationContactEmailInput,
   businessPhone: messagingPhoneInput,
   street: z.string().trim().min(3).max(100),
   city: z.string().trim().min(2).max(100),
@@ -98,11 +113,9 @@ const a2pRegistrationInput = z.object({
     .string()
     .trim()
     .regex(/^\d{5}(?:-\d{4})?$/, "Enter a valid US ZIP code."),
-  website: httpsUrlInput.refine((value) => value.length <= 100, {
-    message: "Website URL must be 100 characters or fewer.",
-  }),
-  privacyPolicyUrl: httpsUrlInput,
-  termsUrl: httpsUrlInput,
+  website: registrationWebsiteInput,
+  privacyPolicyUrl: optionalHttpsUrlInput,
+  termsUrl: optionalHttpsUrlInput,
   certifyAccuracyAndConsent: z.literal(true),
 });
 
@@ -217,6 +230,22 @@ function configuredWebhookBaseUrl(): string {
   return "";
 }
 
+function splitContactName(name: string) {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  return {
+    contactFirstName: parts.shift() ?? "",
+    contactLastName: parts.join(" "),
+  };
+}
+
+function stringDefault(
+  schema: z.ZodType<string>,
+  value: string | null | undefined
+): string {
+  const parsed = schema.safeParse(value ?? "");
+  return parsed.success ? parsed.data : "";
+}
+
 export const messagingRouter = createRouter({
   /** Redacted clinic-entered A2P details. Raw/encrypted tax IDs never leave DB. */
   getRegistration: adminOnly.query(async ({ ctx }) => {
@@ -255,6 +284,55 @@ export const messagingRouter = createRouter({
       )
       .limit(1);
     return registration ?? null;
+  }),
+
+  /** Prefill non-legal fields and provide hosted SMS policy URLs. */
+  getRegistrationDefaults: adminOnly.query(async ({ ctx }) => {
+    await assertActivePractice(ctx);
+    const [practice] = await ctx.db
+      .select({
+        name: practices.name,
+        email: practices.email,
+        phone: practices.phone,
+        website: practices.website,
+        primaryLocationPhone: locations.phone,
+      })
+      .from(practices)
+      .leftJoin(
+        locations,
+        and(
+          eq(locations.practiceId, practices.id),
+          eq(locations.isPrimary, true),
+          isNull(locations.deletedAt)
+        )
+      )
+      .where(activePracticeWhere(ctx.practiceId))
+      .limit(1);
+
+    if (!practice) throw practiceNotFound();
+    const policyUrls = messagingProgramUrls(ctx.practiceId, appBaseUrl());
+    const contactName = splitContactName(ctx.user.name);
+
+    return {
+      displayName: stringDefault(registrationDisplayNameInput, practice.name),
+      contactFirstName: stringDefault(
+        registrationContactNameInput,
+        contactName.contactFirstName
+      ),
+      contactLastName: stringDefault(
+        registrationContactNameInput,
+        contactName.contactLastName
+      ),
+      contactEmail:
+        stringDefault(registrationContactEmailInput, practice.email) ||
+        stringDefault(registrationContactEmailInput, ctx.user.email),
+      businessPhone: stringDefault(
+        messagingPhoneInput,
+        practice.phone || practice.primaryLocationPhone
+      ),
+      website: stringDefault(registrationWebsiteInput, practice.website),
+      ...policyUrls,
+    };
   }),
 
   /**
@@ -321,14 +399,24 @@ export const messagingRouter = createRouter({
         });
       }
 
+      const hostedPolicyUrls =
+        !input.privacyPolicyUrl || !input.termsUrl
+          ? messagingProgramUrls(ctx.practiceId, appBaseUrl())
+          : null;
       const { taxId: _taxId, ...fields } = input;
       const { certifyAccuracyAndConsent: _attestation, ...registrationFields } =
         fields;
+      const completedRegistrationFields = {
+        ...registrationFields,
+        privacyPolicyUrl:
+          input.privacyPolicyUrl || hostedPolicyUrls!.privacyPolicyUrl,
+        termsUrl: input.termsUrl || hostedPolicyUrls!.termsUrl,
+      };
       await ctx.db
         .insert(messagingRegistrations)
         .values({
           practiceId: ctx.practiceId,
-          ...registrationFields,
+          ...completedRegistrationFields,
           taxIdEncrypted,
           taxIdLast4,
           complianceAttestedAt: new Date(),
@@ -341,7 +429,7 @@ export const messagingRouter = createRouter({
         .onConflictDoUpdate({
           target: messagingRegistrations.practiceId,
           set: {
-            ...registrationFields,
+            ...completedRegistrationFields,
             taxIdEncrypted,
             taxIdLast4,
             complianceAttestedAt: new Date(),

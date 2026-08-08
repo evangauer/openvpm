@@ -47,6 +47,7 @@ import {
   mergeRegistrationStatus,
   observedRegistrationStatus,
 } from "@/lib/messaging/a2p-lifecycle";
+import { messagingProgramUrls } from "@/lib/messaging/public-program";
 
 /**
  * Platform-operator only. Crosses tenant boundaries deliberately, so it is
@@ -114,18 +115,26 @@ function campaignReferenceId(practiceId: string) {
   return `openvpm-clinic-${practiceId}`;
 }
 
-function campaignCopy(displayName: string) {
+export function messagingCampaignCopy(input: {
+  displayName: string;
+  businessPhone: string;
+  website: string;
+  programUrl: string;
+  privacyPolicyUrl: string;
+  termsUrl: string;
+  optInUrl: string;
+}) {
   return {
     description:
-      "Veterinary clinic communications including appointment reminders, care follow-ups, invoice notifications, and two-way client support. Messages are sent only to clients whose SMS consent is recorded by the clinic.",
-    sample1: `${displayName}: Reminder—your pet's appointment is tomorrow at 10:00 AM. Reply C to confirm or call the clinic to reschedule. Reply STOP to opt out.`,
-    sample2: `${displayName}: Your pet's care instructions are ready. Reply here with questions or call the clinic. Reply STOP to opt out.`,
-    sample3: `${displayName}: Your invoice is ready to review and pay securely. Reply HELP for help or STOP to opt out.`,
+      "Veterinary clinic communications including appointment reminders, vaccination and care follow-ups, and two-way client support. Messages are sent only to clients whose SMS consent is recorded by the clinic.",
+    sample1: `${input.displayName}: Reminder—your pet's appointment is tomorrow at 10:00 AM. Call ${input.businessPhone} if you need to reschedule. Reply STOP to opt out.`,
+    sample2: `${input.displayName}: Your pet's care instructions are ready. Reply here with questions or call ${input.businessPhone}. Reply STOP to opt out.`,
+    sample3: `${input.displayName}: Clinic text messaging information: ${input.programUrl} Reply HELP for help or STOP to opt out.`,
     messageFlow:
-      "Clients provide their mobile number and consent directly to the veterinary clinic during intake, online booking, by phone, or in person. Clinic staff record that consent in OpenVPM before any SMS is sent. Message frequency varies. Message and data rates may apply. Consent is not a condition of purchase. Clients can reply STOP to opt out or HELP for help.",
-    helpMessage: `Reply to reach ${displayName}, or call the clinic for help. Reply STOP to opt out.`,
-    optinMessage: `${displayName}: You are subscribed to clinic messages. Message frequency varies. Msg & data rates may apply. Reply HELP for help or STOP to opt out.`,
-    optoutMessage: `${displayName}: You have been unsubscribed and will receive no further SMS messages. Reply START to opt back in.`,
+      `Clients opt in during phone or in-person intake. Clinic staff read or show the exact disclosure at ${input.optInUrl}, ask for an explicit choice, and record the consent decision, timestamp, disclosure, consent source, and mobile number in OpenVPM. The consent control is optional and unchecked by default. No SMS is sent before consent is recorded. Message frequency varies. Message and data rates may apply. Consent is not a condition of purchase. Reply STOP to opt out or HELP for help. Privacy: ${input.privacyPolicyUrl} Terms: ${input.termsUrl}`,
+    helpMessage: `Contact ${input.displayName} at ${input.businessPhone} or ${input.website}. Reply STOP to opt out.`,
+    optinMessage: `${input.displayName}: You agreed to receive clinic service texts. Frequency varies. Msg & data rates may apply. Consent is not a condition of purchase. Reply HELP for help or STOP to opt out.`,
+    optoutMessage: `${input.displayName}: You have been unsubscribed and will receive no further SMS messages. Reply START to opt back in.`,
   };
 }
 
@@ -753,7 +762,16 @@ export const adminRouter = createRouter({
         allowReviewedRetry: input.retryAfterProviderReview,
       });
       try {
-        const copy = campaignCopy(registration.displayName);
+        const programUrls = messagingProgramUrls(registration.practiceId);
+        const copy = messagingCampaignCopy({
+          displayName: registration.displayName,
+          businessPhone: registration.businessPhone,
+          website: registration.website,
+          programUrl: programUrls.programUrl,
+          privacyPolicyUrl: registration.privacyPolicyUrl,
+          termsUrl: registration.termsUrl,
+          optInUrl: programUrls.optInUrl,
+        });
         const campaign = await createA2pCampaign({
           brandId: registration.providerBrandId,
           referenceId,

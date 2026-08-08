@@ -172,6 +172,63 @@ describe("messaging provisioning kill-switch", () => {
 });
 
 describe("messaging location target safety", () => {
+  it("prefills carrier registration from the active clinic without exposing legal fields", async () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.openvpm.com");
+    const { db } = createDb({
+      selectResults: [
+        [
+          {
+            name: "Healthy Pets",
+            email: null,
+            phone: null,
+            website: "https://example.com",
+            primaryLocationPhone: "+15555550100",
+          },
+        ],
+      ],
+    });
+
+    await expect(callerWithDb(db).getRegistrationDefaults()).resolves.toEqual({
+      displayName: "Healthy Pets",
+      contactFirstName: "Admin",
+      contactLastName: "",
+      contactEmail: "admin@example.com",
+      businessPhone: "+15555550100",
+      website: "https://example.com",
+      programUrl: `https://app.openvpm.com/sms/${PRACTICE_ID}`,
+      privacyPolicyUrl:
+        `https://app.openvpm.com/sms/${PRACTICE_ID}/privacy`,
+      termsUrl: `https://app.openvpm.com/sms/${PRACTICE_ID}/terms`,
+      optInUrl: `https://app.openvpm.com/sms/${PRACTICE_ID}/opt-in`,
+    });
+  });
+
+  it("leaves invalid or overlong clinic defaults blank instead of creating save errors", async () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.openvpm.com");
+    const { db } = createDb({
+      selectResults: [
+        [
+          {
+            name: "x".repeat(101),
+            email: "x".repeat(101) + "@example.com",
+            phone: "not-a-phone",
+            website: "https://example.com/" + "x".repeat(101),
+            primaryLocationPhone: null,
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).getRegistrationDefaults()
+    ).resolves.toMatchObject({
+      displayName: "",
+      contactEmail: "admin@example.com",
+      businessPhone: "",
+      website: "",
+    });
+  });
+
   it("encrypts clinic tax IDs and upserts registration details tenant-scoped", async () => {
     vi.stubEnv(
       "MESSAGING_REGISTRATION_ENCRYPTION_KEY",
@@ -211,6 +268,38 @@ describe("messaging location target safety", () => {
     });
     expect(values.taxIdEncrypted).toMatch(/^v1:/);
     expect(JSON.stringify(values)).not.toContain("123456789");
+  });
+
+  it("uses the hosted clinic SMS policies when custom links are omitted", async () => {
+    vi.stubEnv(
+      "MESSAGING_REGISTRATION_ENCRYPTION_KEY",
+      Buffer.alloc(32, 9).toString("base64")
+    );
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.openvpm.com");
+    const { db, insertValues } = createDb({ selectResults: [[]] });
+
+    await callerWithDb(db).saveRegistration({
+      entityType: "PRIVATE_PROFIT",
+      displayName: "Healthy Pets",
+      legalName: "Healthy Pets LLC",
+      taxId: "12-3456789",
+      contactFirstName: "Alex",
+      contactLastName: "Vet",
+      contactEmail: "alex@example.com",
+      businessPhone: "+15555550100",
+      street: "1 Main St",
+      city: "Denver",
+      state: "CO",
+      postalCode: "80202",
+      website: "https://example.com",
+      certifyAccuracyAndConsent: true,
+    });
+
+    expect(insertValues.mock.calls[0]?.[0]).toMatchObject({
+      privacyPolicyUrl:
+        `https://app.openvpm.com/sms/${PRACTICE_ID}/privacy`,
+      termsUrl: `https://app.openvpm.com/sms/${PRACTICE_ID}/terms`,
+    });
   });
 
   it("rejects invalid messaging phone inputs before DB or provider calls", async () => {
