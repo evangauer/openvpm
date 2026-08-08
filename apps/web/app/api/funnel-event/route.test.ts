@@ -115,4 +115,31 @@ describe("/api/funnel-event", () => {
       "https://openvpm.com"
     );
   });
+
+  it("accepts events from the hosted demo origin", async () => {
+    const response = await POST(
+      request(
+        {
+          ...validEvent,
+          name: "demo_gate_viewed",
+          path: "/login",
+          source: undefined,
+        },
+        "https://demo.openvpm.com"
+      )
+    );
+
+    expect(response.status).toBe(202);
+    expect(response.headers.get("access-control-allow-origin")).toBe(
+      "https://demo.openvpm.com"
+    );
+    expect(mocks.insertFunnelEvent).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        eventName: "demo_gate_viewed",
+        origin: "https://demo.openvpm.com",
+        path: "/login",
+      })
+    );
+  });
 });

@@ -14,7 +14,7 @@ const contentSecurityPolicy = [
   ]
     .filter(Boolean)
     .join(" "),
-  "connect-src 'self' https://vitals.vercel-insights.com https://va.vercel-scripts.com",
+  "connect-src 'self' https://app.openvpm.com https://vitals.vercel-insights.com https://va.vercel-scripts.com",
   "worker-src 'self' blob:",
   process.env.NODE_ENV === "production" ? "upgrade-insecure-requests" : null,
 ]

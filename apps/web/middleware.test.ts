@@ -189,6 +189,9 @@ describe("middleware security headers", () => {
 
   it("keeps the CSP compatible with accepted patient photo URLs", () => {
     expect(contentSecurityPolicy).toContain("img-src 'self' data: blob: https:");
+    expect(contentSecurityPolicy).toContain(
+      "connect-src 'self' https://app.openvpm.com"
+    );
     expect(contentSecurityPolicy).toContain("default-src 'self'");
     expect(contentSecurityPolicy).toContain("object-src 'none'");
   });
