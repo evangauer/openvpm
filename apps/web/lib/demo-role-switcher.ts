@@ -7,6 +7,8 @@ export const DEMO_ROLE_OPTIONS = [
 
 export type DemoSwitcherRole = (typeof DEMO_ROLE_OPTIONS)[number]["value"];
 
+export const DEMO_ROLE_SWITCH_QUERY_PARAM = "demo_role_switch";
+
 type DemoSignInResult = {
   ok?: boolean;
   error?: string | null;
@@ -108,6 +110,30 @@ export function demoRoleDestination(
   return currentPathIsLocal && canPreserveDemoPath(role, pathname)
     ? currentPath
     : "/";
+}
+
+export function addDemoRoleSwitchMarker(destination: string): string {
+  if (!destination.startsWith("/") || destination.startsWith("//")) return "/";
+  const url = new URL(destination, "https://demo.openvpm.local");
+  url.searchParams.set(DEMO_ROLE_SWITCH_QUERY_PARAM, "1");
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+export function stripDemoRoleSwitchMarker(currentPath: string): {
+  hadMarker: boolean;
+  path: string;
+} {
+  if (!currentPath.startsWith("/") || currentPath.startsWith("//")) {
+    return { hadMarker: false, path: "/" };
+  }
+  const url = new URL(currentPath, "https://demo.openvpm.local");
+  const hadMarker = url.searchParams.get(DEMO_ROLE_SWITCH_QUERY_PARAM) === "1";
+  if (!hadMarker) return { hadMarker: false, path: currentPath };
+  url.searchParams.delete(DEMO_ROLE_SWITCH_QUERY_PARAM);
+  return {
+    hadMarker: true,
+    path: `${url.pathname}${url.search}${url.hash}`,
+  };
 }
 
 export async function requestDemoRoleSwitch(

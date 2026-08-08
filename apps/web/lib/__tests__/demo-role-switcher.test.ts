@@ -5,10 +5,12 @@ import { describe, expect, it, vi } from "vitest";
 import { DemoRoleSwitcherView } from "@/components/demo/demo-role-switcher";
 import {
   DEMO_ROLE_OPTIONS,
+  addDemoRoleSwitchMarker,
   canPreserveDemoPath,
   demoRoleDestination,
   requestDemoRoleSwitch,
   shouldShowDemoRoleSwitcher,
+  stripDemoRoleSwitchMarker,
 } from "@/lib/demo-role-switcher";
 
 describe("post-gate demo role switcher", () => {
@@ -87,6 +89,26 @@ describe("post-gate demo role switcher", () => {
     ).toBe("/");
   });
 
+  it("marks role-switch landings and strips only the one-time marker", () => {
+    expect(
+      addDemoRoleSwitchMarker("/encounters/abc?tab=soap#draft"),
+    ).toBe("/encounters/abc?tab=soap&demo_role_switch=1#draft");
+    expect(addDemoRoleSwitchMarker("https://outside.example/path")).toBe("/");
+
+    expect(
+      stripDemoRoleSwitchMarker(
+        "/encounters/abc?tab=soap&demo_role_switch=1#draft",
+      ),
+    ).toEqual({
+      hadMarker: true,
+      path: "/encounters/abc?tab=soap#draft",
+    });
+    expect(stripDemoRoleSwitchMarker("/encounters/abc?tab=soap")).toEqual({
+      hadMarker: false,
+      path: "/encounters/abc?tab=soap",
+    });
+  });
+
   it("shows the current role and disables switching while a role change is pending", () => {
     const currentMarkup = renderToStaticMarkup(
       createElement(DemoRoleSwitcherView, {
@@ -136,14 +158,22 @@ describe("post-gate demo role switcher", () => {
       "utf8",
     );
     const loginSource = readFileSync("app/(auth)/login/page.tsx", "utf8");
+    const welcomeSource = readFileSync(
+      "components/welcome/welcome-provider.tsx",
+      "utf8",
+    );
 
     expect(componentSource).toContain("NEXT_PUBLIC_DEMO_MODE");
     expect(componentSource).toContain("signIn(provider, options)");
-    expect(componentSource).toContain("window.location.assign(destination)");
+    expect(componentSource).toContain(
+      "window.location.assign(addDemoRoleSwitchMarker(destination))",
+    );
     expect(componentSource).not.toContain("/api/demo-access");
     expect(componentSource).not.toContain("trackFunnelEvent");
     expect(componentSource).not.toContain("FUNNEL_EVENTS");
     expect(barSource).toContain("<DemoRoleSwitcher />");
     expect(loginSource).not.toContain("DemoRoleSwitcher");
+    expect(welcomeSource).toContain("stripDemoRoleSwitchMarker");
+    expect(welcomeSource).toContain("autoDecided.current = true");
   });
 });

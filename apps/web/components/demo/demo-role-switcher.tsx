@@ -6,6 +6,7 @@ import { signIn, useSession } from "next-auth/react";
 import { Loader2, UserRoundCog } from "lucide-react";
 import {
   DEMO_ROLE_OPTIONS,
+  addDemoRoleSwitchMarker,
   type DemoSwitcherRole,
   demoRoleDestination,
   demoRoleLabel,
@@ -130,7 +131,7 @@ export function DemoRoleSwitcher() {
       );
       // A full local navigation reloads the JWT-backed session before any
       // role-gated page or query can render under the new identity.
-      window.location.assign(destination);
+      window.location.assign(addDemoRoleSwitchMarker(destination));
     } catch {
       setPendingRole(null);
       setError("Role changed. Refresh this page to finish switching views.");

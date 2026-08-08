@@ -34,6 +34,9 @@ import {
 import { WelcomeSurface } from "./welcome-surface";
 import type { WelcomeVariant } from "./polaroid-card";
 import { WELCOME_COPY } from "./welcome-copy";
+import { stripDemoRoleSwitchMarker } from "@/lib/demo-role-switcher";
+
+const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE?.trim() === "true";
 
 interface WelcomeContextValue {
   openWelcome: () => void;
@@ -109,6 +112,18 @@ export function WelcomeProvider({ children }: { children: React.ReactNode }) {
     const wantGuides =
       typeof window !== "undefined" &&
       new URLSearchParams(window.location.search).get("guides") === "1";
+
+    if (DEMO_MODE && typeof window !== "undefined") {
+      const roleSwitchLanding = stripDemoRoleSwitchMarker(
+        `${window.location.pathname}${window.location.search}${window.location.hash}`,
+      );
+      if (roleSwitchLanding.hadMarker) {
+        autoDecided.current = true;
+        router.replace(roleSwitchLanding.path);
+        return;
+      }
+    }
+
     if (wantGuides) {
       autoDecided.current = true;
       router.replace(pathname); // strip so refresh does not relaunch
