@@ -35,6 +35,7 @@ import {
 import { ServicePicker } from "@/components/billing/service-picker";
 import { CapturePhotos } from "@/components/records/capture-photos";
 import { ConsentSign } from "@/components/records/consent-sign";
+import { EncounterVitalsCard } from "@/components/records/encounter-vitals-card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -92,6 +93,10 @@ function canManageVisit(role?: string | null): boolean {
 
 function canCreateSoap(role?: string | null): boolean {
   return role === "admin" || role === "veterinarian";
+}
+
+function canRecordVitals(role?: string | null): boolean {
+  return role === "admin" || role === "veterinarian" || role === "technician";
 }
 
 function canManageBilling(role?: string | null): boolean {
@@ -221,6 +226,13 @@ export default function EncounterWorkspacePage() {
     .filter(Boolean)
     .join(" ");
   const nextAction = nextVisitAction(appointment.status);
+  const visitClinicalStateReady =
+    Boolean(closeoutQuery.data) && !closeoutQuery.error;
+  const visitOpenForClinicalEntry =
+    visitClinicalStateReady &&
+    appointment.status === "in_exam" &&
+    closeoutQuery.data?.closeout?.status !== "clinical_finalized" &&
+    closeoutQuery.data?.closeout?.status !== "completed";
   const activeInvoices =
     invoicesQuery.data?.items.filter(
       (invoice) => !invoice.isEstimate && invoice.status !== "void",
@@ -422,6 +434,17 @@ export default function EncounterWorkspacePage() {
               )}
             </CardContent>
           </Card>
+
+          {appointment.patientId ? (
+            <EncounterVitalsCard
+              patientId={appointment.patientId}
+              appointmentId={appointment.id}
+              canRecord={visitOpenForClinicalEntry && canRecordVitals(role)}
+              visitStateReady={visitClinicalStateReady}
+              visitOpen={visitOpenForClinicalEntry}
+              timeZone={taxConfigQuery.data?.timezone}
+            />
+          ) : null}
 
           <VisitCloseout
             appointment={appointment}

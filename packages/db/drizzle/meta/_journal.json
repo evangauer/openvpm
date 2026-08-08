@@ -323,6 +323,13 @@
       "when": 1786209072337,
       "tag": "0045_visit_work_ledger",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1786215894384,
+      "tag": "0046_encounter_vitals_index",
+      "breakpoints": true
     }
   ]
 }

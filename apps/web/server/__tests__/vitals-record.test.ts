@@ -34,12 +34,14 @@ function callerWithDb(db: Record<string, unknown>, role = "technician") {
 }
 
 function thenableRows(result: unknown[]) {
-  return {
+  const query = {
     limit: vi.fn(async () => result),
     for: vi.fn(async () => result),
+    orderBy: vi.fn(() => query),
     then: (resolve: (value: unknown[]) => unknown, reject?: (e: unknown) => unknown) =>
       Promise.resolve(result).then(resolve, reject),
   };
+  return query;
 }
 
 function createDb(opts: {
@@ -108,6 +110,13 @@ describe("vitals.record tenant safety", () => {
     await expect(
       callerWithDb(db).listByPatient({
         patientId: PATIENT_ID,
+        limit: 1.5,
+      })
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    await expect(
+      callerWithDb(db).listByAppointment({
+        appointmentId: APPOINTMENT_ID,
         limit: 1.5,
       })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
@@ -210,6 +219,32 @@ describe("vitals.record tenant safety", () => {
     expect(source).toMatch(
       /eq\(vitalSigns\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(vitalSigns\.deletedAt\)/
     );
+    expect(source).toContain(
+      "eq(vitalSigns.appointmentId, input.appointmentId)"
+    );
+    expect(source).toContain("return ctx.db.transaction(async (tx) =>");
+  });
+
+  it("lists appointment-owned vitals for the current tenant after closeout", async () => {
+    const recorded = {
+      id: "00000000-0000-0000-0000-000000000004",
+      practiceId: PRACTICE_ID,
+      patientId: PATIENT_ID,
+      appointmentId: APPOINTMENT_ID,
+      temperatureC: "38.6",
+    };
+    const { db, select, insertValues } = createDb({
+      selectResults: [[recorded]],
+    });
+
+    await expect(
+      callerWithDb(db, "front_desk").listByAppointment({
+        appointmentId: APPOINTMENT_ID,
+      })
+    ).resolves.toEqual([recorded]);
+
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(insertValues).not.toHaveBeenCalled();
   });
 
   it("rejects appointment-linked vitals when the appointment is not for that patient", async () => {

@@ -13,6 +13,14 @@ const soapSource = readFileSync(
   "app/(dashboard)/records/new-soap/[patientId]/page.tsx",
   "utf8",
 );
+const encounterVitalsSource = readFileSync(
+  "components/records/encounter-vitals-card.tsx",
+  "utf8",
+);
+const patientChartSource = readFileSync(
+  "app/(dashboard)/patients/[id]/page.tsx",
+  "utf8",
+);
 
 describe("clinic encounter workspace", () => {
   it("opens from an appointment and keeps visit and patient context together", () => {
@@ -39,6 +47,56 @@ describe("clinic encounter workspace", () => {
     );
     expect(soapSource).toContain(
       "This note will be linked to the current appointment.",
+    );
+  });
+
+  it("keeps visit vitals appointment-owned and readable after closeout", () => {
+    expect(workspaceSource).toContain(
+      "function canRecordVitals(role?: string | null): boolean",
+    );
+    expect(workspaceSource).toContain('appointment.status === "in_exam"');
+    expect(workspaceSource).toContain(
+      'closeoutQuery.data?.closeout?.status !== "clinical_finalized"',
+    );
+    expect(workspaceSource).toContain(
+      'closeoutQuery.data?.closeout?.status !== "completed"',
+    );
+    expect(workspaceSource).toContain("patientId={appointment.patientId}");
+    expect(workspaceSource).toContain("appointmentId={appointment.id}");
+    expect(workspaceSource).toContain(
+      "visitStateReady={visitClinicalStateReady}",
+    );
+    expect(encounterVitalsSource).toContain(
+      "trpc.vitals.listByAppointment.useQuery",
+    );
+    expect(encounterVitalsSource).toContain("recordVitals.mutate({");
+    expect(encounterVitalsSource).toContain(
+      "const vitalsReady = Boolean(vitalsQuery.data) && !vitalsQuery.error",
+    );
+    expect(encounterVitalsSource).toContain("canRecord &&\n    vitalsReady &&");
+    expect(encounterVitalsSource).toMatch(
+      /recordVitals\.mutate\(\{\s+patientId,\s+appointmentId,/,
+    );
+    expect(encounterVitalsSource).toContain(
+      "Checking whether this visit accepts new vitals...",
+    );
+    expect(encounterVitalsSource).toContain(
+      "This visit is closed to new vitals. Recorded values remain read-only.",
+    );
+    expect(encounterVitalsSource).toContain(
+      "Only an administrator, veterinarian, or technician can record visit vitals.",
+    );
+    expect(encounterVitalsSource).toContain(
+      "utils.vitals.listByPatient.invalidate({ patientId })",
+    );
+  });
+
+  it("preserves patient-only vitals for historical chart entry", () => {
+    expect(patientChartSource).toContain(
+      "trpc.vitals.listByPatient.useQuery({ patientId })",
+    );
+    expect(patientChartSource).toMatch(
+      /record\.mutate\(\{\s+patientId,\s+temperatureC:/,
     );
   });
 

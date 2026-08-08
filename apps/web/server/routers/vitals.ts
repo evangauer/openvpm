@@ -133,6 +133,30 @@ export const vitalsRouter = createRouter({
         .limit(input.limit);
     }),
 
+  /** Appointment-owned vital signs remain readable after visit closeout. */
+  listByAppointment: protectedProcedure
+    .input(
+      z.object({
+        appointmentId: z.string().uuid(),
+        limit: z.number().int().min(1).max(100).default(100),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      return ctx.db
+        .select()
+        .from(vitalSigns)
+        .where(
+          and(
+            eq(vitalSigns.appointmentId, input.appointmentId),
+            eq(vitalSigns.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(vitalSigns.deletedAt)
+          )
+        )
+        .orderBy(desc(vitalSigns.recordedAt))
+        .limit(input.limit);
+    }),
+
   record: protectedProcedure
     .use(recordRole)
     .input(
@@ -200,27 +224,34 @@ export const vitalsRouter = createRouter({
         })
     )
     .mutation(async ({ ctx, input }) => {
-      await assertPatientBelongsToPractice(ctx.db, ctx.practiceId, input.patientId);
-      if (input.appointmentId) {
-        await assertAppointmentBelongsToPatient(
-          ctx.db,
+      return ctx.db.transaction(async (tx) => {
+        const txDb = tx as unknown as Database;
+        await assertPatientBelongsToPractice(
+          txDb,
           ctx.practiceId,
-          input.appointmentId,
           input.patientId
         );
-      }
-      const { temperatureC, weightKg, capillaryRefillSec, ...rest } = input;
-      const [row] = await ctx.db
-        .insert(vitalSigns)
-        .values({
-          ...rest,
-          practiceId: ctx.practiceId,
-          recordedBy: ctx.user.id,
-          temperatureC: temperatureC?.toString(),
-          weightKg: weightKg?.toString(),
-          capillaryRefillSec: capillaryRefillSec?.toString(),
-        })
-        .returning();
-      return row!;
+        if (input.appointmentId) {
+          await assertAppointmentBelongsToPatient(
+            txDb,
+            ctx.practiceId,
+            input.appointmentId,
+            input.patientId
+          );
+        }
+        const { temperatureC, weightKg, capillaryRefillSec, ...rest } = input;
+        const [row] = await tx
+          .insert(vitalSigns)
+          .values({
+            ...rest,
+            practiceId: ctx.practiceId,
+            recordedBy: ctx.user.id,
+            temperatureC: temperatureC?.toString(),
+            weightKg: weightKg?.toString(),
+            capillaryRefillSec: capillaryRefillSec?.toString(),
+          })
+          .returning();
+        return row!;
+      });
     }),
 });

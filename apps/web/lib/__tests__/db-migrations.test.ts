@@ -624,4 +624,23 @@ describe("committed Drizzle migrations", () => {
       sql.indexOf('CREATE UNIQUE INDEX "appointments_practice_id_uq"'),
     ).toBeLessThan(sql.indexOf("visit_work_items_practice_appointment_fk"));
   });
+
+  it("indexes tenant appointment vital timelines", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries?: Array<{ tag?: string }> };
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0046_encounter_vitals_index",
+    );
+
+    const sql = readRepoFile(
+      "packages/db/drizzle/0046_encounter_vitals_index.sql",
+    );
+    expect(sql).toContain(
+      'CREATE INDEX "vital_signs_appointment_idx" ON "vital_signs"',
+    );
+    expect(sql).toContain(
+      '("practice_id","appointment_id","deleted_at","recorded_at")',
+    );
+  });
 });

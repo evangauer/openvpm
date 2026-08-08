@@ -315,6 +315,12 @@ export const vitalSigns = pgTable(
   (table) => ({
     patientIdx: index("vital_signs_patient_idx").on(table.patientId, table.recordedAt),
     practiceIdx: index("vital_signs_practice_idx").on(table.practiceId, table.deletedAt),
+    appointmentIdx: index("vital_signs_appointment_idx").on(
+      table.practiceId,
+      table.appointmentId,
+      table.deletedAt,
+      table.recordedAt
+    ),
   })
 );
 

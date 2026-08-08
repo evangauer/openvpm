@@ -137,7 +137,11 @@ describe("hot table indexes", () => {
     [
       "vital_signs",
       vitalSigns,
-      ["vital_signs_patient_idx", "vital_signs_practice_idx"],
+      [
+        "vital_signs_patient_idx",
+        "vital_signs_practice_idx",
+        "vital_signs_appointment_idx",
+      ],
     ],
     [
       "patient_allergies",
@@ -425,5 +429,16 @@ describe("hot table indexes", () => {
     expect(
       indexColumnNames(smsSuppressions, "sms_suppressions_practice_idx")
     ).toEqual(["practice_id", "deleted_at"]);
+  });
+
+  it("matches visit-vitals indexing to the tenant appointment timeline query", () => {
+    expect(
+      indexColumnNames(vitalSigns, "vital_signs_appointment_idx")
+    ).toEqual([
+      "practice_id",
+      "appointment_id",
+      "deleted_at",
+      "recorded_at",
+    ]);
   });
 });
