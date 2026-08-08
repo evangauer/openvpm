@@ -29,6 +29,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/common/empty-state";
+import { ActionConfirmationDialog } from "@/components/common/action-confirmation-dialog";
 import { TableSkeleton } from "@/components/common/loading";
 import { TableScroll } from "@/components/common/table-scroll";
 import {
@@ -69,6 +70,9 @@ const PAYMENT_METHODS = [
   { label: "Online", value: "online" },
   { label: "Other", value: "other" },
 ] as const;
+
+const BILLING_ACTION_REASON_MIN_LENGTH = 5;
+const BILLING_ACTION_REASON_MAX_LENGTH = 500;
 
 function canManageBillingRole(role?: string | null): boolean {
   return role === "admin" || role === "front_desk";
@@ -152,6 +156,10 @@ export default function BillingPage() {
   const [activeTab, setActiveTab] = useState(0);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
+  const [pendingInvoiceVoidId, setPendingInvoiceVoidId] = useState<
+    string | null
+  >(null);
+  const [invoiceVoidReason, setInvoiceVoidReason] = useState("");
   const limit = 25;
 
   // Deep link: /billing?expand=<invoiceId> opens that invoice's detail (the
@@ -242,11 +250,33 @@ export default function BillingPage() {
 
   const handleVoidInvoice = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    const reason = window.prompt(
-      "Why is this invoice being voided? Dispensed medication charges will return to the work queue.",
+    setInvoiceVoidReason("");
+    setPendingInvoiceVoidId(id);
+  };
+
+  const closeInvoiceVoidDialog = () => {
+    if (voidInvoice.isPending) return;
+    setPendingInvoiceVoidId(null);
+    setInvoiceVoidReason("");
+  };
+
+  const confirmInvoiceVoid = () => {
+    const reason = invoiceVoidReason.trim();
+    if (
+      !pendingInvoiceVoidId ||
+      reason.length < BILLING_ACTION_REASON_MIN_LENGTH
+    ) {
+      return;
+    }
+    voidInvoice.mutate(
+      { id: pendingInvoiceVoidId, reason },
+      {
+        onSuccess: () => {
+          setPendingInvoiceVoidId(null);
+          setInvoiceVoidReason("");
+        },
+      },
     );
-    if (!reason?.trim()) return;
-    voidInvoice.mutate({ id, reason: reason.trim() });
   };
 
   return (
@@ -462,6 +492,25 @@ export default function BillingPage() {
           }
         />
       )}
+
+      <ActionConfirmationDialog
+        open={pendingInvoiceVoidId !== null}
+        title="Void invoice?"
+        description="This cannot be undone. Any dispensed medication charges on this invoice will return to the billing work queue; inventory will not move again."
+        confirmLabel="Void invoice"
+        confirmVariant="destructive"
+        isPending={voidInvoice.isPending}
+        reason={{
+          label: "Reason for voiding",
+          value: invoiceVoidReason,
+          onChange: setInvoiceVoidReason,
+          placeholder: "Explain the correction for the audit trail",
+          minLength: BILLING_ACTION_REASON_MIN_LENGTH,
+          maxLength: BILLING_ACTION_REASON_MAX_LENGTH,
+        }}
+        onCancel={closeInvoiceVoidDialog}
+        onConfirm={confirmInvoiceVoid}
+      />
     </div>
   );
 }
@@ -480,6 +529,11 @@ function DispenseChargeQueuePanel({
   const router = useRouter();
   const formatCurrency = useCurrencyFormatter();
   const utils = trpc.useUtils();
+  const [waiveTargetId, setWaiveTargetId] = useState<string | null>(null);
+  const [waiveReason, setWaiveReason] = useState("");
+  const [legacyReviewTargetId, setLegacyReviewTargetId] = useState<
+    string | null
+  >(null);
   const pending = trpc.billing.listDispenseChargeQueue.useQuery({
     status: "pending",
     limit: 50,
@@ -518,30 +572,58 @@ function DispenseChargeQueuePanel({
   const isMutating =
     createInvoice.isPending || waiveCharge.isPending || reopenCharge.isPending;
 
-  function waive(id: string) {
-    const reason = window.prompt(
-      "Why should this clinic-stock dispense not be charged?",
-    );
-    if (!reason?.trim()) return;
-    waiveCharge.mutate({ id, reason: reason.trim() });
+  function openWaiveDialog(id: string) {
+    setWaiveReason("");
+    setWaiveTargetId(id);
   }
 
-  function createDraftForDispense(item: {
-    id: string;
-    legacyReview: boolean;
-  }) {
-    if (
-      item.legacyReview &&
-      !window.confirm(
-        "This dispense predates the billing ledger. Verify it was not already billed before creating a draft invoice.",
-      )
-    ) {
+  function closeWaiveDialog() {
+    if (waiveCharge.isPending) return;
+    setWaiveTargetId(null);
+    setWaiveReason("");
+  }
+
+  function confirmWaive() {
+    const reason = waiveReason.trim();
+    if (!waiveTargetId || reason.length < BILLING_ACTION_REASON_MIN_LENGTH) {
+      return;
+    }
+    waiveCharge.mutate(
+      { id: waiveTargetId, reason },
+      {
+        onSuccess: () => {
+          setWaiveTargetId(null);
+          setWaiveReason("");
+        },
+      },
+    );
+  }
+
+  function createDraftForDispense(item: { id: string; legacyReview: boolean }) {
+    if (item.legacyReview) {
+      setLegacyReviewTargetId(item.id);
       return;
     }
     createInvoice.mutate({
       id: item.id,
-      acknowledgeLegacyReview: item.legacyReview,
+      acknowledgeLegacyReview: false,
     });
+  }
+
+  function closeLegacyReviewDialog() {
+    if (createInvoice.isPending) return;
+    setLegacyReviewTargetId(null);
+  }
+
+  function confirmLegacyReview() {
+    if (!legacyReviewTargetId) return;
+    createInvoice.mutate(
+      {
+        id: legacyReviewTargetId,
+        acknowledgeLegacyReview: true,
+      },
+      { onSuccess: () => setLegacyReviewTargetId(null) },
+    );
   }
 
   return (
@@ -625,7 +707,7 @@ function DispenseChargeQueuePanel({
                       size="sm"
                       variant="outline"
                       disabled={isMutating}
-                      onClick={() => waive(item.id)}
+                      onClick={() => openWaiveDialog(item.id)}
                     >
                       Waive
                     </Button>
@@ -672,6 +754,35 @@ function DispenseChargeQueuePanel({
           </div>
         </details>
       ) : null}
+      <ActionConfirmationDialog
+        open={legacyReviewTargetId !== null}
+        title="Review legacy dispense"
+        description="This dispense predates the billing ledger. Verify it was not already billed before creating a draft invoice."
+        confirmLabel="Verified — create draft"
+        isPending={createInvoice.isPending}
+        onCancel={closeLegacyReviewDialog}
+        onConfirm={confirmLegacyReview}
+      />
+
+      <ActionConfirmationDialog
+        open={waiveTargetId !== null}
+        title="Waive medication charge?"
+        description="No invoice will be created. Inventory remains deducted, and the reason is saved to the audit trail so an admin can review or reopen this charge later."
+        confirmLabel="Waive charge"
+        confirmVariant="destructive"
+        isPending={waiveCharge.isPending}
+        reason={{
+          label: "Reason for no charge",
+          value: waiveReason,
+          onChange: setWaiveReason,
+          placeholder: "Explain why this dispense should not be billed",
+          minLength: BILLING_ACTION_REASON_MIN_LENGTH,
+          maxLength: BILLING_ACTION_REASON_MAX_LENGTH,
+        }}
+        onCancel={closeWaiveDialog}
+        onConfirm={confirmWaive}
+      />
+
     </section>
   );
 }
@@ -1348,6 +1459,10 @@ function PaymentSection({
   );
   const [adjustmentAmount, setAdjustmentAmount] = useState("");
   const [adjustmentReason, setAdjustmentReason] = useState("");
+  const [refundTarget, setRefundTarget] = useState<{
+    paymentId: string;
+    amount: string;
+  } | null>(null);
   const paymentOperationId = useRef<string | null>(null);
   const adjustmentOperationId = useRef<string | null>(null);
 
@@ -1410,6 +1525,7 @@ function PaymentSection({
   const refundPayment = trpc.billing.refundPayment.useMutation({
     onSuccess: () => {
       toast.success("Payment refunded");
+      setRefundTarget(null);
       utils.billing.listPayments.invalidate({ invoiceId });
       utils.billing.listInvoices.invalidate();
       utils.billing.getInvoice.invalidate({ id: invoiceId });
@@ -1492,6 +1608,16 @@ function PaymentSection({
       amount: adjustmentAmount.trim(),
       reason: adjustmentReason.trim() || undefined,
     });
+  };
+
+  const closeRefundDialog = () => {
+    if (refundPayment.isPending) return;
+    setRefundTarget(null);
+  };
+
+  const confirmRefund = () => {
+    if (!refundTarget) return;
+    refundPayment.mutate({ paymentId: refundTarget.paymentId });
   };
 
   return (
@@ -1760,16 +1886,12 @@ function PaymentSection({
                         size="sm"
                         className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive"
                         disabled={refundPayment.isPending}
-                        onClick={() => {
-                          if (
-                            !window.confirm(
-                              `Refund ${formatCurrency(payment.amount)}? Card payments are refunded through Stripe.`
-                            )
-                          ) {
-                            return;
-                          }
-                          refundPayment.mutate({ paymentId: payment.id });
-                        }}
+                        onClick={() =>
+                          setRefundTarget({
+                            paymentId: payment.id,
+                            amount: payment.amount,
+                          })
+                        }
                       >
                         Refund
                       </Button>
@@ -1845,6 +1967,16 @@ function PaymentSection({
           No credits or write-offs recorded.
         </p>
       )}
+      <ActionConfirmationDialog
+        open={refundTarget !== null}
+        title="Refund payment?"
+        description={`Refund ${formatCurrency(refundTarget?.amount ?? "0")}? Card payments are refunded through Stripe.`}
+        confirmLabel="Refund payment"
+        confirmVariant="destructive"
+        isPending={refundPayment.isPending}
+        onCancel={closeRefundDialog}
+        onConfirm={confirmRefund}
+      />
     </div>
   );
 }

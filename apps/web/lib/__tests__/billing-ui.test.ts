@@ -203,6 +203,16 @@ describe("billing invoice payment actions", () => {
     expect(source).toContain("Take Card");
   });
 
+  it("uses accessible in-app dialogs for irreversible billing actions", () => {
+    expect(source).toContain("<ActionConfirmationDialog");
+    expect(source).toContain('title="Void invoice?"');
+    expect(source).toContain('label: "Reason for voiding"');
+    expect(source).toContain('title="Refund payment?"');
+    expect(source).toContain('confirmLabel="Refund payment"');
+    expect(source).not.toContain("window.prompt");
+    expect(source).not.toContain("window.confirm");
+  });
+
   it("keeps one operation ID across payment and adjustment retries", () => {
     expect(source).toContain("paymentOperationId.current ??= crypto.randomUUID()");
     expect(source).toContain("operationId: paymentOperationId.current");
@@ -344,9 +354,14 @@ describe("medication dispense billing queue", () => {
     expect(source).toContain("Create draft");
     expect(source).toContain("Review & create");
     expect(source).toContain("Verify it was not already billed");
+    expect(source).toContain('title="Review legacy dispense"');
+    expect(source).toContain('confirmLabel="Verified — create draft"');
     expect(source).toContain("Open visit");
     expect(source).toContain("Standalone refill");
     expect(source).toContain("Waive");
+    expect(source).toContain('title="Waive medication charge?"');
+    expect(source).toContain('label: "Reason for no charge"');
+    expect(source).toContain("the audit trail");
     expect(source).toContain("Inventory has");
     expect(source).toContain("already been deducted and will not move again");
   });
