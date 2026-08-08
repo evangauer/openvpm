@@ -51,7 +51,8 @@ describe("parseCsv", () => {
 
 describe("csvToClientRecords", () => {
   it("maps flexible headers and requires first/last name", () => {
-    const csv = "First Name,Last Name,Email\nJane,Doe,jane@x.com\n,Smith,bob@x.com";
+    const csv =
+      "First Name,Last Name,Email\nJane,Doe,jane@x.com\n,Smith,bob@x.com";
     const { records, errors } = csvToClientRecords(csv);
     expect(records).toEqual([
       { firstName: "Jane", lastName: "Doe", email: "jane@x.com" },
@@ -62,7 +63,7 @@ describe("csvToClientRecords", () => {
 
   it("does not map records from malformed quoted CSV", () => {
     const { records, errors } = csvToClientRecords(
-      'First Name,Last Name\n"Jane,Doe'
+      'First Name,Last Name\n"Jane,Doe',
     );
 
     expect(records).toEqual([]);
@@ -124,7 +125,7 @@ describe("csvToPatientRecords", () => {
 
   it("does not map patient records from malformed quoted CSV", () => {
     const { records, errors } = csvToPatientRecords(
-      'clientEmail,name,species\n"owner@example.com,Rex,canine'
+      'clientEmail,name,species\n"owner@example.com,Rex,canine',
     );
 
     expect(records).toEqual([]);
@@ -157,30 +158,29 @@ describe("csvToPatientRecords", () => {
   });
 
   it("passes unreadable DOBs through so the router reports them precisely", () => {
-    const csv = "clientEmail,name,species,dob\njane@x.com,Rex,canine,last spring";
+    const csv =
+      "clientEmail,name,species,dob\njane@x.com,Rex,canine,last spring";
     const { records } = csvToPatientRecords(csv);
     expect(records[0]!.dob).toBe("last spring");
   });
 
-  it("stops an ID-linked raw PIMS table before row mapping and explains assisted migration", () => {
+  it("maps an ID-linked raw PIMS patient table without requiring owner email", () => {
     const csv =
-      "Client ID,Patient Name,Species\n" +
-      "client-4839,Rex,Dog\n".repeat(100);
+      "Client ID,Patient Name,Species\n" + "client-4839,Rex,Dog\n".repeat(100);
     const { records, errors } = csvToPatientRecords(csv);
 
-    expect(records).toEqual([]);
-    expect(errors).toEqual([
-      expect.stringMatching(
-        /owner\/client ID column.*currently links records by owner email.*assisted migration/i
-      ),
-    ]);
-    expect(errors[0]).not.toContain("client-4839");
-    expect(errors[0]).not.toContain("Rex");
+    expect(records).toHaveLength(100);
+    expect(records[0]).toMatchObject({
+      externalClientId: "client-4839",
+      name: "Rex",
+      species: "canine",
+    });
+    expect(errors).toEqual([]);
   });
 
   it("reports absent required headers before producing per-row errors", () => {
     const { records, errors } = csvToPatientRecords(
-      "Owner Email,Patient Name\nowner@example.com,Rex"
+      "Owner Email,Patient Name\nowner@example.com,Rex",
     );
 
     expect(records).toEqual([]);
@@ -208,9 +208,33 @@ describe("csvToClientRecords migration aliases", () => {
       zip: "83701",
     });
   });
+
+  it("preserves opaque external client IDs including leading zeroes and case", () => {
+    const { records, errors } = csvToClientRecords(
+      "Owner ID,First Name,Last Name\n00AbC-19,Jane,Doe",
+    );
+
+    expect(errors).toEqual([]);
+    expect(records[0]).toMatchObject({
+      externalClientId: "00AbC-19",
+      firstName: "Jane",
+      lastName: "Doe",
+    });
+  });
 });
 
 describe("csvToVaccinationRecords", () => {
+  it("accepts a direct patient ID without owner email or patient name", () => {
+    const { records, errors } = csvToVaccinationRecords(
+      "Patient ID,Vaccine,Date Given\nPET-002,Rabies,2025-01-01",
+    );
+
+    expect(errors).toEqual([]);
+    expect(records[0]).toMatchObject({
+      externalPatientId: "PET-002",
+      vaccineName: "Rabies",
+    });
+  });
   it("maps vaccine history rows with alias headers and US dates", () => {
     const csv =
       "Owner Email,Pet Name,Vaccine,Date Given,Due Date,Lot,Manufacturer\n" +
@@ -238,7 +262,9 @@ describe("csvToVaccinationRecords", () => {
     const { records, errors } = csvToVaccinationRecords(csv);
     expect(records).toEqual([]);
     expect(errors).toHaveLength(4);
-    expect(errors[0]).toMatch(/Row 1: clientEmail is required/);
+    expect(errors[0]).toMatch(
+      /Row 1: a patient ID or owner reference is required/,
+    );
     expect(errors[1]).toMatch(/Row 2: patientName is required/);
     expect(errors[2]).toMatch(/Row 3: vaccineName is required/);
     expect(errors[3]).toMatch(/Row 4: dateGiven must be a date/);
@@ -256,25 +282,41 @@ describe("csvToVaccinationRecords", () => {
 
   it("does not map vaccination records from malformed quoted CSV", () => {
     const { records, errors } = csvToVaccinationRecords(
-      'clientEmail,patientName,vaccineName,dateGiven\n"jane@x.com,Rex'
+      'clientEmail,patientName,vaccineName,dateGiven\n"jane@x.com,Rex',
     );
     expect(records).toEqual([]);
     expect(errors).toEqual(["CSV has an unterminated quoted field."]);
   });
 
-  it("detects an ID-linked export before parsing vaccination rows", () => {
+  it("maps vaccination rows by external owner ID plus patient name", () => {
     const { records, errors } = csvToVaccinationRecords(
-      "Account Number,Patient Name,Vaccine,Date Given\n42,Rex,Rabies,2025-01-01"
+      "Account Number,Patient Name,Vaccine,Date Given\n42,Rex,Rabies,2025-01-01",
     );
 
-    expect(records).toEqual([]);
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toMatch(/owner\/client ID column/i);
-    expect(errors[0]).not.toContain("Rabies");
+    expect(records).toEqual([
+      expect.objectContaining({
+        externalClientId: "42",
+        patientName: "Rex",
+        vaccineName: "Rabies",
+      }),
+    ]);
+    expect(errors).toEqual([]);
   });
 });
 
 describe("csvToSoapNoteRecords", () => {
+  it("accepts a direct patient ID without owner email or patient name", () => {
+    const { records, errors } = csvToSoapNoteRecords(
+      "Patient ID,Visit Date,Notes\nPET-002,2025-01-01,Annual exam",
+    );
+
+    expect(errors).toEqual([]);
+    expect(records[0]).toMatchObject({
+      externalPatientId: "PET-002",
+      date: "2025-01-01",
+      subjective: "Annual exam",
+    });
+  });
   it("maps split SOAP columns with alias headers and US dates", () => {
     const csv =
       "Owner Email,Pet Name,Visit Date,Subjective,Objective,Assessment,Plan\n" +
@@ -329,9 +371,7 @@ describe("csvToSoapNoteRecords", () => {
     expect(records).toHaveLength(1);
     expect(records[0]!.patientName).toBe("Rex");
     expect(
-      errors.some((e) =>
-        /Row 2: clientEmail "none" is not a valid email/.test(e)
-      )
+      errors.some((e) => /Row 2: clientEmail is not a valid email/.test(e)),
     ).toBe(true);
   });
 
@@ -365,7 +405,9 @@ describe("csvToSoapNoteRecords", () => {
     const { records, errors } = csvToSoapNoteRecords(csv);
     expect(records).toEqual([]);
     expect(errors).toHaveLength(4);
-    expect(errors[0]).toMatch(/Row 1: clientEmail is required/);
+    expect(errors[0]).toMatch(
+      /Row 1: a patient ID or owner reference is required/,
+    );
     expect(errors[1]).toMatch(/Row 2: patientName is required/);
     expect(errors[2]).toMatch(/Row 3: date must be a date/);
     expect(errors[3]).toMatch(/Row 4: needs at least one note/);
@@ -373,7 +415,7 @@ describe("csvToSoapNoteRecords", () => {
 
   it("does not map notes from malformed quoted CSV", () => {
     const { records, errors } = csvToSoapNoteRecords(
-      'clientEmail,patientName,date,notes\n"jane@x.com,Rex'
+      'clientEmail,patientName,date,notes\n"jane@x.com,Rex',
     );
     expect(records).toEqual([]);
     expect(errors).toEqual(["CSV has an unterminated quoted field."]);
@@ -381,12 +423,14 @@ describe("csvToSoapNoteRecords", () => {
 
   it("requires a recognized note-content column at file preflight", () => {
     const { records, errors } = csvToSoapNoteRecords(
-      "Owner Email,Patient Name,Visit Date,Provider\nowner@example.com,Rex,2025-01-01,Dr. Example"
+      "Owner Email,Patient Name,Visit Date,Provider\nowner@example.com,Rex,2025-01-01,Dr. Example",
     );
 
     expect(records).toEqual([]);
     expect(errors).toEqual([
-      expect.stringMatching(/missing a recognized medical-note content column/i),
+      expect.stringMatching(
+        /missing a recognized medical-note content column/i,
+      ),
     ]);
     expect(errors[0]).not.toContain("owner@example.com");
     expect(errors[0]).not.toContain("Rex");

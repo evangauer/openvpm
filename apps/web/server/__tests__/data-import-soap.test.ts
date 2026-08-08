@@ -28,14 +28,14 @@ function thenableRows(result: unknown[]) {
     limit: vi.fn(async () => result),
     then: (
       resolve: (value: unknown[]) => unknown,
-      reject?: (error: unknown) => unknown
+      reject?: (error: unknown) => unknown,
     ) => Promise.resolve(result).then(resolve, reject),
   };
 }
 
 function createDb(
   selectRows: unknown[][],
-  practiceRows: unknown[] = [{ id: PRACTICE_ID }]
+  practiceRows: unknown[] = [{ id: PRACTICE_ID }],
 ) {
   const remainingSelects = [practiceRows, ...selectRows];
   const select = vi.fn(() => {
@@ -83,7 +83,7 @@ describe("medical history (SOAP notes) import", () => {
       await expect(
         callerWithDb(db, role).importSoapNotesCsv({
           csv: `${HEADER}\n${REX_ROW}`,
-        })
+        }),
       ).rejects.toMatchObject({ code: "FORBIDDEN" });
     }
     expect(select).not.toHaveBeenCalled();
@@ -95,7 +95,7 @@ describe("medical history (SOAP notes) import", () => {
     await expect(
       callerWithDb(db).importSoapNotesCsv({
         csv: "x".repeat(IMPORT_CSV_MAX_BYTES + 1),
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(select).not.toHaveBeenCalled();
   });
@@ -142,7 +142,9 @@ describe("medical history (SOAP notes) import", () => {
       duplicates: 2,
       unmatchedPatient: 1,
     });
-    expect(result.errors.some((e) => /No pet named "Ghost"/.test(e))).toBe(true);
+    expect(
+      result.errors.some((e) => /No matching patient was found/.test(e)),
+    ).toBe(true);
     expect(insertValues).not.toHaveBeenCalled();
   });
 
@@ -171,7 +173,7 @@ describe("medical history (SOAP notes) import", () => {
       imported: true,
     });
     expect((rows[0]!.createdAt as Date).toISOString()).toBe(
-      "2024-03-05T12:00:00.000Z"
+      "2024-03-05T12:00:00.000Z",
     );
   });
 
@@ -211,8 +213,8 @@ describe("medical history (SOAP notes) import", () => {
     expect(result).toMatchObject({ dryRun: true, total: 1, willInsert: 1 });
     expect(
       result.errors.some((e) =>
-        /Row 2: clientEmail "none" is not a valid email/.test(e)
-      )
+        /Row 2: clientEmail is not a valid email/.test(e),
+      ),
     ).toBe(true);
     expect(insertValues).not.toHaveBeenCalled();
   });
@@ -239,8 +241,74 @@ describe("medical history (SOAP notes) import", () => {
       unmatchedPatient: 1,
     });
     expect(
-      result.errors.some((e) => /More than one pet named "Rex"/.test(e))
+      result.errors.some((e) => /patient references are ambiguous/.test(e)),
     ).toBe(true);
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("links medical history directly by external patient ID", async () => {
+    const rows = [
+      {
+        id: PATIENT_ID,
+        name: "Rex",
+        externalSource: "shepherd",
+        externalId: "P-9",
+        clientEmail: null,
+        clientExternalSource: "shepherd",
+        clientExternalId: "C-42",
+      },
+    ];
+    const { db, insertValues } = createDb([rows, []]);
+
+    const result = await callerWithDb(db).importSoapNotesCsv({
+      csv: "Patient ID,Visit Date,Notes\nP-9,2025-02-03,Annual exam",
+      source: "shepherd",
+    });
+
+    expect(result).toMatchObject({ imported: 1, errors: [] });
+    expect(insertValues).toHaveBeenCalledWith([
+      expect.objectContaining({
+        patientId: PATIENT_ID,
+        subjective: "Annual exam",
+        imported: true,
+      }),
+    ]);
+  });
+
+  it("rejects a direct patient ID that conflicts with the supplied owner and name", async () => {
+    const rows = [
+      {
+        id: PATIENT_ID,
+        name: "Rex",
+        externalSource: "shepherd",
+        externalId: "P-1",
+        clientEmail: "rex-owner@example.com",
+        clientExternalSource: "shepherd",
+        clientExternalId: "C-1",
+      },
+      {
+        id: "00000000-0000-0000-0000-0000000000p2",
+        name: "Luna",
+        externalSource: "shepherd",
+        externalId: "P-2",
+        clientEmail: "luna-owner@example.com",
+        clientExternalSource: "shepherd",
+        clientExternalId: "C-2",
+      },
+    ];
+    const { db, insertValues } = createDb([rows, []]);
+
+    const result = await callerWithDb(db).importSoapNotesCsv({
+      csv: [
+        "Patient ID,Owner Email,Patient Name,Visit Date,Notes",
+        "P-1,luna-owner@example.com,Luna,2025-01-01,Annual exam",
+      ].join("\n"),
+      source: "shepherd",
+      dryRun: true,
+    });
+
+    expect(result).toMatchObject({ willInsert: 0, unmatchedPatient: 1 });
+    expect(result.errors[0]).toMatch(/ambiguous or conflict/i);
     expect(insertValues).not.toHaveBeenCalled();
   });
 
@@ -263,7 +331,7 @@ describe("medical history (SOAP notes) import", () => {
     await expect(
       callerWithDb(db).importSoapNotesCsv({
         csv: `${HEADER}\n${REX_ROW}`,
-      })
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 });

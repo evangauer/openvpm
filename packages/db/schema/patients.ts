@@ -1,4 +1,5 @@
 import {
+  check,
   pgTable,
   pgEnum,
   uuid,
@@ -8,8 +9,9 @@ import {
   timestamp,
   numeric,
   index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import { baseColumns } from "./common";
 import { practices } from "./practices";
 import { clients } from "./clients";
@@ -54,6 +56,8 @@ export const patients = pgTable(
     clientId: uuid("client_id")
       .notNull()
       .references(() => clients.id),
+    externalSource: varchar("external_source", { length: 64 }),
+    externalId: varchar("external_id", { length: 160 }),
     name: varchar("name", { length: 128 }).notNull(),
     species: speciesEnum("species").notNull(),
     breed: varchar("breed", { length: 128 }),
@@ -65,10 +69,22 @@ export const patients = pgTable(
     status: patientStatusEnum("status").notNull().default("active"),
   },
   (table) => ({
-    practiceIdx: index("patients_practice_idx").on(table.practiceId, table.deletedAt),
+    practiceIdx: index("patients_practice_idx").on(
+      table.practiceId,
+      table.deletedAt,
+    ),
     clientIdx: index("patients_client_idx").on(table.clientId),
     nameIdx: index("patients_name_idx").on(table.name),
-  })
+    externalIdUq: uniqueIndex("patients_external_id_uq")
+      .on(table.practiceId, table.externalSource, table.externalId)
+      .where(
+        sql`${table.externalSource} is not null and ${table.externalId} is not null`,
+      ),
+    externalIdentityPairCheck: check(
+      "patients_external_identity_pair_check",
+      sql`(${table.externalSource} is null) = (${table.externalId} is null)`,
+    ),
+  }),
 );
 
 export const patientWeights = pgTable(
@@ -88,9 +104,9 @@ export const patientWeights = pgTable(
     patientRecordedIdx: index("patient_weights_patient_recorded_idx").on(
       table.patientId,
       table.deletedAt,
-      table.recordedAt
+      table.recordedAt,
     ),
-  })
+  }),
 );
 
 export const patientAllergies = pgTable(
@@ -111,9 +127,9 @@ export const patientAllergies = pgTable(
   (table) => ({
     patientIdx: index("patient_allergies_patient_idx").on(
       table.patientId,
-      table.deletedAt
+      table.deletedAt,
     ),
-  })
+  }),
 );
 
 export const patientsRelations = relations(patients, ({ one, many }) => ({
@@ -151,5 +167,5 @@ export const patientAllergiesRelations = relations(
       fields: [patientAllergies.notedBy],
       references: [users.id],
     }),
-  })
+  }),
 );

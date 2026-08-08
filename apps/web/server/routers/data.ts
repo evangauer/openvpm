@@ -25,7 +25,10 @@ import {
   csvToVaccinationRecords,
   csvToSoapNoteRecords,
 } from "@/lib/csv/import";
-import { SOAP_SECTION_MAX_LENGTH, hasSoapContent } from "@/lib/records/soap-content";
+import {
+  SOAP_SECTION_MAX_LENGTH,
+  hasSoapContent,
+} from "@/lib/records/soap-content";
 import {
   exportPracticeData,
   restorePracticeData,
@@ -36,7 +39,6 @@ import {
   PRACTICE_BACKUP_JSON_SIZE_MESSAGE,
   isPracticeBackupJsonSizeValid,
 } from "@/lib/backup/policy";
-import { planClientImport } from "@/lib/import/plan";
 import {
   IMPORT_CSV_MAX_BYTES,
   IMPORT_MAX_ROWS,
@@ -91,17 +93,28 @@ const importOptionalText = (label: string, maxLength: number) =>
     .transform((value) => value || undefined);
 const importOptionalEmail = z.preprocess(
   (value) => (typeof value === "string" ? value.trim() || undefined : value),
-  z.string().trim().email().max(255).optional()
+  z.string().trim().email().max(255).optional(),
 );
 const importOptionalDate = z.preprocess(
   (value) => (typeof value === "string" ? value.trim() || undefined : value),
-  clinicalDateInput("Date of birth").optional()
+  clinicalDateInput("Date of birth").optional(),
 );
 const importOptionalDueDate = z.preprocess(
   (value) => (typeof value === "string" ? value.trim() || undefined : value),
-  clinicalDateInput("Next due date").optional()
+  clinicalDateInput("Next due date").optional(),
 );
+const importOptionalExternalId = importOptionalText("External ID", 160);
+const importSourceInput = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(
+    /^[a-z0-9][a-z0-9_-]{0,63}$/,
+    "Import source must use letters, numbers, underscores, or hyphens.",
+  )
+  .default("other");
 const clientImportRecordInput = z.object({
+  externalClientId: importOptionalExternalId,
   firstName: importRequiredText("First name", 128),
   lastName: importRequiredText("Last name", 128),
   email: importOptionalEmail,
@@ -111,7 +124,38 @@ const clientImportRecordInput = z.object({
   state: importOptionalText("State", 64),
   zip: importOptionalText("ZIP", 16),
 });
-const patientImportRecordInput = z.object({
+const patientImportRecordInput = z
+  .object({
+    clientEmail: importOptionalEmail,
+    externalClientId: importOptionalExternalId,
+    externalPatientId: importOptionalExternalId,
+    name: importRequiredText("Patient name", 128),
+    species: importSpeciesInput,
+    breed: importOptionalText("Breed", 128),
+    sex: importSexInput,
+    dob: importOptionalDate,
+    color: importOptionalText("Color", 64),
+    microchipNumber: importOptionalText("Microchip number", 64),
+  })
+  .refine((record) => record.clientEmail || record.externalClientId, {
+    message: "An owner email or external owner ID is required.",
+  });
+const clientImportRecordsInput = z
+  .array(clientImportRecordInput)
+  .max(
+    IMPORT_MAX_ROWS,
+    `Client imports can include at most ${IMPORT_MAX_ROWS} rows.`,
+  );
+const patientImportRecordsInput = z
+  .array(patientImportRecordInput)
+  .max(
+    IMPORT_MAX_ROWS,
+    `Patient imports can include at most ${IMPORT_MAX_ROWS} rows.`,
+  );
+const clientJsonImportRecordInput = clientImportRecordInput.omit({
+  externalClientId: true,
+});
+const patientJsonImportRecordInput = z.object({
   clientEmail: z.string().trim().email().max(255),
   name: importRequiredText("Patient name", 128),
   species: importSpeciesInput,
@@ -121,49 +165,68 @@ const patientImportRecordInput = z.object({
   color: importOptionalText("Color", 64),
   microchipNumber: importOptionalText("Microchip number", 64),
 });
-const clientImportRecordsInput = z
-  .array(clientImportRecordInput)
-  .max(
-    IMPORT_MAX_ROWS,
-    `Client imports can include at most ${IMPORT_MAX_ROWS} rows.`
-  );
-const patientImportRecordsInput = z
-  .array(patientImportRecordInput)
-  .max(
-    IMPORT_MAX_ROWS,
-    `Patient imports can include at most ${IMPORT_MAX_ROWS} rows.`
-  );
 const importClientsInput = z.object({
-  clients: clientImportRecordsInput,
+  clients: z
+    .array(clientJsonImportRecordInput)
+    .max(
+      IMPORT_MAX_ROWS,
+      `Client imports can include at most ${IMPORT_MAX_ROWS} rows.`,
+    ),
 });
 const importPatientsInput = z.object({
-  patients: patientImportRecordsInput,
+  patients: z
+    .array(patientJsonImportRecordInput)
+    .max(
+      IMPORT_MAX_ROWS,
+      `Patient imports can include at most ${IMPORT_MAX_ROWS} rows.`,
+    ),
 });
-const vaccinationImportRecordInput = z.object({
-  clientEmail: z.string().trim().email().max(255),
-  patientName: importRequiredText("Patient name", 128),
-  vaccineName: importRequiredText("Vaccine name", 255),
-  administeredAt: clinicalDateInput("Date given"),
-  nextDueDate: importOptionalDueDate,
-  lotNumber: importOptionalText("Lot number", 64),
-  manufacturer: importOptionalText("Manufacturer", 128),
-});
+const vaccinationImportRecordInput = z
+  .object({
+    clientEmail: importOptionalEmail,
+    externalClientId: importOptionalExternalId,
+    externalPatientId: importOptionalExternalId,
+    patientName: importOptionalText("Patient name", 128),
+    vaccineName: importRequiredText("Vaccine name", 255),
+    administeredAt: clinicalDateInput("Date given"),
+    nextDueDate: importOptionalDueDate,
+    lotNumber: importOptionalText("Lot number", 64),
+    manufacturer: importOptionalText("Manufacturer", 128),
+  })
+  .refine(
+    (record) =>
+      record.externalPatientId ||
+      (record.patientName && (record.clientEmail || record.externalClientId)),
+    {
+      message: "A patient ID or owner reference plus patient name is required.",
+    },
+  );
 const vaccinationImportRecordsInput = z
   .array(vaccinationImportRecordInput)
   .max(
     IMPORT_MAX_ROWS,
-    `Vaccination imports can include at most ${IMPORT_MAX_ROWS} rows.`
+    `Vaccination imports can include at most ${IMPORT_MAX_ROWS} rows.`,
   );
 const soapNoteImportRecordInput = z
   .object({
-    clientEmail: z.string().trim().email().max(255),
-    patientName: importRequiredText("Patient name", 128),
+    clientEmail: importOptionalEmail,
+    externalClientId: importOptionalExternalId,
+    externalPatientId: importOptionalExternalId,
+    patientName: importOptionalText("Patient name", 128),
     date: clinicalDateInput("Visit date"),
     subjective: importOptionalText("Subjective", SOAP_SECTION_MAX_LENGTH),
     objective: importOptionalText("Objective", SOAP_SECTION_MAX_LENGTH),
     assessment: importOptionalText("Assessment", SOAP_SECTION_MAX_LENGTH),
     plan: importOptionalText("Plan", SOAP_SECTION_MAX_LENGTH),
   })
+  .refine(
+    (record) =>
+      record.externalPatientId ||
+      (record.patientName && (record.clientEmail || record.externalClientId)),
+    {
+      message: "A patient ID or owner reference plus patient name is required.",
+    },
+  )
   .refine((record) => hasSoapContent(record), {
     message:
       "Each medical history row needs at least one of Subjective, Objective, Assessment, or Plan.",
@@ -172,15 +235,22 @@ const soapNoteImportRecordsInput = z
   .array(soapNoteImportRecordInput)
   .max(
     IMPORT_MAX_ROWS,
-    `Medical history imports can include at most ${IMPORT_MAX_ROWS} rows.`
+    `Medical history imports can include at most ${IMPORT_MAX_ROWS} rows.`,
   );
+const importCsvTextInput = z
+  .string()
+  .min(1)
+  .max(IMPORT_CSV_MAX_BYTES, "CSV imports must be 5 MB or less.")
+  .refine(isImportCsvSizeValid, "CSV imports must be 5 MB or less.");
 const importCsvInput = z.object({
-  csv: z
-    .string()
-    .min(1)
-    .max(IMPORT_CSV_MAX_BYTES, "CSV imports must be 5 MB or less.")
-    .refine(isImportCsvSizeValid, "CSV imports must be 5 MB or less."),
+  csv: importCsvTextInput,
   dryRun: z.boolean().optional().default(false),
+  source: importSourceInput,
+});
+const importPatientsCsvInput = importCsvInput.extend({
+  /** Optional during dry-run so a two-file onboarding preview can resolve pets
+   * against owners that the client file will create without writing either file. */
+  clientCsv: importCsvTextInput.optional(),
 });
 
 function activePracticeWhere(practiceId: string) {
@@ -221,6 +291,161 @@ function normalizeImportText(value?: string | null): string {
   return value?.trim().toLowerCase().replace(/\s+/g, " ") ?? "";
 }
 
+function normalizeExternalId(value?: string | null): string | null {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
+}
+
+function externalIdentityKey(source: string, externalId: string): string {
+  return `${source}|${externalId}`;
+}
+
+type ExistingClientImportIdentity = {
+  id: string;
+  email: string | null;
+  externalSource: string | null;
+  externalId: string | null;
+  deletedAt: Date | null;
+  plannedRowIndex?: number;
+};
+
+type ExternalIdentityUpdate = {
+  id: string;
+  externalSource: string;
+  externalId: string;
+};
+
+function planClientCsvImport(
+  records: ClientImportRecord[],
+  source: string,
+  existingClients: ExistingClientImportIdentity[],
+): {
+  rows: ClientImportRow[];
+  identityUpdates: ExternalIdentityUpdate[];
+  errors: string[];
+  duplicates: number;
+} {
+  const byEmail = new Map<string, ExistingClientImportIdentity>();
+  const ambiguousEmails = new Set<string>();
+  const byExternalId = new Map<string, ExistingClientImportIdentity>();
+
+  for (const client of existingClients) {
+    if (client.externalSource && client.externalId) {
+      byExternalId.set(
+        externalIdentityKey(client.externalSource, client.externalId),
+        client,
+      );
+    }
+    if (client.deletedAt) continue;
+    const email = normalizeImportEmail(client.email);
+    if (!email) continue;
+    if (byEmail.has(email)) ambiguousEmails.add(email);
+    else byEmail.set(email, client);
+  }
+
+  const rows: ClientImportRow[] = [];
+  const identityUpdates: ExternalIdentityUpdate[] = [];
+  const errors: string[] = [];
+  let duplicates = 0;
+
+  records.forEach((client, index) => {
+    const email = normalizeImportEmail(client.email);
+    const externalId = normalizeExternalId(client.externalClientId);
+    const externalKey = externalId
+      ? externalIdentityKey(source, externalId)
+      : null;
+    const externalMatch = externalKey
+      ? byExternalId.get(externalKey)
+      : undefined;
+    const emailMatch =
+      email && !ambiguousEmails.has(email) ? byEmail.get(email) : undefined;
+
+    if (externalMatch) {
+      if (externalMatch.deletedAt) {
+        errors.push(
+          `Row ${index + 1}: This external client ID belongs to an archived client. Restore or review that client before importing.`,
+        );
+        return;
+      }
+      if (emailMatch && emailMatch.id !== externalMatch.id) {
+        errors.push(
+          `Row ${index + 1}: The client email and external ID point to different existing clients. Nothing was changed.`,
+        );
+        return;
+      }
+      duplicates++;
+      errors.push(`Row ${index + 1}: Skipped an already linked client.`);
+      return;
+    }
+
+    if (email && ambiguousEmails.has(email)) {
+      errors.push(
+        `Row ${index + 1}: More than one existing client uses this email. Resolve the duplicate clients before importing.`,
+      );
+      return;
+    }
+
+    if (emailMatch) {
+      if (!externalId) {
+        duplicates++;
+        errors.push(`Row ${index + 1}: Skipped a duplicate client.`);
+        return;
+      }
+      if (emailMatch.externalSource || emailMatch.externalId) {
+        errors.push(
+          `Row ${index + 1}: This client already has a different external identity. Nothing was changed.`,
+        );
+        return;
+      }
+
+      if (emailMatch.plannedRowIndex !== undefined) {
+        const plannedRow = rows[emailMatch.plannedRowIndex];
+        if (!plannedRow) {
+          throw new Error("Missing planned client import row.");
+        }
+        plannedRow.externalSource = source;
+        plannedRow.externalId = externalId;
+      } else {
+        identityUpdates.push({
+          id: emailMatch.id,
+          externalSource: source,
+          externalId,
+        });
+      }
+      emailMatch.externalSource = source;
+      emailMatch.externalId = externalId;
+      byExternalId.set(externalKey!, emailMatch);
+      return;
+    }
+
+    const row: ClientImportRow = {
+      firstName: client.firstName.trim(),
+      lastName: client.lastName.trim(),
+      email,
+      phone: client.phone?.trim() || null,
+      address: client.address?.trim() || null,
+      city: client.city?.trim() || null,
+      state: client.state?.trim() || null,
+      zip: client.zip?.trim() || null,
+      ...(externalId ? { externalSource: source, externalId } : {}),
+    };
+    rows.push(row);
+
+    const planned: ExistingClientImportIdentity = {
+      id: `planned:${index}`,
+      email,
+      externalSource: externalId ? source : null,
+      externalId,
+      deletedAt: null,
+      plannedRowIndex: rows.length - 1,
+    };
+    if (email) byEmail.set(email, planned);
+    if (externalKey) byExternalId.set(externalKey, planned);
+  });
+
+  return { rows, identityUpdates, errors, duplicates };
+}
+
 function patientIdentityKey(input: {
   clientId: string;
   name: string;
@@ -235,6 +460,16 @@ function patientIdentityKey(input: {
   ].join("|");
 }
 
+function patientWeakIdentityKey(input: {
+  clientId: string;
+  name: string;
+  species: string;
+}): string {
+  return [input.clientId, normalizeImportText(input.name), input.species].join(
+    "|",
+  );
+}
+
 function patientMicrochipKey(microchipNumber?: string | null): string | null {
   const normalized = normalizeImportText(microchipNumber);
   return normalized ? `chip:${normalized}` : null;
@@ -242,7 +477,7 @@ function patientMicrochipKey(microchipNumber?: string | null): string | null {
 
 function dedupeClientImport(
   records: ClientImportRecord[],
-  existingEmails: Set<string>
+  existingEmails: Set<string>,
 ): {
   rows: ClientImportRow[];
   errors: string[];
@@ -256,7 +491,7 @@ function dedupeClientImport(
     if (email) {
       if (seen.has(email)) {
         errors.push(
-          `Row ${index + 1}: Skipped duplicate client email "${email}".`
+          `Row ${index + 1}: Skipped duplicate client email "${email}".`,
         );
         return;
       }
@@ -287,7 +522,7 @@ function dedupePatientImport(
     species: string;
     dob: string | null;
     microchipNumber: string | null;
-  }>
+  }>,
 ): {
   rows: PatientImportRow[];
   errors: string[];
@@ -313,7 +548,7 @@ function dedupePatientImport(
     if (!clientId) {
       unmatchedClient++;
       errors.push(
-        `Row ${index + 1}: No client found with email "${patient.clientEmail}"`
+        `Row ${index + 1}: No client found with email "${patient.clientEmail}"`,
       );
       return;
     }
@@ -331,7 +566,7 @@ function dedupePatientImport(
     ) {
       duplicates++;
       errors.push(
-        `Row ${index + 1}: Skipped duplicate patient "${patient.name}".`
+        `Row ${index + 1}: Skipped duplicate patient "${patient.name}".`,
       );
       return;
     }
@@ -353,9 +588,420 @@ function dedupePatientImport(
   return { rows, errors, duplicates, unmatchedClient };
 }
 
-/** Key linking a vaccination row to a pet: owner email + normalized name. */
-function vaccinationPatientKey(clientEmail: string, patientName: string): string {
+type ExistingPatientImportIdentity = {
+  id: string;
+  clientId: string;
+  name: string;
+  species: string;
+  dob: string | null;
+  microchipNumber: string | null;
+  externalSource: string | null;
+  externalId: string | null;
+  deletedAt: Date | null;
+  plannedRowIndex?: number;
+};
+
+type ClientReferenceLookup = {
+  byEmail: Map<string, string | "ambiguous">;
+  byExternalId: Map<string, string | "archived">;
+};
+
+function createClientReferenceLookup(
+  clientsToIndex: ExistingClientImportIdentity[],
+): ClientReferenceLookup {
+  const byEmail = new Map<string, string | "ambiguous">();
+  const byExternalId = new Map<string, string | "archived">();
+
+  for (const client of clientsToIndex) {
+    const email = normalizeImportEmail(client.email);
+    if (email && !client.deletedAt) {
+      byEmail.set(email, byEmail.has(email) ? "ambiguous" : client.id);
+    }
+    if (client.externalSource && client.externalId) {
+      byExternalId.set(
+        externalIdentityKey(client.externalSource, client.externalId),
+        client.deletedAt ? "archived" : client.id,
+      );
+    }
+  }
+
+  return { byEmail, byExternalId };
+}
+
+function resolveClientReference(
+  record: Pick<PatientImportRecord, "clientEmail" | "externalClientId">,
+  source: string,
+  lookup: ClientReferenceLookup,
+): { clientId?: string; issue?: "ambiguous" | "archived" | "conflict" } {
+  const email = normalizeImportEmail(record.clientEmail);
+  const externalId = normalizeExternalId(record.externalClientId);
+  const emailResult = email ? lookup.byEmail.get(email) : undefined;
+  const externalResult = externalId
+    ? lookup.byExternalId.get(externalIdentityKey(source, externalId))
+    : undefined;
+
+  if (externalId) {
+    if (externalResult === "archived") return { issue: "archived" };
+    if (!externalResult) return {};
+    if (emailResult === "ambiguous") return { issue: "ambiguous" };
+    if (emailResult && emailResult !== externalResult) {
+      return { issue: "conflict" };
+    }
+    return { clientId: externalResult };
+  }
+
+  if (emailResult === "ambiguous") return { issue: "ambiguous" };
+  return { clientId: emailResult };
+}
+
+function planPatientCsvImport(
+  records: PatientImportRecord[],
+  source: string,
+  clientLookup: ClientReferenceLookup,
+  existingPatients: ExistingPatientImportIdentity[],
+): {
+  rows: PatientImportRow[];
+  identityUpdates: ExternalIdentityUpdate[];
+  errors: string[];
+  duplicates: number;
+  unmatchedClient: number;
+} {
+  const byExternalId = new Map<string, ExistingPatientImportIdentity>();
+  const byIdentity = new Map<
+    string,
+    ExistingPatientImportIdentity | "ambiguous"
+  >();
+  const byMicrochip = new Map<
+    string,
+    ExistingPatientImportIdentity | "ambiguous"
+  >();
+  const byWeakIdentity = new Map<
+    string,
+    ExistingPatientImportIdentity | "ambiguous"
+  >();
+
+  for (const patient of existingPatients) {
+    if (patient.externalSource && patient.externalId) {
+      byExternalId.set(
+        externalIdentityKey(patient.externalSource, patient.externalId),
+        patient,
+      );
+    }
+    if (patient.deletedAt) continue;
+    const identityKey = patientIdentityKey(patient);
+    byIdentity.set(
+      identityKey,
+      byIdentity.has(identityKey) ? "ambiguous" : patient,
+    );
+    const weakIdentityKey = patientWeakIdentityKey(patient);
+    byWeakIdentity.set(
+      weakIdentityKey,
+      byWeakIdentity.has(weakIdentityKey) ? "ambiguous" : patient,
+    );
+    const chipKey = patientMicrochipKey(patient.microchipNumber);
+    if (chipKey) {
+      byMicrochip.set(
+        chipKey,
+        byMicrochip.has(chipKey) ? "ambiguous" : patient,
+      );
+    }
+  }
+
+  const rows: PatientImportRow[] = [];
+  const identityUpdates: ExternalIdentityUpdate[] = [];
+  const errors: string[] = [];
+  let duplicates = 0;
+  let unmatchedClient = 0;
+
+  records.forEach((patient, index) => {
+    const owner = resolveClientReference(patient, source, clientLookup);
+    if (!owner.clientId) {
+      unmatchedClient++;
+      const message =
+        owner.issue === "archived"
+          ? "The external owner ID belongs to an archived client. Restore or review that client before importing."
+          : owner.issue === "ambiguous"
+            ? "The owner reference matches more than one client. Resolve the duplicate clients before importing."
+            : owner.issue === "conflict"
+              ? "The owner email and external ID point to different clients. Nothing was changed."
+              : "No matching client was found for the supplied owner reference.";
+      errors.push(`Row ${index + 1}: ${message}`);
+      return;
+    }
+
+    const externalId = normalizeExternalId(patient.externalPatientId);
+    const externalKey = externalId
+      ? externalIdentityKey(source, externalId)
+      : null;
+    const externalMatch = externalKey
+      ? byExternalId.get(externalKey)
+      : undefined;
+    if (externalMatch) {
+      if (externalMatch.deletedAt) {
+        errors.push(
+          `Row ${index + 1}: This external patient ID belongs to an archived patient. Restore or review that patient before importing.`,
+        );
+        return;
+      }
+      if (externalMatch.clientId !== owner.clientId) {
+        errors.push(
+          `Row ${index + 1}: The patient ID is linked to a different owner. Nothing was changed.`,
+        );
+        return;
+      }
+      duplicates++;
+      errors.push(`Row ${index + 1}: Skipped an already linked patient.`);
+      return;
+    }
+
+    const identityKey = patientIdentityKey({
+      clientId: owner.clientId,
+      name: patient.name,
+      species: patient.species,
+      dob: patient.dob ?? null,
+    });
+    const identityMatch = byIdentity.get(identityKey);
+    const weakIdentityKey = patientWeakIdentityKey({
+      clientId: owner.clientId,
+      name: patient.name,
+      species: patient.species,
+    });
+    const weakIdentityMatch = byWeakIdentity.get(weakIdentityKey);
+    const chipKey = patientMicrochipKey(patient.microchipNumber);
+    const chipMatch = chipKey ? byMicrochip.get(chipKey) : undefined;
+    if (chipMatch === "ambiguous") {
+      errors.push(
+        `Row ${index + 1}: This microchip matches more than one patient. Resolve the duplicate charts before importing.`,
+      );
+      return;
+    }
+    if (identityMatch === "ambiguous") {
+      errors.push(
+        `Row ${index + 1}: More than one existing patient matches this row. Resolve the duplicate charts before importing.`,
+      );
+      return;
+    }
+    if (chipMatch && chipMatch.clientId !== owner.clientId) {
+      errors.push(
+        `Row ${index + 1}: This microchip is already linked to a patient under a different owner. Nothing was changed.`,
+      );
+      return;
+    }
+    if (identityMatch && chipMatch && identityMatch.id !== chipMatch.id) {
+      errors.push(
+        `Row ${index + 1}: The patient identity and microchip point to different charts. Nothing was changed.`,
+      );
+      return;
+    }
+
+    const existingMatch = identityMatch ?? chipMatch;
+    if (existingMatch) {
+      if (!externalId) {
+        duplicates++;
+        errors.push(`Row ${index + 1}: Skipped a duplicate patient.`);
+        return;
+      }
+      if (existingMatch.externalSource || existingMatch.externalId) {
+        errors.push(
+          `Row ${index + 1}: This patient already has a different external identity. Nothing was changed.`,
+        );
+        return;
+      }
+      if (
+        existingMatch.plannedRowIndex === undefined &&
+        !chipMatch &&
+        !patient.dob
+      ) {
+        errors.push(
+          `Row ${index + 1}: An existing patient may match this external ID, but a microchip or date of birth is needed before OpenVPM can connect it safely.`,
+        );
+        return;
+      }
+      if (existingMatch.plannedRowIndex !== undefined) {
+        const plannedRow = rows[existingMatch.plannedRowIndex];
+        if (!plannedRow) {
+          throw new Error("Missing planned patient import row.");
+        }
+        plannedRow.externalSource = source;
+        plannedRow.externalId = externalId;
+      } else {
+        identityUpdates.push({
+          id: existingMatch.id,
+          externalSource: source,
+          externalId,
+        });
+      }
+      existingMatch.externalSource = source;
+      existingMatch.externalId = externalId;
+      byExternalId.set(externalKey!, existingMatch);
+      return;
+    }
+
+    if (externalId && !patient.dob && weakIdentityMatch) {
+      errors.push(
+        weakIdentityMatch === "ambiguous"
+          ? `Row ${index + 1}: More than one existing patient may match this external ID. Add a microchip or date of birth, or resolve the duplicate charts before importing.`
+          : `Row ${index + 1}: An existing patient may match this external ID, but a microchip or date of birth is needed before OpenVPM can connect it safely.`,
+      );
+      return;
+    }
+
+    const row: PatientImportRow = {
+      clientId: owner.clientId,
+      name: patient.name.trim(),
+      species: patient.species,
+      breed: patient.breed?.trim() || null,
+      sex: patient.sex || null,
+      dob: patient.dob?.trim() || null,
+      color: patient.color?.trim() || null,
+      microchipNumber: patient.microchipNumber?.trim() || null,
+      ...(externalId ? { externalSource: source, externalId } : {}),
+    };
+    rows.push(row);
+
+    const planned: ExistingPatientImportIdentity = {
+      id: `planned:${index}`,
+      clientId: owner.clientId,
+      name: row.name,
+      species: row.species,
+      dob: row.dob ?? null,
+      microchipNumber: row.microchipNumber ?? null,
+      externalSource: externalId ? source : null,
+      externalId,
+      deletedAt: null,
+      plannedRowIndex: rows.length - 1,
+    };
+    byIdentity.set(identityKey, planned);
+    byWeakIdentity.set(weakIdentityKey, planned);
+    if (chipKey) byMicrochip.set(chipKey, planned);
+    if (externalKey) byExternalId.set(externalKey, planned);
+  });
+
+  return {
+    rows,
+    identityUpdates,
+    errors,
+    duplicates,
+    unmatchedClient,
+  };
+}
+
+/** Legacy key linking a historical row to a pet: owner email + pet name. */
+function vaccinationPatientKey(
+  clientEmail: string,
+  patientName: string,
+): string {
   return `${normalizeImportEmail(clientEmail) ?? ""}|${normalizeImportText(patientName)}`;
+}
+
+function externalOwnerPatientKey(
+  source: string,
+  externalClientId: string,
+  patientName: string,
+): string {
+  return `${externalIdentityKey(source, externalClientId)}|${normalizeImportText(patientName)}`;
+}
+
+type PatientReferenceLookup = {
+  byExternalPatientId: Record<string, string>;
+  byEmailAndName: Record<string, string | "ambiguous">;
+  byExternalOwnerAndName: Record<string, string | "ambiguous">;
+};
+
+function addUniquePatientReference(
+  target: Record<string, string | "ambiguous">,
+  key: string,
+  patientId: string,
+) {
+  target[key] = target[key] ? "ambiguous" : patientId;
+}
+
+function createPatientReferenceLookup(
+  patientRows: Array<{
+    id: string;
+    name: string;
+    externalSource: string | null;
+    externalId: string | null;
+    clientEmail: string | null;
+    clientExternalSource: string | null;
+    clientExternalId: string | null;
+  }>,
+): PatientReferenceLookup {
+  const lookup: PatientReferenceLookup = {
+    byExternalPatientId: {},
+    byEmailAndName: {},
+    byExternalOwnerAndName: {},
+  };
+
+  for (const patient of patientRows) {
+    if (patient.externalSource && patient.externalId) {
+      lookup.byExternalPatientId[
+        externalIdentityKey(patient.externalSource, patient.externalId)
+      ] = patient.id;
+    }
+    if (patient.clientEmail) {
+      addUniquePatientReference(
+        lookup.byEmailAndName,
+        vaccinationPatientKey(patient.clientEmail, patient.name),
+        patient.id,
+      );
+    }
+    if (patient.clientExternalSource && patient.clientExternalId) {
+      addUniquePatientReference(
+        lookup.byExternalOwnerAndName,
+        externalOwnerPatientKey(
+          patient.clientExternalSource,
+          patient.clientExternalId,
+          patient.name,
+        ),
+        patient.id,
+      );
+    }
+  }
+
+  return lookup;
+}
+
+function resolvePatientReference(
+  record: Pick<
+    VaccinationImportRecord,
+    "clientEmail" | "externalClientId" | "externalPatientId" | "patientName"
+  >,
+  source: string,
+  lookup: PatientReferenceLookup,
+): string | "ambiguous" | undefined {
+  const externalPatientId = normalizeExternalId(record.externalPatientId);
+  const matches = new Set<string>();
+  let ambiguous = false;
+  if (externalPatientId) {
+    const directMatch =
+      lookup.byExternalPatientId[
+        externalIdentityKey(source, externalPatientId)
+      ];
+    if (!directMatch) return undefined;
+    matches.add(directMatch);
+  }
+
+  if (record.patientName && record.clientEmail) {
+    const match =
+      lookup.byEmailAndName[
+        vaccinationPatientKey(record.clientEmail, record.patientName)
+      ];
+    if (match === "ambiguous") ambiguous = true;
+    else if (match) matches.add(match);
+  }
+  const externalClientId = normalizeExternalId(record.externalClientId);
+  if (record.patientName && externalClientId) {
+    const match =
+      lookup.byExternalOwnerAndName[
+        externalOwnerPatientKey(source, externalClientId, record.patientName)
+      ];
+    if (match === "ambiguous") ambiguous = true;
+    else if (match) matches.add(match);
+  }
+
+  if (ambiguous || matches.size > 1) return "ambiguous";
+  return matches.values().next().value;
 }
 
 /** Identity of an administered dose: patient + vaccine + date given. */
@@ -382,12 +1028,13 @@ function vaccinationInstant(dateInput: string): Date {
 
 function dedupeVaccinationImport(
   records: VaccinationImportRecord[],
-  patientKeyToId: Record<string, string | "ambiguous">,
+  patientLookup: PatientReferenceLookup,
+  source: string,
   existingDoses: Array<{
     patientId: string;
     vaccineName: string;
     administeredAt: Date;
-  }>
+  }>,
 ): {
   rows: VaccinationImportRow[];
   errors: string[];
@@ -400,8 +1047,8 @@ function dedupeVaccinationImport(
         patientId: dose.patientId,
         vaccineName: dose.vaccineName,
         administeredDate: dose.administeredAt.toISOString().slice(0, 10),
-      })
-    )
+      }),
+    ),
   );
 
   const rows: VaccinationImportRow[] = [];
@@ -410,19 +1057,18 @@ function dedupeVaccinationImport(
   let unmatchedPatient = 0;
 
   records.forEach((record, index) => {
-    const key = vaccinationPatientKey(record.clientEmail, record.patientName);
-    const patientId = patientKeyToId[key];
+    const patientId = resolvePatientReference(record, source, patientLookup);
     if (!patientId) {
       unmatchedPatient++;
       errors.push(
-        `Row ${index + 1}: No pet named "${record.patientName}" found for client "${record.clientEmail}"`
+        `Row ${index + 1}: No matching patient was found for the supplied reference.`,
       );
       return;
     }
     if (patientId === "ambiguous") {
       unmatchedPatient++;
       errors.push(
-        `Row ${index + 1}: More than one pet named "${record.patientName}" belongs to "${record.clientEmail}"; add this dose by hand.`
+        `Row ${index + 1}: The supplied patient references are ambiguous or conflict. Nothing was changed.`,
       );
       return;
     }
@@ -434,9 +1080,7 @@ function dedupeVaccinationImport(
     });
     if (seen.has(identityKey)) {
       duplicates++;
-      errors.push(
-        `Row ${index + 1}: Skipped duplicate dose "${record.vaccineName}" for "${record.patientName}".`
-      );
+      errors.push(`Row ${index + 1}: Skipped a duplicate vaccine dose.`);
       return;
     }
     seen.add(identityKey);
@@ -457,7 +1101,7 @@ function dedupeVaccinationImport(
 }
 
 function parseVaccinationImportRecords(
-  records: VaccinationImportRecord[]
+  records: VaccinationImportRecord[],
 ): VaccinationImportRecord[] {
   const result = vaccinationImportRecordsInput.safeParse(records);
   if (!result.success) {
@@ -506,7 +1150,8 @@ function soapNoteInstant(dateInput: string): Date {
 
 function dedupeSoapNoteImport(
   records: SoapNoteImportRecord[],
-  patientKeyToId: Record<string, string | "ambiguous">,
+  patientLookup: PatientReferenceLookup,
+  source: string,
   existingNotes: Array<{
     patientId: string;
     createdAt: Date;
@@ -514,7 +1159,7 @@ function dedupeSoapNoteImport(
     objective: string | null;
     assessment: string | null;
     plan: string | null;
-  }>
+  }>,
 ): {
   rows: SoapNoteImportRow[];
   errors: string[];
@@ -527,8 +1172,8 @@ function dedupeSoapNoteImport(
         patientId: note.patientId,
         date: note.createdAt.toISOString().slice(0, 10),
         signature: soapNoteContentSignature(note),
-      })
-    )
+      }),
+    ),
   );
 
   const rows: SoapNoteImportRow[] = [];
@@ -537,20 +1182,18 @@ function dedupeSoapNoteImport(
   let unmatchedPatient = 0;
 
   records.forEach((record, index) => {
-    // Same owner-email + pet-name link key as the vaccination import.
-    const key = vaccinationPatientKey(record.clientEmail, record.patientName);
-    const patientId = patientKeyToId[key];
+    const patientId = resolvePatientReference(record, source, patientLookup);
     if (!patientId) {
       unmatchedPatient++;
       errors.push(
-        `Row ${index + 1}: No pet named "${record.patientName}" found for client "${record.clientEmail}"`
+        `Row ${index + 1}: No matching patient was found for the supplied reference.`,
       );
       return;
     }
     if (patientId === "ambiguous") {
       unmatchedPatient++;
       errors.push(
-        `Row ${index + 1}: More than one pet named "${record.patientName}" belongs to "${record.clientEmail}"; add this note by hand.`
+        `Row ${index + 1}: The supplied patient references are ambiguous or conflict. Nothing was changed.`,
       );
       return;
     }
@@ -562,9 +1205,7 @@ function dedupeSoapNoteImport(
     });
     if (seen.has(identityKey)) {
       duplicates++;
-      errors.push(
-        `Row ${index + 1}: Skipped duplicate note for "${record.patientName}" on ${record.date}.`
-      );
+      errors.push(`Row ${index + 1}: Skipped a duplicate medical note.`);
       return;
     }
     seen.add(identityKey);
@@ -585,7 +1226,7 @@ function dedupeSoapNoteImport(
 }
 
 function parseSoapNoteImportRecords(
-  records: SoapNoteImportRecord[]
+  records: SoapNoteImportRecord[],
 ): SoapNoteImportRecord[] {
   const result = soapNoteImportRecordsInput.safeParse(records);
   if (!result.success) {
@@ -598,7 +1239,7 @@ function parseSoapNoteImportRecords(
 }
 
 function parseClientImportRecords(
-  records: ClientImportRecord[]
+  records: ClientImportRecord[],
 ): ClientImportRecord[] {
   const result = clientImportRecordsInput.safeParse(records);
   if (!result.success) {
@@ -611,7 +1252,7 @@ function parseClientImportRecords(
 }
 
 function parsePatientImportRecords(
-  records: PatientImportRecord[]
+  records: PatientImportRecord[],
 ): PatientImportRecord[] {
   const result = patientImportRecordsInput.safeParse(records);
   if (!result.success) {
@@ -654,8 +1295,8 @@ export const dataRouter = createRouter({
         and(
           eq(clients.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(clients.deletedAt)
-        )
+          isNull(clients.deletedAt),
+        ),
       );
     return rows;
   }),
@@ -684,15 +1325,15 @@ export const dataRouter = createRouter({
           eq(patients.clientId, clients.id),
           eq(clients.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(clients.deletedAt)
-        )
+          isNull(clients.deletedAt),
+        ),
       )
       .where(
         and(
           eq(patients.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(patients.deletedAt)
-        )
+          isNull(patients.deletedAt),
+        ),
       );
     return rows;
   }),
@@ -720,8 +1361,8 @@ export const dataRouter = createRouter({
           eq(patients.clientId, appointments.clientId),
           eq(patients.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(patients.deletedAt)
-        )
+          isNull(patients.deletedAt),
+        ),
       )
       .leftJoin(
         clients,
@@ -729,8 +1370,8 @@ export const dataRouter = createRouter({
           eq(appointments.clientId, clients.id),
           eq(clients.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(clients.deletedAt)
-        )
+          isNull(clients.deletedAt),
+        ),
       )
       .leftJoin(
         users,
@@ -738,8 +1379,8 @@ export const dataRouter = createRouter({
           eq(appointments.doctorId, users.id),
           eq(users.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(users.deletedAt)
-        )
+          isNull(users.deletedAt),
+        ),
       )
       .leftJoin(
         appointmentTypes,
@@ -747,15 +1388,15 @@ export const dataRouter = createRouter({
           eq(appointments.typeId, appointmentTypes.id),
           eq(appointmentTypes.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(appointmentTypes.deletedAt)
-        )
+          isNull(appointmentTypes.deletedAt),
+        ),
       )
       .where(
         and(
           eq(appointments.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(appointments.deletedAt)
-        )
+          isNull(appointments.deletedAt),
+        ),
       );
     return rows;
   }),
@@ -784,8 +1425,8 @@ export const dataRouter = createRouter({
           eq(invoices.clientId, clients.id),
           eq(clients.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(clients.deletedAt)
-        )
+          isNull(clients.deletedAt),
+        ),
       )
       .leftJoin(
         patients,
@@ -794,20 +1435,28 @@ export const dataRouter = createRouter({
           eq(patients.clientId, invoices.clientId),
           eq(patients.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(patients.deletedAt)
-        )
+          isNull(patients.deletedAt),
+        ),
       )
       .where(
         and(
           eq(invoices.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(invoices.deletedAt)
-        )
+          isNull(invoices.deletedAt),
+        ),
       );
 
     // Fetch items for each invoice
     const invoiceIds = invoiceRows.map((r) => r.invoiceId);
-    let itemsByInvoice: Record<string, { description: string; quantity: number; unitPrice: string; total: string }[]> = {};
+    let itemsByInvoice: Record<
+      string,
+      {
+        description: string;
+        quantity: number;
+        unitPrice: string;
+        total: string;
+      }[]
+    > = {};
 
     if (invoiceIds.length > 0) {
       const allItems = await ctx.db
@@ -830,8 +1479,8 @@ export const dataRouter = createRouter({
                 and ${invoices.deletedAt} is null
             )`,
             activePracticePredicate(ctx.practiceId),
-            isNull(invoiceItems.deletedAt)
-          )
+            isNull(invoiceItems.deletedAt),
+          ),
         );
 
       for (const item of allItems) {
@@ -862,11 +1511,11 @@ export const dataRouter = createRouter({
           .record(z.unknown())
           .refine(
             isPracticeBackupJsonSizeValid,
-            PRACTICE_BACKUP_JSON_SIZE_MESSAGE
+            PRACTICE_BACKUP_JSON_SIZE_MESSAGE,
           ),
         dryRun: z.boolean().optional().default(true),
         confirmFreshPractice: z.boolean().optional().default(false),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const summary = summarizePracticeExport(input.backup);
@@ -902,53 +1551,57 @@ export const dataRouter = createRouter({
         });
       }
 
-      const [existingClients, existingPatients, existingAppointments, existingInvoices] =
-        await Promise.all([
-          ctx.db
-            .select({ id: clients.id })
-            .from(clients)
-            .where(
-              and(
-                eq(clients.practiceId, ctx.practiceId),
-                activePracticePredicate(ctx.practiceId),
-                isNull(clients.deletedAt)
-              )
-            )
-            .limit(1),
-          ctx.db
-            .select({ id: patients.id })
-            .from(patients)
-            .where(
-              and(
-                eq(patients.practiceId, ctx.practiceId),
-                activePracticePredicate(ctx.practiceId),
-                isNull(patients.deletedAt)
-              )
-            )
-            .limit(1),
-          ctx.db
-            .select({ id: appointments.id })
-            .from(appointments)
-            .where(
-              and(
-                eq(appointments.practiceId, ctx.practiceId),
-                activePracticePredicate(ctx.practiceId),
-                isNull(appointments.deletedAt)
-              )
-            )
-            .limit(1),
-          ctx.db
-            .select({ id: invoices.id })
-            .from(invoices)
-            .where(
-              and(
-                eq(invoices.practiceId, ctx.practiceId),
-                activePracticePredicate(ctx.practiceId),
-                isNull(invoices.deletedAt)
-              )
-            )
-            .limit(1),
-        ]);
+      const [
+        existingClients,
+        existingPatients,
+        existingAppointments,
+        existingInvoices,
+      ] = await Promise.all([
+        ctx.db
+          .select({ id: clients.id })
+          .from(clients)
+          .where(
+            and(
+              eq(clients.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(clients.deletedAt),
+            ),
+          )
+          .limit(1),
+        ctx.db
+          .select({ id: patients.id })
+          .from(patients)
+          .where(
+            and(
+              eq(patients.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(patients.deletedAt),
+            ),
+          )
+          .limit(1),
+        ctx.db
+          .select({ id: appointments.id })
+          .from(appointments)
+          .where(
+            and(
+              eq(appointments.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(appointments.deletedAt),
+            ),
+          )
+          .limit(1),
+        ctx.db
+          .select({ id: invoices.id })
+          .from(invoices)
+          .where(
+            and(
+              eq(invoices.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(invoices.deletedAt),
+            ),
+          )
+          .limit(1),
+      ]);
 
       if (
         existingClients.length > 0 ||
@@ -963,7 +1616,11 @@ export const dataRouter = createRouter({
         });
       }
 
-      const result = await restorePracticeData(ctx.db, ctx.practiceId, input.backup);
+      const result = await restorePracticeData(
+        ctx.db,
+        ctx.practiceId,
+        input.backup,
+      );
       return { dryRun: false as const, ...result };
     }),
 
@@ -984,17 +1641,17 @@ export const dataRouter = createRouter({
           and(
             eq(clients.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(clients.deletedAt)
-          )
+            isNull(clients.deletedAt),
+          ),
         );
       const existingEmails = new Set(
         existing
           .map((client) => normalizeImportEmail(client.email))
-          .filter((email): email is string => !!email)
+          .filter((email): email is string => !!email),
       );
       const { rows, errors } = dedupeClientImport(
         input.clients,
-        existingEmails
+        existingEmails,
       );
 
       if (rows.length > 0) {
@@ -1021,8 +1678,8 @@ export const dataRouter = createRouter({
           and(
             eq(clients.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(clients.deletedAt)
-          )
+            isNull(clients.deletedAt),
+          ),
         );
 
       const emailToClientId: Record<string, string> = {};
@@ -1046,13 +1703,13 @@ export const dataRouter = createRouter({
           and(
             eq(patients.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(patients.deletedAt)
-          )
+            isNull(patients.deletedAt),
+          ),
         );
       const { rows, errors } = dedupePatientImport(
         input.patients,
         emailToClientId,
-        existingPatients
+        existingPatients,
       );
 
       if (rows.length > 0) {
@@ -1081,68 +1738,89 @@ export const dataRouter = createRouter({
             dryRun: true as const,
             total: 0,
             willInsert: 0,
+            willReconcile: 0,
             duplicates: 0,
             errors,
           };
         }
-        return { imported: 0, errors };
+        return { imported: 0, reconciled: 0, errors };
       }
 
       await assertActivePractice(ctx);
 
-      if (input.dryRun) {
-        const existing = await ctx.db
-          .select({ email: clients.email })
-          .from(clients)
-          .where(
-            and(
-              eq(clients.practiceId, ctx.practiceId),
-              activePracticePredicate(ctx.practiceId),
-              isNull(clients.deletedAt)
-            )
-          );
-        const emails = new Set(
-          existing
-            .map((client) => normalizeImportEmail(client.email))
-            .filter((email): email is string => !!email)
-        );
-        const plan = planClientImport(validRecords, emails);
-        return { dryRun: true as const, ...plan, errors };
-      }
-
       const existing = await ctx.db
-        .select({ email: clients.email })
+        .select({
+          id: clients.id,
+          email: clients.email,
+          externalSource: clients.externalSource,
+          externalId: clients.externalId,
+          deletedAt: clients.deletedAt,
+        })
         .from(clients)
         .where(
           and(
             eq(clients.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(clients.deletedAt)
-          )
+          ),
         );
-      const existingEmails = new Set(
-        existing
-          .map((client) => normalizeImportEmail(client.email))
-          .filter((email): email is string => !!email)
-      );
-      const deduped = dedupeClientImport(validRecords, existingEmails);
+      const plan = planClientCsvImport(validRecords, input.source, existing);
 
-      if (deduped.rows.length > 0) {
-        await ctx.db.insert(clients).values(
-          deduped.rows.map((c) => ({
-            ...c,
-            practiceId: ctx.practiceId,
-          }))
-        );
+      if (input.dryRun) {
+        return {
+          dryRun: true as const,
+          total: validRecords.length,
+          willInsert: plan.rows.length,
+          willReconcile: plan.identityUpdates.length,
+          duplicates: plan.duplicates,
+          errors: [...errors, ...plan.errors],
+        };
       }
+
+      await ctx.db.transaction(async (tx) => {
+        for (const update of plan.identityUpdates) {
+          const updated = await tx
+            .update(clients)
+            .set({
+              externalSource: update.externalSource,
+              externalId: update.externalId,
+            })
+            .where(
+              and(
+                eq(clients.id, update.id),
+                eq(clients.practiceId, ctx.practiceId),
+                isNull(clients.deletedAt),
+                isNull(clients.externalSource),
+                isNull(clients.externalId),
+              ),
+            )
+            .returning({ id: clients.id });
+          if (updated.length !== 1) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "A client changed after the dry run. Check the file again before importing.",
+            });
+          }
+        }
+
+        if (plan.rows.length > 0) {
+          await tx.insert(clients).values(
+            plan.rows.map((client) => ({
+              ...client,
+              practiceId: ctx.practiceId,
+            })),
+          );
+        }
+      });
       return {
-        imported: deduped.rows.length,
-        errors: [...errors, ...deduped.errors],
+        imported: plan.rows.length,
+        reconciled: plan.identityUpdates.length,
+        errors: [...errors, ...plan.errors],
       };
     }),
 
   importPatientsCsv: adminProcedure
-    .input(importCsvInput)
+    .input(importPatientsCsvInput)
     .mutation(async ({ ctx, input }) => {
       const { records, errors } = csvToPatientRecords(input.csv);
       const validRecords = parsePatientImportRecords(records);
@@ -1153,81 +1831,140 @@ export const dataRouter = createRouter({
             dryRun: true as const,
             total: 0,
             willInsert: 0,
+            willReconcile: 0,
             unmatchedClient: 0,
             duplicates: 0,
             errors,
           };
         }
-        return { imported: 0, errors };
+        return { imported: 0, reconciled: 0, errors };
       }
 
       await assertActivePractice(ctx);
 
       const clientRows = await ctx.db
-        .select({ id: clients.id, email: clients.email })
+        .select({
+          id: clients.id,
+          email: clients.email,
+          externalSource: clients.externalSource,
+          externalId: clients.externalId,
+          deletedAt: clients.deletedAt,
+        })
         .from(clients)
         .where(
           and(
             eq(clients.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(clients.deletedAt)
-          )
+          ),
         );
-      const emailToClientId: Record<string, string> = {};
-      for (const c of clientRows) {
-        const email = normalizeImportEmail(c.email);
-        if (email) emailToClientId[email] = c.id;
+      if (input.dryRun && input.clientCsv) {
+        const clientCsv = csvToClientRecords(input.clientCsv);
+        const plannedClientRecords = parseClientImportRecords(
+          clientCsv.records,
+        );
+        const clientPlan = planClientCsvImport(
+          plannedClientRecords,
+          input.source,
+          clientRows,
+        );
+        clientRows.push(
+          ...clientPlan.rows.map((client, index) => ({
+            id: `planned-client:${index}`,
+            email: client.email ?? null,
+            externalSource: client.externalSource ?? null,
+            externalId: client.externalId ?? null,
+            deletedAt: null,
+          })),
+        );
       }
+      const clientLookup = createClientReferenceLookup(clientRows);
 
       const existingPatients = await ctx.db
         .select({
+          id: patients.id,
           clientId: patients.clientId,
           name: patients.name,
           species: patients.species,
           dob: patients.dob,
           microchipNumber: patients.microchipNumber,
+          externalSource: patients.externalSource,
+          externalId: patients.externalId,
+          deletedAt: patients.deletedAt,
         })
         .from(patients)
         .where(
           and(
             eq(patients.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(patients.deletedAt)
-          )
+          ),
         );
 
-      const deduped = dedupePatientImport(
+      const plan = planPatientCsvImport(
         validRecords,
-        emailToClientId,
-        existingPatients
+        input.source,
+        clientLookup,
+        existingPatients,
       );
 
       if (input.dryRun) {
         return {
           dryRun: true as const,
           total: validRecords.length,
-          willInsert: deduped.rows.length,
-          unmatchedClient: deduped.unmatchedClient,
-          duplicates: deduped.duplicates,
-          errors: [...errors, ...deduped.errors],
+          willInsert: plan.rows.length,
+          willReconcile: plan.identityUpdates.length,
+          unmatchedClient: plan.unmatchedClient,
+          duplicates: plan.duplicates,
+          errors: [...errors, ...plan.errors],
         };
       }
 
-      if (deduped.rows.length > 0) {
-        await ctx.db.insert(patients).values(
-          deduped.rows.map((p) => ({ ...p, practiceId: ctx.practiceId }))
-        );
-      }
+      await ctx.db.transaction(async (tx) => {
+        for (const update of plan.identityUpdates) {
+          const updated = await tx
+            .update(patients)
+            .set({
+              externalSource: update.externalSource,
+              externalId: update.externalId,
+            })
+            .where(
+              and(
+                eq(patients.id, update.id),
+                eq(patients.practiceId, ctx.practiceId),
+                isNull(patients.deletedAt),
+                isNull(patients.externalSource),
+                isNull(patients.externalId),
+              ),
+            )
+            .returning({ id: patients.id });
+          if (updated.length !== 1) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "A patient changed after the dry run. Check the file again before importing.",
+            });
+          }
+        }
+
+        if (plan.rows.length > 0) {
+          await tx.insert(patients).values(
+            plan.rows.map((patient) => ({
+              ...patient,
+              practiceId: ctx.practiceId,
+            })),
+          );
+        }
+      });
       return {
-        imported: deduped.rows.length,
-        errors: [...errors, ...deduped.errors],
+        imported: plan.rows.length,
+        reconciled: plan.identityUpdates.length,
+        errors: [...errors, ...plan.errors],
       };
     }),
 
   /**
-   * Vaccination history import (migration): rows link to pets by owner
-   * email + pet name, so run it AFTER clients and patients. Historical
-   * doses power reminders and the overdue-vaccine views from day one.
+   * Vaccination history import (migration): rows prefer a source-scoped
+   * external patient ID and fall back to owner reference + pet name. Run it
+   * after clients and patients. Historical doses power reminders immediately.
    */
   importVaccinationsCsv: adminProcedure
     .input(importCsvInput)
@@ -1255,26 +1992,24 @@ export const dataRouter = createRouter({
         .select({
           id: patients.id,
           name: patients.name,
+          externalSource: patients.externalSource,
+          externalId: patients.externalId,
           clientEmail: clients.email,
+          clientExternalSource: clients.externalSource,
+          clientExternalId: clients.externalId,
         })
         .from(patients)
         .innerJoin(clients, eq(patients.clientId, clients.id))
         .where(
           and(
             eq(patients.practiceId, ctx.practiceId),
+            eq(clients.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
             isNull(patients.deletedAt),
-            isNull(clients.deletedAt)
-          )
+            isNull(clients.deletedAt),
+          ),
         );
-      const patientKeyToId: Record<string, string | "ambiguous"> = {};
-      for (const p of patientRows) {
-        if (!p.clientEmail) continue;
-        const key = vaccinationPatientKey(p.clientEmail, p.name);
-        // Two pets with the same name under one owner cannot be told apart
-        // by a CSV row; flag instead of guessing which pet got the dose.
-        patientKeyToId[key] = patientKeyToId[key] ? "ambiguous" : p.id;
-      }
+      const patientLookup = createPatientReferenceLookup(patientRows);
 
       const existingDoses = await ctx.db
         .select({
@@ -1287,14 +2022,15 @@ export const dataRouter = createRouter({
           and(
             eq(vaccinationRecords.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(vaccinationRecords.deletedAt)
-          )
+            isNull(vaccinationRecords.deletedAt),
+          ),
         );
 
       const deduped = dedupeVaccinationImport(
         validRecords,
-        patientKeyToId,
-        existingDoses
+        patientLookup,
+        input.source,
+        existingDoses,
       );
 
       if (input.dryRun) {
@@ -1309,9 +2045,11 @@ export const dataRouter = createRouter({
       }
 
       if (deduped.rows.length > 0) {
-        await ctx.db.insert(vaccinationRecords).values(
-          deduped.rows.map((v) => ({ ...v, practiceId: ctx.practiceId }))
-        );
+        await ctx.db
+          .insert(vaccinationRecords)
+          .values(
+            deduped.rows.map((v) => ({ ...v, practiceId: ctx.practiceId })),
+          );
       }
       return {
         imported: deduped.rows.length,
@@ -1321,8 +2059,8 @@ export const dataRouter = createRouter({
 
   /**
    * Medical history import (migration): each row is one dated visit note,
-   * saved as a SOAP note and linked to a pet by owner email + pet name, so
-   * run it AFTER clients and patients. The visit date is preserved (the
+   * saved as a SOAP note and linked by external patient ID or owner reference
+   * + pet name, so run it after clients and patients. The visit date is preserved (the
    * history reads in order) and the note is attributed to the importing admin,
    * since historical records have no OpenVPM author. Re-running a file is
    * safe: the same pet + date + note text is skipped as a duplicate.
@@ -1353,26 +2091,24 @@ export const dataRouter = createRouter({
         .select({
           id: patients.id,
           name: patients.name,
+          externalSource: patients.externalSource,
+          externalId: patients.externalId,
           clientEmail: clients.email,
+          clientExternalSource: clients.externalSource,
+          clientExternalId: clients.externalId,
         })
         .from(patients)
         .innerJoin(clients, eq(patients.clientId, clients.id))
         .where(
           and(
             eq(patients.practiceId, ctx.practiceId),
+            eq(clients.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
             isNull(patients.deletedAt),
-            isNull(clients.deletedAt)
-          )
+            isNull(clients.deletedAt),
+          ),
         );
-      const patientKeyToId: Record<string, string | "ambiguous"> = {};
-      for (const p of patientRows) {
-        if (!p.clientEmail) continue;
-        const key = vaccinationPatientKey(p.clientEmail, p.name);
-        // Two pets with the same name under one owner cannot be told apart
-        // by a CSV row; flag instead of guessing which pet the note is for.
-        patientKeyToId[key] = patientKeyToId[key] ? "ambiguous" : p.id;
-      }
+      const patientLookup = createPatientReferenceLookup(patientRows);
 
       const existingNotes = await ctx.db
         .select({
@@ -1388,14 +2124,15 @@ export const dataRouter = createRouter({
           and(
             eq(soapNotes.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(soapNotes.deletedAt)
-          )
+            isNull(soapNotes.deletedAt),
+          ),
         );
 
       const deduped = dedupeSoapNoteImport(
         validRecords,
-        patientKeyToId,
-        existingNotes
+        patientLookup,
+        input.source,
+        existingNotes,
       );
 
       if (input.dryRun) {
@@ -1418,7 +2155,7 @@ export const dataRouter = createRouter({
             // Mark as migrated so the record shows "Imported" rather than
             // implying the importing admin authored this historical note.
             imported: true,
-          }))
+          })),
         );
       }
       return {

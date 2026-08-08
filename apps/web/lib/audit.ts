@@ -7,15 +7,19 @@ import { auditLog } from "@openpims/db";
  * best-effort insert and must never throw into the request path.
  */
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SECRET_KEY_RE = /pass(word)?|secret|token|keyhash|^key$|apikey/i;
 // Bulk import/restore payloads (raw CSV, full backup JSON) can be megabytes of
 // medical records + client PII. The audit trail records who ran the import and
 // when, not a second copy of the data, so these are replaced with a marker.
-const BULK_PAYLOAD_KEY_RE = /^(csv|backup)$/i;
+const BULK_PAYLOAD_KEY_RE = /(?:csv$|^backup$)/i;
 
 /** "clients.create" -> { entityType: "clients", action: "create" }. */
-export function parseAuditPath(path: string): { entityType: string; action: string } {
+export function parseAuditPath(path: string): {
+  entityType: string;
+  action: string;
+} {
   const dot = path.indexOf(".");
   const entityType = (dot === -1 ? path : path.slice(0, dot)).slice(0, 64);
   const action = (dot === -1 ? "" : path.slice(dot + 1)).slice(0, 64);
@@ -50,11 +54,16 @@ export function redactSecrets(input: unknown): Record<string, unknown> | null {
 }
 
 /** Best-effort entity id: prefer the created/updated row's id, else input.id. */
-export function extractEntityId(rawInput: unknown, resultData: unknown): string | null {
+export function extractEntityId(
+  rawInput: unknown,
+  resultData: unknown,
+): string | null {
   const fromResult = (resultData as { id?: unknown } | null)?.id;
-  if (typeof fromResult === "string" && UUID_RE.test(fromResult)) return fromResult;
+  if (typeof fromResult === "string" && UUID_RE.test(fromResult))
+    return fromResult;
   const fromInput = (rawInput as { id?: unknown } | null)?.id;
-  if (typeof fromInput === "string" && UUID_RE.test(fromInput)) return fromInput;
+  if (typeof fromInput === "string" && UUID_RE.test(fromInput))
+    return fromInput;
   return null;
 }
 
@@ -67,7 +76,7 @@ export async function recordAuditLog(
     path: string;
     rawInput: unknown;
     resultData: unknown;
-  }
+  },
 ): Promise<void> {
   try {
     const { entityType, action } = parseAuditPath(opts.path);

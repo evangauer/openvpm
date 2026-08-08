@@ -5,21 +5,37 @@ const UUID = "11111111-1111-1111-1111-111111111111";
 
 describe("parseAuditPath", () => {
   it("splits entity and action on the first dot", () => {
-    expect(parseAuditPath("clients.create")).toEqual({ entityType: "clients", action: "create" });
+    expect(parseAuditPath("clients.create")).toEqual({
+      entityType: "clients",
+      action: "create",
+    });
     expect(parseAuditPath("treatmentPlans.updateItemStatus")).toEqual({
       entityType: "treatmentPlans",
       action: "updateItemStatus",
     });
   });
   it("handles a path with no dot", () => {
-    expect(parseAuditPath("health")).toEqual({ entityType: "health", action: "" });
+    expect(parseAuditPath("health")).toEqual({
+      entityType: "health",
+      action: "",
+    });
   });
 });
 
 describe("redactSecrets", () => {
   it("redacts secret-ish keys, keeps the rest", () => {
-    const out = redactSecrets({ name: "Rex", password: "hunter2", apiKey: "x", note: "ok" });
-    expect(out).toEqual({ name: "Rex", password: "[redacted]", apiKey: "[redacted]", note: "ok" });
+    const out = redactSecrets({
+      name: "Rex",
+      password: "hunter2",
+      apiKey: "x",
+      note: "ok",
+    });
+    expect(out).toEqual({
+      name: "Rex",
+      password: "[redacted]",
+      apiKey: "[redacted]",
+      note: "ok",
+    });
   });
   it("redacts keyHash/secret/token variants", () => {
     const out = redactSecrets({ keyHash: "a", secret: "b", authToken: "c" })!;
@@ -58,6 +74,12 @@ describe("redactSecrets", () => {
       dryRun: true,
     })!;
     expect(out.csv).toBe("[redacted-bulk-payload]");
+    const onboarding = redactSecrets({
+      csv: "patient rows",
+      clientCsv: "client rows with PII",
+    })!;
+    expect(onboarding.csv).toBe("[redacted-bulk-payload]");
+    expect(onboarding.clientCsv).toBe("[redacted-bulk-payload]");
     expect(out.dryRun).toBe(true);
 
     const restore = redactSecrets({

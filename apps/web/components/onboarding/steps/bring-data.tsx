@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   ArrowRight,
@@ -18,6 +18,7 @@ import {
   isImportCsvSizeValid,
 } from "@/lib/import/policy";
 import { getOnboardingIntentOption } from "@/lib/onboarding/intent";
+import { MIGRATION_SOURCES } from "@/lib/import/sources";
 import { toast } from "sonner";
 import type { StepHandle, StepProps } from "../journey-types";
 
@@ -25,15 +26,16 @@ type Choice = "import" | "api" | "keep";
 type CsvPreview = {
   total: number;
   willInsert: number;
+  willReconcile?: number;
   duplicates?: number;
   unmatchedClient?: number;
   errors: string[];
 };
 
 const CLIENT_COLUMNS =
-  "firstName, lastName, email, phone, address, city, state, zip";
+  "firstName, lastName, email or client ID, phone, address, city, state, zip";
 const PET_COLUMNS =
-  "clientEmail, name, species, breed, sex, dob, color, microchipNumber";
+  "clientEmail or client ID, patient ID, name, species, breed, sex, dob, color, microchipNumber";
 const IMPORT_CSV_SIZE_MESSAGE = "CSV imports must be 5 MB or less.";
 
 const textareaClass =
@@ -56,51 +58,61 @@ function readFileText(file: File): Promise<string> {
  * Step 4: choose how real data gets in. Import from a file now, connect by API
  * later, or keep the sample data for now (the default and the skip behavior).
  */
-export function BringDataStep({
-  register,
-  state,
-  setState,
-}: StepProps) {
+export function BringDataStep({ register, state, setState }: StepProps) {
   const importClientsCsv = trpc.data.importClientsCsv.useMutation();
   const importPatientsCsv = trpc.data.importPatientsCsv.useMutation();
 
   // Default to keeping the sample data; the skip behavior matches this too.
   const [choice, setChoice] = useState<Choice>("keep");
+  const [migrationSource, setMigrationSource] =
+    useState<(typeof MIGRATION_SOURCES)[number]["id"]>("other");
   const [clientsCsv, setClientsCsv] = useState("");
   const [petsCsv, setPetsCsv] = useState("");
   const [clientsFileName, setClientsFileName] = useState("");
   const [petsFileName, setPetsFileName] = useState("");
   const [clientsPreview, setClientsPreview] = useState<CsvPreview | null>(null);
   const [petsPreview, setPetsPreview] = useState<CsvPreview | null>(null);
+  const importReviewVersionRef = useRef(0);
+  const fileReadVersionRef = useRef({ clients: 0, pets: 0 });
   const [result, setResult] = useState<{
     clients: number;
     pets: number;
+    reconciled: number;
     errors: string[];
   } | null>(null);
 
   function clearImportReview() {
+    importReviewVersionRef.current += 1;
     setClientsPreview(null);
     setPetsPreview(null);
     setResult(null);
   }
 
   function updateClientsCsv(value: string) {
+    fileReadVersionRef.current.clients += 1;
     setClientsCsv(value);
     clearImportReview();
   }
 
   function updatePetsCsv(value: string) {
+    fileReadVersionRef.current.pets += 1;
     setPetsCsv(value);
     clearImportReview();
+  }
+
+  function invalidatePendingFileReads() {
+    fileReadVersionRef.current.clients += 1;
+    fileReadVersionRef.current.pets += 1;
   }
 
   async function onPickFile(
     e: React.ChangeEvent<HTMLInputElement>,
     setCsv: (v: string) => void,
-    which: "clients" | "pets"
+    which: "clients" | "pets",
   ) {
     const file = e.target.files?.[0];
     if (!file) return;
+    const readVersion = ++fileReadVersionRef.current[which];
     function clearPickedFile() {
       setCsv("");
       if (which === "clients") setClientsFileName("");
@@ -114,6 +126,7 @@ export function BringDataStep({
     }
     try {
       const text = await readFileText(file);
+      if (fileReadVersionRef.current[which] !== readVersion) return;
       if (!isImportCsvSizeValid(text)) {
         clearPickedFile();
         toast.error(IMPORT_CSV_SIZE_MESSAGE);
@@ -123,6 +136,7 @@ export function BringDataStep({
       if (which === "clients") setClientsFileName(file.name);
       else setPetsFileName(file.name);
     } catch {
+      if (fileReadVersionRef.current[which] !== readVersion) return;
       toast.error("Could not read that file. Try again.");
     }
   }
@@ -144,6 +158,8 @@ export function BringDataStep({
   const previewReady = hasImportCsv && !needsDryRun;
   const previewWillInsert =
     (clientsPreview?.willInsert ?? 0) + (petsPreview?.willInsert ?? 0);
+  const previewWillReconcile =
+    (clientsPreview?.willReconcile ?? 0) + (petsPreview?.willReconcile ?? 0);
 
   // Finish only clears sample data after real rows have imported. Checking a
   // CSV or connecting later leaves the demo clinic intact.
@@ -166,15 +182,19 @@ export function BringDataStep({
         }
 
         if (needsDryRun) {
+          const reviewVersion = importReviewVersionRef.current;
           if (hasClientsCsv) {
             const r = await importClientsCsv.mutateAsync({
               csv: clientsCsv.trim(),
               dryRun: true,
+              source: migrationSource,
             });
+            if (importReviewVersionRef.current !== reviewVersion) return false;
             if ("dryRun" in r && r.dryRun) {
               setClientsPreview({
                 total: r.total,
                 willInsert: r.willInsert,
+                willReconcile: r.willReconcile,
                 duplicates: r.duplicates,
                 errors: r.errors,
               });
@@ -184,11 +204,15 @@ export function BringDataStep({
             const r = await importPatientsCsv.mutateAsync({
               csv: petsCsv.trim(),
               dryRun: true,
+              source: migrationSource,
+              clientCsv: hasClientsCsv ? clientsCsv.trim() : undefined,
             });
+            if (importReviewVersionRef.current !== reviewVersion) return false;
             if ("dryRun" in r && r.dryRun) {
               setPetsPreview({
                 total: r.total,
                 willInsert: r.willInsert,
+                willReconcile: r.willReconcile,
                 unmatchedClient: r.unmatchedClient,
                 errors: r.errors,
               });
@@ -198,10 +222,11 @@ export function BringDataStep({
           return false;
         }
 
-        if (previewWillInsert === 0) {
+        if (previewWillInsert + previewWillReconcile === 0) {
           setResult({
             clients: 0,
             pets: 0,
+            reconciled: 0,
             errors: [
               "No new rows were found to import. You can adjust the CSV or continue with sample data.",
             ],
@@ -212,26 +237,36 @@ export function BringDataStep({
         const errors: string[] = [];
         let clientsImported = 0;
         let petsImported = 0;
+        let reconciled = 0;
 
         if (hasClientsCsv) {
           const r = await importClientsCsv.mutateAsync({
             csv: clientsCsv.trim(),
             dryRun: false,
+            source: migrationSource,
           });
           clientsImported = r.imported ?? 0;
+          reconciled += r.reconciled ?? 0;
           if (r.errors?.length) errors.push(...r.errors);
         }
         if (hasPetsCsv) {
           const r = await importPatientsCsv.mutateAsync({
             csv: petsCsv.trim(),
             dryRun: false,
+            source: migrationSource,
           });
           petsImported = r.imported ?? 0;
+          reconciled += r.reconciled ?? 0;
           if (r.errors?.length) errors.push(...r.errors);
         }
-        setResult({ clients: clientsImported, pets: petsImported, errors });
+        setResult({
+          clients: clientsImported,
+          pets: petsImported,
+          reconciled,
+          errors,
+        });
         toast.success(
-          `Added ${clientsImported} clients and ${petsImported} pets`
+          `Added ${clientsImported} clients and ${petsImported} pets${reconciled > 0 ? `; connected ${reconciled} IDs` : ""}`,
         );
         // Stay on the step so they can see the result before moving on.
         return false;
@@ -248,6 +283,8 @@ export function BringDataStep({
     importCsvSizeError,
     needsDryRun,
     previewWillInsert,
+    previewWillReconcile,
+    migrationSource,
     result,
     importClientsCsv,
     importPatientsCsv,
@@ -277,6 +314,7 @@ export function BringDataStep({
           title="Import from a file"
           subtitle="Paste your clients and pets from a spreadsheet."
           onClick={() => {
+            invalidatePendingFileReads();
             setChoice("import");
             clearImportReview();
           }}
@@ -287,6 +325,31 @@ export function BringDataStep({
               Pick a CSV file for each one, or paste the rows below. Continue
               checks the files first; nothing imports until you review the plan.
             </p>
+            <p className="text-xs text-slate-500">
+              Existing owners connect by one exact email. Existing pets need a
+              matching microchip or date of birth before an ID is connected.
+            </p>
+            <label className="block space-y-1.5 text-sm font-medium text-slate-700">
+              <span>Which system are you moving from?</span>
+              <select
+                value={migrationSource}
+                onChange={(event) => {
+                  invalidatePendingFileReads();
+                  setMigrationSource(
+                    event.target
+                      .value as (typeof MIGRATION_SOURCES)[number]["id"],
+                  );
+                  clearImportReview();
+                }}
+                className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm font-normal"
+              >
+                {MIGRATION_SOURCES.map((source) => (
+                  <option key={source.id} value={source.id}>
+                    {source.name}
+                  </option>
+                ))}
+              </select>
+            </label>
             <div className="space-y-1.5">
               <span className="text-sm font-medium text-slate-700">
                 Clients
@@ -335,7 +398,9 @@ export function BringDataStep({
                 aria-label="Choose a pets CSV file"
               />
               {petsFileName ? (
-                <p className="text-xs text-emerald-700">Loaded {petsFileName}</p>
+                <p className="text-xs text-emerald-700">
+                  Loaded {petsFileName}
+                </p>
               ) : null}
               <textarea
                 rows={4}
@@ -362,8 +427,8 @@ export function BringDataStep({
                     Dry-run preview
                   </p>
                   <p className="mt-1 text-xs text-slate-500">
-                    No data has been imported yet. Review the counts, then
-                    press Continue again to import.
+                    No data has been imported yet. Review the counts, then press
+                    Continue again to import.
                   </p>
                 </div>
                 {clientsPreview ? (
@@ -394,6 +459,9 @@ export function BringDataStep({
               <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900">
                 <p className="font-medium">
                   Added {result.clients} clients and {result.pets} pets.
+                  {result.reconciled > 0
+                    ? ` Connected ${result.reconciled} existing record IDs.`
+                    : ""}
                 </p>
                 {result.errors.length > 0 ? (
                   <>
@@ -427,6 +495,7 @@ export function BringDataStep({
           title="Connect later by API"
           subtitle="Move data in from another system whenever you want."
           onClick={() => {
+            invalidatePendingFileReads();
             setChoice("api");
             clearImportReview();
           }}
@@ -453,6 +522,7 @@ export function BringDataStep({
           title="Keep the sample data for now"
           subtitle="Explore with the example pets we set up for you."
           onClick={() => {
+            invalidatePendingFileReads();
             setChoice("keep");
             clearImportReview();
           }}
@@ -478,12 +548,20 @@ function CsvPreviewCard({
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm font-medium text-slate-800">{title}</p>
         <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
-          {preview.willInsert > 0 ? "Ready" : "Review"}
+          {preview.willInsert + (preview.willReconcile ?? 0) > 0
+            ? "Ready"
+            : "Review"}
         </span>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
         <ImportStat label="Rows" value={preview.total} />
         <ImportStat label="Will import" value={preview.willInsert} />
+        {(preview.willReconcile ?? 0) > 0 ? (
+          <ImportStat
+            label="IDs to connect"
+            value={preview.willReconcile ?? 0}
+          />
+        ) : null}
         <ImportStat label={duplicateLabel} value={duplicateValue} />
         <ImportStat label="Issues" value={preview.errors.length} />
       </div>
@@ -533,13 +611,15 @@ function ChoiceCard({
         "flex items-start gap-3 rounded-lg border bg-white p-4 text-left transition-colors",
         active
           ? "border-emerald-300 ring-1 ring-emerald-300"
-          : "border-slate-200 hover:border-slate-300"
+          : "border-slate-200 hover:border-slate-300",
       )}
     >
       <span
         className={cn(
           "flex h-9 w-9 shrink-0 items-center justify-center rounded-md",
-          active ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"
+          active
+            ? "bg-emerald-100 text-emerald-700"
+            : "bg-slate-100 text-slate-500",
         )}
       >
         {icon}
@@ -550,9 +630,7 @@ function ChoiceCard({
         </span>
         <span className="mt-0.5 block text-xs text-slate-500">{subtitle}</span>
       </span>
-      {active ? (
-        <Check className="h-5 w-5 shrink-0 text-emerald-600" />
-      ) : null}
+      {active ? <Check className="h-5 w-5 shrink-0 text-emerald-600" /> : null}
     </button>
   );
 }

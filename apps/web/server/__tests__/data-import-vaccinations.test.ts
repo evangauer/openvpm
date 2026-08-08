@@ -28,14 +28,14 @@ function thenableRows(result: unknown[]) {
     limit: vi.fn(async () => result),
     then: (
       resolve: (value: unknown[]) => unknown,
-      reject?: (error: unknown) => unknown
+      reject?: (error: unknown) => unknown,
     ) => Promise.resolve(result).then(resolve, reject),
   };
 }
 
 function createDb(
   selectRows: unknown[][],
-  practiceRows: unknown[] = [{ id: PRACTICE_ID }]
+  practiceRows: unknown[] = [{ id: PRACTICE_ID }],
 ) {
   const remainingSelects = [practiceRows, ...selectRows];
   const select = vi.fn(() => {
@@ -83,7 +83,7 @@ describe("vaccination history import", () => {
       await expect(
         callerWithDb(db, role).importVaccinationsCsv({
           csv: `${HEADER}\n${REX_ROW}`,
-        })
+        }),
       ).rejects.toMatchObject({ code: "FORBIDDEN" });
     }
     expect(select).not.toHaveBeenCalled();
@@ -95,7 +95,7 @@ describe("vaccination history import", () => {
     await expect(
       callerWithDb(db).importVaccinationsCsv({
         csv: "x".repeat(IMPORT_CSV_MAX_BYTES + 1),
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(select).not.toHaveBeenCalled();
   });
@@ -139,7 +139,9 @@ describe("vaccination history import", () => {
       duplicates: 2,
       unmatchedPatient: 1,
     });
-    expect(result.errors.some((e) => /No pet named "Ghost"/.test(e))).toBe(true);
+    expect(
+      result.errors.some((e) => /No matching patient was found/.test(e)),
+    ).toBe(true);
     expect(insertValues).not.toHaveBeenCalled();
   });
 
@@ -164,14 +166,18 @@ describe("vaccination history import", () => {
       administeredBy: null,
     });
     expect((rows[0]!.administeredAt as Date).toISOString()).toBe(
-      "2024-10-04T12:00:00.000Z"
+      "2024-10-04T12:00:00.000Z",
     );
   });
 
   it("flags same-named pets under one owner instead of guessing", async () => {
     const twins = [
       { id: PATIENT_ID, name: "Rex", clientEmail: "jane@x.com" },
-      { id: "00000000-0000-0000-0000-0000000000p2", name: "Rex", clientEmail: "jane@x.com" },
+      {
+        id: "00000000-0000-0000-0000-0000000000p2",
+        name: "Rex",
+        clientEmail: "jane@x.com",
+      },
     ];
     const { db, insertValues } = createDb([twins, []]);
 
@@ -186,8 +192,82 @@ describe("vaccination history import", () => {
       unmatchedPatient: 1,
     });
     expect(
-      result.errors.some((e) => /More than one pet named "Rex"/.test(e))
+      result.errors.some((e) => /patient references are ambiguous/.test(e)),
     ).toBe(true);
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("uses a direct external patient ID to disambiguate same-named pets", async () => {
+    const twins = [
+      {
+        id: PATIENT_ID,
+        name: "Rex",
+        externalSource: "shepherd",
+        externalId: "P-1",
+        clientEmail: "jane@x.com",
+        clientExternalSource: "shepherd",
+        clientExternalId: "C-1",
+      },
+      {
+        id: "00000000-0000-0000-0000-0000000000p2",
+        name: "Rex",
+        externalSource: "shepherd",
+        externalId: "P-2",
+        clientEmail: "jane@x.com",
+        clientExternalSource: "shepherd",
+        clientExternalId: "C-1",
+      },
+    ];
+    const { db, insertValues } = createDb([twins, []]);
+
+    const result = await callerWithDb(db).importVaccinationsCsv({
+      csv: "Patient ID,Vaccine,Date Given\nP-2,Rabies,2025-01-01",
+      source: "shepherd",
+    });
+
+    expect(result).toMatchObject({ imported: 1, errors: [] });
+    expect(insertValues).toHaveBeenCalledWith([
+      expect.objectContaining({
+        patientId: "00000000-0000-0000-0000-0000000000p2",
+        vaccineName: "Rabies",
+      }),
+    ]);
+  });
+
+  it("rejects a direct patient ID that conflicts with the supplied owner and name", async () => {
+    const rows = [
+      {
+        id: PATIENT_ID,
+        name: "Rex",
+        externalSource: "shepherd",
+        externalId: "P-1",
+        clientEmail: "rex-owner@example.com",
+        clientExternalSource: "shepherd",
+        clientExternalId: "C-1",
+      },
+      {
+        id: "00000000-0000-0000-0000-0000000000p2",
+        name: "Luna",
+        externalSource: "shepherd",
+        externalId: "P-2",
+        clientEmail: "luna-owner@example.com",
+        clientExternalSource: "shepherd",
+        clientExternalId: "C-2",
+      },
+    ];
+    const { db, insertValues } = createDb([rows, []]);
+
+    const result = await callerWithDb(db).importVaccinationsCsv({
+      csv: [
+        "Patient ID,Owner Email,Patient Name,Vaccine,Date Given",
+        "P-1,luna-owner@example.com,Luna,Rabies,2025-01-01",
+      ].join("\n"),
+      source: "shepherd",
+      dryRun: true,
+    });
+
+    expect(result).toMatchObject({ willInsert: 0, unmatchedPatient: 1 });
+    expect(result.errors[0]).toMatch(/ambiguous or conflict/i);
     expect(insertValues).not.toHaveBeenCalled();
   });
 
@@ -210,7 +290,7 @@ describe("vaccination history import", () => {
     await expect(
       callerWithDb(db).importVaccinationsCsv({
         csv: `${HEADER}\n${REX_ROW}`,
-      })
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 });

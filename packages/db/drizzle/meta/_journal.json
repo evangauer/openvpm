@@ -274,6 +274,13 @@
       "when": 1786115753528,
       "tag": "0038_overconfident_power_pack",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1786121551230,
+      "tag": "0039_greedy_valeria_richards",
+      "breakpoints": true
     }
   ]
 }

@@ -1374,8 +1374,9 @@ function BillingTab() {
               <span className="font-medium text-foreground">
                 {daysLeft} days
               </span>{" "}
-              left. After that, {currentPlan?.name ?? "Cloud"} is {priceSentence}
-              . Unlimited staff, and everything you see today stays on.
+              left. After that, {currentPlan?.name ?? "Cloud"} is{" "}
+              {priceSentence}. Unlimited staff, and everything you see today
+              stays on.
             </>
           ) : (
             <>
@@ -2761,8 +2762,10 @@ function downloadJSON(data: unknown, filename: string) {
 }
 
 type ImportPreview = {
+  requestKey: string;
   total: number;
   willInsert: number;
+  willReconcile?: number;
   duplicates?: number;
   unmatchedClient?: number;
   unmatchedPatient?: number;
@@ -2770,15 +2773,28 @@ type ImportPreview = {
 };
 type ImportMode = "clients" | "patients" | "vaccinations" | "soapNotes";
 const IMPORT_CSV_SIZE_MESSAGE = "CSV imports must be 5 MB or less.";
+function importPreviewRequestKey(
+  mode: ImportMode,
+  source: string,
+  csv: string,
+): string {
+  let hash = 2_166_136_261;
+  const input = `${mode}\u0000${source}\u0000${csv}`;
+  for (let index = 0; index < input.length; index++) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return `${mode}:${source}:${csv.length}:${(hash >>> 0).toString(16)}`;
+}
 const IMPORT_COLUMN_HINTS: Record<ImportMode, string> = {
   clients:
-    "Expected columns: firstName, lastName, email, phone, address, city, state, zip",
+    "Expected columns: firstName, lastName, plus email or client ID. Optional: phone, address, city, state, zip",
   patients:
-    "Expected columns: clientEmail, name, species, breed, sex, dob, color, microchipNumber",
+    "Expected columns: clientEmail or client ID, name, species. Patient ID is recommended. Optional: breed, sex, dob, color, microchipNumber",
   vaccinations:
-    "Expected columns: clientEmail, patientName, vaccineName, dateGiven, nextDueDate, lotNumber, manufacturer",
+    "Expected columns: patient ID, or an owner reference plus patientName; vaccineName and dateGiven. Optional: nextDueDate, lotNumber, manufacturer",
   soapNotes:
-    "Expected columns: clientEmail, patientName, date (use YYYY-MM-DD), and either subjective, objective, assessment, plan or a single notes column",
+    "Expected columns: patient ID, or an owner reference plus patientName; date, and either subjective, objective, assessment, plan or a single notes column",
 };
 
 // ── Data Tab ─────────────────────────────────────────────────
@@ -2788,6 +2804,7 @@ function DataTab() {
   const [migrationSource, setMigrationSource] = useState<
     (typeof MIGRATION_SOURCES)[number]["id"] | null
   >(null);
+  const importSource = migrationSource ?? "other";
   const [csvText, setCsvText] = useState("");
   const [csvFileName, setCsvFileName] = useState("");
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(
@@ -2795,6 +2812,7 @@ function DataTab() {
   );
   const [importResult, setImportResult] = useState<{
     imported: number;
+    reconciled?: number;
     errors?: string[];
   } | null>(null);
   const [backupFileName, setBackupFileName] = useState("");
@@ -2819,6 +2837,8 @@ function DataTab() {
   const [confirmExportDownloaded, setConfirmExportDownloaded] = useState(false);
   const [confirmManualReview, setConfirmManualReview] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const importRequestKeyRef = useRef<string | null>(null);
+  const importFileReadVersionRef = useRef(0);
   const backupFileInputRef = useRef<HTMLInputElement>(null);
 
   const utils = trpc.useUtils();
@@ -2886,11 +2906,19 @@ function DataTab() {
     : null;
 
   const importClientsCsv = trpc.data.importClientsCsv.useMutation({
-    onSuccess: (data) => {
+    onSuccess: (data, variables) => {
       if ("dryRun" in data && data.dryRun) {
+        const requestKey = importPreviewRequestKey(
+          "clients",
+          variables.source ?? "other",
+          variables.csv,
+        );
+        if (importRequestKeyRef.current !== requestKey) return;
         setImportPreview({
+          requestKey,
           total: data.total,
           willInsert: data.willInsert,
+          willReconcile: data.willReconcile,
           duplicates: data.duplicates,
           errors: data.errors,
         });
@@ -2899,7 +2927,11 @@ function DataTab() {
         return;
       }
 
-      setImportResult({ imported: data.imported ?? 0, errors: data.errors });
+      setImportResult({
+        imported: data.imported ?? 0,
+        reconciled: data.reconciled,
+        errors: data.errors,
+      });
       setImportPreview(null);
       setCsvText("");
       setCsvFileName("");
@@ -2910,11 +2942,19 @@ function DataTab() {
     },
   });
   const importPatientsCsv = trpc.data.importPatientsCsv.useMutation({
-    onSuccess: (data) => {
+    onSuccess: (data, variables) => {
       if ("dryRun" in data && data.dryRun) {
+        const requestKey = importPreviewRequestKey(
+          "patients",
+          variables.source ?? "other",
+          variables.csv,
+        );
+        if (importRequestKeyRef.current !== requestKey) return;
         setImportPreview({
+          requestKey,
           total: data.total,
           willInsert: data.willInsert,
+          willReconcile: data.willReconcile,
           duplicates: data.duplicates,
           unmatchedClient: data.unmatchedClient,
           errors: data.errors,
@@ -2924,7 +2964,11 @@ function DataTab() {
         return;
       }
 
-      setImportResult({ imported: data.imported ?? 0, errors: data.errors });
+      setImportResult({
+        imported: data.imported ?? 0,
+        reconciled: data.reconciled,
+        errors: data.errors,
+      });
       setImportPreview(null);
       setCsvText("");
       setCsvFileName("");
@@ -2935,9 +2979,16 @@ function DataTab() {
     },
   });
   const importVaccinationsCsv = trpc.data.importVaccinationsCsv.useMutation({
-    onSuccess: (data) => {
+    onSuccess: (data, variables) => {
       if ("dryRun" in data && data.dryRun) {
+        const requestKey = importPreviewRequestKey(
+          "vaccinations",
+          variables.source ?? "other",
+          variables.csv,
+        );
+        if (importRequestKeyRef.current !== requestKey) return;
         setImportPreview({
+          requestKey,
           total: data.total,
           willInsert: data.willInsert,
           duplicates: data.duplicates,
@@ -2960,9 +3011,16 @@ function DataTab() {
     },
   });
   const importSoapNotesCsv = trpc.data.importSoapNotesCsv.useMutation({
-    onSuccess: (data) => {
+    onSuccess: (data, variables) => {
       if ("dryRun" in data && data.dryRun) {
+        const requestKey = importPreviewRequestKey(
+          "soapNotes",
+          variables.source ?? "other",
+          variables.csv,
+        );
+        if (importRequestKeyRef.current !== requestKey) return;
         setImportPreview({
+          requestKey,
           total: data.total,
           willInsert: data.willInsert,
           duplicates: data.duplicates,
@@ -3182,7 +3240,9 @@ function DataTab() {
   const handleFileSelect = useCallback(
     (file: File) => {
       if (!importMode) return;
+      const readVersion = ++importFileReadVersionRef.current;
       function clearImportFile() {
+        importRequestKeyRef.current = null;
         setCsvFileName("");
         setCsvText("");
         setImportPreview(null);
@@ -3201,6 +3261,7 @@ function DataTab() {
       setImportResult(null);
       const reader = new FileReader();
       reader.onload = (e) => {
+        if (importFileReadVersionRef.current !== readVersion) return;
         const text = String(e.target?.result ?? "");
         if (!text.trim()) {
           setCsvFileName("");
@@ -3214,17 +3275,39 @@ function DataTab() {
         }
 
         setCsvText(text);
+        importRequestKeyRef.current = importPreviewRequestKey(
+          importMode,
+          importSource,
+          text,
+        );
         if (importMode === "clients") {
-          importClientsCsv.mutate({ csv: text, dryRun: true });
+          importClientsCsv.mutate({
+            csv: text,
+            dryRun: true,
+            source: importSource,
+          });
         } else if (importMode === "patients") {
-          importPatientsCsv.mutate({ csv: text, dryRun: true });
+          importPatientsCsv.mutate({
+            csv: text,
+            dryRun: true,
+            source: importSource,
+          });
         } else if (importMode === "vaccinations") {
-          importVaccinationsCsv.mutate({ csv: text, dryRun: true });
+          importVaccinationsCsv.mutate({
+            csv: text,
+            dryRun: true,
+            source: importSource,
+          });
         } else {
-          importSoapNotesCsv.mutate({ csv: text, dryRun: true });
+          importSoapNotesCsv.mutate({
+            csv: text,
+            dryRun: true,
+            source: importSource,
+          });
         }
       };
       reader.onerror = () => {
+        if (importFileReadVersionRef.current !== readVersion) return;
         setCsvFileName("");
         toast.error("Could not read CSV file");
       };
@@ -3232,6 +3315,7 @@ function DataTab() {
     },
     [
       importClientsCsv,
+      importSource,
       importMode,
       importPatientsCsv,
       importVaccinationsCsv,
@@ -3257,19 +3341,47 @@ function DataTab() {
       toast.error(IMPORT_CSV_SIZE_MESSAGE);
       return;
     }
+    const currentRequestKey = importPreviewRequestKey(
+      importMode,
+      importSource,
+      csvText,
+    );
+    if (importPreview.requestKey !== currentRequestKey) {
+      importRequestKeyRef.current = null;
+      setImportPreview(null);
+      toast.error("The file or source changed. Check the CSV again.");
+      return;
+    }
     if (importMode === "clients") {
-      importClientsCsv.mutate({ csv: csvText, dryRun: false });
+      importClientsCsv.mutate({
+        csv: csvText,
+        dryRun: false,
+        source: importSource,
+      });
     } else if (importMode === "patients") {
-      importPatientsCsv.mutate({ csv: csvText, dryRun: false });
+      importPatientsCsv.mutate({
+        csv: csvText,
+        dryRun: false,
+        source: importSource,
+      });
     } else if (importMode === "vaccinations") {
-      importVaccinationsCsv.mutate({ csv: csvText, dryRun: false });
+      importVaccinationsCsv.mutate({
+        csv: csvText,
+        dryRun: false,
+        source: importSource,
+      });
     } else {
-      importSoapNotesCsv.mutate({ csv: csvText, dryRun: false });
+      importSoapNotesCsv.mutate({
+        csv: csvText,
+        dryRun: false,
+        source: importSource,
+      });
     }
   }, [
     csvText,
     importMode,
     importPreview,
+    importSource,
     importClientsCsv,
     importPatientsCsv,
     importVaccinationsCsv,
@@ -3711,7 +3823,8 @@ function DataTab() {
           vaccine history, then medical history (visit notes). Every file is
           dry-run first so you see duplicates and missing matches before
           anything is saved. Common column names from AVImark, Cornerstone,
-          ezyVet, and Shepherd exports are understood automatically.
+          ezyVet, and Shepherd exports are understood automatically. Owner and
+          patient IDs stay linked across files, even when an owner has no email.
         </p>
 
         {/* Where the data is coming from (export instructions per source) */}
@@ -3723,11 +3836,17 @@ function DataTab() {
             <button
               key={source.id}
               type="button"
-              onClick={() =>
+              onClick={() => {
+                importFileReadVersionRef.current += 1;
+                importRequestKeyRef.current = null;
                 setMigrationSource(
                   migrationSource === source.id ? null : source.id,
-                )
-              }
+                );
+                setCsvText("");
+                setCsvFileName("");
+                setImportPreview(null);
+                setImportResult(null);
+              }}
               className={cn(
                 "rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors",
                 migrationSource === source.id
@@ -3767,6 +3886,8 @@ function DataTab() {
               variant={importMode === mode ? "default" : "outline"}
               size="sm"
               onClick={() => {
+                importFileReadVersionRef.current += 1;
+                importRequestKeyRef.current = null;
                 setImportMode(mode);
                 setCsvText("");
                 setCsvFileName("");
@@ -3810,6 +3931,10 @@ function DataTab() {
               <p className="mt-1 text-xs text-muted-foreground">
                 CSV files must be 5 MB or less. The file is dry-run first; no
                 rows import until you confirm.
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Existing owners connect by one exact email. Existing pets need a
+                matching microchip or date of birth before an ID is connected.
               </p>
               <input
                 ref={fileInputRef}
@@ -3862,6 +3987,13 @@ function DataTab() {
                         value={importPreview.duplicates ?? 0}
                       />
                     )}
+                    {typeof importPreview.willReconcile === "number" &&
+                      importPreview.willReconcile > 0 && (
+                        <ImportStat
+                          label="IDs to connect"
+                          value={importPreview.willReconcile}
+                        />
+                      )}
                     {importMode === "patients" && (
                       <ImportStat
                         label="Missing owners"
@@ -3897,7 +4029,12 @@ function DataTab() {
                 <div className="flex flex-wrap gap-2">
                   <Button
                     size="sm"
-                    disabled={isImportPending || importPreview.willInsert === 0}
+                    disabled={
+                      isImportPending ||
+                      importPreview.willInsert +
+                        (importPreview.willReconcile ?? 0) ===
+                        0
+                    }
                     onClick={handleImportConfirm}
                   >
                     {isImportPending ? (
@@ -3905,12 +4042,17 @@ function DataTab() {
                     ) : (
                       <Check className="mr-2 h-4 w-4" />
                     )}
-                    Confirm Import ({importPreview.willInsert} rows)
+                    Confirm Import (
+                    {importPreview.willInsert +
+                      (importPreview.willReconcile ?? 0)}{" "}
+                    changes)
                   </Button>
                   <Button
                     size="sm"
                     variant="ghost"
                     onClick={() => {
+                      importFileReadVersionRef.current += 1;
+                      importRequestKeyRef.current = null;
                       setCsvText("");
                       setCsvFileName("");
                       setImportPreview(null);
@@ -3928,6 +4070,9 @@ function DataTab() {
                 <div className="flex items-center gap-2 text-sm font-medium text-green-600 dark:text-green-400">
                   <Check className="h-4 w-4" />
                   {importResult.imported} records imported successfully
+                  {(importResult.reconciled ?? 0) > 0
+                    ? `; ${importResult.reconciled} existing record IDs connected`
+                    : ""}
                 </div>
                 {importResult.errors && importResult.errors.length > 0 && (
                   <div className="space-y-1">
