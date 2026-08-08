@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@openpims/db/client";
@@ -29,8 +30,54 @@ const DEMO_ACCESS_EMAIL_LIMIT = 5;
 const demoAccessInput = z
   .object({
     email: z.string().trim().email().max(AUTH_EMAIL_MAX_LENGTH),
+    // Optional by design: telemetry must never block immediate demo access.
+    // The demo UI always supplies this first-party anonymous journey UUID.
+    anonymousId: z.string().uuid().optional(),
   })
   .strict();
+
+function funnelEventEndpoint(request: Request): URL {
+  const configured = process.env.NEXT_PUBLIC_FUNNEL_ENDPOINT?.trim();
+  if (configured) {
+    try {
+      return new URL("/api/funnel-event", configured);
+    } catch {
+      // Fall through to the hosted/local default.
+    }
+  }
+
+  const requestUrl = new URL(request.url);
+  const origin =
+    requestUrl.hostname === "demo.openvpm.com"
+      ? "https://app.openvpm.com"
+      : requestUrl.origin;
+  return new URL("/api/funnel-event", origin);
+}
+
+async function recordAcceptedDemoGate(
+  request: Request,
+  anonymousId: string,
+): Promise<void> {
+  const origin = new URL(request.url).origin;
+  const response = await fetch(funnelEventEndpoint(request), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Origin: origin,
+    },
+    body: JSON.stringify({
+      eventId: randomUUID(),
+      anonymousId,
+      name: "demo_gate_submitted",
+      source: "demo",
+      path: "/login",
+    }),
+    signal: AbortSignal.timeout(750),
+  });
+  if (!response.ok) {
+    throw new Error(`funnel endpoint returned ${response.status}`);
+  }
+}
 
 function tooManyRequests(result: RateLimitResult, limit: number) {
   return NextResponse.json(
@@ -38,7 +85,7 @@ function tooManyRequests(result: RateLimitResult, limit: number) {
     {
       status: 429,
       headers: rateLimitResponseHeaders(limit, result),
-    }
+    },
   );
 }
 
@@ -51,7 +98,7 @@ export async function POST(request: Request) {
   if (!body.ok) {
     return NextResponse.json(
       { ok: false, error: "Add a valid work email." },
-      { status: body.reason === "too_large" ? 413 : 400 }
+      { status: body.reason === "too_large" ? 413 : 400 },
     );
   }
 
@@ -59,7 +106,7 @@ export async function POST(request: Request) {
   if (!parsed.success) {
     return NextResponse.json(
       { ok: false, error: "Add a valid work email." },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
@@ -86,7 +133,7 @@ export async function POST(request: Request) {
     console.error("[demo-access] rate limit failed:", error);
     return NextResponse.json(
       { ok: false, error: "The demo is temporarily unavailable." },
-      { status: 503 }
+      { status: 503 },
     );
   }
 
@@ -114,13 +161,13 @@ export async function POST(request: Request) {
             updatedAt: now,
             accessCount: sql`${demoAccesses.accessCount} + 1`,
           },
-        })
+        }),
     );
   } catch (error) {
     console.error("[demo-access] capture failed:", error);
     return NextResponse.json(
       { ok: false, error: "The demo is temporarily unavailable." },
-      { status: 503 }
+      { status: 503 },
     );
   }
 
@@ -128,13 +175,25 @@ export async function POST(request: Request) {
   if (!token) {
     return NextResponse.json(
       { ok: false, error: "The demo is temporarily unavailable." },
-      { status: 503 }
+      { status: 503 },
     );
+  }
+
+  // Gate acceptance is a business event, so record it from the server after
+  // the lead is durably captured. The demo uses a separate database, hence
+  // the server-to-server write to app.openvpm.com. It remains non-blocking for
+  // the visitor if telemetry is unavailable.
+  if (parsed.data.anonymousId) {
+    try {
+      await recordAcceptedDemoGate(request, parsed.data.anonymousId);
+    } catch (error) {
+      console.error("[demo-access] funnel capture failed:", error);
+    }
   }
 
   const response = NextResponse.json(
     { ok: true },
-    { headers: { "Cache-Control": "no-store" } }
+    { headers: { "Cache-Control": "no-store" } },
   );
   response.cookies.set(DEMO_ACCESS_COOKIE_NAME, token, {
     httpOnly: true,

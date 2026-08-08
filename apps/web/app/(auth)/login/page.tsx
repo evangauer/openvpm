@@ -17,7 +17,7 @@ import {
   FUNNEL_EVENTS,
 } from "@/lib/funnel-analytics";
 import { trackFunnelEvent } from "@/lib/track-funnel-event";
-import { useFunnelVisitorId } from "@/lib/funnel-visitor";
+import { getFunnelVisitorId, useFunnelVisitorId } from "@/lib/funnel-visitor";
 
 const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE?.trim() === "true";
 
@@ -58,10 +58,8 @@ function LoginPageInner() {
   const [loading, setLoading] = useState(false);
   const passwordMeetsPolicy =
     password.length > 0 && password.length <= AUTH_PASSWORD_MAX_LENGTH;
-  const emailIsValid =
-    isAuthEmailLengthValid(email) && isValidEmail(email);
-  const canSubmit =
-    emailIsValid && (DEMO_MODE || passwordMeetsPolicy);
+  const emailIsValid = isAuthEmailLengthValid(email) && isValidEmail(email);
+  const canSubmit = emailIsValid && (DEMO_MODE || passwordMeetsPolicy);
 
   useEffect(() => {
     if (!DEMO_MODE) return;
@@ -103,17 +101,20 @@ function LoginPageInner() {
         const gateResponse = await fetch("/api/demo-access", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: email.trim().toLowerCase() }),
+          body: JSON.stringify({
+            email: email.trim().toLowerCase(),
+            anonymousId: visitorId ?? getFunnelVisitorId() ?? undefined,
+          }),
         });
-        const gateResult = (await gateResponse.json().catch(() => null)) as
-          | { ok?: boolean; error?: string }
-          | null;
+        const gateResult = (await gateResponse.json().catch(() => null)) as {
+          ok?: boolean;
+          error?: string;
+        } | null;
         if (!gateResponse.ok || !gateResult?.ok) {
           setError(gateResult?.error ?? "The demo is temporarily unavailable.");
           return;
         }
 
-        trackFunnelEvent(FUNNEL_EVENTS.demoGateSubmitted);
         const result = await signIn("demo", {
           role: "admin",
           redirect: false,
@@ -147,7 +148,9 @@ function LoginPageInner() {
             OpenVPM
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {DEMO_MODE ? "Explore the live product" : "Sign in to your practice"}
+            {DEMO_MODE
+              ? "Explore the live product"
+              : "Sign in to your practice"}
           </p>
         </div>
 
