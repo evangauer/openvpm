@@ -124,6 +124,20 @@ describe("SMS delivery reconciliation queue", () => {
     );
   });
 
+  it("keeps correlated queue identity qualified and serializes timestamp cutoffs", () => {
+    expect(deliveryQueue).toContain(
+      'attributed.delivery_event_id = "sms_delivery_events"."id"',
+    );
+    expect(deliveryQueue).toContain(
+      'accepted_reconciliation.attempt_id = "sms_send_attempts"."id"',
+    );
+    expect(sharedQueues).toContain(
+      'queue_event.attempt_id = "sms_send_attempts"."id"',
+    );
+    expect(deliveryQueue).toContain("receiptCutoff.toISOString()");
+    expect(deliveryQueue).toContain("::timestamptz");
+  });
+
   it("does not expose phone, body, or raw callback payloads", () => {
     expect(deliveryQueue).not.toContain("destinationE164");
     expect(deliveryQueue).not.toContain("body:");

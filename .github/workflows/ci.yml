@@ -79,6 +79,14 @@ jobs:
 
       - run: pnpm --filter @openpims/db db:rls
 
+      # Compile, bind, and execute the exact read-only SQL used by the shared
+      # platform-admin and daily SMS operations queues. Unit tests cannot catch
+      # postgres.js timestamp encoders or correlated identifier rendering.
+      - name: Execute SMS operations queue SQL
+        env:
+          SMS_QUEUE_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run lib/messaging/__tests__/sms-operations-queues.integration.test.ts
+
       - run: pnpm --filter @openpims/db db:rls:test
 
       - run: pnpm --filter @openpims/db db:migration-runs:test

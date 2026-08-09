@@ -39,14 +39,14 @@ export async function loadSmsDeliveryEventQueue(
     const attributedPracticeId = sql<string | null>`(
       select attributed.practice_id
       from sms_delivery_event_history attributed
-      where attributed.delivery_event_id = ${smsDeliveryEvents.id}
+      where attributed.delivery_event_id = "sms_delivery_events"."id"
         and attributed.result = 'attributed'
       limit 1
     )`;
     const attributedAttemptId = sql<string | null>`(
       select attributed.attempt_id
       from sms_delivery_event_history attributed
-      where attributed.delivery_event_id = ${smsDeliveryEvents.id}
+      where attributed.delivery_event_id = "sms_delivery_events"."id"
         and attributed.result = 'attributed'
       limit 1
     )`;
@@ -60,13 +60,13 @@ export async function loadSmsDeliveryEventQueue(
     const hasAttribution = sql<boolean>`exists (
       select 1
       from sms_delivery_event_history attributed
-      where attributed.delivery_event_id = ${smsDeliveryEvents.id}
+      where attributed.delivery_event_id = "sms_delivery_events"."id"
         and attributed.result = 'attributed'
     )`;
     const hasPendingAmbiguity = sql<boolean>`exists (
       select 1
       from sms_delivery_event_history conflict
-      where conflict.delivery_event_id = ${smsDeliveryEvents.id}
+      where conflict.delivery_event_id = "sms_delivery_events"."id"
         and conflict.result = 'ambiguous'
         and not exists (
           select 1
@@ -77,7 +77,7 @@ export async function loadSmsDeliveryEventQueue(
     const hasPendingUnmatched = sql<boolean>`exists (
       select 1
       from sms_delivery_event_history unmatched
-      where unmatched.delivery_event_id = ${smsDeliveryEvents.id}
+      where unmatched.delivery_event_id = "sms_delivery_events"."id"
         and unmatched.result = 'unmatched'
         and not exists (
           select 1
@@ -94,7 +94,7 @@ export async function loadSmsDeliveryEventQueue(
     const pendingHistoryId = sql<string | null>`(
       select pending.id
       from sms_delivery_event_history pending
-      where pending.delivery_event_id = ${smsDeliveryEvents.id}
+      where pending.delivery_event_id = "sms_delivery_events"."id"
         and pending.result in ('ambiguous', 'unmatched')
         and (
           pending.result = 'ambiguous'
@@ -120,17 +120,17 @@ export async function loadSmsDeliveryEventQueue(
       (
         select reconciliation.classification::text
         from sms_delivery_event_history reconciliation
-        where reconciliation.delivery_event_id = ${smsDeliveryEvents.id}
+        where reconciliation.delivery_event_id = "sms_delivery_events"."id"
           and reconciliation.result = 'reconciled'
         order by reconciliation.created_at desc, reconciliation.id desc
         limit 1
       ),
-      ${smsDeliveryEvents.classification}::text
+      "sms_delivery_events"."classification"::text
     )`;
     const latestProjectionResult = sql<string | null>`(
       select projection.result::text
       from sms_delivery_event_history projection
-      where projection.delivery_event_id = ${smsDeliveryEvents.id}
+      where projection.delivery_event_id = "sms_delivery_events"."id"
         and projection.result in ('projected', 'projection_miss')
       order by projection.created_at desc, projection.id desc
       limit 1
@@ -138,13 +138,13 @@ export async function loadSmsDeliveryEventQueue(
     const operatorReviewed = sql<boolean>`exists (
       select 1
       from sms_delivery_event_history review
-      where review.delivery_event_id = ${smsDeliveryEvents.id}
+      where review.delivery_event_id = "sms_delivery_events"."id"
         and review.result = 'operator_reviewed'
     )`;
     const latestReviewAt = sql<Date | null>`(
       select review.created_at
       from sms_delivery_event_history review
-      where review.delivery_event_id = ${smsDeliveryEvents.id}
+      where review.delivery_event_id = "sms_delivery_events"."id"
         and review.result = 'operator_reviewed'
       order by review.created_at desc, review.id desc
       limit 1
@@ -152,7 +152,7 @@ export async function loadSmsDeliveryEventQueue(
     const latestReviewReason = sql<string | null>`(
       select review.operator_reason_code::text
       from sms_delivery_event_history review
-      where review.delivery_event_id = ${smsDeliveryEvents.id}
+      where review.delivery_event_id = "sms_delivery_events"."id"
         and review.result = 'operator_reviewed'
       order by review.created_at desc, review.id desc
       limit 1
@@ -160,7 +160,7 @@ export async function loadSmsDeliveryEventQueue(
     const latestReviewerName = sql<string | null>`(
       select review.actor_name
       from sms_delivery_event_history review
-      where review.delivery_event_id = ${smsDeliveryEvents.id}
+      where review.delivery_event_id = "sms_delivery_events"."id"
         and review.result = 'operator_reviewed'
       order by review.created_at desc, review.id desc
       limit 1
@@ -168,7 +168,7 @@ export async function loadSmsDeliveryEventQueue(
     const latestReviewerIdentity = sql<string | null>`(
       select review.actor_identity
       from sms_delivery_event_history review
-      where review.delivery_event_id = ${smsDeliveryEvents.id}
+      where review.delivery_event_id = "sms_delivery_events"."id"
         and review.result = 'operator_reviewed'
       order by review.created_at desc, review.id desc
       limit 1
@@ -228,8 +228,8 @@ export async function loadSmsDeliveryEventQueue(
       (
         select accepted_reconciliation.provider_message_id
         from sms_send_attempt_events accepted_reconciliation
-        where accepted_reconciliation.practice_id = ${smsSendAttempts.practiceId}
-          and accepted_reconciliation.attempt_id = ${smsSendAttempts.id}
+        where accepted_reconciliation.practice_id = "sms_send_attempts"."practice_id"
+          and accepted_reconciliation.attempt_id = "sms_send_attempts"."id"
           and accepted_reconciliation.kind = 'reconciliation'
           and accepted_reconciliation.outcome = 'accepted'
         order by accepted_reconciliation.created_at desc, accepted_reconciliation.id desc
@@ -238,8 +238,8 @@ export async function loadSmsDeliveryEventQueue(
       (
         select accepted_result.provider_message_id
         from sms_send_attempt_events accepted_result
-        where accepted_result.practice_id = ${smsSendAttempts.practiceId}
-          and accepted_result.attempt_id = ${smsSendAttempts.id}
+        where accepted_result.practice_id = "sms_send_attempts"."practice_id"
+          and accepted_result.attempt_id = "sms_send_attempts"."id"
           and accepted_result.kind = 'provider_result'
           and accepted_result.outcome = 'accepted'
         order by accepted_result.created_at desc, accepted_result.id desc
@@ -250,8 +250,8 @@ export async function loadSmsDeliveryEventQueue(
       (
         select accepted_reconciliation.created_at
         from sms_send_attempt_events accepted_reconciliation
-        where accepted_reconciliation.practice_id = ${smsSendAttempts.practiceId}
-          and accepted_reconciliation.attempt_id = ${smsSendAttempts.id}
+        where accepted_reconciliation.practice_id = "sms_send_attempts"."practice_id"
+          and accepted_reconciliation.attempt_id = "sms_send_attempts"."id"
           and accepted_reconciliation.kind = 'reconciliation'
           and accepted_reconciliation.outcome = 'accepted'
         order by accepted_reconciliation.created_at desc, accepted_reconciliation.id desc
@@ -260,8 +260,8 @@ export async function loadSmsDeliveryEventQueue(
       (
         select accepted_result.created_at
         from sms_send_attempt_events accepted_result
-        where accepted_result.practice_id = ${smsSendAttempts.practiceId}
-          and accepted_result.attempt_id = ${smsSendAttempts.id}
+        where accepted_result.practice_id = "sms_send_attempts"."practice_id"
+          and accepted_result.attempt_id = "sms_send_attempts"."id"
           and accepted_result.kind = 'provider_result'
           and accepted_result.outcome = 'accepted'
         order by accepted_result.created_at desc, accepted_result.id desc
@@ -293,14 +293,14 @@ export async function loadSmsDeliveryEventQueue(
         and(
           ne(smsSendAttempts.provider, "console"),
           sql`${acceptedProviderMessageId} is not null`,
-          sql`${acceptedAt} <= ${receiptCutoff}`,
+          sql`${acceptedAt} <= ${receiptCutoff.toISOString()}::timestamptz`,
           input.practiceId
             ? eq(smsSendAttempts.practiceId, input.practiceId)
             : undefined,
           sql`not exists (
             select 1
             from sms_delivery_events receipt
-            where receipt.provider = ${smsSendAttempts.provider}
+            where receipt.provider = "sms_send_attempts"."provider"
               and receipt.provider_message_id = ${acceptedProviderMessageId}
               and (
                 (
@@ -351,15 +351,15 @@ export async function loadSmsSendAttemptQueue(
     const hasAnyEvent = sql<boolean>`exists (
       select 1
       from sms_send_attempt_events queue_event
-      where queue_event.practice_id = ${smsSendAttempts.practiceId}
-        and queue_event.attempt_id = ${smsSendAttempts.id}
+      where queue_event.practice_id = "sms_send_attempts"."practice_id"
+        and queue_event.attempt_id = "sms_send_attempts"."id"
     )`;
     const effectiveOutcome = sql<string | null>`coalesce(
       (
         select reconciliation.outcome::text
         from sms_send_attempt_events reconciliation
-        where reconciliation.practice_id = ${smsSendAttempts.practiceId}
-          and reconciliation.attempt_id = ${smsSendAttempts.id}
+        where reconciliation.practice_id = "sms_send_attempts"."practice_id"
+          and reconciliation.attempt_id = "sms_send_attempts"."id"
           and reconciliation.kind = 'reconciliation'
         order by reconciliation.created_at desc, reconciliation.id desc
         limit 1
@@ -367,8 +367,8 @@ export async function loadSmsSendAttemptQueue(
       (
         select provider_result.outcome::text
         from sms_send_attempt_events provider_result
-        where provider_result.practice_id = ${smsSendAttempts.practiceId}
-          and provider_result.attempt_id = ${smsSendAttempts.id}
+        where provider_result.practice_id = "sms_send_attempts"."practice_id"
+          and provider_result.attempt_id = "sms_send_attempts"."id"
           and provider_result.kind = 'provider_result'
         order by provider_result.created_at desc, provider_result.id desc
         limit 1
@@ -408,8 +408,8 @@ export async function loadSmsSendAttemptQueue(
               and exists (
                 select 1
                 from communications pending_projection
-                where pending_projection.practice_id = ${smsSendAttempts.practiceId}
-                  and pending_projection.id = ${smsSendAttempts.communicationId}
+                where pending_projection.practice_id = "sms_send_attempts"."practice_id"
+                  and pending_projection.id = "sms_send_attempts"."communication_id"
                   and pending_projection.status = 'pending'
                   and pending_projection.deleted_at is null
               )
