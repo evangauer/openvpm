@@ -55,7 +55,7 @@ DECLARE
     'capture_sessions','cases','clients','clinical_notes','clinical_record_corrections','communications','consent_forms','consent_requests','controlled_substance_log','dispense_charge_queue','email_suppressions',
     'files','insurance_claims','insurance_policies','invoices','lab_results','location_messaging','messaging_registrations','migration_runs',
     'locations','patient_merge_events','patients','practice_payment_accounts','prescription_events','prescriptions','problem_list','procedures','products','purchase_orders',
-    'recurring_series','rooms','services','sms_suppressions','soap_notes','staff_schedules','suppliers',
+    'recurring_series','rooms','services','sms_consent_events','sms_suppressions','soap_notes','staff_schedules','suppliers',
     'treatment_plans','treatment_templates','usage_records','users','vaccination_records',
     'visit_closeouts','visit_work_items','vital_signs','webhooks','wellness_enrollments','wellness_plans'
   ];
@@ -87,6 +87,11 @@ GRANT SELECT, INSERT ON prescription_events TO openpims_app;
 -- can create and read attributed events but cannot rewrite or remove lineage.
 REVOKE ALL ON patient_merge_events FROM openpims_app;
 GRANT SELECT, INSERT ON patient_merge_events TO openpims_app;
+
+-- SMS consent events are an append-only compliance ledger. The current client
+-- consent projection may change; its evidence history may only be appended.
+REVOKE ALL ON sms_consent_events FROM openpims_app;
+GRANT SELECT, INSERT ON sms_consent_events TO openpims_app;
 
 -- Dispense charge snapshots are durable revenue work. The app may advance or
 -- reopen their attributed workflow status, while database triggers prevent

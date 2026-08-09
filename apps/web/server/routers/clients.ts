@@ -9,6 +9,7 @@ import {
   invoices,
   patients,
   practices,
+  smsConsentEvents,
   smsSuppressions,
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
@@ -34,6 +35,10 @@ import {
   acquireSmsRecipientLockInTransaction,
   revokeSmsConsentAfterRecipientLockInTransaction,
 } from "@/lib/messaging/suppression";
+import {
+  appendRequiredSmsConsentEventInTransaction,
+  staffSmsConsentEventKey,
+} from "@/lib/messaging/consent-events";
 
 const clientNameInput = z.string().trim().min(1).max(CLIENT_NAME_MAX_LENGTH);
 const clientEmailInput = z
@@ -84,7 +89,7 @@ const activeSchedulingStatuses = [
 ] as const;
 const unresolvedInvoiceStatuses = ["draft", "sent", "overdue"] as const;
 const clientManagerProcedure = protectedProcedure.use(
-  requireRole("admin", "veterinarian", "technician", "front_desk")
+  requireRole("admin", "veterinarian", "technician", "front_desk"),
 );
 type ClientsContext = {
   db: Pick<Database, "select">;
@@ -124,6 +129,28 @@ function canReadPortalAccessTokenRole(role?: string | null): boolean {
   );
 }
 
+function smsSuppressionConsentError(reason: string): TRPCError {
+  if (reason === "manual") {
+    return new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "This number was manually placed on the do-not-text list. A staff member must review it before any future opt-in.",
+    });
+  }
+  if (reason === "stop") {
+    return new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "This number previously opted out by text. The client must reply START from that phone before SMS consent can be restored.",
+    });
+  }
+  return new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message:
+      "This number is blocked from texting after a delivery or complaint event. Review the suppression before recording consent.",
+  });
+}
+
 function redactClientPortalAccessToken<
   T extends { accessToken: string | null },
 >(client: T): Omit<T, "accessToken"> & { accessToken: null } {
@@ -137,7 +164,7 @@ export const clientsRouter = createRouter({
         search: clientSearchInput,
         limit: z.number().int().min(1).max(100).default(25),
         offset: listOffsetInput,
-      })
+      }),
     )
     .query(async ({ ctx, input }) => {
       const conditions = [
@@ -153,11 +180,11 @@ export const clientsRouter = createRouter({
             ilike(clients.lastName, `%${input.search}%`),
             ilike(
               sql`concat_ws(' ', ${clients.firstName}, ${clients.lastName})`,
-              `%${input.search}%`
+              `%${input.search}%`,
             ),
             ilike(clients.email, `%${input.search}%`),
-            ilike(clients.phone, `%${input.search}%`)
-          )!
+            ilike(clients.phone, `%${input.search}%`),
+          )!,
         );
       }
 
@@ -177,7 +204,7 @@ export const clientsRouter = createRouter({
           .select({ timezone: practices.timezone })
           .from(practices)
           .where(
-            and(eq(practices.id, ctx.practiceId), isNull(practices.deletedAt))
+            and(eq(practices.id, ctx.practiceId), isNull(practices.deletedAt)),
           )
           .limit(1),
       ]);
@@ -218,12 +245,12 @@ export const clientsRouter = createRouter({
               ilike(clients.lastName, `%${input.query}%`),
               ilike(
                 sql`concat_ws(' ', ${clients.firstName}, ${clients.lastName})`,
-                `%${input.query}%`
+                `%${input.query}%`,
               ),
               ilike(clients.email, `%${input.query}%`),
-              ilike(clients.phone, `%${input.query}%`)
-            )
-          )
+              ilike(clients.phone, `%${input.query}%`),
+            ),
+          ),
         )
         .limit(10);
     }),
@@ -239,8 +266,8 @@ export const clientsRouter = createRouter({
             eq(clients.id, input.id),
             eq(clients.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(clients.deletedAt)
-          )
+            isNull(clients.deletedAt),
+          ),
         )
         .limit(1);
 
@@ -256,9 +283,38 @@ export const clientsRouter = createRouter({
             eq(patients.clientId, input.id),
             eq(patients.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(patients.deletedAt)
-          )
+            isNull(patients.deletedAt),
+          ),
         );
+
+      const normalizedClientPhone = normalizeE164(client.phone);
+      const smsConsentHistory = await ctx.db
+        .select({
+          id: smsConsentEvents.id,
+          action: smsConsentEvents.action,
+          destinationE164: smsConsentEvents.destinationE164,
+          source: smsConsentEvents.source,
+          detail: smsConsentEvents.detail,
+          actorType: smsConsentEvents.actorType,
+          actorName: smsConsentEvents.actorName,
+          provider: smsConsentEvents.provider,
+          occurredAt: smsConsentEvents.occurredAt,
+        })
+        .from(smsConsentEvents)
+        .where(
+          and(
+            eq(smsConsentEvents.practiceId, ctx.practiceId),
+            normalizedClientPhone
+              ? or(
+                  eq(smsConsentEvents.clientId, input.id),
+                  eq(smsConsentEvents.destinationE164, normalizedClientPhone),
+                )
+              : eq(smsConsentEvents.clientId, input.id),
+            activePracticePredicate(ctx.practiceId),
+          ),
+        )
+        .orderBy(desc(smsConsentEvents.occurredAt), desc(smsConsentEvents.id))
+        .limit(50);
 
       const safeClient = canReadPortalAccessTokenRole(ctx.user.role)
         ? client
@@ -267,6 +323,7 @@ export const clientsRouter = createRouter({
       return {
         ...safeClient,
         patients: clientPatients,
+        smsConsentHistory,
       };
     }),
 
@@ -283,7 +340,7 @@ export const clientsRouter = createRouter({
         zip: optionalClientString(CLIENT_ZIP_MAX_LENGTH),
         notes: clientNotesInput,
         smsConsent: z.boolean().optional(),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const { smsConsent, ...rest } = input;
@@ -296,26 +353,6 @@ export const clientsRouter = createRouter({
 
       await assertActivePractice(ctx);
       const normalizedPhone = normalizeE164(rest.phone);
-      if (smsConsent && normalizedPhone) {
-        const [manualSuppression] = await ctx.db
-          .select({ id: smsSuppressions.id })
-          .from(smsSuppressions)
-          .where(
-            and(
-              eq(smsSuppressions.practiceId, ctx.practiceId),
-              eq(smsSuppressions.phone, normalizedPhone),
-              eq(smsSuppressions.reason, "manual")
-            )
-          )
-          .limit(1);
-        if (manualSuppression) {
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message:
-              "This number was manually placed on the do-not-text list. A staff member must review it before any future opt-in.",
-          });
-        }
-      }
       const consent = smsConsent
         ? {
             smsConsent: true,
@@ -324,24 +361,73 @@ export const clientsRouter = createRouter({
             smsConsentDisclosure: SMS_CONSENT_DISCLOSURE.snapshot,
           }
         : {};
-      const [client] = await ctx.db
-        .insert(clients)
-        .values({
-          ...rest,
-          ...consent,
-          practiceId: ctx.practiceId,
-          accessToken: generatePortalAccessToken(),
-        })
-        .returning();
+      const client = await ctx.db.transaction(async (tx) => {
+        if (smsConsent && normalizedPhone) {
+          await acquireSmsRecipientLockInTransaction(
+            tx,
+            ctx.practiceId,
+            normalizedPhone,
+          );
+          const [suppression] = await tx
+            .select({ reason: smsSuppressions.reason })
+            .from(smsSuppressions)
+            .where(
+              and(
+                eq(smsSuppressions.practiceId, ctx.practiceId),
+                eq(smsSuppressions.phone, normalizedPhone),
+              ),
+            )
+            .limit(1);
+          if (suppression) {
+            throw smsSuppressionConsentError(suppression.reason);
+          }
+        }
+
+        const [created] = await tx
+          .insert(clients)
+          .values({
+            ...rest,
+            ...consent,
+            practiceId: ctx.practiceId,
+            accessToken: generatePortalAccessToken(),
+          })
+          .returning();
+        if (!created) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Client could not be created",
+          });
+        }
+
+        if (smsConsent && normalizedPhone) {
+          await appendRequiredSmsConsentEventInTransaction(tx, {
+            practiceId: ctx.practiceId,
+            clientId: created.id,
+            destinationE164: normalizedPhone,
+            action: "granted",
+            source: SMS_CONSENT_DISCLOSURE.source,
+            disclosureVersion: SMS_CONSENT_DISCLOSURE.version,
+            disclosure: SMS_CONSENT_DISCLOSURE.snapshot,
+            detail:
+              "Staff recorded affirmative consent while creating the client.",
+            actorType: "staff",
+            actorUserId: ctx.user.id,
+            actorName: ctx.user.name,
+            eventKey: staffSmsConsentEventKey(),
+          });
+        }
+
+        return created;
+      });
       await dispatchWebhookEvent(ctx.practiceId, "client.created", {
-        id: client!.id,
-        firstName: client!.firstName,
-        lastName: client!.lastName,
-        email: client!.email,
-        phone: client!.phone,
+        id: client.id,
+        firstName: client.firstName,
+        lastName: client.lastName,
+        email: client.email,
+        phone: client.phone,
         source: "dashboard",
       });
-      return client!;
+      return client;
     }),
 
   update: clientManagerProcedure
@@ -358,49 +444,16 @@ export const clientsRouter = createRouter({
         zip: optionalClientString(CLIENT_ZIP_MAX_LENGTH),
         notes: clientNotesInput,
         smsConsent: z.boolean().optional(),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       return ctx.db.transaction(async (tx) => {
         const phoneWasProvided = Object.prototype.hasOwnProperty.call(
           input,
-          "phone"
+          "phone",
         );
         const { id, smsConsent, phone, ...rest } = input;
         const data: Record<string, unknown> = { ...rest };
-        let withdrawalPhoneSnapshot: string | null | undefined;
-
-        if (smsConsent === false) {
-          // Read without a row lock only to derive the recipient advisory key.
-          // Hosted sends use advisory -> row, so every revocation must follow
-          // that same order. The locked row is rechecked below before writes.
-          const [prelockClient] = await tx
-            .select({ phone: clients.phone })
-            .from(clients)
-            .where(
-              and(
-                eq(clients.id, id),
-                eq(clients.practiceId, ctx.practiceId),
-                activePracticePredicate(ctx.practiceId),
-                isNull(clients.deletedAt)
-              )
-            )
-            .limit(1);
-          if (!prelockClient) {
-            throw new TRPCError({
-              code: "NOT_FOUND",
-              message: "Client not found",
-            });
-          }
-          withdrawalPhoneSnapshot = normalizeE164(prelockClient.phone);
-          if (withdrawalPhoneSnapshot) {
-            await acquireSmsRecipientLockInTransaction(
-              tx,
-              ctx.practiceId,
-              withdrawalPhoneSnapshot
-            );
-          }
-        }
 
         if (phoneWasProvided) {
           // Drizzle ignores undefined values. Use null so an explicitly cleared
@@ -409,20 +462,73 @@ export const clientsRouter = createRouter({
         }
 
         if (phoneWasProvided || smsConsent !== undefined) {
-          // Keep the consent decision and destination update under one row lock.
-          // Without the surrounding transaction, FOR UPDATE would release before
-          // the write and a concurrent phone edit could attach consent to the
-          // wrong destination.
-          const [existingClient] = await tx
-            .select({ id: clients.id, phone: clients.phone })
+          // Read without a row lock only to derive recipient advisory keys.
+          // Hosted sends use advisory -> client row, so consent transitions use
+          // the same order and then revalidate the row after acquiring locks.
+          const [prelockClient] = await tx
+            .select({
+              phone: clients.phone,
+              smsConsent: clients.smsConsent,
+            })
             .from(clients)
             .where(
               and(
                 eq(clients.id, id),
                 eq(clients.practiceId, ctx.practiceId),
                 activePracticePredicate(ctx.practiceId),
-                isNull(clients.deletedAt)
-              )
+                isNull(clients.deletedAt),
+              ),
+            )
+            .limit(1);
+          if (!prelockClient) {
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: "Client not found",
+            });
+          }
+
+          const prelockNextPhone = phoneWasProvided
+            ? phone
+            : prelockClient.phone;
+          const prelockPhoneChanged = !phoneNumbersMatchForConsent(
+            prelockClient.phone,
+            prelockNextPhone,
+          );
+          const oldDestination = normalizeE164(prelockClient.phone);
+          const newDestination = normalizeE164(prelockNextPhone);
+          const lockDestinations = new Set<string>();
+          if (
+            oldDestination &&
+            (smsConsent === false ||
+              (prelockClient.smsConsent && prelockPhoneChanged))
+          ) {
+            lockDestinations.add(oldDestination);
+          }
+          if (smsConsent === true && newDestination) {
+            lockDestinations.add(newDestination);
+          }
+          for (const destination of [...lockDestinations].sort()) {
+            await acquireSmsRecipientLockInTransaction(
+              tx,
+              ctx.practiceId,
+              destination,
+            );
+          }
+
+          const [existingClient] = await tx
+            .select({
+              id: clients.id,
+              phone: clients.phone,
+              smsConsent: clients.smsConsent,
+            })
+            .from(clients)
+            .where(
+              and(
+                eq(clients.id, id),
+                eq(clients.practiceId, ctx.practiceId),
+                activePracticePredicate(ctx.practiceId),
+                isNull(clients.deletedAt),
+              ),
             )
             .limit(1)
             .for("update");
@@ -435,20 +541,23 @@ export const clientsRouter = createRouter({
           }
 
           if (
-            smsConsent === false &&
-            normalizeE164(existingClient.phone) !== withdrawalPhoneSnapshot
+            !phoneNumbersMatchForConsent(
+              existingClient.phone,
+              prelockClient.phone,
+            ) ||
+            existingClient.smsConsent !== prelockClient.smsConsent
           ) {
             throw new TRPCError({
               code: "CONFLICT",
               message:
-                "Client phone changed while withdrawing SMS consent. Refresh and try again.",
+                "Client SMS consent or phone changed while saving. Refresh and try again.",
             });
           }
 
           const nextPhone = phoneWasProvided ? phone : existingClient.phone;
           const phoneChanged = !phoneNumbersMatchForConsent(
             existingClient.phone,
-            nextPhone
+            nextPhone,
           );
 
           if (smsConsent === true) {
@@ -461,24 +570,51 @@ export const clientsRouter = createRouter({
               });
             }
 
-            const [manualSuppression] = await tx
-              .select({ id: smsSuppressions.id })
+            const [suppression] = await tx
+              .select({ reason: smsSuppressions.reason })
               .from(smsSuppressions)
               .where(
                 and(
                   eq(smsSuppressions.practiceId, ctx.practiceId),
                   eq(smsSuppressions.phone, normalizedNextPhone),
-                  eq(smsSuppressions.reason, "manual")
-                )
+                ),
               )
               .limit(1);
-            if (manualSuppression) {
-              throw new TRPCError({
-                code: "PRECONDITION_FAILED",
-                message:
-                  "This number was manually placed on the do-not-text list. A staff member must review it before any future opt-in.",
+            if (suppression) {
+              throw smsSuppressionConsentError(suppression.reason);
+            }
+
+            if (phoneChanged && existingClient.smsConsent && oldDestination) {
+              await appendRequiredSmsConsentEventInTransaction(tx, {
+                practiceId: ctx.practiceId,
+                clientId: id,
+                destinationE164: oldDestination,
+                action: "revoked",
+                source: "phone_change:v1",
+                detail:
+                  "Prior SMS consent was invalidated because the client destination changed.",
+                actorType: "staff",
+                actorUserId: ctx.user.id,
+                actorName: ctx.user.name,
+                eventKey: staffSmsConsentEventKey(),
               });
             }
+
+            await appendRequiredSmsConsentEventInTransaction(tx, {
+              practiceId: ctx.practiceId,
+              clientId: id,
+              destinationE164: normalizedNextPhone,
+              action: "granted",
+              source: SMS_CONSENT_DISCLOSURE.source,
+              disclosureVersion: SMS_CONSENT_DISCLOSURE.version,
+              disclosure: SMS_CONSENT_DISCLOSURE.snapshot,
+              detail:
+                "Staff recorded affirmative consent on the client record.",
+              actorType: "staff",
+              actorUserId: ctx.user.id,
+              actorName: ctx.user.name,
+              eventKey: staffSmsConsentEventKey(),
+            });
 
             // A true value is an explicit staff attestation under the current,
             // server-owned disclosure. Unrelated edits omit this field entirely.
@@ -488,14 +624,37 @@ export const clientsRouter = createRouter({
             data.smsConsentDisclosure = SMS_CONSENT_DISCLOSURE.snapshot;
           } else if (phoneChanged || smsConsent === false) {
             if (smsConsent === false) {
-              if (withdrawalPhoneSnapshot) {
+              if (oldDestination) {
                 await revokeSmsConsentAfterRecipientLockInTransaction(tx, {
                   practiceId: ctx.practiceId,
-                  phone: withdrawalPhoneSnapshot,
+                  phone: oldDestination,
                   reason: "manual",
                   detail: `Staff revoked SMS consent from client ${id}.`,
+                  evidence: {
+                    clientId: id,
+                    source: "staff_manual_revoke:v1",
+                    detail: "Staff explicitly withdrew SMS consent.",
+                    actorType: "staff",
+                    actorUserId: ctx.user.id,
+                    actorName: ctx.user.name,
+                    eventKey: staffSmsConsentEventKey(),
+                  },
                 });
               }
+            } else if (existingClient.smsConsent && oldDestination) {
+              await appendRequiredSmsConsentEventInTransaction(tx, {
+                practiceId: ctx.practiceId,
+                clientId: id,
+                destinationE164: oldDestination,
+                action: "revoked",
+                source: "phone_change:v1",
+                detail:
+                  "Prior SMS consent was invalidated because the client destination changed.",
+                actorType: "staff",
+                actorUserId: ctx.user.id,
+                actorName: ctx.user.name,
+                eventKey: staffSmsConsentEventKey(),
+              });
             }
             // Consent belongs to one destination. Changing that destination (or
             // explicitly withdrawing consent) invalidates all prior evidence.
@@ -514,8 +673,8 @@ export const clientsRouter = createRouter({
               eq(clients.id, id),
               eq(clients.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(clients.deletedAt)
-            )
+              isNull(clients.deletedAt),
+            ),
           )
           .returning();
         if (!client) {
@@ -534,7 +693,7 @@ export const clientsRouter = createRouter({
       z.object({
         id: z.string().uuid(),
         expectedPhone: normalizedClientPhoneInput,
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       return ctx.db.transaction(async (tx) => {
@@ -546,8 +705,8 @@ export const clientsRouter = createRouter({
               eq(clients.id, input.id),
               eq(clients.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(clients.deletedAt)
-            )
+              isNull(clients.deletedAt),
+            ),
           )
           .limit(1);
         if (!prelockClient) {
@@ -575,7 +734,7 @@ export const clientsRouter = createRouter({
           await acquireSmsRecipientLockInTransaction(
             tx,
             ctx.practiceId,
-            prelockPhone
+            prelockPhone,
           );
           const [lockedClient] = await tx
             .select({ phone: clients.phone })
@@ -585,8 +744,8 @@ export const clientsRouter = createRouter({
                 eq(clients.id, input.id),
                 eq(clients.practiceId, ctx.practiceId),
                 activePracticePredicate(ctx.practiceId),
-                isNull(clients.deletedAt)
-              )
+                isNull(clients.deletedAt),
+              ),
             )
             .limit(1)
             .for("update");
@@ -608,6 +767,15 @@ export const clientsRouter = createRouter({
             phone: prelockPhone,
             reason: "manual",
             detail: `Staff revoked SMS consent from client ${input.id}.`,
+            evidence: {
+              clientId: input.id,
+              source: "staff_manual_revoke:v1",
+              detail: "Staff explicitly withdrew SMS consent practice-wide.",
+              actorType: "staff",
+              actorUserId: ctx.user.id,
+              actorName: ctx.user.name,
+              eventKey: staffSmsConsentEventKey(),
+            },
           });
         } catch (error) {
           if (error instanceof TRPCError) throw error;
@@ -632,8 +800,8 @@ export const clientsRouter = createRouter({
             eq(clients.id, input.id),
             eq(clients.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(clients.deletedAt)
-          )
+            isNull(clients.deletedAt),
+          ),
         )
         .returning({
           id: clients.id,
@@ -660,8 +828,8 @@ export const clientsRouter = createRouter({
               eq(clients.id, input.id),
               eq(clients.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(clients.deletedAt)
-            )
+              isNull(clients.deletedAt),
+            ),
           )
           .limit(1);
 
@@ -680,8 +848,8 @@ export const clientsRouter = createRouter({
               eq(patients.clientId, input.id),
               eq(patients.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(patients.deletedAt)
-            )
+              isNull(patients.deletedAt),
+            ),
           )
           .limit(1);
 
@@ -701,8 +869,8 @@ export const clientsRouter = createRouter({
               eq(appointments.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
               isNull(appointments.deletedAt),
-              inArray(appointments.status, activeSchedulingStatuses)
-            )
+              inArray(appointments.status, activeSchedulingStatuses),
+            ),
           )
           .limit(1);
 
@@ -723,8 +891,8 @@ export const clientsRouter = createRouter({
               eq(appointmentWaitlist.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
               eq(appointmentWaitlist.status, "waiting"),
-              isNull(appointmentWaitlist.deletedAt)
-            )
+              isNull(appointmentWaitlist.deletedAt),
+            ),
           )
           .limit(1);
 
@@ -745,8 +913,8 @@ export const clientsRouter = createRouter({
               eq(invoices.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
               isNull(invoices.deletedAt),
-              inArray(invoices.status, unresolvedInvoiceStatuses)
-            )
+              inArray(invoices.status, unresolvedInvoiceStatuses),
+            ),
           )
           .limit(1);
 
@@ -766,8 +934,8 @@ export const clientsRouter = createRouter({
               eq(clients.id, input.id),
               eq(clients.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(clients.deletedAt)
-            )
+              isNull(clients.deletedAt),
+            ),
           )
           .returning({ id: clients.id });
         if (!client) {

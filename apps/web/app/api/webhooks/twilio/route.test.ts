@@ -3,14 +3,24 @@ import { readFileSync } from "node:fs";
 
 const ROUTE_SOURCE = readFileSync(
   new URL("./route.ts", import.meta.url),
-  "utf8"
+  "utf8",
 );
 
 const mocks = vi.hoisted(() => {
   const selectResults: unknown[][] = [];
   const updateResults: unknown[][] = [];
 
-  const selectLimit = vi.fn(async () => selectResults.shift() ?? []);
+  const selectLimit = vi.fn(() => {
+    const result = selectResults.shift() ?? [];
+    const terminal = {
+      for: vi.fn(() => terminal),
+      then: (
+        resolve: (value: unknown[]) => unknown,
+        reject?: (error: unknown) => unknown,
+      ) => Promise.resolve(result).then(resolve, reject),
+    };
+    return terminal;
+  });
   const selectWhere = vi.fn((_condition: unknown) => ({ limit: selectLimit }));
   const selectInnerJoin = vi.fn(() => ({
     innerJoin: selectInnerJoin,
@@ -25,7 +35,7 @@ const mocks = vi.hoisted(() => {
   const updateReturning = vi.fn(async () =>
     updateResults.length > 0
       ? updateResults.shift()
-      : [{ id: "00000000-0000-0000-0000-000000000009" }]
+      : [{ id: "00000000-0000-0000-0000-000000000009" }],
   );
   const updateWhere = vi.fn((_condition: unknown) => ({
     returning: updateReturning,
@@ -33,7 +43,12 @@ const mocks = vi.hoisted(() => {
   const updateSet = vi.fn(() => ({ where: updateWhere }));
   const update = vi.fn(() => ({ set: updateSet }));
 
-  const insertConflict = vi.fn(async (_config?: unknown) => undefined);
+  const insertReturning = vi.fn(async () => [
+    { id: "00000000-0000-0000-0000-0000000000ee" },
+  ]);
+  const insertConflict = vi.fn((_config?: unknown) => ({
+    returning: insertReturning,
+  }));
   const insertValues = vi.fn((_values: unknown) => ({
     onConflictDoNothing: insertConflict,
     onConflictDoUpdate: insertConflict,
@@ -57,17 +72,18 @@ const mocks = vi.hoisted(() => {
     updateResults,
     selectWhere,
     insertConflict,
+    insertReturning,
     insertValues,
     deleteWhere,
     updateSet,
     updateWhere,
     validateRequest: vi.fn(() => true),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
-      fn(db)
+      fn(db),
     ),
     withTenant: vi.fn(
       async (_db: unknown, _practiceId: string, fn: (tx: unknown) => unknown) =>
-        fn(db)
+        fn(db),
     ),
   };
 });
@@ -108,7 +124,7 @@ function twilioRequest(params: Record<string, string>, signature = "sig") {
 function sqlIncludesColumnName(
   value: unknown,
   columnName: string,
-  seen = new WeakSet<object>()
+  seen = new WeakSet<object>(),
 ): boolean {
   if (!value || typeof value !== "object") {
     return false;
@@ -120,18 +136,18 @@ function sqlIncludesColumnName(
   if (candidate.name === columnName) return true;
   if (Array.isArray(candidate.queryChunks)) {
     return candidate.queryChunks.some((item) =>
-      sqlIncludesColumnName(item, columnName, seen)
+      sqlIncludesColumnName(item, columnName, seen),
     );
   }
   return Object.values(value as Record<string, unknown>).some((item) =>
-    sqlIncludesColumnName(item, columnName, seen)
+    sqlIncludesColumnName(item, columnName, seen),
   );
 }
 
 function sqlIncludesValue(
   value: unknown,
   needle: unknown,
-  seen = new WeakSet<object>()
+  seen = new WeakSet<object>(),
 ): boolean {
   if (Object.is(value, needle)) return true;
   if (!value || typeof value !== "object") {
@@ -149,11 +165,11 @@ function sqlIncludesValue(
   }
   if (Array.isArray(candidate.queryChunks)) {
     return candidate.queryChunks.some((item) =>
-      sqlIncludesValue(item, needle, seen)
+      sqlIncludesValue(item, needle, seen),
     );
   }
   return Object.values(value as Record<string, unknown>).some((item) =>
-    sqlIncludesValue(item, needle, seen)
+    sqlIncludesValue(item, needle, seen),
   );
 }
 
@@ -176,7 +192,7 @@ describe("Twilio webhook", () => {
           "x-twilio-signature": "sig",
         },
         body: new URLSearchParams({ From: "+15555550199" }),
-      })
+      }),
     );
 
     expect(response.status).toBe(413);
@@ -199,7 +215,7 @@ describe("Twilio webhook", () => {
           "x-twilio-signature": "sig",
         },
         body: "x".repeat(MESSAGING_WEBHOOK_BODY_MAX_BYTES + 1),
-      })
+      }),
     );
 
     expect(response.status).toBe(413);
@@ -222,7 +238,7 @@ describe("Twilio webhook", () => {
       new Request("https://openvpm.test/api/webhooks/twilio", {
         method: "POST",
         body: new URLSearchParams({ From: "+15555550199" }),
-      })
+      }),
     );
 
     await expect(response.json()).resolves.toEqual({
@@ -241,7 +257,7 @@ describe("Twilio webhook", () => {
         From: "+15555550199",
         To: "+15555550100",
         Body: "Running five minutes late",
-      })
+      }),
     );
 
     await expect(response.json()).resolves.toEqual({
@@ -262,7 +278,7 @@ describe("Twilio webhook", () => {
           locationId: "00000000-0000-0000-0000-000000000002",
         },
       ],
-      [{ id: "00000000-0000-0000-0000-000000000003" }]
+      [{ id: "00000000-0000-0000-0000-000000000003" }],
     );
 
     const response = await POST(
@@ -271,7 +287,7 @@ describe("Twilio webhook", () => {
         To: "+15555550100",
         Body: "Running five minutes late",
         MessageSid: "SM123",
-      })
+      }),
     );
 
     await expect(response.json()).resolves.toEqual({
@@ -287,12 +303,12 @@ describe("Twilio webhook", () => {
         To: "+15555550100",
         Body: "Running five minutes late",
         MessageSid: "SM123",
-      })
+      }),
     );
     expect(mocks.withTenant).toHaveBeenCalledWith(
       mocks.db,
       "00000000-0000-0000-0000-0000000000aa",
-      expect.any(Function)
+      expect.any(Function),
     );
     expect(mocks.insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -303,28 +319,28 @@ describe("Twilio webhook", () => {
         content: "Running five minutes late",
         providerMessageId: "SM123",
         dedupeKey: "twilio:inbound:SM123",
-      })
+      }),
     );
     const inserted = mocks.insertValues.mock.calls.find(
       ([value]) =>
-        (value as { providerMessageId?: string }).providerMessageId === "SM123"
+        (value as { providerMessageId?: string }).providerMessageId === "SM123",
     )?.[0] as { assignedTo?: unknown };
     expect(inserted.assignedTo).toBeTruthy();
     expect(sqlIncludesColumnName(inserted.assignedTo, "assigned_to")).toBe(
-      true
+      true,
     );
     expect(sqlIncludesColumnName(inserted.assignedTo, "client_id")).toBe(true);
     expect(
       sqlIncludesValue(
         inserted.assignedTo,
-        "00000000-0000-0000-0000-0000000000aa"
-      )
+        "00000000-0000-0000-0000-0000000000aa",
+      ),
     ).toBe(true);
     expect(
       sqlIncludesValue(
         inserted.assignedTo,
-        "00000000-0000-0000-0000-000000000003"
-      )
+        "00000000-0000-0000-0000-000000000003",
+      ),
     ).toBe(true);
     expect(mocks.insertConflict).toHaveBeenCalledWith({
       target: communications.dedupeKey,
@@ -341,7 +357,7 @@ describe("Twilio webhook", () => {
           locationId: "00000000-0000-0000-0000-000000000002",
         },
       ],
-      [{ id: "00000000-0000-0000-0000-000000000003" }]
+      [{ id: "00000000-0000-0000-0000-000000000003" }],
     );
 
     const response = await POST(
@@ -351,7 +367,7 @@ describe("Twilio webhook", () => {
         Body: "Can you confirm pickup?",
         MessageSid: "SM-profile-inbound",
         MessagingServiceSid: " MG123 ",
-      })
+      }),
     );
 
     await expect(response.json()).resolves.toEqual({
@@ -361,7 +377,7 @@ describe("Twilio webhook", () => {
     expect(mocks.withSystem).toHaveBeenCalledTimes(3);
     const profileCondition = mocks.selectWhere.mock.calls[1]?.[0];
     expect(
-      sqlIncludesColumnName(profileCondition, "messaging_profile_id")
+      sqlIncludesColumnName(profileCondition, "messaging_profile_id"),
     ).toBe(true);
     expect(sqlIncludesValue(profileCondition, "MG123")).toBe(true);
     expect(mocks.insertValues).toHaveBeenCalledWith(
@@ -373,7 +389,7 @@ describe("Twilio webhook", () => {
         content: "Can you confirm pickup?",
         providerMessageId: "SM-profile-inbound",
         dedupeKey: "twilio:inbound:SM-profile-inbound",
-      })
+      }),
     );
   });
 
@@ -387,7 +403,7 @@ describe("Twilio webhook", () => {
           locationId: "00000000-0000-0000-0000-000000000002",
         },
       ],
-      [{ id: clientId }]
+      [{ id: clientId }],
     );
 
     const response = await POST(
@@ -396,7 +412,7 @@ describe("Twilio webhook", () => {
         To: "+15555550100",
         Body: "STOP",
         MessageSid: "SM-stop",
-      })
+      }),
     );
 
     await expect(response.json()).resolves.toEqual({
@@ -406,11 +422,23 @@ describe("Twilio webhook", () => {
     expect(mocks.insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
         practiceId: "00000000-0000-0000-0000-0000000000aa",
+        clientId: null,
+        destinationE164: "+15555550199",
+        action: "revoked",
+        source: "inbound_opt_out:v1",
+        actorType: "client",
+        provider: "twilio",
+        providerMessageId: "SM-stop",
+      }),
+    );
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: "00000000-0000-0000-0000-0000000000aa",
         locationId: "00000000-0000-0000-0000-000000000002",
         phone: "+15555550199",
         reason: "stop",
         detail: 'Inbound opt-out: "STOP"',
-      })
+      }),
     );
     expect(mocks.updateSet).toHaveBeenCalledWith({
       smsConsent: false,
@@ -429,7 +457,7 @@ describe("Twilio webhook", () => {
         status: "delivered",
         providerMessageId: "SM-stop",
         dedupeKey: "twilio:inbound:SM-stop",
-      })
+      }),
     );
     expect(mocks.insertConflict).toHaveBeenCalledWith({
       target: communications.dedupeKey,
@@ -446,7 +474,7 @@ describe("Twilio webhook", () => {
           locationId: "00000000-0000-0000-0000-000000000002",
         },
       ],
-      [{ id: clientId }]
+      [{ id: clientId }],
     );
 
     const response = await POST(
@@ -455,7 +483,7 @@ describe("Twilio webhook", () => {
         To: "+15555550100",
         Body: "START",
         MessageSid: "SM-start",
-      })
+      }),
     );
 
     await expect(response.json()).resolves.toEqual({
@@ -480,11 +508,29 @@ describe("Twilio webhook", () => {
         status: "delivered",
         providerMessageId: "SM-start",
         dedupeKey: "twilio:inbound:SM-start",
-      })
+      }),
     );
     expect(mocks.insertConflict).toHaveBeenCalledWith({
       target: communications.dedupeKey,
     });
+  });
+
+  it("rejects inbound consent messages without a durable provider id", async () => {
+    process.env.TWILIO_AUTH_TOKEN = "test-token";
+    const response = await POST(
+      twilioRequest({
+        From: "+15555550199",
+        To: "+15555550100",
+        Body: "START",
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "missing inbound message id",
+    });
+    expect(mocks.insertValues).not.toHaveBeenCalled();
+    expect(mocks.updateSet).not.toHaveBeenCalled();
   });
 
   it("updates transient failed delivery callbacks without suppressing recipients", async () => {
@@ -503,7 +549,7 @@ describe("Twilio webhook", () => {
         MessageSid: "SM-failed",
         MessageStatus: "undelivered",
         ErrorCode: "30008",
-      })
+      }),
     );
 
     await expect(response.json()).resolves.toEqual({ ok: true });
@@ -528,18 +574,18 @@ describe("Twilio webhook", () => {
         MessageSid: "SM-profile-failed",
         MessageStatus: "undelivered",
         MessagingServiceSid: "MG123",
-      })
+      }),
     );
 
     await expect(response.json()).resolves.toEqual({ ok: true });
     expect(mocks.withTenant).toHaveBeenCalledWith(
       mocks.db,
       "00000000-0000-0000-0000-0000000000aa",
-      expect.any(Function)
+      expect.any(Function),
     );
     const profileCondition = mocks.selectWhere.mock.calls[0]?.[0];
     expect(
-      sqlIncludesColumnName(profileCondition, "messaging_profile_id")
+      sqlIncludesColumnName(profileCondition, "messaging_profile_id"),
     ).toBe(true);
     expect(sqlIncludesValue(profileCondition, "MG123")).toBe(true);
     expect(mocks.updateSet).toHaveBeenCalledWith({ status: "failed" });

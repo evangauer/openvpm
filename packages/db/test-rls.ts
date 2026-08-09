@@ -64,6 +64,8 @@ const aPrescriptionEvent = randomUUID();
 const bPrescriptionEvent = randomUUID();
 const aDispenseCharge = randomUUID();
 const bDispenseCharge = randomUUID();
+const aSmsConsentEvent = randomUUID();
+const bSmsConsentEvent = randomUUID();
 const funnelEventId = randomUUID();
 let failures = 0;
 
@@ -86,6 +88,11 @@ try {
   await owner`insert into users (id, email, password_hash, name, role, practice_id) values
     (${aUser}, ${`rls-${aUser}@example.com`}, 'not-a-real-hash', 'RLS Admin A', 'admin', ${aId}),
     (${bUser}, ${`rls-${bUser}@example.com`}, 'not-a-real-hash', 'RLS Admin B', 'admin', ${bId})`;
+  await owner`insert into sms_consent_events
+    (id, practice_id, client_id, destination_e164, action, source, detail, actor_type, event_key)
+    values
+    (${aSmsConsentEvent}, ${aId}, ${aClient}, '+15555550101', 'revoked', 'rls_test:v1', 'Tenant A event', 'system', ${`rls:${aSmsConsentEvent}`}),
+    (${bSmsConsentEvent}, ${bId}, ${bClient}, '+15555550102', 'revoked', 'rls_test:v1', 'Tenant B event', 'system', ${`rls:${bSmsConsentEvent}`})`;
   await owner`insert into patients (id, practice_id, client_id, name, species)
     select ${aPatient}, ${aId}, id, 'RLS Pet A', 'canine'
     from clients where practice_id = ${aId}`;
@@ -164,6 +171,60 @@ try {
   check(
     "tenant A sees only A's clients",
     aRows.length === 1 && aRows[0]!.practice_id === aId,
+  );
+
+  const aSmsConsentEvents = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id, practice_id from sms_consent_events where id in (${aSmsConsentEvent}, ${bSmsConsentEvent})`;
+  });
+  check(
+    "tenant A sees only A's SMS consent events",
+    aSmsConsentEvents.length === 1 &&
+      aSmsConsentEvents[0]!.id === aSmsConsentEvent,
+  );
+
+  let smsConsentUpdateBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`update sms_consent_events set detail = 'tampered' where id = ${aSmsConsentEvent}`;
+    });
+  } catch {
+    smsConsentUpdateBlocked = true;
+  }
+  check(
+    "application role cannot rewrite SMS consent history",
+    smsConsentUpdateBlocked,
+  );
+
+  let smsConsentDeleteBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`delete from sms_consent_events where id = ${aSmsConsentEvent}`;
+    });
+  } catch {
+    smsConsentDeleteBlocked = true;
+  }
+  check(
+    "application role cannot delete SMS consent history",
+    smsConsentDeleteBlocked,
+  );
+
+  let crossTenantSmsConsentInsertBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into sms_consent_events
+        (practice_id, client_id, destination_e164, action, source, actor_type, event_key)
+        values (${bId}, ${bClient}, '+15555550102', 'revoked', 'rls_cross_tenant:v1', 'system', ${`rls:cross:${randomUUID()}`})`;
+    });
+  } catch {
+    crossTenantSmsConsentInsertBlocked = true;
+  }
+  check(
+    "cross-tenant SMS consent INSERT is blocked",
+    crossTenantSmsConsentInsertBlocked,
   );
 
   const aPrescriptionEvents = await appTransaction(async (tx) => {
@@ -538,6 +599,7 @@ try {
   await owner.begin(async (tx) => {
     const cleanup = tx as unknown as typeof owner;
     await cleanup`select set_config('app.ledger_maintenance', 'on', true)`;
+    await cleanup`delete from sms_consent_events where id in (${aSmsConsentEvent}, ${bSmsConsentEvent})`;
     await cleanup`delete from patient_merge_events where id in (${aPatientMergeEvent}, ${bPatientMergeEvent})`;
     await cleanup`delete from dispense_charge_queue where id in (${aDispenseCharge}, ${bDispenseCharge})`;
     await cleanup`delete from invoice_adjustments where invoice_id in (${aInvoice}, ${bInvoice})`;

@@ -75,7 +75,7 @@ function hostedDispatchDb(rows: Array<unknown[] | Error>) {
       for: settle,
       then: (
         resolve: (value: unknown[]) => unknown,
-        reject?: (reason: unknown) => unknown
+        reject?: (reason: unknown) => unknown,
       ) => settle().then(resolve, reject),
     };
     return builder;
@@ -96,7 +96,7 @@ function deferred<T = void>() {
 function transport(
   sender: { messagingServiceId?: string; from?: string },
   name: "telnyx" | "twilio" | "console" = "telnyx",
-  send = mocks.providerSend
+  send = mocks.providerSend,
 ) {
   return {
     provider: { name, isConfigured: () => true, send },
@@ -130,7 +130,7 @@ afterEach(() => {
             }),
           }),
         }),
-      })
+      }),
   );
 });
 
@@ -145,7 +145,7 @@ describe("sendSms", () => {
         practiceId: PRACTICE_ID,
         locationId: LOCATION_ID,
         clientId: CLIENT_ID,
-      })
+      }),
     ).resolves.toEqual({
       success: false,
       error:
@@ -166,7 +166,7 @@ describe("sendSms", () => {
         to: "+15555550199",
         body: "Reminder",
         practiceId: PRACTICE_ID,
-      })
+      }),
     ).resolves.toMatchObject({ success: false });
     await expect(
       sendSms({
@@ -174,7 +174,7 @@ describe("sendSms", () => {
         body: "Reminder",
         practiceId: PRACTICE_ID,
         locationId: LOCATION_ID,
-      })
+      }),
     ).resolves.toEqual({
       success: false,
       error: "Hosted SMS requires an explicit consented client.",
@@ -189,7 +189,7 @@ describe("sendSms", () => {
     mocks.billingEnforced.mockReturnValue(true);
     const twilioSend = vi.fn();
     mocks.resolveMessagingTransport.mockResolvedValue(
-      transport({ from: "+15555550100" }, "twilio", twilioSend)
+      transport({ from: "+15555550100" }, "twilio", twilioSend),
     );
 
     await expect(
@@ -199,7 +199,7 @@ describe("sendSms", () => {
         practiceId: PRACTICE_ID,
         locationId: LOCATION_ID,
         clientId: CLIENT_ID,
-      })
+      }),
     ).resolves.toEqual({
       success: false,
       error:
@@ -213,7 +213,7 @@ describe("sendSms", () => {
     allowHostedPilot();
     mocks.billingEnforced.mockReturnValue(true);
     mocks.resolveMessagingTransport.mockResolvedValue(
-      transport({ from: "+15555550100" })
+      transport({ from: "+15555550100" }),
     );
     mocks.withSystem
       .mockImplementationOnce(
@@ -221,8 +221,8 @@ describe("sendSms", () => {
           fn(
             hostedDispatchDb([
               [{ tier: "cloud", billingStatus: "active", trialEndsAt: null }],
-            ])
-          )
+            ]),
+          ),
       )
       .mockImplementationOnce(
         async (_db: unknown, fn: (tx: unknown) => unknown) =>
@@ -237,8 +237,8 @@ describe("sendSms", () => {
                   smsConsentDisclosure: null,
                 },
               ],
-            ])
-          )
+            ]),
+          ),
       );
 
     await expect(
@@ -248,7 +248,7 @@ describe("sendSms", () => {
         practiceId: PRACTICE_ID,
         locationId: LOCATION_ID,
         clientId: CLIENT_ID,
-      })
+      }),
     ).resolves.toEqual({
       success: false,
       error:
@@ -262,7 +262,7 @@ describe("sendSms", () => {
     allowHostedPilot();
     mocks.billingEnforced.mockReturnValue(true);
     mocks.resolveMessagingTransport.mockResolvedValue(
-      transport({ from: "+15555550100" })
+      transport({ from: "+15555550100" }),
     );
     mocks.providerSend.mockResolvedValue({ success: true, id: "sms-hosted-1" });
     mocks.withSystem
@@ -271,8 +271,8 @@ describe("sendSms", () => {
           fn(
             hostedDispatchDb([
               [{ tier: "cloud", billingStatus: "active", trialEndsAt: null }],
-            ])
-          )
+            ]),
+          ),
       )
       .mockImplementationOnce(
         async (_db: unknown, fn: (tx: unknown) => unknown) =>
@@ -288,8 +288,8 @@ describe("sendSms", () => {
                 },
               ],
               [],
-            ])
-          )
+            ]),
+          ),
       );
 
     await expect(
@@ -299,7 +299,7 @@ describe("sendSms", () => {
         practiceId: PRACTICE_ID,
         locationId: LOCATION_ID,
         clientId: CLIENT_ID,
-      })
+      }),
     ).resolves.toEqual({
       success: true,
       sid: "sms-hosted-1",
@@ -312,7 +312,7 @@ describe("sendSms", () => {
     allowHostedPilot();
     mocks.billingEnforced.mockReturnValue(true);
     mocks.resolveMessagingTransport.mockResolvedValue(
-      transport({ from: "+15555550100" })
+      transport({ from: "+15555550100" }),
     );
     mocks.withSystem
       .mockImplementationOnce(
@@ -320,8 +320,8 @@ describe("sendSms", () => {
           fn(
             hostedDispatchDb([
               [{ tier: "cloud", billingStatus: "active", trialEndsAt: null }],
-            ])
-          )
+            ]),
+          ),
       )
       .mockImplementationOnce(
         async (_db: unknown, fn: (tx: unknown) => unknown) =>
@@ -337,8 +337,8 @@ describe("sendSms", () => {
                 },
               ],
               [{ id: "suppression-1" }],
-            ])
-          )
+            ]),
+          ),
       );
 
     await expect(
@@ -348,7 +348,7 @@ describe("sendSms", () => {
         practiceId: PRACTICE_ID,
         locationId: LOCATION_ID,
         clientId: CLIENT_ID,
-      })
+      }),
     ).resolves.toEqual({
       success: false,
       error: "Recipient has opted out of SMS (STOP).",
@@ -361,7 +361,7 @@ describe("sendSms", () => {
     allowHostedPilot();
     mocks.billingEnforced.mockReturnValue(true);
     mocks.resolveMessagingTransport.mockResolvedValue(
-      transport({ from: "+15555550100" })
+      transport({ from: "+15555550100" }),
     );
     mocks.withSystem
       .mockImplementationOnce(
@@ -369,8 +369,8 @@ describe("sendSms", () => {
           fn(
             hostedDispatchDb([
               [{ tier: "cloud", billingStatus: "active", trialEndsAt: null }],
-            ])
-          )
+            ]),
+          ),
       )
       .mockImplementationOnce(
         async (_db: unknown, fn: (tx: unknown) => unknown) =>
@@ -386,8 +386,8 @@ describe("sendSms", () => {
                 },
               ],
               new Error("suppression database unavailable"),
-            ])
-          )
+            ]),
+          ),
       );
 
     await expect(
@@ -397,7 +397,7 @@ describe("sendSms", () => {
         practiceId: PRACTICE_ID,
         locationId: LOCATION_ID,
         clientId: CLIENT_ID,
-      })
+      }),
     ).resolves.toEqual({
       success: false,
       error: "Could not verify SMS consent; send blocked.",
@@ -410,7 +410,7 @@ describe("sendSms", () => {
     allowHostedPilot();
     mocks.billingEnforced.mockReturnValue(true);
     mocks.resolveMessagingTransport.mockResolvedValue(
-      transport({ from: "+15555550100" })
+      transport({ from: "+15555550100" }),
     );
 
     const revokeReachedWrite = deferred();
@@ -436,7 +436,12 @@ describe("sendSms", () => {
     const revokeTx = {
       execute: vi.fn(acquireRecipient),
       insert: () => ({
-        values: () => ({ onConflictDoUpdate: async () => undefined }),
+        values: () => ({
+          onConflictDoNothing: () => ({
+            returning: async () => [{ id: "consent-event-1" }],
+          }),
+          onConflictDoUpdate: async () => undefined,
+        }),
       }),
       update: () => ({
         set: () => ({
@@ -457,7 +462,14 @@ describe("sendSms", () => {
           practiceId: PRACTICE_ID,
           phone: "+15555550199",
           reason: "manual",
-        }
+          evidence: {
+            source: "staff_manual_revoke:v1",
+            actorType: "staff",
+            actorUserId: "00000000-0000-0000-0000-000000000001",
+            actorName: "Test User",
+            eventKey: "staff:test-race",
+          },
+        },
       );
       state.consent = false;
       state.suppressed = true;
@@ -496,7 +508,7 @@ describe("sendSms", () => {
           for: async () => result,
           then: (
             resolve: (value: unknown[]) => unknown,
-            reject?: (reason: unknown) => unknown
+            reject?: (reason: unknown) => unknown,
           ) => Promise.resolve(result).then(resolve, reject),
         };
         return builder;
@@ -508,15 +520,15 @@ describe("sendSms", () => {
           fn(
             hostedDispatchDb([
               [{ tier: "cloud", billingStatus: "active", trialEndsAt: null }],
-            ])
-          )
+            ]),
+          ),
       )
       .mockImplementationOnce(
         async (_db: unknown, fn: (tx: unknown) => unknown) => {
           const result = await fn(sendTx);
           releaseRecipient();
           return result;
-        }
+        },
       );
 
     const sendPromise = sendSms({
@@ -540,7 +552,7 @@ describe("sendSms", () => {
 
   it("requires an active practice for hosted billing entitlement checks", () => {
     expect(smsSource).toMatch(
-      /where\(\s*and\(\s*eq\(practices\.id, options\.practiceId!\),\s*isNull\(practices\.deletedAt\)\s*\)\s*\)/s
+      /where\(\s*and\(\s*eq\(practices\.id, options\.practiceId!\),\s*isNull\(practices\.deletedAt\)\s*\)\s*\)/s,
     );
     expect(smsSource).toContain("if (!practice)");
     expect(smsSource).toContain("Practice not found");
@@ -551,7 +563,7 @@ describe("sendSms", () => {
   it("meters successful real provider sends for hosted usage billing", async () => {
     mocks.isSuppressed.mockResolvedValue(false);
     mocks.resolveMessagingTransport.mockResolvedValue(
-      transport({ from: "+15555550100" })
+      transport({ from: "+15555550100" }),
     );
     mocks.providerSend.mockResolvedValue({ success: true, id: "sms-1" });
 
@@ -560,7 +572,7 @@ describe("sendSms", () => {
         to: "+15555550199",
         body: "Reminder",
         practiceId: "00000000-0000-0000-0000-0000000000aa",
-      })
+      }),
     ).resolves.toEqual({ success: true, sid: "sms-1", error: undefined });
 
     expect(mocks.recordUsage).toHaveBeenCalledWith({
@@ -572,7 +584,7 @@ describe("sendSms", () => {
   it("normalizes recipients before suppression checks and provider sends", async () => {
     mocks.isSuppressed.mockResolvedValue(false);
     mocks.resolveMessagingTransport.mockResolvedValue(
-      transport({ from: "+15555550100" })
+      transport({ from: "+15555550100" }),
     );
     mocks.providerSend.mockResolvedValue({ success: true, id: "sms-1" });
 
@@ -581,12 +593,12 @@ describe("sendSms", () => {
         to: " (555) 555-0199 ",
         body: "Reminder",
         practiceId: "00000000-0000-0000-0000-0000000000aa",
-      })
+      }),
     ).resolves.toEqual({ success: true, sid: "sms-1", error: undefined });
 
     expect(mocks.isSuppressed).toHaveBeenCalledWith(
       "00000000-0000-0000-0000-0000000000aa",
-      "+15555550199"
+      "+15555550199",
     );
     expect(mocks.providerSend).toHaveBeenCalledWith({
       to: "+15555550199",
@@ -601,7 +613,7 @@ describe("sendSms", () => {
         to: "12345",
         body: "Reminder",
         practiceId: "00000000-0000-0000-0000-0000000000aa",
-      })
+      }),
     ).resolves.toEqual({
       success: false,
       error:
@@ -618,7 +630,7 @@ describe("sendSms", () => {
     const usage = deferred();
     mocks.isSuppressed.mockResolvedValue(false);
     mocks.resolveMessagingTransport.mockResolvedValue(
-      transport({ from: "+15555550100" })
+      transport({ from: "+15555550100" }),
     );
     mocks.providerSend.mockResolvedValue({ success: true, id: "sms-1" });
     mocks.recordUsage.mockReturnValueOnce(usage.promise);
@@ -647,7 +659,7 @@ describe("sendSms", () => {
   it("keeps provider message ids on appointment reminder helper results", async () => {
     mocks.isSuppressed.mockResolvedValue(false);
     mocks.resolveMessagingTransport.mockResolvedValue(
-      transport({ from: "+15555550100" })
+      transport({ from: "+15555550100" }),
     );
     mocks.providerSend.mockResolvedValue({
       success: true,
@@ -661,7 +673,7 @@ describe("sendSms", () => {
         appointmentDate: "July 2",
         appointmentTime: "9:00 AM",
         practiceName: "Neighborhood Veterinary",
-      })
+      }),
     ).resolves.toEqual({
       success: true,
       sid: "sms-reminder-1",
@@ -672,7 +684,7 @@ describe("sendSms", () => {
   it("keeps provider message ids on vaccination reminder helper results", async () => {
     mocks.isSuppressed.mockResolvedValue(false);
     mocks.resolveMessagingTransport.mockResolvedValue(
-      transport({ from: "+15555550100" })
+      transport({ from: "+15555550100" }),
     );
     mocks.providerSend.mockResolvedValue({ success: true, id: "sms-vax-1" });
 
@@ -682,7 +694,7 @@ describe("sendSms", () => {
         patientName: "Miso",
         vaccineName: "Rabies",
         practiceName: "Neighborhood Veterinary",
-      })
+      }),
     ).resolves.toEqual({
       success: true,
       sid: "sms-vax-1",
@@ -693,7 +705,7 @@ describe("sendSms", () => {
   it("does not meter failed provider sends", async () => {
     mocks.isSuppressed.mockResolvedValue(false);
     mocks.resolveMessagingTransport.mockResolvedValue(
-      transport({ from: "+15555550100" })
+      transport({ from: "+15555550100" }),
     );
     mocks.providerSend.mockResolvedValue({
       success: false,
@@ -705,7 +717,7 @@ describe("sendSms", () => {
         to: "+15555550199",
         body: "Reminder",
         practiceId: "00000000-0000-0000-0000-0000000000aa",
-      })
+      }),
     ).resolves.toEqual({
       success: false,
       sid: undefined,
@@ -730,7 +742,7 @@ describe("sendSms", () => {
         to: "+15555550199",
         body: "Reminder",
         practiceId: "00000000-0000-0000-0000-0000000000aa",
-      })
+      }),
     ).resolves.toEqual({
       success: true,
       sid: "console-1",
@@ -757,7 +769,7 @@ describe("sendSms", () => {
         practiceId: PRACTICE_ID,
         locationId: LOCATION_ID,
         clientId: CLIENT_ID,
-      })
+      }),
     ).resolves.toEqual({
       success: false,
       error:
@@ -790,7 +802,7 @@ describe("sendSms", () => {
         to: "+15555550199",
         body: "Reminder",
         practiceId: "00000000-0000-0000-0000-0000000000aa",
-      })
+      }),
     ).resolves.toEqual({
       success: true,
       sid: "console-1",
@@ -818,7 +830,7 @@ describe("sendSms", () => {
               }),
             }),
           }),
-        })
+        }),
     );
 
     await expect(
@@ -828,7 +840,7 @@ describe("sendSms", () => {
         practiceId: PRACTICE_ID,
         locationId: LOCATION_ID,
         clientId: CLIENT_ID,
-      })
+      }),
     ).resolves.toEqual({
       success: false,
       error: "Practice not found",
@@ -851,7 +863,7 @@ describe("sendSms", () => {
         body: "Reminder",
         practiceId: "00000000-0000-0000-0000-0000000000aa",
         locationId: "00000000-0000-0000-0000-000000000002",
-      })
+      }),
     ).resolves.toEqual({
       success: false,
       error: "No active texting sender is configured for this location.",
@@ -874,8 +886,8 @@ describe("sendSms", () => {
           from: "+15555550122",
         },
         "twilio",
-        twilioSend
-      )
+        twilioSend,
+      ),
     );
 
     await expect(
@@ -884,7 +896,7 @@ describe("sendSms", () => {
         body: "Location-bound message",
         practiceId: "00000000-0000-0000-0000-0000000000aa",
         locationId: "00000000-0000-0000-0000-000000000002",
-      })
+      }),
     ).resolves.toEqual({ success: true, sid: "SM-location", error: undefined });
 
     expect(mocks.getMessagingProvider).not.toHaveBeenCalled();

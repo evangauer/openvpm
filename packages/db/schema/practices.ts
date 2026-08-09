@@ -56,22 +56,22 @@ export const practices = pgTable(
     billingTrialIdx: index("practices_billing_trial_idx").on(
       table.billingStatus,
       table.trialEndsAt,
-      table.deletedAt
+      table.deletedAt,
     ),
     stripeCustomerIdx: index("practices_stripe_customer_idx").on(
       table.stripeCustomerId,
-      table.deletedAt
+      table.deletedAt,
     ),
     stripeSubscriptionIdx: index("practices_stripe_subscription_idx").on(
       table.stripeSubscriptionId,
-      table.deletedAt
+      table.deletedAt,
     ),
     // Unique token lookup for the unauthenticated ICS feed route. Postgres
     // treats NULLs as distinct, so practices without a feed are unaffected.
     calendarFeedTokenUq: uniqueIndex("practices_calendar_feed_token_uq").on(
-      table.calendarFeedToken
+      table.calendarFeedToken,
     ),
-  })
+  }),
 );
 
 export const locations = pgTable(
@@ -87,15 +87,19 @@ export const locations = pgTable(
     isPrimary: boolean("is_primary").notNull().default(false),
   },
   (table) => ({
+    practiceIdUq: uniqueIndex("locations_practice_id_uq").on(
+      table.practiceId,
+      table.id,
+    ),
     practiceIdx: index("locations_practice_idx").on(
       table.practiceId,
-      table.deletedAt
+      table.deletedAt,
     ),
     primaryIdx: index("locations_primary_idx").on(
       table.practiceId,
-      table.isPrimary
+      table.isPrimary,
     ),
-  })
+  }),
 );
 
 export const practicesRelations = relations(practices, ({ many }) => ({

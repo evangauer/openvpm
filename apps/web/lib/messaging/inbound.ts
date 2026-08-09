@@ -7,15 +7,19 @@ import {
   locationMessaging,
   locations,
   practices,
+  smsSuppressions,
 } from "@openpims/db";
 import { withSystem, withTenant } from "@/lib/tenant-db";
 import { normalizeE164 } from "./phone";
 import {
-  isSuppressed,
-  removeSuppression,
+  acquireSmsRecipientLockInTransaction,
   revokeSmsConsentByPhone,
 } from "./suppression";
 import { inboundSmsOptInEvidence, SMS_INBOUND_OPT_IN } from "./consent";
+import {
+  appendSmsConsentEventInTransaction,
+  inboundSmsConsentEventKey,
+} from "./consent-events";
 import { latestAssignedToForClient } from "@/lib/communications/assignment";
 
 export type InboundSmsProvider = "telnyx" | "twilio";
@@ -75,7 +79,7 @@ export function classifyInboundSms(text: string): InboundSmsClassification {
 
 export function inboundSmsDedupeKey(
   provider: InboundSmsProvider,
-  providerMessageId: string | null
+  providerMessageId: string | null,
 ): string | undefined {
   if (!providerMessageId) return undefined;
   const prefix = `${provider}:inbound:`;
@@ -100,13 +104,13 @@ function normalizedClientPhoneCondition(e164: string): SQL | null {
       : fullDigits;
   return or(
     sql`regexp_replace(${clients.phone}, '\D', '', 'g') = ${fullDigits}`,
-    sql`regexp_replace(${clients.phone}, '\D', '', 'g') = ${nationalDigits}`
+    sql`regexp_replace(${clients.phone}, '\D', '', 'g') = ${nationalDigits}`,
   )!;
 }
 
 async function findMessagingLocationMatching(
   provider: InboundSmsProvider,
-  matchCondition: SQL
+  matchCondition: SQL,
 ): Promise<{ practiceId: string; locationId: string } | null> {
   const matches = await withSystem(db, (tx) =>
     tx
@@ -120,15 +124,15 @@ async function findMessagingLocationMatching(
         and(
           eq(locations.id, locationMessaging.locationId),
           eq(locations.practiceId, locationMessaging.practiceId),
-          isNull(locations.deletedAt)
-        )
+          isNull(locations.deletedAt),
+        ),
       )
       .innerJoin(
         practices,
         and(
           eq(practices.id, locationMessaging.practiceId),
-          isNull(practices.deletedAt)
-        )
+          isNull(practices.deletedAt),
+        ),
       )
       .where(
         and(
@@ -136,23 +140,23 @@ async function findMessagingLocationMatching(
           eq(locationMessaging.provider, provider),
           isNull(locationMessaging.deletedAt),
           eq(locations.practiceId, locationMessaging.practiceId),
-          isNull(locations.deletedAt)
-        )
+          isNull(locations.deletedAt),
+        ),
       )
-      .limit(2)
+      .limit(2),
   );
   return matches.length === 1 ? (matches[0] ?? null) : null;
 }
 
 export async function findMessagingLocationBySender(
   senderE164: string,
-  provider: InboundSmsProvider
+  provider: InboundSmsProvider,
 ): Promise<{ practiceId: string; locationId: string } | null> {
   const sender = normalizeE164(senderE164);
   if (!sender) return null;
   return findMessagingLocationMatching(
     provider,
-    sql`trim(${locationMessaging.senderE164}) = ${sender}`
+    sql`trim(${locationMessaging.senderE164}) = ${sender}`,
   );
 }
 
@@ -167,7 +171,7 @@ export async function findMessagingLocationForWebhook(opts: {
   if (sender) {
     const loc = await findMessagingLocationMatching(
       opts.provider,
-      sql`trim(${locationMessaging.senderE164}) = ${sender}`
+      sql`trim(${locationMessaging.senderE164}) = ${sender}`,
     );
     if (loc) return loc;
   }
@@ -175,14 +179,14 @@ export async function findMessagingLocationForWebhook(opts: {
   if (!messagingProfileId) return null;
   return findMessagingLocationMatching(
     opts.provider,
-    sql`trim(${locationMessaging.messagingProfileId}) = ${messagingProfileId}`
+    sql`trim(${locationMessaging.messagingProfileId}) = ${messagingProfileId}`,
   );
 }
 
 /** Best-effort: find the only active client in the practice matching this phone. */
 export async function findClientIdByPhone(
   practiceId: string,
-  e164: string
+  e164: string,
 ): Promise<string | null> {
   const phoneCondition = normalizedClientPhoneCondition(e164);
   if (!phoneCondition) return null;
@@ -194,71 +198,128 @@ export async function findClientIdByPhone(
         and(
           eq(clients.practiceId, practiceId),
           isNull(clients.deletedAt),
-          phoneCondition
-        )
+          phoneCondition,
+        ),
       )
-      .limit(2)
+      .limit(2),
   );
   return matches.length === 1 ? (matches[0]?.id ?? null) : null;
 }
 
-/** Flip a client's SMS consent flag after carrier opt-out / opt-in callbacks. */
-export async function setClientSmsConsentByPhone(
-  practiceId: string,
-  e164: string,
-  consent: boolean,
-  matchedClientId?: string | null,
-  optInKeyword?: string
-): Promise<void> {
-  const phoneCondition = normalizedClientPhoneCondition(e164);
-  if (!phoneCondition) return;
+async function applyInboundSmsOptIn(opts: {
+  practiceId: string;
+  locationId: string;
+  provider: InboundSmsProvider;
+  providerMessageId: string;
+  phone: string;
+  keyword: string;
+}): Promise<{ clientId: string | null; remainsSuppressed: boolean }> {
+  const destination = normalizeE164(opts.phone);
+  const phoneCondition = normalizedClientPhoneCondition(opts.phone);
+  if (!destination || !phoneCondition) {
+    return { clientId: null, remainsSuppressed: true };
+  }
 
-  if (consent) {
-    const clientId =
-      matchedClientId === undefined
-        ? await findClientIdByPhone(practiceId, e164)
-        : matchedClientId;
-    if (!clientId) return;
+  return withSystem(db, async (tx) => {
+    await acquireSmsRecipientLockInTransaction(
+      tx,
+      opts.practiceId,
+      destination,
+    );
 
-    await withSystem(db, (tx) =>
-      tx
+    const matches = await tx
+      .select({ id: clients.id })
+      .from(clients)
+      .where(
+        and(
+          eq(clients.practiceId, opts.practiceId),
+          isNull(clients.deletedAt),
+          phoneCondition,
+        ),
+      )
+      .limit(2)
+      .for("update");
+    const clientId = matches.length === 1 ? (matches[0]?.id ?? null) : null;
+
+    const [suppression] = await tx
+      .select({ reason: smsSuppressions.reason })
+      .from(smsSuppressions)
+      .where(
+        and(
+          eq(smsSuppressions.practiceId, opts.practiceId),
+          eq(smsSuppressions.phone, destination),
+        ),
+      )
+      .limit(1);
+    if (suppression && suppression.reason !== "stop") {
+      return { clientId, remainsSuppressed: true };
+    }
+
+    const disclosure = inboundSmsOptInEvidence(opts.keyword);
+    const eventInserted = await appendSmsConsentEventInTransaction(tx, {
+      practiceId: opts.practiceId,
+      clientId,
+      locationId: opts.locationId,
+      destinationE164: destination,
+      action: "granted",
+      source: SMS_INBOUND_OPT_IN.source,
+      disclosureVersion: SMS_INBOUND_OPT_IN.version,
+      disclosure,
+      detail: `Inbound opt-in keyword: "${opts.keyword}"`,
+      actorType: "client",
+      provider: opts.provider,
+      providerMessageId: opts.providerMessageId,
+      eventKey: inboundSmsConsentEventKey(
+        opts.provider,
+        opts.providerMessageId,
+        "granted",
+      ),
+    });
+
+    if (!eventInserted) {
+      // A replay must report the state that is still current. In particular,
+      // START(event A) -> STOP(event B) -> replay START(A) must not claim the
+      // later STOP was removed when the idempotent event insert was skipped.
+      return { clientId, remainsSuppressed: Boolean(suppression) };
+    }
+
+    await tx
+      .delete(smsSuppressions)
+      .where(
+        and(
+          eq(smsSuppressions.practiceId, opts.practiceId),
+          eq(smsSuppressions.phone, destination),
+          eq(smsSuppressions.reason, "stop"),
+        ),
+      );
+
+    if (clientId) {
+      const updated = await tx
         .update(clients)
         .set({
           smsConsent: true,
           smsConsentAt: new Date(),
           smsConsentSource: SMS_INBOUND_OPT_IN.source,
-          smsConsentDisclosure: inboundSmsOptInEvidence(
-            optInKeyword ?? "START"
-          ),
+          smsConsentDisclosure: disclosure,
         })
         .where(
           and(
             eq(clients.id, clientId),
-            eq(clients.practiceId, practiceId),
-            isNull(clients.deletedAt)
-          )
+            eq(clients.practiceId, opts.practiceId),
+            isNull(clients.deletedAt),
+            phoneCondition,
+          ),
         )
-    );
-    return;
-  }
+        .returning({ id: clients.id });
+      if (updated.length !== 1) {
+        throw new Error(
+          "Inbound SMS opt-in client changed before consent could be projected",
+        );
+      }
+    }
 
-  await withSystem(db, (tx) =>
-    tx
-      .update(clients)
-      .set({
-        smsConsent: false,
-        smsConsentAt: null,
-        smsConsentSource: null,
-        smsConsentDisclosure: null,
-      })
-      .where(
-        and(
-          eq(clients.practiceId, practiceId),
-          isNull(clients.deletedAt),
-          phoneCondition
-        )
-      )
-  );
+    return { clientId, remainsSuppressed: false };
+  });
 }
 
 async function logInboundSmsCommunication(opts: {
@@ -287,12 +348,12 @@ async function logInboundSmsCommunication(opts: {
           ? {
               assignedTo: latestAssignedToForClient(
                 opts.practiceId,
-                opts.clientId
+                opts.clientId,
               ),
             }
           : {}),
       })
-      .onConflictDoNothing({ target: communications.dedupeKey })
+      .onConflictDoNothing({ target: communications.dedupeKey }),
   );
 }
 
@@ -320,15 +381,38 @@ export async function handleInboundSmsReply(opts: {
 
   const classification = classifyInboundSms(text);
   const keyword = normalizedKeyword(text);
-  const clientId = await findClientIdByPhone(loc.practiceId, fromPhone);
   if (classification === "stop") {
+    const providerMessageId = opts.providerMessageId;
+    if (!providerMessageId) {
+      // Consent state changes require a durable provider identity. Without one,
+      // a replay cannot be distinguished from a later legitimate decision.
+      return { ok: true, action: "ignored" };
+    }
     await revokeSmsConsentByPhone({
       practiceId: loc.practiceId,
       locationId: loc.locationId,
       phone: fromPhone,
       reason: "stop",
       detail: `Inbound opt-out: "${text}"`,
+      evidence: {
+        // STOP is a destination-wide instruction. Do not bind immutable
+        // evidence to a client selected before the recipient lock: the phone
+        // can move concurrently, and duplicate clients are all revoked.
+        clientId: null,
+        locationId: loc.locationId,
+        source: "inbound_opt_out:v1",
+        detail: `Inbound opt-out: "${text}"`,
+        actorType: "client",
+        provider: opts.provider,
+        providerMessageId,
+        eventKey: inboundSmsConsentEventKey(
+          opts.provider,
+          providerMessageId,
+          "revoked",
+        ),
+      },
     });
+    const clientId = await findClientIdByPhone(loc.practiceId, fromPhone);
     await logInboundSmsCommunication({
       practiceId: loc.practiceId,
       clientId,
@@ -342,22 +426,25 @@ export async function handleInboundSmsReply(opts: {
   }
 
   if (classification === "start") {
-    await removeSuppression(loc.practiceId, fromPhone);
-    // START can remove only a carrier STOP. A manual, complaint, or bounce
-    // suppression remains authoritative and must not silently restore consent.
-    const remainsSuppressed = await isSuppressed(loc.practiceId, fromPhone);
-    if (!remainsSuppressed) {
-      await setClientSmsConsentByPhone(
-        loc.practiceId,
-        fromPhone,
-        true,
-        clientId,
-        keyword
-      );
+    const providerMessageId = opts.providerMessageId;
+    if (!providerMessageId) {
+      return { ok: true, action: "ignored" };
     }
+    // START can remove only a carrier STOP. The event, suppression removal,
+    // and (only for a unique client match) current projection change commit
+    // together. Manual, complaint, and bounce suppressions remain authoritative.
+    const optIn = await applyInboundSmsOptIn({
+      practiceId: loc.practiceId,
+      locationId: loc.locationId,
+      provider: opts.provider,
+      providerMessageId,
+      phone: fromPhone,
+      keyword,
+    });
+    const remainsSuppressed = optIn.remainsSuppressed;
     await logInboundSmsCommunication({
       practiceId: loc.practiceId,
-      clientId,
+      clientId: optIn.clientId,
       provider: opts.provider,
       fromPhone,
       text,
@@ -371,6 +458,8 @@ export async function handleInboundSmsReply(opts: {
       action: remainsSuppressed ? "suppressed" : "unsuppressed",
     };
   }
+
+  const clientId = await findClientIdByPhone(loc.practiceId, fromPhone);
 
   if (classification === "help") {
     // Carriers commonly generate their own HELP response. Log one staff-visible

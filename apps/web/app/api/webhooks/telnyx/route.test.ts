@@ -4,19 +4,30 @@ import { fileURLToPath } from "node:url";
 
 const INBOUND_SOURCE = readFileSync(
   fileURLToPath(
-    new URL("../../../../lib/messaging/inbound.ts", import.meta.url)
+    new URL("../../../../lib/messaging/inbound.ts", import.meta.url),
   ),
-  "utf8"
+  "utf8",
 );
 const ROUTE_SOURCE = readFileSync(
   fileURLToPath(new URL("./route.ts", import.meta.url)),
-  "utf8"
+  "utf8",
 );
 
 const mocks = vi.hoisted(() => {
   const selectResults: unknown[][] = [];
   const updateResults: unknown[][] = [];
-  const selectLimit = vi.fn(async () => selectResults.shift() ?? []);
+  const insertResults: unknown[][] = [];
+  const selectLimit = vi.fn(() => {
+    const result = selectResults.shift() ?? [];
+    const terminal = {
+      for: vi.fn(() => terminal),
+      then: (
+        resolve: (value: unknown[]) => unknown,
+        reject?: (error: unknown) => unknown,
+      ) => Promise.resolve(result).then(resolve, reject),
+    };
+    return terminal;
+  });
   const selectWhere = vi.fn((_condition: unknown) => ({ limit: selectLimit }));
   const selectInnerJoin = vi.fn(() => ({
     innerJoin: selectInnerJoin,
@@ -31,7 +42,7 @@ const mocks = vi.hoisted(() => {
   const updateReturning = vi.fn(async () =>
     updateResults.length > 0
       ? updateResults.shift()
-      : [{ id: "00000000-0000-0000-0000-000000000009" }]
+      : [{ id: "00000000-0000-0000-0000-000000000009" }],
   );
   const updateWhere = vi.fn((_condition: unknown) => ({
     returning: updateReturning,
@@ -39,7 +50,14 @@ const mocks = vi.hoisted(() => {
   const updateSet = vi.fn(() => ({ where: updateWhere }));
   const update = vi.fn(() => ({ set: updateSet }));
 
-  const insertConflict = vi.fn(async (_config?: unknown) => undefined);
+  const insertReturning = vi.fn(async () =>
+    insertResults.length > 0
+      ? insertResults.shift()
+      : [{ id: "00000000-0000-0000-0000-0000000000ee" }],
+  );
+  const insertConflict = vi.fn((_config?: unknown) => ({
+    returning: insertReturning,
+  }));
   const insertValues = vi.fn((_values: unknown) => ({
     onConflictDoNothing: insertConflict,
     onConflictDoUpdate: insertConflict,
@@ -61,10 +79,12 @@ const mocks = vi.hoisted(() => {
     db,
     selectResults,
     updateResults,
+    insertResults,
     selectLimit,
     selectWhere,
     selectInnerJoin,
     insertConflict,
+    insertReturning,
     insertValues,
     deleteWhere,
     updateReturning,
@@ -72,11 +92,11 @@ const mocks = vi.hoisted(() => {
     updateWhere,
     verifyTelnyxSignature: vi.fn(() => true),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
-      fn(db)
+      fn(db),
     ),
     withTenant: vi.fn(
       async (_db: unknown, _practiceId: string, fn: (tx: unknown) => unknown) =>
-        fn(db)
+        fn(db),
     ),
   };
 });
@@ -104,7 +124,7 @@ const { MESSAGING_WEBHOOK_BODY_MAX_BYTES } =
 function sqlIncludesColumnParamPair(
   value: unknown,
   columnName: string,
-  paramValue: unknown
+  paramValue: unknown,
 ): boolean {
   if (!value || typeof value !== "object") {
     return false;
@@ -119,7 +139,7 @@ function sqlIncludesColumnParamPair(
     (item) =>
       !!item &&
       typeof item === "object" &&
-      (item as { name?: unknown }).name === columnName
+      (item as { name?: unknown }).name === columnName,
   );
   const hasParam = chunk.queryChunks.some((item) => {
     if (!item || typeof item !== "object") {
@@ -134,7 +154,7 @@ function sqlIncludesColumnParamPair(
   return (
     (hasColumn && hasParam) ||
     chunk.queryChunks.some((item) =>
-      sqlIncludesColumnParamPair(item, columnName, paramValue)
+      sqlIncludesColumnParamPair(item, columnName, paramValue),
     )
   );
 }
@@ -142,7 +162,7 @@ function sqlIncludesColumnParamPair(
 function sqlIncludesColumnName(
   value: unknown,
   columnName: string,
-  seen = new WeakSet<object>()
+  seen = new WeakSet<object>(),
 ): boolean {
   if (!value || typeof value !== "object") {
     return false;
@@ -154,18 +174,18 @@ function sqlIncludesColumnName(
   if (candidate.name === columnName) return true;
   if (Array.isArray(candidate.queryChunks)) {
     return candidate.queryChunks.some((item) =>
-      sqlIncludesColumnName(item, columnName, seen)
+      sqlIncludesColumnName(item, columnName, seen),
     );
   }
   return Object.values(value as Record<string, unknown>).some((item) =>
-    sqlIncludesColumnName(item, columnName, seen)
+    sqlIncludesColumnName(item, columnName, seen),
   );
 }
 
 function sqlIncludesValue(
   value: unknown,
   needle: unknown,
-  seen = new WeakSet<object>()
+  seen = new WeakSet<object>(),
 ): boolean {
   if (Object.is(value, needle)) return true;
   if (!value || typeof value !== "object") {
@@ -183,11 +203,11 @@ function sqlIncludesValue(
   }
   if (Array.isArray(candidate.queryChunks)) {
     return candidate.queryChunks.some((item) =>
-      sqlIncludesValue(item, needle, seen)
+      sqlIncludesValue(item, needle, seen),
     );
   }
   return Object.values(value as Record<string, unknown>).some((item) =>
-    sqlIncludesValue(item, needle, seen)
+    sqlIncludesValue(item, needle, seen),
   );
 }
 
@@ -230,7 +250,7 @@ describe("Telnyx webhook", () => {
           "telnyx-timestamp": "123",
         },
         body,
-      })
+      }),
     );
 
     expect(response.status).toBe(200);
@@ -240,13 +260,13 @@ describe("Telnyx webhook", () => {
         status: "action_required",
         providerCampaignStatus: "REJECTED",
         lastError: "Privacy policy could not be verified",
-      })
+      }),
     );
     expect(mocks.updateSet).toHaveBeenCalledWith(
       expect.objectContaining({
         registrationStatus: "action_required",
         enabled: false,
-      })
+      }),
     );
     expect(mocks.withTenant).not.toHaveBeenCalled();
   });
@@ -261,7 +281,7 @@ describe("Telnyx webhook", () => {
           "telnyx-timestamp": "123",
         },
         body: "{}",
-      })
+      }),
     );
 
     expect(response.status).toBe(413);
@@ -284,7 +304,7 @@ describe("Telnyx webhook", () => {
           "telnyx-timestamp": "123",
         },
         body: "x".repeat(MESSAGING_WEBHOOK_BODY_MAX_BYTES + 1),
-      })
+      }),
     );
 
     expect(response.status).toBe(413);
@@ -324,7 +344,7 @@ describe("Telnyx webhook", () => {
           "telnyx-timestamp": "123",
         },
         body,
-      })
+      }),
     );
 
     expect(response.status).toBe(401);
@@ -363,28 +383,28 @@ describe("Telnyx webhook", () => {
           "telnyx-timestamp": "123",
         },
         body,
-      })
+      }),
     );
 
     await expect(response.json()).resolves.toEqual({ ok: true });
     expect(mocks.verifyTelnyxSignature).toHaveBeenCalledWith(
       expect.objectContaining({
         publicKeyB64: "test-public-key",
-      })
+      }),
     );
     expect(mocks.withTenant).toHaveBeenCalledWith(
       mocks.db,
       "00000000-0000-0000-0000-0000000000aa",
-      expect.any(Function)
+      expect.any(Function),
     );
     expect(mocks.updateSet).toHaveBeenCalledWith({ status: "delivered" });
     const condition = mocks.updateWhere.mock.calls[0]?.[0];
     expect(sqlIncludesColumnParamPair(condition, "channel", "sms")).toBe(true);
     expect(sqlIncludesColumnParamPair(condition, "direction", "outbound")).toBe(
-      true
+      true,
     );
     expect(sqlIncludesColumnParamPair(condition, "status", "pending")).toBe(
-      true
+      true,
     );
     expect(sqlIncludesColumnParamPair(condition, "status", "sent")).toBe(true);
     expect(sqlIncludesColumnName(condition, "deleted_at")).toBe(true);
@@ -417,19 +437,19 @@ describe("Telnyx webhook", () => {
           "telnyx-timestamp": "123",
         },
         body,
-      })
+      }),
     );
 
     await expect(response.json()).resolves.toEqual({ ok: true });
     expect(mocks.withTenant).toHaveBeenCalledWith(
       mocks.db,
       "00000000-0000-0000-0000-0000000000aa",
-      expect.any(Function)
+      expect.any(Function),
     );
     expect(mocks.updateSet).toHaveBeenCalledWith({ status: "delivered" });
     const senderCondition = mocks.selectWhere.mock.calls[0]?.[0];
     expect(sqlIncludesColumnName(senderCondition, "messaging_profile_id")).toBe(
-      true
+      true,
     );
     expect(sqlIncludesValue(senderCondition, "profile-1")).toBe(true);
   });
@@ -461,14 +481,14 @@ describe("Telnyx webhook", () => {
           "telnyx-timestamp": "123",
         },
         body,
-      })
+      }),
     );
 
     await expect(response.json()).resolves.toEqual({ ok: true });
     expect(mocks.updateSet).toHaveBeenCalledWith({ status: "sent" });
     const condition = mocks.updateWhere.mock.calls[0]?.[0];
     expect(sqlIncludesColumnParamPair(condition, "status", "pending")).toBe(
-      true
+      true,
     );
     expect(sqlIncludesColumnParamPair(condition, "status", "sent")).toBe(false);
   });
@@ -482,7 +502,7 @@ describe("Telnyx webhook", () => {
           locationId: "00000000-0000-0000-0000-000000000002",
         },
       ],
-      [{ id: "00000000-0000-0000-0000-000000000003" }]
+      [{ id: "00000000-0000-0000-0000-000000000003" }],
     );
     const body = JSON.stringify({
       data: {
@@ -504,7 +524,7 @@ describe("Telnyx webhook", () => {
           "telnyx-timestamp": "123",
         },
         body,
-      })
+      }),
     );
 
     await expect(response.json()).resolves.toEqual({
@@ -515,7 +535,7 @@ describe("Telnyx webhook", () => {
     expect(mocks.withTenant).toHaveBeenCalledWith(
       mocks.db,
       "00000000-0000-0000-0000-0000000000aa",
-      expect.any(Function)
+      expect.any(Function),
     );
     expect(mocks.insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -526,29 +546,29 @@ describe("Telnyx webhook", () => {
         content: "Running five minutes late",
         providerMessageId: "msg-inbound",
         dedupeKey: "telnyx:inbound:msg-inbound",
-      })
+      }),
     );
     const inserted = mocks.insertValues.mock.calls.find(
       ([value]) =>
         (value as { providerMessageId?: string }).providerMessageId ===
-        "msg-inbound"
+        "msg-inbound",
     )?.[0] as { assignedTo?: unknown };
     expect(inserted.assignedTo).toBeTruthy();
     expect(sqlIncludesColumnName(inserted.assignedTo, "assigned_to")).toBe(
-      true
+      true,
     );
     expect(sqlIncludesColumnName(inserted.assignedTo, "client_id")).toBe(true);
     expect(
       sqlIncludesValue(
         inserted.assignedTo,
-        "00000000-0000-0000-0000-0000000000aa"
-      )
+        "00000000-0000-0000-0000-0000000000aa",
+      ),
     ).toBe(true);
     expect(
       sqlIncludesValue(
         inserted.assignedTo,
-        "00000000-0000-0000-0000-000000000003"
-      )
+        "00000000-0000-0000-0000-000000000003",
+      ),
     ).toBe(true);
     expect(mocks.insertConflict).toHaveBeenCalledWith({
       target: communications.dedupeKey,
@@ -565,7 +585,7 @@ describe("Telnyx webhook", () => {
           locationId: "00000000-0000-0000-0000-000000000002",
         },
       ],
-      [{ id: "00000000-0000-0000-0000-000000000003" }]
+      [{ id: "00000000-0000-0000-0000-000000000003" }],
     );
     const body = JSON.stringify({
       data: {
@@ -588,7 +608,7 @@ describe("Telnyx webhook", () => {
           "telnyx-timestamp": "123",
         },
         body,
-      })
+      }),
     );
 
     await expect(response.json()).resolves.toEqual({
@@ -598,7 +618,7 @@ describe("Telnyx webhook", () => {
     expect(mocks.withSystem).toHaveBeenCalledTimes(3);
     const profileCondition = mocks.selectWhere.mock.calls[1]?.[0];
     expect(
-      sqlIncludesColumnName(profileCondition, "messaging_profile_id")
+      sqlIncludesColumnName(profileCondition, "messaging_profile_id"),
     ).toBe(true);
     expect(sqlIncludesValue(profileCondition, "profile-1")).toBe(true);
     expect(mocks.insertValues).toHaveBeenCalledWith(
@@ -610,7 +630,7 @@ describe("Telnyx webhook", () => {
         content: "Following up",
         providerMessageId: "msg-profile-inbound",
         dedupeKey: "telnyx:inbound:msg-profile-inbound",
-      })
+      }),
     );
   });
 
@@ -636,7 +656,7 @@ describe("Telnyx webhook", () => {
           "telnyx-timestamp": "123",
         },
         body,
-      })
+      }),
     );
 
     await expect(response.json()).resolves.toEqual({ ok: true });
@@ -658,7 +678,7 @@ describe("Telnyx webhook", () => {
       [
         { id: "00000000-0000-0000-0000-000000000003" },
         { id: "00000000-0000-0000-0000-000000000004" },
-      ]
+      ],
     );
     const body = JSON.stringify({
       data: {
@@ -680,7 +700,7 @@ describe("Telnyx webhook", () => {
           "telnyx-timestamp": "123",
         },
         body,
-      })
+      }),
     );
 
     await expect(response.json()).resolves.toEqual({
@@ -694,12 +714,12 @@ describe("Telnyx webhook", () => {
         content: "Can you check both pets?",
         providerMessageId: "msg-ambiguous",
         dedupeKey: "telnyx:inbound:msg-ambiguous",
-      })
+      }),
     );
     expect(mocks.insertValues).not.toHaveBeenCalledWith(
       expect.objectContaining({
         clientId: expect.any(String),
-      })
+      }),
     );
   });
 
@@ -713,7 +733,7 @@ describe("Telnyx webhook", () => {
           locationId: "00000000-0000-0000-0000-000000000002",
         },
       ],
-      [{ id: clientId }]
+      [{ id: clientId }],
     );
     const body = JSON.stringify({
       data: {
@@ -735,7 +755,7 @@ describe("Telnyx webhook", () => {
           "telnyx-timestamp": "123",
         },
         body,
-      })
+      }),
     );
 
     await expect(response.json()).resolves.toEqual({
@@ -745,11 +765,24 @@ describe("Telnyx webhook", () => {
     expect(mocks.insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
         practiceId: "00000000-0000-0000-0000-0000000000aa",
+        clientId: null,
+        locationId: "00000000-0000-0000-0000-000000000002",
+        destinationE164: "+15555550199",
+        action: "revoked",
+        source: "inbound_opt_out:v1",
+        actorType: "client",
+        provider: "telnyx",
+        providerMessageId: "msg-stop",
+      }),
+    );
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: "00000000-0000-0000-0000-0000000000aa",
         locationId: "00000000-0000-0000-0000-000000000002",
         phone: "+15555550199",
         reason: "stop",
         detail: 'Inbound opt-out: "STOP"',
-      })
+      }),
     );
     expect(mocks.updateSet).toHaveBeenCalledWith({
       smsConsent: false,
@@ -768,11 +801,41 @@ describe("Telnyx webhook", () => {
         status: "delivered",
         providerMessageId: "msg-stop",
         dedupeKey: "telnyx:inbound:msg-stop",
-      })
+      }),
     );
     expect(mocks.insertConflict).toHaveBeenCalledWith({
       target: communications.dedupeKey,
     });
+  });
+
+  it("rejects inbound consent messages without a durable provider id", async () => {
+    process.env.TELNYX_PUBLIC_KEY = "test-public-key";
+    const response = await POST(
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body: JSON.stringify({
+          data: {
+            event_type: "message.received",
+            payload: {
+              from: { phone_number: "+15555550199" },
+              to: [{ phone_number: "+15555550100" }],
+              text: "STOP",
+            },
+          },
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "missing inbound message id",
+    });
+    expect(mocks.insertValues).not.toHaveBeenCalled();
+    expect(mocks.updateSet).not.toHaveBeenCalled();
   });
 
   it("restores client SMS consent on START only when the sender phone uniquely matches a client", async () => {
@@ -785,7 +848,7 @@ describe("Telnyx webhook", () => {
           locationId: "00000000-0000-0000-0000-000000000002",
         },
       ],
-      [{ id: clientId }]
+      [{ id: clientId }],
     );
     const body = JSON.stringify({
       data: {
@@ -807,13 +870,27 @@ describe("Telnyx webhook", () => {
           "telnyx-timestamp": "123",
         },
         body,
-      })
+      }),
     );
 
     await expect(response.json()).resolves.toEqual({
       ok: true,
       action: "unsuppressed",
     });
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: "00000000-0000-0000-0000-0000000000aa",
+        clientId,
+        locationId: "00000000-0000-0000-0000-000000000002",
+        destinationE164: "+15555550199",
+        action: "granted",
+        source: SMS_INBOUND_OPT_IN.source,
+        disclosureVersion: SMS_INBOUND_OPT_IN.version,
+        actorType: "client",
+        provider: "telnyx",
+        providerMessageId: "msg-start",
+      }),
+    );
     expect(mocks.deleteWhere).toHaveBeenCalled();
     expect(mocks.updateSet).toHaveBeenCalledWith({
       smsConsent: true,
@@ -834,11 +911,116 @@ describe("Telnyx webhook", () => {
         status: "delivered",
         providerMessageId: "msg-start",
         dedupeKey: "telnyx:inbound:msg-start",
-      })
+      }),
     );
     expect(mocks.insertConflict).toHaveBeenCalledWith({
       target: communications.dedupeKey,
     });
+  });
+
+  it("fails the START transaction when the locked client projection is not updated", async () => {
+    process.env.TELNYX_PUBLIC_KEY = "test-public-key";
+    mocks.selectResults.push(
+      [
+        {
+          practiceId: "00000000-0000-0000-0000-0000000000aa",
+          locationId: "00000000-0000-0000-0000-000000000002",
+        },
+      ],
+      [{ id: "00000000-0000-0000-0000-000000000003" }],
+      [],
+    );
+    mocks.updateResults.push([]);
+    const body = JSON.stringify({
+      data: {
+        event_type: "message.received",
+        payload: {
+          id: "msg-start-stale-client",
+          from: { phone_number: "+15555550199" },
+          to: [{ phone_number: "+15555550100" }],
+          text: "START",
+        },
+      },
+    });
+
+    await expect(
+      POST(
+        new Request("https://openvpm.test/api/webhooks/telnyx", {
+          method: "POST",
+          headers: {
+            "telnyx-signature-ed25519": "sig",
+            "telnyx-timestamp": "123",
+          },
+          body,
+        }),
+      ),
+    ).rejects.toThrow(
+      "Inbound SMS opt-in client changed before consent could be projected",
+    );
+  });
+
+  it("does not reapply consent projection or suppression changes on provider replay", async () => {
+    process.env.TELNYX_PUBLIC_KEY = "test-public-key";
+    const clientId = "00000000-0000-0000-0000-000000000003";
+    const location = [
+      {
+        practiceId: "00000000-0000-0000-0000-0000000000aa",
+        locationId: "00000000-0000-0000-0000-000000000002",
+      },
+    ];
+    mocks.selectResults.push(location, [{ id: clientId }], []);
+    mocks.insertResults.push([{ id: "00000000-0000-0000-0000-0000000000ee" }]);
+
+    const body = JSON.stringify({
+      data: {
+        event_type: "message.received",
+        payload: {
+          id: "msg-start-replay",
+          from: { phone_number: "+15555550199" },
+          to: [{ phone_number: "+15555550100" }],
+          text: "START",
+        },
+      },
+    });
+    const request = () =>
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body,
+      });
+
+    await expect((await POST(request())).json()).resolves.toEqual({
+      ok: true,
+      action: "unsuppressed",
+    });
+
+    mocks.selectResults.push(location, [{ id: clientId }], []);
+    mocks.insertResults.push([]);
+    await expect((await POST(request())).json()).resolves.toEqual({
+      ok: true,
+      action: "unsuppressed",
+    });
+
+    expect(mocks.updateSet).toHaveBeenCalledTimes(1);
+    expect(mocks.deleteWhere).toHaveBeenCalledTimes(1);
+
+    // A historical START replay must not claim success over a later STOP.
+    mocks.selectResults.push(
+      location,
+      [{ id: clientId }],
+      [{ reason: "stop" }],
+    );
+    mocks.insertResults.push([]);
+    await expect((await POST(request())).json()).resolves.toEqual({
+      ok: true,
+      action: "suppressed",
+    });
+
+    expect(mocks.updateSet).toHaveBeenCalledTimes(1);
+    expect(mocks.deleteWhere).toHaveBeenCalledTimes(1);
   });
 
   it("keeps consent off when START encounters a manual suppression", async () => {
@@ -852,7 +1034,7 @@ describe("Telnyx webhook", () => {
         },
       ],
       [{ id: clientId }],
-      [{ id: "00000000-0000-0000-0000-000000000099" }]
+      [{ id: "00000000-0000-0000-0000-000000000099" }],
     );
     const body = JSON.stringify({
       data: {
@@ -874,21 +1056,21 @@ describe("Telnyx webhook", () => {
           "telnyx-timestamp": "123",
         },
         body,
-      })
+      }),
     );
 
     await expect(response.json()).resolves.toEqual({
       ok: true,
       action: "suppressed",
     });
-    expect(mocks.deleteWhere).toHaveBeenCalled();
+    expect(mocks.deleteWhere).not.toHaveBeenCalled();
     expect(mocks.updateSet).not.toHaveBeenCalled();
     expect(mocks.insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
         clientId,
         subject: "SMS opt-in blocked for +15555550199",
         providerMessageId: "msg-start-manual-block",
-      })
+      }),
     );
   });
 
@@ -904,7 +1086,7 @@ describe("Telnyx webhook", () => {
       [
         { id: "00000000-0000-0000-0000-000000000003" },
         { id: "00000000-0000-0000-0000-000000000004" },
-      ]
+      ],
     );
     const body = JSON.stringify({
       data: {
@@ -926,7 +1108,7 @@ describe("Telnyx webhook", () => {
           "telnyx-timestamp": "123",
         },
         body,
-      })
+      }),
     );
 
     await expect(response.json()).resolves.toEqual({
@@ -943,12 +1125,12 @@ describe("Telnyx webhook", () => {
         content: "START",
         providerMessageId: "msg-start-ambiguous",
         dedupeKey: "telnyx:inbound:msg-start-ambiguous",
-      })
+      }),
     );
     expect(mocks.insertValues).not.toHaveBeenCalledWith(
       expect.objectContaining({
         clientId: expect.any(String),
-      })
+      }),
     );
   });
 
@@ -961,7 +1143,7 @@ describe("Telnyx webhook", () => {
           locationId: "00000000-0000-0000-0000-000000000002",
         },
       ],
-      []
+      [],
     );
     const longProviderId = `msg-${"x".repeat(220)}`;
     const body = JSON.stringify({
@@ -984,7 +1166,7 @@ describe("Telnyx webhook", () => {
           "telnyx-timestamp": "123",
         },
         body,
-      })
+      }),
     );
 
     await expect(response.json()).resolves.toEqual({
@@ -995,7 +1177,7 @@ describe("Telnyx webhook", () => {
       expect.objectContaining({
         providerMessageId: longProviderId,
         dedupeKey: expect.stringMatching(/^telnyx:inbound:[a-f0-9]{64}$/),
-      })
+      }),
     );
     const inserted = mocks.insertValues.mock.calls[0]?.[0] as {
       dedupeKey?: string;
@@ -1030,7 +1212,7 @@ describe("Telnyx webhook", () => {
           "telnyx-timestamp": "123",
         },
         body,
-      })
+      }),
     );
 
     await expect(response.json()).resolves.toEqual({ ok: true });
@@ -1067,7 +1249,7 @@ describe("Telnyx webhook", () => {
           "telnyx-timestamp": "123",
         },
         body,
-      })
+      }),
     );
 
     await expect(response.json()).resolves.toEqual({ ok: true });
@@ -1100,7 +1282,7 @@ describe("Telnyx webhook", () => {
           "telnyx-timestamp": "123",
         },
         body,
-      })
+      }),
     );
 
     await expect(response.json()).resolves.toEqual({ ok: true });
@@ -1111,11 +1293,21 @@ describe("Telnyx webhook", () => {
 
   it("requires active practices when resolving inbound sender locations", () => {
     const senderLookup = INBOUND_SOURCE.match(
-      /async function findMessagingLocationMatching[\s\S]+?return matches\.length === 1 \? \(?matches\[0\] \?\? null\)? : null;/
+      /async function findMessagingLocationMatching[\s\S]+?return matches\.length === 1 \? \(?matches\[0\] \?\? null\)? : null;/,
     )?.[0];
 
     expect(senderLookup).toContain("innerJoin(");
     expect(senderLookup).toContain("practices");
     expect(senderLookup).toContain("isNull(practices.deletedAt)");
+  });
+
+  it("keeps inbound START identity stable under the recipient and client locks", () => {
+    const optIn = INBOUND_SOURCE.match(
+      /async function applyInboundSmsOptIn[\s\S]+?async function logInboundSmsCommunication/,
+    )?.[0];
+
+    expect(optIn).toMatch(/\.limit\(2\)\s*\.for\("update"\)/);
+    expect(optIn).toContain(".returning({ id: clients.id })");
+    expect(optIn).toContain("updated.length !== 1");
   });
 });

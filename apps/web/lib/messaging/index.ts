@@ -19,7 +19,6 @@ export { normalizeE164 } from "./phone";
 export {
   isSuppressed,
   addSuppression,
-  removeSuppression,
   acquireSmsRecipientLockInTransaction,
   revokeSmsConsentAfterRecipientLockInTransaction,
   revokeSmsConsentByPhone,
@@ -107,8 +106,8 @@ export async function resolveMessagingTransport(opts: {
             and(
               eq(locations.id, locationMessaging.locationId),
               eq(locations.practiceId, opts.practiceId!),
-              isNull(locations.deletedAt)
-            )
+              isNull(locations.deletedAt),
+            ),
           )
           .where(
             opts.hosted
@@ -119,7 +118,7 @@ export async function resolveMessagingTransport(opts: {
                   isNull(locations.deletedAt),
                   eq(locationMessaging.enabled, true),
                   eq(locationMessaging.registrationStatus, "active"),
-                  hasNonBlankMessagingSender()
+                  hasNonBlankMessagingSender(),
                 )
               : and(
                   eq(locationMessaging.locationId, opts.locationId!),
@@ -129,10 +128,10 @@ export async function resolveMessagingTransport(opts: {
                   isNull(locations.deletedAt),
                   eq(locationMessaging.enabled, true),
                   eq(locationMessaging.registrationStatus, "active"),
-                  hasNonBlankMessagingSender()
-                )
+                  hasNonBlankMessagingSender(),
+                ),
           )
-          .limit(opts.hosted ? 2 : 1)
+          .limit(opts.hosted ? 2 : 1),
       );
       // Hosted rollout is deliberately one location per practice. More than
       // one active/enabled sender is ambiguous and must never become “first row

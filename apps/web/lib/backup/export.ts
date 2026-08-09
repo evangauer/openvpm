@@ -1,7 +1,8 @@
 import { eq, and, isNull, inArray, sql, getTableColumns } from "drizzle-orm";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Database } from "@openpims/db/client";
 import { redactSecrets } from "@/lib/audit";
+import { normalizeE164 } from "@/lib/messaging/phone";
 import {
   appointmentTypes,
   appointmentWaitlist,
@@ -40,6 +41,7 @@ import {
   recurringSeries,
   rooms,
   services,
+  smsConsentEvents,
   smsSuppressions,
   soapNotes,
   staffSchedules,
@@ -76,7 +78,8 @@ export const PRACTICE_EXPORT_SYSTEM_EXCLUSIONS = {
   rateLimitBuckets: "Transient abuse-control buckets, not clinic-owned data.",
   sessions: "Transient authentication sessions.",
   verificationTokens: "Transient authentication verification tokens.",
-  authTokens: "Expiring pre-tenant email verification and password-reset tokens.",
+  authTokens:
+    "Expiring pre-tenant email verification and password-reset tokens.",
   captureSessions:
     "Expiring QR photo-capture link tokens; restoring them would resurrect old capture URLs. The photos themselves are in the files section.",
   consentRequests:
@@ -86,11 +89,9 @@ export const PRACTICE_EXPORT_SYSTEM_EXCLUSIONS = {
 } as const;
 
 export const PRACTICE_EXPORT_SECRET_REPLACEMENTS = {
-  passwordHash:
-    "$2a$12$HNkF00edpp2mYk2gvvj8ne/PWjlXwgT5YZhAodh0/UVgTgtIPdnWS",
+  passwordHash: "$2a$12$HNkF00edpp2mYk2gvvj8ne/PWjlXwgT5YZhAodh0/UVgTgtIPdnWS",
   apiKeyPrefix: "disabled",
-  apiKeyHash:
-    "$2a$12$HNkF00edpp2mYk2gvvj8ne/PWjlXwgT5YZhAodh0/UVgTgtIPdnWS",
+  apiKeyHash: "$2a$12$HNkF00edpp2mYk2gvvj8ne/PWjlXwgT5YZhAodh0/UVgTgtIPdnWS",
   webhookSecret: "rotate-after-restore",
 } as const;
 
@@ -98,6 +99,7 @@ export const PRACTICE_EXPORT_SECTIONS = [
   "locations",
   "locationMessaging",
   "smsSuppressions",
+  "smsConsentEvents",
   "emailSuppressions",
   "webhooks",
   "apiKeys",
@@ -159,6 +161,8 @@ const PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS = [
   "dispenseChargeQueue",
   // Backward compatibility for backups created before durable patient lineage.
   "patientMergeEvents",
+  // Backward compatibility for backups created before SMS consent evidence.
+  "smsConsentEvents",
   "visitCloseouts",
   "clinicalRecordCorrections",
 ] as const satisfies readonly PracticeExportSection[];
@@ -184,7 +188,7 @@ function rowsFor(data: unknown, section: PracticeExportSection): Row[] {
 
 export function sanitizePracticeExportRows(
   section: PracticeExportSection,
-  rows: Row[]
+  rows: Row[],
 ): Row[] {
   return rows.map((row) => {
     switch (section) {
@@ -232,7 +236,7 @@ const MAX_RESTORE_REFERENCE_ERRORS = 25;
 function requiredRef(
   section: PracticeExportSection,
   field: string,
-  parentSection: PracticeExportSection
+  parentSection: PracticeExportSection,
 ): RestoreReferenceRule {
   return { section, field, parentSection, required: true };
 }
@@ -240,7 +244,7 @@ function requiredRef(
 function optionalRef(
   section: PracticeExportSection,
   field: string,
-  parentSection: PracticeExportSection
+  parentSection: PracticeExportSection,
 ): RestoreReferenceRule {
   return { section, field, parentSection };
 }
@@ -248,6 +252,9 @@ function optionalRef(
 const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
   requiredRef("locationMessaging", "locationId", "locations"),
   optionalRef("smsSuppressions", "locationId", "locations"),
+  optionalRef("smsConsentEvents", "clientId", "clients"),
+  optionalRef("smsConsentEvents", "locationId", "locations"),
+  optionalRef("smsConsentEvents", "actorUserId", "users"),
   optionalRef("users", "locationId", "locations"),
   optionalRef("rooms", "locationId", "locations"),
   requiredRef("patients", "clientId", "clients"),
@@ -311,18 +318,14 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
   optionalRef("vitalSigns", "appointmentId", "appointments"),
   optionalRef("vitalSigns", "recordedBy", "users"),
   requiredRef("clinicalRecordCorrections", "patientId", "patients"),
-  optionalRef(
-    "clinicalRecordCorrections",
-    "appointmentId",
-    "appointments"
-  ),
+  optionalRef("clinicalRecordCorrections", "appointmentId", "appointments"),
   requiredRef("clinicalRecordCorrections", "correctedBy", "users"),
   optionalRef("clinicalRecordCorrections", "soapNoteId", "soapNotes"),
   optionalRef("clinicalRecordCorrections", "vitalSignId", "vitalSigns"),
   optionalRef(
     "clinicalRecordCorrections",
     "vaccinationRecordId",
-    "vaccinationRecords"
+    "vaccinationRecords",
   ),
   requiredRef("cases", "patientId", "patients"),
   optionalRef("cases", "primaryVetId", "users"),
@@ -371,12 +374,14 @@ function withPracticeId(rows: Row[], practiceId: string): Row[] {
   return rows.map((row) => ({ ...row, practiceId }));
 }
 
-function countsFor(sections: Record<PracticeExportSection, unknown[]>): Record<PracticeExportSection, number> {
+function countsFor(
+  sections: Record<PracticeExportSection, unknown[]>,
+): Record<PracticeExportSection, number> {
   return Object.fromEntries(
     PRACTICE_EXPORT_SECTIONS.map((section) => [
       section,
       sections[section].length,
-    ])
+    ]),
   ) as Record<PracticeExportSection, number>;
 }
 
@@ -386,20 +391,18 @@ export function summarizePracticeExport(data: unknown): {
   totalRows: number;
 } {
   const record = isRecord(data) ? data : {};
-  const missingSections = PRACTICE_EXPORT_SECTIONS.filter(
-    (section) => {
-      if (Array.isArray(record[section])) return false;
-      const isBackwardCompatibleAbsence =
-        !Object.prototype.hasOwnProperty.call(record, section) &&
-        PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS.includes(section as never);
-      return !isBackwardCompatibleAbsence;
-    },
-  );
+  const missingSections = PRACTICE_EXPORT_SECTIONS.filter((section) => {
+    if (Array.isArray(record[section])) return false;
+    const isBackwardCompatibleAbsence =
+      !Object.prototype.hasOwnProperty.call(record, section) &&
+      PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS.includes(section as never);
+    return !isBackwardCompatibleAbsence;
+  });
   const counts = Object.fromEntries(
     PRACTICE_EXPORT_SECTIONS.map((section) => [
       section,
       rowsFor(record, section).length,
-    ])
+    ]),
   ) as Record<PracticeExportSection, number>;
 
   return {
@@ -430,7 +433,9 @@ const PATIENT_IDENTITY_SEX = new Set([
 ]);
 
 function isNullableBoundedString(value: unknown, maxLength: number): boolean {
-  return value == null || (typeof value === "string" && value.length <= maxLength);
+  return (
+    value == null || (typeof value === "string" && value.length <= maxLength)
+  );
 }
 
 function isValidCalendarDate(value: unknown): boolean {
@@ -439,7 +444,10 @@ function isValidCalendarDate(value: unknown): boolean {
     return false;
   }
   const parsed = new Date(`${value}T00:00:00.000Z`);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+  return (
+    !Number.isNaN(parsed.getTime()) &&
+    parsed.toISOString().slice(0, 10) === value
+  );
 }
 
 function isValidPatientIdentitySnapshot(
@@ -482,7 +490,10 @@ function isRestoredTimestamp(value: unknown): boolean {
   );
 }
 
-function validateRestoreRows(data: unknown, pushError: (message: string) => void) {
+function validateRestoreRows(
+  data: unknown,
+  pushError: (message: string) => void,
+) {
   const record = isRecord(data) ? data : {};
 
   for (const section of PRACTICE_EXPORT_SECTIONS) {
@@ -521,7 +532,9 @@ export function validatePracticeExportRestore(data: unknown): {
       ids = new Set(
         rowsFor(data, section)
           .map((row) => row.id)
-          .filter((id): id is string => typeof id === "string" && id.length > 0)
+          .filter(
+            (id): id is string => typeof id === "string" && id.length > 0,
+          ),
       );
       parentIds.set(section, ids);
     }
@@ -543,7 +556,7 @@ export function validatePracticeExportRestore(data: unknown): {
       if (value == null || value === "") {
         if (rule.required) {
           pushError(
-            `${rule.section}[${rowLabel(row, index)}].${rule.field} is required.`
+            `${rule.section}[${rowLabel(row, index)}].${rule.field} is required.`,
           );
         }
         return;
@@ -551,14 +564,14 @@ export function validatePracticeExportRestore(data: unknown): {
 
       if (typeof value !== "string") {
         pushError(
-          `${rule.section}[${rowLabel(row, index)}].${rule.field} must be a string id.`
+          `${rule.section}[${rowLabel(row, index)}].${rule.field} must be a string id.`,
         );
         return;
       }
 
       if (!ids.has(value)) {
         pushError(
-          `${rule.section}[${rowLabel(row, index)}].${rule.field} references missing ${rule.parentSection} row "${value}".`
+          `${rule.section}[${rowLabel(row, index)}].${rule.field} references missing ${rule.parentSection} row "${value}".`,
         );
       }
     });
@@ -568,9 +581,9 @@ export function validatePracticeExportRestore(data: unknown): {
     new Map(
       rowsFor(data, section)
         .filter((row): row is Row & { id: string } =>
-          Boolean(typeof row.id === "string" && row.id.length > 0)
+          Boolean(typeof row.id === "string" && row.id.length > 0),
         )
-        .map((row) => [row.id, row])
+        .map((row) => [row.id, row]),
     );
   const appointmentRows = rowsById("appointments");
 
@@ -582,7 +595,7 @@ export function validatePracticeExportRestore(data: unknown): {
 
       if (appointment.patientId !== row.patientId) {
         pushError(
-          `${section}[${rowLabel(row, index)}].appointmentId must reference an appointment for the same patient.`
+          `${section}[${rowLabel(row, index)}].appointmentId must reference an appointment for the same patient.`,
         );
       }
     });
@@ -640,10 +653,15 @@ export function validatePracticeExportRestore(data: unknown): {
         pushError(`${label} cannot use an existing merge target as a source.`);
       }
 
-      if (typeof practiceId === "string" && typeof row.sourcePatientId === "string") {
+      if (
+        typeof practiceId === "string" &&
+        typeof row.sourcePatientId === "string"
+      ) {
         const sourceKey = `${practiceId}:${row.sourcePatientId}`;
         if (sourceKeys.has(sourceKey)) {
-          pushError(`${label}.sourcePatientId must be unique within its practice.`);
+          pushError(
+            `${label}.sourcePatientId must be unique within its practice.`,
+          );
         }
         sourceKeys.add(sourceKey);
       }
@@ -667,7 +685,9 @@ export function validatePracticeExportRestore(data: unknown): {
         row.performedByName.trim().length === 0 ||
         row.performedByName.length > 255
       ) {
-        pushError(`${label}.performedByName must be between 1 and 255 characters.`);
+        pushError(
+          `${label}.performedByName must be between 1 and 255 characters.`,
+        );
       }
       if (
         typeof row.reason !== "string" ||
@@ -684,7 +704,9 @@ export function validatePracticeExportRestore(data: unknown): {
           row.clientId,
         )
       ) {
-        pushError(`${label}.sourceSnapshot must be a valid patient identity snapshot.`);
+        pushError(
+          `${label}.sourceSnapshot must be a valid patient identity snapshot.`,
+        );
       }
       if (
         !isValidPatientIdentitySnapshot(
@@ -693,7 +715,9 @@ export function validatePracticeExportRestore(data: unknown): {
           row.clientId,
         )
       ) {
-        pushError(`${label}.targetSnapshot must be a valid patient identity snapshot.`);
+        pushError(
+          `${label}.targetSnapshot must be a valid patient identity snapshot.`,
+        );
       }
 
       if (
@@ -701,14 +725,18 @@ export function validatePracticeExportRestore(data: unknown): {
         (sourcePatient.clientId !== row.clientId ||
           sourcePatient.practiceId !== practiceId)
       ) {
-        pushError(`${label}.sourcePatientId must share its client and practice.`);
+        pushError(
+          `${label}.sourcePatientId must share its client and practice.`,
+        );
       }
       if (
         targetPatient &&
         (targetPatient.clientId !== row.clientId ||
           targetPatient.practiceId !== practiceId)
       ) {
-        pushError(`${label}.targetPatientId must share its client and practice.`);
+        pushError(
+          `${label}.targetPatientId must share its client and practice.`,
+        );
       }
       if (client && client.practiceId !== practiceId) {
         pushError(`${label}.clientId must belong to the declared practice.`);
@@ -717,7 +745,9 @@ export function validatePracticeExportRestore(data: unknown): {
         pushError(`${label}.performedBy must belong to the declared practice.`);
       }
       if (sourcePatient && !isRestoredTimestamp(sourcePatient.deletedAt)) {
-        pushError(`${label}.sourcePatientId must reference a soft-deleted source.`);
+        pushError(
+          `${label}.sourcePatientId must reference a soft-deleted source.`,
+        );
       }
       if (targetPatient && targetPatient.deletedAt != null) {
         pushError(`${label}.targetPatientId must reference an active target.`);
@@ -763,7 +793,8 @@ export function validatePracticeExportRestore(data: unknown): {
     const invoiceItemsByDispense = new Map<string, Row[]>();
     rowsFor(data, "invoiceItems").forEach((item) => {
       if (typeof item.sourceDispenseChargeId !== "string") return;
-      const rows = invoiceItemsByDispense.get(item.sourceDispenseChargeId) ?? [];
+      const rows =
+        invoiceItemsByDispense.get(item.sourceDispenseChargeId) ?? [];
       rows.push(item);
       invoiceItemsByDispense.set(item.sourceDispenseChargeId, rows);
     });
@@ -771,7 +802,7 @@ export function validatePracticeExportRestore(data: unknown): {
       const label = `dispenseChargeQueue[${rowLabel(row, index)}]`;
       const sourceItems =
         typeof row.id === "string"
-          ? invoiceItemsByDispense.get(row.id) ?? []
+          ? (invoiceItemsByDispense.get(row.id) ?? [])
           : [];
       if (
         row.status !== "pending" &&
@@ -827,7 +858,9 @@ export function validatePracticeExportRestore(data: unknown): {
         row.resolutionReason.trim().length < 5 ||
         row.resolutionReason.length > 1000
       ) {
-        pushError(`${label} waived state requires one bounded reason and no invoice.`);
+        pushError(
+          `${label} waived state requires one bounded reason and no invoice.`,
+        );
       }
     });
   }
@@ -847,34 +880,35 @@ export function validatePracticeExportRestore(data: unknown): {
         return;
       }
       if (row.vitalSignId != null) {
-        pushError(`${label}.vitalSignId must be null for recordType soap_note.`);
+        pushError(
+          `${label}.vitalSignId must be null for recordType soap_note.`,
+        );
         return;
       }
       if (row.vaccinationRecordId != null) {
         pushError(
-          `${label}.vaccinationRecordId must be null for recordType soap_note.`
+          `${label}.vaccinationRecordId must be null for recordType soap_note.`,
         );
         return;
       }
       source = soapRows.get(row.soapNoteId);
       sourceIdentity = `soap_note:${row.soapNoteId}`;
     } else if (row.recordType === "vital_sign") {
-      if (
-        typeof row.vitalSignId !== "string" ||
-        row.vitalSignId.length === 0
-      ) {
+      if (typeof row.vitalSignId !== "string" || row.vitalSignId.length === 0) {
         pushError(
-          `${label}.vitalSignId is required for recordType vital_sign.`
+          `${label}.vitalSignId is required for recordType vital_sign.`,
         );
         return;
       }
       if (row.soapNoteId != null) {
-        pushError(`${label}.soapNoteId must be null for recordType vital_sign.`);
+        pushError(
+          `${label}.soapNoteId must be null for recordType vital_sign.`,
+        );
         return;
       }
       if (row.vaccinationRecordId != null) {
         pushError(
-          `${label}.vaccinationRecordId must be null for recordType vital_sign.`
+          `${label}.vaccinationRecordId must be null for recordType vital_sign.`,
         );
         return;
       }
@@ -886,13 +920,13 @@ export function validatePracticeExportRestore(data: unknown): {
         row.vaccinationRecordId.length === 0
       ) {
         pushError(
-          `${label}.vaccinationRecordId is required for recordType vaccination_record.`
+          `${label}.vaccinationRecordId is required for recordType vaccination_record.`,
         );
         return;
       }
       if (row.soapNoteId != null || row.vitalSignId != null) {
         pushError(
-          `${label}.soapNoteId and .vitalSignId must be null for recordType vaccination_record.`
+          `${label}.soapNoteId and .vitalSignId must be null for recordType vaccination_record.`,
         );
         return;
       }
@@ -900,7 +934,7 @@ export function validatePracticeExportRestore(data: unknown): {
       sourceIdentity = `vaccination_record:${row.vaccinationRecordId}`;
     } else {
       pushError(
-        `${label}.recordType must be soap_note, vital_sign, or vaccination_record.`
+        `${label}.recordType must be soap_note, vital_sign, or vaccination_record.`,
       );
       return;
     }
@@ -919,7 +953,7 @@ export function validatePracticeExportRestore(data: unknown): {
       sourceAppointmentId !== correctionAppointmentId
     ) {
       pushError(
-        `${label} must match its source record patientId and appointmentId exactly.`
+        `${label} must match its source record patientId and appointmentId exactly.`,
       );
     }
   });
@@ -956,6 +990,155 @@ export function synthesizeLegacyPrescriptionEvents(data: unknown): Row[] {
   }));
 }
 
+/**
+ * Backups created before the consent ledger may contain only the current
+ * client projection. Preserve an affirmative value only when that legacy row
+ * itself contains complete, valid evidence; otherwise clear it fail-closed.
+ */
+export function prepareLegacySmsConsentRestore(data: unknown): {
+  clients: Row[];
+  smsConsentEvents: Row[];
+} {
+  const clientRows = rowsFor(data, "clients");
+  const backupRecord = isRecord(data) ? data : {};
+  if (Object.prototype.hasOwnProperty.call(backupRecord, "smsConsentEvents")) {
+    const eventRows = rowsFor(data, "smsConsentEvents");
+    const latestGrants = new Map<string, Row>();
+    const latestRevokes = new Map<string, Row>();
+    const occurredAtMs = (event: Row) => {
+      const value = event.occurredAt;
+      if (value instanceof Date) return value.getTime();
+      if (typeof value === "string") return new Date(value).getTime();
+      return Number.NaN;
+    };
+    const compareEvents = (left: Row, right: Row) => {
+      const leftTime = occurredAtMs(left);
+      const rightTime = occurredAtMs(right);
+      if (!Number.isFinite(leftTime) || !Number.isFinite(rightTime)) {
+        // Malformed modern evidence must never preserve an affirmative state.
+        return Number.NaN;
+      }
+      return (
+        leftTime - rightTime ||
+        String(left.id ?? "").localeCompare(String(right.id ?? ""))
+      );
+    };
+    for (const event of eventRows) {
+      if (typeof event.destinationE164 !== "string") continue;
+      if (event.action === "revoked") {
+        const prior = latestRevokes.get(event.destinationE164);
+        if (!prior || compareEvents(event, prior) > 0) {
+          latestRevokes.set(event.destinationE164, event);
+        }
+      } else if (
+        event.action === "granted" &&
+        typeof event.clientId === "string"
+      ) {
+        const key = `${event.clientId}\u0000${event.destinationE164}`;
+        const prior = latestGrants.get(key);
+        if (!prior || compareEvents(event, prior) > 0) {
+          latestGrants.set(key, event);
+        }
+      }
+    }
+    return {
+      clients: clientRows.map((client) => {
+        if (client.smsConsent !== true) return client;
+        const destination = normalizeE164(
+          typeof client.phone === "string" ? client.phone : null,
+        );
+        const matchingGrant =
+          typeof client.id === "string" && destination !== null
+            ? latestGrants.get(`${client.id}\u0000${destination}`)
+            : undefined;
+        const latestRevoke = destination
+          ? latestRevokes.get(destination)
+          : undefined;
+        const latestApplicableEventIsGrant =
+          matchingGrant !== undefined &&
+          Number.isFinite(occurredAtMs(matchingGrant)) &&
+          (!latestRevoke ||
+            (Number.isFinite(occurredAtMs(latestRevoke)) &&
+              occurredAtMs(matchingGrant) > occurredAtMs(latestRevoke)));
+        return latestApplicableEventIsGrant
+          ? client
+          : {
+              ...client,
+              smsConsent: false,
+              smsConsentAt: null,
+              smsConsentSource: null,
+              smsConsentDisclosure: null,
+            };
+      }),
+      smsConsentEvents: eventRows,
+    };
+  }
+
+  const synthesizedEvents: Row[] = [];
+  const preparedClients = clientRows.map((client) => {
+    if (client.smsConsent !== true) return client;
+
+    const destination = normalizeE164(
+      typeof client.phone === "string" ? client.phone : null,
+    );
+    const source =
+      typeof client.smsConsentSource === "string"
+        ? client.smsConsentSource.trim()
+        : "";
+    const disclosure =
+      typeof client.smsConsentDisclosure === "string"
+        ? client.smsConsentDisclosure.trim()
+        : "";
+    const disclosureVersion = source.split(":", 2)[1]?.trim() ?? "";
+    const occurredAt = client.smsConsentAt;
+    const hasTruthfulEvidence =
+      typeof client.id === "string" &&
+      destination !== null &&
+      source.length > 0 &&
+      disclosureVersion.length > 0 &&
+      disclosure.length > 0 &&
+      isRestoredTimestamp(occurredAt);
+
+    if (!hasTruthfulEvidence) {
+      return {
+        ...client,
+        smsConsent: false,
+        smsConsentAt: null,
+        smsConsentSource: null,
+        smsConsentDisclosure: null,
+      };
+    }
+
+    const eventDigest = createHash("sha256")
+      .update(client.id as string)
+      .digest("hex");
+    synthesizedEvents.push({
+      id: randomUUID(),
+      createdAt: occurredAt,
+      occurredAt,
+      practiceId: client.practiceId,
+      clientId: client.id,
+      locationId: null,
+      destinationE164: destination,
+      action: "granted",
+      source,
+      disclosureVersion,
+      disclosure,
+      detail:
+        "Restored from complete affirmative evidence in a pre-ledger backup.",
+      actorType: "system",
+      actorUserId: null,
+      actorName: null,
+      provider: null,
+      providerMessageId: null,
+      eventKey: `restore:legacy-client:${eventDigest}:affirmative-v1`,
+    });
+    return client;
+  });
+
+  return { clients: preparedClients, smsConsentEvents: synthesizedEvents };
+}
+
 async function activeRows(db: Database, table: any, practiceId: string) {
   return db
     .select()
@@ -974,7 +1157,7 @@ async function tenantParentChildRows(
   parentIds: string[],
   parentTable: any,
   parentIdColumn: any,
-  practiceId: string
+  practiceId: string,
 ) {
   if (parentIds.length === 0) return [];
   return db
@@ -990,8 +1173,8 @@ async function tenantParentChildRows(
             and ${parentTable.practiceId} = ${practiceId}
             and ${parentTable.deletedAt} is null
         )`,
-        isNull(table.deletedAt)
-      )
+        isNull(table.deletedAt),
+      ),
     );
 }
 
@@ -1002,7 +1185,9 @@ async function tenantParentChildRows(
  */
 export function coerceRowDates(table: any, rows: Row[]): Row[] {
   const dateColumns = Object.entries(getTableColumns(table))
-    .filter(([, column]) => (column as { dataType?: string }).dataType === "date")
+    .filter(
+      ([, column]) => (column as { dataType?: string }).dataType === "date",
+    )
     .map(([name]) => name);
   if (dateColumns.length === 0) return rows;
 
@@ -1024,12 +1209,12 @@ async function restoreRows(
   table: any,
   section: PracticeExportSection,
   rows: Row[],
-  opts: { practiceId?: string } = {}
+  opts: { practiceId?: string } = {},
 ): Promise<number> {
   if (rows.length === 0) return 0;
   const sanitizedRows = coerceRowDates(
     table,
-    sanitizePracticeExportRows(section, rows)
+    sanitizePracticeExportRows(section, rows),
   );
   const values = opts.practiceId
     ? withPracticeId(sanitizedRows, opts.practiceId)
@@ -1045,12 +1230,13 @@ async function restoreRows(
 export async function exportPracticeData(
   db: Database,
   practiceId: string,
-  exportedAt: string
+  exportedAt: string,
 ): Promise<PracticeExport> {
   const [
     allLocationRows,
     locationMessagingRows,
     smsSuppressionRows,
+    smsConsentEventRows,
     emailSuppressionRows,
     webhookRows,
     apiKeyRows,
@@ -1096,6 +1282,7 @@ export async function exportPracticeData(
     allPracticeRows(db, locations, practiceId),
     activeRows(db, locationMessaging, practiceId),
     activeRows(db, smsSuppressions, practiceId),
+    allPracticeRows(db, smsConsentEvents, practiceId),
     activeRows(db, emailSuppressions, practiceId),
     activeRows(db, webhooks, practiceId),
     activeRows(db, apiKeys, practiceId),
@@ -1226,6 +1413,7 @@ export async function exportPracticeData(
       ...vaccinationRows.map((vaccination) => vaccination.administeredBy),
       ...appointmentRows.map((appointment) => appointment.doctorId),
       ...patientMergeRows.map((event) => event.performedBy),
+      ...smsConsentEventRows.map((event) => event.actorUserId),
     ].filter((id): id is string => typeof id === "string"),
   );
   const userRows = allUserRows.filter(
@@ -1236,16 +1424,17 @@ export async function exportPracticeData(
       ...patientRows.map((patient) => patient.clientId),
       ...appointmentRows.map((appointment) => appointment.clientId),
       ...patientMergeRows.map((event) => event.clientId),
+      ...smsConsentEventRows.map((event) => event.clientId),
     ].filter((id): id is string => typeof id === "string"),
   );
   const clientRows = allClientRows.filter(
-    (client) =>
-      client.deletedAt == null || referencedClientIds.has(client.id),
+    (client) => client.deletedAt == null || referencedClientIds.has(client.id),
   );
   const referencedLocationIds = new Set(
     [
       ...productRows.map((product) => product.locationId),
       ...userRows.map((user) => user.locationId),
+      ...smsConsentEventRows.map((event) => event.locationId),
       ...allRoomRows.map((room) =>
         appointmentRows.some((appointment) => appointment.roomId === room.id)
           ? room.locationId
@@ -1307,7 +1496,7 @@ export async function exportPracticeData(
       patientIds,
       patients,
       patients.id,
-      practiceId
+      practiceId,
     ),
     tenantParentChildRows(
       db,
@@ -1316,7 +1505,7 @@ export async function exportPracticeData(
       patientIds,
       patients,
       patients.id,
-      practiceId
+      practiceId,
     ),
     tenantParentChildRows(
       db,
@@ -1325,7 +1514,7 @@ export async function exportPracticeData(
       invoiceIds,
       invoices,
       invoices.id,
-      practiceId
+      practiceId,
     ),
     tenantParentChildRows(
       db,
@@ -1334,7 +1523,7 @@ export async function exportPracticeData(
       invoiceIds,
       invoices,
       invoices.id,
-      practiceId
+      practiceId,
     ),
     tenantParentChildRows(
       db,
@@ -1343,7 +1532,7 @@ export async function exportPracticeData(
       invoiceIds,
       invoices,
       invoices.id,
-      practiceId
+      practiceId,
     ),
     tenantParentChildRows(
       db,
@@ -1352,7 +1541,7 @@ export async function exportPracticeData(
       treatmentTemplateIds,
       treatmentTemplates,
       treatmentTemplates.id,
-      practiceId
+      practiceId,
     ),
     tenantParentChildRows(
       db,
@@ -1361,7 +1550,7 @@ export async function exportPracticeData(
       caseIds,
       cases,
       cases.id,
-      practiceId
+      practiceId,
     ),
     tenantParentChildRows(
       db,
@@ -1370,7 +1559,7 @@ export async function exportPracticeData(
       treatmentPlanIds,
       treatmentPlans,
       treatmentPlans.id,
-      practiceId
+      practiceId,
     ),
   ]);
 
@@ -1378,6 +1567,7 @@ export async function exportPracticeData(
     locations: locationRows,
     locationMessaging: locationMessagingRows,
     smsSuppressions: smsSuppressionRows,
+    smsConsentEvents: smsConsentEventRows,
     emailSuppressions: emailSuppressionRows,
     webhooks: sanitizePracticeExportRows("webhooks", webhookRows),
     apiKeys: sanitizePracticeExportRows("apiKeys", apiKeyRows),
@@ -1447,18 +1637,21 @@ export async function exportPracticeData(
 async function restorePracticeDataRows(
   db: Database,
   practiceId: string,
-  data: unknown
-): Promise<{ restored: Record<PracticeExportSection, number>; totalRows: number }> {
+  data: unknown,
+): Promise<{
+  restored: Record<PracticeExportSection, number>;
+  totalRows: number;
+}> {
   const summary = summarizePracticeExport(data);
   if (summary.missingSections.length > 0) {
     throw new Error(
-      `Backup is missing required sections: ${summary.missingSections.join(", ")}`
+      `Backup is missing required sections: ${summary.missingSections.join(", ")}`,
     );
   }
   const validation = validatePracticeExportRestore(data);
   if (!validation.valid) {
     throw new Error(
-      `Backup contains invalid restore data: ${validation.errors.join("; ")}`
+      `Backup contains invalid restore data: ${validation.errors.join("; ")}`,
     );
   }
   const backupRecord = isRecord(data) ? data : {};
@@ -1467,15 +1660,33 @@ async function restorePracticeDataRows(
     "dispenseChargeQueue",
   );
   const dispenseChargeRestoreRows = rowsFor(data, "dispenseChargeQueue");
+  const smsConsentRestore = prepareLegacySmsConsentRestore(data);
 
   const restored = {} as Record<PracticeExportSection, number>;
-  const restorePracticeRows = async (section: PracticeExportSection, table: any) => {
-    restored[section] = await restoreRows(db, table, section, rowsFor(data, section), {
-      practiceId,
-    });
+  const restorePracticeRows = async (
+    section: PracticeExportSection,
+    table: any,
+  ) => {
+    restored[section] = await restoreRows(
+      db,
+      table,
+      section,
+      rowsFor(data, section),
+      {
+        practiceId,
+      },
+    );
   };
-  const restoreChildRows = async (section: PracticeExportSection, table: any) => {
-    restored[section] = await restoreRows(db, table, section, rowsFor(data, section));
+  const restoreChildRows = async (
+    section: PracticeExportSection,
+    table: any,
+  ) => {
+    restored[section] = await restoreRows(
+      db,
+      table,
+      section,
+      rowsFor(data, section),
+    );
   };
 
   await restorePracticeRows("locations", locations);
@@ -1489,7 +1700,20 @@ async function restorePracticeDataRows(
   await restorePracticeRows("appointmentTypes", appointmentTypes);
   await restorePracticeRows("rooms", rooms);
   await restorePracticeRows("recurringSeries", recurringSeries);
-  await restorePracticeRows("clients", clients);
+  restored.clients = await restoreRows(
+    db,
+    clients,
+    "clients",
+    smsConsentRestore.clients,
+    { practiceId },
+  );
+  restored.smsConsentEvents = await restoreRows(
+    db,
+    smsConsentEvents,
+    "smsConsentEvents",
+    smsConsentRestore.smsConsentEvents,
+    { practiceId },
+  );
   await restorePracticeRows("patients", patients);
   await restorePracticeRows("patientMergeEvents", patientMergeEvents);
   await restorePracticeRows("insurancePolicies", insurancePolicies);
@@ -1531,7 +1755,7 @@ async function restorePracticeDataRows(
   await restorePracticeRows("vitalSigns", vitalSigns);
   await restorePracticeRows(
     "clinicalRecordCorrections",
-    clinicalRecordCorrections
+    clinicalRecordCorrections,
   );
   await restorePracticeRows("cases", cases);
   await restoreChildRows("caseEntries", caseEntries);
@@ -1602,16 +1826,13 @@ async function restorePracticeDataRows(
           resolvedBy:
             typeof row.resolvedBy === "string" ? row.resolvedBy : null,
           resolvedByName:
-            typeof row.resolvedByName === "string"
-              ? row.resolvedByName
-              : null,
+            typeof row.resolvedByName === "string" ? row.resolvedByName : null,
           resolvedAt: row.resolvedAt instanceof Date ? row.resolvedAt : null,
           resolutionReason:
             typeof row.resolutionReason === "string"
               ? row.resolutionReason
               : null,
-          updatedAt:
-            row.updatedAt instanceof Date ? row.updatedAt : new Date(),
+          updatedAt: row.updatedAt instanceof Date ? row.updatedAt : new Date(),
         })
         .where(
           and(
@@ -1635,23 +1856,28 @@ async function restorePracticeDataRows(
 export async function restorePracticeData(
   db: Database,
   practiceId: string,
-  data: unknown
-): Promise<{ restored: Record<PracticeExportSection, number>; totalRows: number }> {
-  const transaction = (db as unknown as {
-    transaction?: (
-      fn: (tx: unknown) => Promise<{
+  data: unknown,
+): Promise<{
+  restored: Record<PracticeExportSection, number>;
+  totalRows: number;
+}> {
+  const transaction = (
+    db as unknown as {
+      transaction?: (
+        fn: (tx: unknown) => Promise<{
+          restored: Record<PracticeExportSection, number>;
+          totalRows: number;
+        }>,
+      ) => Promise<{
         restored: Record<PracticeExportSection, number>;
         totalRows: number;
-      }>
-    ) => Promise<{
-      restored: Record<PracticeExportSection, number>;
-      totalRows: number;
-    }>;
-  }).transaction;
+      }>;
+    }
+  ).transaction;
 
   if (typeof transaction === "function") {
     return transaction.call(db, (tx) =>
-      restorePracticeDataRows(tx as Database, practiceId, data)
+      restorePracticeDataRows(tx as Database, practiceId, data),
     );
   }
 

@@ -35,7 +35,7 @@ export const dynamic = "force-dynamic";
 function payloadTooLargeResponse() {
   return NextResponse.json(
     { error: "Messaging webhook payload too large" },
-    { status: 413 }
+    { status: 413 },
   );
 }
 
@@ -57,7 +57,7 @@ function payloadMessagingProfileId(payload: {
 }
 
 function deliveryReceiptCurrentStatusCondition(
-  deliveryStatus: CommunicationDeliveryStatus
+  deliveryStatus: CommunicationDeliveryStatus,
 ) {
   if (deliveryStatus === "sent") {
     return eq(communications.status, "pending");
@@ -65,7 +65,7 @@ function deliveryReceiptCurrentStatusCondition(
 
   return or(
     eq(communications.status, "pending"),
-    eq(communications.status, "sent")
+    eq(communications.status, "sent"),
   )!;
 }
 
@@ -131,9 +131,9 @@ async function handleA2pLifecycleWebhook(opts: {
               ? eq(messagingRegistrations.providerCampaignId, campaignId)
               : eq(
                   messagingRegistrations.id,
-                  "00000000-0000-0000-0000-000000000000"
-                )
-        )
+                  "00000000-0000-0000-0000-000000000000",
+                ),
+        ),
       )
       .limit(1);
 
@@ -145,8 +145,8 @@ async function handleA2pLifecycleWebhook(opts: {
           and(
             eq(locationMessaging.provider, "telnyx"),
             eq(locationMessaging.senderE164, phoneNumber),
-            isNull(locationMessaging.deletedAt)
-          )
+            isNull(locationMessaging.deletedAt),
+          ),
         )
         .limit(1);
       if (sender) {
@@ -160,8 +160,8 @@ async function handleA2pLifecycleWebhook(opts: {
           .where(
             and(
               eq(messagingRegistrations.practiceId, sender.practiceId),
-              isNull(messagingRegistrations.deletedAt)
-            )
+              isNull(messagingRegistrations.deletedAt),
+            ),
           )
           .limit(1);
       }
@@ -171,7 +171,7 @@ async function handleA2pLifecycleWebhook(opts: {
     const next = mergeRegistrationStatus(registration.status, observed);
     const reasons = Array.isArray(opts.payload.reasons)
       ? opts.payload.reasons.filter(
-          (item): item is string => typeof item === "string"
+          (item): item is string => typeof item === "string",
         )
       : [];
     const detail =
@@ -214,8 +214,8 @@ async function handleA2pLifecycleWebhook(opts: {
         and(
           eq(locationMessaging.practiceId, registration.practiceId),
           eq(locationMessaging.provider, "telnyx"),
-          isNull(locationMessaging.deletedAt)
-        )
+          isNull(locationMessaging.deletedAt),
+        ),
       );
   });
 }
@@ -227,7 +227,7 @@ export async function POST(request: Request) {
 
   const rawBody = await readRequestTextWithLimit(
     request,
-    MESSAGING_WEBHOOK_BODY_MAX_BYTES
+    MESSAGING_WEBHOOK_BODY_MAX_BYTES,
   );
   if (!rawBody.ok) {
     return payloadTooLargeResponse();
@@ -317,10 +317,10 @@ export async function POST(request: Request) {
               eq(communications.channel, "sms"),
               eq(communications.direction, "outbound"),
               isNull(communications.deletedAt),
-              deliveryReceiptCurrentStatusCondition(deliveryStatus)
-            )
+              deliveryReceiptCurrentStatusCondition(deliveryStatus),
+            ),
           )
-          .returning({ id: communications.id })
+          .returning({ id: communications.id }),
       );
 
       // Generic Telnyx failure events do not distinguish a permanently invalid
@@ -348,6 +348,12 @@ export async function POST(request: Request) {
   if (!text) {
     return NextResponse.json({ ok: true });
   }
+  if (!providerMessageId) {
+    return NextResponse.json(
+      { error: "missing inbound message id" },
+      { status: 400 },
+    );
+  }
 
   const result = await handleInboundSmsReply({
     provider: "telnyx",
@@ -362,7 +368,7 @@ export async function POST(request: Request) {
     console.warn(
       `[telnyx-webhook] inbound to unrecognised sender ${
         toPhone ?? messagingProfileId
-      }`
+      }`,
     );
     return NextResponse.json({ ok: true });
   }

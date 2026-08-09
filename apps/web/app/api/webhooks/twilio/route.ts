@@ -23,7 +23,7 @@ export const dynamic = "force-dynamic";
 function payloadTooLargeResponse() {
   return NextResponse.json(
     { error: "Messaging webhook payload too large" },
-    { status: 413 }
+    { status: 413 },
   );
 }
 
@@ -36,7 +36,7 @@ function deliveryReceiptCurrentStatusCondition(deliveryStatus: DeliveryStatus) {
 
   return or(
     eq(communications.status, "pending"),
-    eq(communications.status, "sent")
+    eq(communications.status, "sent"),
   )!;
 }
 
@@ -61,14 +61,14 @@ function requestValidationUrls(request: Request): string[] {
 
 function verifyTwilioRequest(
   request: Request,
-  params: Record<string, string>
+  params: Record<string, string>,
 ): boolean {
   const authToken = envValue("TWILIO_AUTH_TOKEN");
   const signature = request.headers.get("x-twilio-signature");
   if (!authToken || !signature) return false;
 
   return requestValidationUrls(request).some((url) =>
-    Twilio.validateRequest(authToken, signature, url, params)
+    Twilio.validateRequest(authToken, signature, url, params),
   );
 }
 
@@ -79,7 +79,7 @@ export async function POST(request: Request) {
 
   const rawBody = await readRequestTextWithLimit(
     request,
-    MESSAGING_WEBHOOK_BODY_MAX_BYTES
+    MESSAGING_WEBHOOK_BODY_MAX_BYTES,
   );
   if (!rawBody.ok) {
     return payloadTooLargeResponse();
@@ -100,6 +100,12 @@ export async function POST(request: Request) {
   const messagingProfileId = nonBlankParam(params.MessagingServiceSid);
 
   if (fromPhone && toPhone && text) {
+    if (!providerMessageId) {
+      return NextResponse.json(
+        { error: "missing inbound message id" },
+        { status: 400 },
+      );
+    }
     const result = await handleInboundSmsReply({
       provider: "twilio",
       fromPhone,
@@ -110,7 +116,9 @@ export async function POST(request: Request) {
     });
 
     if (result.action === "ignored") {
-      console.warn(`[twilio-webhook] inbound to unrecognised number ${toPhone}`);
+      console.warn(
+        `[twilio-webhook] inbound to unrecognised number ${toPhone}`,
+      );
       return NextResponse.json({ ok: true });
     }
 
@@ -118,7 +126,7 @@ export async function POST(request: Request) {
   }
 
   const deliveryStatus = twilioDeliveryStatus(
-    params.MessageStatus ?? params.SmsStatus ?? null
+    params.MessageStatus ?? params.SmsStatus ?? null,
   );
   if (!deliveryStatus || !providerMessageId) {
     return NextResponse.json({ ok: true });
@@ -144,10 +152,10 @@ export async function POST(request: Request) {
           eq(communications.channel, "sms"),
           eq(communications.direction, "outbound"),
           isNull(communications.deletedAt),
-          deliveryReceiptCurrentStatusCondition(deliveryStatus)
-        )
+          deliveryReceiptCurrentStatusCondition(deliveryStatus),
+        ),
       )
-      .returning({ id: communications.id })
+      .returning({ id: communications.id }),
   );
 
   // A failed/undelivered DLR is not proof that the recipient is permanently

@@ -11,7 +11,7 @@ export function normalizeE164(raw: string | null | undefined): string | null {
   const digits = trimmed.replace(/\D/g, "");
   if (!digits) return null;
   if (hasPlus) {
-    return digits.length >= 8 && digits.length <= 15 ? `+${digits}` : null;
+    return /^[1-9][0-9]{7,14}$/.test(digits) ? `+${digits}` : null;
   }
   if (digits.length === 10) return `+1${digits}`; // US/CA national
   if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;

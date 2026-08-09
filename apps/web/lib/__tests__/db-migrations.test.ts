@@ -671,12 +671,12 @@ describe("committed Drizzle migrations", () => {
     expect(sql).toContain(
       "source.product_id IS NOT DISTINCT FROM NEW.product_id",
     );
-    expect(sql).toContain(
-      "source.quantity IS NOT DISTINCT FROM NEW.quantity",
-    );
+    expect(sql).toContain("source.quantity IS NOT DISTINCT FROM NEW.quantity");
     expect(sql).toContain("prescription_events_immutable");
     expect(sql).toContain("app.ledger_maintenance");
-    expect(sql).toContain("ALTER TABLE prescription_events ENABLE ROW LEVEL SECURITY");
+    expect(sql).toContain(
+      "ALTER TABLE prescription_events ENABLE ROW LEVEL SECURITY",
+    );
     expect(sql).toContain(
       "GRANT SELECT, INSERT ON prescription_events TO openpims_app",
     );
@@ -778,5 +778,59 @@ describe("committed Drizzle migrations", () => {
       'UPDATE "invoice_items" SET "taxable" = true WHERE "taxable" IS NULL',
     );
     expect(sql.match(/ALTER COLUMN "taxable" SET NOT NULL/g)).toHaveLength(2);
+  });
+
+  it("adds an immutable tenant-scoped SMS consent evidence ledger", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries?: Array<{ tag?: string }> };
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0055_flippant_silver_fox",
+    );
+
+    const sql = readRepoFile(
+      "packages/db/drizzle/0055_flippant_silver_fox.sql",
+    );
+    expect(sql).toContain('CREATE TABLE "sms_consent_events"');
+    expect(sql).toContain("sms_consent_events_client_tenant_fk");
+    expect(sql).toContain("sms_consent_events_location_tenant_fk");
+    expect(sql).toContain("sms_consent_events_actor_tenant_fk");
+    expect(
+      sql.indexOf('CREATE UNIQUE INDEX "locations_practice_id_uq"'),
+    ).toBeLessThan(sql.indexOf("sms_consent_events_location_tenant_fk"));
+    expect(sql).toContain("sms_consent_events_practice_event_key_uq");
+    expect(sql).toContain("sms_consent_events_provider_message_uq");
+    expect(sql).toContain('"provider_message_id" varchar(255)');
+    expect(sql).toContain("sms_consent_events_destination_check");
+    expect(sql).toContain("sms_consent_events_evidence_shape_check");
+    expect(sql).toContain("sms_consent_events_actor_shape_check");
+    expect(sql).toContain(
+      "\"sms_consent_events\".\"provider\" in ('telnyx', 'twilio')",
+    );
+    expect(sql).toContain(
+      'coalesce("sms_consent_events"."provider_message_id", \'\')',
+    );
+    expect(sql).toContain("AND c.sms_consent = true");
+    expect(sql).toContain("c.sms_consent_at IS NOT NULL");
+    expect(sql).toContain("split_part(c.sms_consent_source, ':', 2)");
+    expect(sql).toContain("WITH consent_candidates AS MATERIALIZED");
+    expect(sql).toContain("'[^0-9]'");
+    expect(sql).not.toContain("'\\\\D'");
+    expect(sql).toContain("normalized_destination ~ '^\\+[1-9][0-9]{7,14}$'");
+    expect(sql).toContain("UPDATE clients c");
+    expect(sql).toContain("AND NOT EXISTS (");
+    expect(sql).not.toContain("WHERE c.sms_consent = false");
+    expect(sql).toContain("sms_consent_events_immutable");
+    expect(sql).toContain("app.ledger_maintenance");
+    expect(sql).toContain(
+      "ALTER TABLE sms_consent_events ENABLE ROW LEVEL SECURITY",
+    );
+    expect(sql).toContain(
+      "GRANT SELECT, INSERT ON sms_consent_events TO openpims_app",
+    );
+    expect(sql).toContain("REVOKE ALL ON sms_consent_events FROM anon");
+    expect(sql).toContain(
+      "REVOKE ALL ON sms_consent_events FROM authenticated",
+    );
   });
 });

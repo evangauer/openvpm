@@ -6,6 +6,7 @@ import {
   PRACTICE_EXPORT_SECRET_REPLACEMENTS,
   PRACTICE_EXPORT_SYSTEM_EXCLUSIONS,
   PRACTICE_EXPORT_SECTIONS,
+  prepareLegacySmsConsentRestore,
   restorePracticeData,
   sanitizePracticeExportRows,
   summarizePracticeExport,
@@ -30,7 +31,9 @@ describe("backup restore policy", () => {
 
 describe("backupKey", () => {
   it("namespaces backups per practice and date", () => {
-    expect(backupKey("prac-1", "2026-06-07")).toBe("backups/prac-1/2026-06-07.json");
+    expect(backupKey("prac-1", "2026-06-07")).toBe(
+      "backups/prac-1/2026-06-07.json",
+    );
   });
   it("keeps the practice id segment isolated", () => {
     const a = backupKey("a", "2026-06-07");
@@ -40,9 +43,9 @@ describe("backupKey", () => {
   });
 });
 
-function emptyBackup() {
+function emptyBackup(): Record<string, unknown[]> {
   return Object.fromEntries(
-    PRACTICE_EXPORT_SECTIONS.map((section) => [section, []])
+    PRACTICE_EXPORT_SECTIONS.map((section) => [section, []]),
   );
 }
 
@@ -139,6 +142,7 @@ describe("summarizePracticeExport", () => {
     expect(PRACTICE_EXPORT_SECTIONS).toContain("wellnessEnrollments");
     expect(PRACTICE_EXPORT_SECTIONS).toContain("locationMessaging");
     expect(PRACTICE_EXPORT_SECTIONS).toContain("smsSuppressions");
+    expect(PRACTICE_EXPORT_SECTIONS).toContain("smsConsentEvents");
     expect(PRACTICE_EXPORT_SECTIONS).toContain("emailSuppressions");
     expect(PRACTICE_EXPORT_SECTIONS).toContain("webhooks");
     expect(PRACTICE_EXPORT_SECTIONS).toContain("apiKeys");
@@ -155,13 +159,13 @@ describe("summarizePracticeExport", () => {
     expect(sections).not.toContain("messagingRegistrations");
     expect(PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.usageRecords).toContain("billing");
     expect(PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.practicePaymentAccounts).toContain(
-      "Stripe Connect"
+      "Stripe Connect",
     );
     expect(PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.messagingRegistrations).toContain(
-      "Encrypted tax identity"
+      "Encrypted tax identity",
     );
     expect(PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.messagingRegistrations).toContain(
-      "operational database disaster recovery"
+      "operational database disaster recovery",
     );
   });
 
@@ -198,6 +202,153 @@ describe("summarizePracticeExport", () => {
     expect(summary.missingSections).not.toContain("patientMergeEvents");
     expect(summary.counts.patientMergeEvents).toBe(0);
   });
+
+  it("allows restoring older backups that predate SMS consent events", () => {
+    const backup = emptyBackup();
+    delete (backup as Record<string, unknown>).smsConsentEvents;
+
+    const summary = summarizePracticeExport(backup);
+
+    expect(summary.missingSections).not.toContain("smsConsentEvents");
+    expect(summary.counts.smsConsentEvents).toBe(0);
+  });
+
+  it("synthesizes only truthful legacy consent and clears incomplete projections", () => {
+    const backup = emptyBackup();
+    delete (backup as Record<string, unknown>).smsConsentEvents;
+    backup.clients = [
+      {
+        id: "00000000-0000-0000-0000-000000000001",
+        practiceId: "source-practice",
+        phone: "+1 (555) 555-0100",
+        smsConsent: true,
+        smsConsentAt: "2026-08-01T12:00:00.000Z",
+        smsConsentSource: "staff_attested_form:v1",
+        smsConsentDisclosure: "Exact historical disclosure",
+      },
+      {
+        id: "00000000-0000-0000-0000-000000000002",
+        practiceId: "source-practice",
+        phone: "+05555550101",
+        smsConsent: true,
+        smsConsentAt: "2026-08-01T12:00:00.000Z",
+        smsConsentSource: "intake",
+        smsConsentDisclosure: "Incomplete historical evidence",
+      },
+    ];
+
+    const prepared = prepareLegacySmsConsentRestore(backup);
+
+    expect(prepared.clients[0]).toMatchObject({ smsConsent: true });
+    expect(prepared.smsConsentEvents).toHaveLength(1);
+    expect(prepared.smsConsentEvents[0]).toMatchObject({
+      clientId: "00000000-0000-0000-0000-000000000001",
+      destinationE164: "+15555550100",
+      action: "granted",
+      source: "staff_attested_form:v1",
+      disclosureVersion: "v1",
+      disclosure: "Exact historical disclosure",
+      actorType: "system",
+      occurredAt: "2026-08-01T12:00:00.000Z",
+    });
+    expect(prepared.clients[1]).toMatchObject({
+      smsConsent: false,
+      smsConsentAt: null,
+      smsConsentSource: null,
+      smsConsentDisclosure: null,
+    });
+  });
+
+  it("clears a modern affirmative projection without a matching destination grant", () => {
+    const backup = emptyBackup();
+    backup.clients = [
+      {
+        id: "00000000-0000-0000-0000-000000000001",
+        phone: "+15555550100",
+        smsConsent: true,
+        smsConsentAt: "2026-08-01T12:00:00.000Z",
+        smsConsentSource: "staff_attested_form:v1",
+        smsConsentDisclosure: "Exact historical disclosure",
+      },
+    ];
+
+    expect(prepareLegacySmsConsentRestore(backup).clients[0]).toMatchObject({
+      smsConsent: false,
+      smsConsentAt: null,
+      smsConsentSource: null,
+      smsConsentDisclosure: null,
+    });
+
+    backup.smsConsentEvents = [
+      {
+        id: "00000000-0000-0000-0000-000000000010",
+        clientId: "00000000-0000-0000-0000-000000000001",
+        destinationE164: "+15555550100",
+        action: "granted",
+        occurredAt: "2026-08-01T12:00:00.000Z",
+      },
+    ];
+    expect(prepareLegacySmsConsentRestore(backup).clients[0]).toMatchObject({
+      smsConsent: true,
+      phone: "+15555550100",
+    });
+
+    const destinationRevoke = {
+      id: "00000000-0000-0000-0000-000000000011",
+      clientId: "00000000-0000-0000-0000-000000000099",
+      destinationE164: "+15555550100",
+      action: "revoked",
+      occurredAt: "2026-08-01T12:00:00.000Z",
+    };
+    backup.smsConsentEvents.push(destinationRevoke);
+    expect(prepareLegacySmsConsentRestore(backup).clients[0]).toMatchObject({
+      smsConsent: false,
+      smsConsentAt: null,
+    });
+
+    destinationRevoke.occurredAt = "2026-08-02T12:00:00.000Z";
+    expect(prepareLegacySmsConsentRestore(backup).clients[0]).toMatchObject({
+      smsConsent: false,
+      smsConsentAt: null,
+    });
+  });
+
+  it("restores a truthful pre-ledger projection with its synthesized event", async () => {
+    const backup = emptyBackup();
+    delete (backup as Record<string, unknown>).smsConsentEvents;
+    backup.clients = [
+      {
+        id: "00000000-0000-0000-0000-000000000001",
+        practiceId: "source-practice",
+        phone: "+15555550100",
+        smsConsent: true,
+        smsConsentAt: "2026-08-01T12:00:00.000Z",
+        smsConsentSource: "staff_attested_form:v1",
+        smsConsentDisclosure: "Exact historical disclosure",
+      },
+    ];
+    const { db, inserted } = restoreDb();
+
+    const result = await restorePracticeData(
+      db as never,
+      "target-practice",
+      backup,
+    );
+    const restoredRows = inserted.flatMap(({ rows }) => rows);
+
+    expect(result.restored.clients).toBe(1);
+    expect(result.restored.smsConsentEvents).toBe(1);
+    expect(restoredRows).toContainEqual(
+      expect.objectContaining({
+        practiceId: "target-practice",
+        clientId: "00000000-0000-0000-0000-000000000001",
+        destinationE164: "+15555550100",
+        action: "granted",
+        actorType: "system",
+        occurredAt: new Date("2026-08-01T12:00:00.000Z"),
+      }),
+    );
+  });
 });
 
 describe("exportPracticeData query scoping", () => {
@@ -205,7 +356,7 @@ describe("exportPracticeData query scoping", () => {
 
   it("exports parent-scoped children through active tenant parents", () => {
     const helper = source.match(
-      /async function tenantParentChildRows[\s\S]+?async function restoreRows/
+      /async function tenantParentChildRows[\s\S]+?async function restoreRows/,
     )?.[0];
 
     expect(helper).toContain("inArray(parentColumn, parentIds)");
@@ -213,17 +364,29 @@ describe("exportPracticeData query scoping", () => {
     expect(helper).toContain("and ${parentTable.practiceId} = ${practiceId}");
     expect(helper).toContain("and ${parentTable.deletedAt} is null");
     expect(helper).toContain("isNull(table.deletedAt)");
-    expect(source).toContain("tenantParentChildRows(\n      db,\n      patientWeights");
-    expect(source).toContain("tenantParentChildRows(\n      db,\n      patientAllergies");
-    expect(source).toContain("tenantParentChildRows(\n      db,\n      invoiceItems");
-    expect(source).toContain("tenantParentChildRows(\n      db,\n      payments");
-    expect(source).toContain("tenantParentChildRows(\n      db,\n      invoiceAdjustments");
     expect(source).toContain(
-      "tenantParentChildRows(\n      db,\n      treatmentTemplateItems"
+      "tenantParentChildRows(\n      db,\n      patientWeights",
     );
-    expect(source).toContain("tenantParentChildRows(\n      db,\n      caseEntries");
     expect(source).toContain(
-      "tenantParentChildRows(\n      db,\n      treatmentPlanItems"
+      "tenantParentChildRows(\n      db,\n      patientAllergies",
+    );
+    expect(source).toContain(
+      "tenantParentChildRows(\n      db,\n      invoiceItems",
+    );
+    expect(source).toContain(
+      "tenantParentChildRows(\n      db,\n      payments",
+    );
+    expect(source).toContain(
+      "tenantParentChildRows(\n      db,\n      invoiceAdjustments",
+    );
+    expect(source).toContain(
+      "tenantParentChildRows(\n      db,\n      treatmentTemplateItems",
+    );
+    expect(source).toContain(
+      "tenantParentChildRows(\n      db,\n      caseEntries",
+    );
+    expect(source).toContain(
+      "tenantParentChildRows(\n      db,\n      treatmentPlanItems",
     );
   });
 
@@ -236,6 +399,25 @@ describe("exportPracticeData query scoping", () => {
     expect(source).toContain("event.targetPatientId");
     expect(source).toContain("patientMergeEvents: patientMergeRows");
   });
+
+  it("exports append-only SMS consent evidence and referenced identities", () => {
+    expect(source).toContain(
+      "allPracticeRows(db, smsConsentEvents, practiceId)",
+    );
+    expect(source).toContain(
+      "...smsConsentEventRows.map((event) => event.clientId)",
+    );
+    expect(source).toContain(
+      "...smsConsentEventRows.map((event) => event.actorUserId)",
+    );
+    expect(source).toContain(
+      "...smsConsentEventRows.map((event) => event.locationId)",
+    );
+    expect(source).toContain("smsConsentEvents: smsConsentEventRows");
+    expect(source).toContain(".onConflictDoNothing()");
+    expect(source).toContain("restored.smsConsentEvents = await restoreRows(");
+    expect(source).toContain("smsConsentRestore.smsConsentEvents");
+  });
 });
 
 describe("practice backup secret handling", () => {
@@ -247,7 +429,7 @@ describe("practice backup secret handling", () => {
           passwordHash: "real-password-hash",
           emailVerifiedAt: new Date("2026-06-01T12:00:00Z"),
         },
-      ])
+      ]),
     ).toEqual([
       {
         id: "user-1",
@@ -259,7 +441,7 @@ describe("practice backup secret handling", () => {
     expect(
       sanitizePracticeExportRows("clients", [
         { id: "client-1", accessToken: "portal-token" },
-      ])
+      ]),
     ).toEqual([{ id: "client-1", accessToken: null }]);
 
     expect(
@@ -270,7 +452,7 @@ describe("practice backup secret handling", () => {
           keyHash: "stored-api-key-hash",
           lastUsedAt: new Date("2026-06-01T12:00:00Z"),
         },
-      ])
+      ]),
     ).toEqual([
       {
         id: "api-key-1",
@@ -287,7 +469,7 @@ describe("practice backup secret handling", () => {
           secret: "stored-webhook-secret",
           active: true,
         },
-      ])
+      ]),
     ).toEqual([
       {
         id: "webhook-1",
@@ -309,7 +491,7 @@ describe("practice backup secret handling", () => {
             events: [{ apiKey: "raw-key", label: "created" }],
           },
         },
-      ])
+      ]),
     ).toEqual([
       {
         id: "audit-1",
@@ -609,9 +791,9 @@ describe("restorePracticeData", () => {
             appointmentId: "appointment-2",
           },
         ],
-      }).errors
+      }).errors,
     ).toContain(
-      "clinicalRecordCorrections[correction-1] must match its source record patientId and appointmentId exactly."
+      "clinicalRecordCorrections[correction-1] must match its source record patientId and appointmentId exactly.",
     );
 
     expect(
@@ -623,9 +805,9 @@ describe("restorePracticeData", () => {
             recordType: "lab_result",
           },
         ],
-      }).errors
+      }).errors,
     ).toContain(
-      "clinicalRecordCorrections[correction-1].recordType must be soap_note, vital_sign, or vaccination_record."
+      "clinicalRecordCorrections[correction-1].recordType must be soap_note, vital_sign, or vaccination_record.",
     );
 
     expect(
@@ -638,9 +820,9 @@ describe("restorePracticeData", () => {
             appointmentId: "appointment-2",
           },
         ],
-      }).errors
+      }).errors,
     ).toContain(
-      "clinicalRecordCorrections[correction-3] must match its source record patientId and appointmentId exactly."
+      "clinicalRecordCorrections[correction-3] must match its source record patientId and appointmentId exactly.",
     );
 
     expect(
@@ -653,9 +835,9 @@ describe("restorePracticeData", () => {
             id: "correction-4",
           },
         ],
-      }).errors
+      }).errors,
     ).toContain(
-      "clinicalRecordCorrections[correction-4] duplicates an existing correction source."
+      "clinicalRecordCorrections[correction-4] duplicates an existing correction source.",
     );
   });
 
@@ -686,7 +868,7 @@ describe("restorePracticeData", () => {
     };
 
     expect(validatePracticeExportRestore(backup).errors).toContain(
-      "soapNotes[soap-1].appointmentId must reference an appointment for the same patient."
+      "soapNotes[soap-1].appointmentId must reference an appointment for the same patient.",
     );
   });
 
@@ -700,11 +882,11 @@ describe("restorePracticeData", () => {
     const { db, inserted } = restoreDb();
 
     expect(validatePracticeExportRestore(backup).errors).toContain(
-      'appointments[appointment-1].clientId references missing clients row "other-client".'
+      'appointments[appointment-1].clientId references missing clients row "other-client".',
     );
 
     await expect(
-      restorePracticeData(db as never, "target-practice", backup)
+      restorePracticeData(db as never, "target-practice", backup),
     ).rejects.toThrow("Backup contains invalid restore data");
     expect(inserted).toEqual([]);
   });
@@ -877,7 +1059,9 @@ describe("restorePracticeData", () => {
     );
     await expect(
       restorePracticeData(db as never, "target-practice", backup),
-    ).rejects.toThrow("Backup is missing required sections: prescriptionEvents");
+    ).rejects.toThrow(
+      "Backup is missing required sections: prescriptionEvents",
+    );
     expect(inserted).toEqual([]);
   });
 
@@ -899,11 +1083,11 @@ describe("restorePracticeData", () => {
         "clients[#2].id is required.",
         "clients[#3].id must be a non-empty string.",
         "clients[#4].id must be a non-empty string.",
-      ])
+      ]),
     );
 
     await expect(
-      restorePracticeData(db as never, "target-practice", backup)
+      restorePracticeData(db as never, "target-practice", backup),
     ).rejects.toThrow("Backup contains invalid restore data");
     expect(inserted).toEqual([]);
   });
@@ -941,7 +1125,7 @@ describe("restorePracticeData", () => {
     expect(client?.createdAt).toBeInstanceOf(Date);
     expect(client?.updatedAt).toBeInstanceOf(Date);
     expect((client?.createdAt as Date).toISOString()).toBe(
-      "2026-07-01T12:00:00.000Z"
+      "2026-07-01T12:00:00.000Z",
     );
     expect(patient?.createdAt).toBeInstanceOf(Date);
     // String-mode date columns (calendar dates) stay strings.
@@ -973,7 +1157,7 @@ describe("restorePracticeData", () => {
     const result = await restorePracticeData(
       rootDb as never,
       "target-practice",
-      backup
+      backup,
     );
     const restoredRows = inserted.flatMap(({ rows }) => rows);
 
@@ -983,7 +1167,7 @@ describe("restorePracticeData", () => {
       expect.objectContaining({
         id: "client-1",
         practiceId: "target-practice",
-      })
+      }),
     );
   });
 
@@ -1042,6 +1226,25 @@ describe("restorePracticeData", () => {
       ],
       clients: [{ id: "client-1", practiceId: "source-practice" }],
       users: [{ id: "user-1", practiceId: "source-practice" }],
+      smsConsentEvents: [
+        {
+          id: "sms-consent-event-1",
+          practiceId: "source-practice",
+          clientId: "client-1",
+          locationId: "location-1",
+          destinationE164: "+15555550100",
+          action: "granted",
+          source: "staff_attested_form:v1",
+          disclosureVersion: "v1",
+          disclosure: "Exact historical disclosure",
+          actorType: "staff",
+          actorUserId: "user-1",
+          actorName: "Ada Staff",
+          eventKey: "staff:historical-1",
+          occurredAt: "2026-08-01T12:00:00.000Z",
+          createdAt: "2026-08-01T12:00:01.000Z",
+        },
+      ],
       patients: [
         {
           id: "patient-1",
@@ -1088,26 +1291,32 @@ describe("restorePracticeData", () => {
     };
     const { db, inserted } = restoreDb();
 
-    const result = await restorePracticeData(db as never, "target-practice", backup);
+    const result = await restorePracticeData(
+      db as never,
+      "target-practice",
+      backup,
+    );
     const restoredRows = inserted.flatMap(({ rows }) => rows);
 
-    expect(result.totalRows).toBe(18);
+    expect(result.totalRows).toBe(19);
     expect(restoredRows.find((row) => row.id === "location-1")).toMatchObject({
       id: "location-1",
       practiceId: "target-practice",
     });
     expect(
-      restoredRows.find((row) => row.id === "location-messaging-1")
+      restoredRows.find((row) => row.id === "location-messaging-1"),
     ).toMatchObject({
       id: "location-messaging-1",
       practiceId: "target-practice",
     });
-    expect(restoredRows.find((row) => row.id === "suppression-1")).toMatchObject({
+    expect(
+      restoredRows.find((row) => row.id === "suppression-1"),
+    ).toMatchObject({
       id: "suppression-1",
       practiceId: "target-practice",
     });
     expect(
-      restoredRows.find((row) => row.id === "email-suppression-1")
+      restoredRows.find((row) => row.id === "email-suppression-1"),
     ).toMatchObject({
       id: "email-suppression-1",
       practiceId: "target-practice",
@@ -1135,6 +1344,19 @@ describe("restorePracticeData", () => {
       practiceId: "target-practice",
       accessToken: null,
     });
+    expect(
+      restoredRows.find((row) => row.id === "sms-consent-event-1"),
+    ).toMatchObject({
+      id: "sms-consent-event-1",
+      practiceId: "target-practice",
+      clientId: "client-1",
+      locationId: "location-1",
+      destinationE164: "+15555550100",
+      disclosure: "Exact historical disclosure",
+      eventKey: "staff:historical-1",
+      occurredAt: new Date("2026-08-01T12:00:00.000Z"),
+      createdAt: new Date("2026-08-01T12:00:01.000Z"),
+    });
     expect(restoredRows.find((row) => row.id === "user-1")).toMatchObject({
       id: "user-1",
       practiceId: "target-practice",
@@ -1155,13 +1377,13 @@ describe("restorePracticeData", () => {
       practiceId: "target-practice",
     });
     expect(
-      restoredRows.find((row) => row.id === "wellness-plan-1")
+      restoredRows.find((row) => row.id === "wellness-plan-1"),
     ).toMatchObject({
       id: "wellness-plan-1",
       practiceId: "target-practice",
     });
     expect(
-      restoredRows.find((row) => row.id === "wellness-enrollment-1")
+      restoredRows.find((row) => row.id === "wellness-enrollment-1"),
     ).toMatchObject({
       id: "wellness-enrollment-1",
       practiceId: "target-practice",
@@ -1191,7 +1413,7 @@ describe("restorePracticeData", () => {
       restorePracticeData(db as never, "target-practice", {
         clients: [],
         patients: [],
-      })
+      }),
     ).rejects.toThrow("Backup is missing required sections");
   });
 });

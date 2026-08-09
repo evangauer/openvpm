@@ -1561,7 +1561,7 @@ describe("messaging location sender join scoping", () => {
         )}\\),\\s*(?:activePracticePredicate\\(${practiceExpr.replace(
           ".",
           "\\."
-        )}\\),\\s*)?isNull\\(locations\\.deletedAt\\)\\s*\\)\\s*\\)`,
+        )}\\),\\s*)?isNull\\(locations\\.deletedAt\\)\\s*,?\\s*\\)\\s*,?\\s*\\)`,
         "s"
       )
     );
@@ -1676,7 +1676,7 @@ describe("messaging location sender join scoping", () => {
 
     expect(source).toContain("if (!opts.practiceId) return undefined");
     expect(source).toMatch(
-      /innerJoin\(\s*locations,\s*and\(\s*eq\(locations\.id, locationMessaging\.locationId\),\s*eq\(locations\.practiceId, opts\.practiceId!\),\s*isNull\(locations\.deletedAt\)\s*\)\s*\)/s
+      /innerJoin\(\s*locations,\s*and\(\s*eq\(locations\.id, locationMessaging\.locationId\),\s*eq\(locations\.practiceId, opts\.practiceId!\),\s*isNull\(locations\.deletedAt\)\s*,?\s*\)\s*,?\s*\)/s
     );
     expect(source).toContain(
       "eq(locationMessaging.practiceId, opts.practiceId!)"

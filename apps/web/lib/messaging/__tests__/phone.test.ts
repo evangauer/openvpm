@@ -22,6 +22,11 @@ describe("normalizeE164", () => {
     expect(normalizeE164("+44 20 7946 0958")).toBe("+442079460958");
   });
 
+  it("rejects plus-prefixed numbers with an invalid zero country code", () => {
+    expect(normalizeE164("+05555550123")).toBeNull();
+    expect(normalizeE164("+0 555 555 0123")).toBeNull();
+  });
+
   it("returns null for empty / nullish input", () => {
     expect(normalizeE164("")).toBeNull();
     expect(normalizeE164(null)).toBeNull();

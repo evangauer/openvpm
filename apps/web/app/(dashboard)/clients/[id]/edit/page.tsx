@@ -111,7 +111,7 @@ function EditClientForm() {
     refetch,
   } = trpc.clients.getById.useQuery(
     { id: params.id },
-    { enabled: !!params.id }
+    { enabled: !!params.id },
   );
 
   useEffect(() => {
@@ -144,7 +144,7 @@ function EditClientForm() {
   const revokeSms = trpc.clients.revokeSms.useMutation({
     onSuccess: async ({ clientsRevoked }) => {
       toast.success(
-        `Texting revoked for this number${clientsRevoked > 1 ? ` across ${clientsRevoked} matching client records` : ""}.`
+        `Texting revoked for this number${clientsRevoked > 1 ? ` across ${clientsRevoked} matching client records` : ""}.`,
       );
       setSmsConsent(false);
       setSmsConsentTouched(false);
@@ -182,7 +182,7 @@ function EditClientForm() {
     }
     if (smsConsentTouched && smsConsent && !smsPhoneValid) {
       setError(
-        "Enter a valid mobile phone number before recording SMS consent."
+        "Enter a valid mobile phone number before recording SMS consent.",
       );
       return;
     }
@@ -213,7 +213,7 @@ function EditClientForm() {
       setSmsConsent(
         phoneNumbersMatchForConsent(client.phone, value)
           ? (client.smsConsent ?? false)
-          : false
+          : false,
       );
       setSmsConsentTouched(false);
     }
@@ -376,7 +376,7 @@ function EditClientForm() {
               setError(null);
               if (
                 window.confirm(
-                  "Stop all SMS to this phone number across the practice?"
+                  "Stop all SMS to this phone number across the practice?",
                 )
               ) {
                 revokeSms.mutate({
@@ -393,6 +393,47 @@ function EditClientForm() {
             )}
             Do not text this number
           </Button>
+        </div>
+
+        <div className="rounded-md border border-border p-3">
+          <p className="text-sm font-medium">SMS consent history</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Append-only evidence for this client. Destination-wide events may
+            affect other client records that share the same phone number.
+          </p>
+          {client.smsConsentHistory.length === 0 ? (
+            <p className="mt-3 text-xs text-muted-foreground">
+              No consent events have been recorded yet.
+            </p>
+          ) : (
+            <ol className="mt-3 space-y-2">
+              {client.smsConsentHistory.map((event) => (
+                <li
+                  key={event.id}
+                  className="rounded border border-border/70 bg-muted/30 p-2 text-xs"
+                >
+                  <p className="font-medium">
+                    {event.action === "granted"
+                      ? "Consent granted"
+                      : "Consent revoked"}
+                    {` · ${event.destinationE164}`}
+                  </p>
+                  <p className="mt-0.5 text-muted-foreground">
+                    {new Date(event.occurredAt).toLocaleString()} ·{" "}
+                    {event.source}
+                    {event.actorName
+                      ? ` · ${event.actorName}`
+                      : event.provider
+                        ? ` · ${event.provider}`
+                        : " · system"}
+                  </p>
+                  {event.detail ? (
+                    <p className="mt-1 text-muted-foreground">{event.detail}</p>
+                  ) : null}
+                </li>
+              ))}
+            </ol>
+          )}
         </div>
 
         <div>

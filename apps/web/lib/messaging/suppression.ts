@@ -4,22 +4,30 @@ import type { Database } from "@openpims/db/client";
 import { clients, smsSuppressions } from "@openpims/db";
 import { withSystem } from "@/lib/tenant-db";
 import { normalizeE164 } from "./phone";
+import {
+  appendSmsConsentEventInTransaction,
+  type SmsConsentEventEvidence,
+} from "./consent-events";
 
 export type SuppressionReason = "stop" | "manual" | "bounce" | "complaint";
 type SmsRevocationDatabase = Pick<Database, "execute" | "insert" | "update">;
 type SmsRecipientLockDatabase = Pick<Database, "execute">;
+type SmsRevocationEvidence = Omit<
+  SmsConsentEventEvidence,
+  "practiceId" | "destinationE164" | "action"
+>;
 
 export async function acquireSmsRecipientLockInTransaction(
   tx: SmsRecipientLockDatabase,
   practiceId: string,
-  phone: string
+  phone: string,
 ): Promise<string> {
   const e164 = normalizeE164(phone);
   if (!e164) {
     throw new Error("A valid SMS phone number is required for revocation.");
   }
   await tx.execute(
-    sql`select pg_advisory_xact_lock(hashtextextended(${`sms:${practiceId}:${e164}`}, 0))`
+    sql`select pg_advisory_xact_lock(hashtextextended(${`sms:${practiceId}:${e164}`}, 0))`,
   );
   return e164;
 }
@@ -31,7 +39,7 @@ export async function acquireSmsRecipientLockInTransaction(
  */
 export async function isSuppressed(
   practiceId: string,
-  phone: string
+  phone: string,
 ): Promise<boolean> {
   const e164 = normalizeE164(phone);
   if (!e164) return false;
@@ -42,10 +50,10 @@ export async function isSuppressed(
       .where(
         and(
           eq(smsSuppressions.practiceId, practiceId),
-          eq(smsSuppressions.phone, e164)
-        )
+          eq(smsSuppressions.phone, e164),
+        ),
       )
-      .limit(1)
+      .limit(1),
   );
   return Boolean(row);
 }
@@ -75,7 +83,7 @@ export async function addSuppression(opts: {
       })
       .onConflictDoNothing({
         target: [smsSuppressions.practiceId, smsSuppressions.phone],
-      })
+      }),
   );
 }
 
@@ -92,13 +100,28 @@ async function revokeSmsConsentAfterLock(
     locationId?: string;
     reason: "stop" | "manual";
     detail?: string;
-  }
+    evidence: SmsRevocationEvidence;
+  },
 ): Promise<{ phone: string; clientsRevoked: number }> {
   const fullDigits = e164.replace(/\D/g, "");
   const nationalDigits =
     e164.startsWith("+1") && fullDigits.length === 11
       ? fullDigits.slice(1)
       : fullDigits;
+
+  const eventInserted = await appendSmsConsentEventInTransaction(tx, {
+    ...opts.evidence,
+    practiceId: opts.practiceId,
+    destinationE164: e164,
+    action: "revoked",
+    detail: opts.evidence.detail ?? opts.detail,
+  });
+  if (!eventInserted) {
+    if (opts.evidence.actorType !== "client") {
+      throw new Error("SMS consent revocation evidence could not be appended");
+    }
+    return { phone: e164, clientsRevoked: 0 };
+  }
 
   await tx
     .insert(smsSuppressions)
@@ -140,9 +163,9 @@ async function revokeSmsConsentAfterLock(
         isNull(clients.deletedAt),
         or(
           sql`regexp_replace(${clients.phone}, '\D', '', 'g') = ${fullDigits}`,
-          sql`regexp_replace(${clients.phone}, '\D', '', 'g') = ${nationalDigits}`
-        )
-      )
+          sql`regexp_replace(${clients.phone}, '\D', '', 'g') = ${nationalDigits}`,
+        ),
+      ),
     )
     .returning({ id: clients.id });
 
@@ -163,7 +186,8 @@ export async function revokeSmsConsentAfterRecipientLockInTransaction(
     locationId?: string;
     reason: "stop" | "manual";
     detail?: string;
-  }
+    evidence: SmsRevocationEvidence;
+  },
 ): Promise<{ phone: string; clientsRevoked: number }> {
   const e164 = normalizeE164(opts.phone);
   if (!e164) {
@@ -180,12 +204,13 @@ export async function revokeSmsConsentByPhoneInTransaction(
     locationId?: string;
     reason: "stop" | "manual";
     detail?: string;
-  }
+    evidence: SmsRevocationEvidence;
+  },
 ): Promise<{ phone: string; clientsRevoked: number }> {
   const e164 = await acquireSmsRecipientLockInTransaction(
     tx,
     opts.practiceId,
-    opts.phone
+    opts.phone,
   );
   return revokeSmsConsentAfterLock(tx, e164, opts);
 }
@@ -196,6 +221,7 @@ export async function revokeSmsConsentByPhone(opts: {
   locationId?: string;
   reason: "stop" | "manual";
   detail?: string;
+  evidence: SmsRevocationEvidence;
 }): Promise<{ phone: string; clientsRevoked: number }> {
   return withSystem(db, (tx) => revokeSmsConsentByPhoneInTransaction(tx, opts));
 }
@@ -204,21 +230,3 @@ export async function revokeSmsConsentByPhone(opts: {
  * Remove carrier STOP suppression after an explicit opt-in keyword. Manual,
  * bounce, and complaint suppressions remain as staff/provider safety gates.
  */
-export async function removeSuppression(
-  practiceId: string,
-  phone: string
-): Promise<void> {
-  const e164 = normalizeE164(phone);
-  if (!e164) return;
-  await withSystem(db, (tx) =>
-    tx
-      .delete(smsSuppressions)
-      .where(
-        and(
-          eq(smsSuppressions.practiceId, practiceId),
-          eq(smsSuppressions.phone, e164),
-          eq(smsSuppressions.reason, "stop")
-        )
-      )
-  );
-}
