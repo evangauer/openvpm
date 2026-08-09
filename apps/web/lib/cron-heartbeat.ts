@@ -14,6 +14,7 @@ export const CRON_HEARTBEAT_JOBS = [
   "prescription-expiry",
   "activation-digest",
   "conversion-reconcile",
+  "sms-operations",
 ] as const;
 
 export type CronHeartbeatJob = (typeof CRON_HEARTBEAT_JOBS)[number];

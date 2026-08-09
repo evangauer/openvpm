@@ -18,6 +18,7 @@ describe("Vercel cron schedule", () => {
         "/api/cron/rate-limit-cleanup",
         "/api/cron/auth-cleanup",
         "/api/cron/activation-digest",
+        "/api/cron/sms-operations",
         "/api/cron/conversion-reconcile",
         "/api/cron/prescription-expiry",
       ]),
@@ -27,5 +28,10 @@ describe("Vercel cron schedule", () => {
       config.crons?.find((cron) => cron.path === "/api/cron/reminders")
         ?.schedule,
     ).toBe("0 * * * *");
+
+    expect(
+      config.crons?.find((cron) => cron.path === "/api/cron/sms-operations")
+        ?.schedule,
+    ).toBe("30 13 * * *");
   });
 });

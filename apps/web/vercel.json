@@ -43,6 +43,10 @@
       "schedule": "0 13 * * 1"
     },
     {
+      "path": "/api/cron/sms-operations",
+      "schedule": "30 13 * * *"
+    },
+    {
       "path": "/api/cron/conversion-reconcile",
       "schedule": "35 * * * *"
     }

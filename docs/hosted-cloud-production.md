@@ -160,6 +160,45 @@ allowlists, disable the clinic database sender, and finally select **Disable
 provider profile**. Provider deactivation always closes the database gate before
 contacting Telnyx, so an uncertain carrier response cannot leave OpenVPM sending.
 
+### Texting operations response
+
+The daily `/api/cron/sms-operations` check is read-only. It does not enable a
+provider profile, change a launch flag or allowlist, send or retry a message, or
+reconcile evidence. It sends one bounded, PHI-free operations alert only when
+the health computation finds an exception; a healthy run emits only its cron
+heartbeat.
+
+Use these fixed thresholds and responses:
+
+- **P0 — enabled but unsafe:** an enabled location has missing or inactive
+  registration/provider state, missing sender/profile identity, a failed-closed
+  profile-readiness gate, registration/profile identity drift, more than one
+  enabled hosted location for a practice, or read-only provider inspection finds
+  unsafe profile, number, campaign, or assignment state. Turn global sending off,
+  clear both sending allowlists, disable the clinic sender, and investigate the
+  exact provider state before reactivation. Do not work around a failed gate.
+- **P1 — carrier action:** registration or sender state is failed, suspended, or
+  action-required; a submission lock is older than 15 minutes; or pending/not
+  started carrier work has had no provider sync or activity for 24 hours. Review
+  the carrier portal and immutable registration history before taking a bounded,
+  explicit operator action.
+- **P1 — profile attention:** a disabled clinic's provider-readiness attestation
+  has passed its 15-minute activation window, current provider state has drifted,
+  or a read-only provider inspection could not complete. Reinspect; do not infer
+  readiness or automatically mutate the provider. An enabled sender is not
+  classified as unsafe solely because its original activation attestation is
+  older than 15 minutes; current provider inspection controls that decision.
+- **P1 — send/delivery operations:** review send-attempt exceptions after 15
+  minutes and delivery-event exceptions or accepted sends without final provider
+  evidence after 60 minutes. Use the exact admin queues and their constrained
+  review actions; never attach ambiguous evidence to an arbitrary clinic or
+  retry an SMS from the monitoring job.
+
+Alerts contain only bounded counts and reason codes. They must not contain phone
+numbers, recipients, message bodies, clinic/patient/client names, raw provider
+payloads, or full provider identifiers. Resolve every P0 before any pilot sends;
+record and clear P1 items through the existing operator evidence workflow.
+
 For a Twilio fallback deployment, set `MESSAGING_PROVIDER=twilio` and provide
 `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_PHONE_NUMBER` instead of
 the Telnyx send envs. Every Twilio send configures the canonical
@@ -335,6 +374,7 @@ set job-specific URLs (`CRON_HEARTBEAT_REMINDERS_URL`,
 `CRON_HEARTBEAT_RATE_LIMIT_CLEANUP_URL`,
 `CRON_HEARTBEAT_AUTH_CLEANUP_URL`,
 `CRON_HEARTBEAT_ACTIVATION_DIGEST_URL`,
+`CRON_HEARTBEAT_SMS_OPERATIONS_URL`,
 `CRON_HEARTBEAT_CONVERSION_RECONCILE_URL`,
 `CRON_HEARTBEAT_PRESCRIPTION_EXPIRY_URL`) when your external monitor expects one URL
 per scheduled job. URL templates may include `{job}` and `{status}` tokens.
