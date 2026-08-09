@@ -464,51 +464,72 @@ export const authRouter = createRouter({
       return { ok: true };
     }),
 
-  /** Resend the email-verification link. Generic response (no enumeration). */
-  resendVerification: publicProcedure
-    .input(z.object({ email: authEmailInput }))
-    .mutation(async ({ ctx, input }) => {
-      const email = normalizeAuthEmail(input.email);
-      await assertPreAuthRateLimit({
-        key: `verifyresend:${email}`,
-        limit: 5,
-        windowMs: 3600000,
-        message: "Too many requests. Please try again later.",
-        logContext: "resendVerification",
+  /**
+   * Resend verification for the signed-in user and report delivery failures.
+   * This procedure can be truthful because the session already proves which
+   * account is making the request; there is no logged-out email resend route.
+   */
+  resendVerification: protectedProcedure.mutation(async ({ ctx }) => {
+    const [user] = await ctx.db
+      .select({
+        id: users.id,
+        email: users.email,
+        name: users.name,
+        emailVerifiedAt: users.emailVerifiedAt,
+      })
+      .from(users)
+      .where(
+        and(
+          eq(users.id, ctx.user.id),
+          eq(users.practiceId, ctx.practiceId),
+          isNull(users.deletedAt)
+        )
+      )
+      .limit(1);
+
+    if (!user) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "Account not found." });
+    }
+    if (user.emailVerifiedAt) {
+      return { ok: true, alreadyVerified: true };
+    }
+
+    await assertPreAuthRateLimit({
+      key: `verifyresend:${normalizeAuthEmail(user.email)}`,
+      limit: 5,
+      windowMs: 3600000,
+      message: "Too many requests. Please try again later.",
+      logContext: "resendVerification",
+    });
+
+    try {
+      const token = await createAuthToken({
+        userId: user.id,
+        email: user.email,
+        type: "email_verify",
+        db: ctx.db,
       });
-
-      const [user] = await ctx.db
-        .select({
-          id: users.id,
-          email: users.email,
-          name: users.name,
-          emailVerifiedAt: users.emailVerifiedAt,
-        })
-        .from(users)
-        .where(and(eq(users.email, email), isNull(users.deletedAt)))
-        .limit(1);
-
-      // Only send for an existing, not-yet-verified account. Respond the same
-      // either way so the endpoint can't be used to probe for accounts.
-      if (user && !user.emailVerifiedAt) {
-        try {
-          const token = await createAuthToken({
-            userId: user.id,
-            email: user.email,
-            type: "email_verify",
-            db: ctx.db,
-          });
-          await sendVerificationEmail({
-            to: user.email,
-            name: user.name,
-            verifyUrl: `${appBaseUrl()}/verify-email?token=${token}`,
-          });
-        } catch (err) {
-          console.error("[resendVerification] email failed:", err);
-        }
+      const result = await sendVerificationEmail({
+        to: user.email,
+        name: user.name,
+        verifyUrl: `${appBaseUrl()}/verify-email?token=${token}`,
+      });
+      if (!result.success) {
+        throw new Error(
+          result.error || "Email provider did not accept the verification message."
+        );
       }
-      return { ok: true };
-    }),
+    } catch (err) {
+      console.error("[resendVerification] email failed:", err);
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message:
+          "We couldn't send the verification email. Please try again in a moment.",
+      });
+    }
+
+    return { ok: true, alreadyVerified: false };
+  }),
 
   /** Request a password-reset email. Always succeeds (no account enumeration). */
   requestPasswordReset: publicProcedure

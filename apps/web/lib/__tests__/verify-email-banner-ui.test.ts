@@ -19,4 +19,12 @@ describe("verify email banner UI", () => {
     );
     expect(source).not.toContain("if (!data?.verificationEnabled || data.emailVerified)");
   });
+
+  it("uses the authenticated inputless resend and renders real failures", () => {
+    expect(source).toContain("trpc.auth.resendVerification.useMutation()");
+    expect(source).toContain("onClick={() => resend.mutate()}");
+    expect(source).not.toContain("resend.mutate({ email:");
+    expect(source).toContain("resend.error.message");
+    expect(source).toContain("Verification email sent. Check your inbox (and spam).");
+  });
 });

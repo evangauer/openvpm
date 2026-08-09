@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => {
     role: "admin",
     practiceId: "practice-1",
     passwordHash: "hashed-password",
+    emailVerifiedAt: null,
   };
   const selectLimit = vi.fn(async (): Promise<unknown[]> => [activeUser]);
   const selectWhere = vi.fn(() => ({ limit: selectLimit }));
@@ -102,6 +103,20 @@ afterEach(() => {
 });
 
 describe("credentials login rate-limit cleanup", () => {
+  it("keeps trial access open while the user's email is unverified", async () => {
+    const user = await credentialsProvider().authorize(
+      { email: "admin@example.com", password: "password123" },
+      { headers: { "x-forwarded-for": "203.0.113.10" } }
+    );
+
+    expect(user).toMatchObject({
+      id: "user-1",
+      email: "admin@example.com",
+      practiceId: "practice-1",
+    });
+    expect(mocks.activeUser.emailVerifiedAt).toBeNull();
+  });
+
   it("clears the email bucket after successful sign-in without resetting the IP bucket", async () => {
     const user = await credentialsProvider().authorize(
       { email: " Admin@Example.COM ", password: "password123" },

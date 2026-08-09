@@ -110,6 +110,7 @@ const t = initTRPC.context<TRPCContext>().create({
 export const createRouter = t.router;
 
 const HOSTED_READ_ONLY_MUTATION_ALLOWLIST = new Set([
+  "auth.resendVerification",
   "settings.requestAccountDeletion",
   "subscription.createCheckout",
   "subscription.openBillingPortal",

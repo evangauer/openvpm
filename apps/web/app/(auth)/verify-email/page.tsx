@@ -9,12 +9,12 @@ import { trpc } from "@/lib/trpc";
 function VerifyEmailInner() {
   const params = useSearchParams();
   const token = params.get("token") ?? "";
-  const email = params.get("email") ?? "";
 
-  // Two modes: confirm a token (clicked from the email), or the post-signup
-  // "check your inbox" pending screen (no token) with a resend option.
+  // Token links confirm the address. Recovery is intentionally authenticated:
+  // signed-in users can resend from the in-app banner without exposing an
+  // email-address endpoint that could invalidate another user's link.
   if (token) return <ConfirmToken token={token} />;
-  return <PendingVerification email={email} />;
+  return <VerificationRecovery />;
 }
 
 function ConfirmToken({ token }: { token: string }) {
@@ -44,7 +44,8 @@ function ConfirmToken({ token }: { token: string }) {
       {status === "ok" && (
         <>
           <p className="mt-3 text-sm text-foreground">
-            Your email is verified. Your OpenVPM trial is ready.
+            Email confirmed. Your trial was already active, so you can continue
+            where you left off.
           </p>
           <Link
             href="/"
@@ -60,10 +61,10 @@ function ConfirmToken({ token }: { token: string }) {
             This verification link is invalid or has expired.
           </p>
           <Link
-            href="/verify-email"
+            href="/"
             className="mt-6 inline-block text-sm text-primary hover:underline"
           >
-            Send a new link
+            Open OpenVPM to resend
           </Link>
         </>
       )}
@@ -71,12 +72,7 @@ function ConfirmToken({ token }: { token: string }) {
   );
 }
 
-function PendingVerification({ email }: { email: string }) {
-  const [sent, setSent] = useState(false);
-  const resend = trpc.auth.resendVerification.useMutation({
-    onSuccess: () => setSent(true),
-  });
-
+function VerificationRecovery() {
   return (
     <Shell>
       <div className="mt-4 flex justify-center">
@@ -85,52 +81,21 @@ function PendingVerification({ email }: { email: string }) {
         </span>
       </div>
       <h2 className="mt-4 font-heading text-lg font-semibold text-foreground">
-        Check your inbox
+        Confirm your email
       </h2>
       <p className="mt-2 text-sm text-muted-foreground">
-        {email ? (
-          <>
-            We sent a verification link to{" "}
-            <span className="font-medium text-foreground">{email}</span>. Click it
-            to confirm your address. Your trial is already active.
-          </>
-        ) : (
-          <>
-            We sent a verification link to your email. Click it to confirm your
-            address. Your trial is already active.
-          </>
-        )}
+        Your trial is already active. Open OpenVPM and use the verification
+        banner to send a new link securely. Any unexpired verification link will
+        work.
       </p>
-
-      {sent ? (
-        <p className="mt-6 rounded-md border border-primary/20 bg-primary/5 p-3 text-sm text-primary">
-          Sent. If it&apos;s not in your inbox, check spam.
-        </p>
-      ) : (
-        <button
-          type="button"
-          disabled={!email || resend.isPending}
-          onClick={() => email && resend.mutate({ email })}
-          className="mt-6 inline-flex items-center justify-center gap-2 rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:border-primary hover:text-primary disabled:opacity-50"
-        >
-          {resend.isPending ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : null}
-          Resend verification email
-        </button>
-      )}
-
-      <p className="mt-6 text-xs text-muted-foreground">
-        Wrong address?{" "}
-        <Link href="/register" className="text-primary hover:underline">
-          Use a different email
-        </Link>
-      </p>
-      <p className="mt-2 text-xs text-muted-foreground">
-        Already verified?{" "}
-        <Link href="/login" className="text-primary hover:underline">
-          Sign in
-        </Link>
+      <Link
+        href="/"
+        className="mt-6 inline-block rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+      >
+        Open OpenVPM
+      </Link>
+      <p className="mt-4 text-xs text-muted-foreground">
+        If you&apos;re signed out, OpenVPM will ask you to sign in first.
       </p>
     </Shell>
   );

@@ -119,6 +119,7 @@ describe("createAuthToken", () => {
     });
     expect(row.tokenHash).not.toBe(raw);
     expect(row.expiresAt).toEqual(new Date("2026-06-13T00:00:00Z"));
+    expect(fake.update).not.toHaveBeenCalled();
   });
 
   it("supersedes previous unused unexpired tokens for the same user and type", async () => {

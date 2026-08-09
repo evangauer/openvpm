@@ -88,12 +88,17 @@ export function VerifyEmailBanner() {
             account and keep reminders deliverable.
           </>
         )}
+        {resend.error ? (
+          <span className="mt-1 block text-xs text-destructive">
+            {resend.error.message}
+          </span>
+        ) : null}
       </p>
       {!resend.isSuccess && (
         <button
           type="button"
-          disabled={resend.isPending || !data.email}
-          onClick={() => data.email && resend.mutate({ email: data.email })}
+          disabled={resend.isPending}
+          onClick={() => resend.mutate()}
           className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-amber-300 bg-white px-2.5 py-1 text-xs font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50"
         >
           {resend.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}

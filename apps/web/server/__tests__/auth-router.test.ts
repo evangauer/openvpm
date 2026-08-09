@@ -6,7 +6,11 @@ const mocks = vi.hoisted(() => ({
   createAuthToken: vi.fn(async () => "token-123"),
   consumeAuthToken: vi.fn(),
   sendPasswordResetEmail: vi.fn(async () => ({ success: true })),
-  sendVerificationEmail: vi.fn(async () => ({ success: true })),
+  sendVerificationEmail: vi.fn(
+    async (): Promise<{ success: boolean; id?: string; error?: string }> => ({
+      success: true,
+    })
+  ),
   sendWelcomeEmail: vi.fn(async () => ({ success: true })),
   createSubscriptionCheckoutSession: vi.fn(async () => ({
     url: "https://stripe.example/signup-checkout",
@@ -102,6 +106,21 @@ function sqlIncludesValue(
 
 function callerWithDb(db: Record<string, unknown>) {
   return authRouter.createCaller({ db, session: null } as never);
+}
+
+function callerWithSession(db: Record<string, unknown>) {
+  return authRouter.createCaller({
+    db,
+    session: {
+      user: {
+        id: "user-1",
+        email: "admin@example.com",
+        name: "Admin",
+        role: "admin",
+        practiceId: "practice-1",
+      },
+    },
+  } as never);
 }
 
 function createSelectDb(selectResults: unknown[][]) {
@@ -202,6 +221,8 @@ afterEach(() => {
   });
   mocks.billingEnforced.mockReturnValue(false);
   mocks.noCardTrialEnabled.mockReturnValue(false);
+  mocks.createAuthToken.mockResolvedValue("token-123");
+  mocks.sendVerificationEmail.mockResolvedValue({ success: true });
   mocks.createSubscriptionCheckoutSession.mockResolvedValue({
     url: "https://stripe.example/signup-checkout",
   });
@@ -628,39 +649,115 @@ describe("auth router email normalization", () => {
     });
   });
 
-  it("normalizes verification-resend keys and active account lookups", async () => {
-    const { db, selectWhere } = createSelectDb([
-      [
-        {
-          id: "user-1",
-          email: "admin@example.com",
-          name: "Admin",
-          emailVerifiedAt: null,
-        },
-      ],
-    ]);
+});
 
-    await expect(
-      callerWithDb(db).resendVerification({ email: "Admin@Example.COM" })
-    ).resolves.toEqual({ ok: true });
+describe("authenticated verification resend", () => {
+  const unverifiedUser = {
+    id: "user-1",
+    email: "admin@example.com",
+    name: "Admin",
+    emailVerifiedAt: null,
+  };
 
+  it("rejects logged-out callers before account lookup", async () => {
+    const { db } = createSelectDb([]);
+
+    await expect(callerWithDb(db).resendVerification()).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+    });
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it("binds resend to the signed-in account and reports provider acceptance", async () => {
+    const { db, selectWhere } = createSelectDb([[unverifiedUser]]);
+
+    await expect(callerWithSession(db).resendVerification()).resolves.toEqual({
+      ok: true,
+      alreadyVerified: false,
+    });
+
+    const condition = selectWhere.mock.calls[0]?.[0];
+    expect(sqlIncludesValue(condition, "user-1")).toBe(true);
+    expect(sqlIncludesValue(condition, "practice-1")).toBe(true);
+    expect(sqlIncludesValue(condition, users.deletedAt)).toBe(true);
     expect(mocks.rateLimit).toHaveBeenCalledWith({
       key: "verifyresend:admin@example.com",
       limit: 5,
       windowMs: 3600000,
     });
-    expect(sqlIncludesValue(selectWhere.mock.calls[0]?.[0], "admin@example.com")).toBe(
-      true
-    );
-    expect(sqlIncludesValue(selectWhere.mock.calls[0]?.[0], users.deletedAt)).toBe(
-      true
-    );
     expect(mocks.createAuthToken).toHaveBeenCalledWith({
       userId: "user-1",
       email: "admin@example.com",
       type: "email_verify",
       db,
     });
+    expect(mocks.sendVerificationEmail).toHaveBeenCalledWith({
+      to: "admin@example.com",
+      name: "Admin",
+      verifyUrl: "http://localhost:3000/verify-email?token=token-123",
+    });
+  });
+
+  it("does not send another message after the account is verified", async () => {
+    const { db } = createSelectDb([
+      [{ ...unverifiedUser, emailVerifiedAt: new Date("2026-08-09T12:00:00Z") }],
+    ]);
+
+    await expect(callerWithSession(db).resendVerification()).resolves.toEqual({
+      ok: true,
+      alreadyVerified: true,
+    });
+    expect(mocks.rateLimit).not.toHaveBeenCalled();
+    expect(mocks.createAuthToken).not.toHaveBeenCalled();
+    expect(mocks.sendVerificationEmail).not.toHaveBeenCalled();
+  });
+
+  it("reports provider rejection instead of claiming the email was sent", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const { db } = createSelectDb([[unverifiedUser]]);
+    mocks.sendVerificationEmail.mockResolvedValueOnce({
+      success: false,
+      error: "provider unavailable",
+    });
+
+    try {
+      await expect(callerWithSession(db).resendVerification()).rejects.toMatchObject({
+        code: "INTERNAL_SERVER_ERROR",
+        message:
+          "We couldn't send the verification email. Please try again in a moment.",
+      });
+      expect(consoleError).toHaveBeenCalledWith(
+        "[resendVerification] email failed:",
+        expect.any(Error)
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("fails closed when the resend limiter is unavailable", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const { db } = createSelectDb([[unverifiedUser]]);
+    mocks.rateLimit.mockRejectedValueOnce(new Error("rate limiter down"));
+
+    try {
+      await expect(callerWithSession(db).resendVerification()).rejects.toMatchObject({
+        code: "TOO_MANY_REQUESTS",
+        message: "Too many requests. Please try again later.",
+      });
+      expect(consoleError).toHaveBeenCalledWith(
+        "[auth.resendVerification] rate limit failed:",
+        expect.any(Error)
+      );
+      expect(mocks.createAuthToken).not.toHaveBeenCalled();
+      expect(mocks.sendVerificationEmail).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });
 
@@ -677,13 +774,6 @@ describe("auth router rate-limit failure guards", () => {
           password: "password123",
           practiceName: "Neighborhood Veterinary",
         }),
-    },
-    {
-      label: "verification resend",
-      logContext: "resendVerification",
-      expectedMessage: "Too many requests. Please try again later.",
-      call: (caller: ReturnType<typeof callerWithDb>) =>
-        caller.resendVerification({ email: "owner@example.com" }),
     },
     {
       label: "password reset",

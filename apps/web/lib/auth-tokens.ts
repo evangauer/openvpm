@@ -31,17 +31,23 @@ export async function createAuthToken(opts: {
   const raw = randomBytes(32).toString("hex");
   const now = opts.now ?? new Date();
   const issueToken = async (tx: Database) => {
-    await tx
-      .update(authTokens)
-      .set({ usedAt: now })
-      .where(
-        and(
-          eq(authTokens.userId, opts.userId),
-          eq(authTokens.type, opts.type),
-          isNull(authTokens.usedAt),
-          gt(authTokens.expiresAt, now)
-        )
-      );
+    // Keep unexpired verification links valid. A resend may be delayed or the
+    // provider may reject it, and neither case should burn a working link that
+    // is already in the user's inbox. Password-reset and invite tokens retain
+    // single-newest-link semantics because they grant new credentials/access.
+    if (opts.type !== "email_verify") {
+      await tx
+        .update(authTokens)
+        .set({ usedAt: now })
+        .where(
+          and(
+            eq(authTokens.userId, opts.userId),
+            eq(authTokens.type, opts.type),
+            isNull(authTokens.usedAt),
+            gt(authTokens.expiresAt, now)
+          )
+        );
+    }
 
     await tx.insert(authTokens).values({
       userId: opts.userId,

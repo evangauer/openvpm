@@ -220,6 +220,29 @@ describe("sendEmail", () => {
     ).resolves.toMatchObject({ success: true, id: "email-invoice-1" });
   });
 
+  it("keeps verification provider evidence and says the trial is already active", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-verify-1" } });
+    const { sendVerificationEmail } = await loadEmail();
+
+    await expect(
+      sendVerificationEmail({
+        to: "admin@example.com",
+        name: "Dr Admin",
+        verifyUrl: "https://app.openvpm.com/verify-email?token=safe-token",
+      })
+    ).resolves.toEqual({ success: true, id: "email-verify-1" });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload).toMatchObject({
+      to: "admin@example.com",
+      subject: "Verify your OpenVPM email",
+    });
+    expect(payload.html).toContain("Your trial is already active.");
+    expect(payload.html).toContain("Confirm email");
+    expect(payload.html).not.toMatch(/activate your account|start your free trial/i);
+  });
+
   it("aborts hung Resend sends and returns a timeout error", async () => {
     vi.useFakeTimers();
     vi.stubEnv("RESEND_API_KEY", "re_test");

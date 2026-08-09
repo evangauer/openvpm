@@ -387,11 +387,11 @@ export async function sendVerificationEmail(data: {
   to: string;
   name: string;
   verifyUrl: string;
-}): Promise<{ success: boolean }> {
+}): Promise<{ success: boolean; id?: string; error?: string }> {
   const body = `
     <p style="margin:0 0 16px;color:#111827;font-size:15px;line-height:1.6;">Hi ${data.name},</p>
-    <p style="margin:0 0 8px;color:#111827;font-size:15px;line-height:1.6;">Welcome to OpenVPM! Please confirm your email address to activate your account and start your free trial.</p>
-    ${ctaButton("Verify my email", data.verifyUrl)}
+    <p style="margin:0 0 8px;color:#111827;font-size:15px;line-height:1.6;">Welcome to OpenVPM! Your trial is already active. Please confirm your email address to secure your workspace and keep important account messages deliverable.</p>
+    ${ctaButton("Confirm email", data.verifyUrl)}
     <p style="margin:0;color:#6b7280;font-size:13px;line-height:1.5;">This link expires in 24 hours. If you didn't create an OpenVPM account, you can ignore this email.</p>
   `;
   const html = emailLayout("OpenVPM", body);
@@ -400,7 +400,7 @@ export async function sendVerificationEmail(data: {
     subject: "Verify your OpenVPM email",
     html,
   });
-  return { success: result.success };
+  return result;
 }
 
 export async function sendPasswordResetEmail(data: {
