@@ -124,6 +124,29 @@ describe("admin UI", () => {
     expect(source).toContain("sender.registrationDetail");
   });
 
+  it("shows a bounded read-only SMS operations queue with operator actions", () => {
+    expect(source).toContain("trpc.admin.smsOperationsHealth.useQuery");
+    expect(source).toContain("SMS operations health");
+    expect(source).toContain("This monitor never enables sending");
+    expect(source).toContain("smsOperations.counts.critical");
+    expect(source).toContain("smsOperations.counts.attention");
+    expect(source).toContain("smsOperations.counts.sendAttempts");
+    expect(source).toContain("smsOperations.counts.deliveryEvents");
+    expect(source).toContain("smsOperations.counts.staleWithoutFinal");
+    expect(source).toContain("smsOperations.counts.providerAuditFailures");
+    expect(source).toContain("item.practiceName");
+    expect(source).toContain('item.locationName ?? "Practice-wide"');
+    expect(source).toContain("formatAgeMinutes(item.ageMinutes)");
+    expect(source).toContain("item.reason");
+    expect(source).toContain("item.nextAction");
+    expect(source).toContain("No SMS operational exceptions need attention.");
+    expect(source).toContain("Results are bounded.");
+    expect(source).not.toContain("item.senderE164");
+    expect(source).not.toContain("item.providerMessageId");
+    expect(source).not.toContain("item.recipient");
+    expect(source).not.toContain("item.body");
+  });
+
   it("renders practice dates in each practice timezone", () => {
     expect(source).toContain(
       "function formatDate(d: Date | string | null, timeZone?: string | null)"

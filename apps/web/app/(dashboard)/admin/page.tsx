@@ -46,6 +46,13 @@ function formatPct(rate: number) {
   return `${Math.round(rate * 100)}%`;
 }
 
+function formatAgeMinutes(minutes: number | null) {
+  if (minutes === null) return "Current state";
+  if (minutes < 60) return `${Math.max(1, Math.round(minutes))}m`;
+  if (minutes < 24 * 60) return `${Math.round(minutes / 60)}h`;
+  return `${Math.round(minutes / (24 * 60))}d`;
+}
+
 const statusStyles: Record<string, string> = {
   active: "bg-green-100 text-green-700",
   trialing: "bg-blue-100 text-blue-700",
@@ -79,6 +86,8 @@ export default function AdminPage() {
     trpc.admin.journeyFunnel.useQuery({ days: 30 }, { retry: false });
   const { data: messagingQueue, error: messagingQueueError } =
     trpc.admin.messagingRegistrationQueue.useQuery(undefined, { retry: false });
+  const { data: smsOperations, error: smsOperationsError } =
+    trpc.admin.smsOperationsHealth.useQuery(undefined, { retry: false });
   const [extendTrialError, setExtendTrialError] = useState<string | null>(null);
   const [analyticsError, setAnalyticsError] = useState<string | null>(null);
   const [messagingError, setMessagingError] = useState<string | null>(null);
@@ -236,6 +245,132 @@ export default function AdminPage() {
             </div>
           );
         })}
+      </div>
+
+      {/* SMS operations health */}
+      <div className="mt-6 rounded-lg border border-border bg-card p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <MessageSquare className="h-4 w-4" />
+              <span className="text-sm">SMS operations health</span>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Read-only carrier, provider-profile, send-attempt, and delivery
+              evidence. This monitor never enables sending or changes provider
+              state.
+            </p>
+          </div>
+          {smsOperations ? (
+            <span
+              className={`rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${
+                smsOperations.status === "critical"
+                  ? "bg-red-100 text-red-800"
+                  : smsOperations.status === "attention"
+                    ? "bg-amber-100 text-amber-800"
+                    : "bg-green-100 text-green-800"
+              }`}
+            >
+              {smsOperations.status}
+            </span>
+          ) : null}
+        </div>
+        {smsOperations ? (
+          <>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {[
+                ["Critical", smsOperations.counts.critical, "text-red-700"],
+                ["Attention", smsOperations.counts.attention, "text-amber-700"],
+                ["Send exceptions", smsOperations.counts.sendAttempts, "text-foreground"],
+                [
+                  "Delivery exceptions",
+                  smsOperations.counts.deliveryEvents +
+                    smsOperations.counts.staleWithoutFinal,
+                  "text-foreground",
+                ],
+              ].map(([label, value, tone]) => (
+                <div key={String(label)} className="rounded-md border border-border p-3">
+                  <p className="text-xs text-muted-foreground">{label}</p>
+                  <p className={`mt-1 text-xl font-semibold tabular-nums ${tone}`}>
+                    {value}
+                  </p>
+                </div>
+              ))}
+            </div>
+            <p className="mt-3 text-xs text-muted-foreground">
+              Carrier {smsOperations.counts.carrier} · Profile{" "}
+              {smsOperations.counts.profile} · Provider audit failures{" "}
+              {smsOperations.counts.providerAuditFailures} · Generated{" "}
+              {new Date(smsOperations.generatedAt).toLocaleString()}
+            </p>
+            {smsOperations.items.length > 0 ? (
+              <div className="mt-4 overflow-x-auto rounded-md border border-border">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border bg-muted/30 text-left text-muted-foreground">
+                      <th className="px-3 py-2 font-medium">Priority</th>
+                      <th className="px-3 py-2 font-medium">Clinic / location</th>
+                      <th className="px-3 py-2 font-medium">Category</th>
+                      <th className="px-3 py-2 font-medium">Age</th>
+                      <th className="px-3 py-2 font-medium">Reason</th>
+                      <th className="px-3 py-2 font-medium">Next action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {smsOperations.items.map((item, index) => (
+                      <tr
+                        key={`${item.severity}-${item.category}-${item.practiceName}-${item.locationName ?? "practice"}-${index}`}
+                        className="align-top"
+                      >
+                        <td className="px-3 py-2">
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-xs font-semibold uppercase ${
+                              item.severity === "p0"
+                                ? "bg-red-100 text-red-800"
+                                : "bg-amber-100 text-amber-800"
+                            }`}
+                          >
+                            {item.severity}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2">
+                          <p className="font-medium">{item.practiceName}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {item.locationName ?? "Practice-wide"}
+                          </p>
+                        </td>
+                        <td className="px-3 py-2 capitalize text-muted-foreground">
+                          {item.category.replaceAll("_", " ")}
+                        </td>
+                        <td className="px-3 py-2 tabular-nums text-muted-foreground">
+                          {formatAgeMinutes(item.ageMinutes)}
+                        </td>
+                        <td className="px-3 py-2">{item.reason}</td>
+                        <td className="px-3 py-2 font-medium">{item.nextAction}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="mt-4 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-900">
+                No SMS operational exceptions need attention.
+              </div>
+            )}
+            {smsOperations.truncated ? (
+              <p className="mt-2 text-xs font-medium text-amber-700">
+                Results are bounded. Resolve the oldest items, then refresh for
+                the remaining queue.
+              </p>
+            ) : null}
+          </>
+        ) : (
+          <p className="mt-3 text-sm text-muted-foreground">
+            {smsOperationsError
+              ? "Could not load SMS operations health."
+              : "Loading SMS operations health…"}
+          </p>
+        )}
       </div>
 
       {/* Activation recovery queue */}
