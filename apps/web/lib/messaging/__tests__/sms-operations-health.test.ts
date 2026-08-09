@@ -22,6 +22,7 @@ function state(overrides: Partial<SmsMessagingState> = {}): SmsMessagingState {
     registrationUpdatedAt: "2026-08-09T11:55:00.000Z",
     locationId: "location-1",
     locationName: "Main",
+    locationActive: true,
     provider: "telnyx",
     messagingProfileId: "profile-1",
     senderE164: "+15555550100",
@@ -163,6 +164,43 @@ describe("SMS operations state classifier", () => {
       expect.objectContaining({ severity: "p0", locationName: null }),
     ]);
   });
+
+  it("treats an enabled non-Telnyx hosted sender as P0", () => {
+    const issues = classifySmsMessagingStates(
+      [state({ enabled: true, provider: "twilio" })],
+      NOW,
+    );
+
+    expect(issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          severity: "p0",
+          reasonCode: "enabled_provider_unsupported",
+        }),
+      ]),
+    );
+  });
+
+  it("separates orphaned deleted-location config from active profile drift", () => {
+    const issues = classifySmsMessagingStates(
+      [
+        state({
+          locationName: null,
+          locationActive: false,
+          providerProfileSyncedAt: "2026-08-09T10:00:00.000Z",
+        }),
+      ],
+      NOW,
+    );
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toEqual(
+      expect.objectContaining({
+        severity: "p1",
+        reasonCode: "inactive_location_configuration",
+      }),
+    );
+  });
 });
 
 describe("SMS provider inspection classifier", () => {
@@ -208,6 +246,11 @@ describe("SMS operations implementation safety", () => {
       "utf8",
     );
     expect(source).toContain("inspectTelnyxProviderReadiness");
+    expect(source).toContain("loadSmsSendAttemptQueue");
+    expect(source).toContain("loadSmsDeliveryEventQueue");
+    expect(source).toContain("providerAuditConcurrency = 4");
+    expect(source).not.toContain("from sms_send_attempt_events");
+    expect(source).not.toContain("from sms_delivery_event_history");
     expect(source).not.toMatch(
       /updateMessagingProfileEnabled|sendSms|retrySms|reconcileSms|MESSAGING_PROVISIONING_ENABLED/,
     );

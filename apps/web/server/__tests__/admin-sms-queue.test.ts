@@ -2,9 +2,16 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const source = readFileSync("server/routers/admin.ts", "utf8");
+const sharedQueues = readFileSync(
+  "lib/messaging/sms-operations-queues.ts",
+  "utf8",
+);
 
 describe("SMS operator recovery queue", () => {
-  const queue = source.slice(
+  const queue = sharedQueues.slice(
+    sharedQueues.indexOf("loadSmsSendAttemptQueue"),
+  );
+  const routerQueue = source.slice(
     source.indexOf("smsSendAttemptQueue:"),
     source.indexOf("smsSendAttempt:", source.indexOf("smsSendAttemptQueue:")),
   );
@@ -26,14 +33,19 @@ describe("SMS operator recovery queue", () => {
   });
 
   it("keeps the queue bounded, oldest-first, and no-store", () => {
-    expect(queue).toContain("noStore()");
+    expect(routerQueue).toContain("noStore()");
+    expect(routerQueue).toContain("loadSmsSendAttemptQueue(db, input)");
     expect(queue).toContain(".slice(0, input.limit)");
     expect(queue).toContain('cacheControl: "no-store" as const');
   });
 });
 
 describe("SMS delivery reconciliation queue", () => {
-  const deliveryQueue = source.slice(
+  const deliveryQueue = sharedQueues.slice(
+    sharedQueues.indexOf("loadSmsDeliveryEventQueue"),
+    sharedQueues.indexOf("loadSmsSendAttemptQueue"),
+  );
+  const deliveryDetail = source.slice(
     source.indexOf("smsDeliveryEventQueue:"),
     source.indexOf("smsSendAttemptQueue:"),
   );
@@ -120,29 +132,29 @@ describe("SMS delivery reconciliation queue", () => {
   });
 
   it("provides a bounded redacted evidence/history detail workflow", () => {
-    expect(deliveryQueue).toContain("smsDeliveryEventDetail:");
-    expect(deliveryQueue).toContain("providerMessageId:");
-    expect(deliveryQueue).toContain("reviewedHistoryId:");
-    expect(deliveryQueue).toContain(
+    expect(deliveryDetail).toContain("smsDeliveryEventDetail:");
+    expect(deliveryDetail).toContain("providerMessageId:");
+    expect(deliveryDetail).toContain("reviewedHistoryId:");
+    expect(deliveryDetail).toContain(
       "redactedOperatorIdentity(row.actorIdentity)",
     );
-    expect(deliveryQueue).toContain(
+    expect(deliveryDetail).toContain(
       "historyLimit: z.number().int().min(1).max(200).default(100)",
     );
-    expect(deliveryQueue).toContain(".limit(input.historyLimit + 1)");
-    expect(deliveryQueue).toContain("desc(smsDeliveryEventHistory.createdAt)");
-    expect(deliveryQueue).toContain("const visibleHistory = history");
-    expect(deliveryQueue).toContain(".reverse()");
-    expect(deliveryQueue).toContain(
+    expect(deliveryDetail).toContain(".limit(input.historyLimit + 1)");
+    expect(deliveryDetail).toContain("desc(smsDeliveryEventHistory.createdAt)");
+    expect(deliveryDetail).toContain("const visibleHistory = history");
+    expect(deliveryDetail).toContain(".reverse()");
+    expect(deliveryDetail).toContain(
       "candidateAttempts: candidateAttempts.slice(0, 100)",
     );
-    expect(deliveryQueue).toContain("candidateAttemptsTruncated");
-    expect(deliveryQueue).toContain(".limit(101)");
-    expect(deliveryQueue).toContain(
+    expect(deliveryDetail).toContain("candidateAttemptsTruncated");
+    expect(deliveryDetail).toContain(".limit(101)");
+    expect(deliveryDetail).toContain(
       'eq(smsSendAttemptEvents.outcome, "accepted")',
     );
-    expect(deliveryQueue).toContain("truncated");
-    expect(deliveryQueue).not.toContain("destinationE164");
-    expect(deliveryQueue).not.toContain("content:");
+    expect(deliveryDetail).toContain("truncated");
+    expect(deliveryDetail).not.toContain("destinationE164");
+    expect(deliveryDetail).not.toContain("content:");
   });
 });

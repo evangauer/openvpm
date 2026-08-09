@@ -62,10 +62,14 @@ function heartbeatMetrics(health: SmsOperationsHealth) {
 
 function degradedAlert(health: SmsOperationsHealth): string {
   const counts = health.counts;
+  const countQualifier = health.truncated ? "at least " : "";
+  const truncationNotice = health.truncated
+    ? " The bounded queue is truncated; additional exceptions exist."
+    : "";
   return [
-    `Status: ${health.status}. P0: ${counts.critical}; P1: ${counts.attention}.`,
-    `Carrier: ${counts.carrier}; profile: ${counts.profile}; send attempts: ${counts.sendAttempts}; delivery events: ${counts.deliveryEvents}; stale without final: ${counts.staleWithoutFinal}; provider audit failures: ${counts.providerAuditFailures}.`,
-    `Reason counts (bounded): ${reasonSummary(health.reasons)}.`,
+    `Status: ${health.status}. P0: ${countQualifier}${counts.critical}; P1: ${countQualifier}${counts.attention}.${truncationNotice}`,
+    `Carrier: ${countQualifier}${counts.carrier}; profile: ${countQualifier}${counts.profile}; send attempts: ${countQualifier}${counts.sendAttempts}; delivery events: ${countQualifier}${counts.deliveryEvents}; stale without final: ${countQualifier}${counts.staleWithoutFinal}; provider audit failures: ${countQualifier}${counts.providerAuditFailures}.`,
+    `Reason counts (bounded${health.truncated ? " lower bounds" : ""}): ${reasonSummary(health.reasons)}.`,
     "Review the SMS operations queue. This check made no provider, launch-control, message, or evidence changes.",
   ].join(" ");
 }
@@ -96,7 +100,7 @@ export async function GET(request: Request) {
       job: "sms-operations",
       status: degraded ? "degraded" : "ok",
       detail: degraded
-        ? `${health.counts.critical} P0 and ${health.counts.attention} P1 exception(s)`
+        ? `${health.truncated ? "At least " : ""}${health.counts.critical} P0 and ${health.counts.attention} P1 exception(s)${health.truncated ? "; bounded queue truncated" : ""}`
         : "No SMS operations exceptions",
       metrics: heartbeatMetrics(health),
     });

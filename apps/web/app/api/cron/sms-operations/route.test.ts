@@ -149,7 +149,11 @@ describe("SMS operations cron", () => {
     expect(mocks.alertOps).toHaveBeenCalledTimes(1);
     const [subject, detail] = mocks.alertOps.mock.calls[0] ?? [];
     expect(subject).toBe("SMS operations critical");
-    expect(detail).toContain("P0: 2; P1: 8");
+    expect(detail).toContain("P0: at least 2; P1: at least 8");
+    expect(detail).toContain(
+      "The bounded queue is truncated; additional exceptions exist.",
+    );
+    expect(detail).toContain("Reason counts (bounded lower bounds)");
     expect(detail).toContain("p0/profile/safe_reason_0=1");
     expect(detail).toContain("p1/delivery_event/unclassified_delivery_event=2");
     expect(detail).toContain("p1/delivery_event/safe_reason_9=10");
@@ -161,7 +165,7 @@ describe("SMS operations cron", () => {
     expect(mocks.reportCronHeartbeat).toHaveBeenCalledWith({
       job: "sms-operations",
       status: "degraded",
-      detail: "2 P0 and 8 P1 exception(s)",
+      detail: "At least 2 P0 and 8 P1 exception(s); bounded queue truncated",
       metrics: {
         status: "critical",
         ...critical.counts,

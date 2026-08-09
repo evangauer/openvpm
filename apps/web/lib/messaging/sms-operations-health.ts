@@ -6,6 +6,10 @@ import {
   inspectTelnyxProviderReadiness,
   type TelnyxProviderReadinessInput,
 } from "@/lib/messaging/provider-readiness";
+import {
+  loadSmsDeliveryEventQueue,
+  loadSmsSendAttemptQueue,
+} from "@/lib/messaging/sms-operations-queues";
 
 const MINUTE_MS = 60 * 1000;
 
@@ -77,6 +81,7 @@ export interface SmsMessagingState {
   registrationUpdatedAt: Date | string | null;
   locationId: string | null;
   locationName: string | null;
+  locationActive: boolean | null;
   provider: string | null;
   messagingProfileId: string | null;
   senderE164: string | null;
@@ -90,20 +95,12 @@ export interface SmsMessagingState {
 }
 
 interface QueueRow {
+  practiceId: string | null;
+  locationId: string | null;
   practiceName: string;
   locationName: string | null;
   observedAt: Date | string;
   classification: string;
-  totalCount: number | string;
-  missingProviderResultCount?: number | string;
-  outcomeUnknownCount?: number | string;
-  terminalProjectionPendingCount?: number | string;
-  orphanPendingCommunicationCount?: number | string;
-  identityConflictCount?: number | string;
-  unmatchedCount?: number | string;
-  unknownStatusCount?: number | string;
-  projectionMissCount?: number | string;
-  staleWithoutFinalCount?: number | string;
 }
 
 interface SmsOperationsOptions {
@@ -119,12 +116,6 @@ function rowsFromExecute<T>(result: unknown): T[] {
   if (Array.isArray(result)) return result as T[];
   const rows = (result as { rows?: unknown[] } | null)?.rows;
   return Array.isArray(rows) ? (rows as T[]) : [];
-}
-
-function asNumber(value: number | string | undefined): number {
-  if (value === undefined) return 0;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function asDate(value: Date | string | null | undefined): Date | null {
@@ -326,6 +317,54 @@ export function classifySmsMessagingStates(
 
     if (!state.locationId) continue;
 
+    if (state.locationActive === false) {
+      if (
+        state.enabled ||
+        state.providerProfileReady === true ||
+        Boolean(state.messagingProfileId?.trim()) ||
+        Boolean(state.senderE164?.trim())
+      ) {
+        addIssue(
+          issues,
+          stateIssue(state, {
+            severity: state.enabled ? "p0" : "p1",
+            category: "profile",
+            reasonCode: state.enabled
+              ? "enabled_inactive_location"
+              : "inactive_location_configuration",
+            reason: state.enabled
+              ? "Clinic sending is enabled for a deleted or inactive location."
+              : "A deleted or inactive location still has provider messaging configuration.",
+            nextAction: state.enabled
+              ? "Turn off the global gate and disable this orphaned sender immediately."
+              : "Review and retire the orphaned provider configuration.",
+            observedAt: senderObservedAt,
+            ageMinutes: ageMinutes(now, senderObservedAt),
+          }),
+        );
+      }
+      // An inactive location cannot be safely activated. Avoid layering active
+      // profile/attestation guidance onto the orphan-cleanup incident.
+      continue;
+    }
+
+    if (state.enabled && state.provider !== "telnyx") {
+      addIssue(
+        issues,
+        stateIssue(state, {
+          severity: "p0",
+          category: "profile",
+          reasonCode: "enabled_provider_unsupported",
+          reason:
+            "Hosted clinic sending is enabled on an unsupported provider.",
+          nextAction:
+            "Turn off the global gate and disable this clinic sender.",
+          observedAt: senderObservedAt,
+          ageMinutes: ageMinutes(now, senderObservedAt),
+        }),
+      );
+    }
+
     if (state.enabled && state.registrationStatus !== "active") {
       addIssue(
         issues,
@@ -522,6 +561,7 @@ async function loadMessagingStates(db: Database): Promise<SmsMessagingState[]> {
         mr.updated_at as "registrationUpdatedAt",
         lm.location_id as "locationId",
         l.name as "locationName",
+        (l.id is not null) as "locationActive",
         lm.provider as "provider",
         lm.messaging_profile_id as "messagingProfileId",
         lm.sender_e164 as "senderE164",
@@ -549,316 +589,27 @@ async function loadMessagingStates(db: Database): Promise<SmsMessagingState[]> {
   });
 }
 
-async function loadSendExceptions(
-  db: Database,
-  now: Date,
-  limit: number,
-): Promise<QueueRow[]> {
-  const cutoff = new Date(
-    now.getTime() - SMS_OPERATIONS_THRESHOLDS.sendAttemptMinutes * MINUTE_MS,
+function hydrateQueueNames(
+  rows: QueueRow[],
+  states: SmsMessagingState[],
+): QueueRow[] {
+  const practiceNames = new Map(
+    states.map((state) => [state.practiceId, state.practiceName] as const),
   );
-  return withSystem(db, async (tx) => {
-    const result = await tx.execute(sql`
-      with attempt_base as (
-        select
-          sa.id as attempt_id,
-          sa.practice_id,
-          sa.location_id,
-          sa.communication_id,
-          sa.created_at,
-          exists (
-            select 1 from sms_send_attempt_events any_event
-            where any_event.practice_id = sa.practice_id
-              and any_event.attempt_id = sa.id
-          ) as has_any_event,
-          coalesce(
-            (
-              select reconciliation.outcome::text
-              from sms_send_attempt_events reconciliation
-              where reconciliation.practice_id = sa.practice_id
-                and reconciliation.attempt_id = sa.id
-                and reconciliation.kind = 'reconciliation'
-              order by reconciliation.created_at desc, reconciliation.id desc
-              limit 1
-            ),
-            (
-              select provider_result.outcome::text
-              from sms_send_attempt_events provider_result
-              where provider_result.practice_id = sa.practice_id
-                and provider_result.attempt_id = sa.id
-                and provider_result.kind = 'provider_result'
-              order by provider_result.created_at desc, provider_result.id desc
-              limit 1
-            )
-          ) as effective_outcome
-        from sms_send_attempts sa
-        where sa.created_at <= ${cutoff}
-      ), exceptions as (
-        select
-          ab.practice_id,
-          ab.location_id,
-          ab.created_at as observed_at,
-          case
-            when not ab.has_any_event then 'missing_provider_result'
-            when ab.effective_outcome = 'outcome_unknown' then 'outcome_unknown'
-            else 'terminal_projection_pending'
-          end as classification
-        from attempt_base ab
-        where ab.effective_outcome is null
-           or ab.effective_outcome = 'outcome_unknown'
-           or (
-             ab.effective_outcome in ('accepted', 'definite_failure')
-             and exists (
-               select 1 from communications pending_projection
-               where pending_projection.practice_id = ab.practice_id
-                 and pending_projection.id = ab.communication_id
-                 and pending_projection.status = 'pending'
-                 and pending_projection.deleted_at is null
-             )
-           )
-        union all
-        select
-          c.practice_id,
-          null::uuid as location_id,
-          c.created_at as observed_at,
-          'orphan_pending_communication' as classification
-        from communications c
-        where c.created_at <= ${cutoff}
-          and c.channel = 'sms'
-          and c.direction = 'outbound'
-          and c.status = 'pending'
-          and c.deleted_at is null
-          and not exists (
-            select 1 from sms_send_attempts orphan_attempt
-            where orphan_attempt.practice_id = c.practice_id
-              and orphan_attempt.communication_id = c.id
-          )
-      )
-      select
-        coalesce(p.name, 'Deleted clinic') as "practiceName",
-        l.name as "locationName",
-        e.observed_at as "observedAt",
-        e.classification,
-        count(*) over()::int as "totalCount",
-        count(*) filter (where e.classification = 'missing_provider_result') over()::int as "missingProviderResultCount",
-        count(*) filter (where e.classification = 'outcome_unknown') over()::int as "outcomeUnknownCount",
-        count(*) filter (where e.classification = 'terminal_projection_pending') over()::int as "terminalProjectionPendingCount",
-        count(*) filter (where e.classification = 'orphan_pending_communication') over()::int as "orphanPendingCommunicationCount"
-      from exceptions e
-      left join practices p on p.id = e.practice_id
-      left join locations l
-        on l.id = e.location_id and l.practice_id = e.practice_id
-      order by e.observed_at, e.practice_id, e.location_id nulls first
-      limit ${limit + 1}
-    `);
-    return rowsFromExecute<QueueRow>(result);
-  });
-}
-
-async function loadDeliveryExceptions(
-  db: Database,
-  limit: number,
-): Promise<QueueRow[]> {
-  return withSystem(db, async (tx) => {
-    const result = await tx.execute(sql`
-      with event_state as (
-        select
-          de.id,
-          de.received_at,
-          attributed.practice_id,
-          attributed.attempt_id,
-          exists (
-            select 1 from sms_delivery_event_history conflict
-            where conflict.delivery_event_id = de.id
-              and conflict.result = 'ambiguous'
-              and not exists (
-                select 1 from sms_delivery_event_history review
-                where review.reviewed_history_id = conflict.id
-              )
-          ) as has_pending_ambiguity,
-          exists (
-            select 1 from sms_delivery_event_history unmatched
-            where unmatched.delivery_event_id = de.id
-              and unmatched.result = 'unmatched'
-              and not exists (
-                select 1 from sms_delivery_event_history any_conflict
-                where any_conflict.delivery_event_id = unmatched.delivery_event_id
-                  and any_conflict.result = 'ambiguous'
-              )
-              and not exists (
-                select 1 from sms_delivery_event_history review
-                where review.reviewed_history_id = unmatched.id
-              )
-          ) as has_pending_unmatched,
-          coalesce(
-            (
-              select reconciliation.classification::text
-              from sms_delivery_event_history reconciliation
-              where reconciliation.delivery_event_id = de.id
-                and reconciliation.result = 'reconciled'
-              order by reconciliation.created_at desc, reconciliation.id desc
-              limit 1
-            ),
-            de.classification::text
-          ) as effective_classification,
-          (
-            select projection.result::text
-            from sms_delivery_event_history projection
-            where projection.delivery_event_id = de.id
-              and projection.result in ('projected', 'projection_miss')
-            order by projection.created_at desc, projection.id desc
-            limit 1
-          ) as latest_projection_result
-        from sms_delivery_events de
-        left join lateral (
-          select h.practice_id, h.attempt_id
-          from sms_delivery_event_history h
-          where h.delivery_event_id = de.id and h.result = 'attributed'
-          limit 1
-        ) attributed on true
-      ), exceptions as (
-        select
-          es.practice_id,
-          sa.location_id,
-          es.received_at as observed_at,
-          case
-            when es.has_pending_ambiguity then 'identity_conflict'
-            when es.practice_id is null and es.has_pending_unmatched then 'unmatched'
-            when es.practice_id is not null and es.effective_classification = 'unknown' then 'unknown_status'
-            else 'projection_miss'
-          end as classification
-        from event_state es
-        left join sms_send_attempts sa
-          on sa.practice_id = es.practice_id and sa.id = es.attempt_id
-        where es.has_pending_ambiguity
-           or (es.practice_id is null and es.has_pending_unmatched)
-           or (es.practice_id is not null and es.effective_classification = 'unknown')
-           or es.latest_projection_result = 'projection_miss'
-      )
-      select
-        coalesce(p.name, 'Unattributed provider event') as "practiceName",
-        l.name as "locationName",
-        e.observed_at as "observedAt",
-        e.classification,
-        count(*) over()::int as "totalCount",
-        count(*) filter (where e.classification = 'identity_conflict') over()::int as "identityConflictCount",
-        count(*) filter (where e.classification = 'unmatched') over()::int as "unmatchedCount",
-        count(*) filter (where e.classification = 'unknown_status') over()::int as "unknownStatusCount",
-        count(*) filter (where e.classification = 'projection_miss') over()::int as "projectionMissCount"
-      from exceptions e
-      left join practices p on p.id = e.practice_id
-      left join locations l
-        on l.id = e.location_id and l.practice_id = e.practice_id
-      order by e.observed_at, e.practice_id nulls first, e.location_id nulls first
-      limit ${limit + 1}
-    `);
-    return rowsFromExecute<QueueRow>(result);
-  });
-}
-
-async function loadStaleFinalReceipts(
-  db: Database,
-  now: Date,
-  limit: number,
-): Promise<QueueRow[]> {
-  const cutoff = new Date(
-    now.getTime() -
-      SMS_OPERATIONS_THRESHOLDS.deliveryReceiptMinutes * MINUTE_MS,
+  const locationNames = new Map(
+    states
+      .filter((state) => state.locationId && state.locationName)
+      .map((state) => [state.locationId!, state.locationName!] as const),
   );
-  return withSystem(db, async (tx) => {
-    const result = await tx.execute(sql`
-      with accepted as (
-        select
-          sa.id,
-          sa.practice_id,
-          sa.location_id,
-          sa.provider,
-          coalesce(
-            (
-              select reconciliation.provider_message_id
-              from sms_send_attempt_events reconciliation
-              where reconciliation.practice_id = sa.practice_id
-                and reconciliation.attempt_id = sa.id
-                and reconciliation.kind = 'reconciliation'
-                and reconciliation.outcome = 'accepted'
-              order by reconciliation.created_at desc, reconciliation.id desc
-              limit 1
-            ),
-            (
-              select provider_result.provider_message_id
-              from sms_send_attempt_events provider_result
-              where provider_result.practice_id = sa.practice_id
-                and provider_result.attempt_id = sa.id
-                and provider_result.kind = 'provider_result'
-                and provider_result.outcome = 'accepted'
-              order by provider_result.created_at desc, provider_result.id desc
-              limit 1
-            )
-          ) as provider_message_id,
-          coalesce(
-            (
-              select reconciliation.created_at
-              from sms_send_attempt_events reconciliation
-              where reconciliation.practice_id = sa.practice_id
-                and reconciliation.attempt_id = sa.id
-                and reconciliation.kind = 'reconciliation'
-                and reconciliation.outcome = 'accepted'
-              order by reconciliation.created_at desc, reconciliation.id desc
-              limit 1
-            ),
-            (
-              select provider_result.created_at
-              from sms_send_attempt_events provider_result
-              where provider_result.practice_id = sa.practice_id
-                and provider_result.attempt_id = sa.id
-                and provider_result.kind = 'provider_result'
-                and provider_result.outcome = 'accepted'
-              order by provider_result.created_at desc, provider_result.id desc
-              limit 1
-            )
-          ) as accepted_at
-        from sms_send_attempts sa
-        where sa.provider <> 'console'
-      ), exceptions as (
-        select a.*
-        from accepted a
-        where a.provider_message_id is not null
-          and a.accepted_at <= ${cutoff}
-          and not exists (
-            select 1 from sms_delivery_events receipt
-            where receipt.provider = a.provider
-              and receipt.provider_message_id = a.provider_message_id
-              and (
-                (
-                  receipt.provider = 'telnyx'
-                  and (
-                    receipt.provider_event_type = 'message.finalized'
-                    or receipt.classification in ('failed', 'delivered')
-                  )
-                )
-                or (
-                  receipt.provider = 'twilio'
-                  and receipt.classification in ('failed', 'delivered')
-                )
-              )
-          )
-      )
-      select
-        coalesce(p.name, 'Deleted clinic') as "practiceName",
-        l.name as "locationName",
-        e.accepted_at as "observedAt",
-        'stale_without_final_delivery' as classification,
-        count(*) over()::int as "totalCount",
-        count(*) over()::int as "staleWithoutFinalCount"
-      from exceptions e
-      left join practices p on p.id = e.practice_id
-      left join locations l
-        on l.id = e.location_id and l.practice_id = e.practice_id
-      order by e.accepted_at, e.practice_id, e.location_id nulls first
-      limit ${limit + 1}
-    `);
-    return rowsFromExecute<QueueRow>(result);
-  });
+  return rows.map((row) => ({
+    ...row,
+    practiceName:
+      (row.practiceId ? practiceNames.get(row.practiceId) : null) ??
+      (row.practiceId ? "Clinic unavailable" : "Unattributed provider event"),
+    locationName: row.locationId
+      ? (locationNames.get(row.locationId) ?? null)
+      : null,
+  }));
 }
 
 function providerReasonCode(blocker: string) {
@@ -916,60 +667,71 @@ async function providerIssues(
   const candidates = states.filter(
     (state) =>
       state.locationId &&
+      state.locationActive !== false &&
       state.provider === "telnyx" &&
       (state.enabled || state.providerProfileReady === true),
   );
 
-  const settled = await Promise.all(
-    candidates.map(async (state): Promise<InternalIssue[]> => {
-      const observedAt = asDate(state.providerProfileSyncedAt);
-      if (
-        !webhookUrl ||
-        !state.locationId ||
-        !state.messagingProfileId?.trim() ||
-        !state.senderE164?.trim() ||
-        !state.providerBrandId?.trim() ||
-        !state.providerCampaignId?.trim()
-      ) {
-        return [
-          stateIssue(state, {
-            severity: "p1",
-            category: "profile",
-            reasonCode: "provider_audit_failed",
-            reason:
-              "Provider readiness inspection could not start from complete public configuration.",
-            nextAction:
-              "Restore the exact provider identity or public webhook configuration, then reinspect.",
-            observedAt,
-            ageMinutes: ageMinutes(now, observedAt),
-          }),
-        ];
-      }
-
-      try {
-        const inspection = await inspectProvider({
-          locationId: state.locationId,
-          messagingProfileId: state.messagingProfileId,
-          senderE164: state.senderE164,
-          providerBrandId: state.providerBrandId,
-          providerCampaignId: state.providerCampaignId,
-          registrationStatus: state.registrationStatus ?? "not_started",
-          senderRegistrationStatus:
-            state.senderRegistrationStatus ?? "not_started",
-          webhookUrl,
-        });
-        const blockers = [...inspection.blockers];
-        if (inspection.profile && inspection.profile.enabled !== true) {
-          blockers.push("messaging profile is disabled");
+  const settled: InternalIssue[][] = [];
+  const providerAuditConcurrency = 4;
+  for (
+    let index = 0;
+    index < candidates.length;
+    index += providerAuditConcurrency
+  ) {
+    const batch = candidates.slice(index, index + providerAuditConcurrency);
+    const batchResults = await Promise.all(
+      batch.map(async (state): Promise<InternalIssue[]> => {
+        const observedAt = asDate(state.providerProfileSyncedAt);
+        if (
+          !webhookUrl ||
+          !state.locationId ||
+          !state.messagingProfileId?.trim() ||
+          !state.senderE164?.trim() ||
+          !state.providerBrandId?.trim() ||
+          !state.providerCampaignId?.trim()
+        ) {
+          return [
+            stateIssue(state, {
+              severity: "p1",
+              category: "profile",
+              reasonCode: "provider_audit_failed",
+              reason:
+                "Provider readiness inspection could not start from complete public configuration.",
+              nextAction:
+                "Restore the exact provider identity or public webhook configuration, then reinspect.",
+              observedAt,
+              ageMinutes: ageMinutes(now, observedAt),
+            }),
+          ];
         }
-        return classifyProviderReadinessResult(state, now, {
-          blockers,
-        });
-      } catch {
-        return classifyProviderReadinessResult(state, now, { failed: true });
-      }
-    }),
-  );
+
+        try {
+          const inspection = await inspectProvider({
+            locationId: state.locationId,
+            messagingProfileId: state.messagingProfileId,
+            senderE164: state.senderE164,
+            providerBrandId: state.providerBrandId,
+            providerCampaignId: state.providerCampaignId,
+            registrationStatus: state.registrationStatus ?? "not_started",
+            senderRegistrationStatus:
+              state.senderRegistrationStatus ?? "not_started",
+            webhookUrl,
+          });
+          const blockers = [...inspection.blockers];
+          if (inspection.profile && inspection.profile.enabled !== true) {
+            blockers.push("messaging profile is disabled");
+          }
+          return classifyProviderReadinessResult(state, now, {
+            blockers,
+          });
+        } catch {
+          return classifyProviderReadinessResult(state, now, { failed: true });
+        }
+      }),
+    );
+    settled.push(...batchResults);
+  }
   return settled.flat();
 }
 
@@ -991,10 +753,6 @@ function addReason(
   });
 }
 
-function queueTotals(rows: QueueRow[]) {
-  return rows.length > 0 ? asNumber(rows[0]!.totalCount) : 0;
-}
-
 export async function getSmsOperationsHealth(
   db: Database,
   options: SmsOperationsOptions = {},
@@ -1004,12 +762,53 @@ export async function getSmsOperationsHealth(
   const inspectProvider =
     options.inspectProvider ?? inspectTelnyxProviderReadiness;
 
-  const [states, sendRows, deliveryRows, staleRows] = await Promise.all([
+  const queueLimit = limit + 1;
+  const [states, sendQueue, deliveryQueue] = await Promise.all([
     loadMessagingStates(db),
-    loadSendExceptions(db, now, limit),
-    loadDeliveryExceptions(db, limit),
-    loadStaleFinalReceipts(db, now, limit),
+    loadSmsSendAttemptQueue(db, {
+      staleMinutes: SMS_OPERATIONS_THRESHOLDS.sendAttemptMinutes,
+      limit: queueLimit,
+      now,
+    }),
+    loadSmsDeliveryEventQueue(db, {
+      staleMinutes: SMS_OPERATIONS_THRESHOLDS.deliveryReceiptMinutes,
+      limit: queueLimit,
+      now,
+    }),
   ]);
+  const sendRows = hydrateQueueNames(
+    sendQueue.items.map((item) => ({
+      practiceId: item.practiceId,
+      locationId: item.locationId,
+      practiceName: "",
+      locationName: null,
+      observedAt: item.createdAt,
+      classification: item.classification,
+    })),
+    states,
+  );
+  const deliveryRows = hydrateQueueNames(
+    deliveryQueue.items.map((item) => ({
+      practiceId: item.practiceId,
+      locationId: item.locationId,
+      practiceName: "",
+      locationName: null,
+      observedAt: item.receivedAt,
+      classification: item.queueReason,
+    })),
+    states,
+  );
+  const staleRows = hydrateQueueNames(
+    deliveryQueue.staleAcceptedWithoutFinalDelivery.map((item) => ({
+      practiceId: item.practiceId,
+      locationId: item.locationId,
+      practiceName: "",
+      locationName: null,
+      observedAt: item.receivedAt!,
+      classification: item.queueReason,
+    })),
+    states,
+  );
   // Provider GETs run only after the system transactions above have closed.
   const localIssues = classifySmsMessagingStates(states, now);
   const inspectedIssues = await providerIssues(states, now, inspectProvider);
@@ -1038,9 +837,9 @@ export async function getSmsOperationsHealth(
     return issueKey(left).localeCompare(issueKey(right));
   });
 
-  const sendTotal = queueTotals(sendRows);
-  const deliveryTotal = queueTotals(deliveryRows);
-  const staleTotal = queueTotals(staleRows);
+  const sendTotal = sendRows.length;
+  const deliveryTotal = deliveryRows.length;
+  const staleTotal = staleRows.length;
   const localCritical = stateIssues.filter(
     (item) => item.severity === "p0",
   ).length;
@@ -1063,71 +862,12 @@ export async function getSmsOperationsHealth(
   for (const item of stateIssues) {
     addReason(reasons, item.severity, item.category, item.reasonCode, 1);
   }
-  const firstSend = sendRows[0];
-  addReason(
-    reasons,
-    "p1",
-    "send_attempt",
-    "missing_provider_result",
-    asNumber(firstSend?.missingProviderResultCount),
-  );
-  addReason(
-    reasons,
-    "p1",
-    "send_attempt",
-    "outcome_unknown",
-    asNumber(firstSend?.outcomeUnknownCount),
-  );
-  addReason(
-    reasons,
-    "p1",
-    "send_attempt",
-    "terminal_projection_pending",
-    asNumber(firstSend?.terminalProjectionPendingCount),
-  );
-  addReason(
-    reasons,
-    "p1",
-    "send_attempt",
-    "orphan_pending_communication",
-    asNumber(firstSend?.orphanPendingCommunicationCount),
-  );
-  const firstDelivery = deliveryRows[0];
-  addReason(
-    reasons,
-    "p1",
-    "delivery_event",
-    "identity_conflict",
-    asNumber(firstDelivery?.identityConflictCount),
-  );
-  addReason(
-    reasons,
-    "p1",
-    "delivery_event",
-    "unmatched",
-    asNumber(firstDelivery?.unmatchedCount),
-  );
-  addReason(
-    reasons,
-    "p1",
-    "delivery_event",
-    "unknown_status",
-    asNumber(firstDelivery?.unknownStatusCount),
-  );
-  addReason(
-    reasons,
-    "p1",
-    "delivery_event",
-    "projection_miss",
-    asNumber(firstDelivery?.projectionMissCount),
-  );
-  addReason(
-    reasons,
-    "p1",
-    "delivery_event",
-    "stale_without_final_delivery",
-    staleTotal,
-  );
+  for (const item of sendRows) {
+    addReason(reasons, "p1", "send_attempt", item.classification, 1);
+  }
+  for (const item of [...deliveryRows, ...staleRows]) {
+    addReason(reasons, "p1", "delivery_event", item.classification, 1);
+  }
 
   return {
     cacheControl: "no-store",
