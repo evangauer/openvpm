@@ -98,7 +98,10 @@ import {
   markCompletedVisitCloseoutPaid,
 } from "../visit-billing-integrity";
 
-type BillingDb = Pick<Database, "select" | "insert" | "update" | "execute">;
+type BillingDb = Pick<
+  Database,
+  "select" | "insert" | "update" | "execute" | "transaction"
+>;
 type ServiceCatalogDb = Pick<Database, "select" | "execute">;
 
 type BillingContext = {

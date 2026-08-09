@@ -215,8 +215,10 @@ describe("patient detail UI states", () => {
     );
     expect(source).toContain("<VitalsTab");
     expect(source).toContain("canRecordVitals={canRecordVitals}");
+    expect(source).toContain("<VaccinationsTab");
+    expect(source).toContain("timeZone={recordsTimeZone}");
     expect(source).toContain(
-      "<VaccinationsTab patientId={patient.id} timeZone={recordsTimeZone} />"
+      "canCorrectClinicalRecords={canCorrectClinicalRecords}"
     );
     expect(source).toContain(
       "(vitals ?? []).filter((vital) => !vital.correctionId)"

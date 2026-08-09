@@ -45,6 +45,12 @@ function latestVaccinationRecordPredicate() {
     where newer_vaccination.practice_id = ${vaccinationRecords.practiceId}
       and newer_vaccination.patient_id = ${vaccinationRecords.patientId}
       and newer_vaccination.deleted_at is null
+      and not exists (
+        select 1
+        from clinical_record_corrections as newer_correction
+        where newer_correction.practice_id = ${vaccinationRecords.practiceId}
+          and newer_correction.vaccination_record_id = newer_vaccination.id
+      )
       and lower(btrim(newer_vaccination.vaccine_name)) = lower(btrim(${vaccinationRecords.vaccineName}))
       and (
         newer_vaccination.administered_at > ${vaccinationRecords.administeredAt}
@@ -58,6 +64,15 @@ function latestVaccinationRecordPredicate() {
           and newer_vaccination.id::text > ${vaccinationRecords.id}::text
         )
       )
+  )`;
+}
+
+function validVaccinationRecordPredicate() {
+  return sql`not exists (
+    select 1
+    from clinical_record_corrections as vaccination_correction
+    where vaccination_correction.practice_id = ${vaccinationRecords.practiceId}
+      and vaccination_correction.vaccination_record_id = ${vaccinationRecords.id}
   )`;
 }
 
@@ -249,6 +264,7 @@ async function loadVaccinationRecallRecipients(
         isNull(clients.deletedAt),
         targetPredicate,
         lt(vaccinationRecords.nextDueDate, today),
+        validVaccinationRecordPredicate(),
         latestVaccinationRecordPredicate()
       )
     )

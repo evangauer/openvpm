@@ -5,6 +5,7 @@ import {
   invoiceItems,
   invoices,
   auditLog,
+  clinicalRecordCorrections,
   labResults,
   prescriptions,
   procedures,
@@ -14,7 +15,10 @@ import {
 } from "@openpims/db";
 import { rowsFromExecute } from "@/lib/db/execute-rows";
 
-type VisitBillingDb = Pick<Database, "select" | "insert" | "update" | "execute">;
+type VisitBillingDb = Pick<
+  Database,
+  "select" | "insert" | "update" | "execute" | "transaction"
+>;
 
 export type VisitBillingContext = {
   db: VisitBillingDb;
@@ -112,46 +116,66 @@ export async function markCompletedVisitCloseoutPaid(
  * visits must not acquire new unresolved work after the fact.
  */
 export async function syncVisitWorkItems(ctx: VisitBillingContext, appointmentId: string) {
-  await ctx.db.execute(sql`
-    insert into ${visitWorkItems}
-      (practice_id, appointment_id, vaccination_record_id)
-    select ${vaccinationRecords.practiceId}, ${vaccinationRecords.appointmentId}, ${vaccinationRecords.id}
-    from ${vaccinationRecords}
-    where ${vaccinationRecords.practiceId} = ${ctx.practiceId}
-      and ${vaccinationRecords.appointmentId} = ${appointmentId}
-      and ${vaccinationRecords.deletedAt} is null
-    on conflict do nothing
-  `);
-  await ctx.db.execute(sql`
-    insert into ${visitWorkItems}
-      (practice_id, appointment_id, lab_result_id)
-    select ${labResults.practiceId}, ${labResults.appointmentId}, ${labResults.id}
-    from ${labResults}
-    where ${labResults.practiceId} = ${ctx.practiceId}
-      and ${labResults.appointmentId} = ${appointmentId}
-      and ${labResults.deletedAt} is null
-    on conflict do nothing
-  `);
-  await ctx.db.execute(sql`
-    insert into ${visitWorkItems}
-      (practice_id, appointment_id, procedure_id)
-    select ${procedures.practiceId}, ${procedures.appointmentId}, ${procedures.id}
-    from ${procedures}
-    where ${procedures.practiceId} = ${ctx.practiceId}
-      and ${procedures.appointmentId} = ${appointmentId}
-      and ${procedures.deletedAt} is null
-    on conflict do nothing
-  `);
-  await ctx.db.execute(sql`
-    insert into ${visitWorkItems}
-      (practice_id, appointment_id, prescription_id)
-    select ${prescriptions.practiceId}, ${prescriptions.appointmentId}, ${prescriptions.id}
-    from ${prescriptions}
-    where ${prescriptions.practiceId} = ${ctx.practiceId}
-      and ${prescriptions.appointmentId} = ${appointmentId}
-      and ${prescriptions.deletedAt} is null
-    on conflict do nothing
-  `);
+  await ctx.db.transaction(async (tx) => {
+    // Correction and materialization serialize on the same source row. This
+    // lock statement intentionally precedes the INSERT so READ COMMITTED takes
+    // a fresh snapshot for the correction exclusion after any lock wait.
+    await tx.execute(sql`
+      select ${vaccinationRecords.id}
+      from ${vaccinationRecords}
+      where ${vaccinationRecords.practiceId} = ${ctx.practiceId}
+        and ${vaccinationRecords.appointmentId} = ${appointmentId}
+        and ${vaccinationRecords.deletedAt} is null
+      order by ${vaccinationRecords.id}
+      for update
+    `);
+    await tx.execute(sql`
+      insert into ${visitWorkItems}
+        (practice_id, appointment_id, vaccination_record_id)
+      select ${vaccinationRecords.practiceId}, ${vaccinationRecords.appointmentId}, ${vaccinationRecords.id}
+      from ${vaccinationRecords}
+      where ${vaccinationRecords.practiceId} = ${ctx.practiceId}
+        and ${vaccinationRecords.appointmentId} = ${appointmentId}
+        and ${vaccinationRecords.deletedAt} is null
+        and not exists (
+          select 1
+          from ${clinicalRecordCorrections} as vaccination_correction
+          where vaccination_correction.practice_id = ${ctx.practiceId}
+            and vaccination_correction.vaccination_record_id = ${vaccinationRecords.id}
+        )
+      on conflict do nothing
+    `);
+    await tx.execute(sql`
+      insert into ${visitWorkItems}
+        (practice_id, appointment_id, lab_result_id)
+      select ${labResults.practiceId}, ${labResults.appointmentId}, ${labResults.id}
+      from ${labResults}
+      where ${labResults.practiceId} = ${ctx.practiceId}
+        and ${labResults.appointmentId} = ${appointmentId}
+        and ${labResults.deletedAt} is null
+      on conflict do nothing
+    `);
+    await tx.execute(sql`
+      insert into ${visitWorkItems}
+        (practice_id, appointment_id, procedure_id)
+      select ${procedures.practiceId}, ${procedures.appointmentId}, ${procedures.id}
+      from ${procedures}
+      where ${procedures.practiceId} = ${ctx.practiceId}
+        and ${procedures.appointmentId} = ${appointmentId}
+        and ${procedures.deletedAt} is null
+      on conflict do nothing
+    `);
+    await tx.execute(sql`
+      insert into ${visitWorkItems}
+        (practice_id, appointment_id, prescription_id)
+      select ${prescriptions.practiceId}, ${prescriptions.appointmentId}, ${prescriptions.id}
+      from ${prescriptions}
+      where ${prescriptions.practiceId} = ${ctx.practiceId}
+        and ${prescriptions.appointmentId} = ${appointmentId}
+        and ${prescriptions.deletedAt} is null
+      on conflict do nothing
+    `);
+  });
 }
 
 export async function assertNoUnresolvedVisitWork(

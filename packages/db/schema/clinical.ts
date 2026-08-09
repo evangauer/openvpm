@@ -147,6 +147,10 @@ export const vaccinationRecords = pgTable(
       table.patientId,
       table.nextDueDate,
     ),
+    practiceRecordUq: uniqueIndex("vaccination_records_practice_record_uq").on(
+      table.practiceId,
+      table.id,
+    ),
     practiceDueIdx: index("vaccination_records_practice_due_idx").on(
       table.practiceId,
       table.nextDueDate,

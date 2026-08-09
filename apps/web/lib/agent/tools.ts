@@ -386,7 +386,13 @@ const getPatientSummary: AgentTool = {
           and(
             eq(vaccinationRecords.patientId, patientId),
             eq(vaccinationRecords.practiceId, ctx.practiceId),
-            isNull(vaccinationRecords.deletedAt)
+            isNull(vaccinationRecords.deletedAt),
+            sql`not exists (
+              select 1
+              from ${clinicalRecordCorrections}
+              where ${clinicalRecordCorrections.practiceId} = ${ctx.practiceId}
+                and ${clinicalRecordCorrections.vaccinationRecordId} = ${vaccinationRecords.id}
+            )`
           )
         ),
       ctx.db
@@ -606,6 +612,38 @@ const listOverdueVaccinations: AgentTool = {
         and(
           eq(vaccinationRecords.practiceId, ctx.practiceId),
           isNull(vaccinationRecords.deletedAt),
+          sql`not exists (
+            select 1
+            from ${clinicalRecordCorrections}
+            where ${clinicalRecordCorrections.practiceId} = ${ctx.practiceId}
+              and ${clinicalRecordCorrections.vaccinationRecordId} = ${vaccinationRecords.id}
+          )`,
+          sql`not exists (
+            select 1
+            from vaccination_records as newer_vaccination
+            where newer_vaccination.practice_id = ${ctx.practiceId}
+              and newer_vaccination.patient_id = ${vaccinationRecords.patientId}
+              and newer_vaccination.deleted_at is null
+              and lower(btrim(newer_vaccination.vaccine_name)) = lower(btrim(${vaccinationRecords.vaccineName}))
+              and not exists (
+                select 1
+                from clinical_record_corrections as newer_correction
+                where newer_correction.practice_id = ${ctx.practiceId}
+                  and newer_correction.vaccination_record_id = newer_vaccination.id
+              )
+              and (
+                newer_vaccination.administered_at > ${vaccinationRecords.administeredAt}
+                or (
+                  newer_vaccination.administered_at = ${vaccinationRecords.administeredAt}
+                  and newer_vaccination.created_at > ${vaccinationRecords.createdAt}
+                )
+                or (
+                  newer_vaccination.administered_at = ${vaccinationRecords.administeredAt}
+                  and newer_vaccination.created_at = ${vaccinationRecords.createdAt}
+                  and newer_vaccination.id::text > ${vaccinationRecords.id}::text
+                )
+              )
+          )`,
           isNull(patients.deletedAt),
           lt(vaccinationRecords.nextDueDate, today)
         )

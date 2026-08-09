@@ -32,6 +32,7 @@ function formatDate(
 type Tab = "vaccinations" | "prescriptions" | "weights";
 
 type PortalVaccinationForCertificate = {
+  id: string;
   vaccineName: string;
   lotNumber: string | null;
   manufacturer: string | null;
@@ -52,6 +53,11 @@ export default function PetDetailPage() {
   const token = params.token as string;
   const petId = params.petId as string;
   const [activeTab, setActiveTab] = useState<Tab>("vaccinations");
+  const [certificatePendingId, setCertificatePendingId] = useState<
+    string | null
+  >(null);
+  const [certificateError, setCertificateError] = useState<string | null>(null);
+  const utils = trpc.useUtils();
 
   const { data, isLoading, error } = trpc.portal.getPetDetail.useQuery({
     token,
@@ -91,28 +97,67 @@ export default function PetDetailPage() {
   async function downloadVaccinationCertificate(
     vaccination: PortalVaccinationForCertificate
   ) {
-    const { generateVaccinationCertificatePdf } = await import("@/lib/pdf");
-    generateVaccinationCertificatePdf({
-      practiceName: petDetail.practice.name,
-      practiceAddress: petDetail.practice.address ?? undefined,
-      practicePhone: petDetail.practice.phone ?? undefined,
-      practiceEmail: petDetail.practice.email ?? undefined,
-      patientName: petDetail.name,
-      species: petDetail.species,
-      breed: petDetail.breed ?? undefined,
-      sex: petDetail.sex?.replace("_", " "),
-      dob: petDetail.dob ? formatDate(petDetail.dob, practiceTimeZone) : undefined,
-      color: petDetail.color ?? undefined,
-      clientName: petDetail.clientName,
-      vaccineName: vaccination.vaccineName,
-      administeredAt: formatDate(vaccination.administeredAt, practiceTimeZone),
-      nextDueDate: vaccination.nextDueDate
-        ? formatDate(vaccination.nextDueDate, practiceTimeZone)
-        : undefined,
-      manufacturer: vaccination.manufacturer ?? undefined,
-      lotNumber: vaccination.lotNumber ?? undefined,
-      generatedDate: formatDate(new Date(), practiceTimeZone),
-    }).save(certificateFilename(petDetail.name, vaccination.vaccineName));
+    setCertificatePendingId(vaccination.id);
+    setCertificateError(null);
+    try {
+      // Re-authorize the exact dose at click time. Zero stale time guarantees
+      // every click reaches the server even when this query key was successful.
+      const certificate =
+        await utils.portal.getVaccinationCertificateData.fetch(
+          {
+            token,
+            patientId: petId,
+            vaccinationRecordId: vaccination.id,
+          },
+          { staleTime: 0 }
+        );
+      const { generateVaccinationCertificatePdf } = await import("@/lib/pdf");
+      const certificateTimeZone = certificate.practice.timezone;
+      generateVaccinationCertificatePdf({
+        practiceName: certificate.practice.name,
+        practiceAddress: certificate.practice.address ?? undefined,
+        practicePhone: certificate.practice.phone ?? undefined,
+        practiceEmail: certificate.practice.email ?? undefined,
+        patientName: certificate.patient.name,
+        species: certificate.patient.species,
+        breed: certificate.patient.breed ?? undefined,
+        sex: certificate.patient.sex?.replace("_", " "),
+        dob: certificate.patient.dob
+          ? formatDate(certificate.patient.dob, certificateTimeZone)
+          : undefined,
+        color: certificate.patient.color ?? undefined,
+        clientName: certificate.clientName,
+        vaccineName: certificate.vaccination.vaccineName,
+        administeredAt: formatDate(
+          certificate.vaccination.administeredAt,
+          certificateTimeZone
+        ),
+        nextDueDate: certificate.vaccination.nextDueDate
+          ? formatDate(
+              certificate.vaccination.nextDueDate,
+              certificateTimeZone
+            )
+          : undefined,
+        manufacturer: certificate.vaccination.manufacturer ?? undefined,
+        lotNumber: certificate.vaccination.lotNumber ?? undefined,
+        generatedDate: formatDate(new Date(), certificateTimeZone),
+      }).save(
+        certificateFilename(
+          certificate.patient.name,
+          certificate.vaccination.vaccineName
+        )
+      );
+    } catch {
+      setCertificateError(
+        "This certificate is no longer available. Refresh to see current vaccination records."
+      );
+      await utils.portal.getPetDetail.invalidate({
+        token,
+        patientId: petId,
+      });
+    } finally {
+      setCertificatePendingId(null);
+    }
   }
 
   const tabs: { key: Tab; label: string; count: number }[] = [
@@ -227,6 +272,14 @@ export default function PetDetailPage() {
       {/* Vaccinations Tab */}
       {activeTab === "vaccinations" && (
         <div>
+          {certificateError ? (
+            <p
+              role="alert"
+              className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+            >
+              {certificateError}
+            </p>
+          ) : null}
           {data.vaccinations.length === 0 ? (
             <EmptyState
               className="py-10"
@@ -266,10 +319,13 @@ export default function PetDetailPage() {
                           <button
                             type="button"
                             onClick={() => void downloadVaccinationCertificate(v)}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-teal-200 px-3 py-1.5 text-xs font-medium text-teal-700 transition-colors hover:border-teal-300 hover:bg-teal-50"
+                            disabled={certificatePendingId !== null}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-teal-200 px-3 py-1.5 text-xs font-medium text-teal-700 transition-colors hover:border-teal-300 hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             <Download className="h-3.5 w-3.5" aria-hidden="true" />
-                            Download
+                            {certificatePendingId === v.id
+                              ? "Checking..."
+                              : "Download"}
                           </button>
                         </td>
                       </tr>

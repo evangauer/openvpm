@@ -60,6 +60,44 @@ import {
 
 const DEFAULT_PRACTICE_NAME = "your clinic";
 
+function validVaccinationRecordPredicate(practiceId: string) {
+  return sql`not exists (
+    select 1
+    from clinical_record_corrections as vaccination_correction
+    where vaccination_correction.practice_id = ${practiceId}
+      and vaccination_correction.vaccination_record_id = ${vaccinationRecords.id}
+  )`;
+}
+
+function latestValidVaccinationRecordPredicate(practiceId: string) {
+  return sql`not exists (
+    select 1
+    from vaccination_records as newer_vaccination
+    where newer_vaccination.practice_id = ${practiceId}
+      and newer_vaccination.patient_id = ${vaccinationRecords.patientId}
+      and newer_vaccination.deleted_at is null
+      and lower(btrim(newer_vaccination.vaccine_name)) = lower(btrim(${vaccinationRecords.vaccineName}))
+      and not exists (
+        select 1
+        from clinical_record_corrections as newer_correction
+        where newer_correction.practice_id = ${practiceId}
+          and newer_correction.vaccination_record_id = newer_vaccination.id
+      )
+      and (
+        newer_vaccination.administered_at > ${vaccinationRecords.administeredAt}
+        or (
+          newer_vaccination.administered_at = ${vaccinationRecords.administeredAt}
+          and newer_vaccination.created_at > ${vaccinationRecords.createdAt}
+        )
+        or (
+          newer_vaccination.administered_at = ${vaccinationRecords.administeredAt}
+          and newer_vaccination.created_at = ${vaccinationRecords.createdAt}
+          and newer_vaccination.id::text > ${vaccinationRecords.id}::text
+        )
+      )
+  )`;
+}
+
 function formatDate(d: Date | string, timeZone?: string | null): string {
   const date = new Date(d);
   const options: Intl.DateTimeFormatOptions = {
@@ -863,6 +901,8 @@ export const notificationsRouter = createRouter({
           eq(vaccinationRecords.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
           isNull(vaccinationRecords.deletedAt),
+          validVaccinationRecordPredicate(ctx.practiceId),
+          latestValidVaccinationRecordPredicate(ctx.practiceId),
           eq(patients.practiceId, ctx.practiceId),
           isNull(patients.deletedAt),
           eq(clients.practiceId, ctx.practiceId),

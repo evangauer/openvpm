@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
+import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -29,6 +30,7 @@ export function ClinicalCorrectionControl({
 }) {
   const [editing, setEditing] = useState(false);
   const [reason, setReason] = useState("");
+  const reasonId = useId();
 
   if (correction) {
     const correctedAt = new Date(correction.correctedAt);
@@ -54,72 +56,88 @@ export function ClinicalCorrectionControl({
 
   if (!canCorrect) return null;
 
-  if (!editing) {
-    return (
-      <div className="mt-3 flex justify-end">
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="text-destructive"
-          onClick={() => setEditing(true)}
-        >
-          Mark entered in error
-        </Button>
-      </div>
-    );
-  }
-
   const valid = isClinicalCorrectionReasonValid(reason);
   return (
-    <div className="mt-3 space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-3">
-      <label className="block text-xs font-medium text-foreground">
-        Why is this record incorrect?
-        <Textarea
-          className="mt-1 bg-background"
-          value={reason}
-          maxLength={CLINICAL_CORRECTION_REASON_MAX_LENGTH}
-          rows={3}
-          placeholder="Required. Be specific; this reason becomes permanent chart history."
-          onChange={(event) => setReason(event.currentTarget.value)}
-        />
-      </label>
-      <p className="text-xs text-muted-foreground">
-        The original record will remain visible and cannot be edited or deleted.
-      </p>
-      <div className="flex justify-end gap-2">
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          disabled={isPending}
-          onClick={() => {
-            setReason("");
-            setEditing(false);
-          }}
-        >
-          Cancel
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="destructive"
-          disabled={!valid || isPending}
-          onClick={async () => {
-            try {
-              await onCorrect(reason.trim());
-              setReason("");
-              setEditing(false);
-            } catch {
-              // The mutation owner presents the server error and keeps this
-              // form open so the user can review or retry the correction.
-            }
-          }}
-        >
-          {isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-          Confirm correction
-        </Button>
+    <DialogPrimitive.Root
+      open={editing}
+      onOpenChange={(open) => {
+        if (isPending) return;
+        setEditing(open);
+        if (!open) {
+          setReason("");
+        }
+      }}
+    >
+      <div className="mt-3 flex justify-end">
+        <DialogPrimitive.Trigger asChild>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="text-destructive"
+          >
+            Mark entered in error
+          </Button>
+        </DialogPrimitive.Trigger>
       </div>
-    </div>
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50" />
+        <DialogPrimitive.Content className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-background p-6 shadow-lg">
+          <DialogPrimitive.Title className="text-lg font-semibold">
+            Mark record entered in error?
+          </DialogPrimitive.Title>
+          <DialogPrimitive.Description className="mt-2 text-sm text-muted-foreground">
+            The original record will remain visible in staff chart history, but
+            it will no longer be used for current clinical summaries, client
+            portal records, reminders, or certificates.
+          </DialogPrimitive.Description>
+          <div className="mt-4">
+            <label
+              htmlFor={reasonId}
+              className="block text-sm font-medium text-foreground"
+            >
+              Why is this record incorrect?
+            </label>
+            <Textarea
+              id={reasonId}
+              className="mt-1 bg-background"
+              value={reason}
+              maxLength={CLINICAL_CORRECTION_REASON_MAX_LENGTH}
+              rows={4}
+              autoFocus
+              placeholder="Required. Be specific; this reason becomes permanent chart history."
+              onChange={(event) => setReason(event.currentTarget.value)}
+            />
+          </div>
+          <div className="mt-5 flex justify-end gap-2">
+            <DialogPrimitive.Close asChild>
+              <Button type="button" variant="ghost" disabled={isPending}>
+                Cancel
+              </Button>
+            </DialogPrimitive.Close>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={!valid || isPending}
+              onClick={async () => {
+                try {
+                  await onCorrect(reason.trim());
+                  setReason("");
+                  setEditing(false);
+                } catch {
+                  // The mutation owner presents the server error and keeps the
+                  // dialog open so the user can review or retry.
+                }
+              }}
+            >
+              {isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : null}
+              Confirm correction
+            </Button>
+          </div>
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   );
 }

@@ -458,7 +458,13 @@ export const portalRouter = createRouter({
             and(
               eq(vaccinationRecords.patientId, input.patientId),
               eq(vaccinationRecords.practiceId, client.practiceId),
-              isNull(vaccinationRecords.deletedAt)
+              isNull(vaccinationRecords.deletedAt),
+              sql`not exists (
+                select 1
+                from clinical_record_corrections as vaccination_correction
+                where vaccination_correction.practice_id = ${client.practiceId}
+                  and vaccination_correction.vaccination_record_id = ${vaccinationRecords.id}
+              )`
             )
           )
           .orderBy(desc(vaccinationRecords.administeredAt)),
@@ -510,6 +516,96 @@ export const portalRouter = createRouter({
         allergies,
         vaccinations,
         prescriptions: activeRx,
+      };
+    }),
+
+  getVaccinationCertificateData: publicProcedure
+    .input(
+      z.object({
+        token: portalTokenInput,
+        patientId: z.string().uuid(),
+        vaccinationRecordId: z.string().uuid(),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      await assertPortalIpRateLimit(ctx.ip, {
+        keyPrefix: "portal-read",
+        ...PORTAL_READ_IP_RATE_LIMIT,
+      });
+      await assertPortalReadRateLimit(input.token);
+      const client = await getClientByToken(ctx.db, input.token);
+
+      const [practice, records] = await Promise.all([
+        practicePortalProfile(ctx.db, client.practiceId),
+        ctx.db
+          .select({
+            patientName: patients.name,
+            species: patients.species,
+            breed: patients.breed,
+            sex: patients.sex,
+            dob: patients.dob,
+            color: patients.color,
+            vaccinationRecordId: vaccinationRecords.id,
+            vaccineName: vaccinationRecords.vaccineName,
+            lotNumber: vaccinationRecords.lotNumber,
+            manufacturer: vaccinationRecords.manufacturer,
+            administeredAt: vaccinationRecords.administeredAt,
+            nextDueDate: vaccinationRecords.nextDueDate,
+          })
+          .from(vaccinationRecords)
+          .innerJoin(
+            patients,
+            and(
+              eq(vaccinationRecords.patientId, patients.id),
+              eq(patients.practiceId, client.practiceId),
+              eq(patients.clientId, client.id),
+              eq(patients.status, "active"),
+              isNull(patients.deletedAt)
+            )
+          )
+          .where(
+            and(
+              eq(vaccinationRecords.id, input.vaccinationRecordId),
+              eq(vaccinationRecords.patientId, input.patientId),
+              eq(vaccinationRecords.practiceId, client.practiceId),
+              isNull(vaccinationRecords.deletedAt),
+              sql`not exists (
+                select 1
+                from clinical_record_corrections as vaccination_correction
+                where vaccination_correction.practice_id = ${client.practiceId}
+                  and vaccination_correction.vaccination_record_id = ${vaccinationRecords.id}
+              )`
+            )
+          )
+          .limit(1),
+      ]);
+      const record = records[0];
+      if (!record) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Vaccination certificate is not available",
+        });
+      }
+
+      return {
+        practice,
+        clientName: `${client.firstName} ${client.lastName}`.trim(),
+        patient: {
+          name: record.patientName,
+          species: record.species,
+          breed: record.breed,
+          sex: record.sex,
+          dob: record.dob,
+          color: record.color,
+        },
+        vaccination: {
+          id: record.vaccinationRecordId,
+          vaccineName: record.vaccineName,
+          lotNumber: record.lotNumber,
+          manufacturer: record.manufacturer,
+          administeredAt: record.administeredAt,
+          nextDueDate: record.nextDueDate,
+        },
       };
     }),
 

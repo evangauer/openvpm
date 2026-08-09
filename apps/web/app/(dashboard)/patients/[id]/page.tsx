@@ -542,7 +542,7 @@ export default function PatientDetailPage() {
           status: p.status ?? "active",
           onsetDate: p.onsetDate ?? undefined,
         })),
-        vaccinations: vaccinations.map((v) => ({
+        vaccinations: vaccinations.filter((v) => !v.correctionId).map((v) => ({
           name: v.vaccineName,
           date: v.administeredAt
             ? formatClinicalDate(v.administeredAt, recordsTimeZone, "Unknown")
@@ -1026,7 +1026,11 @@ export default function PatientDetailPage() {
         )}
 
         {activeTab === "vaccinations" && (
-          <VaccinationsTab patientId={patient.id} timeZone={recordsTimeZone} />
+          <VaccinationsTab
+            patientId={patient.id}
+            timeZone={recordsTimeZone}
+            canCorrectClinicalRecords={canCorrectClinicalRecords}
+          />
         )}
 
         {activeTab === "records" && (
@@ -1377,12 +1381,23 @@ function VitalsTab({
 function VaccinationsTab({
   patientId,
   timeZone,
+  canCorrectClinicalRecords,
 }: {
   patientId: string;
   timeZone?: string | null;
+  canCorrectClinicalRecords: boolean;
 }) {
+  const utils = trpc.useUtils();
   const { data: vaccinations, isLoading, error } =
     trpc.records.listVaccinations.useQuery({ patientId });
+  const correctVaccination =
+    trpc.records.markVaccinationEnteredInError.useMutation({
+      onSuccess: async () => {
+        toast.success("Vaccination retained and marked entered in error");
+        await utils.records.listVaccinations.invalidate({ patientId });
+      },
+      onError: (err) => toast.error(err.message),
+    });
   const vaccinationsMissing = !isLoading && !error && !vaccinations;
 
   if (error) {
@@ -1431,13 +1446,19 @@ function VaccinationsTab({
             <th className="px-4 py-3 text-left font-medium text-muted-foreground">
               Administered By
             </th>
+            <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+              Status
+            </th>
           </tr>
         </thead>
         <tbody>
           {vaccinations.map((vax) => (
             <tr
               key={vax.id}
-              className="border-b border-border last:border-0"
+              className={cn(
+                "border-b border-border last:border-0",
+                vax.correctionId && "bg-destructive/5 text-muted-foreground"
+              )}
             >
               <td className="px-4 py-3 font-medium">{vax.vaccineName}</td>
               <td className="px-4 py-3">
@@ -1449,6 +1470,41 @@ function VaccinationsTab({
               <td className="px-4 py-3">{vax.lotNumber ?? "\u2014"}</td>
               <td className="px-4 py-3 text-muted-foreground">
                 {vax.administeredByName ?? "\u2014"}
+              </td>
+              <td className="px-4 py-3">
+                {vax.correctionId ? (
+                  <span className="inline-flex items-center rounded-full bg-destructive/10 px-2.5 py-0.5 text-xs font-medium text-destructive">
+                    Entered in error
+                  </span>
+                ) : (
+                  <span className="text-xs text-muted-foreground">Recorded</span>
+                )}
+                <ClinicalCorrectionControl
+                  correction={
+                    vax.correctionId &&
+                    vax.correctionReason &&
+                    vax.correctedAt
+                      ? {
+                          id: vax.correctionId,
+                          reason: vax.correctionReason,
+                          correctedAt: vax.correctedAt,
+                          correctedByName: vax.correctedByName,
+                        }
+                      : null
+                  }
+                  canCorrect={canCorrectClinicalRecords}
+                  isPending={
+                    correctVaccination.isPending &&
+                    correctVaccination.variables?.recordId === vax.id
+                  }
+                  onCorrect={(reason) =>
+                    correctVaccination.mutateAsync({
+                      patientId,
+                      recordId: vax.id,
+                      reason,
+                    })
+                  }
+                />
               </td>
             </tr>
           ))}

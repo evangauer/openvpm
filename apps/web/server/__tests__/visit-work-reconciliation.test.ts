@@ -17,6 +17,8 @@ const INVOICE_ID = "00000000-0000-0000-0000-000000000007";
 const INVOICE_ITEM_ID = "00000000-0000-0000-0000-000000000008";
 const PRESCRIPTION_ID = "00000000-0000-0000-0000-000000000009";
 const DISPENSE_CHARGE_ID = "00000000-0000-0000-0000-00000000000a";
+const VACCINATION_ID = "00000000-0000-0000-0000-00000000000b";
+const CORRECTION_ID = "00000000-0000-0000-0000-00000000000c";
 
 const openAppointment = {
   id: APPOINTMENT_ID,
@@ -130,9 +132,9 @@ describe("visit work reconciliation", () => {
       unresolvedCount: 1,
       items: [{ id: WORK_ITEM_ID, sourceLabel: "Dental cleaning" }],
     });
-    // Tenant context plus four bounded, idempotent source upserts all finish
-    // before the list query resolves and its transaction commits.
-    expect(execute).toHaveBeenCalledTimes(5);
+    // Tenant context, a deterministic vaccination-source lock, and four
+    // bounded source upserts all finish before the list query resolves.
+    expect(execute).toHaveBeenCalledTimes(6);
   });
 
   it("does not create unresolved ledger work for a historical closed visit", async () => {
@@ -152,6 +154,59 @@ describe("visit work reconciliation", () => {
     ).resolves.toMatchObject({ unresolvedCount: 0, items: [] });
     // The tenant-context statement still runs, but no source upserts do.
     expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("serializes vaccination correction and work materialization on the source row", () => {
+    const integrity = readFileSync(
+      new URL("../visit-billing-integrity.ts", import.meta.url),
+      "utf8"
+    );
+    const records = readFileSync(
+      new URL("../routers/records.ts", import.meta.url),
+      "utf8"
+    );
+
+    const syncTransaction = integrity.indexOf("await ctx.db.transaction");
+    const syncSourceLock = integrity.indexOf(
+      "select ${vaccinationRecords.id}",
+      syncTransaction
+    );
+    const syncInsert = integrity.indexOf(
+      "insert into ${visitWorkItems}",
+      syncSourceLock
+    );
+    const freshCorrectionCheck = integrity.indexOf(
+      "from ${clinicalRecordCorrections} as vaccination_correction",
+      syncInsert
+    );
+    expect(syncTransaction).toBeGreaterThanOrEqual(0);
+    expect(syncSourceLock).toBeGreaterThan(syncTransaction);
+    expect(syncInsert).toBeGreaterThan(syncSourceLock);
+    expect(freshCorrectionCheck).toBeGreaterThan(syncInsert);
+    expect(integrity.slice(syncSourceLock, syncInsert)).toContain(
+      "order by ${vaccinationRecords.id}"
+    );
+    expect(integrity.slice(syncSourceLock, syncInsert)).toContain("for update");
+
+    const correctionStart = records.indexOf("markVaccinationEnteredInError");
+    const correctionEnd = records.indexOf("createVaccination", correctionStart);
+    const correctionMutation = records.slice(correctionStart, correctionEnd);
+    const correctionSourceLock = correctionMutation.indexOf(
+      '.for("update", { of: vaccinationRecords })'
+    );
+    const correctionInsert = correctionMutation.indexOf(
+      ".insert(clinicalRecordCorrections)"
+    );
+    const correctionWorkUpdate = correctionMutation.indexOf(
+      ".update(visitWorkItems)"
+    );
+    expect(correctionSourceLock).toBeGreaterThanOrEqual(0);
+    expect(correctionInsert).toBeGreaterThan(correctionSourceLock);
+    expect(correctionWorkUpdate).toBeGreaterThan(correctionInsert);
+
+    // Sync-first inserts before releasing the source lock, so correction waits
+    // and then voids that row. Correction-first commits before sync's lock wait
+    // ends, so the later INSERT statement's fresh snapshot skips the source.
   });
 
   it("resolves an item against an explicitly selected same-visit charge", async () => {
@@ -388,6 +443,43 @@ describe("visit work reconciliation", () => {
     );
   });
 
+  it("does not reopen visit work for a vaccination entered in error", async () => {
+    const correctedVaccinationWork = {
+      ...unresolvedWork,
+      vaccinationRecordId: VACCINATION_ID,
+      status: "voided",
+      voidReason: "Dose was recorded for the wrong patient.",
+      resolvedBy: USER_ID,
+      resolvedAt: new Date("2026-08-08T17:00:00.000Z"),
+    };
+    const { db, updateSet, insertValues } = createDb({
+      selectResults: [
+        [openAppointment],
+        [{ id: PATIENT_ID }],
+        [],
+        [correctedVaccinationWork],
+        [{ id: CORRECTION_ID }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).reopenVisitWork({
+        appointmentId: APPOINTMENT_ID,
+        workItemId: WORK_ITEM_ID,
+        reason: "Review the reconciliation again",
+      })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message:
+        "This vaccination was entered in error and its visit work cannot be reopened.",
+    });
+
+    // The correction check happens before an audit event or any clinical,
+    // invoice, payment, or work-item update can be attempted.
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
   it("requires the finalized invoice to be voided before reopening visit work", async () => {
     const { db, updateSet, insertValues } = createDb({
       selectResults: [
@@ -513,6 +605,13 @@ describe("visit work reconciliation", () => {
     expect(integrity).toContain(
       "(practice_id, appointment_id, vaccination_record_id)",
     );
+    expect(integrity).toContain(
+      "from ${clinicalRecordCorrections} as vaccination_correction",
+    );
+    expect(integrity).toContain(
+      "vaccination_correction.vaccination_record_id = ${vaccinationRecords.id}",
+    );
+    expect(integrity.match(/on conflict do nothing/g)).toHaveLength(4);
     expect(integrity).toContain(
       "eq(visitCloseouts.practiceId, ctx.practiceId)",
     );

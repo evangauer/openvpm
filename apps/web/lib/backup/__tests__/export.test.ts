@@ -554,6 +554,14 @@ describe("restorePracticeData", () => {
           recordedBy: "user-1",
         },
       ],
+      vaccinationRecords: [
+        {
+          id: "vaccination-1",
+          patientId: "patient-1",
+          appointmentId: "appointment-1",
+          administeredBy: "user-1",
+        },
+      ],
       clinicalRecordCorrections: [
         {
           id: "correction-1",
@@ -571,6 +579,16 @@ describe("restorePracticeData", () => {
           vitalSignId: "vital-1",
           patientId: "patient-1",
           appointmentId: null,
+          correctedBy: "user-1",
+        },
+        {
+          id: "correction-3",
+          recordType: "vaccination_record",
+          soapNoteId: null,
+          vitalSignId: null,
+          vaccinationRecordId: "vaccination-1",
+          patientId: "patient-1",
+          appointmentId: "appointment-1",
           correctedBy: "user-1",
         },
       ],
@@ -607,7 +625,37 @@ describe("restorePracticeData", () => {
         ],
       }).errors
     ).toContain(
-      "clinicalRecordCorrections[correction-1].recordType must be soap_note or vital_sign."
+      "clinicalRecordCorrections[correction-1].recordType must be soap_note, vital_sign, or vaccination_record."
+    );
+
+    expect(
+      validatePracticeExportRestore({
+        ...backup,
+        clinicalRecordCorrections: [
+          {
+            ...backup.clinicalRecordCorrections[2],
+            patientId: "patient-2",
+            appointmentId: "appointment-2",
+          },
+        ],
+      }).errors
+    ).toContain(
+      "clinicalRecordCorrections[correction-3] must match its source record patientId and appointmentId exactly."
+    );
+
+    expect(
+      validatePracticeExportRestore({
+        ...backup,
+        clinicalRecordCorrections: [
+          backup.clinicalRecordCorrections[2],
+          {
+            ...backup.clinicalRecordCorrections[2],
+            id: "correction-4",
+          },
+        ],
+      }).errors
+    ).toContain(
+      "clinicalRecordCorrections[correction-4] duplicates an existing correction source."
     );
   });
 

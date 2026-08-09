@@ -13,12 +13,12 @@ import {
 import { appointments } from "./scheduling";
 import { patients } from "./patients";
 import { practices } from "./practices";
-import { soapNotes, vitalSigns } from "./clinical";
+import { soapNotes, vaccinationRecords, vitalSigns } from "./clinical";
 import { users } from "./users";
 
 export const clinicalCorrectionRecordTypeEnum = pgEnum(
   "clinical_correction_record_type",
-  ["soap_note", "vital_sign"],
+  ["soap_note", "vital_sign", "vaccination_record"],
 );
 
 export const clinicalCorrectionActionEnum = pgEnum(
@@ -46,6 +46,9 @@ export const clinicalRecordCorrections = pgTable(
       .default("entered_in_error"),
     soapNoteId: uuid("soap_note_id").references(() => soapNotes.id),
     vitalSignId: uuid("vital_sign_id").references(() => vitalSigns.id),
+    vaccinationRecordId: uuid("vaccination_record_id").references(
+      () => vaccinationRecords.id,
+    ),
     patientId: uuid("patient_id")
       .notNull()
       .references(() => patients.id),
@@ -72,6 +75,11 @@ export const clinicalRecordCorrections = pgTable(
     vitalSignUq: uniqueIndex("clinical_record_corrections_vital_sign_uq")
       .on(table.practiceId, table.vitalSignId)
       .where(sql`${table.vitalSignId} is not null`),
+    vaccinationRecordUq: uniqueIndex(
+      "clinical_record_corrections_vaccination_record_uq",
+    )
+      .on(table.practiceId, table.vaccinationRecordId)
+      .where(sql`${table.vaccinationRecordId} is not null`),
     appointmentPracticeFk: foreignKey({
       columns: [table.practiceId, table.appointmentId, table.patientId],
       foreignColumns: [
@@ -101,16 +109,28 @@ export const clinicalRecordCorrections = pgTable(
       foreignColumns: [vitalSigns.practiceId, vitalSigns.id],
       name: "clinical_record_corrections_vital_source_fk",
     }),
+    vaccinationSourceFk: foreignKey({
+      columns: [table.practiceId, table.vaccinationRecordId],
+      foreignColumns: [vaccinationRecords.practiceId, vaccinationRecords.id],
+      name: "clinical_record_corrections_vaccination_source_fk",
+    }),
     sourceTypeCheck: check(
       "clinical_record_corrections_source_type_check",
       sql`(
         ${table.recordType} = 'soap_note'
         and ${table.soapNoteId} is not null
         and ${table.vitalSignId} is null
+        and ${table.vaccinationRecordId} is null
       ) or (
         ${table.recordType} = 'vital_sign'
         and ${table.vitalSignId} is not null
         and ${table.soapNoteId} is null
+        and ${table.vaccinationRecordId} is null
+      ) or (
+        ${table.recordType} = 'vaccination_record'
+        and ${table.vaccinationRecordId} is not null
+        and ${table.soapNoteId} is null
+        and ${table.vitalSignId} is null
       )`,
     ),
     reasonLengthCheck: check(
@@ -150,6 +170,10 @@ export const clinicalRecordCorrectionsRelations = relations(
     vitalSign: one(vitalSigns, {
       fields: [clinicalRecordCorrections.vitalSignId],
       references: [vitalSigns.id],
+    }),
+    vaccinationRecord: one(vaccinationRecords, {
+      fields: [clinicalRecordCorrections.vaccinationRecordId],
+      references: [vaccinationRecords.id],
     }),
   }),
 );

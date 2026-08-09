@@ -61,7 +61,10 @@ import {
   syncVisitWorkItems,
 } from "../visit-billing-integrity";
 
-type EncounterDb = Pick<Database, "select" | "insert" | "update" | "execute">;
+type EncounterDb = Pick<
+  Database,
+  "select" | "insert" | "update" | "execute" | "transaction"
+>;
 
 type EncounterContext = {
   db: EncounterDb;
@@ -1337,6 +1340,29 @@ export const encountersRouter = createRouter({
             message: "Visit work item not found",
           });
         }
+
+        if (workItem.vaccinationRecordId) {
+          const [correction] = await tx
+            .select({ id: clinicalRecordCorrections.id })
+            .from(clinicalRecordCorrections)
+            .where(
+              and(
+                eq(clinicalRecordCorrections.practiceId, ctx.practiceId),
+                eq(
+                  clinicalRecordCorrections.vaccinationRecordId,
+                  workItem.vaccinationRecordId
+                )
+              )
+            )
+            .limit(1);
+          if (correction) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "This vaccination was entered in error and its visit work cannot be reopened.",
+            });
+          }
+        }
         if (workItem.status === "unresolved") return workItem;
 
         const dispenseCharge =
@@ -1427,11 +1453,39 @@ export const encountersRouter = createRouter({
               eq(visitWorkItems.practiceId, ctx.practiceId),
               eq(visitWorkItems.appointmentId, input.appointmentId),
               eq(visitWorkItems.status, workItem.status),
+              sql`not exists (
+                select 1
+                from ${clinicalRecordCorrections}
+                where ${clinicalRecordCorrections.practiceId} = ${ctx.practiceId}
+                  and ${clinicalRecordCorrections.vaccinationRecordId} = ${visitWorkItems.vaccinationRecordId}
+              )`,
               isNull(visitWorkItems.deletedAt)
             )
           )
           .returning();
         if (!reopened) {
+          if (workItem.vaccinationRecordId) {
+            const [correction] = await tx
+              .select({ id: clinicalRecordCorrections.id })
+              .from(clinicalRecordCorrections)
+              .where(
+                and(
+                  eq(clinicalRecordCorrections.practiceId, ctx.practiceId),
+                  eq(
+                    clinicalRecordCorrections.vaccinationRecordId,
+                    workItem.vaccinationRecordId
+                  )
+                )
+              )
+              .limit(1);
+            if (correction) {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message:
+                  "This vaccination was entered in error and its visit work cannot be reopened.",
+              });
+            }
+          }
           throw new TRPCError({
             code: "CONFLICT",
             message: "Visit work changed; refresh before correcting it.",

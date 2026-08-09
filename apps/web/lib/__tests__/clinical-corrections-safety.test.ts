@@ -7,6 +7,7 @@ import {
   patients,
   soapNotes,
   users,
+  vaccinationRecords,
   vitalSigns,
 } from "@openpims/db";
 
@@ -174,6 +175,64 @@ describe("clinical correction schema and migration", () => {
       "REVOKE UPDATE, DELETE ON clinical_record_corrections FROM openpims_app",
     );
   });
+
+  it("extends the same tenant-safe append-only ledger to vaccination records", () => {
+    const config = getTableConfig(clinicalRecordCorrections);
+    const vaccinationConfig = getTableConfig(vaccinationRecords);
+    const columns = config.columns.map((column) => column.name);
+    const indexes = config.indexes.map((index) => index.config.name);
+    const foreignKeys = config.foreignKeys.map(
+      (foreignKey) => foreignKey.reference().name,
+    );
+    const migration = readRepoFile(
+      "packages/db/drizzle/0054_ambitious_ultimatum.sql",
+    );
+    const journal = readRepoFile("packages/db/drizzle/meta/_journal.json");
+
+    expect(columns).toContain("vaccination_record_id");
+    expect(indexes).toContain(
+      "clinical_record_corrections_vaccination_record_uq",
+    );
+    expect(foreignKeys).toContain(
+      "clinical_record_corrections_vaccination_source_fk",
+    );
+    expect(
+      vaccinationConfig.indexes.map((index) => index.config.name),
+    ).toContain("vaccination_records_practice_record_uq");
+    expect(journal).toContain("0054_ambitious_ultimatum");
+    expect(migration).toContain(
+      'ALTER TYPE "public"."clinical_correction_record_type" RENAME TO "clinical_correction_record_type_old"',
+    );
+    expect(migration).toContain(
+      'CREATE TYPE "public"."clinical_correction_record_type" AS ENUM(\'soap_note\', \'vital_sign\', \'vaccination_record\')',
+    );
+    expect(migration).toContain(
+      'USING "record_type"::text::"public"."clinical_correction_record_type"',
+    );
+    expect(migration).not.toContain("ADD VALUE 'vaccination_record'");
+    expect(migration.indexOf("vaccination_records_practice_record_uq")).toBeLessThan(
+      migration.indexOf("clinical_record_corrections_vaccination_source_fk"),
+    );
+    expect(migration).toContain(
+      'CONSTRAINT "clinical_record_corrections_vaccination_source_fk"',
+    );
+    expect(migration).toContain(
+      '"clinical_record_corrections"."record_type" = \'vaccination_record\'',
+    );
+    expect(migration).toContain(
+      'and "clinical_record_corrections"."soap_note_id" is null',
+    );
+    expect(migration).toContain(
+      'and "clinical_record_corrections"."vital_sign_id" is null',
+    );
+    expect(migration).toContain(
+      "ELSIF NEW.record_type = 'vaccination_record'",
+    );
+    expect(migration).toContain("FROM public.vaccination_records source");
+    expect(migration).toContain(
+      "source.appointment_id IS NOT DISTINCT FROM NEW.appointment_id",
+    );
+  });
 });
 
 describe("clinical correction consumers", () => {
@@ -231,8 +290,65 @@ describe("clinical correction consumers", () => {
     expect(backup).toContain("allPracticeRows(db, vitalSigns, practiceId)");
     expect(backup).toContain("referencedSoapNoteIds");
     expect(backup).toContain("referencedVitalSignIds");
+    expect(backup).toContain("referencedVaccinationRecordIds");
+    expect(backup).toContain(
+      'optionalRef(\n    "clinicalRecordCorrections",\n    "vaccinationRecordId",',
+    );
     expect(backup).toContain(
       'await restorePracticeRows(\n    "clinicalRecordCorrections"',
     );
+  });
+
+  it("excludes corrected vaccinations from every current-record consumer", () => {
+    const records = readRepoFile("apps/web/server/routers/records.ts");
+    const recordsPage = readRepoFile(
+      "apps/web/app/(dashboard)/records/page.tsx",
+    );
+    const patient = readRepoFile(
+      "apps/web/app/(dashboard)/patients/[id]/page.tsx",
+    );
+    const portal = readRepoFile("apps/web/server/routers/portal.ts");
+    const recalls = readRepoFile("apps/web/server/vaccination-recalls.ts");
+    const notifications = readRepoFile(
+      "apps/web/server/routers/notifications.ts",
+    );
+    const ai = readRepoFile("apps/web/server/routers/ai.ts");
+    const agent = readRepoFile("apps/web/lib/agent/tools.ts");
+
+    expect(records).toContain("markVaccinationEnteredInError");
+    expect(records).toContain(
+      "correctionReason: clinicalRecordCorrections.reason",
+    );
+    expect(records).toContain('recordType: "vaccination_record"');
+    expect(records).toContain('status: "voided"');
+    expect(records).toContain('eq(visitWorkItems.status, "unresolved")');
+    expect(records).toContain("isNull(visitWorkItems.invoiceId)");
+    expect(records).toContain("isNull(visitWorkItems.invoiceItemId)");
+    expect(recordsPage).toContain("correctVaccination.mutateAsync");
+    expect(patient).toContain(
+      "vaccinations.filter((v) => !v.correctionId).map",
+    );
+    for (const source of [portal, recalls, notifications, ai, agent]) {
+      expect(source).toContain("vaccination_record_id");
+    }
+    for (const source of [recalls, notifications, ai, agent]) {
+      expect(source).toContain("newer_correction.vaccination_record_id");
+      expect(source).toContain("newer_vaccination.administered_at");
+    }
+  });
+
+  it("uses an accessible, explicit confirmation dialog for permanent corrections", () => {
+    const control = readRepoFile(
+      "apps/web/components/records/clinical-correction-control.tsx",
+    );
+
+    expect(control).toContain("<DialogPrimitive.Root");
+    expect(control).toContain("<DialogPrimitive.Title");
+    expect(control).toContain("<DialogPrimitive.Description");
+    expect(control).toContain("htmlFor={reasonId}");
+    expect(control).toContain("id={reasonId}");
+    expect(control).toContain("CLINICAL_CORRECTION_REASON_MAX_LENGTH");
+    expect(control).toContain("Confirm correction");
+    expect(control).toContain("The original record will remain visible");
   });
 });

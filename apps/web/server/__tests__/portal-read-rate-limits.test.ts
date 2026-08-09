@@ -30,6 +30,7 @@ const TOKEN_BUCKET =
   "portal-read:token:0ba11c8c03cc892e40cac090ac14c4db6e655ecfaff2490257fbe4c10fba19f9";
 const IP = "203.0.113.10";
 const PATIENT_ID = "00000000-0000-0000-0000-000000000001";
+const VACCINATION_RECORD_ID = "00000000-0000-0000-0000-000000000002";
 
 function callerWithDb(db: Record<string, unknown>, ip?: string) {
   return portalRouter.createCaller({ db, ip } as never);
@@ -79,6 +80,15 @@ describe("portal public read rate limits", () => {
       label: "pet detail",
       call: (caller: ReturnType<typeof callerWithDb>) =>
         caller.getPetDetail({ token: TOKEN, patientId: PATIENT_ID }),
+    },
+    {
+      label: "vaccination certificate",
+      call: (caller: ReturnType<typeof callerWithDb>) =>
+        caller.getVaccinationCertificateData({
+          token: TOKEN,
+          patientId: PATIENT_ID,
+          vaccinationRecordId: VACCINATION_RECORD_ID,
+        }),
     },
     {
       label: "appointments",

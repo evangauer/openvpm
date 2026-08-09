@@ -295,6 +295,7 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
   optionalRef("soapNotes", "appointmentId", "appointments"),
   requiredRef("soapNotes", "authorId", "users"),
   requiredRef("vaccinationRecords", "patientId", "patients"),
+  optionalRef("vaccinationRecords", "appointmentId", "appointments"),
   optionalRef("vaccinationRecords", "administeredBy", "users"),
   requiredRef("labResults", "patientId", "patients"),
   optionalRef("labResults", "appointmentId", "appointments"),
@@ -318,6 +319,11 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
   requiredRef("clinicalRecordCorrections", "correctedBy", "users"),
   optionalRef("clinicalRecordCorrections", "soapNoteId", "soapNotes"),
   optionalRef("clinicalRecordCorrections", "vitalSignId", "vitalSigns"),
+  optionalRef(
+    "clinicalRecordCorrections",
+    "vaccinationRecordId",
+    "vaccinationRecords"
+  ),
   requiredRef("cases", "patientId", "patients"),
   optionalRef("cases", "primaryVetId", "users"),
   requiredRef("caseEntries", "caseId", "cases"),
@@ -828,9 +834,12 @@ export function validatePracticeExportRestore(data: unknown): {
 
   const soapRows = rowsById("soapNotes");
   const vitalRows = rowsById("vitalSigns");
+  const vaccinationRows = rowsById("vaccinationRecords");
+  const correctedSources = new Set<string>();
   rowsFor(data, "clinicalRecordCorrections").forEach((row, index) => {
     const label = `clinicalRecordCorrections[${rowLabel(row, index)}]`;
     let source: Row | undefined;
+    let sourceIdentity: string | undefined;
 
     if (row.recordType === "soap_note") {
       if (typeof row.soapNoteId !== "string" || row.soapNoteId.length === 0) {
@@ -841,7 +850,14 @@ export function validatePracticeExportRestore(data: unknown): {
         pushError(`${label}.vitalSignId must be null for recordType soap_note.`);
         return;
       }
+      if (row.vaccinationRecordId != null) {
+        pushError(
+          `${label}.vaccinationRecordId must be null for recordType soap_note.`
+        );
+        return;
+      }
       source = soapRows.get(row.soapNoteId);
+      sourceIdentity = `soap_note:${row.soapNoteId}`;
     } else if (row.recordType === "vital_sign") {
       if (
         typeof row.vitalSignId !== "string" ||
@@ -856,12 +872,44 @@ export function validatePracticeExportRestore(data: unknown): {
         pushError(`${label}.soapNoteId must be null for recordType vital_sign.`);
         return;
       }
+      if (row.vaccinationRecordId != null) {
+        pushError(
+          `${label}.vaccinationRecordId must be null for recordType vital_sign.`
+        );
+        return;
+      }
       source = vitalRows.get(row.vitalSignId);
+      sourceIdentity = `vital_sign:${row.vitalSignId}`;
+    } else if (row.recordType === "vaccination_record") {
+      if (
+        typeof row.vaccinationRecordId !== "string" ||
+        row.vaccinationRecordId.length === 0
+      ) {
+        pushError(
+          `${label}.vaccinationRecordId is required for recordType vaccination_record.`
+        );
+        return;
+      }
+      if (row.soapNoteId != null || row.vitalSignId != null) {
+        pushError(
+          `${label}.soapNoteId and .vitalSignId must be null for recordType vaccination_record.`
+        );
+        return;
+      }
+      source = vaccinationRows.get(row.vaccinationRecordId);
+      sourceIdentity = `vaccination_record:${row.vaccinationRecordId}`;
     } else {
-      pushError(`${label}.recordType must be soap_note or vital_sign.`);
+      pushError(
+        `${label}.recordType must be soap_note, vital_sign, or vaccination_record.`
+      );
       return;
     }
 
+    if (sourceIdentity && correctedSources.has(sourceIdentity)) {
+      pushError(`${label} duplicates an existing correction source.`);
+      return;
+    }
+    if (sourceIdentity) correctedSources.add(sourceIdentity);
     if (!source) return;
 
     const correctionAppointmentId = row.appointmentId ?? null;
@@ -1028,7 +1076,7 @@ export async function exportPracticeData(
     wellnessPlanRows,
     wellnessEnrollmentRows,
     allSoapNoteRows,
-    vaccinationRows,
+    allVaccinationRows,
     labRows,
     procedureRows,
     clinicalNoteRows,
@@ -1073,7 +1121,7 @@ export async function exportPracticeData(
     activeRows(db, wellnessPlans, practiceId),
     activeRows(db, wellnessEnrollments, practiceId),
     allPracticeRows(db, soapNotes, practiceId),
-    activeRows(db, vaccinationRecords, practiceId),
+    allPracticeRows(db, vaccinationRecords, practiceId),
     activeRows(db, labResults, practiceId),
     activeRows(db, procedures, practiceId),
     activeRows(db, clinicalNotes, practiceId),
@@ -1115,12 +1163,23 @@ export async function exportPracticeData(
   const vitalRows = allVitalRows.filter(
     (vital) => vital.deletedAt == null || referencedVitalSignIds.has(vital.id),
   );
+  const referencedVaccinationRecordIds = new Set(
+    clinicalCorrectionRows
+      .map((correction) => correction.vaccinationRecordId)
+      .filter((id): id is string => typeof id === "string"),
+  );
+  const vaccinationRows = allVaccinationRows.filter(
+    (vaccination) =>
+      vaccination.deletedAt == null ||
+      referencedVaccinationRecordIds.has(vaccination.id),
+  );
   const referencedAppointmentIds = new Set(
     [
       ...prescriptionRows.map((prescription) => prescription.appointmentId),
       ...clinicalCorrectionRows.map((correction) => correction.appointmentId),
       ...soapNoteRows.map((note) => note.appointmentId),
       ...vitalRows.map((vital) => vital.appointmentId),
+      ...vaccinationRows.map((vaccination) => vaccination.appointmentId),
     ].filter((id): id is string => typeof id === "string"),
   );
   const appointmentRows = allAppointmentRows.filter(
@@ -1135,6 +1194,7 @@ export async function exportPracticeData(
       ...clinicalCorrectionRows.map((correction) => correction.patientId),
       ...soapNoteRows.map((note) => note.patientId),
       ...vitalRows.map((vital) => vital.patientId),
+      ...vaccinationRows.map((vaccination) => vaccination.patientId),
       ...appointmentRows.map((appointment) => appointment.patientId),
       ...patientMergeRows.flatMap((event) => [
         event.sourcePatientId,
@@ -1163,6 +1223,7 @@ export async function exportPracticeData(
       ...clinicalCorrectionRows.map((correction) => correction.correctedBy),
       ...soapNoteRows.map((note) => note.authorId),
       ...vitalRows.map((vital) => vital.recordedBy),
+      ...vaccinationRows.map((vaccination) => vaccination.administeredBy),
       ...appointmentRows.map((appointment) => appointment.doctorId),
       ...patientMergeRows.map((event) => event.performedBy),
     ].filter((id): id is string => typeof id === "string"),

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { clinicalRecordCorrections, visitWorkItems } from "@openpims/db";
 
 const mocks = vi.hoisted(() => ({
   recordAuditLog: vi.fn(async () => undefined),
@@ -50,7 +51,8 @@ function createDb(opts: {
     builder.leftJoin = vi.fn(() => builder);
     builder.where = vi.fn(() => builder);
     builder.orderBy = vi.fn(() => builder);
-    builder.limit = vi.fn(async () => result);
+    builder.limit = vi.fn(() => builder);
+    builder.for = vi.fn(async () => result);
     builder.then = (
       resolve: (rows: unknown[]) => unknown,
       reject?: (error: unknown) => unknown,
@@ -66,7 +68,9 @@ function createDb(opts: {
     values,
   }));
   const insert = vi.fn(() => ({ values: insertValues }));
-  const update = vi.fn();
+  const updateWhere = vi.fn(async () => []);
+  const updateSet = vi.fn(() => ({ where: updateWhere }));
+  const update = vi.fn(() => ({ set: updateSet }));
   const remove = vi.fn();
   const db: Record<string, unknown> = {
     select,
@@ -76,7 +80,16 @@ function createDb(opts: {
     execute: vi.fn(async () => undefined),
   };
   db.transaction = vi.fn(async (fn: (tx: unknown) => unknown) => fn(db));
-  return { db, select, insertValues, update, remove };
+  return {
+    db,
+    select,
+    insert,
+    insertValues,
+    update,
+    updateSet,
+    updateWhere,
+    remove,
+  };
 }
 
 afterEach(() => vi.clearAllMocks());
@@ -246,5 +259,152 @@ describe("append-only clinical corrections", () => {
       }),
     ).resolves.toEqual(existing);
     expect(select).toHaveBeenCalledTimes(2);
+  });
+
+  it("restricts vaccination correction to an administrator or veterinarian", async () => {
+    const { db, select, insertValues } = createDb({});
+
+    for (const role of ["technician", "front_desk", "viewer"]) {
+      await expect(
+        recordsRouter.createCaller(context(db, role)).markVaccinationEnteredInError({
+          patientId: PATIENT_ID,
+          recordId: RECORD_ID,
+          reason: "Dose was recorded for the wrong patient.",
+        })
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    }
+
+    expect(select).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("trims and bounds a vaccination correction reason before querying", async () => {
+    const { db, select } = createDb({});
+    const caller = recordsRouter.createCaller(context(db));
+
+    await expect(
+      caller.markVaccinationEnteredInError({
+        patientId: PATIENT_ID,
+        recordId: RECORD_ID,
+        reason: " no ",
+      })
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      caller.markVaccinationEnteredInError({
+        patientId: PATIENT_ID,
+        recordId: RECORD_ID,
+        reason: ` ${"x".repeat(1000)} `,
+      })
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(
+      caller.markVaccinationEnteredInError({
+        patientId: PATIENT_ID,
+        recordId: RECORD_ID,
+        reason: "x".repeat(1001),
+      })
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    // The exactly-1000-character request passes validation, then reaches the
+    // tenant-scoped lookup and returns the same non-disclosing not-found error.
+    expect(select).toHaveBeenCalledTimes(1);
+  });
+
+  it("appends a vaccination correction and voids only unresolved visit work", async () => {
+    const correction = { id: CORRECTION_ID, action: "entered_in_error" };
+    const { db, insert, insertValues, update, updateSet, remove } = createDb({
+      selectResults: [
+        [
+          {
+            id: RECORD_ID,
+            patientId: PATIENT_ID,
+            appointmentId: APPOINTMENT_ID,
+          },
+        ],
+      ],
+      insertResults: [[correction]],
+    });
+
+    await expect(
+      recordsRouter.createCaller(context(db, "admin")).markVaccinationEnteredInError({
+        patientId: PATIENT_ID,
+        recordId: RECORD_ID,
+        reason: " Dose was recorded for the wrong patient. ",
+      })
+    ).resolves.toEqual(correction);
+
+    expect(insertValues).toHaveBeenCalledWith({
+      practiceId: PRACTICE_ID,
+      recordType: "vaccination_record",
+      action: "entered_in_error",
+      vaccinationRecordId: RECORD_ID,
+      patientId: PATIENT_ID,
+      appointmentId: APPOINTMENT_ID,
+      reason: "Dose was recorded for the wrong patient.",
+      correctedBy: USER_ID,
+      correctedByName: "Clinical User",
+    });
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith(visitWorkItems);
+    expect(insert).toHaveBeenCalledTimes(1);
+    expect(insert).toHaveBeenCalledWith(clinicalRecordCorrections);
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "voided",
+        voidReason: "Dose was recorded for the wrong patient.",
+        resolvedBy: USER_ID,
+        resolvedAt: expect.any(Date),
+      })
+    );
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("returns one durable vaccination correction under concurrent duplicates", async () => {
+    const correction = {
+      id: CORRECTION_ID,
+      practiceId: PRACTICE_ID,
+      vaccinationRecordId: RECORD_ID,
+    };
+    const source = {
+      id: RECORD_ID,
+      patientId: PATIENT_ID,
+      appointmentId: APPOINTMENT_ID,
+    };
+    const { db, insertValues, update } = createDb({
+      selectResults: [[source], [source], [correction]],
+      insertResults: [[correction], []],
+    });
+    const caller = recordsRouter.createCaller(context(db));
+    const input = {
+      patientId: PATIENT_ID,
+      recordId: RECORD_ID,
+      reason: "Duplicate request after a network retry.",
+    };
+
+    await expect(
+      Promise.all([
+        caller.markVaccinationEnteredInError(input),
+        caller.markVaccinationEnteredInError(input),
+      ])
+    ).resolves.toEqual([correction, correction]);
+
+    expect(insertValues).toHaveBeenCalledTimes(2);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not leak a wrong-patient or cross-tenant vaccination", async () => {
+    const { db, insertValues, update } = createDb({ selectResults: [[]] });
+
+    await expect(
+      recordsRouter.createCaller(context(db)).markVaccinationEnteredInError({
+        patientId: PATIENT_ID,
+        recordId: RECORD_ID,
+        reason: "Dose was recorded for the wrong patient.",
+      })
+    ).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      message: "Clinical record not found",
+    });
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
   });
 });

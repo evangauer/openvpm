@@ -636,6 +636,14 @@ function RecordsPageContent() {
     !isLoadingVaccinations &&
     !vaccinationsError &&
     !vaccinations;
+  const correctVaccination =
+    trpc.records.markVaccinationEnteredInError.useMutation({
+      onSuccess: async () => {
+        toast.success("Vaccination retained and marked entered in error");
+        await utils.records.listVaccinations.invalidate({ patientId });
+      },
+      onError: (error) => toast.error(error.message),
+    });
   const {
     data: prescriptionsList,
     isLoading: isLoadingPrescriptions,
@@ -1462,7 +1470,11 @@ function RecordsPageContent() {
                           return (
                             <tr
                               key={vax.id}
-                              className="border-b border-border last:border-0"
+                              className={cn(
+                                "border-b border-border last:border-0",
+                                vax.correctionId &&
+                                  "bg-destructive/5 text-muted-foreground"
+                              )}
                             >
                               <td className="px-4 py-3 font-medium">
                                 {vax.vaccineName}
@@ -1487,14 +1499,48 @@ function RecordsPageContent() {
                                 {vax.administeredByName ?? "--"}
                               </td>
                               <td className="px-4 py-3">
-                                <span
-                                  className={cn(
-                                    "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
-                                    dueStatus.className
-                                  )}
-                                >
-                                  {dueStatus.label}
-                                </span>
+                                {vax.correctionId ? (
+                                  <span className="inline-flex items-center rounded-full bg-destructive/10 px-2.5 py-0.5 text-xs font-medium text-destructive">
+                                    Entered in error
+                                  </span>
+                                ) : (
+                                  <span
+                                    className={cn(
+                                      "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
+                                      dueStatus.className
+                                    )}
+                                  >
+                                    {dueStatus.label}
+                                  </span>
+                                )}
+                                <ClinicalCorrectionControl
+                                  correction={
+                                    vax.correctionId &&
+                                    vax.correctionReason &&
+                                    vax.correctedAt
+                                      ? {
+                                          id: vax.correctionId,
+                                          reason: vax.correctionReason,
+                                          correctedAt: vax.correctedAt,
+                                          correctedByName:
+                                            vax.correctedByName,
+                                        }
+                                      : null
+                                  }
+                                  canCorrect={canCorrectClinicalRecords}
+                                  isPending={
+                                    correctVaccination.isPending &&
+                                    correctVaccination.variables?.recordId ===
+                                      vax.id
+                                  }
+                                  onCorrect={(reason) =>
+                                    correctVaccination.mutateAsync({
+                                      patientId,
+                                      recordId: vax.id,
+                                      reason,
+                                    })
+                                  }
+                                />
                               </td>
                             </tr>
                           );

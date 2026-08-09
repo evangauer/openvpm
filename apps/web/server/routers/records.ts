@@ -1112,6 +1112,12 @@ export const recordsRouter = createRouter({
           administeredAt: vaccinationRecords.administeredAt,
           nextDueDate: vaccinationRecords.nextDueDate,
           administeredByName: users.name,
+          correctionId: clinicalRecordCorrections.id,
+          correctionAction: clinicalRecordCorrections.action,
+          correctionReason: clinicalRecordCorrections.reason,
+          correctedAt: clinicalRecordCorrections.createdAt,
+          correctedBy: clinicalRecordCorrections.correctedBy,
+          correctedByName: clinicalRecordCorrections.correctedByName,
         })
         .from(vaccinationRecords)
         .leftJoin(
@@ -1120,6 +1126,16 @@ export const recordsRouter = createRouter({
             eq(vaccinationRecords.administeredBy, users.id),
             eq(users.practiceId, ctx.practiceId),
             isNull(users.deletedAt)
+          )
+        )
+        .leftJoin(
+          clinicalRecordCorrections,
+          and(
+            eq(
+              clinicalRecordCorrections.vaccinationRecordId,
+              vaccinationRecords.id
+            ),
+            eq(clinicalRecordCorrections.practiceId, ctx.practiceId)
           )
         )
         .where(
@@ -1132,6 +1148,107 @@ export const recordsRouter = createRouter({
         )
         .orderBy(desc(vaccinationRecords.administeredAt));
     }),
+
+  markVaccinationEnteredInError: protectedProcedure
+    .use(requireRole("admin", "veterinarian"))
+    .input(
+      z.object({
+        patientId: z.string().uuid(),
+        recordId: z.string().uuid(),
+        reason: z
+          .string()
+          .trim()
+          .min(CLINICAL_CORRECTION_REASON_MIN_LENGTH)
+          .max(CLINICAL_CORRECTION_REASON_MAX_LENGTH),
+      })
+    )
+    .mutation(async ({ ctx, input }) =>
+      ctx.db.transaction(async (tx) => {
+        const [source] = await tx
+          .select({
+            id: vaccinationRecords.id,
+            patientId: vaccinationRecords.patientId,
+            appointmentId: vaccinationRecords.appointmentId,
+          })
+          .from(vaccinationRecords)
+          .where(
+            and(
+              eq(vaccinationRecords.id, input.recordId),
+              eq(vaccinationRecords.patientId, input.patientId),
+              eq(vaccinationRecords.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(vaccinationRecords.deletedAt)
+            )
+          )
+          .limit(1)
+          .for("update", { of: vaccinationRecords });
+
+        if (!source) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Clinical record not found",
+          });
+        }
+
+        const [created] = await tx
+          .insert(clinicalRecordCorrections)
+          .values({
+            practiceId: ctx.practiceId,
+            recordType: "vaccination_record",
+            action: "entered_in_error",
+            vaccinationRecordId: source.id,
+            patientId: source.patientId,
+            appointmentId: source.appointmentId,
+            reason: input.reason,
+            correctedBy: ctx.user.id,
+            correctedByName: ctx.user.name,
+          })
+          .onConflictDoNothing()
+          .returning();
+
+        if (created) {
+          // Only unresolved work can be voided here. Charged or waived work—and
+          // every invoice/payment row—remain untouched for financial audit.
+          await tx
+            .update(visitWorkItems)
+            .set({
+              status: "voided",
+              voidReason: input.reason,
+              resolvedBy: ctx.user.id,
+              resolvedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(visitWorkItems.practiceId, ctx.practiceId),
+                eq(visitWorkItems.vaccinationRecordId, source.id),
+                eq(visitWorkItems.status, "unresolved"),
+                isNull(visitWorkItems.invoiceId),
+                isNull(visitWorkItems.invoiceItemId),
+                isNull(visitWorkItems.deletedAt)
+              )
+            );
+          return created;
+        }
+
+        const [existing] = await tx
+          .select()
+          .from(clinicalRecordCorrections)
+          .where(
+            and(
+              eq(clinicalRecordCorrections.practiceId, ctx.practiceId),
+              eq(clinicalRecordCorrections.vaccinationRecordId, source.id)
+            )
+          )
+          .limit(1);
+        if (existing) return existing;
+
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "Clinical correction changed; refresh and retry.",
+        });
+      })
+    ),
 
   createVaccination: protectedProcedure
     .use(requireRole("admin", "veterinarian", "technician"))
