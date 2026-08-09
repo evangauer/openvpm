@@ -268,6 +268,19 @@ LANGUAGE plpgsql
 SET search_path = ''
 AS $$
 BEGIN
+	IF coalesce(current_setting('app.ledger_maintenance', true), '') = 'on'
+		AND current_user = (
+			SELECT pg_catalog.pg_get_userbyid(class.relowner)
+			FROM pg_catalog.pg_class class
+			JOIN pg_catalog.pg_namespace namespace
+				ON namespace.oid = class.relnamespace
+			WHERE namespace.nspname = TG_TABLE_SCHEMA
+				AND class.relname = TG_TABLE_NAME
+		)
+	THEN
+		IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+		RETURN NEW;
+	END IF;
 	RAISE EXCEPTION USING
 		ERRCODE = '55000',
 		MESSAGE = 'Lab result events are append-only and cannot be updated or deleted.';

@@ -607,6 +607,23 @@ try {
       aLabResultEvents[0]!.practice_id === aId,
   );
 
+  let ownerLabMutationBlockedWithoutMaintenance = false;
+  try {
+    await owner`update lab_result_events set actor_name = actor_name where id = ${aLabResultEvent}`;
+  } catch {
+    ownerLabMutationBlockedWithoutMaintenance = true;
+  }
+  check(
+    "lab evidence owner mutation requires the maintenance GUC",
+    ownerLabMutationBlockedWithoutMaintenance,
+  );
+
+  await owner.begin(async (tx) => {
+    const maintenance = tx as unknown as typeof owner;
+    await maintenance`select set_config('app.ledger_maintenance', 'on', true)`;
+    await maintenance`update lab_result_events set actor_name = actor_name where id = ${aLabResultEvent}`;
+  });
+
   let labResultEventUpdateBlocked = false;
   try {
     await appTransaction(async (tx) => {

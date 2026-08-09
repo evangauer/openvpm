@@ -18,7 +18,7 @@ describe("lab result clinical safety contract", () => {
     expect(migration).toContain("source.appointment_id IS NOT DISTINCT FROM NEW.appointment_id");
     expect(migration).not.toContain("source.status = NEW.status_after");
     expect(migration).not.toContain("source.result_value IS NOT DISTINCT FROM NEW.result_value");
-    expect(migration).not.toContain("app.ledger_maintenance");
+    expect(migration).toContain("app.ledger_maintenance");
     expect(migration).toContain("Lab result events are append-only and cannot be updated or deleted.");
     expect(router.match(/resultValue: updated\.resultValue/g)?.length ?? 0).toBeGreaterThanOrEqual(4);
     expect(router).toContain("resultValue: created.resultValue");
@@ -66,6 +66,7 @@ describe("lab result clinical safety contract", () => {
     const rls = read("../../packages/db/rls/enable-rls.sql");
     const rlsTest = read("../../packages/db/test-rls.ts");
     const backup = read("lib/backup/export.ts");
+    const migration = read("../../packages/db/drizzle/0059_daffy_darkstar.sql");
 
     expect(router).toContain("listLabResultHistory: protectedProcedure");
     expect(router).toContain("eq(labResultEvents.practiceId, ctx.practiceId)");
@@ -79,7 +80,10 @@ describe("lab result clinical safety contract", () => {
     expect(inbox).toContain("Your 100 highest-priority assigned items are shown.");
     expect(rls).toContain("'lab_result_events'");
     expect(rlsTest).toContain("application role cannot rewrite lab result evidence");
+    expect(rlsTest).toContain("lab evidence owner mutation requires the maintenance GUC");
     expect(rlsTest).toContain("cross-tenant lab evidence actor is blocked");
+    expect(migration).toContain("AND current_user = (");
+    expect(migration).toContain("class.relname = TG_TABLE_NAME");
     expect(backup).toContain("labResultEvents: labResultEventRows");
     expect(backup).toContain('restorePracticeRows("labResultEvents", labResultEvents)');
   });
