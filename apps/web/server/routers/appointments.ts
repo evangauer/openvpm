@@ -361,7 +361,7 @@ async function assertDoctorBelongsToPractice(
       and(
         eq(users.id, doctorId),
         eq(users.practiceId, ctx.practiceId),
-        eq(users.role, "veterinarian"),
+        eq(users.isVeterinarian, true),
         activePracticePredicate(ctx.practiceId),
         isNull(users.deletedAt)
       )
@@ -1283,7 +1283,7 @@ export const appointmentsRouter = createRouter({
       .where(
         and(
           eq(users.practiceId, ctx.practiceId),
-          eq(users.role, "veterinarian"),
+          eq(users.isVeterinarian, true),
           activePracticePredicate(ctx.practiceId),
           isNull(users.deletedAt)
         )

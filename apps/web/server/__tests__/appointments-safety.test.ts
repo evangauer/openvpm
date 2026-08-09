@@ -1530,7 +1530,7 @@ describe("appointments display join scoping", () => {
       /eq\(clients\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(clients\.deletedAt\)/
     );
     expect(source).toMatch(
-      /eq\(users\.practiceId, ctx\.practiceId\),\s+eq\(users\.role, "veterinarian"\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(users\.deletedAt\)/
+      /eq\(users\.practiceId, ctx\.practiceId\),\s+eq\(users\.isVeterinarian, true\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(users\.deletedAt\)/
     );
   });
 

@@ -227,6 +227,34 @@ async function assertActivePractice(ctx: {
   }
 }
 
+async function assertProviderHasNoActiveAppointments(ctx: {
+  db: Pick<Database, "select">;
+  practiceId: string;
+  userId: string;
+}) {
+  const [activeAppointment] = await ctx.db
+    .select({ id: appointments.id })
+    .from(appointments)
+    .where(
+      and(
+        eq(appointments.doctorId, ctx.userId),
+        eq(appointments.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(appointments.deletedAt),
+        inArray(appointments.status, activeSchedulingStatuses),
+      ),
+    )
+    .limit(1);
+
+  if (activeAppointment) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message:
+        "Reassign active appointments before removing veterinarian provider access.",
+    });
+  }
+}
+
 async function syncBillingAfterStaffChange(
   db: Parameters<typeof syncPracticeSubscriptionQuantities>[0]["db"],
   practiceId: string,
@@ -333,6 +361,118 @@ export const settingsRouter = createRouter({
     }
     return practice;
   }),
+
+  /**
+   * The workspace owner keeps administrative authorization independently from
+   * clinical provider status. This lets a solo veterinarian schedule and sign
+   * visits without creating a second login or giving up the only admin seat.
+   */
+  getMyClinicalProfile: adminProcedure.query(async ({ ctx }) => {
+    await assertActivePractice(ctx);
+    const [user] = await ctx.db
+      .select({
+        id: users.id,
+        isVeterinarian: users.isVeterinarian,
+        licenseNumber: users.licenseNumber,
+        locationId: users.locationId,
+      })
+      .from(users)
+      .where(
+        and(
+          eq(users.id, ctx.user.id),
+          eq(users.practiceId, ctx.practiceId),
+          isNull(users.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (!user) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+    }
+    return user;
+  }),
+
+  updateMyClinicalProfile: adminProcedure
+    .input(
+      z.object({
+        isVeterinarian: z.boolean(),
+        licenseNumber: licenseNumberInput,
+      }),
+    )
+    .mutation(async ({ ctx, input }) =>
+      ctx.db.transaction(async (tx) => {
+        await assertActivePractice({ db: tx, practiceId: ctx.practiceId });
+        const [user] = await tx
+          .select({
+            id: users.id,
+            isVeterinarian: users.isVeterinarian,
+            locationId: users.locationId,
+          })
+          .from(users)
+          .where(
+            and(
+              eq(users.id, ctx.user.id),
+              eq(users.practiceId, ctx.practiceId),
+              isNull(users.deletedAt),
+            ),
+          )
+          .limit(1);
+        if (!user) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+        }
+
+        if (user.isVeterinarian && !input.isVeterinarian) {
+          await assertProviderHasNoActiveAppointments({
+            db: tx,
+            practiceId: ctx.practiceId,
+            userId: user.id,
+          });
+        }
+
+        let locationId = user.locationId;
+        if (!locationId) {
+          const [primaryLocation] = await tx
+            .select({ id: locations.id })
+            .from(locations)
+            .where(
+              and(
+                eq(locations.practiceId, ctx.practiceId),
+                eq(locations.isPrimary, true),
+                isNull(locations.deletedAt),
+              ),
+            )
+            .limit(1);
+          locationId = primaryLocation?.id ?? null;
+        }
+
+        const [updated] = await tx
+          .update(users)
+          .set({
+            isVeterinarian: input.isVeterinarian,
+            licenseNumber: input.licenseNumber ?? null,
+            ...(locationId ? { locationId } : {}),
+          })
+          .where(
+            and(
+              eq(users.id, ctx.user.id),
+              eq(users.practiceId, ctx.practiceId),
+              isNull(users.deletedAt),
+            ),
+          )
+          .returning({
+            id: users.id,
+            isVeterinarian: users.isVeterinarian,
+            licenseNumber: users.licenseNumber,
+            locationId: users.locationId,
+          });
+        if (!updated) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Your clinical profile changed. Refresh and retry.",
+          });
+        }
+        return updated;
+      }),
+    ),
 
   updatePractice: adminProcedure
     .input(
@@ -1499,6 +1639,8 @@ export const settingsRouter = createRouter({
         name: users.name,
         email: users.email,
         role: users.role,
+        isVeterinarian: users.isVeterinarian,
+        locationId: users.locationId,
         phone: users.phone,
         licenseNumber: users.licenseNumber,
         createdAt: users.createdAt,
@@ -1529,11 +1671,12 @@ export const settingsRouter = createRouter({
         ]),
         phone: phoneInput,
         licenseNumber: licenseNumberInput,
+        isVeterinarian: z.boolean().optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
-      const { password, ...rest } = input;
+      const { password, isVeterinarian, ...rest } = input;
       const [existing] = await ctx.db
         .select({ id: users.id })
         .from(users)
@@ -1551,6 +1694,8 @@ export const settingsRouter = createRouter({
         .insert(users)
         .values({
           ...rest,
+          isVeterinarian:
+            rest.role === "veterinarian" || isVeterinarian === true,
           passwordHash,
           practiceId: ctx.practiceId,
         })
@@ -1559,6 +1704,7 @@ export const settingsRouter = createRouter({
           name: users.name,
           email: users.email,
           role: users.role,
+          isVeterinarian: users.isVeterinarian,
         });
       await syncBillingAfterStaffChange(ctx.db, ctx.practiceId);
       return user!;
@@ -1632,6 +1778,7 @@ export const settingsRouter = createRouter({
           email,
           name,
           role: input.role,
+          isVeterinarian: input.role === "veterinarian",
           passwordHash,
           emailVerifiedAt: null,
           practiceId: ctx.practiceId,
@@ -1641,6 +1788,7 @@ export const settingsRouter = createRouter({
           email: users.email,
           name: users.name,
           role: users.role,
+          isVeterinarian: users.isVeterinarian,
         });
 
       const token = await createAuthToken({
@@ -1680,11 +1828,31 @@ export const settingsRouter = createRouter({
           .optional(),
         phone: phoneInput,
         licenseNumber: licenseNumberInput,
+        isVeterinarian: z.boolean().optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const { id, ...data } = input;
-      if (data.role !== undefined && data.role !== "admin") {
+      const { id, ...requestedData } = input;
+      if (
+        requestedData.role === "veterinarian" &&
+        requestedData.isVeterinarian === false
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "A veterinarian staff role must remain a veterinarian provider.",
+        });
+      }
+      const data = {
+        ...requestedData,
+        ...(requestedData.role === "veterinarian"
+          ? { isVeterinarian: true }
+          : {}),
+      };
+      if (
+        (data.role !== undefined && data.role !== "admin") ||
+        data.isVeterinarian === false
+      ) {
         return ctx.db.transaction(async (tx) => {
           await tx.execute(
             sql`select pg_advisory_xact_lock(hashtext(${staffAdminRosterLockKey(
@@ -1693,7 +1861,11 @@ export const settingsRouter = createRouter({
           );
 
           const [targetUser] = await tx
-            .select({ id: users.id, role: users.role })
+            .select({
+              id: users.id,
+              role: users.role,
+              isVeterinarian: users.isVeterinarian,
+            })
             .from(users)
             .where(
               and(
@@ -1712,7 +1884,11 @@ export const settingsRouter = createRouter({
             });
           }
 
-          if (targetUser.role === "admin") {
+          if (
+            data.role !== undefined &&
+            data.role !== "admin" &&
+            targetUser.role === "admin"
+          ) {
             const [otherAdmin] = await tx
               .select({ id: users.id })
               .from(users)
@@ -1733,6 +1909,14 @@ export const settingsRouter = createRouter({
                 message: "A practice must keep at least one active admin user.",
               });
             }
+          }
+
+          if (targetUser.isVeterinarian && data.isVeterinarian === false) {
+            await assertProviderHasNoActiveAppointments({
+              db: tx,
+              practiceId: ctx.practiceId,
+              userId: targetUser.id,
+            });
           }
 
           const [updated] = await tx

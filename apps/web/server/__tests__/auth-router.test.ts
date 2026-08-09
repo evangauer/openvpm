@@ -394,6 +394,7 @@ describe("auth router input validation", () => {
         name: "Dr Owner",
         role: "admin",
         practiceId: "practice-1",
+        locationId: "location-1",
       }),
     );
     expect(updateSet).toHaveBeenCalledWith({

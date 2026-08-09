@@ -211,6 +211,68 @@ describe("settings admin stale target safety", () => {
     expect(SETTINGS_SOURCE).toContain("onboardingIntentSelectedAt");
   });
 
+  it("lets the clinic owner become a veterinarian provider on the primary location", async () => {
+    const primaryLocationId = "00000000-0000-0000-0000-000000000008";
+    const profile = {
+      id: USER_ID,
+      isVeterinarian: true,
+      licenseNumber: "CO-1234",
+      locationId: primaryLocationId,
+    };
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [{ id: PRACTICE_ID }],
+        [{ id: USER_ID, isVeterinarian: false, locationId: null }],
+        [{ id: primaryLocationId }],
+      ],
+      updatedRows: [profile],
+    });
+
+    await expect(
+      callerWithDb(db).updateMyClinicalProfile({
+        isVeterinarian: true,
+        licenseNumber: "CO-1234",
+      }),
+    ).resolves.toEqual(profile);
+    expect(updateSet).toHaveBeenCalledWith({
+      isVeterinarian: true,
+      licenseNumber: "CO-1234",
+      locationId: primaryLocationId,
+    });
+  });
+
+  it("requires active appointments to be reassigned before provider access is removed", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [{ id: PRACTICE_ID }],
+        [{ id: USER_ID, isVeterinarian: true, locationId: ROOM_ID }],
+        [{ id: APPOINTMENT_ID }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).updateMyClinicalProfile({ isVeterinarian: false }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message:
+        "Reassign active appointments before removing veterinarian provider access.",
+    });
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("keeps veterinarian authorization roles clinically eligible", async () => {
+    const { db, updateSet } = createDb();
+
+    await expect(
+      callerWithDb(db).updateUser({
+        id: STAFF_ID,
+        role: "veterinarian",
+        isVeterinarian: false,
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
   it("validates practice timezone strings through the shared settings policy", () => {
     expect(isSupportedPracticeTimezone("America/New_York")).toBe(true);
     expect(isSupportedPracticeTimezone(" Europe/London ")).toBe(true);

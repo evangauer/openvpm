@@ -6,7 +6,10 @@ import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { FormField } from "@/components/ui/form-field";
-import { PRACTICE_NAME_MAX_LENGTH } from "@/lib/settings-policy";
+import {
+  PRACTICE_NAME_MAX_LENGTH,
+  STAFF_LICENSE_NUMBER_MAX_LENGTH,
+} from "@/lib/settings-policy";
 import type { StepHandle } from "../journey-types";
 
 // Same regions the settings page offers. Choosing a country auto-fills
@@ -52,11 +55,24 @@ export function PracticeBasicsStep({
     error,
     refetch,
   } = trpc.settings.getPractice.useQuery();
+  const {
+    data: clinicalProfile,
+    isLoading: isClinicalProfileLoading,
+    error: clinicalProfileError,
+    refetch: refetchClinicalProfile,
+  } = trpc.settings.getMyClinicalProfile.useQuery();
   const updatePractice = trpc.settings.updatePractice.useMutation();
+  const updateClinicalProfile =
+    trpc.settings.updateMyClinicalProfile.useMutation();
 
   const [name, setName] = useState("");
   const [country, setCountry] = useState("US");
   const [timezone, setTimezone] = useState("America/New_York");
+  const [ownerRole, setOwnerRole] = useState<
+    "veterinarian" | "non_clinical" | ""
+  >("");
+  const [licenseNumber, setLicenseNumber] = useState("");
+  const [ownerRoleMissing, setOwnerRoleMissing] = useState(false);
   const [filled, setFilled] = useState(false);
   const trimmedName = name.trim();
   const practiceNameInvalid =
@@ -64,23 +80,44 @@ export function PracticeBasicsStep({
 
   // Prefill once from the saved practice without stomping later edits.
   useEffect(() => {
-    if (filled || !practice) return;
+    if (filled || !practice || !clinicalProfile) return;
     setName(practice.name ?? "");
     setCountry(practice.country ?? "US");
     setTimezone(practice.timezone ?? "America/New_York");
+    setOwnerRole(clinicalProfile.isVeterinarian ? "veterinarian" : "");
+    setLicenseNumber(clinicalProfile.licenseNumber ?? "");
     setFilled(true);
-  }, [practice, filled]);
+  }, [practice, clinicalProfile, filled]);
 
   useEffect(() => {
     register({
       async onContinue() {
-        if (error || isLoading) return false;
+        if (
+          error ||
+          clinicalProfileError ||
+          isLoading ||
+          isClinicalProfileLoading
+        )
+          return false;
         if (practiceNameInvalid) return false;
-        if (!trimmedName) return true; // nothing to save; let them move on
-        await updatePractice.mutateAsync({
-          name: trimmedName,
-          country,
-          timezone,
+        if (!ownerRole) {
+          setOwnerRoleMissing(true);
+          return false;
+        }
+        setOwnerRoleMissing(false);
+        if (trimmedName) {
+          await updatePractice.mutateAsync({
+            name: trimmedName,
+            country,
+            timezone,
+          });
+        }
+        await updateClinicalProfile.mutateAsync({
+          isVeterinarian: ownerRole === "veterinarian",
+          licenseNumber:
+            ownerRole === "veterinarian" && licenseNumber.trim()
+              ? licenseNumber.trim()
+              : undefined,
         });
         return true;
       },
@@ -88,25 +125,33 @@ export function PracticeBasicsStep({
   }, [
     register,
     error,
+    clinicalProfileError,
     isLoading,
+    isClinicalProfileLoading,
     trimmedName,
     practiceNameInvalid,
     country,
     timezone,
+    ownerRole,
+    licenseNumber,
     updatePractice,
+    updateClinicalProfile,
   ]);
 
-  if (error) {
+  if (error || clinicalProfileError) {
     return (
       <OnboardingStepError
         title="Practice details could not load"
-        message={error.message}
-        onRetry={() => void refetch()}
+        message={(error ?? clinicalProfileError)!.message}
+        onRetry={() => {
+          void refetch();
+          void refetchClinicalProfile();
+        }}
       />
     );
   }
 
-  if (isLoading) {
+  if (isLoading || isClinicalProfileLoading) {
     return (
       <div className="flex items-center justify-center py-10">
         <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -171,6 +216,53 @@ export function PracticeBasicsStep({
             ))}
           </select>
         </FormField>
+      </div>
+
+      <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50/70 p-4">
+        <FormField
+          label="Your clinic role"
+          htmlFor="ob-owner-role"
+          description="Administrative access and veterinarian sign-off are separate. A clinic owner can use this same login for both."
+        >
+          <select
+            id="ob-owner-role"
+            className={selectClass}
+            value={ownerRole}
+            aria-invalid={ownerRoleMissing || undefined}
+            aria-describedby={
+              ownerRoleMissing ? "ob-owner-role-error" : undefined
+            }
+            onChange={(event) => {
+              setOwnerRole(
+                event.target.value as "veterinarian" | "non_clinical" | "",
+              );
+              setOwnerRoleMissing(false);
+            }}
+          >
+            <option value="">Choose your role</option>
+            <option value="veterinarian">I am a veterinarian</option>
+            <option value="non_clinical">I manage or support the clinic</option>
+          </select>
+        </FormField>
+        {ownerRoleMissing ? (
+          <p id="ob-owner-role-error" className="text-xs text-destructive">
+            Choose your clinic role so visits are assigned safely.
+          </p>
+        ) : null}
+        {ownerRole === "veterinarian" ? (
+          <FormField
+            label="Veterinary license number (optional)"
+            htmlFor="ob-license-number"
+          >
+            <Input
+              id="ob-license-number"
+              value={licenseNumber}
+              onChange={(event) => setLicenseNumber(event.target.value)}
+              maxLength={STAFF_LICENSE_NUMBER_MAX_LENGTH}
+              placeholder="State license number"
+            />
+          </FormField>
+        ) : null}
       </div>
     </div>
   );

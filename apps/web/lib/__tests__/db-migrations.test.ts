@@ -93,6 +93,24 @@ describe("committed Drizzle migrations", () => {
     expect(journal.entries?.map((entry) => entry.tag)).toContain(
       "0025_practice_payment_accounts",
     );
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0066_reflective_lord_tyger",
+    );
+  });
+
+  it("backfills clinical provider capability before indexing it", () => {
+    const sql = readRepoFile(
+      "packages/db/drizzle/0066_reflective_lord_tyger.sql",
+    );
+    const addColumn = sql.indexOf('ADD COLUMN "is_veterinarian"');
+    const backfill = sql.indexOf(
+      'SET "is_veterinarian" = true WHERE "role" = \'veterinarian\'',
+    );
+    const index = sql.indexOf('CREATE INDEX "users_veterinarian_idx"');
+
+    expect(addColumn).toBeGreaterThanOrEqual(0);
+    expect(backfill).toBeGreaterThan(addColumn);
+    expect(index).toBeGreaterThan(backfill);
   });
 
   it("captures hot-table indexes in the baseline SQL", () => {

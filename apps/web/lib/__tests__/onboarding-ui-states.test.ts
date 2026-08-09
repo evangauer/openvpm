@@ -133,14 +133,16 @@ describe("onboarding UI states", () => {
   it("surfaces guided setup query failures instead of showing default step states", () => {
     expect(practiceBasics).toContain("function OnboardingStepError");
     expect(practiceBasics).toContain("Practice details could not load");
-    expect(practiceBasics).toContain("onRetry={() => void refetch()}");
-    expect(practiceBasics).toContain("if (error || isLoading) return false;");
-    expect(practiceBasics.indexOf("if (error)")).toBeLessThan(
-      practiceBasics.indexOf("if (isLoading)"),
+    expect(practiceBasics).toContain("getMyClinicalProfile.useQuery()");
+    expect(practiceBasics).toContain("updateMyClinicalProfile.useMutation()");
+    expect(practiceBasics).toContain("void refetch();");
+    expect(practiceBasics).toContain("void refetchClinicalProfile();");
+    expect(practiceBasics).toContain("clinicalProfileError");
+    expect(practiceBasics).toContain("ownerRoleMissing");
+    expect(practiceBasics).toContain(
+      'isVeterinarian: ownerRole === "veterinarian"',
     );
-    expect(
-      practiceBasics.indexOf("if (error || isLoading) return false;"),
-    ).toBeLessThan(
+    expect(practiceBasics.indexOf("clinicalProfileError ||")).toBeLessThan(
       practiceBasics.indexOf("if (practiceNameInvalid) return false"),
     );
 

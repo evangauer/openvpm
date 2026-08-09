@@ -197,7 +197,7 @@ async function activeDoctorExists(
       and(
         eq(users.id, doctorId),
         eq(users.practiceId, ctx.practiceId),
-        eq(users.role, "veterinarian"),
+        eq(users.isVeterinarian, true),
         isNull(users.deletedAt)
       )
     )

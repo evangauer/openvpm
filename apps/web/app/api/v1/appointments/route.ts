@@ -211,7 +211,7 @@ async function validateAppointmentTargets(
         and(
           eq(users.id, input.doctor_id),
           eq(users.practiceId, practiceId),
-          eq(users.role, "veterinarian"),
+          eq(users.isVeterinarian, true),
           isNull(users.deletedAt)
         )
       )

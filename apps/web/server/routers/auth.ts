@@ -283,6 +283,7 @@ export const authRouter = createRouter({
               name: deriveName(input.name, email),
               role: "admin",
               practiceId: createdPractice.id,
+              locationId: createdLocation.id,
             })
             .returning();
 

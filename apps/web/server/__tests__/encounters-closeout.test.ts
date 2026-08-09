@@ -1064,6 +1064,49 @@ describe("encounter closeout safety", () => {
     expect(insertValues).not.toHaveBeenCalled();
   });
 
+  it("allows an admin owner who is also a veterinarian provider to finalize", async () => {
+    const finalized = {
+      ...clinicalFinalized,
+      dischargeInstructions: "Continue normal activity.",
+      revision: 1,
+    };
+    const { db, insertValues } = createDb({
+      selectResults: [
+        [openAppointment],
+        [{ id: PATIENT_ID }],
+        [{ id: USER_ID }],
+        [],
+        [],
+      ],
+      insertResults: [[finalized]],
+    });
+
+    await expect(
+      callerWithDb(db, "admin").finalizeClinical(clinicalInput),
+    ).resolves.toEqual(finalized);
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clinicalFinalizedBy: USER_ID,
+        clinicalFinalizerName: "Clinic User",
+      }),
+    );
+  });
+
+  it("keeps non-provider admins from signing doctor-required visits", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [[openAppointment], [{ id: PATIENT_ID }], []],
+    });
+
+    await expect(
+      callerWithDb(db, "admin").finalizeClinical(clinicalInput),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message:
+        "A veterinarian must finalize instructions for a doctor-required visit.",
+    });
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("fails closed for a missing or cross-tenant appointment", async () => {
     const { db, updateSet, insertValues } = createDb({ selectResults: [[]] });
     await expect(

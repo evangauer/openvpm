@@ -304,6 +304,31 @@ function activePracticePredicate(practiceId: string) {
   )`;
 }
 
+async function isVeterinarianProvider(
+  ctx: EncounterContext,
+  userId: string,
+  authorizationRole: string,
+): Promise<boolean> {
+  if (authorizationRole === "veterinarian") return true;
+  if (authorizationRole !== "admin") return false;
+
+  const [provider] = await ctx.db
+    .select({ id: users.id })
+    .from(users)
+    .where(
+      and(
+        eq(users.id, userId),
+        eq(users.practiceId, ctx.practiceId),
+        eq(users.isVeterinarian, true),
+        activePracticePredicate(ctx.practiceId),
+        isNull(users.deletedAt),
+      ),
+    )
+    .limit(1);
+
+  return Boolean(provider);
+}
+
 async function lockAppointment(
   ctx: EncounterContext,
   appointmentId: string
@@ -1657,7 +1682,7 @@ export const encountersRouter = createRouter({
         const appointment = await lockAppointment(txCtx, input.appointmentId);
         if (
           appointment.requiresDoctor !== 0 &&
-          ctx.user.role !== "veterinarian"
+          !(await isVeterinarianProvider(txCtx, ctx.user.id, ctx.user.role))
         ) {
           throw new TRPCError({
             code: "FORBIDDEN",

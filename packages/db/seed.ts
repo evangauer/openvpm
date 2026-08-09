@@ -185,6 +185,7 @@ async function seed() {
     .values(
       usersData.map((u) => ({
         ...u,
+        isVeterinarian: u.role === "veterinarian",
         passwordHash: PASSWORD_HASH,
         practiceId,
         locationId,

@@ -5,6 +5,7 @@ import {
   varchar,
   text,
   timestamp,
+  boolean,
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
@@ -31,6 +32,10 @@ export const users = pgTable(
     passwordHash: varchar("password_hash", { length: 255 }).notNull(),
     name: varchar("name", { length: 255 }).notNull(),
     role: userRoleEnum("role").notNull().default("front_desk"),
+    // Authorization and clinical identity are intentionally separate. A
+    // clinic owner can remain the required administrator while also appearing
+    // as a veterinarian provider for scheduling and clinical sign-off.
+    isVeterinarian: boolean("is_veterinarian").notNull().default(false),
     practiceId: uuid("practice_id")
       .notNull()
       .references(() => practices.id),
@@ -55,6 +60,11 @@ export const users = pgTable(
       table.deletedAt
     ),
     roleIdx: index("users_role_idx").on(table.practiceId, table.role),
+    veterinarianIdx: index("users_veterinarian_idx").on(
+      table.practiceId,
+      table.isVeterinarian,
+      table.deletedAt
+    ),
   })
 );
 

@@ -1872,7 +1872,13 @@ function StaffTab() {
     name: "",
     email: "",
     password: "",
-    role: "front_desk" as const,
+    role: "front_desk" as
+      | "admin"
+      | "veterinarian"
+      | "technician"
+      | "front_desk"
+      | "viewer",
+    isVeterinarian: false,
     phone: "",
     licenseNumber: "",
   });
@@ -1885,6 +1891,7 @@ function StaffTab() {
       | "technician"
       | "front_desk"
       | "viewer",
+    isVeterinarian: false,
     phone: "",
     licenseNumber: "",
   });
@@ -1898,6 +1905,7 @@ function StaffTab() {
       email: "",
       password: "",
       role: "front_desk",
+      isVeterinarian: false,
       phone: "",
       licenseNumber: "",
     });
@@ -2111,6 +2119,8 @@ function StaffTab() {
                 setAddForm({
                   ...addForm,
                   role: e.target.value as typeof addForm.role,
+                  isVeterinarian:
+                    e.target.value === "veterinarian" || addForm.isVeterinarian,
                 })
               }
             >
@@ -2136,6 +2146,24 @@ function StaffTab() {
                 setAddForm({ ...addForm, licenseNumber: e.target.value })
               }
             />
+            <label className="col-span-2 flex items-start gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4"
+                checked={addForm.isVeterinarian}
+                disabled={addForm.role === "veterinarian"}
+                onChange={(event) =>
+                  setAddForm({
+                    ...addForm,
+                    isVeterinarian: event.target.checked,
+                  })
+                }
+              />
+              <span>
+                Veterinarian provider — appears in doctor lists and can sign
+                doctor-required visits.
+              </span>
+            </label>
           </div>
           <div className="flex gap-2">
             <Button
@@ -2175,6 +2203,7 @@ function StaffTab() {
               <th className="px-4 py-3 text-left font-medium">Name</th>
               <th className="px-4 py-3 text-left font-medium">Email</th>
               <th className="px-4 py-3 text-left font-medium">Role</th>
+              <th className="px-4 py-3 text-left font-medium">Provider</th>
               <th className="px-4 py-3 text-left font-medium">Phone</th>
               <th className="px-4 py-3 text-left font-medium">License #</th>
               <th className="px-4 py-3 text-right font-medium">Actions</th>
@@ -2209,6 +2238,9 @@ function StaffTab() {
                           setEditForm({
                             ...editForm,
                             role: e.target.value as typeof editForm.role,
+                            isVeterinarian:
+                              e.target.value === "veterinarian" ||
+                              editForm.isVeterinarian,
                           })
                         }
                       >
@@ -2218,6 +2250,23 @@ function StaffTab() {
                         <option value="veterinarian">Veterinarian</option>
                         <option value="admin">Admin</option>
                       </select>
+                    </td>
+                    <td className="px-4 py-2">
+                      <label className="flex items-center gap-2 text-xs">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4"
+                          checked={editForm.isVeterinarian}
+                          disabled={editForm.role === "veterinarian"}
+                          onChange={(event) =>
+                            setEditForm({
+                              ...editForm,
+                              isVeterinarian: event.target.checked,
+                            })
+                          }
+                        />
+                        Veterinarian
+                      </label>
                     </td>
                     <td className="px-4 py-2">
                       <Input
@@ -2256,6 +2305,7 @@ function StaffTab() {
                               id: user.id,
                               name: editForm.name,
                               role: editForm.role,
+                              isVeterinarian: editForm.isVeterinarian,
                               phone: editForm.phone || undefined,
                               licenseNumber:
                                 editForm.licenseNumber || undefined,
@@ -2289,6 +2339,9 @@ function StaffTab() {
                       >
                         {user.role.replace("_", " ")}
                       </span>
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {user.isVeterinarian ? "Veterinarian" : "—"}
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
                       {user.phone ?? "-"}
@@ -2331,6 +2384,7 @@ function StaffTab() {
                               setEditForm({
                                 name: user.name,
                                 role: user.role,
+                                isVeterinarian: user.isVeterinarian,
                                 phone: user.phone ?? "",
                                 licenseNumber: user.licenseNumber ?? "",
                               });
@@ -2354,7 +2408,7 @@ function StaffTab() {
             ))}
             {staffList?.length === 0 && (
               <tr>
-                <td colSpan={6} className="p-0">
+                <td colSpan={7} className="p-0">
                   <EmptyState
                     className="border-0 bg-transparent p-8"
                     icon={Users}
