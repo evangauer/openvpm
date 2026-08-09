@@ -21,6 +21,7 @@ describe("treatment template settings UI", () => {
     expect(source).toContain("Templates");
     expect(source).toContain("trpc.templates.create.useMutation");
     expect(source).toContain("trpc.templates.getById.useQuery");
+    expect(source).toContain("trpc.templates.listProducts.useQuery");
   });
 
   it("keeps template create controls aligned to shared policy", () => {
@@ -58,5 +59,31 @@ describe("treatment template settings UI", () => {
     );
     expect(source).toContain("disabled={!canCreateTemplate}");
     expect(source).toContain("items: templateItemsToCreate");
+  });
+
+  it("links product template rows to inventory and fails closed without the catalog", () => {
+    expect(source).toContain("itemId?: string | null");
+    expect(source).toContain("const selectTemplateProduct =");
+    expect(source).toContain("itemId: product?.id ?? null");
+    expect(source).toContain("description: product?.name ?? \"\"");
+    expect(source).toContain("defaultUnitPrice: product?.unitPrice ?? \"0\"");
+    expect(source).toContain("itemId: item.itemId || undefined");
+    expect(source).toContain(
+      'item.itemType !== "product" ||\n      hasActiveTemplateProductLink(item.itemId)',
+    );
+    expect(source).toContain("const hasUnlinkedProductRows = addItems.some(");
+    expect(source).toContain("const activeTemplateProductIds = new Set(");
+    expect(source).toContain("const hasActiveTemplateProductLink =");
+    expect(source).toContain("const hasStaleProductRows = addItems.some(");
+    expect(source).toContain("!hasActiveTemplateProductLink(item.itemId)");
+    expect(source).toContain("!hasUnlinkedProductRows");
+    expect(source).toContain("!templateProductCatalogUnavailable");
+    expect(source).toContain("Inventory products could not load");
+    expect(source).toContain("onClick={() => void refetchTemplateProducts()}");
+    expect(source).toContain('aria-invalid={');
+    expect(source).toContain('role="alert"');
+    expect(source).toContain("selected inventory product is no longer active");
+    expect(source).toContain("item.hasActiveProductLink !== true");
+    expect(source).toContain("Missing or archived inventory product");
   });
 });

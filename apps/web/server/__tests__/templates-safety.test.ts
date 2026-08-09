@@ -21,13 +21,13 @@ const INVOICE_ID = "00000000-0000-0000-0000-000000000006";
 const SECOND_SERVICE_ID = "00000000-0000-0000-0000-000000000007";
 const SECOND_PRODUCT_ID = "00000000-0000-0000-0000-000000000008";
 
-function callerWithDb(db: Record<string, unknown>) {
+function callerWithDb(db: Record<string, unknown>, role = "admin") {
   const session = {
     user: {
       id: USER_ID,
       email: "admin@example.com",
       name: "Admin",
-      role: "admin",
+      role,
       practiceId: PRACTICE_ID,
     },
   };
@@ -144,6 +144,40 @@ describe("treatment template safety", () => {
     expect(insertValues).not.toHaveBeenCalled();
   });
 
+  it("requires every product template item to link to inventory before DB work", async () => {
+    const { db, select, insertValues } = createDb();
+    const unlinkedProduct = {
+      itemType: "product" as const,
+      description: "Dental chews",
+      defaultQuantity: 1,
+      defaultUnitPrice: "12.00",
+      sortOrder: 0,
+    };
+
+    await expect(
+      callerWithDb(db).create({
+        name: "Dental package",
+        items: [unlinkedProduct],
+      })
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringContaining("active inventory product"),
+    });
+
+    await expect(
+      callerWithDb(db).addItem({
+        templateId: TEMPLATE_ID,
+        ...unlinkedProduct,
+      })
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringContaining("active inventory product"),
+    });
+
+    expect(select).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("rejects invalid template text, quantities, totals, and item counts before DB work", async () => {
     const { db, select, insertValues, updateSet } = createDb();
 
@@ -244,8 +278,112 @@ describe("treatment template safety", () => {
     }
   );
 
+  it("lists active tenant inventory products for template setup", async () => {
+    const productOptions = [
+      {
+        id: PRODUCT_ID,
+        name: "Dental chews",
+        sku: "DENTAL-1",
+        unitPrice: "12.00",
+      },
+    ];
+    const { db, select } = createDb({
+      selectResults: [[{ id: PRACTICE_ID }], productOptions],
+    });
+
+    await expect(callerWithDb(db).listProducts()).resolves.toEqual(productOptions);
+    expect(select).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the template product catalog admin-only and tenant-scoped", async () => {
+    const { db, select } = createDb();
+
+    await expect(
+      callerWithDb(db, "veterinarian").listProducts()
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(select).not.toHaveBeenCalled();
+
+    const source = readFileSync("server/routers/templates.ts", "utf8");
+    const listProductsBlock = source.slice(
+      source.indexOf("listProducts:"),
+      source.indexOf("getById:")
+    );
+    expect(listProductsBlock).toContain('requireRole("admin")');
+    expect(listProductsBlock).toContain(
+      "eq(products.practiceId, ctx.practiceId)"
+    );
+    expect(listProductsBlock).toContain("activePracticePredicate(ctx.practiceId)");
+    expect(listProductsBlock).toContain("isNull(products.deletedAt)");
+  });
+
+  it("reports missing and archived product links without exposing catalog data", async () => {
+    const { db } = createDb({
+      selectResults: [
+        [{ id: PRACTICE_ID }],
+        [{ id: TEMPLATE_ID, practiceId: PRACTICE_ID }],
+        [
+          {
+            id: ITEM_ID,
+            itemType: "product",
+            itemId: PRODUCT_ID,
+            description: "Active product",
+          },
+          {
+            id: "00000000-0000-0000-0000-000000000009",
+            itemType: "product",
+            itemId: SECOND_PRODUCT_ID,
+            description: "Archived product",
+          },
+          {
+            id: "00000000-0000-0000-0000-000000000010",
+            itemType: "product",
+            itemId: null,
+            description: "Legacy product",
+          },
+          {
+            id: "00000000-0000-0000-0000-000000000011",
+            itemType: "service",
+            itemId: SERVICE_ID,
+            description: "Exam",
+          },
+        ],
+        [{ id: PRODUCT_ID }],
+      ],
+    });
+
+    const result = await callerWithDb(db).getById({ id: TEMPLATE_ID });
+
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        itemId: PRODUCT_ID,
+        hasActiveProductLink: true,
+      }),
+      expect.objectContaining({
+        itemId: SECOND_PRODUCT_ID,
+        hasActiveProductLink: false,
+      }),
+      expect.objectContaining({
+        itemId: null,
+        hasActiveProductLink: false,
+      }),
+      expect.objectContaining({
+        itemType: "service",
+        hasActiveProductLink: null,
+      }),
+    ]);
+
+    const source = readFileSync("server/routers/templates.ts", "utf8");
+    const detailBlock = source.slice(
+      source.indexOf("getById:"),
+      source.indexOf("create: protectedProcedure")
+    );
+    expect(detailBlock).toContain("inArray(products.id, linkedProductIds)");
+    expect(detailBlock).toContain("eq(products.practiceId, ctx.practiceId)");
+    expect(detailBlock).toContain("isNull(products.deletedAt)");
+  });
+
   it("creates a template after validating referenced catalog items", async () => {
-    const { db, insertValues, transaction } = createDb({
+    const { db, insertValues, transaction, lockFor } = createDb({
       selectResults: [[{ id: PRACTICE_ID }], [{ id: PRODUCT_ID }]],
       insertedRows: [{ id: TEMPLATE_ID, name: "Dental package" }],
     });
@@ -269,6 +407,10 @@ describe("treatment template safety", () => {
     ).resolves.toMatchObject({ id: TEMPLATE_ID });
 
     expect(transaction).toHaveBeenCalled();
+    expect(lockFor).toHaveBeenCalledWith("share");
+    expect(lockFor.mock.invocationCallOrder[0]).toBeLessThan(
+      insertValues.mock.invocationCallOrder[0]!
+    );
     expect(insertValues).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
@@ -290,7 +432,7 @@ describe("treatment template safety", () => {
   });
 
   it("trims added template item text and money before writing", async () => {
-    const { db, insertValues } = createDb({
+    const { db, insertValues, transaction, lockFor } = createDb({
       selectResults: [
         [{ id: PRACTICE_ID }],
         [{ id: TEMPLATE_ID }],
@@ -311,6 +453,11 @@ describe("treatment template safety", () => {
       })
     ).resolves.toMatchObject({ id: ITEM_ID });
 
+    expect(transaction).toHaveBeenCalled();
+    expect(lockFor).toHaveBeenCalledWith("share");
+    expect(lockFor.mock.invocationCallOrder[0]).toBeLessThan(
+      insertValues.mock.invocationCallOrder[0]!
+    );
     expect(insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
         templateId: TEMPLATE_ID,
@@ -431,6 +578,46 @@ describe("treatment template safety", () => {
     expect(lockFor).toHaveBeenCalledTimes(1);
     expect(lockFor).toHaveBeenCalledWith("share");
     expect(execute).toHaveBeenCalled();
+  });
+
+  it("rejects legacy unlinked products before invoice or inventory writes", async () => {
+    const { db, insertValues, updateSet, select } = createDb({
+      selectResults: [
+        [{ id: PRACTICE_ID }],
+        [{ id: TEMPLATE_ID }],
+        [
+          {
+            id: INVOICE_ID,
+            status: "draft",
+            paidAmount: "0.00",
+            isEstimate: false,
+          },
+        ],
+        [
+          {
+            description: "Legacy dental chews",
+            defaultQuantity: 1,
+            defaultUnitPrice: "12.00",
+            itemType: "product",
+            itemId: null,
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).applyToInvoice({
+        templateId: TEMPLATE_ID,
+        invoiceId: INVOICE_ID,
+      })
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringContaining("active inventory product"),
+    });
+
+    expect(select).toHaveBeenCalledTimes(4);
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
   });
 
   it("batch-locks unique service and product references before inserting", async () => {
@@ -872,11 +1059,16 @@ describe("treatment template safety", () => {
 
   it("rejects template reads and writes when the practice is missing or deleted", async () => {
     const { db, insertValues, updateSet } = createDb({
-      selectResults: [[], [], [], [], [], [], [], []],
+      selectResults: [[], [], [], [], [], [], [], [], []],
     });
     const caller = callerWithDb(db);
 
     await expect(caller.list()).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      message: "Practice not found",
+    });
+
+    await expect(caller.listProducts()).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
     });

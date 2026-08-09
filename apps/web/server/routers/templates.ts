@@ -49,6 +49,9 @@ const moneyInput = z.string().trim().refine((value) => {
   return TREATMENT_TEMPLATE_UNIT_PRICE_PATTERN.test(value);
 }, "Amount must be a valid currency amount.");
 
+const PRODUCT_LINK_REQUIRED_MESSAGE =
+  "Every product template item must be linked to an active inventory product.";
+
 const templateItemBaseInput = z.object({
   itemType: z.enum(["service", "product"]),
   itemId: z.string().uuid().optional(),
@@ -75,6 +78,14 @@ function refineTemplateItemTotal(
   item: z.infer<typeof templateItemBaseInput>,
   ctx: z.RefinementCtx
 ) {
+  if (item.itemType === "product" && !item.itemId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["itemId"],
+      message: PRODUCT_LINK_REQUIRED_MESSAGE,
+    });
+  }
+
   const totalCents = moneyToCents(item.defaultUnitPrice) * item.defaultQuantity;
   if (totalCents > TREATMENT_TEMPLATE_MAX_MONEY_CENTS) {
     ctx.addIssue({
@@ -144,50 +155,18 @@ async function assertActivePractice(ctx: TemplatesContext) {
   }
 }
 
-async function assertCatalogItemBelongsToPractice(
-  ctx: TemplatesContext,
-  itemType: "service" | "product",
-  itemId: string | undefined
-) {
-  if (!itemId) return;
-
-  const table = itemType === "service" ? services : products;
-  const [item] = await ctx.db
-    .select({ id: table.id })
-    .from(table)
-    .where(
-      and(
-        eq(table.id, itemId),
-        eq(table.practiceId, ctx.practiceId),
-        activePracticePredicate(ctx.practiceId),
-        isNull(table.deletedAt)
-      )
-    )
-    .limit(1);
-
-  if (!item) {
-    throw new TRPCError({
-      code: "NOT_FOUND",
-      message:
-        itemType === "service" ? "Service not found" : "Product not found",
-    });
-  }
-}
-
-async function assertTemplateItemsBelongToPractice(
-  ctx: TemplatesContext,
-  items: Array<{ itemType: "service" | "product"; itemId?: string }>
-) {
-  for (const item of items) {
-    await assertCatalogItemBelongsToPractice(ctx, item.itemType, item.itemId);
-  }
-}
-
 async function lockActiveTemplateCatalogItems(
   ctx: TemplatesContext,
   items: Array<{ itemType: "service" | "product"; itemId?: string }>,
   options: { lockProductsForStock?: boolean } = {}
 ) {
+  if (items.some((item) => item.itemType === "product" && !item.itemId)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: PRODUCT_LINK_REQUIRED_MESSAGE,
+    });
+  }
+
   const serviceIds = [
     ...new Set(
       items
@@ -296,6 +275,28 @@ export const templatesRouter = createRouter({
       .orderBy(asc(treatmentTemplates.name));
   }),
 
+  listProducts: protectedProcedure
+    .use(requireRole("admin"))
+    .query(async ({ ctx }) => {
+      await assertActivePractice(ctx);
+      return ctx.db
+        .select({
+          id: products.id,
+          name: products.name,
+          sku: products.sku,
+          unitPrice: products.unitPrice,
+        })
+        .from(products)
+        .where(
+          and(
+            eq(products.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(products.deletedAt)
+          )
+        )
+        .orderBy(asc(products.name), asc(products.id));
+    }),
+
   getById: protectedProcedure
     .input(z.object({ id: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
@@ -331,7 +332,43 @@ export const templatesRouter = createRouter({
         )
         .orderBy(asc(treatmentTemplateItems.sortOrder));
 
-      return { ...template, items };
+      const linkedProductIds = [
+        ...new Set(
+          items
+            .filter((item) => item.itemType === "product" && item.itemId)
+            .map((item) => item.itemId!)
+        ),
+      ];
+      const activeLinkedProducts =
+        linkedProductIds.length === 0
+          ? []
+          : await ctx.db
+              .select({ id: products.id })
+              .from(products)
+              .where(
+                and(
+                  inArray(products.id, linkedProductIds),
+                  eq(products.practiceId, ctx.practiceId),
+                  activePracticePredicate(ctx.practiceId),
+                  isNull(products.deletedAt)
+                )
+              );
+      const activeLinkedProductIds = new Set(
+        activeLinkedProducts.map((product) => product.id)
+      );
+
+      return {
+        ...template,
+        items: items.map((item) => ({
+          ...item,
+          hasActiveProductLink:
+            item.itemType === "product"
+              ? Boolean(
+                  item.itemId && activeLinkedProductIds.has(item.itemId)
+                )
+              : null,
+        })),
+      };
     }),
 
   create: protectedProcedure
@@ -339,9 +376,16 @@ export const templatesRouter = createRouter({
     .input(createTemplateInput)
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
-      await assertTemplateItemsBelongToPractice(ctx, input.items);
 
       return ctx.db.transaction(async (tx) => {
+        // Keep catalog validation and insertion in the same transaction. The
+        // share locks prevent an item from being archived after validation but
+        // before the template persists its reference.
+        await lockActiveTemplateCatalogItems(
+          { db: tx, practiceId: ctx.practiceId },
+          input.items
+        );
+
         const [template] = await tx
           .insert(treatmentTemplates)
           .values({
@@ -440,47 +484,50 @@ export const templatesRouter = createRouter({
     .input(addTemplateItemInput)
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
-      // Verify the template belongs to this practice
-      const [template] = await ctx.db
-        .select({ id: treatmentTemplates.id })
-        .from(treatmentTemplates)
-        .where(
-          and(
-            eq(treatmentTemplates.id, input.templateId),
-            eq(treatmentTemplates.practiceId, ctx.practiceId),
-            activePracticePredicate(ctx.practiceId),
-            isNull(treatmentTemplates.deletedAt)
+
+      return ctx.db.transaction(async (tx) => {
+        // Verify the template belongs to this practice inside the same
+        // transaction that locks the catalog reference and inserts the row.
+        const [template] = await tx
+          .select({ id: treatmentTemplates.id })
+          .from(treatmentTemplates)
+          .where(
+            and(
+              eq(treatmentTemplates.id, input.templateId),
+              eq(treatmentTemplates.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(treatmentTemplates.deletedAt)
+            )
           )
-        )
-        .limit(1);
+          .limit(1);
 
-      if (!template) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "Treatment template not found",
-        });
-      }
+        if (!template) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Treatment template not found",
+          });
+        }
 
-      await assertCatalogItemBelongsToPractice(
-        ctx,
-        input.itemType,
-        input.itemId
-      );
+        await lockActiveTemplateCatalogItems(
+          { db: tx, practiceId: ctx.practiceId },
+          [input]
+        );
 
-      const [item] = await ctx.db
-        .insert(treatmentTemplateItems)
-        .values({
-          templateId: input.templateId,
-          itemType: input.itemType as "service" | "product",
-          itemId: input.itemId ?? null,
-          description: input.description,
-          defaultQuantity: input.defaultQuantity,
-          defaultUnitPrice: input.defaultUnitPrice,
-          sortOrder: input.sortOrder,
-        })
-        .returning();
+        const [item] = await tx
+          .insert(treatmentTemplateItems)
+          .values({
+            templateId: input.templateId,
+            itemType: input.itemType as "service" | "product",
+            itemId: input.itemId ?? null,
+            description: input.description,
+            defaultQuantity: input.defaultQuantity,
+            defaultUnitPrice: input.defaultUnitPrice,
+            sortOrder: input.sortOrder,
+          })
+          .returning();
 
-      return item!;
+        return item!;
+      });
     }),
 
   removeItem: protectedProcedure
