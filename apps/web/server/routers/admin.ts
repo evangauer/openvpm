@@ -40,7 +40,6 @@ import {
   createA2pCampaign,
   ensureA2pNumberAssignment,
   findA2pCampaignByReference,
-  findOwnedPhoneNumbers,
   getA2pBrand,
   getA2pCampaign,
   getA2pNumberAssignment,
@@ -51,6 +50,8 @@ import {
   type TelnyxNumberAssignment,
   updateMessagingProfileEnabled,
 } from "@/lib/messaging/telnyx-provisioning";
+import { inspectTelnyxProviderReadiness } from "@/lib/messaging/provider-readiness";
+import { getSmsOperationsHealth } from "@/lib/messaging/sms-operations-health";
 import {
   decryptRegistrationTaxId,
   MessagingRegistrationEncryptionError,
@@ -208,58 +209,16 @@ async function inspectMessagingProviderReadiness(input: {
   }
 
   const webhookUrl = telnyxRegistrationWebhookUrl();
-  const [profile, ownedNumbers, brand, campaign, assignment] =
-    await Promise.all([
-      getMessagingProfile(sender.messagingProfileId),
-      findOwnedPhoneNumbers(sender.senderE164),
-      getA2pBrand(providerBrandId),
-      getA2pCampaign(providerCampaignId),
-      getA2pNumberAssignment(sender.senderE164),
-    ]);
-
-  const blockers = messagingProfileSafetyIssues(profile, {
-    id: sender.messagingProfileId,
-    name: openVpmMessagingProfileName(sender.locationId),
+  const { profile, blockers } = await inspectTelnyxProviderReadiness({
+    locationId: sender.locationId,
+    messagingProfileId: sender.messagingProfileId,
+    senderE164: sender.senderE164,
+    providerBrandId,
+    providerCampaignId,
+    registrationStatus: registration.status,
+    senderRegistrationStatus: sender.registrationStatus,
     webhookUrl,
   });
-  const ownedNumber =
-    ownedNumbers.length === 1 ? ownedNumbers[0] : undefined;
-  if (
-    !ownedNumber ||
-    ownedNumber.messagingProfileId !== sender.messagingProfileId ||
-    ownedNumber.status?.toLowerCase() !== "active"
-  ) {
-    blockers.push(
-      "phone number is not active on the exact messaging profile",
-    );
-  }
-  if (
-    !new Set(["VERIFIED", "VETTED_VERIFIED"]).has(
-      (brand.identityStatus ?? "").toUpperCase(),
-    )
-  ) {
-    blockers.push("carrier brand is not verified");
-  }
-  if (
-    campaign.status?.toUpperCase() !== "ACTIVE" &&
-    campaign.campaignStatus?.toUpperCase() !== "MNO_PROVISIONED"
-  ) {
-    blockers.push("carrier campaign is not active");
-  }
-  if (
-    !assignment ||
-    assignment.phoneNumber !== sender.senderE164 ||
-    assignment.campaignId !== providerCampaignId ||
-    assignment.assignmentStatus?.toUpperCase() !== "ASSIGNED"
-  ) {
-    blockers.push("phone number is not assigned to the active campaign");
-  }
-  if (
-    registration.status !== "active" ||
-    sender.registrationStatus !== "active"
-  ) {
-    blockers.push("OpenVPM carrier reconciliation is not active");
-  }
 
   return {
     profile,
@@ -895,6 +854,12 @@ export const adminRouter = createRouter({
       }),
     ),
 
+  /** Bounded, PHI-free, read-only launch and delivery exception monitor. */
+  smsOperationsHealth: platformAdminProcedure.query(() => {
+    noStore();
+    return getSmsOperationsHealth(db);
+  }),
+
   /** Redacted A2P work queue. Legal tax IDs are never exposed here. */
   messagingRegistrationQueue: platformAdminProcedure.query(async () =>
     withSystem(db, async (tx) => {
@@ -956,8 +921,7 @@ export const adminRouter = createRouter({
               sender.providerProfileReady &&
               sender.providerProfileSyncedAt !== null &&
               sender.providerProfileSyncedAt.getTime() >=
-                Date.now() -
-                  MESSAGING_PROVIDER_PROFILE_ATTESTATION_MAX_AGE_MS,
+                Date.now() - MESSAGING_PROVIDER_PROFILE_ATTESTATION_MAX_AGE_MS,
           })),
       }));
     }),

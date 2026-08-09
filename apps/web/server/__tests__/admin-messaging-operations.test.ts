@@ -429,8 +429,14 @@ describe("platform messaging operations", () => {
         status: "active",
       },
     ]);
-    mocks.getA2pBrand.mockResolvedValue({ identityStatus: "VERIFIED" });
-    mocks.getA2pCampaign.mockResolvedValue({ status: "ACTIVE" });
+    mocks.getA2pBrand.mockResolvedValue({
+      brandId: "brand-123",
+      identityStatus: "VERIFIED",
+    });
+    mocks.getA2pCampaign.mockResolvedValue({
+      campaignId: "campaign-123",
+      status: "ACTIVE",
+    });
     mocks.getA2pNumberAssignment.mockResolvedValue({
       phoneNumber: "+15555550101",
       campaignId: "campaign-123",

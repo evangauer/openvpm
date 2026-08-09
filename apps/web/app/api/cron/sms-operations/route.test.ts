@@ -29,7 +29,7 @@ const healthy: SmsOperationsHealth = {
 };
 
 const mocks = vi.hoisted(() => ({
-  alertOps: vi.fn(async () => undefined),
+  alertOps: vi.fn(async (_subject: string, _detail: string) => undefined),
   cronAuthError: vi.fn((): Response | null => null),
   db: {},
   getSmsOperationsHealth: vi.fn(),
