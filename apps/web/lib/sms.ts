@@ -1,6 +1,6 @@
 import { recordUsage } from "@/lib/billing/usage";
 import { db } from "@openpims/db/client";
-import { practices } from "@openpims/db";
+import { clients, practices, smsSuppressions } from "@openpims/db";
 import { and, eq, isNull } from "drizzle-orm";
 import { withSystem } from "@/lib/tenant-db";
 import { billingEnforced, hasHostedFullAccess } from "@/lib/billing/plans";
@@ -9,8 +9,13 @@ import {
   normalizeE164,
   resolveMessagingTransport,
   isSuppressed,
+  acquireSmsRecipientLockInTransaction,
 } from "@/lib/messaging";
 import { envFlagEnabled } from "@/lib/env-bool";
+import {
+  hostedMessagingLaunchBlockMessage,
+  hostedMessagingLaunchDecision,
+} from "@/lib/messaging/launch-gate";
 
 // ---------------------------------------------------------------------------
 // Core send function
@@ -28,15 +33,36 @@ export async function sendSms(options: {
   practiceId?: string;
   /** Selects the location's bound provider and number/messaging profile. */
   locationId?: string;
+  /** Client whose current consent and destination must match immediately before dispatch. */
+  clientId?: string;
 }): Promise<{ success: boolean; sid?: string; error?: string }> {
   const hostedBilling = billingEnforced();
+  const demoMode = envFlagEnabled("NEXT_PUBLIC_DEMO_MODE");
+  const hostedExternalSend = hostedBilling && !demoMode;
   const recipient = normalizeE164(options.to);
 
   if (!recipient) {
     return {
       success: false,
-      error: "SMS recipient phone number must be a valid E.164 or US/CA number.",
+      error:
+        "SMS recipient phone number must be a valid E.164 or US/CA number.",
     };
+  }
+
+  if (hostedExternalSend) {
+    const launch = hostedMessagingLaunchDecision(options);
+    if (!launch.allowed) {
+      return {
+        success: false,
+        error: hostedMessagingLaunchBlockMessage(launch.reason),
+      };
+    }
+    if (!options.clientId) {
+      return {
+        success: false,
+        error: "Hosted SMS requires an explicit consented client.",
+      };
+    }
   }
 
   // Preserve the locationless hosted guard without consulting the global
@@ -45,7 +71,7 @@ export async function sendSms(options: {
     !options.locationId &&
     getMessagingProvider().name === "console" &&
     hostedBilling &&
-    !envFlagEnabled("NEXT_PUBLIC_DEMO_MODE")
+    !demoMode
   ) {
     return {
       success: false,
@@ -90,10 +116,16 @@ export async function sendSms(options: {
 
   // Hard opt-out gate: never text a number on the practice's suppression list.
   // Fail closed — if we can't verify opt-out status, block rather than risk it.
-  if (options.practiceId) {
+  // Hosted dispatch repeats this check under a per-recipient transaction lock
+  // immediately before the provider call, so stale automation snapshots cannot
+  // outrun a concurrent STOP/manual revoke.
+  if (options.practiceId && !hostedExternalSend) {
     try {
       if (await isSuppressed(options.practiceId, recipient)) {
-        return { success: false, error: "Recipient has opted out of SMS (STOP)." };
+        return {
+          success: false,
+          error: "Recipient has opted out of SMS (STOP).",
+        };
       }
     } catch {
       return {
@@ -106,6 +138,7 @@ export async function sendSms(options: {
   const transport = await resolveMessagingTransport({
     practiceId: options.practiceId,
     locationId: options.locationId,
+    hosted: hostedExternalSend,
   });
   if (options.locationId && !transport) {
     return {
@@ -119,22 +152,94 @@ export async function sendSms(options: {
   }
 
   const { provider, sender } = transport;
-  if (
-    provider.name === "console" &&
-    hostedBilling &&
-    !envFlagEnabled("NEXT_PUBLIC_DEMO_MODE")
-  ) {
+  if (hostedExternalSend && provider.name !== "telnyx") {
+    return {
+      success: false,
+      error:
+        "Hosted texting is available only through the approved Telnyx pilot.",
+    };
+  }
+  if (provider.name === "console" && hostedBilling && !demoMode) {
     return {
       success: false,
       error: "SMS provider is not configured for hosted sending.",
     };
   }
 
-  const result = await provider.send({
-    to: recipient,
-    body: options.body,
-    sender,
-  });
+  const result = hostedExternalSend
+    ? await withSystem(db, async (tx) => {
+        try {
+          const practiceId = options.practiceId!;
+          const clientId = options.clientId!;
+          await acquireSmsRecipientLockInTransaction(tx, practiceId, recipient);
+
+          const [client] = await tx
+            .select({
+              phone: clients.phone,
+              smsConsent: clients.smsConsent,
+              smsConsentAt: clients.smsConsentAt,
+              smsConsentSource: clients.smsConsentSource,
+              smsConsentDisclosure: clients.smsConsentDisclosure,
+            })
+            .from(clients)
+            .where(
+              and(
+                eq(clients.id, clientId),
+                eq(clients.practiceId, practiceId),
+                isNull(clients.deletedAt)
+              )
+            )
+            .limit(1)
+            .for("share");
+          if (
+            !client?.smsConsent ||
+            !client.smsConsentAt ||
+            !client.smsConsentSource?.trim() ||
+            !client.smsConsentDisclosure?.trim() ||
+            normalizeE164(client.phone) !== recipient
+          ) {
+            return {
+              success: false,
+              error:
+                "Client SMS consent or phone changed before sending; delivery was blocked.",
+            };
+          }
+
+          const [suppression] = await tx
+            .select({ id: smsSuppressions.id })
+            .from(smsSuppressions)
+            .where(
+              and(
+                eq(smsSuppressions.practiceId, practiceId),
+                eq(smsSuppressions.phone, recipient)
+              )
+            )
+            .limit(1);
+          if (suppression) {
+            return {
+              success: false,
+              error: "Recipient has opted out of SMS (STOP).",
+            };
+          }
+
+          return provider.send({
+            to: recipient,
+            body: options.body,
+            sender,
+          });
+        } catch (error) {
+          console.error("[messaging] hosted dispatch preflight failed", error);
+          return {
+            success: false,
+            error: "Could not verify SMS consent; send blocked.",
+          };
+        }
+      })
+    : await provider.send({
+        to: recipient,
+        body: options.body,
+        sender,
+      });
 
   // Meter only real sends (not the dev-console fallback); no-op on self-host.
   if (result.success && provider.name !== "console" && options.practiceId) {
@@ -157,6 +262,7 @@ export async function sendAppointmentReminderSms(data: {
   practicePhone?: string;
   practiceId?: string;
   locationId?: string;
+  clientId?: string;
 }): Promise<{ success: boolean; sid?: string; error?: string }> {
   const phoneInfo = data.practicePhone
     ? `Call ${data.practicePhone} to reschedule.`
@@ -169,6 +275,7 @@ export async function sendAppointmentReminderSms(data: {
     body,
     practiceId: data.practiceId,
     locationId: data.locationId,
+    clientId: data.clientId,
   });
   return { success: result.success, sid: result.sid, error: result.error };
 }
@@ -185,6 +292,7 @@ export async function sendVaccinationReminderSms(data: {
   practicePhone?: string;
   practiceId?: string;
   locationId?: string;
+  clientId?: string;
 }): Promise<{ success: boolean; sid?: string; error?: string }> {
   const phoneInfo = data.practicePhone
     ? `Call ${data.practicePhone} to schedule.`
@@ -197,6 +305,7 @@ export async function sendVaccinationReminderSms(data: {
     body,
     practiceId: data.practiceId,
     locationId: data.locationId,
+    clientId: data.clientId,
   });
   return { success: result.success, sid: result.sid, error: result.error };
 }

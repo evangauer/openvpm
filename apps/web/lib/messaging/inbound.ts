@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, eq, isNull, sql, type SQL } from "drizzle-orm";
+import { and, eq, isNull, or, sql, type SQL } from "drizzle-orm";
 import { db } from "@openpims/db/client";
 import {
   clients,
@@ -10,15 +10,21 @@ import {
 } from "@openpims/db";
 import { withSystem, withTenant } from "@/lib/tenant-db";
 import { normalizeE164 } from "./phone";
-import { addSuppression, removeSuppression } from "./suppression";
 import {
-  inboundSmsOptInEvidence,
-  SMS_INBOUND_OPT_IN,
-} from "./consent";
+  isSuppressed,
+  removeSuppression,
+  revokeSmsConsentByPhone,
+} from "./suppression";
+import { inboundSmsOptInEvidence, SMS_INBOUND_OPT_IN } from "./consent";
 import { latestAssignedToForClient } from "@/lib/communications/assignment";
 
 export type InboundSmsProvider = "telnyx" | "twilio";
-export type InboundSmsAction = "ignored" | "suppressed" | "unsuppressed" | "logged";
+export type InboundSmsAction =
+  | "ignored"
+  | "suppressed"
+  | "unsuppressed"
+  | "logged";
+export type InboundSmsClassification = "stop" | "start" | "help" | "other";
 
 const STOP_KEYWORDS = new Set([
   "STOP",
@@ -31,9 +37,40 @@ const STOP_KEYWORDS = new Set([
   "OPTOUT",
 ]);
 const START_KEYWORDS = new Set(["START", "YES", "UNSTOP"]);
+const HELP_KEYWORDS = new Set(["HELP", "INFO"]);
 
 function normalizedKeyword(text: string): string {
   return text.toUpperCase().replace(/[^A-Z]/g, "");
+}
+
+/**
+ * Carrier keywords must be the whole message. A small, anchored set of plain
+ * language requests covers unmistakable revocations without guessing at
+ * ambiguous conversational messages (for example, “do not stop texting me”).
+ */
+export function classifyInboundSms(text: string): InboundSmsClassification {
+  const trimmed = text.trim();
+  if (!trimmed) return "other";
+  const keyword = normalizedKeyword(trimmed);
+  if (STOP_KEYWORDS.has(keyword)) return "stop";
+  if (START_KEYWORDS.has(keyword)) return "start";
+  if (HELP_KEYWORDS.has(keyword)) return "help";
+  if (/\?\s*$/.test(trimmed)) return "other";
+
+  const sentence = trimmed
+    .toLowerCase()
+    .replace(/[.!,;:]+$/g, "")
+    .replace(/\s+/g, " ");
+  const naturalOptOut = [
+    /^(?:please |kindly )?stop (?:texting|messaging)(?: me)?$/,
+    /^(?:please |kindly )?stop sending me (?:texts|text messages|messages|sms messages)$/,
+    /^(?:please |kindly )?(?:do not|don['’]t) (?:text|message) me$/,
+    /^(?:please |kindly )?(?:do not|don['’]t) send me (?:texts|text messages|sms messages)$/,
+    /^(?:please |kindly )?no more (?:texts|text messages|sms messages)$/,
+    /^(?:please |kindly )?(?:remove me from|take me off) (?:your |the )?(?:text|texting|sms) list$/,
+    /^(?:please |kindly )?unsubscribe me from (?:texts|text messages|sms messages)$/,
+  ].some((pattern) => pattern.test(sentence));
+  return naturalOptOut ? "stop" : "other";
 }
 
 export function inboundSmsDedupeKey(
@@ -51,6 +88,20 @@ export function inboundSmsDedupeKey(
 function nonBlank(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
+}
+
+function normalizedClientPhoneCondition(e164: string): SQL | null {
+  const normalized = normalizeE164(e164);
+  if (!normalized) return null;
+  const fullDigits = normalized.replace(/\D/g, "");
+  const nationalDigits =
+    normalized.startsWith("+1") && fullDigits.length === 11
+      ? fullDigits.slice(1)
+      : fullDigits;
+  return or(
+    sql`regexp_replace(${clients.phone}, '\D', '', 'g') = ${fullDigits}`,
+    sql`regexp_replace(${clients.phone}, '\D', '', 'g') = ${nationalDigits}`
+  )!;
 }
 
 async function findMessagingLocationMatching(
@@ -90,7 +141,7 @@ async function findMessagingLocationMatching(
       )
       .limit(2)
   );
-  return matches.length === 1 ? matches[0] ?? null : null;
+  return matches.length === 1 ? (matches[0] ?? null) : null;
 }
 
 export async function findMessagingLocationBySender(
@@ -133,8 +184,8 @@ export async function findClientIdByPhone(
   practiceId: string,
   e164: string
 ): Promise<string | null> {
-  const digits = e164.replace(/\D/g, "").slice(-10);
-  if (digits.length < 10) return null;
+  const phoneCondition = normalizedClientPhoneCondition(e164);
+  if (!phoneCondition) return null;
   const matches = await withSystem(db, (tx) =>
     tx
       .select({ id: clients.id })
@@ -143,12 +194,12 @@ export async function findClientIdByPhone(
         and(
           eq(clients.practiceId, practiceId),
           isNull(clients.deletedAt),
-          sql`right(regexp_replace(${clients.phone}, '\D', '', 'g'), 10) = ${digits}`
+          phoneCondition
         )
       )
       .limit(2)
   );
-  return matches.length === 1 ? matches[0]?.id ?? null : null;
+  return matches.length === 1 ? (matches[0]?.id ?? null) : null;
 }
 
 /** Flip a client's SMS consent flag after carrier opt-out / opt-in callbacks. */
@@ -159,8 +210,8 @@ export async function setClientSmsConsentByPhone(
   matchedClientId?: string | null,
   optInKeyword?: string
 ): Promise<void> {
-  const digits = e164.replace(/\D/g, "").slice(-10);
-  if (digits.length < 10) return;
+  const phoneCondition = normalizedClientPhoneCondition(e164);
+  if (!phoneCondition) return;
 
   if (consent) {
     const clientId =
@@ -204,7 +255,7 @@ export async function setClientSmsConsentByPhone(
         and(
           eq(clients.practiceId, practiceId),
           isNull(clients.deletedAt),
-          sql`right(regexp_replace(${clients.phone}, '\D', '', 'g'), 10) = ${digits}`
+          phoneCondition
         )
       )
   );
@@ -267,17 +318,17 @@ export async function handleInboundSmsReply(opts: {
   });
   if (!loc) return { ok: true, action: "ignored" };
 
+  const classification = classifyInboundSms(text);
   const keyword = normalizedKeyword(text);
   const clientId = await findClientIdByPhone(loc.practiceId, fromPhone);
-  if (STOP_KEYWORDS.has(keyword)) {
-    await addSuppression({
+  if (classification === "stop") {
+    await revokeSmsConsentByPhone({
       practiceId: loc.practiceId,
       locationId: loc.locationId,
       phone: fromPhone,
       reason: "stop",
       detail: `Inbound opt-out: "${text}"`,
     });
-    await setClientSmsConsentByPhone(loc.practiceId, fromPhone, false);
     await logInboundSmsCommunication({
       practiceId: loc.practiceId,
       clientId,
@@ -290,15 +341,20 @@ export async function handleInboundSmsReply(opts: {
     return { ok: true, action: "suppressed" };
   }
 
-  if (START_KEYWORDS.has(keyword)) {
+  if (classification === "start") {
     await removeSuppression(loc.practiceId, fromPhone);
-    await setClientSmsConsentByPhone(
-      loc.practiceId,
-      fromPhone,
-      true,
-      clientId,
-      keyword
-    );
+    // START can remove only a carrier STOP. A manual, complaint, or bounce
+    // suppression remains authoritative and must not silently restore consent.
+    const remainsSuppressed = await isSuppressed(loc.practiceId, fromPhone);
+    if (!remainsSuppressed) {
+      await setClientSmsConsentByPhone(
+        loc.practiceId,
+        fromPhone,
+        true,
+        clientId,
+        keyword
+      );
+    }
     await logInboundSmsCommunication({
       practiceId: loc.practiceId,
       clientId,
@@ -306,9 +362,29 @@ export async function handleInboundSmsReply(opts: {
       fromPhone,
       text,
       providerMessageId: opts.providerMessageId,
-      subject: `SMS opt-in from ${fromPhone}`,
+      subject: remainsSuppressed
+        ? `SMS opt-in blocked for ${fromPhone}`
+        : `SMS opt-in from ${fromPhone}`,
     });
-    return { ok: true, action: "unsuppressed" };
+    return {
+      ok: true,
+      action: remainsSuppressed ? "suppressed" : "unsuppressed",
+    };
+  }
+
+  if (classification === "help") {
+    // Carriers commonly generate their own HELP response. Log one staff-visible
+    // request but do not dispatch a second automated reply.
+    await logInboundSmsCommunication({
+      practiceId: loc.practiceId,
+      clientId,
+      provider: opts.provider,
+      fromPhone,
+      text,
+      providerMessageId: opts.providerMessageId,
+      subject: `SMS help request from ${fromPhone}`,
+    });
+    return { ok: true, action: "logged" };
   }
 
   await logInboundSmsCommunication({

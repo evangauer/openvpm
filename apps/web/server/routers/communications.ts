@@ -98,7 +98,9 @@ function renderComposedEmail(opts: {
 </html>`;
 }
 
-function validReplyToEmail(value: string | null | undefined): string | undefined {
+function validReplyToEmail(
+  value: string | null | undefined
+): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
   return z.string().email().safeParse(trimmed).success ? trimmed : undefined;
@@ -590,8 +592,7 @@ export const communicationsRouter = createRouter({
           });
         }
 
-        const assignedTo =
-          input.action === "assign_to_me" ? ctx.user.id : null;
+        const assignedTo = input.action === "assign_to_me" ? ctx.user.id : null;
         const updated = await tx
           .update(communications)
           .set({ assignedTo })
@@ -842,11 +843,12 @@ export const communicationsRouter = createRouter({
         if (!smsRecipient) {
           throw new TRPCError({
             code: "BAD_REQUEST",
-            message: "Client phone number must be a valid E.164 or US/CA number",
+            message:
+              "Client phone number must be a valid E.164 or US/CA number",
           });
         }
 
-        const [smsSender] = await ctx.db
+        const smsSenders = await ctx.db
           .select({ locationId: locationMessaging.locationId })
           .from(locationMessaging)
           .innerJoin(
@@ -870,7 +872,9 @@ export const communicationsRouter = createRouter({
               hasNonBlankMessagingSender()
             )
           )
-          .limit(1);
+          .limit(2);
+
+        const smsSender = smsSenders.length === 1 ? smsSenders[0] : null;
 
         if (!smsSender) {
           throw new TRPCError({
@@ -887,7 +891,11 @@ export const communicationsRouter = createRouter({
         input.direction === "outbound" && input.channel === "email"
           ? normalizeEmailSuppressionAddress(client.email)
           : null;
-      if (input.direction === "outbound" && input.channel === "email" && !clientEmail) {
+      if (
+        input.direction === "outbound" &&
+        input.channel === "email" &&
+        !clientEmail
+      ) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "Client does not have an email address on file",
@@ -919,12 +927,12 @@ export const communicationsRouter = createRouter({
           readAt: input.status === "read" ? new Date() : undefined,
           status: isDeliverableOutbound
             ? "pending"
-            : input.status ??
+            : (input.status ??
               (input.direction === "outbound"
                 ? input.channel === "portal"
                   ? "delivered"
                   : "sent"
-                : "pending"),
+                : "pending")),
         })
         .returning();
 
@@ -951,6 +959,7 @@ export const communicationsRouter = createRouter({
             body: content,
             practiceId: ctx.practiceId,
             locationId: smsSenderLocationId,
+            clientId: input.clientId,
           });
           providerMessageId = deliveryResult.sid;
         } else {

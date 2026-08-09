@@ -46,6 +46,10 @@ import {
   releaseMessagingProfileAttempt,
   reserveMessagingProfileAttempt,
 } from "@/lib/messaging/provisioning-attempt-gate";
+import {
+  hostedMessagingLaunchBlockMessage,
+  hostedMessagingLaunchDecision,
+} from "@/lib/messaging/launch-gate";
 
 const adminOnly = protectedProcedure.use(requireRole("admin"));
 const MESSAGING_NUMBER_ORDERED_DETAIL =
@@ -70,7 +74,10 @@ const providerPriceInput = z
 const selectedQuoteInput = z.object({
   upfrontCost: providerPriceInput,
   monthlyCost: providerPriceInput,
-  currency: z.string().trim().regex(/^[A-Z]{3}$/),
+  currency: z
+    .string()
+    .trim()
+    .regex(/^[A-Z]{3}$/),
 });
 
 const messagingPhoneInput = z
@@ -270,6 +277,31 @@ function assertProvisioningPracticeAllowed(practiceId: string): void {
         "Texting number setup is available only to approved pilot clinics. Contact OpenVPM support.",
     });
   }
+}
+
+function assertHostedSendingAllowed(practiceId: string, locationId: string) {
+  if (!billingEnforced()) return;
+  const decision = hostedMessagingLaunchDecision({ practiceId, locationId });
+  if (!decision.allowed) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: hostedMessagingLaunchBlockMessage(decision.reason),
+    });
+  }
+}
+
+function hostedLaunchEligibleLocationIds(
+  practiceId: string,
+  locationIds: string[]
+): ReadonlySet<string> {
+  if (!billingEnforced()) return new Set(locationIds);
+  const eligible = locationIds.filter(
+    (locationId) =>
+      hostedMessagingLaunchDecision({ practiceId, locationId }).allowed
+  );
+  // A hosted pilot is intentionally one location per practice. An operator
+  // allowlisting multiple clinic locations is ambiguous and fails closed.
+  return eligible.length === 1 ? new Set(eligible) : new Set();
 }
 
 function provisioningOperationReference(
@@ -597,14 +629,30 @@ export const messagingRouter = createRouter({
             messagingProfileId: l.messagingProfileId,
             registrationStatus: l.registrationStatus ?? "not_started",
             enabled: l.enabled ?? false,
+            provider: l.provider,
+          }
+        : null,
+    }));
+    const launchEligibleLocationIds = hostedLaunchEligibleLocationIds(
+      ctx.practiceId,
+      locs.map((location) => location.locationId)
+    );
+    const locationsWithLaunchState = locationsForSummary.map((location) => ({
+      ...location,
+      messaging: location.messaging
+        ? {
+            ...location.messaging,
+            launchEligible:
+              launchEligibleLocationIds.has(location.locationId) &&
+              (!billingEnforced() || location.messaging.provider === "telnyx"),
           }
         : null,
     }));
 
     return {
       canManage: ctx.user.role === "admin",
-      locations: locationsForSummary,
-      summary: summarizeInboxSmsStatus(locationsForSummary),
+      locations: locationsWithLaunchState,
+      summary: summarizeInboxSmsStatus(locationsWithLaunchState),
     };
   }),
 
@@ -657,7 +705,12 @@ export const messagingRouter = createRouter({
     if (!practice) {
       throw practiceNotFound();
     }
-    const includedSms = getPlan(practice.tier ?? "free")?.includedSmsPerMonth ?? null;
+    const includedSms =
+      getPlan(practice.tier ?? "free")?.includedSmsPerMonth ?? null;
+    const launchEligibleLocationIds = hostedLaunchEligibleLocationIds(
+      ctx.practiceId,
+      locs.map((location) => location.locationId)
+    );
 
     const [consentRow] = await ctx.db
       .select({ n: sql<number>`count(*)::int` })
@@ -695,6 +748,9 @@ export const messagingRouter = createRouter({
               registrationStatus: l.registrationStatus,
               registrationDetail: l.registrationDetail,
               enabled: l.enabled,
+              launchEligible:
+                launchEligibleLocationIds.has(l.locationId) &&
+                (!billingEnforced() || l.provider === "telnyx"),
             }
           : null,
       })),
@@ -702,6 +758,12 @@ export const messagingRouter = createRouter({
       consent: {
         optedIn: consentRow?.n ?? 0,
         suppressed: suppressedRow?.n ?? 0,
+      },
+      launch: {
+        hosted: billingEnforced(),
+        pilotEnabled:
+          !billingEnforced() || launchEligibleLocationIds.size === 1,
+        testSendAllowed: !billingEnforced(),
       },
     };
   }),
@@ -714,6 +776,8 @@ export const messagingRouter = createRouter({
     await assertActivePractice(ctx);
     const rows = await ctx.db
       .select({
+        locationId: locationMessaging.locationId,
+        provider: locationMessaging.provider,
         registrationStatus: locationMessaging.registrationStatus,
         enabled: locationMessaging.enabled,
         senderE164: locationMessaging.senderE164,
@@ -726,12 +790,20 @@ export const messagingRouter = createRouter({
           isNull(locationMessaging.deletedAt)
         )
       );
+    const launchEligibleLocationIds = hostedLaunchEligibleLocationIds(
+      ctx.practiceId,
+      rows.map((row) => row.locationId)
+    );
     return {
       hasAnyNumber: rows.some(
         (r) => !!r.senderE164 && r.registrationStatus !== "failed"
       ),
       hasActiveNumber: rows.some(
-        (r) => r.registrationStatus === "active" && r.enabled
+        (r) =>
+          r.registrationStatus === "active" &&
+          r.enabled &&
+          launchEligibleLocationIds.has(r.locationId) &&
+          (!billingEnforced() || r.provider === "telnyx")
       ),
     };
   }),
@@ -747,7 +819,12 @@ export const messagingRouter = createRouter({
             `Area code must be ${MESSAGING_AREA_CODE_LENGTH} digits`
           )
           .optional(),
-        limit: z.number().int().min(1).max(MESSAGING_SEARCH_LIMIT_MAX).optional(),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(MESSAGING_SEARCH_LIMIT_MAX)
+          .optional(),
       })
     )
     .query(async ({ ctx, input }) => {
@@ -778,7 +855,10 @@ export const messagingRouter = createRouter({
         )
         .limit(1);
       if (!loc) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Location not found" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Location not found",
+        });
       }
       return {
         eligible: false,
@@ -909,11 +989,7 @@ export const messagingRouter = createRouter({
             )
             .limit(1);
 
-          if (
-            input.action === "start" &&
-            !existing &&
-            !preparedThisRequest
-          ) {
+          if (input.action === "start" && !existing && !preparedThisRequest) {
             throw provisioningConflict(
               "OpenVPM could not reserve a durable texting setup attempt. No provider profile or number was created; refresh and try again."
             );
@@ -947,7 +1023,8 @@ export const messagingRouter = createRouter({
             );
             if (
               existing.provider !== "telnyx" ||
-              (existing.numberSource && existing.numberSource !== "purchased") ||
+              (existing.numberSource &&
+                existing.numberSource !== "purchased") ||
               (existing.senderE164 && existing.senderE164 !== e164)
             ) {
               throw provisioningConflict(
@@ -1002,9 +1079,8 @@ export const messagingRouter = createRouter({
           profileId = recoveredProfile?.id ?? profileId;
           failureRecordAllowed ||= Boolean(recoveredProfile);
 
-          const orders = await findNumberOrdersByCustomerReference(
-            customerReference
-          );
+          const orders =
+            await findNumberOrdersByCustomerReference(customerReference);
           if (orders.length > 1) {
             throw provisioningConflict(
               "OpenVPM found duplicate provider orders for this location. No additional purchase was attempted; contact support to reconcile them."
@@ -1084,7 +1160,10 @@ export const messagingRouter = createRouter({
               "The provider reports this number in a failed or released state. No new purchase was made; search again or contact support."
             );
           }
-          if (ownedNumber && ownedNumber.messagingProfileId !== activeProfileId) {
+          if (
+            ownedNumber &&
+            ownedNumber.messagingProfileId !== activeProfileId
+          ) {
             throw provisioningConflict(
               "This number is already owned under a different provider setup. No new purchase was made; contact support before reassigning it."
             );
@@ -1164,8 +1243,7 @@ export const messagingRouter = createRouter({
           preparedThisRequest &&
           e164 &&
           !profileMutationAttempted &&
-          (e instanceof TelnyxNotConfiguredError ||
-            conclusiveEmptyProfileState)
+          (e instanceof TelnyxNotConfiguredError || conclusiveEmptyProfileState)
         ) {
           try {
             const released = await releaseMessagingProfileAttempt({
@@ -1213,17 +1291,17 @@ export const messagingRouter = createRouter({
                 .limit(1);
               const newerAttemptCompleted = Boolean(
                 current?.provider === "telnyx" &&
-                  current.messagingProfileId &&
-                  current.senderE164 === e164 &&
-                  current.numberSource === "purchased" &&
-                  current.registrationStatus !== "failed"
+                current.messagingProfileId &&
+                current.senderE164 === e164 &&
+                current.numberSource === "purchased" &&
+                current.registrationStatus !== "failed"
               );
               const differentSetupExists = Boolean(
                 current &&
-                  (current.provider !== "telnyx" ||
-                    (current.senderE164 && current.senderE164 !== e164) ||
-                    (current.numberSource &&
-                      current.numberSource !== "purchased"))
+                (current.provider !== "telnyx" ||
+                  (current.senderE164 && current.senderE164 !== e164) ||
+                  (current.numberSource &&
+                    current.numberSource !== "purchased"))
               );
               if (newerAttemptCompleted || differentSetupExists) return;
 
@@ -1301,12 +1379,24 @@ export const messagingRouter = createRouter({
         )
         .limit(1);
       if (!loc) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Location not found" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Location not found",
+        });
       }
 
       if (input.enabled) {
+        assertHostedSendingAllowed(ctx.practiceId, input.locationId);
+        if (billingEnforced()) {
+          await ctx.db.execute(
+            sql`select pg_advisory_xact_lock(hashtextextended(${`hosted-sms:${ctx.practiceId}`}, 0))`
+          );
+        }
         const [readySender] = await ctx.db
-          .select({ locationId: locationMessaging.locationId })
+          .select({
+            locationId: locationMessaging.locationId,
+            provider: locationMessaging.provider,
+          })
           .from(locationMessaging)
           .where(
             and(
@@ -1327,6 +1417,40 @@ export const messagingRouter = createRouter({
               "Carrier registration must be active before enabling SMS sending.",
           });
         }
+        if (billingEnforced() && readySender.provider !== "telnyx") {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Hosted texting is available only through the approved Telnyx pilot.",
+          });
+        }
+
+        const enabledSenders = await ctx.db
+          .select({ locationId: locationMessaging.locationId })
+          .from(locationMessaging)
+          .where(
+            and(
+              eq(locationMessaging.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(locationMessaging.deletedAt),
+              eq(locationMessaging.enabled, true),
+              eq(locationMessaging.registrationStatus, "active"),
+              hasNonBlankMessagingSender()
+            )
+          )
+          .limit(2);
+        if (
+          billingEnforced() &&
+          enabledSenders.some(
+            (sender) => sender.locationId !== input.locationId
+          )
+        ) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "The hosted texting pilot supports one enabled location per practice.",
+          });
+        }
       }
 
       const updateConditions = [
@@ -1340,6 +1464,9 @@ export const messagingRouter = createRouter({
           eq(locationMessaging.registrationStatus, "active"),
           hasNonBlankMessagingSender()
         );
+        if (billingEnforced()) {
+          updateConditions.push(eq(locationMessaging.provider, "telnyx"));
+        }
       }
 
       const [updated] = await ctx.db
@@ -1351,7 +1478,8 @@ export const messagingRouter = createRouter({
         if (input.enabled) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "Messaging sender changed while enabling. Refresh and try again.",
+            message:
+              "Messaging sender changed while enabling. Refresh and try again.",
           });
         }
         throw new TRPCError({
@@ -1366,6 +1494,13 @@ export const messagingRouter = createRouter({
   testSend: adminOnly
     .input(z.object({ locationId: z.string().uuid(), to: messagingPhoneInput }))
     .mutation(async ({ ctx, input }) => {
+      if (billingEnforced()) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Hosted test sends are disabled during the controlled texting pilot.",
+        });
+      }
       await assertActivePractice(ctx);
       const [loc] = await ctx.db
         .select({ id: locations.id })
@@ -1380,7 +1515,10 @@ export const messagingRouter = createRouter({
         )
         .limit(1);
       if (!loc) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Location not found" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Location not found",
+        });
       }
 
       const [sender] = await ctx.db

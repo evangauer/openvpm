@@ -10,7 +10,10 @@ import {
 } from "../messaging/policy";
 
 describe("messaging settings UI", () => {
-  const tabSource = readFileSync("components/settings/messaging-tab.tsx", "utf8");
+  const tabSource = readFileSync(
+    "components/settings/messaging-tab.tsx",
+    "utf8"
+  );
   const wizardSource = readFileSync(
     "components/settings/messaging-wizard.tsx",
     "utf8"
@@ -44,28 +47,36 @@ describe("messaging settings UI", () => {
     expect(tabSource).toContain("messaging.senderE164?.trim()");
     expect(tabSource).toContain("messaging.messagingProfileId?.trim()");
     expect(tabSource).toContain("const canEnableSending =");
-    expect(tabSource).toContain(
-      'm.registrationStatus === "active" && hasConfiguredSender(m)'
-    );
-    expect(tabSource).toContain(
-      "const canSendTest =\n    m.enabled && canEnableSending && isMessagingPhoneInputValid(testTo)"
-    );
+    expect(tabSource).toContain('m.registrationStatus === "active"');
+    expect(tabSource).toContain("hasConfiguredSender(m)");
+    expect(tabSource).toContain("m.launchEligible !== false");
+    expect(tabSource).toContain("testSendAllowed &&");
+    expect(tabSource).toContain("isMessagingPhoneInputValid(testTo)");
     expect(tabSource).toContain("maxLength={MESSAGING_PHONE_MAX_LENGTH}");
     expect(tabSource).toContain(
       "disabled={setEnabled.isPending || (!m.enabled && !canEnableSending)}"
     );
-    expect(tabSource).toContain("disabled={!canSendTest || testSend.isPending}");
+    expect(tabSource).toContain(
+      "disabled={!canSendTest || testSend.isPending}"
+    );
     expect(tabSource).toContain("to: testTo.trim()");
+    expect(tabSource).toContain("Outbound texting is safely off");
+    expect(tabSource).toContain("Arbitrary test destinations are disabled");
     expect(wizardSource).toContain("MESSAGING_AREA_CODE_LENGTH");
     expect(wizardSource).toContain("isMessagingAreaCodeInputValid(areaCode)");
-    expect(wizardSource).toContain("disabled={checking || !isMessagingAreaCodeInputValid(areaCode)}");
     expect(wizardSource).toContain(
-      "When registration is active, turn\n          sending on and send a test"
+      "disabled={checking || !isMessagingAreaCodeInputValid(areaCode)}"
     );
+    expect(wizardSource).toContain(
+      "validate through a current consented client workflow"
+    );
+    expect(wizardSource).not.toContain("send a test from the active location");
     expect(tabSource).toContain("<MessagingRegistrationForm />");
     expect(wizardSource).not.toContain("trpc.messaging.testSend.useMutation");
     expect(wizardSource).not.toContain("isMessagingPhoneInputValid(testTo)");
-    expect(wizardSource).not.toContain("maxLength={MESSAGING_PHONE_MAX_LENGTH}");
+    expect(wizardSource).not.toContain(
+      "maxLength={MESSAGING_PHONE_MAX_LENGTH}"
+    );
     expect(wizardSource).not.toContain("to: testTo.trim()");
     expect(wizardSource).not.toContain("Send test");
   });
@@ -84,7 +95,9 @@ describe("messaging settings UI", () => {
     expect(tabSource.indexOf("if (!data)")).toBeLessThan(
       tabSource.indexOf("const usage = data.usage")
     );
-    expect(tabSource).toContain("const locations = data.locations as MessagingSetupLocation[]");
+    expect(tabSource).toContain(
+      "const locations = data.locations as MessagingSetupLocation[]"
+    );
     expect(tabSource).not.toContain("data?.locations ?? []");
     expect(tabSource).not.toContain("const usage = data?.usage");
     expect(tabSource).not.toContain("const consent = data?.consent");
@@ -94,9 +107,7 @@ describe("messaging settings UI", () => {
     expect(wizardSource).toContain(
       "Existing-number texting is not available yet"
     );
-    expect(wizardSource).toContain(
-      "will not be ported, hosted, or changed"
-    );
+    expect(wizardSource).toContain("will not be ported, hosted, or changed");
     expect(wizardSource).toContain("chargeAcknowledged");
     expect(wizardSource).toContain(
       "I authorize the exact upfront and monthly provider charges"

@@ -36,13 +36,20 @@ const mocks = vi.hoisted(() => {
   const insertConflict = vi.fn(async (_config?: unknown) => undefined);
   const insertValues = vi.fn((_values: unknown) => ({
     onConflictDoNothing: insertConflict,
+    onConflictDoUpdate: insertConflict,
   }));
   const insert = vi.fn(() => ({ values: insertValues }));
 
   const deleteWhere = vi.fn(async (_condition: unknown) => undefined);
   const deleteFrom = vi.fn(() => ({ where: deleteWhere }));
 
-  const db = { select, update, insert, delete: deleteFrom };
+  const db = {
+    execute: vi.fn(async () => undefined),
+    select,
+    update,
+    insert,
+    delete: deleteFrom,
+  };
 
   return {
     db,
@@ -59,11 +66,8 @@ const mocks = vi.hoisted(() => {
       fn(db)
     ),
     withTenant: vi.fn(
-      async (
-        _db: unknown,
-        _practiceId: string,
-        fn: (tx: unknown) => unknown
-      ) => fn(db)
+      async (_db: unknown, _practiceId: string, fn: (tx: unknown) => unknown) =>
+        fn(db)
     ),
   };
 });
@@ -85,12 +89,10 @@ vi.mock("twilio", () => ({
 
 const { POST } = await import("./route");
 const { communications } = await import("@openpims/db");
-const { inboundSmsOptInEvidence, SMS_INBOUND_OPT_IN } = await import(
-  "@/lib/messaging/consent"
-);
-const { MESSAGING_WEBHOOK_BODY_MAX_BYTES } = await import(
-  "@/lib/messaging-webhook-limits"
-);
+const { inboundSmsOptInEvidence, SMS_INBOUND_OPT_IN } =
+  await import("@/lib/messaging/consent");
+const { MESSAGING_WEBHOOK_BODY_MAX_BYTES } =
+  await import("@/lib/messaging-webhook-limits");
 
 function twilioRequest(params: Record<string, string>, signature = "sig") {
   return new Request("https://openvpm.test/api/webhooks/twilio", {
@@ -305,8 +307,7 @@ describe("Twilio webhook", () => {
     );
     const inserted = mocks.insertValues.mock.calls.find(
       ([value]) =>
-        (value as { providerMessageId?: string }).providerMessageId ===
-        "SM123"
+        (value as { providerMessageId?: string }).providerMessageId === "SM123"
     )?.[0] as { assignedTo?: unknown };
     expect(inserted.assignedTo).toBeTruthy();
     expect(sqlIncludesColumnName(inserted.assignedTo, "assigned_to")).toBe(
@@ -359,9 +360,9 @@ describe("Twilio webhook", () => {
     });
     expect(mocks.withSystem).toHaveBeenCalledTimes(3);
     const profileCondition = mocks.selectWhere.mock.calls[1]?.[0];
-    expect(sqlIncludesColumnName(profileCondition, "messaging_profile_id")).toBe(
-      true
-    );
+    expect(
+      sqlIncludesColumnName(profileCondition, "messaging_profile_id")
+    ).toBe(true);
     expect(sqlIncludesValue(profileCondition, "MG123")).toBe(true);
     expect(mocks.insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -537,9 +538,9 @@ describe("Twilio webhook", () => {
       expect.any(Function)
     );
     const profileCondition = mocks.selectWhere.mock.calls[0]?.[0];
-    expect(sqlIncludesColumnName(profileCondition, "messaging_profile_id")).toBe(
-      true
-    );
+    expect(
+      sqlIncludesColumnName(profileCondition, "messaging_profile_id")
+    ).toBe(true);
     expect(sqlIncludesValue(profileCondition, "MG123")).toBe(true);
     expect(mocks.updateSet).toHaveBeenCalledWith({ status: "failed" });
     expect(mocks.insertValues).not.toHaveBeenCalled();

@@ -42,13 +42,20 @@ const mocks = vi.hoisted(() => {
   const insertConflict = vi.fn(async (_config?: unknown) => undefined);
   const insertValues = vi.fn((_values: unknown) => ({
     onConflictDoNothing: insertConflict,
+    onConflictDoUpdate: insertConflict,
   }));
   const insert = vi.fn(() => ({ values: insertValues }));
 
   const deleteWhere = vi.fn(async (_condition: unknown) => undefined);
   const deleteFrom = vi.fn(() => ({ where: deleteWhere }));
 
-  const db = { select, update, insert, delete: deleteFrom };
+  const db = {
+    execute: vi.fn(async () => undefined),
+    select,
+    update,
+    insert,
+    delete: deleteFrom,
+  };
 
   return {
     db,
@@ -68,11 +75,8 @@ const mocks = vi.hoisted(() => {
       fn(db)
     ),
     withTenant: vi.fn(
-      async (
-        _db: unknown,
-        _practiceId: string,
-        fn: (tx: unknown) => unknown
-      ) => fn(db)
+      async (_db: unknown, _practiceId: string, fn: (tx: unknown) => unknown) =>
+        fn(db)
     ),
   };
 });
@@ -92,12 +96,10 @@ vi.mock("@/lib/messaging/telnyx-signature", () => ({
 
 const { POST } = await import("./route");
 const { communications } = await import("@openpims/db");
-const { inboundSmsOptInEvidence, SMS_INBOUND_OPT_IN } = await import(
-  "@/lib/messaging/consent"
-);
-const { MESSAGING_WEBHOOK_BODY_MAX_BYTES } = await import(
-  "@/lib/messaging-webhook-limits"
-);
+const { inboundSmsOptInEvidence, SMS_INBOUND_OPT_IN } =
+  await import("@/lib/messaging/consent");
+const { MESSAGING_WEBHOOK_BODY_MAX_BYTES } =
+  await import("@/lib/messaging-webhook-limits");
 
 function sqlIncludesColumnParamPair(
   value: unknown,
@@ -595,9 +597,9 @@ describe("Telnyx webhook", () => {
     });
     expect(mocks.withSystem).toHaveBeenCalledTimes(3);
     const profileCondition = mocks.selectWhere.mock.calls[1]?.[0];
-    expect(sqlIncludesColumnName(profileCondition, "messaging_profile_id")).toBe(
-      true
-    );
+    expect(
+      sqlIncludesColumnName(profileCondition, "messaging_profile_id")
+    ).toBe(true);
     expect(sqlIncludesValue(profileCondition, "profile-1")).toBe(true);
     expect(mocks.insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -839,6 +841,57 @@ describe("Telnyx webhook", () => {
     });
   });
 
+  it("keeps consent off when START encounters a manual suppression", async () => {
+    process.env.TELNYX_PUBLIC_KEY = "test-public-key";
+    const clientId = "00000000-0000-0000-0000-000000000003";
+    mocks.selectResults.push(
+      [
+        {
+          practiceId: "00000000-0000-0000-0000-0000000000aa",
+          locationId: "00000000-0000-0000-0000-000000000002",
+        },
+      ],
+      [{ id: clientId }],
+      [{ id: "00000000-0000-0000-0000-000000000099" }]
+    );
+    const body = JSON.stringify({
+      data: {
+        event_type: "message.received",
+        payload: {
+          id: "msg-start-manual-block",
+          from: { phone_number: "+15555550199" },
+          to: [{ phone_number: "+15555550100" }],
+          text: "START",
+        },
+      },
+    });
+
+    const response = await POST(
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body,
+      })
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      action: "suppressed",
+    });
+    expect(mocks.deleteWhere).toHaveBeenCalled();
+    expect(mocks.updateSet).not.toHaveBeenCalled();
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clientId,
+        subject: "SMS opt-in blocked for +15555550199",
+        providerMessageId: "msg-start-manual-block",
+      })
+    );
+  });
+
   it("does not broadly restore client SMS consent on START when the sender phone is ambiguous", async () => {
     process.env.TELNYX_PUBLIC_KEY = "test-public-key";
     mocks.selectResults.push(
@@ -1058,7 +1111,7 @@ describe("Telnyx webhook", () => {
 
   it("requires active practices when resolving inbound sender locations", () => {
     const senderLookup = INBOUND_SOURCE.match(
-      /async function findMessagingLocationMatching[\s\S]+?return matches\.length === 1 \? matches\[0\] \?\? null : null;/
+      /async function findMessagingLocationMatching[\s\S]+?return matches\.length === 1 \? \(?matches\[0\] \?\? null\)? : null;/
     )?.[0];
 
     expect(senderLookup).toContain("innerJoin(");

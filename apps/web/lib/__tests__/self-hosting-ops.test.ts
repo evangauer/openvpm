@@ -89,6 +89,15 @@ describe("self-hosting operations docs", () => {
     expect(requiredHostedEnvBlock).toContain("EMAIL_SUPPORT_ADDRESS=");
     expect(requiredHostedEnvBlock).toContain("EMAIL_COMPANY_ADDRESS=...");
     expect(requiredHostedEnvBlock).toContain("STRIPE_TAX_ENABLED=true");
+    expect(requiredHostedEnvBlock).toContain(
+      "MESSAGING_SENDING_ENABLED=false"
+    );
+    expect(requiredHostedEnvBlock).toContain(
+      "MESSAGING_SENDING_PRACTICE_IDS="
+    );
+    expect(requiredHostedEnvBlock).toContain(
+      "MESSAGING_SENDING_LOCATION_IDS="
+    );
     expect(requiredHostedEnvBlock).not.toContain("TWILIO_");
     expect(requiredHostedEnvBlock).not.toContain("STRIPE_PRICE_CLOUD_USER");
 
@@ -100,6 +109,9 @@ describe("self-hosting operations docs", () => {
     expect(envExample).toContain("TELNYX_PUBLIC_KEY=");
     expect(envExample).toContain("TELNYX_MESSAGING_PROFILE_ID=");
     expect(envExample).toContain("TELNYX_FROM_NUMBER=");
+    expect(envExample).toContain("MESSAGING_SENDING_ENABLED=false");
+    expect(envExample).toContain("MESSAGING_SENDING_PRACTICE_IDS=");
+    expect(envExample).toContain("MESSAGING_SENDING_LOCATION_IDS=");
     expect(envExample).toContain("RESEND_WEBHOOK_SECRET=");
     expect(envExample).toContain("EMAIL_SUPPORT_ADDRESS=");
     expect(envExample).toContain("EMAIL_COMPANY_ADDRESS=");

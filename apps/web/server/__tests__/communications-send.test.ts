@@ -214,11 +214,13 @@ describe("communications.create delivery", () => {
       "sql`${emailSuppressions.email} = lower(trim(${clients.email}))`"
     );
     expect(createBlock).toContain("hasNonBlankMessagingSender()");
-    expect(createBlock).not.toContain("isNotNull(locationMessaging.senderE164)");
+    expect(createBlock).not.toContain(
+      "isNotNull(locationMessaging.senderE164)"
+    );
     expect(createBlock).not.toContain(
       "isNotNull(locationMessaging.messagingProfileId)"
     );
-    expect(createBlock).not.toContain(": [{ name: \"OpenVPM\"");
+    expect(createBlock).not.toContain(': [{ name: "OpenVPM"');
     expect(createBlock).not.toContain("practice?.name");
     expect(createBlock).not.toContain("practice?.email");
     expect(createBlock).not.toContain("practice?.timezone");
@@ -565,6 +567,7 @@ describe("communications.create delivery", () => {
       body: "Your refill is ready.",
       practiceId: PRACTICE_ID,
       locationId: LOCATION_ID,
+      clientId: CLIENT_ID,
     });
     expect(updateSet).toHaveBeenCalledWith({
       status: "sent",

@@ -1,14 +1,5 @@
 import { z } from "zod";
-import {
-  eq,
-  and,
-  isNull,
-  gte,
-  lte,
-  lt,
-  inArray,
-  sql,
-} from "drizzle-orm";
+import { eq, and, isNull, gte, lte, lt, inArray, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import type { Database } from "@openpims/db/client";
@@ -24,6 +15,7 @@ import {
   practices,
   locationMessaging,
   locations,
+  rooms,
   emailSuppressions,
 } from "@openpims/db";
 import {
@@ -35,10 +27,7 @@ import {
   sendAppointmentReminderSms,
   sendVaccinationReminderSms,
 } from "@/lib/sms";
-import {
-  isQuietHours,
-  pickReminderChannel,
-} from "@/lib/messaging/reminders";
+import { isQuietHours, pickReminderChannel } from "@/lib/messaging/reminders";
 import { formatCurrency } from "@/lib/locale/format";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
 import { formatClinicalDate } from "@/lib/records/clinical-dates";
@@ -211,11 +200,14 @@ async function practiceDateInput(ctx: {
   return formatDateInputForTimeZone(new Date(), practice.timezone);
 }
 
-async function activeReminderSmsSender(ctx: {
-  db: NotificationsDb;
-  practiceId: string;
-}): Promise<{ locationId: string } | null> {
-  const [smsSender] = await ctx.db
+async function activeReminderSmsSender(
+  ctx: {
+    db: NotificationsDb;
+    practiceId: string;
+  },
+  locationId?: string
+): Promise<{ locationId: string } | null> {
+  const smsSenders = await ctx.db
     .select({ locationId: locationMessaging.locationId })
     .from(locationMessaging)
     .innerJoin(
@@ -237,11 +229,12 @@ async function activeReminderSmsSender(ctx: {
         isNull(locations.deletedAt),
         eq(locationMessaging.enabled, true),
         eq(locationMessaging.registrationStatus, "active"),
+        ...(locationId ? [eq(locationMessaging.locationId, locationId)] : []),
         hasNonBlankMessagingSender()
       )
     )
-    .limit(1);
-  return smsSender ?? null;
+    .limit(2);
+  return smsSenders.length === 1 ? smsSenders[0]! : null;
 }
 
 export const notificationsRouter = createRouter({
@@ -267,6 +260,7 @@ export const notificationsRouter = createRouter({
           practiceName: practices.name,
           practicePhone: practices.phone,
           practiceTimezone: practices.timezone,
+          locationId: rooms.locationId,
         })
         .from(appointments)
         .leftJoin(
@@ -304,6 +298,14 @@ export const notificationsRouter = createRouter({
             isNull(practices.deletedAt)
           )
         )
+        .leftJoin(
+          rooms,
+          and(
+            eq(appointments.roomId, rooms.id),
+            eq(rooms.practiceId, ctx.practiceId),
+            isNull(rooms.deletedAt)
+          )
+        )
         .where(
           and(
             eq(appointments.id, input.appointmentId),
@@ -319,7 +321,10 @@ export const notificationsRouter = createRouter({
         .limit(1);
 
       if (!appt) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Appointment not found" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Appointment not found",
+        });
       }
       if (appt.status !== "confirmed") {
         throw new TRPCError({
@@ -407,21 +412,31 @@ export const notificationsRouter = createRouter({
       }
 
       if (channel === "sms") {
-        const smsSender = await activeReminderSmsSender(ctx);
+        const smsSender = appt.locationId
+          ? await activeReminderSmsSender(ctx, appt.locationId)
+          : null;
         const result = smsSender
           ? await sendAppointmentReminderSms({
               to: appt.clientPhone!,
               patientName: appt.patientName ?? "Unknown",
-              appointmentDate: formatDate(appt.startTime, appt.practiceTimezone),
-              appointmentTime: formatTime(appt.startTime, appt.practiceTimezone),
+              appointmentDate: formatDate(
+                appt.startTime,
+                appt.practiceTimezone
+              ),
+              appointmentTime: formatTime(
+                appt.startTime,
+                appt.practiceTimezone
+              ),
               practiceName: practiceDisplayName(appt.practiceName),
               practicePhone: appt.practicePhone ?? undefined,
               practiceId: ctx.practiceId,
               locationId: smsSender.locationId,
+              clientId: appt.clientId!,
             })
           : {
               success: false,
-              error: "Set up an active texting number before sending SMS reminders",
+              error:
+                "Set up an active texting number before sending SMS reminders",
             };
         if (result.success) {
           await logReminder("sms", result.sid);
@@ -493,7 +508,10 @@ export const notificationsRouter = createRouter({
         .limit(1);
 
       if (!invoice) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Invoice not found" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Invoice not found",
+        });
       }
       if (invoice.isEstimate) {
         throw new TRPCError({
@@ -501,13 +519,11 @@ export const notificationsRouter = createRouter({
           message: "Convert the estimate before emailing an invoice.",
         });
       }
-      if (
-        invoice.status !== "sent" &&
-        invoice.status !== "overdue"
-      ) {
+      if (invoice.status !== "sent" && invoice.status !== "overdue") {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: "Only sent or overdue invoices can be emailed. Use the receipt for paid invoices.",
+          message:
+            "Only sent or overdue invoices can be emailed. Use the receipt for paid invoices.",
         });
       }
       await assertVisitInvoiceReadyForFinancialAction(
@@ -516,7 +532,10 @@ export const notificationsRouter = createRouter({
       );
       const clientEmail = normalizeEmailSuppressionAddress(invoice.clientEmail);
       if (!clientEmail) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "Client does not have an email address on file" });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Client does not have an email address on file",
+        });
       }
       if (invoice.emailSuppressionReason) {
         throw new TRPCError({
@@ -565,7 +584,11 @@ export const notificationsRouter = createRouter({
         clientName: `${invoice.clientFirstName} ${invoice.clientLastName}`,
         invoiceTotal: totalFormatted,
         dueDate: invoice.dueDate
-          ? formatClinicalDate(invoice.dueDate, practice.timezone, invoice.dueDate)
+          ? formatClinicalDate(
+              invoice.dueDate,
+              practice.timezone,
+              invoice.dueDate
+            )
           : undefined,
         practiceName: practice.name,
         practicePhone: practice.phone ?? undefined,
@@ -687,6 +710,7 @@ export const notificationsRouter = createRouter({
           practiceName: practices.name,
           practicePhone: practices.phone,
           practiceTimezone: practices.timezone,
+          locationId: rooms.locationId,
         })
         .from(appointments)
         .leftJoin(
@@ -724,6 +748,14 @@ export const notificationsRouter = createRouter({
             isNull(practices.deletedAt)
           )
         )
+        .leftJoin(
+          rooms,
+          and(
+            eq(appointments.roomId, rooms.id),
+            eq(rooms.practiceId, ctx.practiceId),
+            isNull(rooms.deletedAt)
+          )
+        )
         .where(
           and(
             inArray(appointments.id, appointmentIds),
@@ -740,10 +772,18 @@ export const notificationsRouter = createRouter({
 
       let sent = 0;
       let failed = appointmentIds.length - appts.length;
-      let smsSenderPromise: Promise<{ locationId: string } | null> | null = null;
-      const getSmsSender = () => {
-        smsSenderPromise ??= activeReminderSmsSender(ctx);
-        return smsSenderPromise;
+      const smsSenderPromises = new Map<
+        string,
+        Promise<{ locationId: string } | null>
+      >();
+      const getSmsSender = (locationId: string | null) => {
+        if (!locationId) return Promise.resolve(null);
+        let promise = smsSenderPromises.get(locationId);
+        if (!promise) {
+          promise = activeReminderSmsSender(ctx, locationId);
+          smsSenderPromises.set(locationId, promise);
+        }
+        return promise;
       };
 
       for (const appt of appts) {
@@ -772,7 +812,9 @@ export const notificationsRouter = createRouter({
           });
 
         const sendEmail = async (): Promise<boolean> => {
-          const clientEmail = normalizeEmailSuppressionAddress(appt.clientEmail);
+          const clientEmail = normalizeEmailSuppressionAddress(
+            appt.clientEmail
+          );
           if (!clientEmail) return false;
           if (appt.emailSuppressionReason) return false;
           try {
@@ -802,7 +844,7 @@ export const notificationsRouter = createRouter({
         });
 
         if (channel === "sms") {
-          const smsSender = await getSmsSender();
+          const smsSender = await getSmsSender(appt.locationId);
           let result: { success: boolean; sid?: string; error?: string };
           if (smsSender) {
             try {
@@ -815,6 +857,7 @@ export const notificationsRouter = createRouter({
                 practicePhone: appt.practicePhone ?? undefined,
                 practiceId: ctx.practiceId,
                 locationId: smsSender.locationId,
+                clientId: appt.clientId!,
               });
             } catch (error) {
               result = {
@@ -860,7 +903,7 @@ export const notificationsRouter = createRouter({
       }
 
       return { sent, failed };
-  }),
+    }),
 
   getOverdueVaccinations: protectedProcedure.query(async ({ ctx }) => {
     await assertActivePractice(ctx);
@@ -912,20 +955,26 @@ export const notificationsRouter = createRouter({
       )
       .orderBy(patients.name);
 
-    const grouped = new Map<string, {
-      patientId: string;
-      patientName: string;
-      clientId: string;
-      clientFirstName: string;
-      clientLastName: string;
-      clientEmail: string | null;
-      overdueVaccines: { vaccineName: string; nextDueDate: string | null }[];
-    }>();
+    const grouped = new Map<
+      string,
+      {
+        patientId: string;
+        patientName: string;
+        clientId: string;
+        clientFirstName: string;
+        clientLastName: string;
+        clientEmail: string | null;
+        overdueVaccines: { vaccineName: string; nextDueDate: string | null }[];
+      }
+    >();
 
     for (const row of rows) {
       const existing = grouped.get(row.patientId);
       if (existing) {
-        existing.overdueVaccines.push({ vaccineName: row.vaccineName, nextDueDate: row.nextDueDate });
+        existing.overdueVaccines.push({
+          vaccineName: row.vaccineName,
+          nextDueDate: row.nextDueDate,
+        });
       } else {
         grouped.set(row.patientId, {
           patientId: row.patientId,
@@ -934,7 +983,9 @@ export const notificationsRouter = createRouter({
           clientFirstName: row.clientFirstName,
           clientLastName: row.clientLastName,
           clientEmail: row.clientEmail,
-          overdueVaccines: [{ vaccineName: row.vaccineName, nextDueDate: row.nextDueDate }],
+          overdueVaccines: [
+            { vaccineName: row.vaccineName, nextDueDate: row.nextDueDate },
+          ],
         });
       }
     }

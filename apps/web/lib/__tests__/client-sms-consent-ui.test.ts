@@ -29,4 +29,17 @@ describe("client SMS consent forms", () => {
     expect(EDIT_CLIENT_SOURCE).toContain("phoneNumbersMatchForConsent");
     expect(EDIT_CLIENT_SOURCE).toContain("setSmsConsentTouched(false)");
   });
+
+  it("cannot revoke a different unsaved phone than the persisted destination", () => {
+    expect(EDIT_CLIENT_SOURCE).toContain(
+      "const persistedSmsPhone = normalizeE164(client?.phone)"
+    );
+    expect(EDIT_CLIENT_SOURCE).toContain(
+      "!persistedSmsPhone || phoneChanged || revokeSms.isPending"
+    );
+    expect(EDIT_CLIENT_SOURCE).toContain("expectedPhone: persistedSmsPhone!");
+    expect(EDIT_CLIENT_SOURCE).toContain(
+      "Save or discard the unsaved phone change"
+    );
+  });
 });

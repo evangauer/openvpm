@@ -9,6 +9,7 @@ import {
   invoices,
   patients,
   practices,
+  smsSuppressions,
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import { generatePortalAccessToken } from "@/lib/portal/tokens";
@@ -29,6 +30,10 @@ import {
   phoneNumbersMatchForConsent,
   SMS_CONSENT_DISCLOSURE,
 } from "@/lib/messaging/consent";
+import {
+  acquireSmsRecipientLockInTransaction,
+  revokeSmsConsentAfterRecipientLockInTransaction,
+} from "@/lib/messaging/suppression";
 
 const clientNameInput = z.string().trim().min(1).max(CLIENT_NAME_MAX_LENGTH);
 const clientEmailInput = z
@@ -56,6 +61,21 @@ const optionalClientString = (maxLength: number) =>
     .transform((value) => value || undefined);
 const clientAddressInput = optionalClientString(CLIENT_ADDRESS_MAX_LENGTH);
 const clientNotesInput = optionalClientString(2000);
+const normalizedClientPhoneInput = z
+  .string()
+  .trim()
+  .max(CLIENT_PHONE_MAX_LENGTH)
+  .transform((value, ctx) => {
+    const normalized = normalizeE164(value);
+    if (!normalized) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "A valid SMS phone number is required",
+      });
+      return z.NEVER;
+    }
+    return normalized;
+  });
 const activeSchedulingStatuses = [
   "scheduled",
   "confirmed",
@@ -104,9 +124,9 @@ function canReadPortalAccessTokenRole(role?: string | null): boolean {
   );
 }
 
-function redactClientPortalAccessToken<T extends { accessToken: string | null }>(
-  client: T
-): Omit<T, "accessToken"> & { accessToken: null } {
+function redactClientPortalAccessToken<
+  T extends { accessToken: string | null },
+>(client: T): Omit<T, "accessToken"> & { accessToken: null } {
   return { ...client, accessToken: null };
 }
 
@@ -275,6 +295,27 @@ export const clientsRouter = createRouter({
       }
 
       await assertActivePractice(ctx);
+      const normalizedPhone = normalizeE164(rest.phone);
+      if (smsConsent && normalizedPhone) {
+        const [manualSuppression] = await ctx.db
+          .select({ id: smsSuppressions.id })
+          .from(smsSuppressions)
+          .where(
+            and(
+              eq(smsSuppressions.practiceId, ctx.practiceId),
+              eq(smsSuppressions.phone, normalizedPhone),
+              eq(smsSuppressions.reason, "manual")
+            )
+          )
+          .limit(1);
+        if (manualSuppression) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "This number was manually placed on the do-not-text list. A staff member must review it before any future opt-in.",
+          });
+        }
+      }
       const consent = smsConsent
         ? {
             smsConsent: true,
@@ -327,6 +368,39 @@ export const clientsRouter = createRouter({
         );
         const { id, smsConsent, phone, ...rest } = input;
         const data: Record<string, unknown> = { ...rest };
+        let withdrawalPhoneSnapshot: string | null | undefined;
+
+        if (smsConsent === false) {
+          // Read without a row lock only to derive the recipient advisory key.
+          // Hosted sends use advisory -> row, so every revocation must follow
+          // that same order. The locked row is rechecked below before writes.
+          const [prelockClient] = await tx
+            .select({ phone: clients.phone })
+            .from(clients)
+            .where(
+              and(
+                eq(clients.id, id),
+                eq(clients.practiceId, ctx.practiceId),
+                activePracticePredicate(ctx.practiceId),
+                isNull(clients.deletedAt)
+              )
+            )
+            .limit(1);
+          if (!prelockClient) {
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: "Client not found",
+            });
+          }
+          withdrawalPhoneSnapshot = normalizeE164(prelockClient.phone);
+          if (withdrawalPhoneSnapshot) {
+            await acquireSmsRecipientLockInTransaction(
+              tx,
+              ctx.practiceId,
+              withdrawalPhoneSnapshot
+            );
+          }
+        }
 
         if (phoneWasProvided) {
           // Drizzle ignores undefined values. Use null so an explicitly cleared
@@ -354,7 +428,21 @@ export const clientsRouter = createRouter({
             .for("update");
 
           if (!existingClient) {
-            throw new TRPCError({ code: "NOT_FOUND", message: "Client not found" });
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: "Client not found",
+            });
+          }
+
+          if (
+            smsConsent === false &&
+            normalizeE164(existingClient.phone) !== withdrawalPhoneSnapshot
+          ) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "Client phone changed while withdrawing SMS consent. Refresh and try again.",
+            });
           }
 
           const nextPhone = phoneWasProvided ? phone : existingClient.phone;
@@ -364,10 +452,31 @@ export const clientsRouter = createRouter({
           );
 
           if (smsConsent === true) {
-            if (!normalizeE164(nextPhone)) {
+            const normalizedNextPhone = normalizeE164(nextPhone);
+            if (!normalizedNextPhone) {
               throw new TRPCError({
                 code: "BAD_REQUEST",
-                message: "A valid mobile phone number is required for SMS consent",
+                message:
+                  "A valid mobile phone number is required for SMS consent",
+              });
+            }
+
+            const [manualSuppression] = await tx
+              .select({ id: smsSuppressions.id })
+              .from(smsSuppressions)
+              .where(
+                and(
+                  eq(smsSuppressions.practiceId, ctx.practiceId),
+                  eq(smsSuppressions.phone, normalizedNextPhone),
+                  eq(smsSuppressions.reason, "manual")
+                )
+              )
+              .limit(1);
+            if (manualSuppression) {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message:
+                  "This number was manually placed on the do-not-text list. A staff member must review it before any future opt-in.",
               });
             }
 
@@ -378,6 +487,16 @@ export const clientsRouter = createRouter({
             data.smsConsentSource = SMS_CONSENT_DISCLOSURE.source;
             data.smsConsentDisclosure = SMS_CONSENT_DISCLOSURE.snapshot;
           } else if (phoneChanged || smsConsent === false) {
+            if (smsConsent === false) {
+              if (withdrawalPhoneSnapshot) {
+                await revokeSmsConsentAfterRecipientLockInTransaction(tx, {
+                  practiceId: ctx.practiceId,
+                  phone: withdrawalPhoneSnapshot,
+                  reason: "manual",
+                  detail: `Staff revoked SMS consent from client ${id}.`,
+                });
+              }
+            }
             // Consent belongs to one destination. Changing that destination (or
             // explicitly withdrawing consent) invalidates all prior evidence.
             data.smsConsent = false;
@@ -400,9 +519,105 @@ export const clientsRouter = createRouter({
           )
           .returning();
         if (!client) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Client not found" });
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Client not found",
+          });
         }
         return client;
+      });
+    }),
+
+  /** Practice-wide do-not-text action for every active client sharing a phone. */
+  revokeSms: clientManagerProcedure
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        expectedPhone: normalizedClientPhoneInput,
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      return ctx.db.transaction(async (tx) => {
+        const [prelockClient] = await tx
+          .select({ phone: clients.phone })
+          .from(clients)
+          .where(
+            and(
+              eq(clients.id, input.id),
+              eq(clients.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(clients.deletedAt)
+            )
+          )
+          .limit(1);
+        if (!prelockClient) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Client not found",
+          });
+        }
+        const prelockPhone = normalizeE164(prelockClient.phone);
+        if (!prelockPhone) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Client does not have a valid SMS phone number on file",
+          });
+        }
+        if (prelockPhone !== input.expectedPhone) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "The saved client phone no longer matches this page. Refresh before revoking SMS.",
+          });
+        }
+
+        try {
+          await acquireSmsRecipientLockInTransaction(
+            tx,
+            ctx.practiceId,
+            prelockPhone
+          );
+          const [lockedClient] = await tx
+            .select({ phone: clients.phone })
+            .from(clients)
+            .where(
+              and(
+                eq(clients.id, input.id),
+                eq(clients.practiceId, ctx.practiceId),
+                activePracticePredicate(ctx.practiceId),
+                isNull(clients.deletedAt)
+              )
+            )
+            .limit(1)
+            .for("update");
+          if (!lockedClient) {
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: "Client not found",
+            });
+          }
+          if (normalizeE164(lockedClient.phone) !== prelockPhone) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "Client phone changed while revoking SMS. Refresh and try again.",
+            });
+          }
+          return await revokeSmsConsentAfterRecipientLockInTransaction(tx, {
+            practiceId: ctx.practiceId,
+            phone: prelockPhone,
+            reason: "manual",
+            detail: `Staff revoked SMS consent from client ${input.id}.`,
+          });
+        } catch (error) {
+          if (error instanceof TRPCError) throw error;
+          console.error("Manual SMS revocation failed", error);
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message:
+              "SMS consent could not be revoked safely. No message was sent.",
+          });
+        }
       });
     }),
 
@@ -451,7 +666,10 @@ export const clientsRouter = createRouter({
           .limit(1);
 
         if (!existingClient) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Client not found" });
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Client not found",
+          });
         }
 
         const [activePatient] = await tx
@@ -553,7 +771,10 @@ export const clientsRouter = createRouter({
           )
           .returning({ id: clients.id });
         if (!client) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Client not found" });
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Client not found",
+          });
         }
       });
       return { success: true };

@@ -16,7 +16,15 @@ import type {
 
 export * from "./types";
 export { normalizeE164 } from "./phone";
-export { isSuppressed, addSuppression, removeSuppression } from "./suppression";
+export {
+  isSuppressed,
+  addSuppression,
+  removeSuppression,
+  acquireSmsRecipientLockInTransaction,
+  revokeSmsConsentAfterRecipientLockInTransaction,
+  revokeSmsConsentByPhone,
+  revokeSmsConsentByPhoneInTransaction,
+} from "./suppression";
 
 /**
  * Resolve the active messaging provider. Explicit override via MESSAGING_PROVIDER
@@ -77,15 +85,18 @@ function providerByName(name: string): MessagingProvider | undefined {
 export async function resolveMessagingTransport(opts: {
   practiceId?: string;
   locationId?: string;
+  /** Hosted pilot resolution is Telnyx-only and unambiguous per practice. */
+  hosted?: boolean;
 }): Promise<ResolvedMessagingTransport | undefined> {
   if (opts.locationId) {
     // A location UUID is not an authorization boundary. Never resolve an
     // explicit clinic sender unless its owning practice is supplied too.
     if (!opts.practiceId) return undefined;
     try {
-      const [row] = await withSystem(db, (tx) =>
+      const rows = await withSystem(db, (tx) =>
         tx
           .select({
+            locationId: locationMessaging.locationId,
             provider: locationMessaging.provider,
             messagingProfileId: locationMessaging.messagingProfileId,
             senderE164: locationMessaging.senderE164,
@@ -100,20 +111,39 @@ export async function resolveMessagingTransport(opts: {
             )
           )
           .where(
-            and(
-              eq(locationMessaging.locationId, opts.locationId!),
-              eq(locationMessaging.practiceId, opts.practiceId!),
-              isNull(locationMessaging.deletedAt),
-              eq(locations.practiceId, opts.practiceId!),
-              isNull(locations.deletedAt),
-              eq(locationMessaging.enabled, true),
-              eq(locationMessaging.registrationStatus, "active"),
-              hasNonBlankMessagingSender()
-            )
+            opts.hosted
+              ? and(
+                  eq(locationMessaging.practiceId, opts.practiceId!),
+                  isNull(locationMessaging.deletedAt),
+                  eq(locations.practiceId, opts.practiceId!),
+                  isNull(locations.deletedAt),
+                  eq(locationMessaging.enabled, true),
+                  eq(locationMessaging.registrationStatus, "active"),
+                  hasNonBlankMessagingSender()
+                )
+              : and(
+                  eq(locationMessaging.locationId, opts.locationId!),
+                  eq(locationMessaging.practiceId, opts.practiceId!),
+                  isNull(locationMessaging.deletedAt),
+                  eq(locations.practiceId, opts.practiceId!),
+                  isNull(locations.deletedAt),
+                  eq(locationMessaging.enabled, true),
+                  eq(locationMessaging.registrationStatus, "active"),
+                  hasNonBlankMessagingSender()
+                )
           )
-          .limit(1)
+          .limit(opts.hosted ? 2 : 1)
       );
+      // Hosted rollout is deliberately one location per practice. More than
+      // one active/enabled sender is ambiguous and must never become “first row
+      // wins”; the selected row must also be the explicitly requested location.
+      const row = opts.hosted
+        ? rows.length === 1 && rows[0]?.provider === "telnyx"
+          ? rows[0]
+          : undefined
+        : rows[0];
       if (row) {
+        if (opts.hosted && row.locationId !== opts.locationId) return undefined;
         const messagingServiceId = nonBlank(row.messagingProfileId);
         const from = nonBlank(row.senderE164);
         if (!messagingServiceId && !from) return undefined;
@@ -148,6 +178,7 @@ export async function resolveMessagingTransport(opts: {
 export async function resolveSender(opts: {
   practiceId?: string;
   locationId?: string;
+  hosted?: boolean;
 }): Promise<MessagingSender> {
   return (await resolveMessagingTransport(opts))?.sender ?? {};
 }

@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => {
     db,
     senderRows,
     selectInnerJoin,
+    selectWhere,
+    selectLimit,
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
       fn(tx)
     ),
@@ -36,6 +38,35 @@ import {
   resolveMessagingTransport,
   resolveSender,
 } from "../index";
+
+function sqlIncludesColumnParamPair(
+  value: unknown,
+  columnName: string,
+  paramValue: unknown
+): boolean {
+  if (!value || typeof value !== "object") return false;
+  const chunk = value as { name?: unknown; queryChunks?: unknown[] };
+  if (!Array.isArray(chunk.queryChunks)) return false;
+  const hasColumn = chunk.queryChunks.some(
+    (item) =>
+      !!item &&
+      typeof item === "object" &&
+      (item as { name?: unknown }).name === columnName
+  );
+  const hasParam = chunk.queryChunks.some(
+    (item) =>
+      !!item &&
+      typeof item === "object" &&
+      Object.prototype.hasOwnProperty.call(item, "value") &&
+      Object.is((item as { value?: unknown }).value, paramValue)
+  );
+  return (
+    (hasColumn && hasParam) ||
+    chunk.queryChunks.some((item) =>
+      sqlIncludesColumnParamPair(item, columnName, paramValue)
+    )
+  );
+}
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -329,7 +360,9 @@ describe("resolveMessagingTransport", () => {
     vi.stubEnv("TWILIO_MESSAGING_SERVICE_SID", "MG-env");
     vi.stubEnv("TWILIO_PHONE_NUMBER", "+15555550111");
 
-    await expect(resolveMessagingTransport({ practiceId: "p1" })).resolves.toEqual({
+    await expect(
+      resolveMessagingTransport({ practiceId: "p1" })
+    ).resolves.toEqual({
       provider: expect.objectContaining({ name: "twilio" }),
       sender: {
         messagingServiceId: "MG-env",
@@ -337,5 +370,100 @@ describe("resolveMessagingTransport", () => {
       },
     });
     expect(mocks.selectInnerJoin).not.toHaveBeenCalled();
+  });
+
+  it("resolves exactly one Telnyx sender for a hosted one-location pilot", async () => {
+    clearMessagingEnv();
+    vi.stubEnv("TELNYX_API_KEY", "KEY123");
+    mocks.senderRows.push([
+      {
+        locationId: "00000000-0000-0000-0000-000000000002",
+        provider: "telnyx",
+        messagingProfileId: "profile-1",
+        senderE164: "+15555550122",
+      },
+    ]);
+
+    await expect(
+      resolveMessagingTransport({
+        practiceId: "00000000-0000-0000-0000-0000000000aa",
+        locationId: "00000000-0000-0000-0000-000000000002",
+        hosted: true,
+      })
+    ).resolves.toEqual({
+      provider: expect.objectContaining({ name: "telnyx" }),
+      sender: {
+        messagingServiceId: "profile-1",
+        from: "+15555550122",
+      },
+    });
+    const condition = (mocks.selectWhere.mock.calls as unknown[][]).at(-1)?.[0];
+    expect(sqlIncludesColumnParamPair(condition, "enabled", true)).toBe(true);
+    expect(
+      sqlIncludesColumnParamPair(condition, "registration_status", "active")
+    ).toBe(true);
+    expect(mocks.selectLimit).toHaveBeenLastCalledWith(2);
+  });
+
+  it("fails closed for ambiguous hosted senders instead of selecting the first", async () => {
+    clearMessagingEnv();
+    vi.stubEnv("TELNYX_API_KEY", "KEY123");
+    mocks.senderRows.push([
+      {
+        locationId: "00000000-0000-0000-0000-000000000002",
+        provider: "telnyx",
+        messagingProfileId: "profile-1",
+        senderE164: "+15555550122",
+      },
+      {
+        locationId: "00000000-0000-0000-0000-000000000003",
+        provider: "telnyx",
+        messagingProfileId: "profile-2",
+        senderE164: "+15555550123",
+      },
+    ]);
+
+    await expect(
+      resolveMessagingTransport({
+        practiceId: "00000000-0000-0000-0000-0000000000aa",
+        locationId: "00000000-0000-0000-0000-000000000002",
+        hosted: true,
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  it("fails closed for a missing requested hosted location or Twilio row", async () => {
+    clearMessagingEnv();
+    mocks.senderRows.push([
+      {
+        locationId: "00000000-0000-0000-0000-000000000099",
+        provider: "telnyx",
+        messagingProfileId: "profile-1",
+        senderE164: "+15555550122",
+      },
+    ]);
+    await expect(
+      resolveMessagingTransport({
+        practiceId: "00000000-0000-0000-0000-0000000000aa",
+        locationId: "00000000-0000-0000-0000-000000000002",
+        hosted: true,
+      })
+    ).resolves.toBeUndefined();
+
+    mocks.senderRows.push([
+      {
+        locationId: "00000000-0000-0000-0000-000000000002",
+        provider: "twilio",
+        messagingProfileId: "MG-1",
+        senderE164: "+15555550122",
+      },
+    ]);
+    await expect(
+      resolveMessagingTransport({
+        practiceId: "00000000-0000-0000-0000-0000000000aa",
+        locationId: "00000000-0000-0000-0000-000000000002",
+        hosted: true,
+      })
+    ).resolves.toBeUndefined();
   });
 });

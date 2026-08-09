@@ -49,6 +49,7 @@ export function SetUpTextingStep({
             registrationStatus: l.messaging.registrationStatus ?? "not_started",
             registrationDetail: l.messaging.registrationDetail,
             enabled: l.messaging.enabled ?? false,
+            launchEligible: l.messaging.launchEligible,
           }
         : null,
     };
@@ -61,7 +62,9 @@ export function SetUpTextingStep({
   const isFailed = messaging?.registrationStatus === "failed";
   const isConfigured = hasSender && !isFailed;
   const isActive =
-    messaging?.registrationStatus === "active" && !!messaging?.enabled;
+    messaging?.registrationStatus === "active" &&
+    !!messaging?.enabled &&
+    messaging.launchEligible !== false;
   const statusDetail = (() => {
     if (!messaging) return null;
     if (isFailed) {
@@ -76,6 +79,13 @@ export function SetUpTextingStep({
     if (messaging.registrationStatus === "active" && !messaging.enabled) {
       return "Carrier registration is approved. An admin still needs to enable sending in Messaging settings.";
     }
+    if (
+      messaging.registrationStatus === "active" &&
+      messaging.enabled &&
+      messaging.launchEligible === false
+    ) {
+      return "Carrier registration is approved, but outbound texting remains off until OpenVPM approves this clinic location for the controlled pilot.";
+    }
     if (isActive) return "Texting is active.";
     if (messaging.registrationStatus === "action_required") {
       return "Carrier registration needs more clinic information. Review the request in Messaging settings.";
@@ -89,10 +99,10 @@ export function SetUpTextingStep({
   return (
     <div className="space-y-5">
       <p className="text-sm leading-6 text-slate-600">
-        Text your clients about appointments, reminders, and results, and let them
-        text you back. OpenVPM can set up a new local texting number; your existing
-        clinic voice line stays unchanged. This is optional, so skip it and set it
-        up later if you like.
+        Text your clients about appointments, reminders, and results, and let
+        them text you back. OpenVPM can set up a new local texting number; your
+        existing clinic voice line stays unchanged. This is optional, so skip it
+        and set it up later if you like.
       </p>
 
       <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-4">
@@ -120,9 +130,7 @@ export function SetUpTextingStep({
                 <p className="text-sm font-medium text-slate-900">
                   {messaging.senderE164 ?? "Texting setup needs attention"}
                 </p>
-                <p className="text-xs text-slate-500">
-                  {statusDetail}
-                </p>
+                <p className="text-xs text-slate-500">{statusDetail}</p>
               </div>
             ) : (
               <div className="space-y-1">
@@ -144,14 +152,14 @@ export function SetUpTextingStep({
                 </Link>
               </Button>
             ) : (
-            <Button
-              type="button"
-              variant="default"
-              size="sm"
-              onClick={() => setWizardOpen(true)}
-            >
-              Set up texting
-            </Button>
+              <Button
+                type="button"
+                variant="default"
+                size="sm"
+                onClick={() => setWizardOpen(true)}
+              >
+                Set up texting
+              </Button>
             )
           ) : null}
         </div>

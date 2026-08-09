@@ -88,6 +88,9 @@ TELNYX_PUBLIC_KEY=...
 MESSAGING_REGISTRATION_ENCRYPTION_KEY=... # openssl rand -base64 32
 MESSAGING_PROVISIONING_ENABLED=false
 MESSAGING_PROVISIONING_PRACTICE_IDS= # comma-separated approved pilot practice UUIDs
+MESSAGING_SENDING_ENABLED=false
+MESSAGING_SENDING_PRACTICE_IDS= # comma-separated approved pilot practice UUIDs
+MESSAGING_SENDING_LOCATION_IDS= # comma-separated approved pilot location UUIDs
 AI_MODEL=claude-sonnet-4-6
 ANTHROPIC_API_KEY=...
 OPS_ALERT_WEBHOOK_URL=...
@@ -114,8 +117,21 @@ number orders additionally require the clinic's practice UUID in
 `MESSAGING_PROVISIONING_PRACTICE_IDS`, so a controlled pilot does not expose
 purchases to every clinic admin. New OpenVPM-created messaging profiles enforce
 a `$10.00` daily Telnyx spend limit and smart encoding; review that cap before
-expanding beyond a design-partner pilot. For a
-Twilio fallback deployment, set `MESSAGING_PROVIDER=twilio` and provide
+expanding beyond a design-partner pilot.
+
+Outbound sending has a separate, default-off launch interlock. Keep
+`MESSAGING_SENDING_ENABLED=false` and both sending allowlists empty until one
+Telnyx location has carrier-active registration, its database sender is enabled,
+and the clinic has passed pilot review. A hosted send requires the practice UUID
+in `MESSAGING_SENDING_PRACTICE_IDS` and the exact location UUID in
+`MESSAGING_SENDING_LOCATION_IDS`; the hosted pilot permits only one enabled
+location per practice. Missing, ambiguous, Twilio, inactive, or partially
+configured state makes no provider call. These three variables are hosted-only
+and do not gate intentional self-host messaging configuration. Arbitrary hosted
+test destinations remain disabled; validate through a current, consented client
+workflow after approval.
+
+For a Twilio fallback deployment, set `MESSAGING_PROVIDER=twilio` and provide
 `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_PHONE_NUMBER` instead of
 the Telnyx send envs.
 

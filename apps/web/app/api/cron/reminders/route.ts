@@ -1,12 +1,5 @@
 import { NextResponse } from "next/server";
-import {
-  eq,
-  and,
-  isNull,
-  gte,
-  lte,
-  sql,
-} from "drizzle-orm";
+import { eq, and, isNull, gte, lte, sql } from "drizzle-orm";
 import { db } from "@openpims/db/client";
 import {
   appointments,
@@ -293,10 +286,10 @@ export async function GET(request: Request) {
             isNull(clients.deletedAt),
             gte(appointments.startTime, now),
             lte(appointments.startTime, in24h),
-            eq(appointments.status, "confirmed"),
-          ),
+            eq(appointments.status, "confirmed")
+          )
         )
-        .orderBy(appointments.startTime),
+        .orderBy(appointments.startTime)
     );
 
     let sent = 0;
@@ -317,8 +310,8 @@ export async function GET(request: Request) {
         return senderLocationCache.get(cacheKey) ?? null;
       }
 
-      const findSender = async (locationId?: string): Promise<string | null> => {
-        const [sender] = await withSystem(db, (tx) =>
+      const findSender = async (locationId: string): Promise<string | null> => {
+        const senders = await withSystem(db, (tx) =>
           tx
             .select({ locationId: locationMessaging.locationId })
             .from(locationMessaging)
@@ -331,35 +324,28 @@ export async function GET(request: Request) {
               )
             )
             .where(
-              locationId
-                ? and(
-                    eq(locationMessaging.locationId, locationId),
-                    eq(locationMessaging.practiceId, practiceId),
-                    isNull(locationMessaging.deletedAt),
-                    eq(locations.practiceId, practiceId),
-                    isNull(locations.deletedAt),
-                    eq(locationMessaging.enabled, true),
-                    eq(locationMessaging.registrationStatus, "active"),
-                    hasNonBlankMessagingSender()
-                  )
-                : and(
-                    eq(locationMessaging.practiceId, practiceId),
-                    isNull(locationMessaging.deletedAt),
-                    eq(locations.practiceId, practiceId),
-                    isNull(locations.deletedAt),
-                    eq(locationMessaging.enabled, true),
-                    eq(locationMessaging.registrationStatus, "active"),
-                    hasNonBlankMessagingSender()
-                  )
+              and(
+                eq(locationMessaging.locationId, locationId),
+                eq(locationMessaging.practiceId, practiceId),
+                isNull(locationMessaging.deletedAt),
+                eq(locations.practiceId, practiceId),
+                isNull(locations.deletedAt),
+                eq(locationMessaging.enabled, true),
+                eq(locationMessaging.registrationStatus, "active"),
+                hasNonBlankMessagingSender()
+              )
             )
-            .limit(1)
+            .limit(2)
         );
-        return sender?.locationId ?? null;
+        return senders.length === 1 ? senders[0]!.locationId : null;
       };
 
-      const locationId =
-        (preferredLocationId ? await findSender(preferredLocationId) : null) ??
-        (await findSender());
+      // Appointment reminders are tied to the appointment room's exact clinic
+      // location. Missing/ambiguous location data must never choose a random
+      // practice sender.
+      const locationId = preferredLocationId
+        ? await findSender(preferredLocationId)
+        : null;
       senderLocationCache.set(cacheKey, locationId);
       return locationId;
     };
@@ -388,7 +374,9 @@ export async function GET(request: Request) {
 
       // Email reminder + communications log (the existing path, reused as the
       // fallback whenever SMS isn't chosen or a send is blocked).
-      const emailReminder = async (communicationId: string): Promise<boolean> => {
+      const emailReminder = async (
+        communicationId: string
+      ): Promise<boolean> => {
         const clientEmail = normalizeEmailSuppressionAddress(appt.clientEmail);
         if (!clientEmail) return false;
         if (appt.emailSuppressionReason) {
@@ -498,10 +486,12 @@ export async function GET(request: Request) {
                 practicePhone: appt.practicePhone ?? undefined,
                 practiceId: appt.practiceId,
                 locationId: senderLocationId,
+                clientId: appt.clientId,
               })
             : {
                 success: false,
-                error: "Set up an active texting number before sending SMS reminders",
+                error:
+                  "Set up an active texting number before sending SMS reminders",
               };
           if (result.success) {
             await recordReminderOutcome({
@@ -549,7 +539,7 @@ export async function GET(request: Request) {
         }
         console.error(
           `Failed to send reminder for appointment ${appt.id}:`,
-          error,
+          error
         );
         failed++;
       }
@@ -587,10 +577,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ sent, failed, skipped, deduped, suppressed });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    void alertOps(
-      "Reminder cron job crashed",
-      message,
-    );
+    void alertOps("Reminder cron job crashed", message);
     console.error("Cron reminder job failed:", error);
     await reportCronHeartbeat({
       job: "reminders",
@@ -599,7 +586,7 @@ export async function GET(request: Request) {
     });
     return NextResponse.json(
       { error: "Internal server error" },
-      { status: 500 },
+      { status: 500 }
     );
   }
 }

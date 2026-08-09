@@ -45,9 +45,8 @@ vi.mock("@/lib/audit", () => ({
   recordAuditLog: mocks.recordAuditLog,
 }));
 
-const { REMINDER_BATCH_MAX_TARGETS, notificationsRouter } = await import(
-  "../routers/notifications"
-);
+const { REMINDER_BATCH_MAX_TARGETS, notificationsRouter } =
+  await import("../routers/notifications");
 
 const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const USER_ID = "00000000-0000-0000-0000-000000000001";
@@ -188,7 +187,9 @@ describe("notification target safety", () => {
     const { db, insertValues } = createDb({ selectResults: [[]] });
 
     await expect(
-      callerWithDb(db).sendAppointmentReminder({ appointmentId: APPOINTMENT_ID })
+      callerWithDb(db).sendAppointmentReminder({
+        appointmentId: APPOINTMENT_ID,
+      })
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
@@ -218,7 +219,9 @@ describe("notification target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).sendAppointmentReminder({ appointmentId: APPOINTMENT_ID })
+      callerWithDb(db).sendAppointmentReminder({
+        appointmentId: APPOINTMENT_ID,
+      })
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message: "Confirm the appointment before sending a reminder.",
@@ -258,6 +261,7 @@ describe("notification target safety", () => {
             practiceName: "Neighborhood Veterinary",
             practicePhone: "555-0100",
             practiceTimezone: "America/Los_Angeles",
+            locationId: LOCATION_ID,
           },
         ],
         [{ locationId: LOCATION_ID }],
@@ -265,7 +269,9 @@ describe("notification target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).sendAppointmentReminder({ appointmentId: APPOINTMENT_ID })
+      callerWithDb(db).sendAppointmentReminder({
+        appointmentId: APPOINTMENT_ID,
+      })
     ).resolves.toEqual({ success: true, channel: "sms" });
 
     expect(mocks.sendAppointmentReminderSms).toHaveBeenCalledWith(
@@ -277,6 +283,7 @@ describe("notification target safety", () => {
         practicePhone: "555-0100",
         practiceId: PRACTICE_ID,
         locationId: LOCATION_ID,
+        clientId: CLIENT_ID,
       })
     );
     expect(insertValues).toHaveBeenCalledWith(
@@ -284,8 +291,7 @@ describe("notification target safety", () => {
         practiceId: PRACTICE_ID,
         clientId: CLIENT_ID,
         channel: "sms",
-        content:
-          "Appointment reminder sent for Miso on Tuesday, June 30, 2026",
+        content: "Appointment reminder sent for Miso on Tuesday, June 30, 2026",
         status: "sent",
         providerMessageId: "sms-manual-1",
       })
@@ -312,13 +318,16 @@ describe("notification target safety", () => {
             practiceName: "Neighborhood Veterinary",
             practicePhone: "555-0100",
             practiceTimezone: "America/Los_Angeles",
+            locationId: LOCATION_ID,
           },
         ],
       ],
     });
 
     await expect(
-      callerWithDb(db).sendAppointmentReminder({ appointmentId: APPOINTMENT_ID })
+      callerWithDb(db).sendAppointmentReminder({
+        appointmentId: APPOINTMENT_ID,
+      })
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message:
@@ -350,13 +359,16 @@ describe("notification target safety", () => {
             practiceName: "Neighborhood Veterinary",
             practicePhone: "555-0100",
             practiceTimezone: "America/Los_Angeles",
+            locationId: LOCATION_ID,
           },
         ],
       ],
     });
 
     await expect(
-      callerWithDb(db).sendAppointmentReminder({ appointmentId: APPOINTMENT_ID })
+      callerWithDb(db).sendAppointmentReminder({
+        appointmentId: APPOINTMENT_ID,
+      })
     ).resolves.toEqual({ success: true, channel: "email" });
 
     expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
@@ -396,7 +408,9 @@ describe("notification target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).sendAppointmentReminder({ appointmentId: APPOINTMENT_ID })
+      callerWithDb(db).sendAppointmentReminder({
+        appointmentId: APPOINTMENT_ID,
+      })
     ).resolves.toEqual({ success: true, channel: "email" });
 
     expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
@@ -437,7 +451,9 @@ describe("notification target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).sendAppointmentReminder({ appointmentId: APPOINTMENT_ID })
+      callerWithDb(db).sendAppointmentReminder({
+        appointmentId: APPOINTMENT_ID,
+      })
     ).rejects.toMatchObject({
       code: "BAD_REQUEST",
       message:
@@ -473,7 +489,9 @@ describe("notification target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).sendAppointmentReminder({ appointmentId: APPOINTMENT_ID })
+      callerWithDb(db).sendAppointmentReminder({
+        appointmentId: APPOINTMENT_ID,
+      })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
@@ -499,6 +517,7 @@ describe("notification target safety", () => {
             practiceName: "Neighborhood Veterinary",
             practicePhone: "555-0100",
             practiceTimezone: "America/Los_Angeles",
+            locationId: LOCATION_ID,
           },
         ],
       ],
@@ -550,6 +569,7 @@ describe("notification target safety", () => {
             practiceName: "Neighborhood Veterinary",
             practicePhone: "555-0100",
             practiceTimezone: "America/Los_Angeles",
+            locationId: LOCATION_ID,
           },
         ],
         [{ locationId: LOCATION_ID }],
@@ -572,6 +592,7 @@ describe("notification target safety", () => {
         practicePhone: "555-0100",
         practiceId: PRACTICE_ID,
         locationId: LOCATION_ID,
+        clientId: CLIENT_ID,
       })
     );
     expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
@@ -610,6 +631,7 @@ describe("notification target safety", () => {
             practiceName: "Neighborhood Veterinary",
             practicePhone: "555-0100",
             practiceTimezone: "America/Los_Angeles",
+            locationId: LOCATION_ID,
           },
         ],
         [],
@@ -653,6 +675,7 @@ describe("notification target safety", () => {
             practiceName: "Neighborhood Veterinary",
             practicePhone: "555-0100",
             practiceTimezone: "America/Los_Angeles",
+            locationId: LOCATION_ID,
           },
         ],
       ],
@@ -687,6 +710,7 @@ describe("notification target safety", () => {
             practiceName: "Neighborhood Veterinary",
             practicePhone: "555-0100",
             practiceTimezone: "America/Los_Angeles",
+            locationId: LOCATION_ID,
           },
         ],
         [{ locationId: LOCATION_ID }],
@@ -1547,12 +1571,14 @@ describe("notification query scoping", () => {
     expect(senderBlock).toContain("eq(locations.practiceId, ctx.practiceId)");
     expect(senderBlock).toContain("isNull(locationMessaging.deletedAt)");
     expect(senderBlock).toContain("isNull(locations.deletedAt)");
-    expect(senderBlock).toContain('eq(locationMessaging.enabled, true)');
+    expect(senderBlock).toContain("eq(locationMessaging.enabled, true)");
     expect(senderBlock).toContain(
       'eq(locationMessaging.registrationStatus, "active")'
     );
     expect(senderBlock).toContain("hasNonBlankMessagingSender()");
-    expect(senderBlock).not.toContain("isNotNull(locationMessaging.senderE164)");
+    expect(senderBlock).not.toContain(
+      "isNotNull(locationMessaging.senderE164)"
+    );
     expect(senderBlock).not.toContain(
       "isNotNull(locationMessaging.messagingProfileId)"
     );
@@ -1606,7 +1632,9 @@ describe("notification query scoping", () => {
     expect(source).toContain(
       "formatDateInputForTimeZone(new Date(), practice.timezone)"
     );
-    expect(vaccinationBlock).toContain("const today = await practiceDateInput(ctx)");
+    expect(vaccinationBlock).toContain(
+      "const today = await practiceDateInput(ctx)"
+    );
     expect(recallPreviewBlock).toContain(
       "const today = formatDateInputForTimeZone(new Date(), practice.timezone)"
     );
@@ -1623,8 +1651,12 @@ describe("notification query scoping", () => {
       "function formatTime(d: Date | string, timeZone?: string | null)"
     );
     expect(source).toContain("practiceTimezone: practices.timezone");
-    expect(source).toContain("formatDate(appt.startTime, appt.practiceTimezone)");
-    expect(source).toContain("formatTime(appt.startTime, appt.practiceTimezone)");
+    expect(source).toContain(
+      "formatDate(appt.startTime, appt.practiceTimezone)"
+    );
+    expect(source).toContain(
+      "formatTime(appt.startTime, appt.practiceTimezone)"
+    );
     expect(source).not.toContain("formatDate(appt.startTime)");
     expect(source).not.toContain("formatTime(appt.startTime)");
   });
@@ -1632,7 +1664,9 @@ describe("notification query scoping", () => {
   it("keeps customer notification emails branded with a practice display name", () => {
     expect(source).toContain("function practiceDisplayName");
     expect(source).toContain("async function practiceNotificationSettings");
-    expect(source).toContain("practiceName: practiceDisplayName(appt.practiceName)");
+    expect(source).toContain(
+      "practiceName: practiceDisplayName(appt.practiceName)"
+    );
     expect(source).toContain("name: practiceDisplayName(practice.name)");
     expect(source).not.toContain("practice?.name");
     expect(source).not.toContain("practice?.phone");

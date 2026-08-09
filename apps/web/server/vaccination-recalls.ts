@@ -88,12 +88,7 @@ async function practiceNotificationSettings(ctx: {
       settings: practices.settings,
     })
     .from(practices)
-    .where(
-      and(
-        eq(practices.id, ctx.practiceId),
-        isNull(practices.deletedAt)
-      )
-    )
+    .where(and(eq(practices.id, ctx.practiceId), isNull(practices.deletedAt)))
     .limit(1);
   if (!practice) return null;
   return {
@@ -348,7 +343,8 @@ export async function getVaccinationRecallPreview(ctx: {
     total: result.recipients.length,
     eligible: result.recipients.filter((item) => item.status === "eligible")
       .length,
-    blocked: result.recipients.filter((item) => item.status === "blocked").length,
+    blocked: result.recipients.filter((item) => item.status === "blocked")
+      .length,
     alreadySent: result.recipients.filter(
       (item) => item.status === "already_sent"
     ).length,
@@ -370,7 +366,8 @@ export async function sendVaccinationRecallReminders(
   let sent = 0;
   let failed = 0;
   const blocked =
-    targets.length - recipients.length +
+    targets.length -
+    recipients.length +
     recipients.filter((recipient) => recipient.status === "blocked").length;
   let deduped = recipients.filter(
     (recipient) => recipient.status === "already_sent"
@@ -402,7 +399,9 @@ export async function sendVaccinationRecallReminders(
     }
 
     const sendEmail = async () => {
-      const clientEmail = normalizeEmailSuppressionAddress(recipient.clientEmail);
+      const clientEmail = normalizeEmailSuppressionAddress(
+        recipient.clientEmail
+      );
       if (!clientEmail || recipient.emailSuppressionReason || !dueDate) {
         return { success: false as const };
       }
@@ -434,6 +433,7 @@ export async function sendVaccinationRecallReminders(
           practicePhone: practice.phone ?? undefined,
           practiceId: ctx.practiceId,
           locationId: smsSender.locationId,
+          clientId: recipient.clientId,
         });
         delivered = smsResult.success;
         providerMessageId = smsResult.sid;

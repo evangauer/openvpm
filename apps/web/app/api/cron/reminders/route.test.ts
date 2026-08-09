@@ -63,11 +63,8 @@ const mocks = vi.hoisted(() => {
       fn(db)
     ),
     withTenant: vi.fn(
-      async (
-        _db: unknown,
-        _practiceId: string,
-        fn: (tx: unknown) => unknown
-      ) => fn(db)
+      async (_db: unknown, _practiceId: string, fn: (tx: unknown) => unknown) =>
+        fn(db)
     ),
   };
 });
@@ -236,6 +233,7 @@ describe("appointment reminder cron", () => {
         appointment({
           startTime: new Date("2026-07-02T16:00:00Z"),
           practiceTimezone: " America/Los_Angeles ",
+          locationId: LOCATION_ID,
         }),
       ],
       [{ locationId: LOCATION_ID }]
@@ -259,6 +257,7 @@ describe("appointment reminder cron", () => {
         appointmentTime: "9:00 AM",
         practiceId: PRACTICE_ID,
         locationId: LOCATION_ID,
+        clientId: CLIENT_ID,
       })
     );
     expect(mocks.insertValues).toHaveBeenCalledWith(
@@ -668,14 +667,12 @@ describe("appointment reminder cron query scoping", () => {
     expect(source).toContain(
       "formatAppointmentReminderDateTime(startDate, appt.practiceTimezone)"
     );
-    expect(source).not.toContain(
-      'startDate.toLocaleTimeString("en-US", {'
-    );
+    expect(source).not.toContain('startDate.toLocaleTimeString("en-US", {');
   });
 
   it("reclaims failed or stale reminder claims with scoped predicates", () => {
     expect(source).toContain("const REMINDER_PENDING_RECLAIM_MS");
-    expect(source).toContain("existing.status === \"failed\"");
+    expect(source).toContain('existing.status === "failed"');
     expect(source).toContain("lte(communications.createdAt, staleBefore)");
     expect(source).toContain("eq(communications.practiceId, opts.practiceId)");
     expect(source).toContain("eq(communications.dedupeKey, opts.dedupeKey)");

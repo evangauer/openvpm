@@ -8,10 +8,13 @@ export type InboxSmsRegistrationStatus =
 
 export type InboxSmsLocation = {
   messaging: {
+    provider?: string | null;
     senderE164: string | null;
     messagingProfileId: string | null;
     registrationStatus: InboxSmsRegistrationStatus;
     enabled: boolean;
+    /** Server-computed hosted rollout policy. Omitted for self-host/back-compat. */
+    launchEligible?: boolean;
   } | null;
 };
 
@@ -40,15 +43,19 @@ export function summarizeInboxSmsStatus(
 ): InboxSmsStatusSummary {
   const configured = locations
     .map((location) => location.messaging)
-    .filter((messaging): messaging is NonNullable<InboxSmsLocation["messaging"]> =>
-      Boolean(messaging)
+    .filter(
+      (messaging): messaging is NonNullable<InboxSmsLocation["messaging"]> =>
+        Boolean(messaging)
     );
   const hasSender = (messaging: NonNullable<InboxSmsLocation["messaging"]>) =>
-    Boolean(messaging.senderE164?.trim() || messaging.messagingProfileId?.trim());
+    Boolean(
+      messaging.senderE164?.trim() || messaging.messagingProfileId?.trim()
+    );
 
   const ready = configured.some(
     (messaging) =>
       messaging.enabled &&
+      messaging.launchEligible !== false &&
       messaging.registrationStatus === "active" &&
       hasSender(messaging)
   );
@@ -61,6 +68,22 @@ export function summarizeInboxSmsStatus(
       title: "Texting is ready",
       description: "SMS is available from your active clinic number.",
       badge: { label: "SMS ready", variant: "success" },
+      actionLabel: null,
+    };
+  }
+
+  const launchBlocked = configured.some(
+    (messaging) => messaging.launchEligible === false
+  );
+  if (launchBlocked) {
+    return {
+      kind: "disabled",
+      smsComposeEnabled: false,
+      showBanner: true,
+      title: "Texting pilot is not active for this clinic",
+      description:
+        "OpenVPM has kept outbound SMS off. Contact support when this clinic is ready for the controlled texting pilot.",
+      badge: { label: "Pilot off", variant: "warning" },
       actionLabel: null,
     };
   }

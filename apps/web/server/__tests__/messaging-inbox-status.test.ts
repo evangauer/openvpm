@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const { messagingRouter } = await import("../routers/messaging");
 
@@ -44,6 +44,8 @@ function createDb(rows: Record<string, unknown>[]) {
   return { db, where };
 }
 
+afterEach(() => vi.unstubAllEnvs());
+
 describe("messaging.getInboxStatus", () => {
   it("is visible to non-admin staff and reports setup prompts", async () => {
     const { db } = createDb([
@@ -81,12 +83,38 @@ describe("messaging.getInboxStatus", () => {
       },
     ]);
 
-    await expect(callerWithDb(db, "admin").getInboxStatus()).resolves.toMatchObject({
+    await expect(
+      callerWithDb(db, "admin").getInboxStatus()
+    ).resolves.toMatchObject({
       canManage: true,
       summary: {
         kind: "ready",
         smsComposeEnabled: true,
         showBanner: false,
+      },
+    });
+  });
+
+  it("reports an active DB sender as unavailable while the hosted launch gate is off", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    const { db } = createDb([
+      {
+        locationId: "00000000-0000-0000-0000-000000000002",
+        name: "Main Clinic",
+        provider: "telnyx",
+        senderE164: "+15555550100",
+        messagingProfileId: null,
+        registrationStatus: "active",
+        enabled: true,
+      },
+    ]);
+
+    await expect(callerWithDb(db).getInboxStatus()).resolves.toMatchObject({
+      locations: [{ messaging: { launchEligible: false } }],
+      summary: {
+        kind: "disabled",
+        smsComposeEnabled: false,
+        title: "Texting pilot is not active for this clinic",
       },
     });
   });
@@ -133,5 +161,30 @@ describe("messaging.getInboxStatus", () => {
         showBanner: true,
       },
     });
+  });
+});
+
+describe("messaging.activationSummary", () => {
+  const activeRow = {
+    locationId: "00000000-0000-0000-0000-000000000002",
+    provider: "telnyx",
+    senderE164: "+15555550100",
+    registrationStatus: "active",
+    enabled: true,
+  };
+
+  it("does not claim hosted texting is active while launch remains off", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    const { db } = createDb([activeRow]);
+    await expect(
+      callerWithDb(db, "admin").activationSummary()
+    ).resolves.toEqual({ hasAnyNumber: true, hasActiveNumber: false });
+  });
+
+  it("preserves self-host active sender behavior", async () => {
+    const { db } = createDb([activeRow]);
+    await expect(
+      callerWithDb(db, "admin").activationSummary()
+    ).resolves.toEqual({ hasAnyNumber: true, hasActiveNumber: true });
   });
 });

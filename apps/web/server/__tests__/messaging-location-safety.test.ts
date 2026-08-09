@@ -4,7 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => {
   class MockTelnyxNotConfiguredError extends Error {}
   class MockTelnyxError extends Error {
-    constructor(message: string, readonly status: number) {
+    constructor(
+      message: string,
+      readonly status: number
+    ) {
       super(message);
     }
   }
@@ -221,13 +224,19 @@ beforeEach(() => {
   mocks.reserveMessagingProfileAttempt.mockResolvedValue(true);
   mocks.releaseMessagingProfileAttempt.mockResolvedValue(true);
   mocks.createMessagingProfile.mockResolvedValue({ id: "profile_123" });
-  mocks.buyNumber.mockResolvedValue({ orderId: "order_123", status: "pending" });
+  mocks.buyNumber.mockResolvedValue({
+    orderId: "order_123",
+    status: "pending",
+  });
   mocks.deleteMessagingProfile.mockResolvedValue(undefined);
   mocks.deleteOwnedPhoneNumber.mockResolvedValue(undefined);
   delete process.env.NEXT_PUBLIC_APP_URL;
   delete process.env.NEXTAUTH_URL;
   delete process.env.HOSTED_BILLING_ENABLED;
   delete process.env.MESSAGING_PROVISIONING_PRACTICE_IDS;
+  delete process.env.MESSAGING_SENDING_ENABLED;
+  delete process.env.MESSAGING_SENDING_PRACTICE_IDS;
+  delete process.env.MESSAGING_SENDING_LOCATION_IDS;
   // The platform kill-switch is on for behavior tests; the gate itself is
   // covered in "messaging provisioning kill-switch".
   vi.stubEnv("MESSAGING_PROVISIONING_ENABLED", "true");
@@ -309,8 +318,7 @@ describe("messaging location target safety", () => {
       businessPhone: "+15555550100",
       website: "https://example.com",
       programUrl: `https://app.openvpm.com/sms/${PRACTICE_ID}`,
-      privacyPolicyUrl:
-        `https://app.openvpm.com/sms/${PRACTICE_ID}/privacy`,
+      privacyPolicyUrl: `https://app.openvpm.com/sms/${PRACTICE_ID}/privacy`,
       termsUrl: `https://app.openvpm.com/sms/${PRACTICE_ID}/terms`,
       optInUrl: `https://app.openvpm.com/sms/${PRACTICE_ID}/opt-in`,
     });
@@ -366,8 +374,7 @@ describe("messaging location target safety", () => {
       businessPhone: "+15555550100",
       website: "",
       programUrl: `https://app.openvpm.com/sms/${PRACTICE_ID}`,
-      privacyPolicyUrl:
-        `https://app.openvpm.com/sms/${PRACTICE_ID}/privacy`,
+      privacyPolicyUrl: `https://app.openvpm.com/sms/${PRACTICE_ID}/privacy`,
       termsUrl: `https://app.openvpm.com/sms/${PRACTICE_ID}/terms`,
       optInUrl: `https://app.openvpm.com/sms/${PRACTICE_ID}/opt-in`,
     });
@@ -440,8 +447,7 @@ describe("messaging location target safety", () => {
     });
 
     expect(insertValues.mock.calls[0]?.[0]).toMatchObject({
-      privacyPolicyUrl:
-        `https://app.openvpm.com/sms/${PRACTICE_ID}/privacy`,
+      privacyPolicyUrl: `https://app.openvpm.com/sms/${PRACTICE_ID}/privacy`,
       termsUrl: `https://app.openvpm.com/sms/${PRACTICE_ID}/terms`,
     });
   });
@@ -552,7 +558,10 @@ describe("messaging location target safety", () => {
     const { db } = createDb();
 
     await expect(
-      callerWithDb(db).provisionNumber({ locationId: LOCATION_ID, mode: "host" })
+      callerWithDb(db).provisionNumber({
+        locationId: LOCATION_ID,
+        mode: "host",
+      })
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message: expect.stringContaining("has not ported or changed"),
@@ -629,10 +638,7 @@ describe("messaging location target safety", () => {
     process.env.NEXT_PUBLIC_APP_URL = "   ";
     process.env.NEXTAUTH_URL = "https://auth.example.com/settings";
     const { db } = createDb({
-      selectResults: [
-        [{ id: LOCATION_ID }],
-        [],
-      ],
+      selectResults: [[{ id: LOCATION_ID }], []],
     });
 
     await expect(
@@ -657,10 +663,7 @@ describe("messaging location target safety", () => {
   it("passes the public Telnyx webhook URL and reactivates sender rows", async () => {
     process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
     const { db, insertValues, insertUpdate } = createDb({
-      selectResults: [
-        [{ id: LOCATION_ID }],
-        [],
-      ],
+      selectResults: [[{ id: LOCATION_ID }], []],
     });
 
     await expect(
@@ -921,7 +924,9 @@ describe("messaging location target safety", () => {
         locationId: LOCATION_ID,
         senderE164: "+15555550100",
         customerReference: `openvpm:${PRACTICE_ID}:${LOCATION_ID}`,
-        detail: expect.stringContaining("will not create another provider profile"),
+        detail: expect.stringContaining(
+          "will not create another provider profile"
+        ),
       });
       expect(
         mocks.reserveMessagingProfileAttempt.mock.invocationCallOrder[0]
@@ -1071,7 +1076,9 @@ describe("messaging location target safety", () => {
       locationId: LOCATION_ID,
       senderE164: "+15555550100",
       customerReference: `openvpm:${PRACTICE_ID}:${LOCATION_ID}`,
-      detail: expect.stringContaining("will not create another provider profile"),
+      detail: expect.stringContaining(
+        "will not create another provider profile"
+      ),
     });
     expect(mocks.createMessagingProfile).not.toHaveBeenCalled();
     expect(mocks.buyNumber).not.toHaveBeenCalled();
@@ -1108,7 +1115,9 @@ describe("messaging location target safety", () => {
       locationId: LOCATION_ID,
       senderE164: "+15555550100",
       customerReference: `openvpm:${PRACTICE_ID}:${LOCATION_ID}`,
-      detail: expect.stringContaining("will not create another provider profile"),
+      detail: expect.stringContaining(
+        "will not create another provider profile"
+      ),
     });
     expect(mocks.createMessagingProfile).not.toHaveBeenCalled();
     expect(mocks.buyNumber).not.toHaveBeenCalled();
@@ -1237,7 +1246,9 @@ describe("messaging location target safety", () => {
 
   it("retains an accepted order identity when the durable write fails", async () => {
     process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
-    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const errorLog = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
     mocks.findOwnedPhoneNumbers
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([
@@ -1373,7 +1384,8 @@ describe("messaging location target safety", () => {
       callerWithDb(db).setEnabled({ locationId: LOCATION_ID, enabled: true })
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
-      message: "Carrier registration must be active before enabling SMS sending.",
+      message:
+        "Carrier registration must be active before enabling SMS sending.",
     });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -1389,7 +1401,8 @@ describe("messaging location target safety", () => {
       callerWithDb(db).setEnabled({ locationId: LOCATION_ID, enabled: true })
     ).rejects.toMatchObject({
       code: "CONFLICT",
-      message: "Messaging sender changed while enabling. Refresh and try again.",
+      message:
+        "Messaging sender changed while enabling. Refresh and try again.",
     });
 
     expect(updateSet).toHaveBeenCalledWith({
@@ -1397,9 +1410,9 @@ describe("messaging location target safety", () => {
       updatedAt: expect.any(Date),
     });
     const condition = updateWhere.mock.calls[0]?.[0];
-    expect(sqlIncludesColumnParamPair(condition, "registration_status", "active")).toBe(
-      true
-    );
+    expect(
+      sqlIncludesColumnParamPair(condition, "registration_status", "active")
+    ).toBe(true);
   });
 
   it("allows disabling an inactive sender so stale enabled state can be cleared", async () => {
@@ -1414,6 +1427,60 @@ describe("messaging location target safety", () => {
 
     expect(updateSet).toHaveBeenCalledWith({
       enabled: false,
+      updatedAt: expect.any(Date),
+    });
+  });
+
+  it("keeps hosted location enablement default-off even for an active Telnyx sender", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    const { db, updateSet } = createDb({
+      practiceRows: [
+        {
+          tier: "cloud",
+          billingStatus: "active",
+          trialEndsAt: null,
+        },
+      ],
+      selectResults: [[{ id: PRACTICE_ID }], [{ id: LOCATION_ID }]],
+    });
+
+    await expect(
+      callerWithDb(db).setEnabled({ locationId: LOCATION_ID, enabled: true })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("not enabled for this clinic pilot"),
+    });
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(mocks.sendSms).not.toHaveBeenCalled();
+  });
+
+  it("allows one explicitly allowlisted active Telnyx hosted location to be enabled", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    vi.stubEnv("MESSAGING_SENDING_ENABLED", "true");
+    vi.stubEnv("MESSAGING_SENDING_PRACTICE_IDS", PRACTICE_ID);
+    vi.stubEnv("MESSAGING_SENDING_LOCATION_IDS", LOCATION_ID);
+    const { db, updateSet } = createDb({
+      practiceRows: [
+        {
+          tier: "cloud",
+          billingStatus: "active",
+          trialEndsAt: null,
+        },
+      ],
+      selectResults: [
+        [{ id: PRACTICE_ID }],
+        [{ id: LOCATION_ID }],
+        [{ locationId: LOCATION_ID, provider: "telnyx" }],
+        [],
+      ],
+      updateRows: [{ enabled: true }],
+    });
+
+    await expect(
+      callerWithDb(db).setEnabled({ locationId: LOCATION_ID, enabled: true })
+    ).resolves.toEqual({ ok: true, enabled: true });
+    expect(updateSet).toHaveBeenCalledWith({
+      enabled: true,
       updatedAt: expect.any(Date),
     });
   });
@@ -1433,6 +1500,31 @@ describe("messaging location target safety", () => {
     expect(mocks.sendSms).not.toHaveBeenCalled();
   });
 
+  it("disables arbitrary hosted test destinations before sender or provider work", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    const { db, select } = createDb({
+      practiceRows: [
+        {
+          tier: "cloud",
+          billingStatus: "active",
+          trialEndsAt: null,
+        },
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).testSend({
+        locationId: LOCATION_ID,
+        to: "+15555550100",
+      })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("test sends are disabled"),
+    });
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(mocks.sendSms).not.toHaveBeenCalled();
+  });
+
   it("sends a test SMS after validating the active location sender", async () => {
     mocks.sendSms.mockResolvedValue({ success: true, sid: "sms_123" });
     const { db } = createDb({
@@ -1440,7 +1532,10 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).testSend({ locationId: LOCATION_ID, to: "(555) 555-0100" })
+      callerWithDb(db).testSend({
+        locationId: LOCATION_ID,
+        to: "(555) 555-0100",
+      })
     ).resolves.toEqual({ ok: true, id: "sms_123" });
 
     expect(mocks.sendSms).toHaveBeenCalledWith({
@@ -1496,9 +1591,7 @@ describe("messaging location sender join scoping", () => {
 
     expect(statusJoins).toHaveLength(2);
     for (const join of statusJoins ?? []) {
-      expect(join).toContain(
-        "eq(locationMessaging.locationId, locations.id)"
-      );
+      expect(join).toContain("eq(locationMessaging.locationId, locations.id)");
       expect(join).toContain(
         "eq(locationMessaging.practiceId, ctx.practiceId)"
       );
@@ -1574,7 +1667,7 @@ describe("messaging location sender join scoping", () => {
       'provider: "twilio"'
     );
     expect(readSource("app/api/webhooks/twilio/route.ts")).toContain(
-      'handleInboundSmsReply({'
+      "handleInboundSmsReply({"
     );
   });
 

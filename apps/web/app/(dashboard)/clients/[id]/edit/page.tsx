@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
-import { AlertCircle, ArrowLeft, Loader2 } from "lucide-react";
+import { AlertCircle, ArrowLeft, Ban, Loader2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -108,6 +108,7 @@ function EditClientForm() {
     data: client,
     isLoading,
     error: loadError,
+    refetch,
   } = trpc.clients.getById.useQuery(
     { id: params.id },
     { enabled: !!params.id }
@@ -140,8 +141,23 @@ function EditClientForm() {
       setError(err.message);
     },
   });
+  const revokeSms = trpc.clients.revokeSms.useMutation({
+    onSuccess: async ({ clientsRevoked }) => {
+      toast.success(
+        `Texting revoked for this number${clientsRevoked > 1 ? ` across ${clientsRevoked} matching client records` : ""}.`
+      );
+      setSmsConsent(false);
+      setSmsConsentTouched(false);
+      await refetch();
+    },
+    onError: (err) => {
+      toast.error(err.message);
+      setError(err.message);
+    },
+  });
 
   const smsPhoneValid = normalizeE164(form.phone) !== null;
+  const persistedSmsPhone = normalizeE164(client?.phone);
   const phoneChanged = client
     ? !phoneNumbersMatchForConsent(client.phone, form.phone)
     : false;
@@ -165,7 +181,9 @@ function EditClientForm() {
       return;
     }
     if (smsConsentTouched && smsConsent && !smsPhoneValid) {
-      setError("Enter a valid mobile phone number before recording SMS consent.");
+      setError(
+        "Enter a valid mobile phone number before recording SMS consent."
+      );
       return;
     }
     if (!canSubmit) {
@@ -336,6 +354,46 @@ function EditClientForm() {
             </span>
           </span>
         </label>
+
+        <div className="rounded-md border border-border p-3">
+          <p className="text-sm font-medium">Practice-wide do-not-text</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Use this when the client asks staff to stop texts. It immediately
+            suppresses this phone number and clears SMS consent on every active
+            client record that shares it. Saving the client or checking consent
+            later will not silently remove the manual suppression.
+            {phoneChanged
+              ? " Save or discard the unsaved phone change before using this action."
+              : ""}
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="mt-3"
+            disabled={!persistedSmsPhone || phoneChanged || revokeSms.isPending}
+            onClick={() => {
+              setError(null);
+              if (
+                window.confirm(
+                  "Stop all SMS to this phone number across the practice?"
+                )
+              ) {
+                revokeSms.mutate({
+                  id: params.id,
+                  expectedPhone: persistedSmsPhone!,
+                });
+              }
+            }}
+          >
+            {revokeSms.isPending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Ban className="mr-2 h-4 w-4" />
+            )}
+            Do not text this number
+          </Button>
+        </div>
 
         <div>
           <label className="text-sm font-medium" htmlFor="address">

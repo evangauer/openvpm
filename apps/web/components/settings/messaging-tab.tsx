@@ -27,7 +27,10 @@ import { MessagingRegistrationForm } from "@/components/settings/messaging-regis
 
 const REGISTRATION_BADGE: Record<
   NonNullable<MessagingSetupLocation["messaging"]>["registrationStatus"],
-  { label: string; variant: "success" | "warning" | "destructive" | "secondary" }
+  {
+    label: string;
+    variant: "success" | "warning" | "destructive" | "secondary";
+  }
 > = {
   not_started: { label: "Not started", variant: "secondary" },
   pending: { label: "Registration pending", variant: "warning" },
@@ -107,10 +110,22 @@ export function MessagingTab() {
           <MessageSquare className="h-5 w-5" /> Messaging
         </h2>
         <p className="text-sm text-muted-foreground">
-          Text appointment reminders from each location&apos;s own number. Clients
-          who reply land in your inbox; STOP opt-outs are handled automatically.
+          Text appointment reminders from each location&apos;s own number.
+          Clients who reply land in your inbox; STOP opt-outs are handled
+          automatically.
         </p>
       </div>
+
+      {data.launch.hosted && !data.launch.pilotEnabled ? (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
+          <p className="font-medium">Outbound texting is safely off</p>
+          <p className="mt-1">
+            OpenVPM enables one approved clinic location at a time after carrier
+            activation and pilot review. Setup can continue, but no SMS can send
+            until your clinic and location are explicitly approved.
+          </p>
+        </div>
+      ) : null}
 
       {/* Usage + consent summary */}
       <div className="grid gap-4 sm:grid-cols-3">
@@ -125,8 +140,14 @@ export function MessagingTab() {
           }
           hint={usage?.includedSms != null ? "included" : undefined}
         />
-        <SummaryStat label="Clients opted in" value={String(consent?.optedIn ?? 0)} />
-        <SummaryStat label="Opted out (STOP)" value={String(consent?.suppressed ?? 0)} />
+        <SummaryStat
+          label="Clients opted in"
+          value={String(consent?.optedIn ?? 0)}
+        />
+        <SummaryStat
+          label="Do-not-text numbers"
+          value={String(consent?.suppressed ?? 0)}
+        />
       </div>
 
       {/* Per-location setup */}
@@ -135,6 +156,7 @@ export function MessagingTab() {
           <LocationCard
             key={loc.locationId}
             loc={loc}
+            testSendAllowed={data.launch.testSendAllowed}
             onStartSetup={() => setWizardLocation(loc)}
           />
         ))}
@@ -173,7 +195,12 @@ function MessagingLoadError({
         <div>
           <p className="font-medium">Unable to load messaging settings</p>
           <p className="mt-1">{message}</p>
-          <Button variant="outline" size="sm" onClick={onRetry} className="mt-3">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onRetry}
+            className="mt-3"
+          >
             Retry
           </Button>
         </div>
@@ -196,7 +223,11 @@ function SummaryStat({
       <p className="text-xs text-muted-foreground">{label}</p>
       <p className="mt-1 text-xl font-semibold">
         {value}
-        {hint && <span className="ml-1 text-xs font-normal text-muted-foreground">{hint}</span>}
+        {hint && (
+          <span className="ml-1 text-xs font-normal text-muted-foreground">
+            {hint}
+          </span>
+        )}
       </p>
     </div>
   );
@@ -204,9 +235,11 @@ function SummaryStat({
 
 function LocationCard({
   loc,
+  testSendAllowed,
   onStartSetup,
 }: {
   loc: MessagingSetupLocation;
+  testSendAllowed: boolean;
   onStartSetup: () => void;
 }) {
   const utils = trpc.useUtils();
@@ -220,7 +253,11 @@ function LocationCard({
           {loc.isPrimary && <Badge variant="secondary">Primary</Badge>}
         </div>
         {loc.messaging && (
-          <Badge variant={REGISTRATION_BADGE[loc.messaging.registrationStatus].variant}>
+          <Badge
+            variant={
+              REGISTRATION_BADGE[loc.messaging.registrationStatus].variant
+            }
+          >
             {REGISTRATION_BADGE[loc.messaging.registrationStatus].label}
           </Badge>
         )}
@@ -229,6 +266,7 @@ function LocationCard({
       {loc.messaging ? (
         <ConfiguredLocation
           loc={loc}
+          testSendAllowed={testSendAllowed}
           onChanged={refresh}
         />
       ) : (
@@ -240,9 +278,11 @@ function LocationCard({
 
 function ConfiguredLocation({
   loc,
+  testSendAllowed,
   onChanged,
 }: {
   loc: MessagingSetupLocation;
+  testSendAllowed: boolean;
   onChanged: () => void;
 }) {
   const m = loc.messaging!;
@@ -250,9 +290,14 @@ function ConfiguredLocation({
   const senderLabel =
     m.senderE164?.trim() || m.messagingProfileId?.trim() || "—";
   const canEnableSending =
-    m.registrationStatus === "active" && hasConfiguredSender(m);
+    m.registrationStatus === "active" &&
+    hasConfiguredSender(m) &&
+    m.launchEligible !== false;
   const canSendTest =
-    m.enabled && canEnableSending && isMessagingPhoneInputValid(testTo);
+    testSendAllowed &&
+    m.enabled &&
+    canEnableSending &&
+    isMessagingPhoneInputValid(testTo);
 
   const setEnabled = trpc.messaging.setEnabled.useMutation({
     onSuccess: () => onChanged(),
@@ -264,7 +309,9 @@ function ConfiguredLocation({
   });
   const reconcileSetup = trpc.messaging.provisionNumber.useMutation({
     onSuccess: () => {
-      toast.success("Provider setup reconciled. No additional number was purchased.");
+      toast.success(
+        "Provider setup reconciled. No additional number was purchased."
+      );
       onChanged();
     },
     onError: (e) => toast.error(e.message),
@@ -316,40 +363,50 @@ function ConfiguredLocation({
           checked={m.enabled}
           disabled={setEnabled.isPending || (!m.enabled && !canEnableSending)}
           onChange={(e) =>
-            setEnabled.mutate({ locationId: loc.locationId, enabled: e.target.checked })
+            setEnabled.mutate({
+              locationId: loc.locationId,
+              enabled: e.target.checked,
+            })
           }
         />
         Sending enabled
       </label>
 
-      <div className="flex flex-wrap items-end gap-2 border-t border-border pt-4">
-        <label className="space-y-1.5">
-          <span className="text-xs font-medium text-muted-foreground">
-            Send a test message to
-          </span>
-          <Input
-            value={testTo}
-            onChange={(e) => setTestTo(e.target.value)}
-            maxLength={MESSAGING_PHONE_MAX_LENGTH}
-            placeholder="+1 555 555 0123"
-            className="w-48"
-          />
-        </label>
-        <Button
-          variant="outline"
-          disabled={!canSendTest || testSend.isPending}
-          onClick={() =>
-            testSend.mutate({ locationId: loc.locationId, to: testTo.trim() })
-          }
-        >
-          {testSend.isPending ? (
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          ) : (
-            <Send className="mr-2 h-4 w-4" />
-          )}
-          Send test
-        </Button>
-      </div>
+      {testSendAllowed ? (
+        <div className="flex flex-wrap items-end gap-2 border-t border-border pt-4">
+          <label className="space-y-1.5">
+            <span className="text-xs font-medium text-muted-foreground">
+              Send a test message to
+            </span>
+            <Input
+              value={testTo}
+              onChange={(e) => setTestTo(e.target.value)}
+              maxLength={MESSAGING_PHONE_MAX_LENGTH}
+              placeholder="+1 555 555 0123"
+              className="w-48"
+            />
+          </label>
+          <Button
+            variant="outline"
+            disabled={!canSendTest || testSend.isPending}
+            onClick={() =>
+              testSend.mutate({ locationId: loc.locationId, to: testTo.trim() })
+            }
+          >
+            {testSend.isPending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Send className="mr-2 h-4 w-4" />
+            )}
+            Send test
+          </Button>
+        </div>
+      ) : (
+        <p className="border-t border-border pt-4 text-xs text-muted-foreground">
+          Arbitrary test destinations are disabled for hosted clinics during the
+          controlled pilot. Use a consented client workflow after activation.
+        </p>
+      )}
     </div>
   );
 }

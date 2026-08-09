@@ -43,11 +43,25 @@ function callerWithDb(db: Record<string, unknown>, role = "admin") {
   return clientsRouter.createCaller({ db, session } as never);
 }
 
+function objectContainsText(
+  value: unknown,
+  needle: string,
+  seen = new WeakSet<object>()
+): boolean {
+  if (typeof value === "string") return value.includes(needle);
+  if (!value || typeof value !== "object" || seen.has(value)) return false;
+  seen.add(value);
+  return Object.values(value as Record<string, unknown>).some((item) =>
+    objectContainsText(item, needle, seen)
+  );
+}
+
 function createDb(opts?: {
   selectResults?: unknown[][];
   insertedRows?: unknown[];
   updatedRows?: unknown[];
 }) {
+  const lockEvents: string[] = [];
   const selectResults = [...(opts?.selectResults ?? [])];
   const select = vi.fn(() => {
     const result = selectResults.shift() ?? [];
@@ -56,7 +70,10 @@ function createDb(opts?: {
       where: vi.fn(() => builder),
       orderBy: vi.fn(() => builder),
       limit: vi.fn(() => builder),
-      for: vi.fn(() => builder),
+      for: vi.fn((mode: string) => {
+        lockEvents.push(`row:${mode}`);
+        return builder;
+      }),
       offset: vi.fn(async () => result),
       then: (
         resolve: (value: unknown[]) => unknown,
@@ -66,21 +83,30 @@ function createDb(opts?: {
     return builder;
   });
   const insertReturning = vi.fn(async () => opts?.insertedRows ?? []);
-  const insertValues = vi.fn(() => ({ returning: insertReturning }));
+  const insertConflict = vi.fn(async () => undefined);
+  const insertValues = vi.fn(() => ({
+    returning: insertReturning,
+    onConflictDoUpdate: insertConflict,
+  }));
   const insert = vi.fn(() => ({ values: insertValues }));
 
   const updateReturning = vi.fn(async () => opts?.updatedRows ?? []);
   const updateWhere = vi.fn(() => ({ returning: updateReturning }));
   const updateSet = vi.fn(() => ({ where: updateWhere }));
   const update = vi.fn(() => ({ set: updateSet }));
+  const execute = vi.fn(async (query: unknown) => {
+    if (objectContainsText(query, "pg_advisory_xact_lock")) {
+      lockEvents.push("advisory");
+    }
+  });
   const db: Record<string, unknown> = {
     transaction: async (fn: (tx: unknown) => unknown) => fn(db),
-    execute: vi.fn(async () => undefined),
+    execute,
     select,
     insert,
     update,
   };
-  return { db, select, insertValues, updateSet };
+  return { db, select, insertValues, updateSet, execute, lockEvents };
 }
 
 afterEach(() => {
@@ -486,9 +512,106 @@ describe("clients mutation safety", () => {
     });
   });
 
-  it("clears prior evidence when staff explicitly withdraws SMS consent", async () => {
+  it("does not let ordinary re-consent bypass a manual suppression", async () => {
     const { db, updateSet } = createDb({
-      selectResults: [[{ id: CLIENT_ID, phone: "+15555550123" }]],
+      selectResults: [
+        [{ id: CLIENT_ID, phone: "+15555550123" }],
+        [{ id: "suppression-1" }],
+      ],
+      updatedRows: [{ id: CLIENT_ID }],
+    });
+
+    await expect(
+      callerWithDb(db).update({ id: CLIENT_ID, smsConsent: true })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining(
+        "manually placed on the do-not-text list"
+      ),
+    });
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("manually revokes a normalized phone practice-wide across duplicate clients", async () => {
+    const { db, insertValues, updateSet, lockEvents } = createDb({
+      selectResults: [
+        [{ phone: "(555) 555-0123" }],
+        [{ phone: "+15555550123" }],
+      ],
+      updatedRows: [{ id: CLIENT_ID }, { id: PATIENT_ID }],
+    });
+
+    await expect(
+      callerWithDb(db, "front_desk").revokeSms({
+        id: CLIENT_ID,
+        expectedPhone: "+15555550123",
+      })
+    ).resolves.toEqual({
+      phone: "+15555550123",
+      clientsRevoked: 2,
+    });
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: PRACTICE_ID,
+        phone: "+15555550123",
+        reason: "manual",
+      })
+    );
+    expect(updateSet).toHaveBeenCalledWith({
+      smsConsent: false,
+      smsConsentAt: null,
+      smsConsentSource: null,
+      smsConsentDisclosure: null,
+    });
+    expect(lockEvents.slice(0, 2)).toEqual(["advisory", "row:update"]);
+  });
+
+  it("fails closed when the revoke page has a stale persisted phone", async () => {
+    const { db, insertValues, updateSet, lockEvents } = createDb({
+      selectResults: [[{ phone: "+15555550999" }]],
+    });
+
+    await expect(
+      callerWithDb(db, "front_desk").revokeSms({
+        id: CLIENT_ID,
+        expectedPhone: "+15555550123",
+      })
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: expect.stringContaining("no longer matches"),
+    });
+
+    expect(lockEvents).toEqual([]);
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("rechecks the persisted phone after the recipient lock before revoking", async () => {
+    const { db, insertValues, updateSet, lockEvents } = createDb({
+      selectResults: [[{ phone: "+15555550123" }], [{ phone: "+15555550999" }]],
+    });
+
+    await expect(
+      callerWithDb(db, "front_desk").revokeSms({
+        id: CLIENT_ID,
+        expectedPhone: "+15555550123",
+      })
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: expect.stringContaining("changed while revoking"),
+    });
+
+    expect(lockEvents).toEqual(["advisory", "row:update"]);
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("clears prior evidence when staff explicitly withdraws SMS consent", async () => {
+    const { db, updateSet, lockEvents } = createDb({
+      selectResults: [
+        [{ phone: "+15555550123" }],
+        [{ id: CLIENT_ID, phone: "+15555550123" }],
+      ],
       updatedRows: [{ id: CLIENT_ID, smsConsent: false }],
     });
 
@@ -503,6 +626,57 @@ describe("clients mutation safety", () => {
       smsConsentSource: null,
       smsConsentDisclosure: null,
     });
+    expect(lockEvents.slice(0, 2)).toEqual(["advisory", "row:update"]);
+  });
+
+  it("withdraws from the persisted phone rather than an unsaved replacement", async () => {
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [
+        [{ phone: "+15555550123" }],
+        [{ id: CLIENT_ID, phone: "+15555550123" }],
+      ],
+      updatedRows: [{ id: CLIENT_ID, smsConsent: false }],
+    });
+
+    await callerWithDb(db).update({
+      id: CLIENT_ID,
+      phone: "+15555550999",
+      smsConsent: false,
+    });
+
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ phone: "+15555550123", reason: "manual" })
+    );
+    expect(insertValues).not.toHaveBeenCalledWith(
+      expect.objectContaining({ phone: "+15555550999" })
+    );
+    expect(updateSet).toHaveBeenCalledWith({
+      phone: "+15555550999",
+      smsConsent: false,
+      smsConsentAt: null,
+      smsConsentSource: null,
+      smsConsentDisclosure: null,
+    });
+  });
+
+  it("rechecks the withdrawal phone after the recipient lock", async () => {
+    const { db, insertValues, updateSet, lockEvents } = createDb({
+      selectResults: [
+        [{ phone: "+15555550123" }],
+        [{ id: CLIENT_ID, phone: "+15555550999" }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).update({ id: CLIENT_ID, smsConsent: false })
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: expect.stringContaining("changed while withdrawing"),
+    });
+
+    expect(lockEvents).toEqual(["advisory", "row:update"]);
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
   });
 
   it("rejects stale, deleted, or cross-tenant client updates", async () => {
@@ -582,9 +756,9 @@ describe("clients mutation safety", () => {
       updatedRows: [{ id: CLIENT_ID }],
     });
 
-    await expect(
-      callerWithDb(db).delete({ id: CLIENT_ID })
-    ).resolves.toEqual({ success: true });
+    await expect(callerWithDb(db).delete({ id: CLIENT_ID })).resolves.toEqual({
+      success: true,
+    });
 
     expect(updateSet).toHaveBeenCalledWith({ deletedAt: expect.any(Date) });
   });
@@ -630,9 +804,7 @@ describe("clients delete dependency safety", () => {
     expect(deleteBlock).toContain(
       "inArray(appointments.status, activeSchedulingStatuses)"
     );
-    expect(deleteBlock).toContain(
-      "eq(appointmentWaitlist.clientId, input.id)"
-    );
+    expect(deleteBlock).toContain("eq(appointmentWaitlist.clientId, input.id)");
     expect(deleteBlock).toContain(
       "eq(appointmentWaitlist.practiceId, ctx.practiceId)"
     );

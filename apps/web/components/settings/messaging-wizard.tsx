@@ -46,6 +46,7 @@ export type MessagingSetupLocation = {
       | "suspended";
     registrationDetail: string | null;
     enabled: boolean;
+    launchEligible?: boolean;
   } | null;
 };
 
@@ -104,8 +105,12 @@ export function MessagingWizard({
   const [areaCode, setAreaCode] = useState("");
   const [numbers, setNumbers] = useState<SearchNumber[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
-  const [selectedNumber, setSelectedNumber] = useState<SearchNumber | null>(null);
-  const [provisionedSender, setProvisionedSender] = useState<string | null>(null);
+  const [selectedNumber, setSelectedNumber] = useState<SearchNumber | null>(
+    null
+  );
+  const [provisionedSender, setProvisionedSender] = useState<string | null>(
+    null
+  );
   const [chargeAcknowledged, setChargeAcknowledged] = useState(false);
 
   useEffect(() => {
@@ -316,9 +321,7 @@ export function MessagingWizard({
                 setChargeAcknowledged={setChargeAcknowledged}
               />
             ) : null}
-            {step === "done" ? (
-              <DoneStep sender={provisionedSender} />
-            ) : null}
+            {step === "done" ? <DoneStep sender={provisionedSender} /> : null}
           </div>
 
           <div className="mt-6 flex items-center justify-between border-t border-slate-200 pt-5">
@@ -368,12 +371,10 @@ function ChooseStep({
   return (
     <div className="space-y-4">
       <p className="text-sm leading-6 text-slate-600">
-        OpenVPM currently sets up a new local number for texting. Your clinic&apos;s
-        existing voice line stays unchanged.
+        OpenVPM currently sets up a new local number for texting. Your
+        clinic&apos;s existing voice line stays unchanged.
       </p>
-      <div
-        className="w-full rounded-xl border border-slate-200 bg-slate-50 p-4 text-left"
-      >
+      <div className="w-full rounded-xl border border-slate-200 bg-slate-50 p-4 text-left">
         <div className="flex items-start gap-3">
           <ShieldCheck className="mt-0.5 h-5 w-5 text-slate-500" />
           <div>
@@ -491,9 +492,7 @@ function ConfirmStep({
       </p>
       <div className="flex flex-wrap items-end gap-2">
         <label className="space-y-1.5">
-          <span className="text-xs font-medium text-slate-600">
-            Area code
-          </span>
+          <span className="text-xs font-medium text-slate-600">Area code</span>
           <Input
             value={areaCode}
             onChange={(e) =>
@@ -537,7 +536,9 @@ function ConfirmStep({
                   : "hover:bg-slate-50"
               )}
             >
-              <span className="font-medium text-slate-950">{n.phoneNumber}</span>
+              <span className="font-medium text-slate-950">
+                {n.phoneNumber}
+              </span>
               <span className="flex items-center gap-2">
                 <span className="text-xs text-slate-500">
                   {formatCost(n.upfrontCost, n.currency)} today ·{" "}
@@ -553,7 +554,8 @@ function ConfirmStep({
       ) : hasSearched ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
           No available numbers returned a complete upfront price, monthly price,
-          and currency. Nothing can be selected or purchased; search again later.
+          and currency. Nothing can be selected or purchased; search again
+          later.
         </div>
       ) : null}
     </div>
@@ -575,7 +577,7 @@ function RegistrationStep({
 }) {
   const number =
     mode === "host"
-      ? location.existingPhone ?? "your number"
+      ? (location.existingPhone ?? "your number")
       : selectedNumber?.phoneNumber;
 
   return (
@@ -590,8 +592,9 @@ function RegistrationStep({
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
           <p className="text-sm font-medium text-amber-950">Provider charges</p>
           <p className="mt-2 text-sm text-amber-900">
-            {formatCost(selectedNumber.upfrontCost, selectedNumber.currency)} due
-            now, then {formatCost(selectedNumber.monthlyCost, selectedNumber.currency)}
+            {formatCost(selectedNumber.upfrontCost, selectedNumber.currency)}{" "}
+            due now, then{" "}
+            {formatCost(selectedNumber.monthlyCost, selectedNumber.currency)}
             /month for the number.
           </p>
         </div>
@@ -635,7 +638,8 @@ function DoneStep({ sender }: { sender: string | null }) {
         <p className="mt-2 text-sm leading-6 text-emerald-800">
           {sender ?? "Your number"} is saved while the provider finishes any
           activation work. Carrier registration has not been submitted yet, and
-          SMS sending stays off until approval is active and an admin turns it on.
+          SMS sending stays off until approval is active and an admin turns it
+          on.
         </p>
       </div>
       <div className="rounded-xl border border-slate-200 p-4">
@@ -644,8 +648,9 @@ function DoneStep({ sender }: { sender: string | null }) {
         </p>
         <p className="mt-2 text-sm leading-6 text-slate-600">
           Complete the US carrier registration form in Messaging settings.
-          OpenVPM will review and submit it. When registration is active, turn
-          sending on and send a test from the active location card.
+          OpenVPM will review and submit it. Hosted sending remains off until
+          the clinic and one location are explicitly approved for the pilot;
+          after approval, validate through a current consented client workflow.
         </p>
       </div>
     </div>
