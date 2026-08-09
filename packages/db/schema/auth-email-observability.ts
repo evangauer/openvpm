@@ -124,9 +124,7 @@ export const authEmailProviderIdentityConflicts = pgTable(
     occurredAt: timestamp("occurred_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
-    attemptId: uuid("attempt_id")
-      .notNull()
-      .references(() => authEmailAttempts.id),
+    attemptId: uuid("attempt_id").notNull(),
     provider: varchar("provider", { length: 16 }).notNull().default("resend"),
     source: authEmailSourceEnum("source").notNull(),
     durableProviderMessageId: varchar("durable_provider_message_id", {
@@ -137,6 +135,11 @@ export const authEmailProviderIdentityConflicts = pgTable(
     }).notNull(),
   },
   (table) => ({
+    attemptFk: foreignKey({
+      columns: [table.attemptId],
+      foreignColumns: [authEmailAttempts.id],
+      name: "auth_email_provider_identity_conflicts_attempt_fk",
+    }),
     identityUq: uniqueIndex(
       "auth_email_provider_identity_conflicts_identity_uq",
     ).on(
