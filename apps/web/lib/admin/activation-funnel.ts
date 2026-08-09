@@ -3,20 +3,19 @@ import type { Database } from "@openpims/db/client";
 import { withSystem } from "@/lib/tenant-db";
 
 /**
- * Trial activation funnel, DERIVED from existing data (no schema changes).
+ * Canonical practice conversion funnel.
  *
  * - signup: a practice created inside the window (soft-deleted and explicitly
  *   analytics-excluded internal/test practices are excluded).
- * - activated: the practice has at least one real (non-demo) client AND at
- *   least one real (non-demo) appointment created after signup. Demo rows are
- *   the ids recorded in practices.settings -> 'demoData' when sample data is
- *   seeded, so they never count toward activation.
+ * - activated: exact, repairable milestone projected from the first real
+ *   client and first real appointment creation timestamps.
  * - first visit completed: a real appointment has a completed visit_closeout.
  *   This is the durable clinic-use signal because closeout constraints require
  *   finalized clinical handoff plus an attributable charge disposition.
- * - billing started: a Stripe subscription exists and local status is trialing
- *   or active. This captures card-on-file commitment before the first charge.
- * - paid active: billingStatus = 'active'. A trialing subscription is not paid.
+ * - payment method collected: signed subscription Checkout completion created
+ *   with payment_method_collection=always.
+ * - first positive payment: signed subscription invoice.payment_succeeded with
+ *   amount_paid > 0. Current subscription state is reported separately.
  *
  * Shared by the platform-admin tRPC query and the weekly digest cron so both
  * always report the same numbers.
@@ -32,8 +31,19 @@ export interface ActivationFunnelWeek {
   setupCompleted: number;
   activated: number;
   firstVisitCompleted: number;
-  billingStarted: number;
-  subscribed: number;
+  paymentMethodCollected: number;
+  firstPositivePayment: number;
+  currentlyActive: number;
+}
+
+export interface ActivationFunnelDataQuality {
+  legacyBusinessStageRows: number;
+  unknownPaymentMethodPractices: number;
+  unknownPositivePaymentPractices: number;
+  missingRegistrationMilestones: number;
+  missingActivationMilestones: number;
+  unprojectedStripeEvidence: number;
+  unmappedStripeEvidence: number;
 }
 
 export interface ActivationFunnelTotals {
@@ -42,8 +52,9 @@ export interface ActivationFunnelTotals {
   setupCompleted: number;
   activated: number;
   firstVisitCompleted: number;
-  billingStarted: number;
-  subscribed: number;
+  paymentMethodCollected: number;
+  firstPositivePayment: number;
+  currentlyActive: number;
   /** setupStarted / signups; 0 when there are no signups. */
   setupStartRate: number;
   /** setupCompleted / signups; 0 when there are no signups. */
@@ -52,16 +63,19 @@ export interface ActivationFunnelTotals {
   activationRate: number;
   /** firstVisitCompleted / activated; 0 when there are no activated clinics. */
   firstVisitCompletionRate: number;
-  /** billingStarted / signups; 0 when there are no signups. */
-  billingStartRate: number;
-  /** subscribed / signups; 0 when there are no signups. */
-  conversionRate: number;
+  /** paymentMethodCollected / activated; 0 when there are no activations. */
+  paymentMethodRate: number;
+  /** firstPositivePayment / paymentMethodCollected. */
+  positivePaymentRate: number;
+  /** currently active subscription / signups; a current-state metric only. */
+  currentlyActiveRate: number;
 }
 
 export interface ActivationFunnel {
   days: number;
   weeks: ActivationFunnelWeek[];
   totals: ActivationFunnelTotals;
+  dataQuality: ActivationFunnelDataQuality;
 }
 
 /** Rate guarded against divide-by-zero: no signups means a 0 rate, not NaN. */
@@ -76,8 +90,19 @@ interface FunnelRow {
   setupCompleted: number | string;
   activated: number | string;
   firstVisitCompleted: number | string;
-  billingStarted: number | string;
-  subscribed: number | string;
+  paymentMethodCollected: number | string;
+  firstPositivePayment: number | string;
+  currentlyActive: number | string;
+}
+
+interface DataQualityRow {
+  legacyBusinessStageRows: number | string;
+  unknownPaymentMethodPractices: number | string;
+  unknownPositivePaymentPractices: number | string;
+  missingRegistrationMilestones: number | string;
+  missingActivationMilestones: number | string;
+  unprojectedStripeEvidence: number | string;
+  unmappedStripeEvidence: number | string;
 }
 
 function rowsFromExecute<T>(result: unknown): T[] {
@@ -94,56 +119,60 @@ export async function computeActivationFunnel(
 
   // Cross-tenant read → system context (RLS bypass), same as the admin
   // overview. One grouped aggregate query — no per-practice N+1.
-  const result = await withSystem(db, (tx) =>
-    tx.execute(sql`
+  const { cohortResult, qualityResult } = await withSystem(db, async (tx) => {
+    const cohortResult = await tx.execute(sql`
       with signups as (
         select
           p.id,
           p.created_at,
           p.billing_status,
-          p.stripe_subscription_id,
           p.settings,
-          date_trunc('week', p.created_at) as week_start,
-          coalesce(p.settings -> 'demoData' -> 'clientIds', '[]'::jsonb)
-            as demo_client_ids,
-          coalesce(p.settings -> 'demoData' -> 'appointmentIds', '[]'::jsonb)
-            as demo_appointment_ids
+          date_trunc('week', p.created_at) as week_start
         from practices p
         where p.deleted_at is null
           and p.created_at >= ${windowStart}::timestamptz
           and p.settings ->> 'analyticsExcluded' is distinct from 'true'
+      ), milestone_times as (
+        select
+          pcm.practice_id,
+          min(pcm.occurred_at) filter (
+            where pcm.milestone = 'registered'
+          ) as registered_at,
+          min(pcm.occurred_at) filter (
+            where pcm.milestone = 'activated'
+          ) as activated_at,
+          min(pcm.occurred_at) filter (
+            where pcm.milestone = 'payment_method_collected'
+          ) as payment_method_at,
+          min(pcm.occurred_at) filter (
+            where pcm.milestone = 'first_positive_payment'
+          ) as positive_payment_at
+        from practice_conversion_milestones pcm
+        join signups s on s.id = pcm.practice_id
+        group by pcm.practice_id
       )
       select
         to_char(s.week_start, 'YYYY-MM-DD') as "weekStart",
-        count(*)::int as "signups",
+        count(*) filter (where mt.registered_at is not null)::int as "signups",
         count(*) filter (
-          where nullif(s.settings -> 'onboardingState' ->> 'journeyStepId', '')
-            is not null
-            or nullif(s.settings ->> 'onboardingCompletedAt', '') is not null
+          where mt.registered_at is not null
+            and (
+              nullif(s.settings -> 'onboardingState' ->> 'journeyStepId', '')
+                is not null
+              or nullif(s.settings ->> 'onboardingCompletedAt', '') is not null
+            )
         )::int as "setupStarted",
         count(*) filter (
-          where nullif(s.settings ->> 'onboardingCompletedAt', '') is not null
+          where mt.registered_at is not null
+            and nullif(s.settings ->> 'onboardingCompletedAt', '') is not null
         )::int as "setupCompleted",
         count(*) filter (
-          where exists (
-            select 1
-            from clients c
-            where c.practice_id = s.id
-              and c.deleted_at is null
-              and c.created_at >= s.created_at
-              and not (s.demo_client_ids @> to_jsonb(c.id::text))
-          )
-          and exists (
-            select 1
-            from appointments a
-            where a.practice_id = s.id
-              and a.deleted_at is null
-              and a.created_at >= s.created_at
-              and not (s.demo_appointment_ids @> to_jsonb(a.id::text))
-          )
+          where mt.registered_at is not null and mt.activated_at is not null
         )::int as "activated",
         count(*) filter (
-          where exists (
+          where mt.registered_at is not null
+            and mt.activated_at is not null
+            and exists (
             select 1
             from visit_closeouts vc
             join appointments a
@@ -154,21 +183,135 @@ export async function computeActivationFunnel(
               and vc.status = 'completed'
               and vc.deleted_at is null
               and a.created_at >= s.created_at
-              and not (s.demo_appointment_ids @> to_jsonb(a.id::text))
+              and not (
+                coalesce(s.settings -> 'demoData' -> 'appointmentIds', '[]'::jsonb)
+                  @> to_jsonb(a.id::text)
+              )
           )
         )::int as "firstVisitCompleted",
         count(*) filter (
-          where s.stripe_subscription_id is not null
-            and s.billing_status in ('trialing', 'active')
-        )::int as "billingStarted",
-        count(*) filter (where s.billing_status = 'active')::int as "subscribed"
+          where mt.registered_at is not null
+            and mt.activated_at is not null
+            and mt.payment_method_at is not null
+        )::int as "paymentMethodCollected",
+        count(*) filter (
+          where mt.registered_at is not null
+            and mt.activated_at is not null
+            and mt.payment_method_at is not null
+            and mt.positive_payment_at is not null
+        )::int as "firstPositivePayment",
+        count(*) filter (
+          where mt.registered_at is not null and s.billing_status = 'active'
+        )::int as "currentlyActive"
       from signups s
+      left join milestone_times mt on mt.practice_id = s.id
       group by s.week_start
       order by s.week_start
-    `)
-  );
+    `);
 
-  const weeks: ActivationFunnelWeek[] = rowsFromExecute<FunnelRow>(result).map(
+    const qualityResult = await tx.execute(sql`
+      with cohort as (
+        select p.*
+        from practices p
+        where p.deleted_at is null
+          and p.created_at >= ${windowStart}::timestamptz
+          and p.settings ->> 'analyticsExcluded' is distinct from 'true'
+      ), source_activation as (
+        select p.id
+        from cohort p
+        where exists (
+          select 1 from clients c
+          where c.practice_id = p.id
+            and not (
+              coalesce(p.settings -> 'demoData' -> 'clientIds', '[]'::jsonb)
+                @> to_jsonb(c.id::text)
+            )
+        ) and exists (
+          select 1 from appointments a
+          where a.practice_id = p.id
+            and not (
+              coalesce(p.settings -> 'demoData' -> 'appointmentIds', '[]'::jsonb)
+                @> to_jsonb(a.id::text)
+            )
+        )
+      )
+      select
+        (
+          select count(*) from funnel_events fe
+          join cohort p on p.id = fe.practice_id
+          where fe.deleted_at is null
+            and fe.event_name in ('registration', 'activation', 'card_added', 'paid')
+        )::int as "legacyBusinessStageRows",
+        (
+          select count(*) from cohort p
+          where (
+            p.stripe_subscription_id is not null or exists (
+              select 1 from funnel_events fe
+              where fe.practice_id = p.id and fe.deleted_at is null
+                and fe.event_name = 'card_added'
+            )
+          ) and not exists (
+            select 1 from practice_conversion_milestones pcm
+            where pcm.practice_id = p.id
+              and pcm.milestone = 'payment_method_collected'
+          )
+        )::int as "unknownPaymentMethodPractices",
+        (
+          select count(*) from cohort p
+          where (
+            p.billing_status = 'active' or exists (
+              select 1 from funnel_events fe
+              where fe.practice_id = p.id and fe.deleted_at is null
+                and fe.event_name = 'paid'
+            )
+          ) and not exists (
+            select 1 from practice_conversion_milestones pcm
+            where pcm.practice_id = p.id
+              and pcm.milestone = 'first_positive_payment'
+          )
+        )::int as "unknownPositivePaymentPractices",
+        (
+          select count(*) from cohort p
+          where not exists (
+            select 1 from practice_conversion_milestones pcm
+            where pcm.practice_id = p.id and pcm.milestone = 'registered'
+          )
+        )::int as "missingRegistrationMilestones",
+        (
+          select count(*) from source_activation sa
+          where not exists (
+            select 1 from practice_conversion_milestones pcm
+            where pcm.practice_id = sa.id and pcm.milestone = 'activated'
+          )
+        )::int as "missingActivationMilestones",
+        (
+          select count(*) from stripe_events se
+          join cohort p on p.id = se.practice_id
+          where se.endpoint = 'subscription'
+            and se.evidence_kind is not null
+            and se.event_created_at is not null
+            and not exists (
+              select 1 from practice_conversion_milestones pcm
+              where pcm.practice_id = se.practice_id
+                and pcm.milestone = case se.evidence_kind
+                  when 'subscription_checkout_completed'
+                    then 'payment_method_collected'::practice_conversion_milestone
+                  else 'first_positive_payment'::practice_conversion_milestone
+                end
+            )
+        )::int as "unprojectedStripeEvidence",
+        (
+          select count(*) from stripe_events se
+          where se.endpoint = 'subscription'
+            and se.evidence_kind is not null
+            and se.event_created_at >= ${windowStart}::timestamptz
+            and se.practice_id is null
+        )::int as "unmappedStripeEvidence"
+    `);
+    return { cohortResult, qualityResult };
+  });
+
+  const weeks: ActivationFunnelWeek[] = rowsFromExecute<FunnelRow>(cohortResult).map(
     (row) => ({
       weekStart: String(row.weekStart),
       signups: Number(row.signups) || 0,
@@ -176,8 +319,9 @@ export async function computeActivationFunnel(
       setupCompleted: Number(row.setupCompleted) || 0,
       activated: Number(row.activated) || 0,
       firstVisitCompleted: Number(row.firstVisitCompleted) || 0,
-      billingStarted: Number(row.billingStarted) || 0,
-      subscribed: Number(row.subscribed) || 0,
+      paymentMethodCollected: Number(row.paymentMethodCollected) || 0,
+      firstPositivePayment: Number(row.firstPositivePayment) || 0,
+      currentlyActive: Number(row.currentlyActive) || 0,
     })
   );
 
@@ -192,11 +336,19 @@ export async function computeActivationFunnel(
     (sum, week) => sum + week.firstVisitCompleted,
     0
   );
-  const billingStarted = weeks.reduce(
-    (sum, week) => sum + week.billingStarted,
+  const paymentMethodCollected = weeks.reduce(
+    (sum, week) => sum + week.paymentMethodCollected,
     0
   );
-  const subscribed = weeks.reduce((sum, week) => sum + week.subscribed, 0);
+  const firstPositivePayment = weeks.reduce(
+    (sum, week) => sum + week.firstPositivePayment,
+    0,
+  );
+  const currentlyActive = weeks.reduce(
+    (sum, week) => sum + week.currentlyActive,
+    0,
+  );
+  const quality = rowsFromExecute<DataQualityRow>(qualityResult)[0];
 
   return {
     days,
@@ -207,14 +359,33 @@ export async function computeActivationFunnel(
       setupCompleted,
       activated,
       firstVisitCompleted,
-      billingStarted,
-      subscribed,
+      paymentMethodCollected,
+      firstPositivePayment,
+      currentlyActive,
       setupStartRate: funnelRate(setupStarted, signups),
       setupCompletionRate: funnelRate(setupCompleted, signups),
       activationRate: funnelRate(activated, signups),
       firstVisitCompletionRate: funnelRate(firstVisitCompleted, activated),
-      billingStartRate: funnelRate(billingStarted, signups),
-      conversionRate: funnelRate(subscribed, signups),
+      paymentMethodRate: funnelRate(paymentMethodCollected, activated),
+      positivePaymentRate: funnelRate(
+        firstPositivePayment,
+        paymentMethodCollected,
+      ),
+      currentlyActiveRate: funnelRate(currentlyActive, signups),
+    },
+    dataQuality: {
+      legacyBusinessStageRows: Number(quality?.legacyBusinessStageRows) || 0,
+      unknownPaymentMethodPractices:
+        Number(quality?.unknownPaymentMethodPractices) || 0,
+      unknownPositivePaymentPractices:
+        Number(quality?.unknownPositivePaymentPractices) || 0,
+      missingRegistrationMilestones:
+        Number(quality?.missingRegistrationMilestones) || 0,
+      missingActivationMilestones:
+        Number(quality?.missingActivationMilestones) || 0,
+      unprojectedStripeEvidence:
+        Number(quality?.unprojectedStripeEvidence) || 0,
+      unmappedStripeEvidence: Number(quality?.unmappedStripeEvidence) || 0,
     },
   };
 }

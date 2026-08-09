@@ -52,15 +52,26 @@ function funnel(days: number, totals: Partial<ActivationFunnel["totals"]> = {}):
       setupCompleted: 2,
       activated: 2,
       firstVisitCompleted: 1,
-      billingStarted: 2,
-      subscribed: 1,
+      paymentMethodCollected: 2,
+      firstPositivePayment: 1,
+      currentlyActive: 1,
       setupStartRate: 0.6,
       setupCompletionRate: 0.4,
       activationRate: 0.4,
       firstVisitCompletionRate: 0.5,
-      billingStartRate: 0.4,
-      conversionRate: 0.2,
+      paymentMethodRate: 1,
+      positivePaymentRate: 0.5,
+      currentlyActiveRate: 0.2,
       ...totals,
+    },
+    dataQuality: {
+      legacyBusinessStageRows: 4,
+      unknownPaymentMethodPractices: 1,
+      unknownPositivePaymentPractices: 1,
+      missingRegistrationMilestones: 0,
+      missingActivationMilestones: 0,
+      unprojectedStripeEvidence: 0,
+      unmappedStripeEvidence: 0,
     },
   };
 }
@@ -74,20 +85,20 @@ function journey(days: number): JourneyFunnel {
       demos: 8,
       registrations: 5,
       activated: 2,
-      cardAdded: 1,
-      paid: 1,
+      paymentMethodCollected: 1,
+      firstPositivePayment: 1,
       leftBeforeTrying: 12,
       demoAbandoned: 3,
       registrationAbandoned: 3,
       activationAbandoned: 1,
-      cardAbandoned: 0,
+      paymentAbandoned: 0,
       unattributedRegistrations: 0,
       clientErrors: 2,
       demoRate: 0.4,
       registrationRate: 0.25,
       activationRate: 0.4,
-      cardRate: 0.5,
-      paidRate: 1,
+      paymentMethodRate: 0.5,
+      positivePaymentRate: 1,
     },
   };
 }
@@ -173,7 +184,7 @@ describe("activation digest cron", () => {
     );
     expect(mocks.sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({
-        html: expect.stringContaining("Billing started"),
+        html: expect.stringContaining("Payment method"),
       })
     );
     expect(mocks.sendEmail).toHaveBeenCalledWith(

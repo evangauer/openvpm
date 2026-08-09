@@ -67,6 +67,7 @@ const bDispenseCharge = randomUUID();
 const aSmsConsentEvent = randomUUID();
 const bSmsConsentEvent = randomUUID();
 const funnelEventId = randomUUID();
+const conversionEvidenceKey = `practice:${aId}`;
 let failures = 0;
 
 async function appTransaction<T>(
@@ -154,6 +155,9 @@ try {
     (${bMigrationRun}, ${bId}, ${bUser}, 'clients', 'other', ${"b".repeat(64)}, ${"d".repeat(64)}, 10, now() + interval '1 day')`;
   await owner`insert into funnel_events (id, event_name, practice_id)
     values (${funnelEventId}, 'registration', ${aId})`;
+  await owner`insert into practice_conversion_milestones
+    (practice_id, milestone, occurred_at, evidence_source, evidence_key)
+    values (${aId}, 'registered', now(), 'practice_created', ${conversionEvidenceKey})`;
   await owner`insert into appointments (id, practice_id, client_id, start_time, end_time)
     select ${aAppointment}::uuid, ${aId}::uuid, id, now(), now() + interval '30 minutes'
     from clients where practice_id = ${aId}
@@ -556,6 +560,14 @@ try {
     "tenant context cannot read system-only funnel events",
     hiddenFunnelRows.length === 0,
   );
+  const hiddenConversionRows = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select practice_id from practice_conversion_milestones where practice_id = ${aId}`;
+  });
+  check(
+    "tenant context cannot read system-only conversion milestones",
+    hiddenConversionRows.length === 0,
+  );
 
   // System bypass sees both (for cron / platform admin).
   const allRows = await appTransaction(async (tx) => {
@@ -576,6 +588,14 @@ try {
     return tx`select id from funnel_events where id = ${funnelEventId}`;
   });
   check("system bypass can read funnel events", systemFunnelRows.length === 1);
+  const systemConversionRows = await appTransaction(async (tx) => {
+    await tx`select set_config('app.rls_bypass', 'on', true)`;
+    return tx`select practice_id from practice_conversion_milestones where practice_id = ${aId}`;
+  });
+  check(
+    "system bypass can read conversion milestones",
+    systemConversionRows.length === 1,
+  );
 
   let bypassCannotDeletePrescriptionHistory = false;
   try {
@@ -606,6 +626,7 @@ try {
     await cleanup`delete from prescription_events where id in (${aPrescriptionEvent}, ${bPrescriptionEvent})`;
     await cleanup`delete from visit_closeouts where id in (${aCloseout}, ${bCloseout})`;
     await cleanup`delete from funnel_events where id = ${funnelEventId}`;
+    await cleanup`delete from practice_conversion_milestones where practice_id = ${aId}`;
     await cleanup`delete from invoices where id in (${aInvoice}, ${bInvoice})`;
     await cleanup`delete from migration_runs where id in (${aMigrationRun}, ${bMigrationRun})`;
     await cleanup`delete from appointments where id in (${aAppointment}, ${bAppointment})`;

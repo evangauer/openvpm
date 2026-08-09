@@ -53,8 +53,9 @@ describe("activation recovery", () => {
 
   it("derives every authoritative progress stage from durable product data", () => {
     const base = {
-      billingStatus: "trialing",
-      stripeSubscriptionId: null,
+      activated: false,
+      paymentMethodCollected: false,
+      firstPositivePayment: false,
       setupStarted: false,
       setupCompleted: false,
       realClientCount: 0,
@@ -79,13 +80,14 @@ describe("activation recovery", () => {
         ...base,
         realClientCount: 1,
         realAppointmentCount: 1,
+        activated: true,
       })
     ).toBe("activated");
     expect(
-      deriveRecoveryStage({ ...base, stripeSubscriptionId: "sub_123" })
-    ).toBe("card_on_file");
-    expect(deriveRecoveryStage({ ...base, billingStatus: "active" })).toBe(
-      "paid"
+      deriveRecoveryStage({ ...base, paymentMethodCollected: true })
+    ).toBe("payment_method_collected");
+    expect(deriveRecoveryStage({ ...base, firstPositivePayment: true })).toBe(
+      "first_positive_payment"
     );
   });
 
@@ -110,19 +112,26 @@ describe("activation recovery", () => {
       [{ ...base, trialState: "no_trial" as const }, "Restore trial or billing access"],
       [
         { ...base, trialState: "ending_soon" as const },
-        "Help add a card before trial end",
+        "Help add a payment method before trial end",
       ],
       [{ ...base, stage: "setup_started" as const, setupStage: "Data import" }, "Unblock Data import"],
       [{ ...base, stage: "setup_complete" as const }, "Help import the first real client"],
       [{ ...base, stage: "client_added" as const }, "Help book the first real appointment"],
       [{ ...base, stage: "appointment_booked" as const }, "Help add the appointment's client"],
-      [{ ...base, stage: "activated" as const }, "Invite clinic to add a card"],
       [
-        { ...base, stage: "card_on_file" as const },
+        { ...base, stage: "activated" as const },
+        "Invite clinic to add a payment method",
+      ],
+      [
+        { ...base, stage: "payment_method_collected" as const },
         "Support the first successful clinic week",
       ],
       [
-        { ...base, trialState: "no_trial" as const, stage: "paid" as const },
+        {
+          ...base,
+          trialState: "no_trial" as const,
+          stage: "first_positive_payment" as const,
+        },
         "Support retention and expansion",
       ],
     ] as const;
@@ -140,7 +149,6 @@ describe("activation recovery", () => {
         practiceName: "Older Clinic",
         billingStatus: "trialing",
         trialEndsAt: "2026-08-20T12:00:00.000Z",
-        stripeSubscriptionId: null,
         timezone: "America/Los_Angeles",
         createdAt: "2026-07-01T12:00:00.000Z",
         settings: {},
@@ -150,6 +158,9 @@ describe("activation recovery", () => {
         activeAdminCount: "1",
         realClientCount: "0",
         realAppointmentCount: "0",
+        activated: false,
+        paymentMethodCollected: false,
+        firstPositivePayment: false,
         lastMeaningfulActivityAt: "2026-07-01T12:00:00.000Z",
       },
       {
@@ -157,7 +168,6 @@ describe("activation recovery", () => {
         practiceName: "Help Clinic",
         billingStatus: "trialing",
         trialEndsAt: "2026-08-20T12:00:00.000Z",
-        stripeSubscriptionId: null,
         timezone: "Pacific/Auckland",
         createdAt: "2026-08-01T12:00:00.000Z",
         settings: {
@@ -172,6 +182,9 @@ describe("activation recovery", () => {
         activeAdminCount: 1,
         realClientCount: 2,
         realAppointmentCount: 0,
+        activated: false,
+        paymentMethodCollected: false,
+        firstPositivePayment: false,
         lastMeaningfulActivityAt: "2026-08-07T12:00:00.000Z",
       },
     ]);
@@ -215,8 +228,9 @@ describe("activation recovery", () => {
     expect(source).not.toContain("join lateral");
     expect(source).toContain("max(greatest(c.created_at, c.updated_at))");
     expect(source).toContain("max(greatest(a.created_at, a.updated_at))");
-    expect(source).toContain("max(fe.created_at) as last_funnel_activity_at");
-    expect(source).toContain("fe.deleted_at is null");
-    expect(source).toContain("'registration', 'activation', 'card_added', 'paid'");
+    expect(source).toContain("from practice_conversion_milestones pcm");
+    expect(source).toContain("pcm.milestone = 'payment_method_collected'");
+    expect(source).toContain("pcm.milestone = 'first_positive_payment'");
+    expect(source).not.toContain("from funnel_events fe");
   });
 });

@@ -39,6 +39,7 @@ import {
   appendRequiredSmsConsentEventInTransaction,
   staffSmsConsentEventKey,
 } from "@/lib/messaging/consent-events";
+import { recordActivationAfterClientCreated } from "@/lib/funnel-events-server";
 
 const clientNameInput = z.string().trim().min(1).max(CLIENT_NAME_MAX_LENGTH);
 const clientEmailInput = z
@@ -419,6 +420,11 @@ export const clientsRouter = createRouter({
 
         return created;
       });
+      await recordActivationAfterClientCreated(
+        ctx.db,
+        ctx.practiceId,
+        "clients.create",
+      );
       await dispatchWebhookEvent(ctx.practiceId, "client.created", {
         id: client.id,
         firstName: client.firstName,

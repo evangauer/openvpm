@@ -65,6 +65,11 @@ export const clients = pgTable(
       table.practiceId,
       table.deletedAt,
     ),
+    conversionCreatedIdx: index("clients_conversion_created_idx").on(
+      table.practiceId,
+      table.createdAt,
+      table.id,
+    ),
     nameTrgmIdx: index("clients_name_trgm_idx").on(
       table.firstName,
       table.lastName,

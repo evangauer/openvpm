@@ -18,8 +18,8 @@ export type RecoveryStage =
   | "client_added"
   | "appointment_booked"
   | "activated"
-  | "card_on_file"
-  | "paid";
+  | "payment_method_collected"
+  | "first_positive_payment";
 
 export interface RecoveryNextAction {
   priority: number;
@@ -54,7 +54,6 @@ interface RecoveryRow {
   practiceName: string;
   billingStatus: string;
   trialEndsAt: Date | string | null;
-  stripeSubscriptionId: string | null;
   timezone: string;
   createdAt: Date | string;
   settings: unknown;
@@ -64,6 +63,9 @@ interface RecoveryRow {
   activeAdminCount: number | string;
   realClientCount: number | string;
   realAppointmentCount: number | string;
+  activated: boolean;
+  paymentMethodCollected: boolean;
+  firstPositivePayment: boolean;
   lastMeaningfulActivityAt: Date | string;
 }
 
@@ -158,20 +160,17 @@ export function recoverySetupState(settingsValue: unknown): {
 }
 
 export function deriveRecoveryStage(input: {
-  billingStatus: string;
-  stripeSubscriptionId: string | null;
+  activated: boolean;
+  paymentMethodCollected: boolean;
+  firstPositivePayment: boolean;
   setupStarted: boolean;
   setupCompleted: boolean;
   realClientCount: number;
   realAppointmentCount: number;
 }): RecoveryStage {
-  if (input.billingStatus === "active") return "paid";
-  if (input.billingStatus === "trialing" && input.stripeSubscriptionId) {
-    return "card_on_file";
-  }
-  if (input.realClientCount > 0 && input.realAppointmentCount > 0) {
-    return "activated";
-  }
+  if (input.firstPositivePayment) return "first_positive_payment";
+  if (input.paymentMethodCollected) return "payment_method_collected";
+  if (input.activated) return "activated";
   if (input.realAppointmentCount > 0) return "appointment_booked";
   if (input.realClientCount > 0) return "client_added";
   if (input.setupCompleted) return "setup_complete";
@@ -198,7 +197,7 @@ export function deriveRecoveryNextAction(input: {
         : "Restore an admin contact",
     };
   }
-  if (input.stage === "paid") {
+  if (input.stage === "first_positive_payment") {
     return { priority: 20, label: "Support retention and expansion" };
   }
   if (input.trialState === "expired") {
@@ -207,8 +206,11 @@ export function deriveRecoveryNextAction(input: {
   if (input.trialState === "no_trial") {
     return { priority: 85, label: "Restore trial or billing access" };
   }
-  if (input.trialState === "ending_soon" && input.stage !== "card_on_file") {
-    return { priority: 80, label: "Help add a card before trial end" };
+  if (
+    input.trialState === "ending_soon" &&
+    input.stage !== "payment_method_collected"
+  ) {
+    return { priority: 80, label: "Help add a payment method before trial end" };
   }
   switch (input.stage) {
     case "registered":
@@ -222,8 +224,8 @@ export function deriveRecoveryNextAction(input: {
     case "appointment_booked":
       return { priority: 60, label: "Help add the appointment's client" };
     case "activated":
-      return { priority: 55, label: "Invite clinic to add a card" };
-    case "card_on_file":
+      return { priority: 55, label: "Invite clinic to add a payment method" };
+    case "payment_method_collected":
       return { priority: 45, label: "Support the first successful clinic week" };
   }
 }
@@ -244,7 +246,6 @@ export async function computeActivationRecovery(
           p.name,
           p.billing_status,
           p.trial_ends_at,
-          p.stripe_subscription_id,
           p.timezone,
           p.created_at,
           p.settings,
@@ -296,22 +297,24 @@ export async function computeActivationRecovery(
           and a.deleted_at is null
           and not (pb.demo_appointment_ids @> to_jsonb(a.id::text))
         group by pb.id
-      ), funnel_stats as (
+      ), milestone_stats as (
         select
-          fe.practice_id,
-          max(fe.created_at) as last_funnel_activity_at
-        from funnel_events fe
-        join practice_base pb on pb.id = fe.practice_id
-        where fe.deleted_at is null
-          and fe.event_name in ('registration', 'activation', 'card_added', 'paid')
-        group by fe.practice_id
+          pcm.practice_id,
+          bool_or(pcm.milestone = 'activated') as activated,
+          bool_or(pcm.milestone = 'payment_method_collected')
+            as payment_method_collected,
+          bool_or(pcm.milestone = 'first_positive_payment')
+            as first_positive_payment,
+          max(pcm.occurred_at) as last_milestone_at
+        from practice_conversion_milestones pcm
+        join practice_base pb on pb.id = pcm.practice_id
+        group by pcm.practice_id
       )
       select
         pb.id as "practiceId",
         pb.name as "practiceName",
         pb.billing_status as "billingStatus",
         pb.trial_ends_at as "trialEndsAt",
-        pb.stripe_subscription_id as "stripeSubscriptionId",
         pb.timezone,
         pb.created_at as "createdAt",
         pb.settings,
@@ -322,18 +325,23 @@ export async function computeActivationRecovery(
         coalesce(client_stats.real_client_count, 0)::int as "realClientCount",
         coalesce(appointment_stats.real_appointment_count, 0)::int
           as "realAppointmentCount",
+        coalesce(milestone_stats.activated, false) as "activated",
+        coalesce(milestone_stats.payment_method_collected, false)
+          as "paymentMethodCollected",
+        coalesce(milestone_stats.first_positive_payment, false)
+          as "firstPositivePayment",
         greatest(
           pb.created_at,
           client_stats.last_real_client_at,
           appointment_stats.last_real_appointment_at,
-          funnel_stats.last_funnel_activity_at
+          milestone_stats.last_milestone_at
         ) as "lastMeaningfulActivityAt"
       from practice_base pb
       left join verified_admin on verified_admin.practice_id = pb.id
       left join admin_stats admins on admins.practice_id = pb.id
       left join client_stats on client_stats.practice_id = pb.id
       left join appointment_stats on appointment_stats.practice_id = pb.id
-      left join funnel_stats on funnel_stats.practice_id = pb.id
+      left join milestone_stats on milestone_stats.practice_id = pb.id
       order by pb.created_at, pb.id
     `)
   );
@@ -361,8 +369,9 @@ export async function computeActivationRecovery(
       now
     );
     const authoritativeStage = deriveRecoveryStage({
-      billingStatus: row.billingStatus,
-      stripeSubscriptionId: row.stripeSubscriptionId,
+      activated: row.activated,
+      paymentMethodCollected: row.paymentMethodCollected,
+      firstPositivePayment: row.firstPositivePayment,
       setupStarted: setup.started,
       setupCompleted: setup.completed,
       realClientCount,

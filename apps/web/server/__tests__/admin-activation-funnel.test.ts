@@ -81,16 +81,16 @@ describe("admin activation funnel", () => {
   it("sums weekly rows and computes activation and conversion rates", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
     mocks.executeResults.push([
-      { weekStart: "2026-06-15", signups: 4, setupStarted: 3, setupCompleted: 1, activated: 2, firstVisitCompleted: 1, billingStarted: 2, subscribed: 1 },
-      { weekStart: "2026-06-22", signups: 6, setupStarted: 4, setupCompleted: 2, activated: 3, firstVisitCompleted: 2, billingStarted: 4, subscribed: 2 },
-    ]);
+      { weekStart: "2026-06-15", signups: 4, setupStarted: 3, setupCompleted: 1, activated: 2, firstVisitCompleted: 1, paymentMethodCollected: 2, firstPositivePayment: 1, currentlyActive: 1 },
+      { weekStart: "2026-06-22", signups: 6, setupStarted: 4, setupCompleted: 2, activated: 3, firstVisitCompleted: 2, paymentMethodCollected: 3, firstPositivePayment: 2, currentlyActive: 2 },
+    ], [{ legacyBusinessStageRows: 9, unknownPaymentMethodPractices: 2 }]);
 
     const result = await caller().activationFunnel({ days: 30 });
 
     expect(result.days).toBe(30);
     expect(result.weeks).toEqual([
-      { weekStart: "2026-06-15", signups: 4, setupStarted: 3, setupCompleted: 1, activated: 2, firstVisitCompleted: 1, billingStarted: 2, subscribed: 1 },
-      { weekStart: "2026-06-22", signups: 6, setupStarted: 4, setupCompleted: 2, activated: 3, firstVisitCompleted: 2, billingStarted: 4, subscribed: 2 },
+      { weekStart: "2026-06-15", signups: 4, setupStarted: 3, setupCompleted: 1, activated: 2, firstVisitCompleted: 1, paymentMethodCollected: 2, firstPositivePayment: 1, currentlyActive: 1 },
+      { weekStart: "2026-06-22", signups: 6, setupStarted: 4, setupCompleted: 2, activated: 3, firstVisitCompleted: 2, paymentMethodCollected: 3, firstPositivePayment: 2, currentlyActive: 2 },
     ]);
     expect(result.totals).toEqual({
       signups: 10,
@@ -98,14 +98,20 @@ describe("admin activation funnel", () => {
       setupCompleted: 3,
       activated: 5,
       firstVisitCompleted: 3,
-      billingStarted: 6,
-      subscribed: 3,
+      paymentMethodCollected: 5,
+      firstPositivePayment: 3,
+      currentlyActive: 3,
       setupStartRate: 0.7,
       setupCompletionRate: 0.3,
       activationRate: 0.5,
       firstVisitCompletionRate: 0.6,
-      billingStartRate: 0.6,
-      conversionRate: 0.3,
+      paymentMethodRate: 1,
+      positivePaymentRate: 0.6,
+      currentlyActiveRate: 0.3,
+    });
+    expect(result.dataQuality).toMatchObject({
+      legacyBusinessStageRows: 9,
+      unknownPaymentMethodPractices: 2,
     });
     expect(mocks.withSystem).toHaveBeenCalledWith(
       mocks.db,
@@ -115,7 +121,7 @@ describe("admin activation funnel", () => {
 
   it("defaults to a 30-day window when no input is given", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
-    mocks.executeResults.push([]);
+    mocks.executeResults.push([], []);
 
     const result = await caller().activationFunnel();
 
@@ -124,7 +130,7 @@ describe("admin activation funnel", () => {
 
   it("returns zero rates instead of dividing by zero when there are no signups", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
-    mocks.executeResults.push([]);
+    mocks.executeResults.push([], []);
 
     const result = await caller().activationFunnel({ days: 7 });
 
@@ -134,22 +140,24 @@ describe("admin activation funnel", () => {
       setupCompleted: 0,
       activated: 0,
       firstVisitCompleted: 0,
-      billingStarted: 0,
-      subscribed: 0,
+      paymentMethodCollected: 0,
+      firstPositivePayment: 0,
+      currentlyActive: 0,
       setupStartRate: 0,
       setupCompletionRate: 0,
       activationRate: 0,
       firstVisitCompletionRate: 0,
-      billingStartRate: 0,
-      conversionRate: 0,
+      paymentMethodRate: 0,
+      positivePaymentRate: 0,
+      currentlyActiveRate: 0,
     });
   });
 
   it("coerces string counts from the driver into numbers", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
     mocks.executeResults.push([
-      { weekStart: "2026-06-29", signups: "2", setupStarted: "1", setupCompleted: "0", activated: "1", firstVisitCompleted: "1", billingStarted: "1", subscribed: "0" },
-    ]);
+      { weekStart: "2026-06-29", signups: "2", setupStarted: "1", setupCompleted: "0", activated: "1", firstVisitCompleted: "1", paymentMethodCollected: "1", firstPositivePayment: "0", currentlyActive: "0" },
+    ], []);
 
     const result = await caller().activationFunnel({ days: 30 });
 
@@ -157,32 +165,25 @@ describe("admin activation funnel", () => {
     expect(result.totals.activated).toBe(1);
     expect(result.totals.firstVisitCompleted).toBe(1);
     expect(result.totals.firstVisitCompletionRate).toBe(1);
-    expect(result.totals.billingStarted).toBe(1);
+    expect(result.totals.paymentMethodCollected).toBe(1);
     expect(result.totals.activationRate).toBe(0.5);
   });
 
-  it("excludes demo rows and soft-deleted data in the funnel SQL", () => {
+  it("uses canonical milestones and reports current billing state separately", () => {
     const source = readFileSync("lib/admin/activation-funnel.ts", "utf8");
 
     // Demo ids seeded into practices.settings.demoData never count.
     expect(source).toContain("p.settings -> 'demoData' -> 'clientIds'");
     expect(source).toContain("p.settings -> 'demoData' -> 'appointmentIds'");
-    expect(source).toContain("not (s.demo_client_ids @> to_jsonb(c.id::text))");
-    expect(source).toContain(
-      "not (s.demo_appointment_ids @> to_jsonb(a.id::text))"
-    );
-
-    // Soft-deleted practices, clients, and appointments are excluded.
+    // Soft-deleted/test practices are excluded from cohorts.
     expect(source).toContain("p.deleted_at is null");
     expect(source).toContain(
       "p.settings ->> 'analyticsExcluded' is distinct from 'true'"
     );
-    expect(source).toContain("c.deleted_at is null");
-    expect(source).toContain("a.deleted_at is null");
-
-    // Activation only counts rows created after the practice signed up.
-    expect(source).toContain("c.created_at >= s.created_at");
-    expect(source).toContain("a.created_at >= s.created_at");
+    expect(source).toContain("from practice_conversion_milestones pcm");
+    expect(source).toContain("pcm.milestone = 'activated'");
+    expect(source).toContain("pcm.milestone = 'payment_method_collected'");
+    expect(source).toContain("pcm.milestone = 'first_positive_payment'");
 
     // First-visit completion requires a completed, tenant-owned closeout for a
     // real appointment and uses the same post-signup/demo exclusions.
@@ -192,10 +193,10 @@ describe("admin activation funnel", () => {
     expect(source).toContain("vc.status = 'completed'");
     expect(source).toContain("vc.deleted_at is null");
 
-    // Subscribed means an active subscription, not a running trial.
-    expect(source).toContain("where s.billing_status = 'active'");
-    expect(source).toContain("s.stripe_subscription_id is not null");
-    expect(source).toContain("s.billing_status in ('trialing', 'active')");
+    // Current active is not used as synthetic historical payment evidence.
+    expect(source).toContain("s.billing_status = 'active'");
+    expect(source).toContain("unknownPositivePaymentPractices");
+    expect(source).toContain("legacyBusinessStageRows");
 
     // Weekly grouping via date_trunc — a grouped aggregate, not a per-practice N+1.
     expect(source).toContain("date_trunc('week', p.created_at)");

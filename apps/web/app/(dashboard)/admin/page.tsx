@@ -607,8 +607,16 @@ export default function AdminPage() {
                 ["Demo", journey.totals.demos, journey.totals.demoRate],
                 ["Registered", journey.totals.registrations, journey.totals.registrationRate],
                 ["Activated", journey.totals.activated, journey.totals.activationRate],
-                ["Card added", journey.totals.cardAdded, journey.totals.cardRate],
-                ["Paid", journey.totals.paid, journey.totals.paidRate],
+                [
+                  "Payment method",
+                  journey.totals.paymentMethodCollected,
+                  journey.totals.paymentMethodRate,
+                ],
+                [
+                  "First positive payment",
+                  journey.totals.firstPositivePayment,
+                  journey.totals.positivePaymentRate,
+                ],
               ].map(([label, value, rate]) => (
                 <div key={String(label)}>
                   <p className="text-sm text-muted-foreground">{label}</p>
@@ -629,7 +637,10 @@ export default function AdminPage() {
               <p>Demo without signup (7d+): {journey.totals.demoAbandoned}</p>
               <p>Signup stalled (7d+): {journey.totals.registrationAbandoned}</p>
               <p>Activation stalled (7d+): {journey.totals.activationAbandoned}</p>
-              <p>Card stalled after trial (7d+): {journey.totals.cardAbandoned}</p>
+              <p>
+                Payment method without positive payment after trial (7d+):{" "}
+                {journey.totals.paymentAbandoned}
+              </p>
               <p>Client errors: {journey.totals.clientErrors}</p>
             </div>
 
@@ -642,8 +653,8 @@ export default function AdminPage() {
                     <th className="px-3 py-2 font-medium">Demo</th>
                     <th className="px-3 py-2 font-medium">Registered</th>
                     <th className="px-3 py-2 font-medium">Activated</th>
-                    <th className="px-3 py-2 font-medium">Card</th>
-                    <th className="px-3 py-2 font-medium">Paid</th>
+                    <th className="px-3 py-2 font-medium">Payment method</th>
+                    <th className="px-3 py-2 font-medium">Positive payment</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -654,8 +665,12 @@ export default function AdminPage() {
                       <td className="px-3 py-2 tabular-nums">{week.demos}</td>
                       <td className="px-3 py-2 tabular-nums">{week.registrations}</td>
                       <td className="px-3 py-2 tabular-nums">{week.activated}</td>
-                      <td className="px-3 py-2 tabular-nums">{week.cardAdded}</td>
-                      <td className="px-3 py-2 tabular-nums">{week.paid}</td>
+                      <td className="px-3 py-2 tabular-nums">
+                        {week.paymentMethodCollected}
+                      </td>
+                      <td className="px-3 py-2 tabular-nums">
+                        {week.firstPositivePayment}
+                      </td>
                     </tr>
                   ))}
                   {journey.weeks.length === 0 ? (
@@ -671,7 +686,8 @@ export default function AdminPage() {
             <p className="mt-3 text-xs text-muted-foreground">
               Anonymous first touch is carried across openvpm.com, demo, and signup.
               Rates are visit-to-step for demo and registration, then step-to-step.{" "}
-              Stalls require seven full days; active card-on-file trials are not stalled.
+              Stalls require seven full days; an active trial with a collected
+              payment method is not treated as payment-abandoned.
               {journey.totals.unattributedRegistrations > 0
                 ? ` ${journey.totals.unattributedRegistrations} registration(s) could not be matched to a first touch.`
                 : ""}
@@ -691,7 +707,7 @@ export default function AdminPage() {
         </div>
         {funnel ? (
           <>
-            <div className="mt-3 grid gap-4 sm:grid-cols-3 xl:grid-cols-7">
+            <div className="mt-3 grid gap-4 sm:grid-cols-3 xl:grid-cols-8">
               <div>
                 <p className="text-sm text-muted-foreground">Signups</p>
                 <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
@@ -735,20 +751,29 @@ export default function AdminPage() {
                 </p>
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Billing started</p>
+                <p className="text-sm text-muted-foreground">Payment method</p>
                 <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
-                  {funnel.totals.billingStarted}
+                  {funnel.totals.paymentMethodCollected}
                   <span className="ml-2 text-sm font-normal text-muted-foreground">
-                    {formatPct(funnel.totals.billingStartRate)}
+                    {formatPct(funnel.totals.paymentMethodRate)}
                   </span>
                 </p>
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Paid active</p>
+                <p className="text-sm text-muted-foreground">First positive payment</p>
                 <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
-                  {funnel.totals.subscribed}
+                  {funnel.totals.firstPositivePayment}
                   <span className="ml-2 text-sm font-normal text-muted-foreground">
-                    {formatPct(funnel.totals.conversionRate)}
+                    {formatPct(funnel.totals.positivePaymentRate)}
+                  </span>
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">Currently active</p>
+                <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
+                  {funnel.totals.currentlyActive}
+                  <span className="ml-2 text-sm font-normal text-muted-foreground">
+                    {formatPct(funnel.totals.currentlyActiveRate)}
                   </span>
                 </p>
               </div>
@@ -757,10 +782,27 @@ export default function AdminPage() {
               Setup progress comes from the guided clinic setup. Activated = added a
               real client and booked a real visit. First visit done requires a
               completed clinical and billing closeout; its rate is measured from
-              activated clinics. Billing started = Stripe subscription created;
-              paid active = billing status active. Other rates are signup-cohort
-              rates for this window.
+              activated clinics. Payment method = a signed subscription Checkout
+              completed with collection required. First positive payment = a signed,
+              positive subscription invoice payment. Currently active is current
+              billing state, not a historical conversion milestone.
             </p>
+            <div className="mt-4 rounded-md border border-amber-300/60 bg-amber-50/50 p-3 text-xs text-muted-foreground dark:bg-amber-950/10">
+              <p className="font-medium text-foreground">Conversion evidence quality</p>
+              <p className="mt-1">
+                Legacy business-stage rows are excluded; unknown evidence is never
+                counted as zero or assigned a synthetic date.
+              </p>
+              <p className="mt-2">
+                Legacy rows: {funnel.dataQuality.legacyBusinessStageRows} · Unknown
+                payment method: {funnel.dataQuality.unknownPaymentMethodPractices} ·{" "}
+                Unknown positive payment: {funnel.dataQuality.unknownPositivePaymentPractices}
+                {" · "}Missing registrations: {funnel.dataQuality.missingRegistrationMilestones}
+                {" · "}Missing activations: {funnel.dataQuality.missingActivationMilestones}
+                {" · "}Unprojected Stripe evidence: {funnel.dataQuality.unprojectedStripeEvidence}
+                {" · "}Unmapped Stripe evidence: {funnel.dataQuality.unmappedStripeEvidence}
+              </p>
+            </div>
           </>
         ) : (
           <p className="mt-3 text-sm text-muted-foreground">

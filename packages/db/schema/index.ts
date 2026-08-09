@@ -25,6 +25,7 @@ export * from "./sms-consent-events";
 export * from "./demo-access";
 export * from "./booking";
 export * from "./funnel-events";
+export * from "./conversion-milestones";
 export * from "./migrations";
 export * from "./visit-closeouts";
 export * from "./visit-work-items";

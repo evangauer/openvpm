@@ -13,6 +13,7 @@ export const CRON_HEARTBEAT_JOBS = [
   "auth-cleanup",
   "prescription-expiry",
   "activation-digest",
+  "conversion-reconcile",
 ] as const;
 
 export type CronHeartbeatJob = (typeof CRON_HEARTBEAT_JOBS)[number];

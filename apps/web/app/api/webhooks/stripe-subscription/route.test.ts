@@ -36,6 +36,8 @@ const mocks = vi.hoisted(() => {
     constructSubscriptionWebhookEvent: vi.fn(),
     retrieveSubscription: vi.fn(),
     claimStripeEvent: vi.fn(async () => true),
+    attachStripeEventPractice: vi.fn(async () => undefined),
+    projectStripeConversionMilestonesForEvent: vi.fn(async () => 1),
     syncPracticeSubscriptionQuantities: vi.fn(async () => ({ status: "ok" })),
     alertOps: vi.fn(async () => undefined),
     sendLifecycleEmail: vi.fn(
@@ -43,7 +45,6 @@ const mocks = vi.hoisted(() => {
     ),
     sendPaymentReceiptEmail: vi.fn(async () => undefined),
     sendPaymentFailedEmail: vi.fn(async () => undefined),
-    recordPracticeFunnelStage: vi.fn(async () => true),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
       fn(db)
     ),
@@ -69,6 +70,7 @@ vi.mock("@/lib/stripe", () => ({
 
 vi.mock("@/lib/billing/stripe-events", () => ({
   claimStripeEvent: mocks.claimStripeEvent,
+  attachStripeEventPractice: mocks.attachStripeEventPractice,
 }));
 
 vi.mock("@/lib/billing/subscription-sync", () => ({
@@ -88,8 +90,9 @@ vi.mock("@/lib/email-lifecycle", () => ({
   sendLifecycleEmail: mocks.sendLifecycleEmail,
 }));
 
-vi.mock("@/lib/funnel-events-server", () => ({
-  recordPracticeFunnelStage: mocks.recordPracticeFunnelStage,
+vi.mock("@/lib/conversion-milestones", () => ({
+  projectStripeConversionMilestonesForEvent:
+    mocks.projectStripeConversionMilestonesForEvent,
 }));
 
 const { POST } = await import("./route");
@@ -102,6 +105,7 @@ const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const CUSTOMER_ID = "cus_test_123";
 const SUBSCRIPTION_ID = "sub_test_123";
 const PRICE_ID = "price_cloud_location";
+const EVENT_CREATED = Math.floor(Date.parse("2026-08-02T03:04:05.000Z") / 1000);
 
 function stripeRequest() {
   return new Request("https://openvpm.test/api/webhooks/stripe-subscription", {
@@ -134,8 +138,12 @@ function checkoutCompletedEvent() {
   return {
     id: "evt_checkout",
     type: "checkout.session.completed",
+    created: EVENT_CREATED,
     data: {
       object: {
+        id: "cs_subscription",
+        mode: "subscription",
+        payment_method_collection: "always",
         client_reference_id: PRACTICE_ID,
         customer: CUSTOMER_ID,
         subscription: SUBSCRIPTION_ID,
@@ -167,6 +175,7 @@ function subscriptionUpdatedEvent(
   return {
     id: eventId,
     type: "customer.subscription.updated",
+    created: EVENT_CREATED,
     data: {
       object: stripeSubscription(status),
     },
@@ -177,6 +186,7 @@ function invoicePaymentSucceededEvent(subscriptionId?: string) {
   return {
     id: "evt_invoice_paid",
     type: "invoice.payment_succeeded",
+    created: EVENT_CREATED,
     data: {
       object: {
         id: "in_paid",
@@ -237,6 +247,8 @@ afterEach(() => {
   mocks.selectResults.length = 0;
   mocks.updateReturns.length = 0;
   mocks.claimStripeEvent.mockResolvedValue(true);
+  mocks.attachStripeEventPractice.mockResolvedValue(undefined);
+  mocks.projectStripeConversionMilestonesForEvent.mockResolvedValue(1);
   mocks.retrieveSubscription.mockResolvedValue(stripeSubscription());
   delete process.env.STRIPE_PRICE_CLOUD_LOCATION;
 });
@@ -288,6 +300,16 @@ describe("Stripe subscription webhook", () => {
       eventId: "evt_checkout",
       endpoint: "subscription",
       eventType: "checkout.session.completed",
+      evidence: {
+        eventCreatedAt: new Date(EVENT_CREATED * 1000),
+        objectId: "cs_subscription",
+        evidenceKind: "subscription_checkout_completed",
+      },
+    });
+    expect(mocks.attachStripeEventPractice).toHaveBeenCalledWith(mocks.db, {
+      eventId: "evt_checkout",
+      endpoint: "subscription",
+      practiceId: PRACTICE_ID,
     });
     expect(mocks.updateSet).toHaveBeenCalledWith({
       stripeCustomerId: CUSTOMER_ID,
@@ -307,6 +329,9 @@ describe("Stripe subscription webhook", () => {
       practiceId: PRACTICE_ID,
       subscriptionId: SUBSCRIPTION_ID,
     });
+    expect(
+      mocks.projectStripeConversionMilestonesForEvent,
+    ).toHaveBeenCalledWith(mocks.db, "evt_checkout");
   });
 
   it("does not sync Checkout quantities when no active practice was updated", async () => {
@@ -346,6 +371,54 @@ describe("Stripe subscription webhook", () => {
       practiceId: PRACTICE_ID,
       subscriptionId: SUBSCRIPTION_ID,
     });
+    expect(mocks.claimStripeEvent).toHaveBeenCalledWith(mocks.db, {
+      eventId: "evt_subscription",
+      endpoint: "subscription",
+      eventType: "customer.subscription.updated",
+    });
+    expect(
+      mocks.projectStripeConversionMilestonesForEvent,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("does not manufacture payment evidence from a zero-dollar invoice", async () => {
+    const event = invoicePaymentSucceededEvent(SUBSCRIPTION_ID);
+    event.data.object.amount_paid = 0;
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(event);
+
+    const response = await POST(stripeRequest());
+
+    await expect(response.json()).resolves.toEqual({ received: true });
+    expect(mocks.claimStripeEvent).toHaveBeenCalledWith(mocks.db, {
+      eventId: "evt_invoice_paid",
+      endpoint: "subscription",
+      eventType: "invoice.payment_succeeded",
+    });
+    expect(mocks.attachStripeEventPractice).not.toHaveBeenCalled();
+    expect(
+      mocks.projectStripeConversionMilestonesForEvent,
+    ).not.toHaveBeenCalled();
+    expect(mocks.retrieveSubscription).not.toHaveBeenCalled();
+  });
+
+  it("keeps successful billing committed when milestone projection needs repair", async () => {
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
+      checkoutCompletedEvent(),
+    );
+    mocks.updateReturns.push([{ id: PRACTICE_ID }], [{ id: PRACTICE_ID }]);
+    mocks.projectStripeConversionMilestonesForEvent.mockRejectedValueOnce(
+      new Error("projection unavailable"),
+    );
+
+    const response = await POST(stripeRequest());
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ received: true });
+    expect(mocks.syncPracticeSubscriptionQuantities).toHaveBeenCalledOnce();
+    expect(mocks.alertOps).toHaveBeenCalledWith(
+      "Subscription conversion projection failed",
+      expect.stringContaining("retried from local evidence"),
+    );
   });
 
   it.each(["checkout-first", "subscription-first"] as const)(
@@ -510,18 +583,26 @@ describe("Stripe subscription webhook", () => {
         stripeSubscriptionId: SUBSCRIPTION_ID,
       }),
     );
-    expect(mocks.recordPracticeFunnelStage).toHaveBeenCalledWith(
-      mocks.db,
-      PRACTICE_ID,
-      "card_added",
-      { stripeStatus: "active" },
-    );
-    expect(mocks.recordPracticeFunnelStage).toHaveBeenCalledWith(
-      mocks.db,
-      PRACTICE_ID,
-      "paid",
-      { stripeStatus: "active" },
-    );
+    expect(mocks.claimStripeEvent).toHaveBeenCalledWith(mocks.db, {
+      eventId: "evt_invoice_paid",
+      endpoint: "subscription",
+      eventType: "invoice.payment_succeeded",
+      evidence: {
+        eventCreatedAt: new Date(EVENT_CREATED * 1000),
+        objectId: "in_paid",
+        evidenceKind: "positive_subscription_invoice_paid",
+        amountCents: 7900,
+        currency: "usd",
+      },
+    });
+    expect(mocks.attachStripeEventPractice).toHaveBeenCalledWith(mocks.db, {
+      eventId: "evt_invoice_paid",
+      endpoint: "subscription",
+      practiceId: PRACTICE_ID,
+    });
+    expect(
+      mocks.projectStripeConversionMilestonesForEvent,
+    ).toHaveBeenCalledWith(mocks.db, "evt_invoice_paid");
     expect(mocks.sendPaymentReceiptEmail).toHaveBeenCalledOnce();
   });
 

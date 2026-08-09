@@ -10,6 +10,7 @@ const TABLES = [
   "audit_log",
   "rate_limit_buckets",
   "stripe_events",
+  "practice_conversion_milestones",
   "usage_records",
   "controlled_substance_log",
   "payments",

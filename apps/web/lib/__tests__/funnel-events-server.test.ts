@@ -28,13 +28,25 @@ const mocks = vi.hoisted(() => {
     values,
     onConflictDoNothing,
     returning,
+    upsertPracticeConversionMilestone: vi.fn(async () => true),
+    withSystem: vi.fn(
+      async (database: unknown, fn: (tx: unknown) => Promise<unknown>) =>
+        fn(database),
+    ),
   };
 });
 
+vi.mock("@/lib/tenant-db", () => ({ withSystem: mocks.withSystem }));
+vi.mock("@/lib/conversion-milestones", () => ({
+  upsertPracticeConversionMilestone: mocks.upsertPracticeConversionMilestone,
+  projectActivationMilestone: vi.fn(),
+  recordActivationAfterAppointmentCreated: vi.fn(),
+  recordActivationAfterClientCreated: vi.fn(),
+}));
+
 const {
   ensureRegistrationFirstTouch,
-  recordActivationAfterAppointmentCreated,
-  recordPracticeFunnelStage,
+  recordRegistration,
 } = await import("../funnel-events-server");
 
 const VISITOR_ID = "123e4567-e89b-42d3-a456-426614174000";
@@ -89,6 +101,7 @@ describe("registration funnel attribution", () => {
     mocks.selectResults.push(
       [
         {
+          id: PRACTICE_ID,
           settings: {
             acquisition: {
               funnelId: VISITOR_ID.toUpperCase(),
@@ -102,11 +115,7 @@ describe("registration funnel attribution", () => {
     );
 
     await expect(
-      recordPracticeFunnelStage(
-        mocks.db as never,
-        PRACTICE_ID,
-        "registration"
-      )
+      recordRegistration(mocks.db as never, PRACTICE_ID)
     ).resolves.toBe(true);
 
     expect(mocks.values).toHaveBeenNthCalledWith(
@@ -117,76 +126,41 @@ describe("registration funnel attribution", () => {
         metadata: { serverFallback: true },
       })
     );
-    expect(mocks.values).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        eventName: "registration",
-        anonymousId: VISITOR_ID,
+    expect(mocks.upsertPracticeConversionMilestone).toHaveBeenCalledWith(
+      mocks.db,
+      {
         practiceId: PRACTICE_ID,
-      })
+        milestone: "registered",
+        occurredAt: CREATED_AT,
+        evidenceSource: "practice_created",
+        evidenceKey: `practice:${PRACTICE_ID}`,
+      },
     );
   });
 
   it("does not invent an anonymous identity for historical registrations", async () => {
     mocks.selectResults.push([
-      { settings: {}, createdAt: CREATED_AT },
+      { id: PRACTICE_ID, settings: {}, createdAt: CREATED_AT },
     ]);
 
     await expect(
-      recordPracticeFunnelStage(
-        mocks.db as never,
-        PRACTICE_ID,
-        "registration"
-      )
+      recordRegistration(mocks.db as never, PRACTICE_ID)
     ).resolves.toBe(true);
 
     expect(mocks.select).toHaveBeenCalledOnce();
-    expect(mocks.values).toHaveBeenCalledOnce();
-    expect(mocks.values).toHaveBeenCalledWith(
-      expect.objectContaining({
-        eventName: "registration",
-        anonymousId: null,
-        practiceId: PRACTICE_ID,
-      })
-    );
+    expect(mocks.values).not.toHaveBeenCalled();
+    expect(mocks.upsertPracticeConversionMilestone).toHaveBeenCalledOnce();
   });
 });
 
 describe("appointment activation telemetry", () => {
-  it("keeps demo clients and appointments out of the durable stage", () => {
+  it("delegates activation to the canonical projection module", () => {
     const source = readFileSync(
       new URL("../funnel-events-server.ts", import.meta.url),
       "utf8"
     );
 
-    expect(source).toContain("p.settings -> 'demoData' -> 'clientIds'");
-    expect(source).toContain("p.settings -> 'demoData' -> 'appointmentIds'");
-    expect(source).toContain(".onConflictDoNothing()");
-  });
-
-  it("does not fail a durable appointment when activation persistence fails", async () => {
-    const error = new Error("analytics unavailable");
-    const consoleError = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => undefined);
-    const db = {
-      transaction: vi.fn(async () => {
-        throw error;
-      }),
-    };
-
-    await expect(
-      recordActivationAfterAppointmentCreated(
-        db as never,
-        PRACTICE_ID,
-        "booking.book"
-      )
-    ).resolves.toBe(false);
-
-    expect(consoleError).toHaveBeenCalledWith(
-      "[booking.book] activation funnel event failed:",
-      error
-    );
-    consoleError.mockRestore();
+    expect(source).toContain('from "@/lib/conversion-milestones"');
+    expect(source).not.toContain('eventName: "activation"');
   });
 });

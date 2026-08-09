@@ -75,6 +75,8 @@ export const PRACTICE_EXPORT_SYSTEM_EXCLUSIONS = {
   practicePaymentAccounts:
     "Stripe Connect account/provider state; reconnect payment processing after restore instead of replaying onboarding state.",
   stripeEvents: "Global Stripe webhook de-duplication ledger.",
+  practiceConversionMilestones:
+    "Repairable system analytics projection; rebuild it from authoritative local practice, product, and allowlisted Stripe evidence after restore.",
   rateLimitBuckets: "Transient abuse-control buckets, not clinic-owned data.",
   sessions: "Transient authentication sessions.",
   verificationTokens: "Transient authentication verification tokens.",

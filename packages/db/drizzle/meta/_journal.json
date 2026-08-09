@@ -393,6 +393,13 @@
       "when": 1786256547912,
       "tag": "0055_flippant_silver_fox",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1786263915731,
+      "tag": "0056_lively_magdalene",
+      "breakpoints": true
     }
   ]
 }

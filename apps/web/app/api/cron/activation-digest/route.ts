@@ -18,7 +18,8 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 // Weekly trial-funnel digest for the founder/operators: signups -> setup ->
-// activated -> billing started -> paid active for the past 7 and 30 days.
+// activated -> payment method collected -> first positive payment for the past
+// 7 and 30 days. Current subscription state is shown separately.
 // Reporting only — it must never 500-loop, so failures alert ops and still
 // return a non-throwing response.
 export async function GET(request: Request) {
@@ -97,14 +98,16 @@ function funnelSection(title: string, funnel: ActivationFunnel): string {
     setupCompleted,
     activated,
     firstVisitCompleted,
-    billingStarted,
-    subscribed,
+    paymentMethodCollected,
+    firstPositivePayment,
+    currentlyActive,
     setupStartRate,
     setupCompletionRate,
     activationRate,
     firstVisitCompletionRate,
-    billingStartRate,
-    conversionRate,
+    paymentMethodRate,
+    positivePaymentRate,
+    currentlyActiveRate,
   } = funnel.totals;
   return `<h2 style="margin:24px 0 8px;font-size:16px;color:#111827;">${title}</h2>
 <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;">
@@ -114,8 +117,9 @@ function funnelSection(title: string, funnel: ActivationFunnel): string {
     <th style="padding:4px 12px 4px 0;font-weight:500;">Setup complete</th>
     <th style="padding:4px 12px 4px 0;font-weight:500;">Activated</th>
     <th style="padding:4px 12px 4px 0;font-weight:500;">First visit done</th>
-    <th style="padding:4px 12px 4px 0;font-weight:500;">Billing started</th>
-    <th style="padding:4px 0;font-weight:500;">Paid active</th>
+    <th style="padding:4px 12px 4px 0;font-weight:500;">Payment method</th>
+    <th style="padding:4px 12px 4px 0;font-weight:500;">First positive payment</th>
+    <th style="padding:4px 0;font-weight:500;">Currently active</th>
   </tr>
   <tr style="font-size:20px;color:#111827;font-weight:600;">
     <td style="padding:2px 12px 2px 0;">${signups}</td>
@@ -123,10 +127,12 @@ function funnelSection(title: string, funnel: ActivationFunnel): string {
     <td style="padding:2px 12px 2px 0;">${setupCompleted} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(setupCompletionRate)}</span></td>
     <td style="padding:2px 12px 2px 0;">${activated} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(activationRate)}</span></td>
     <td style="padding:2px 12px 2px 0;">${firstVisitCompleted} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(firstVisitCompletionRate)}</span></td>
-    <td style="padding:2px 12px 2px 0;">${billingStarted} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(billingStartRate)}</span></td>
-    <td style="padding:2px 0;">${subscribed} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(conversionRate)}</span></td>
+    <td style="padding:2px 12px 2px 0;">${paymentMethodCollected} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(paymentMethodRate)}</span></td>
+    <td style="padding:2px 12px 2px 0;">${firstPositivePayment} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(positivePaymentRate)}</span></td>
+    <td style="padding:2px 0;">${currentlyActive} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(currentlyActiveRate)}</span></td>
   </tr>
-</table>`;
+</table>
+<p style="margin:8px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Evidence quality: ${funnel.dataQuality.legacyBusinessStageRows} excluded legacy stage row(s) · ${funnel.dataQuality.unknownPaymentMethodPractices} clinic(s) with unknown payment-method evidence · ${funnel.dataQuality.unknownPositivePaymentPractices} clinic(s) with unknown positive-payment evidence · ${funnel.dataQuality.missingRegistrationMilestones} missing registration projection(s) · ${funnel.dataQuality.missingActivationMilestones} missing activation projection(s) · ${funnel.dataQuality.unprojectedStripeEvidence} unprojected Stripe evidence row(s) · ${funnel.dataQuality.unmappedStripeEvidence} unmapped Stripe evidence row(s). Unknown is not zero and receives no synthetic date.</p>`;
 }
 
 function journeySection(title: string, funnel: JourneyFunnel): string {
@@ -135,13 +141,13 @@ function journeySection(title: string, funnel: JourneyFunnel): string {
     demos,
     registrations,
     activated,
-    cardAdded,
-    paid,
+    paymentMethodCollected,
+    firstPositivePayment,
     demoRate,
     registrationRate,
     activationRate,
-    cardRate,
-    paidRate,
+    paymentMethodRate,
+    positivePaymentRate,
   } = funnel.totals;
   return `<h2 style="margin:24px 0 8px;font-size:16px;color:#111827;">${title}</h2>
 <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;">
@@ -150,19 +156,19 @@ function journeySection(title: string, funnel: JourneyFunnel): string {
     <th style="padding:4px 12px 4px 0;font-weight:500;">Demo</th>
     <th style="padding:4px 12px 4px 0;font-weight:500;">Registered</th>
     <th style="padding:4px 12px 4px 0;font-weight:500;">Activated</th>
-    <th style="padding:4px 12px 4px 0;font-weight:500;">Card</th>
-    <th style="padding:4px 0;font-weight:500;">Paid</th>
+    <th style="padding:4px 12px 4px 0;font-weight:500;">Payment method</th>
+    <th style="padding:4px 0;font-weight:500;">First positive payment</th>
   </tr>
   <tr style="font-size:20px;color:#111827;font-weight:600;">
     <td style="padding:2px 12px 2px 0;">${visitors}</td>
     <td style="padding:2px 12px 2px 0;">${demos} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(demoRate)}</span></td>
     <td style="padding:2px 12px 2px 0;">${registrations} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(registrationRate)}</span></td>
     <td style="padding:2px 12px 2px 0;">${activated} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(activationRate)}</span></td>
-    <td style="padding:2px 12px 2px 0;">${cardAdded} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(cardRate)}</span></td>
-    <td style="padding:2px 0;">${paid} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(paidRate)}</span></td>
+    <td style="padding:2px 12px 2px 0;">${paymentMethodCollected} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(paymentMethodRate)}</span></td>
+    <td style="padding:2px 0;">${firstPositivePayment} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(positivePaymentRate)}</span></td>
   </tr>
 </table>
-<p style="margin:8px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Left before trying: ${funnel.totals.leftBeforeTrying} · Demo without signup: ${funnel.totals.demoAbandoned} · Signup without activation: ${funnel.totals.registrationAbandoned} · Activated without card: ${funnel.totals.activationAbandoned} · Card without payment: ${funnel.totals.cardAbandoned} · Client errors: ${funnel.totals.clientErrors}</p>`;
+<p style="margin:8px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Left before trying: ${funnel.totals.leftBeforeTrying} · Demo without signup: ${funnel.totals.demoAbandoned} · Signup without activation: ${funnel.totals.registrationAbandoned} · Activated without payment method: ${funnel.totals.activationAbandoned} · Payment method without positive payment after trial: ${funnel.totals.paymentAbandoned} · Client errors: ${funnel.totals.clientErrors}</p>`;
 }
 
 function digestHtml(
@@ -194,7 +200,7 @@ function digestHtml(
               ${journeySection("Production journey · past 30 days", journeyMonth)}
               ${funnelSection("Past 7 days", week)}
               ${funnelSection("Past 30 days", month)}
-              <p style="margin:24px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Activated = added a real client and booked a real visit. First visit done = completed the clinical and billing closeout; its rate is measured from activated clinics. Billing started = a Stripe subscription exists. Paid active = billing status is active. All other rates use the signup cohort; demo data never counts.</p>
+              <p style="margin:24px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Activated = added a real client and booked a real visit. First visit done = completed the clinical and billing closeout; its rate is measured from activated clinics. Payment method = signed subscription Checkout completion with collection required. First positive payment = signed positive subscription invoice payment. Currently active is current billing state, not a historical milestone. Legacy business-stage rows are excluded; demo data never counts.</p>
             </td>
           </tr>
           <tr>

@@ -32,20 +32,22 @@ describe("admin UI", () => {
     expect(source).toContain("{funnel.totals.activated}");
     expect(source).toContain("First visit done");
     expect(source).toContain("{funnel.totals.firstVisitCompleted}");
-    expect(source).toContain("{funnel.totals.billingStarted}");
-    expect(source).toContain("{funnel.totals.subscribed}");
+    expect(source).toContain("{funnel.totals.paymentMethodCollected}");
+    expect(source).toContain("{funnel.totals.firstPositivePayment}");
+    expect(source).toContain("{funnel.totals.currentlyActive}");
     expect(source).toContain("formatPct(funnel.totals.activationRate)");
     expect(source).toContain(
       "formatPct(funnel.totals.firstVisitCompletionRate)"
     );
-    expect(source).toContain("formatPct(funnel.totals.billingStartRate)");
+    expect(source).toContain("formatPct(funnel.totals.paymentMethodRate)");
     expect(source).toContain("formatPct(funnel.totals.setupStartRate)");
     expect(source).toContain("formatPct(funnel.totals.setupCompletionRate)");
-    expect(source).toContain("formatPct(funnel.totals.conversionRate)");
+    expect(source).toContain("formatPct(funnel.totals.positivePaymentRate)");
     expect(source).toContain("Activated = added a");
     expect(source).toContain("completed clinical and billing closeout");
     expect(source).toContain("rate is measured from");
-    expect(source).toContain("Billing started = Stripe");
+    expect(source).toContain("signed subscription Checkout");
+    expect(source).toContain("Legacy business-stage rows are excluded");
     expect(source).toContain("Could not load the funnel.");
   });
 
@@ -82,11 +84,11 @@ describe("admin UI", () => {
     expect(source).toContain("journey.totals.demoAbandoned");
     expect(source).toContain("journey.totals.registrationAbandoned");
     expect(source).toContain("journey.totals.activationAbandoned");
-    expect(source).toContain("journey.totals.cardAbandoned");
+    expect(source).toContain("journey.totals.paymentAbandoned");
     expect(source).toContain("journey.totals.clientErrors");
     expect(source).toContain("journey.weeks.map");
     expect(source).toContain("Stalls require seven full days");
-    expect(source).toContain("active card-on-file trials are not stalled");
+    expect(source).toContain("active trial with a collected");
   });
 
   it("shows trial source and setup stage for diagnosing individual drop-off", () => {

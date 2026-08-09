@@ -147,6 +147,15 @@ CREATE POLICY system_only ON stripe_events
   USING (app_rls_bypass())
   WITH CHECK (app_rls_bypass());
 
+-- Canonical conversion milestones are a cross-tenant, repairable system
+-- projection. Product routes trigger projection under explicit system context;
+-- ordinary clinic sessions never need direct table access.
+ALTER TABLE practice_conversion_milestones ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS system_only ON practice_conversion_milestones;
+CREATE POLICY system_only ON practice_conversion_milestones
+  USING (app_rls_bypass())
+  WITH CHECK (app_rls_bypass());
+
 -- Durable rate-limit buckets are also global/system state.
 ALTER TABLE rate_limit_buckets ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS system_only ON rate_limit_buckets;
@@ -183,7 +192,7 @@ BEGIN
   FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format(
-        'REVOKE ALL ON auth_tokens, clinical_record_corrections, demo_accesses, dispense_charge_queue, funnel_events, patient_merge_events, prescription_events, sessions, verification_tokens FROM %I', r
+        'REVOKE ALL ON auth_tokens, clinical_record_corrections, demo_accesses, dispense_charge_queue, funnel_events, patient_merge_events, practice_conversion_milestones, prescription_events, sessions, stripe_events, verification_tokens FROM %I', r
       );
     END IF;
   END LOOP;

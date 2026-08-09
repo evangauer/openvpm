@@ -379,7 +379,7 @@ export const authRouter = createRouter({
       try {
         await recordRegistration(ctx.db, practice.id);
       } catch (err) {
-        console.error("[register] funnel event failed:", err);
+        console.error("[register] conversion milestone projection failed:", err);
       }
 
       // On the hosted service, request email verification without blocking the

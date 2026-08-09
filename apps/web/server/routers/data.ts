@@ -59,7 +59,10 @@ import {
   type MigrationReviewedTarget,
   type MigrationRunMode,
 } from "@/lib/import/run-ledger";
-import { recordActivationAfterAppointmentCreated } from "@/lib/funnel-events-server";
+import {
+  recordActivationAfterAppointmentCreated,
+  recordActivationAfterClientCreated,
+} from "@/lib/funnel-events-server";
 import { migrationImportFingerprint } from "@/lib/import/fingerprint";
 
 const adminProcedure = protectedProcedure.use(requireRole("admin"));
@@ -2441,6 +2444,11 @@ export const dataRouter = createRouter({
         await ctx.db
           .insert(clients)
           .values(rows.map((row) => ({ ...row, practiceId: ctx.practiceId })));
+        await recordActivationAfterClientCreated(
+          ctx.db,
+          ctx.practiceId,
+          "data.importClients",
+        );
       }
 
       return { imported: rows.length, errors };
@@ -2587,7 +2595,7 @@ export const dataRouter = createRouter({
       }
 
       await assertActivePractice(ctx);
-      return ctx.db.transaction(async (tx) => {
+      const result = await ctx.db.transaction(async (tx) => {
         await tx.execute(sql`set transaction isolation level serializable`);
         const migrationDb = tx as unknown as Database;
         await lockMigrationPractice(migrationDb, ctx.practiceId);
@@ -2685,6 +2693,14 @@ export const dataRouter = createRouter({
           errors: combinedErrors,
         };
       });
+      if ("imported" in result && (result.imported ?? 0) > 0) {
+        await recordActivationAfterClientCreated(
+          ctx.db,
+          ctx.practiceId,
+          "data.importClientsCsv",
+        );
+      }
+      return result;
     }),
 
   importPatientsCsv: adminProcedure

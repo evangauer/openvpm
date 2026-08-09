@@ -155,9 +155,13 @@ describe("summarizePracticeExport", () => {
     expect(sections).not.toContain("usageRecords");
     expect(sections).not.toContain("practicePaymentAccounts");
     expect(sections).not.toContain("stripeEvents");
+    expect(sections).not.toContain("practiceConversionMilestones");
     expect(sections).not.toContain("rateLimitBuckets");
     expect(sections).not.toContain("messagingRegistrations");
     expect(PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.usageRecords).toContain("billing");
+    expect(
+      PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.practiceConversionMilestones,
+    ).toContain("Repairable system analytics projection");
     expect(PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.practicePaymentAccounts).toContain(
       "Stripe Connect",
     );

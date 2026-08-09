@@ -833,4 +833,48 @@ describe("committed Drizzle migrations", () => {
       "REVOKE ALL ON sms_consent_events FROM authenticated",
     );
   });
+
+  it("adds canonical conversion projections without inventing payment dates", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries?: Array<{ tag?: string }> };
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0056_lively_magdalene",
+    );
+
+    const sql = readRepoFile(
+      "packages/db/drizzle/0056_lively_magdalene.sql",
+    );
+    expect(sql).toContain('CREATE TABLE "practice_conversion_milestones"');
+    expect(sql).toContain("practice_conversion_milestones_payment_shape_check");
+    expect(sql).toContain(
+      '"practice_conversion_milestones"."amount_cents" is not null',
+    );
+    expect(sql).toContain(
+      '"practice_conversion_milestones"."currency" is not null',
+    );
+    expect(sql).toContain(
+      "practice_conversion_milestones_evidence_source_check",
+    );
+    expect(sql).toContain("stripe_events_conversion_evidence_shape_check");
+    expect(sql).toContain(
+      '"stripe_events"."amount_cents" is not null',
+    );
+    expect(sql).toContain('length(btrim("stripe_events"."object_id")) > 0');
+    expect(sql).toContain("p.created_at");
+    expect(sql).toContain("greatest(p.created_at, c.created_at, a.created_at)");
+    expect(sql).toContain("p.settings -> 'demoData' -> 'clientIds'");
+    expect(sql).toContain("p.settings -> 'demoData' -> 'appointmentIds'");
+    expect(sql).not.toContain("FROM funnel_events");
+    expect(sql).not.toContain("p.billing_status = 'active'");
+    expect(sql).toContain(
+      "ALTER TABLE practice_conversion_milestones ENABLE ROW LEVEL SECURITY",
+    );
+    expect(sql).toContain(
+      "REVOKE ALL ON practice_conversion_milestones, stripe_events FROM anon",
+    );
+    expect(sql).toContain(
+      "REVOKE ALL ON practice_conversion_milestones, stripe_events",
+    );
+  });
 });

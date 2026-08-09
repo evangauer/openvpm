@@ -1,5 +1,7 @@
 import {
+  check,
   pgTable,
+  pgEnum,
   uuid,
   varchar,
   integer,
@@ -7,6 +9,7 @@ import {
   index,
   primaryKey,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { baseColumns } from "./common";
 import { practices } from "./practices";
 
@@ -42,6 +45,14 @@ export const usageRecords = pgTable(
   })
 );
 
+export const stripeConversionEvidenceKindEnum = pgEnum(
+  "stripe_conversion_evidence_kind",
+  [
+    "subscription_checkout_completed",
+    "positive_subscription_invoice_paid",
+  ],
+);
+
 /**
  * Durable de-dup ledger for Stripe webhooks. Cross-tenant/system table: webhook
  * handlers insert an event id + endpoint inside the same transaction as side
@@ -53,6 +64,17 @@ export const stripeEvents = pgTable(
     eventId: varchar("event_id", { length: 128 }).notNull(),
     endpoint: varchar("endpoint", { length: 64 }).notNull(),
     eventType: varchar("event_type", { length: 128 }).notNull(),
+    /** Stripe's signed event.created timestamp. Null only on legacy claims. */
+    eventCreatedAt: timestamp("event_created_at", { withTimezone: true }),
+    /** Resolved active practice. Null means the evidence could not be mapped. */
+    practiceId: uuid("practice_id").references(() => practices.id),
+    /** Allowlisted Checkout Session / Invoice object id; never the raw payload. */
+    objectId: varchar("object_id", { length: 128 }),
+    evidenceKind: stripeConversionEvidenceKindEnum("evidence_kind"),
+    /** Positive subscription invoice amount in integer minor currency units. */
+    amountCents: integer("amount_cents"),
+    /** Lower-case ISO 4217 code, only for positive invoice evidence. */
+    currency: varchar("currency", { length: 3 }),
     processedAt: timestamp("processed_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -62,6 +84,37 @@ export const stripeEvents = pgTable(
     // subscription and client-invoice endpoints. Each endpoint must claim it
     // independently; redelivery to the same endpoint remains idempotent.
     pk: primaryKey({ columns: [table.eventId, table.endpoint] }),
+    conversionEvidenceIdx: index("stripe_events_conversion_evidence_idx")
+      .on(
+        table.evidenceKind,
+        table.practiceId,
+        table.eventCreatedAt,
+        table.eventId,
+      )
+      .where(sql`${table.evidenceKind} is not null`),
+    evidenceShapeCheck: check(
+      "stripe_events_conversion_evidence_shape_check",
+      sql`(
+        ${table.evidenceKind} is null and
+        ${table.eventCreatedAt} is null and
+        ${table.objectId} is null and
+        ${table.amountCents} is null and
+        ${table.currency} is null
+      ) or (
+        ${table.evidenceKind} is not null and
+        ${table.eventCreatedAt} is not null and
+        ${table.objectId} is not null and
+        length(btrim(${table.objectId})) > 0 and
+        (
+          (${table.evidenceKind} = 'subscription_checkout_completed' and
+            ${table.amountCents} is null and ${table.currency} is null) or
+          (${table.evidenceKind} = 'positive_subscription_invoice_paid' and
+            ${table.amountCents} is not null and ${table.amountCents} > 0 and
+            ${table.currency} is not null and
+            ${table.currency} ~ '^[a-z]{3}$')
+        )
+      )`,
+    ),
   })
 );
 

@@ -13,14 +13,18 @@ import {
   sendPaymentFailedEmail,
 } from "@/lib/email";
 import { sendLifecycleEmail } from "@/lib/email-lifecycle";
-import { claimStripeEvent } from "@/lib/billing/stripe-events";
+import {
+  attachStripeEventPractice,
+  claimStripeEvent,
+  type StripeConversionEvidenceInput,
+} from "@/lib/billing/stripe-events";
 import { billingContactEmail } from "@/lib/billing/contact";
 import { readRequestTextWithLimit } from "@/lib/request-json";
 import {
   STRIPE_WEBHOOK_BODY_MAX_BYTES,
   stripeWebhookContentLengthTooLarge,
 } from "@/lib/stripe-webhook-limits";
-import { recordPracticeFunnelStage } from "@/lib/funnel-events-server";
+import { projectStripeConversionMilestonesForEvent } from "@/lib/conversion-milestones";
 
 function payloadTooLargeResponse() {
   return NextResponse.json(
@@ -66,12 +70,14 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const conversionEvidence = conversionEvidenceForEvent(event);
   try {
     await withSystem(db, async (tx) => {
       const claimed = await claimStripeEvent(tx, {
         eventId: event.id,
         endpoint: "subscription",
         eventType: event.type,
+        ...(conversionEvidence ? { evidence: conversionEvidence } : {}),
       });
       if (!claimed) return;
 
@@ -102,6 +108,13 @@ export async function POST(req: NextRequest) {
               .where(and(eq(practices.id, practiceId), isNull(practices.deletedAt)))
               .limit(1);
             activePracticeId = practice?.id ?? null;
+          }
+          if (activePracticeId && conversionEvidence) {
+            await attachStripeEventPractice(tx, {
+              eventId: event.id,
+              endpoint: "subscription",
+              practiceId: activePracticeId,
+            });
           }
           if (activePracticeId && subscriptionId) {
             if (!stripe) {
@@ -152,6 +165,7 @@ export async function POST(req: NextRequest) {
           // Stripe emits at trial start.
           if (customerId && (inv.amount_paid ?? 0) > 0) {
             const subscriptionId = subscriptionIdForInvoice(inv);
+            let subscriptionPracticeId: string | null = null;
             if (subscriptionId) {
               if (!stripe) {
                 throw new Error(
@@ -162,9 +176,18 @@ export async function POST(req: NextRequest) {
               // self-healing point if a subscription-created/updated event was
               // omitted or arrived out of order.
               const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-              await applySubscription(tx, subscription);
+              subscriptionPracticeId = await applySubscription(tx, subscription);
             }
-            const practice = await practiceForCustomer(tx, customerId);
+            const practice = subscriptionPracticeId
+              ? await practiceById(tx, subscriptionPracticeId)
+              : await practiceForCustomer(tx, customerId);
+            if (practice && conversionEvidence) {
+              await attachStripeEventPractice(tx, {
+                eventId: event.id,
+                endpoint: "subscription",
+                practiceId: practice.id,
+              });
+            }
             const to = billingContactEmail(practice?.email);
             if (practice && to) {
               const practiceName = practice.name ?? "your practice";
@@ -237,7 +260,6 @@ export async function POST(req: NextRequest) {
       }
     });
 
-    return NextResponse.json({ received: true });
   } catch (err) {
     console.error("[Stripe Subscription Webhook] handler error:", err);
     await alertOps(
@@ -246,6 +268,26 @@ export async function POST(req: NextRequest) {
     );
     return NextResponse.json({ error: "Handler error" }, { status: 500 });
   }
+
+  if (conversionEvidence) {
+    try {
+      await projectStripeConversionMilestonesForEvent(db, event.id);
+    } catch (error) {
+      // Billing and the allowlisted signed evidence have already committed.
+      // Local reconciliation will repair this projection without Stripe calls.
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(
+        "[Stripe Subscription Webhook] conversion projection failed:",
+        error,
+      );
+      await alertOps(
+        "Subscription conversion projection failed",
+        `Event ${event.id} will be retried from local evidence: ${message}`,
+      );
+    }
+  }
+
+  return NextResponse.json({ received: true });
 }
 
 /** Apply a subscription's tier/status/trial through one shared mapping path. */
@@ -253,7 +295,7 @@ async function applySubscription(
   tx: typeof db,
   sub: Stripe.Subscription,
   practiceIdHint?: string | null,
-) {
+): Promise<string | null> {
   const practiceId = await resolvePracticeIdForSubscription(
     tx,
     sub,
@@ -283,27 +325,76 @@ async function applySubscription(
       sub.id,
       practiceId,
     );
-    return;
+    return null;
   }
   await syncPracticeSubscriptionQuantities({
     db: tx,
     practiceId: practice.id,
     subscriptionId: sub.id,
   });
-  try {
-    await recordPracticeFunnelStage(tx, practice.id, "card_added", {
-      stripeStatus: sub.status,
-    });
-    if (billingStatus === "active") {
-      await recordPracticeFunnelStage(tx, practice.id, "paid", {
-        stripeStatus: sub.status,
-      });
+  return practice.id;
+}
+
+function conversionEvidenceForEvent(
+  event: Stripe.Event,
+): StripeConversionEvidenceInput | undefined {
+  const eventCreatedAt = stripeEventCreatedAt(event.created);
+  if (!eventCreatedAt) return undefined;
+
+  if (event.type === "checkout.session.completed") {
+    const session = event.data.object as Stripe.Checkout.Session;
+    const subscriptionId =
+      typeof session.subscription === "string"
+        ? session.subscription
+        : (session.subscription?.id ?? null);
+    if (
+      !session.id ||
+      session.mode !== "subscription" ||
+      session.payment_method_collection !== "always" ||
+      !subscriptionId
+    ) {
+      return undefined;
     }
-  } catch (err) {
-    // Billing reconciliation is authoritative; telemetry must never make the
-    // signed Stripe webhook fail or roll back subscription access.
-    console.error("[Stripe Subscription Webhook] funnel event failed:", err);
+    return {
+      eventCreatedAt,
+      objectId: session.id,
+      evidenceKind: "subscription_checkout_completed",
+    };
   }
+
+  if (event.type === "invoice.payment_succeeded") {
+    const invoice = event.data.object as Stripe.Invoice;
+    const amountCents = invoice.amount_paid ?? 0;
+    const currency = normalizedCurrency(invoice.currency);
+    if (
+      !invoice.id ||
+      amountCents <= 0 ||
+      !currency ||
+      !subscriptionIdForInvoice(invoice)
+    ) {
+      return undefined;
+    }
+    return {
+      eventCreatedAt,
+      objectId: invoice.id,
+      evidenceKind: "positive_subscription_invoice_paid",
+      amountCents,
+      currency,
+    };
+  }
+
+  return undefined;
+}
+
+function stripeEventCreatedAt(created: number | null | undefined): Date | null {
+  if (!Number.isFinite(created) || (created ?? -1) < 0) return null;
+  const date = new Date(created! * 1000);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function normalizedCurrency(currency: string | null | undefined): string | null {
+  const normalized = currency?.trim().toLowerCase();
+  return normalized && /^[a-z]{3}$/.test(normalized) ? normalized : null;
 }
 
 /**
@@ -400,6 +491,21 @@ async function practiceForCustomer(tx: typeof db, customerId: string) {
     )
     .limit(1);
   return p ?? null;
+}
+
+/** Read billing contact details for an already-authoritatively resolved clinic. */
+async function practiceById(tx: typeof db, practiceId: string) {
+  const [practice] = await tx
+    .select({
+      id: practices.id,
+      email: practices.email,
+      name: practices.name,
+      timezone: practices.timezone,
+    })
+    .from(practices)
+    .where(and(eq(practices.id, practiceId), isNull(practices.deletedAt)))
+    .limit(1);
+  return practice ?? null;
 }
 
 function formatMoney(
