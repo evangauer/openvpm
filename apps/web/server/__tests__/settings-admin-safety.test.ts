@@ -59,13 +59,16 @@ function createDb(opts?: {
   const selectResults = [...(opts?.selectResults ?? [])];
   const select = vi.fn(() => ({
     from: vi.fn(() => ({
-      where: vi.fn(() => ({
-        limit: vi.fn(async () =>
+      where: vi.fn(() => {
+        const result =
           selectResults.length > 0
             ? selectResults.shift()
-            : (opts?.selectRows ?? [])
-        ),
-      })),
+            : (opts?.selectRows ?? []);
+        return {
+          limit: vi.fn(async () => result),
+          for: vi.fn(async () => result),
+        };
+      }),
     })),
   }));
   const updateReturning = vi.fn(async () => opts?.updatedRows ?? []);
@@ -604,6 +607,26 @@ describe("settings admin stale target safety", () => {
     expect(updateSet).toHaveBeenCalledWith({ deletedAt: expect.any(Date) });
   });
 
+  it("rejects appointment type deletes while a published request page offers the type", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [{ id: TYPE_ID }],
+        [],
+        [],
+        [{ config: { bookableTypeIds: [TYPE_ID] } }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).deleteAppointmentType({ id: TYPE_ID })
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringContaining("appointment request page"),
+    });
+
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
   it("rejects stale room deletes", async () => {
     const { db, updateSet } = createDb({ selectResults: [[]] });
 
@@ -722,6 +745,10 @@ describe("settings scheduling metadata delete safety", () => {
     );
     expect(appointmentTypeDeleteBlock).toContain(
       'eq(appointmentWaitlist.status, "waiting")'
+    );
+    expect(appointmentTypeDeleteBlock).toContain('.for("update")');
+    expect(appointmentTypeDeleteBlock).toContain(
+      "parseBookingPageConfig(publishedPage.config)"
     );
 
     expect(roomDeleteBlock).toContain("eq(appointments.roomId, input.id)");

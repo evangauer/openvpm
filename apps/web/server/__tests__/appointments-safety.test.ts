@@ -484,6 +484,174 @@ describe("appointments target safety", () => {
     expect(updateSet).not.toHaveBeenCalled();
   });
 
+  it("blocks confirmation when the appointment type requires an unassigned doctor", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [
+          {
+            id: APPOINTMENT_ID,
+            status: "scheduled",
+            doctorId: null,
+            typeRequiresDoctor: 1,
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).updateStatus({
+        id: APPOINTMENT_ID,
+        status: "confirmed",
+      })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: "Assign a doctor before confirming this appointment.",
+    });
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("blocks direct check-in when the appointment type requires an unassigned doctor", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [
+          {
+            id: APPOINTMENT_ID,
+            status: "scheduled",
+            doctorId: null,
+            typeRequiresDoctor: 1,
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).updateStatus({
+        id: APPOINTMENT_ID,
+        status: "checked_in",
+      })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: "Assign a doctor before checking in this appointment.",
+    });
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("confirms a doctor-required appointment after a doctor is assigned", async () => {
+    const scheduledStateUpdatedAt = new Date("2026-06-30T18:00:00.000Z");
+    const { db, updateSet, insertValues } = createDb({
+      selectResults: [
+        [
+          {
+            id: APPOINTMENT_ID,
+            status: "scheduled",
+            doctorId: DOCTOR_ID,
+            clientId: CLIENT_ID,
+            startTime: new Date(startTime),
+            updatedAt: scheduledStateUpdatedAt,
+            typeRequiresDoctor: 1,
+          },
+        ],
+        [{ id: CLIENT_ID, phone: "555-0100", email: "client@example.com" }],
+        [],
+      ],
+      updatedRows: [
+        {
+          id: APPOINTMENT_ID,
+          status: "confirmed",
+          doctorId: DOCTOR_ID,
+        },
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).updateStatus({
+        id: APPOINTMENT_ID,
+        status: "confirmed",
+        confirmationContactMethod: "phone",
+      })
+    ).resolves.toMatchObject({
+      id: APPOINTMENT_ID,
+      status: "confirmed",
+      doctorId: DOCTOR_ID,
+    });
+    expect(updateSet).toHaveBeenCalledWith({ status: "confirmed" });
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: PRACTICE_ID,
+        clientId: CLIENT_ID,
+        channel: "phone",
+        direction: "outbound",
+        subject: "Appointment confirmation recorded",
+        status: "sent",
+        assignedTo: USER_ID,
+        dedupeKey: `appointment-confirmation:v1:${PRACTICE_ID}:${APPOINTMENT_ID}:${scheduledStateUpdatedAt.getTime()}`,
+      })
+    );
+  });
+
+  it("requires an explicit client contact record before confirming", async () => {
+    const { db, updateSet, insertValues } = createDb({
+      selectResults: [
+        [
+          {
+            id: APPOINTMENT_ID,
+            status: "scheduled",
+            doctorId: DOCTOR_ID,
+            clientId: CLIENT_ID,
+            startTime: new Date(startTime),
+            updatedAt: new Date("2026-06-30T18:00:00.000Z"),
+            typeRequiresDoctor: 0,
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).updateStatus({
+        id: APPOINTMENT_ID,
+        status: "confirmed",
+      })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Contact the client and record phone or email confirmation before confirming this appointment.",
+    });
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("requires the selected confirmation channel to exist on the active client", async () => {
+    const { db, updateSet, insertValues } = createDb({
+      selectResults: [
+        [
+          {
+            id: APPOINTMENT_ID,
+            status: "scheduled",
+            doctorId: DOCTOR_ID,
+            clientId: CLIENT_ID,
+            startTime: new Date(startTime),
+            updatedAt: new Date("2026-06-30T18:00:00.000Z"),
+            typeRequiresDoctor: 0,
+          },
+        ],
+        [{ id: CLIENT_ID, phone: null, email: "client@example.com" }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).updateStatus({
+        id: APPOINTMENT_ID,
+        status: "confirmed",
+        confirmationContactMethod: "phone",
+      })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: "Add a client phone number or record email confirmation instead.",
+    });
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
   it("does not cancel or reopen a clinically finalized visit", async () => {
     const { db, updateSet } = createDb({
       selectResults: [
@@ -765,6 +933,7 @@ describe("appointments target safety", () => {
       endTime: expect.any(Date),
       doctorId: null,
       roomId: null,
+      status: "scheduled",
     });
     expect(mocks.dispatchWebhookEvent).toHaveBeenCalledWith(
       PRACTICE_ID,
@@ -792,6 +961,8 @@ describe("appointments target safety", () => {
           {
             id: APPOINTMENT_ID,
             status: "scheduled",
+            startTime: new Date(startTime),
+            endTime: new Date(endTime),
             doctorId: null,
             roomId: null,
           },
@@ -810,6 +981,196 @@ describe("appointments target safety", () => {
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("assigns a practice doctor and room while reviewing a scheduled request", async () => {
+    const previousStartTime = new Date("2026-07-01T13:00:00.000Z");
+    const previousEndTime = new Date("2026-07-01T13:30:00.000Z");
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [
+          {
+            id: APPOINTMENT_ID,
+            status: "scheduled",
+            startTime: previousStartTime,
+            endTime: previousEndTime,
+            patientId: PATIENT_ID,
+            clientId: CLIENT_ID,
+            doctorId: null,
+            roomId: null,
+            typeId: TYPE_ID,
+          },
+        ],
+        [{ id: DOCTOR_ID }],
+        [{ id: ROOM_ID }],
+        [],
+      ],
+      updatedRows: [
+        {
+          id: APPOINTMENT_ID,
+          status: "scheduled",
+          startTime: new Date(startTime),
+          endTime: new Date(endTime),
+          patientId: PATIENT_ID,
+          clientId: CLIENT_ID,
+          doctorId: DOCTOR_ID,
+          roomId: ROOM_ID,
+          typeId: TYPE_ID,
+        },
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).reschedule({
+        id: APPOINTMENT_ID,
+        doctorId: DOCTOR_ID,
+        roomId: ROOM_ID,
+        startTime,
+        endTime,
+      })
+    ).resolves.toMatchObject({
+      id: APPOINTMENT_ID,
+      doctorId: DOCTOR_ID,
+      roomId: ROOM_ID,
+    });
+    expect(updateSet).toHaveBeenCalledWith({
+      startTime: expect.any(Date),
+      endTime: expect.any(Date),
+      doctorId: DOCTOR_ID,
+      roomId: ROOM_ID,
+      status: "scheduled",
+    });
+  });
+
+  it("does not unassign the doctor from a confirmed doctor-required appointment", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [
+          {
+            id: APPOINTMENT_ID,
+            status: "confirmed",
+            startTime: new Date(startTime),
+            endTime: new Date(endTime),
+            doctorId: DOCTOR_ID,
+            roomId: ROOM_ID,
+            typeId: TYPE_ID,
+            typeRequiresDoctor: 1,
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).reschedule({
+        id: APPOINTMENT_ID,
+        doctorId: null,
+        startTime,
+        endTime,
+      })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: "Assign a doctor before saving a confirmed appointment.",
+    });
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("returns a moved confirmed appointment to requested status", async () => {
+    const previousStartTime = new Date("2026-07-01T13:00:00.000Z");
+    const previousEndTime = new Date("2026-07-01T13:30:00.000Z");
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [
+          {
+            id: APPOINTMENT_ID,
+            status: "confirmed",
+            startTime: previousStartTime,
+            endTime: previousEndTime,
+            patientId: PATIENT_ID,
+            clientId: CLIENT_ID,
+            doctorId: DOCTOR_ID,
+            roomId: ROOM_ID,
+            typeId: TYPE_ID,
+            typeRequiresDoctor: 1,
+          },
+        ],
+        [],
+      ],
+      updatedRows: [
+        {
+          id: APPOINTMENT_ID,
+          status: "scheduled",
+          startTime: new Date(startTime),
+          endTime: new Date(endTime),
+          patientId: PATIENT_ID,
+          clientId: CLIENT_ID,
+          doctorId: DOCTOR_ID,
+          roomId: ROOM_ID,
+          typeId: TYPE_ID,
+        },
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).reschedule({ id: APPOINTMENT_ID, startTime, endTime })
+    ).resolves.toMatchObject({
+      id: APPOINTMENT_ID,
+      status: "scheduled",
+      confirmationRequired: true,
+    });
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "scheduled" })
+    );
+  });
+
+  it("keeps confirmation for a resource-only edit", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [
+          {
+            id: APPOINTMENT_ID,
+            status: "confirmed",
+            startTime: new Date(startTime),
+            endTime: new Date(endTime),
+            patientId: PATIENT_ID,
+            clientId: CLIENT_ID,
+            doctorId: DOCTOR_ID,
+            roomId: null,
+            typeId: TYPE_ID,
+            typeRequiresDoctor: 1,
+          },
+        ],
+        [{ id: ROOM_ID }],
+        [],
+      ],
+      updatedRows: [
+        {
+          id: APPOINTMENT_ID,
+          status: "confirmed",
+          startTime: new Date(startTime),
+          endTime: new Date(endTime),
+          patientId: PATIENT_ID,
+          clientId: CLIENT_ID,
+          doctorId: DOCTOR_ID,
+          roomId: ROOM_ID,
+          typeId: TYPE_ID,
+        },
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).reschedule({
+        id: APPOINTMENT_ID,
+        roomId: ROOM_ID,
+        startTime,
+        endTime,
+      })
+    ).resolves.toMatchObject({
+      status: "confirmed",
+      confirmationRequired: false,
+    });
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "confirmed", roomId: ROOM_ID })
+    );
   });
 
   it.each(["checked_in", "in_exam", "checked_out", "no_show", "cancelled"] as const)(
@@ -843,6 +1204,8 @@ describe("appointments target safety", () => {
           {
             id: APPOINTMENT_ID,
             status: "scheduled",
+            startTime: new Date(startTime),
+            endTime: new Date(endTime),
             doctorId: null,
             roomId: null,
           },
@@ -866,6 +1229,7 @@ describe("appointments target safety", () => {
       endTime: expect.any(Date),
       doctorId: null,
       roomId: null,
+      status: "scheduled",
     });
   });
 

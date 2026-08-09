@@ -5,7 +5,6 @@ import {
   isNull,
   gte,
   lte,
-  inArray,
   sql,
 } from "drizzle-orm";
 import { db } from "@openpims/db/client";
@@ -294,7 +293,7 @@ export async function GET(request: Request) {
             isNull(clients.deletedAt),
             gte(appointments.startTime, now),
             lte(appointments.startTime, in24h),
-            inArray(appointments.status, ["scheduled", "confirmed"]),
+            eq(appointments.status, "confirmed"),
           ),
         )
         .orderBy(appointments.startTime),

@@ -96,6 +96,8 @@ type AppointmentStatus =
   | "no_show"
   | "cancelled";
 
+type ConfirmationContactMethod = "phone" | "email";
+
 type RecurrenceFrequency = "weekly" | "monthly" | "annual";
 
 const STATUS_COLORS: Record<AppointmentStatus, string> = {
@@ -341,13 +343,17 @@ type Appointment = {
   patientId: string | null;
   clientFirstName: string | null;
   clientLastName: string | null;
+  clientEmail: string | null;
+  clientPhone: string | null;
   clientId: string | null;
   doctorName: string | null;
   doctorId: string | null;
   typeName: string | null;
   typeColor: string | null;
   typeDuration: number | null;
+  typeRequiresDoctor: number | null;
   roomName: string | null;
+  roomId: string | null;
 };
 
 // --- Components ---
@@ -881,11 +887,17 @@ function AppointmentDetailPopover({
   appointment: Appointment;
   timeZone?: string | null;
   onClose: () => void;
-  onStatusChange: (id: string, status: AppointmentStatus) => void;
+  onStatusChange: (
+    id: string,
+    status: AppointmentStatus,
+    confirmationContactMethod?: ConfirmationContactMethod
+  ) => void;
   onReschedule: (input: {
     id: string;
     startTime: string;
     endTime: string;
+    doctorId: string | null;
+    roomId: string | null;
   }) => void;
   onCancelRecurringSeries: (seriesId: string) => void;
   canUpdateStatus: boolean;
@@ -899,9 +911,19 @@ function AppointmentDetailPopover({
   const onCloseRef = useRef(onClose);
   const restoreFocusRef = useRef(true);
   const dialogTitleId = useId();
+  const rescheduleDateId = `${dialogTitleId}-date`;
+  const rescheduleTimeId = `${dialogTitleId}-time`;
+  const rescheduleDurationId = `${dialogTitleId}-duration`;
+  const rescheduleDoctorFieldId = `${dialogTitleId}-doctor`;
+  const rescheduleRoomFieldId = `${dialogTitleId}-room`;
+  const confirmationPhoneFieldId = `${dialogTitleId}-confirmation-phone`;
+  const confirmationEmailFieldId = `${dialogTitleId}-confirmation-email`;
   const start = new Date(appointment.startTime);
   const end = new Date(appointment.endTime);
   const [showRescheduleForm, setShowRescheduleForm] = useState(false);
+  const [showConfirmationForm, setShowConfirmationForm] = useState(false);
+  const [confirmationContactMethod, setConfirmationContactMethod] =
+    useState<ConfirmationContactMethod | "">("");
   const [rescheduleDate, setRescheduleDate] = useState(() =>
     toISODate(start, timeZone)
   );
@@ -911,6 +933,18 @@ function AppointmentDetailPopover({
   const [rescheduleDuration, setRescheduleDuration] = useState(() =>
     appointmentDurationMinutes(start, end)
   );
+  const [rescheduleDoctorId, setRescheduleDoctorId] = useState(
+    appointment.doctorId ?? ""
+  );
+  const [rescheduleRoomId, setRescheduleRoomId] = useState(
+    appointment.roomId ?? ""
+  );
+  const doctorsQuery = trpc.appointments.listDoctors.useQuery(undefined, {
+    enabled: canManageSchedule && showRescheduleForm,
+  });
+  const roomsQuery = trpc.appointments.listRooms.useQuery(undefined, {
+    enabled: canManageSchedule && showRescheduleForm,
+  });
 
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -985,20 +1019,66 @@ function AppointmentDetailPopover({
 
   useEffect(() => {
     setShowRescheduleForm(false);
+    setShowConfirmationForm(false);
+    setConfirmationContactMethod("");
     setRescheduleDate(toISODate(start, timeZone));
     setRescheduleTime(formatTimeInput(start, timeZone));
     setRescheduleDuration(appointmentDurationMinutes(start, end));
-  }, [appointment.id, appointment.startTime, appointment.endTime, timeZone]);
+    setRescheduleDoctorId(appointment.doctorId ?? "");
+    setRescheduleRoomId(appointment.roomId ?? "");
+  }, [
+    appointment.id,
+    appointment.startTime,
+    appointment.endTime,
+    appointment.doctorId,
+    appointment.roomId,
+    timeZone,
+  ]);
 
   const clientName = [appointment.clientFirstName, appointment.clientLastName]
     .filter(Boolean)
     .join(" ") || "Unknown Client";
 
-  const statusActions: { label: string; status: AppointmentStatus; variant: "default" | "outline" | "destructive" }[] = [];
+  const statusActions: {
+    label: string;
+    status: AppointmentStatus;
+    variant: "default" | "outline" | "destructive";
+    disabled?: boolean;
+    disabledReason?: string;
+  }[] = [];
   const current = appointment.status as AppointmentStatus;
   const canMoveAppointment = current === "scheduled" || current === "confirmed";
+  const doctorRequiredForAdvance =
+    current === "scheduled" &&
+    appointment.typeRequiresDoctor === 1 &&
+    !appointment.doctorId;
+  const resourceOptionsUnavailable =
+    doctorsQuery.isLoading ||
+    roomsQuery.isLoading ||
+    Boolean(doctorsQuery.error || roomsQuery.error);
 
-  if (current === "scheduled" || current === "confirmed") {
+  if (current === "scheduled") {
+    statusActions.push({
+      label: "Confirm",
+      status: "confirmed",
+      variant: "default",
+      disabled: doctorRequiredForAdvance,
+      disabledReason: doctorRequiredForAdvance
+        ? "Assign a doctor before confirming this appointment."
+        : undefined,
+    });
+    statusActions.push({
+      label: "Check In",
+      status: "checked_in",
+      variant: "outline",
+      disabled: doctorRequiredForAdvance,
+      disabledReason: doctorRequiredForAdvance
+        ? "Assign a doctor before checking in this appointment."
+        : undefined,
+    });
+    statusActions.push({ label: "No Show", status: "no_show", variant: "outline" });
+    statusActions.push({ label: "Cancel", status: "cancelled", variant: "destructive" });
+  } else if (current === "confirmed") {
     statusActions.push({ label: "Check In", status: "checked_in", variant: "default" });
     statusActions.push({ label: "No Show", status: "no_show", variant: "outline" });
     statusActions.push({ label: "Cancel", status: "cancelled", variant: "destructive" });
@@ -1012,6 +1092,7 @@ function AppointmentDetailPopover({
   const canSubmitReschedule =
     isAppointmentDateInputValid(rescheduleDate) &&
     isAppointmentDurationInputValid(rescheduleDuration) &&
+    !resourceOptionsUnavailable &&
     !isRescheduling;
 
   const handleReschedule = () => {
@@ -1026,18 +1107,20 @@ function AppointmentDetailPopover({
       id: appointment.id,
       startTime: startDt.toISOString(),
       endTime: endDt.toISOString(),
+      doctorId: rescheduleDoctorId || null,
+      roomId: rescheduleRoomId || null,
     });
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-3 sm:p-4">
       <div
         ref={popoverRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={dialogTitleId}
         tabIndex={-1}
-        className="w-full max-w-sm rounded-lg border border-border bg-card shadow-lg"
+        className="max-h-[calc(100dvh-1.5rem)] w-full max-w-sm overflow-y-auto rounded-lg border border-border bg-card shadow-lg sm:max-h-[calc(100dvh-2rem)]"
       >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
@@ -1108,6 +1191,12 @@ function AppointmentDetailPopover({
                 {appointment.notes}
               </p>
             )}
+            {doctorRequiredForAdvance && (
+              <p className="rounded-md bg-amber-50 px-2.5 py-2 text-xs text-amber-900">
+                Assign a doctor before confirming or checking in this appointment
+                request.
+              </p>
+            )}
           </div>
         </div>
 
@@ -1115,10 +1204,14 @@ function AppointmentDetailPopover({
           <div className="border-t border-border px-4 py-3">
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
               <div>
-                <label className="text-xs font-medium text-muted-foreground">
+                <label
+                  htmlFor={rescheduleDateId}
+                  className="text-xs font-medium text-muted-foreground"
+                >
                   Date
                 </label>
                 <Input
+                  id={rescheduleDateId}
                   type="date"
                   value={rescheduleDate}
                   aria-invalid={!isAppointmentDateInputValid(rescheduleDate)}
@@ -1127,10 +1220,14 @@ function AppointmentDetailPopover({
                 />
               </div>
               <div>
-                <label className="text-xs font-medium text-muted-foreground">
+                <label
+                  htmlFor={rescheduleTimeId}
+                  className="text-xs font-medium text-muted-foreground"
+                >
                   Time
                 </label>
                 <select
+                  id={rescheduleTimeId}
                   value={rescheduleTime}
                   onChange={(e) => setRescheduleTime(e.target.value)}
                   className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
@@ -1143,10 +1240,14 @@ function AppointmentDetailPopover({
                 </select>
               </div>
               <div>
-                <label className="text-xs font-medium text-muted-foreground">
+                <label
+                  htmlFor={rescheduleDurationId}
+                  className="text-xs font-medium text-muted-foreground"
+                >
                   Duration
                 </label>
                 <Input
+                  id={rescheduleDurationId}
                   type="number"
                   min={APPOINTMENT_DURATION_MIN_MINUTES}
                   max={APPOINTMENT_DURATION_MAX_MINUTES}
@@ -1158,6 +1259,80 @@ function AppointmentDetailPopover({
                 />
               </div>
             </div>
+            {current === "confirmed" ? (
+              <p className="mt-2 rounded-md bg-amber-50 px-2.5 py-2 text-xs text-amber-900">
+                Changing the date, time, or duration returns this appointment to
+                requested status. Contact the client and record confirmation
+                again before reminders can be sent.
+              </p>
+            ) : null}
+            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <div>
+                <label
+                  htmlFor={rescheduleDoctorFieldId}
+                  className="text-xs font-medium text-muted-foreground"
+                >
+                  Doctor
+                </label>
+                <select
+                  id={rescheduleDoctorFieldId}
+                  value={rescheduleDoctorId}
+                  onChange={(e) => setRescheduleDoctorId(e.target.value)}
+                  disabled={resourceOptionsUnavailable}
+                  className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+                >
+                  <option value="">Unassigned</option>
+                  {(doctorsQuery.data ?? []).map((doctor) => (
+                    <option key={doctor.id} value={doctor.id}>
+                      Dr. {doctor.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label
+                  htmlFor={rescheduleRoomFieldId}
+                  className="text-xs font-medium text-muted-foreground"
+                >
+                  Room
+                </label>
+                <select
+                  id={rescheduleRoomFieldId}
+                  value={rescheduleRoomId}
+                  onChange={(e) => setRescheduleRoomId(e.target.value)}
+                  disabled={resourceOptionsUnavailable}
+                  className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+                >
+                  <option value="">Unassigned</option>
+                  {(roomsQuery.data ?? []).map((room) => (
+                    <option key={room.id} value={room.id}>
+                      {room.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            {(doctorsQuery.error || roomsQuery.error) && (
+              <div className="mt-2 flex items-center justify-between gap-2 rounded-md bg-destructive/10 px-2.5 py-2">
+                <p className="text-xs text-destructive">
+                  Doctor or room options could not be loaded. Retry before
+                  changing this appointment.
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    void Promise.all([
+                      doctorsQuery.refetch(),
+                      roomsQuery.refetch(),
+                    ]);
+                  }}
+                >
+                  Retry options
+                </Button>
+              </div>
+            )}
             <div className="mt-3 flex justify-end gap-2">
               <Button
                 size="sm"
@@ -1174,7 +1349,100 @@ function AppointmentDetailPopover({
                 {isRescheduling && (
                   <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
                 )}
-                Move Appointment
+                Save changes
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {showConfirmationForm && (
+          <div className="border-t border-border px-4 py-3">
+            <fieldset>
+              <legend className="text-sm font-semibold">
+                Record client confirmation
+              </legend>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Contact the client first. This records how they agreed to the
+                appointment; it does not send a message.
+              </p>
+              <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <label
+                  htmlFor={confirmationPhoneFieldId}
+                  className="flex items-start gap-2 rounded-md border border-border p-2.5 text-sm has-[:checked]:border-teal-500 has-[:checked]:bg-teal-50"
+                >
+                  <input
+                    id={confirmationPhoneFieldId}
+                    type="radio"
+                    name={`${dialogTitleId}-confirmation-method`}
+                    value="phone"
+                    checked={confirmationContactMethod === "phone"}
+                    disabled={!appointment.clientPhone}
+                    onChange={() => setConfirmationContactMethod("phone")}
+                    className="mt-0.5 h-4 w-4"
+                  />
+                  <span>
+                    Phone
+                    {!appointment.clientPhone ? (
+                      <span className="block text-xs text-muted-foreground">
+                        No phone on file
+                      </span>
+                    ) : null}
+                  </span>
+                </label>
+                <label
+                  htmlFor={confirmationEmailFieldId}
+                  className="flex items-start gap-2 rounded-md border border-border p-2.5 text-sm has-[:checked]:border-teal-500 has-[:checked]:bg-teal-50"
+                >
+                  <input
+                    id={confirmationEmailFieldId}
+                    type="radio"
+                    name={`${dialogTitleId}-confirmation-method`}
+                    value="email"
+                    checked={confirmationContactMethod === "email"}
+                    disabled={!appointment.clientEmail}
+                    onChange={() => setConfirmationContactMethod("email")}
+                    className="mt-0.5 h-4 w-4"
+                  />
+                  <span>
+                    Email
+                    {!appointment.clientEmail ? (
+                      <span className="block text-xs text-muted-foreground">
+                        No email on file
+                      </span>
+                    ) : null}
+                  </span>
+                </label>
+              </div>
+            </fieldset>
+            <div className="mt-3 flex justify-end gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setShowConfirmationForm(false);
+                  setConfirmationContactMethod("");
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={!confirmationContactMethod || isUpdating}
+                onClick={() => {
+                  if (!confirmationContactMethod) return;
+                  onStatusChange(
+                    appointment.id,
+                    "confirmed",
+                    confirmationContactMethod
+                  );
+                }}
+              >
+                {isUpdating ? (
+                  <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
+                ) : null}
+                Record confirmation
               </Button>
             </div>
           </div>
@@ -1229,11 +1497,10 @@ function AppointmentDetailPopover({
                 onClick={() => setShowRescheduleForm((show) => !show)}
               >
                 <Clock className="mr-1.5 h-3 w-3" />
-                Reschedule
+                Edit appointment
               </Button>
             )}
-            {canSendReminders &&
-              (current === "scheduled" || current === "confirmed") && (
+            {canSendReminders && current === "confirmed" && (
               <SendReminderButton appointmentId={appointment.id} />
             )}
             {canManageSchedule && appointment.recurringSeriesId && (
@@ -1256,8 +1523,16 @@ function AppointmentDetailPopover({
                 key={action.status}
                 size="sm"
                 variant={action.variant}
-                disabled={isUpdating}
-                onClick={() => onStatusChange(appointment.id, action.status)}
+                disabled={isUpdating || action.disabled}
+                title={action.disabledReason}
+                onClick={() => {
+                  if (action.status === "confirmed") {
+                    setShowRescheduleForm(false);
+                    setShowConfirmationForm(true);
+                    return;
+                  }
+                  onStatusChange(appointment.id, action.status);
+                }}
               >
                 {isUpdating ? (
                   <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
@@ -1989,8 +2264,12 @@ export default function SchedulePage() {
   const utils = trpc.useUtils();
 
   const rescheduleAppointment = trpc.appointments.reschedule.useMutation({
-    onSuccess: () => {
-      toast.success("Appointment rescheduled");
+    onSuccess: (result) => {
+      toast.success(
+        result.confirmationRequired
+          ? "Appointment moved; contact the client and confirm the new time"
+          : "Appointment updated"
+      );
       setSelectedAppointment(null);
       utils.appointments.list.invalidate();
     },
@@ -2016,9 +2295,13 @@ export default function SchedulePage() {
     },
   });
 
-  const handleStatusChange = (id: string, status: AppointmentStatus) => {
+  const handleStatusChange = (
+    id: string,
+    status: AppointmentStatus,
+    confirmationContactMethod?: ConfirmationContactMethod
+  ) => {
     updateStatus.mutate(
-      { id, status },
+      { id, status, confirmationContactMethod },
       {
         onSuccess: () => {
           utils.appointments.list.invalidate();
@@ -2031,6 +2314,8 @@ export default function SchedulePage() {
     id: string;
     startTime: string;
     endTime: string;
+    doctorId: string | null;
+    roomId: string | null;
   }) => {
     rescheduleAppointment.mutate(input);
   };

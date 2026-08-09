@@ -30,9 +30,10 @@ export function AllSetStep({
           <PartyPopper className="h-5 w-5" />
         </span>
         <p className="text-sm leading-6 text-slate-600">
-          Your workspace is ready. Everything here is yours, and the AI helper is
-          built in whenever you need it. Want a quick look around before you dive
-          in?
+          You finished the guided setup. Before switching clinic workflows,
+          use the launch checklist on your dashboard to validate a real visit,
+          appointment requests, payments, and communications with your team.
+          Want a quick look around first?
         </p>
       </div>
 

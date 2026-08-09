@@ -13,6 +13,7 @@ import {
   rooms,
   recurringSeries,
   visitCloseouts,
+  communications,
 } from "@openpims/db";
 import {
   detectConflicts,
@@ -67,6 +68,7 @@ const appointmentNotesInput = z
   .optional()
   .transform((value) => value || undefined);
 const appointmentStatusInput = z.enum(appointmentStatusValues);
+const confirmationContactMethodInput = z.enum(["phone", "email"]);
 const appointmentRangeInput = z.string().refine(
   (value) =>
     isValidClinicalDateInput(value) ||
@@ -214,6 +216,14 @@ function activePracticePredicate(practiceId: string) {
     where ${practices.id} = ${practiceId}
       and ${practices.deletedAt} is null
   )`;
+}
+
+function appointmentConfirmationDedupeKey(input: {
+  practiceId: string;
+  appointmentId: string;
+  scheduledStateUpdatedAt: Date;
+}): string {
+  return `appointment-confirmation:v1:${input.practiceId}:${input.appointmentId}:${input.scheduledStateUpdatedAt.getTime()}`;
 }
 
 async function assertActivePractice(ctx: AppointmentsContext) {
@@ -487,13 +497,17 @@ export const appointmentsRouter = createRouter({
           patientId: appointments.patientId,
           clientFirstName: clients.firstName,
           clientLastName: clients.lastName,
+          clientEmail: clients.email,
+          clientPhone: clients.phone,
           clientId: appointments.clientId,
           doctorName: users.name,
           doctorId: appointments.doctorId,
           typeName: appointmentTypes.name,
           typeColor: appointmentTypes.color,
           typeDuration: appointmentTypes.durationMinutes,
+          typeRequiresDoctor: appointmentTypes.requiresDoctor,
           roomName: rooms.name,
+          roomId: appointments.roomId,
         })
         .from(appointments)
         .leftJoin(
@@ -744,13 +758,30 @@ export const appointmentsRouter = createRouter({
       z.object({
         id: z.string().uuid(),
         status: appointmentStatusInput,
+        confirmationContactMethod: confirmationContactMethodInput.optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
       const { current, appt } = await ctx.db.transaction(async (tx) => {
         const [current] = await tx
-          .select({ id: appointments.id, status: appointments.status })
+          .select({
+            id: appointments.id,
+            status: appointments.status,
+            doctorId: appointments.doctorId,
+            clientId: appointments.clientId,
+            startTime: appointments.startTime,
+            updatedAt: appointments.updatedAt,
+            typeRequiresDoctor: appointmentTypes.requiresDoctor,
+          })
           .from(appointments)
+          .leftJoin(
+            appointmentTypes,
+            and(
+              eq(appointments.typeId, appointmentTypes.id),
+              eq(appointmentTypes.practiceId, ctx.practiceId),
+              isNull(appointmentTypes.deletedAt)
+            )
+          )
           .where(
             and(
               eq(appointments.id, input.id),
@@ -779,6 +810,89 @@ export const appointmentsRouter = createRouter({
             message: `Cannot change appointment status from ${current.status} to ${input.status}.`,
           });
         }
+        if (
+          (input.status === "confirmed" || input.status === "checked_in") &&
+          current.typeRequiresDoctor === 1 &&
+          !current.doctorId
+        ) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              input.status === "confirmed"
+                ? "Assign a doctor before confirming this appointment."
+                : "Assign a doctor before checking in this appointment.",
+          });
+        }
+        const isNewConfirmation =
+          current.status !== "confirmed" && input.status === "confirmed";
+        let confirmationRecord:
+          | {
+              clientId: string;
+              channel: "phone" | "email";
+              content: string;
+              dedupeKey: string;
+            }
+          | undefined;
+        if (isNewConfirmation) {
+          if (!input.confirmationContactMethod) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "Contact the client and record phone or email confirmation before confirming this appointment.",
+            });
+          }
+          if (!current.clientId) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: "Assign an active client before confirming this appointment.",
+            });
+          }
+          const [client] = await tx
+            .select({
+              id: clients.id,
+              email: clients.email,
+              phone: clients.phone,
+            })
+            .from(clients)
+            .where(
+              and(
+                eq(clients.id, current.clientId),
+                eq(clients.practiceId, ctx.practiceId),
+                activePracticePredicate(ctx.practiceId),
+                isNull(clients.deletedAt)
+              )
+            )
+            .limit(1);
+          if (!client) {
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: "Client not found",
+            });
+          }
+          const contactAddress =
+            input.confirmationContactMethod === "phone"
+              ? client.phone?.trim()
+              : client.email?.trim();
+          if (!contactAddress) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                input.confirmationContactMethod === "phone"
+                  ? "Add a client phone number or record email confirmation instead."
+                  : "Add a client email address or record phone confirmation instead.",
+            });
+          }
+          confirmationRecord = {
+            clientId: client.id,
+            channel: input.confirmationContactMethod,
+            content: `Staff recorded that the client agreed by ${input.confirmationContactMethod} to the appointment scheduled for ${current.startTime.toISOString()}.`,
+            dedupeKey: appointmentConfirmationDedupeKey({
+              practiceId: ctx.practiceId,
+              appointmentId: current.id,
+              scheduledStateUpdatedAt: current.updatedAt,
+            }),
+          };
+        }
 
         const [closeout] = await tx
           .select({ id: visitCloseouts.id, status: visitCloseouts.status })
@@ -799,6 +913,20 @@ export const appointmentsRouter = createRouter({
             code: "PRECONDITION_FAILED",
             message:
               "Clinical handoff is finalized. Complete the visit through closeout instead of changing its status.",
+          });
+        }
+
+        if (confirmationRecord) {
+          await tx.insert(communications).values({
+            practiceId: ctx.practiceId,
+            clientId: confirmationRecord.clientId,
+            channel: confirmationRecord.channel,
+            direction: "outbound",
+            subject: "Appointment confirmation recorded",
+            content: confirmationRecord.content,
+            status: "sent",
+            assignedTo: ctx.user.id,
+            dedupeKey: confirmationRecord.dedupeKey,
           });
         }
 
@@ -976,8 +1104,17 @@ export const appointmentsRouter = createRouter({
           doctorId: appointments.doctorId,
           roomId: appointments.roomId,
           typeId: appointments.typeId,
+          typeRequiresDoctor: appointmentTypes.requiresDoctor,
         })
         .from(appointments)
+        .leftJoin(
+          appointmentTypes,
+          and(
+            eq(appointments.typeId, appointmentTypes.id),
+            eq(appointmentTypes.practiceId, ctx.practiceId),
+            isNull(appointmentTypes.deletedAt)
+          )
+        )
         .where(
           and(
             eq(appointments.id, input.id),
@@ -1004,10 +1141,26 @@ export const appointmentsRouter = createRouter({
       const doctorId =
         input.doctorId === undefined ? current.doctorId : input.doctorId;
       const roomId = input.roomId === undefined ? current.roomId : input.roomId;
+      const timeChanged =
+        current.startTime.getTime() !== startTime.getTime() ||
+        current.endTime.getTime() !== endTime.getTime();
+      const confirmationRequired =
+        current.status === "confirmed" && timeChanged;
       await assertAppointmentTargets(ctx, {
         doctorId: input.doctorId,
         roomId: input.roomId,
       });
+      if (
+        current.status === "confirmed" &&
+        !confirmationRequired &&
+        current.typeRequiresDoctor === 1 &&
+        !doctorId
+      ) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Assign a doctor before saving a confirmed appointment.",
+        });
+      }
 
       if (doctorId || roomId) {
         const existing = await fetchOverlapping(
@@ -1032,6 +1185,7 @@ export const appointmentsRouter = createRouter({
           endTime,
           doctorId: doctorId ?? null,
           roomId: roomId ?? null,
+          status: confirmationRequired ? "scheduled" : current.status,
         })
         .where(
           and(
@@ -1064,7 +1218,7 @@ export const appointmentsRouter = createRouter({
         typeId: updated.typeId,
         source: "dashboard",
       });
-      return updated;
+      return { ...updated, confirmationRequired };
     }),
 
   /** Open slots on a given date for a doctor and/or room. */

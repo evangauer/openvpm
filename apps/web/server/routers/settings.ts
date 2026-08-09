@@ -35,6 +35,7 @@ import {
   locationMessaging,
   migrationRuns,
   visitCloseouts,
+  bookingPages,
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import { regionDefaults } from "@/lib/locale/format";
@@ -70,6 +71,7 @@ import {
   type OnboardingIntent,
 } from "@/lib/onboarding/intent";
 import { isValidMigrationSource } from "@/lib/import/sources";
+import { parseBookingPageConfig } from "@/lib/booking/page-config";
 
 const adminProcedure = protectedProcedure.use(requireRole("admin"));
 
@@ -1986,7 +1988,7 @@ export const settingsRouter = createRouter({
               isNull(appointmentTypes.deletedAt),
             ),
           )
-          .limit(1);
+          .for("update");
 
         if (!type) {
           throw new TRPCError({
@@ -2036,6 +2038,31 @@ export const settingsRouter = createRouter({
             code: "BAD_REQUEST",
             message:
               "Cannot delete an appointment type used by waiting appointment requests.",
+          });
+        }
+
+        const [publishedPage] = await tx
+          .select({ config: bookingPages.config })
+          .from(bookingPages)
+          .where(
+            and(
+              eq(bookingPages.practiceId, ctx.practiceId),
+              eq(bookingPages.published, true),
+              isNull(bookingPages.deletedAt),
+            ),
+          )
+          .limit(1);
+
+        if (
+          publishedPage &&
+          parseBookingPageConfig(publishedPage.config).bookableTypeIds.includes(
+            input.id,
+          )
+        ) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "Unpublish the appointment request page or remove this visit type from it before deleting the type.",
           });
         }
 

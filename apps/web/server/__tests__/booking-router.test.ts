@@ -73,6 +73,7 @@ function pageRow(config?: Record<string, unknown>) {
       config: {
         hours: ALL_DAYS_OPEN,
         leadTimeMinutes: 0,
+        bookableTypeIds: [TYPE_A],
         ...config,
       },
     },
@@ -110,12 +111,17 @@ function createDb(opts?: {
   const selectResults = [...(opts?.selectResults ?? [])];
   const insertResults = [...(opts?.insertResults ?? [])];
   const insertedValues: unknown[] = [];
+  const operations: string[] = [];
 
   const select = vi.fn(() => {
     const result = selectResults.shift() ?? [];
     const afterWhere = {
       limit: vi.fn(async () => result),
       orderBy: vi.fn(async () => result),
+      for: vi.fn(async () => {
+        operations.push("type-lock");
+        return result;
+      }),
       then: (
         resolve: (value: unknown[]) => unknown,
         reject?: (error: unknown) => unknown
@@ -133,6 +139,7 @@ function createDb(opts?: {
 
   const insert = vi.fn(() => ({
     values: vi.fn((vals: unknown) => {
+      operations.push("insert");
       insertedValues.push(vals);
       const result = insertResults.shift() ?? [];
       return {
@@ -154,7 +161,10 @@ function createDb(opts?: {
   });
   const updateWhere = vi.fn(() => ({ returning: updateReturning }));
   const updateSet = vi.fn(() => ({ where: updateWhere }));
-  const update = vi.fn(() => ({ set: updateSet }));
+  const update = vi.fn(() => {
+    operations.push("update");
+    return { set: updateSet };
+  });
 
   const db: Record<string, unknown> = {
     transaction: async (fn: (tx: unknown) => unknown) => fn(db),
@@ -171,6 +181,7 @@ function createDb(opts?: {
     insertedValues,
     updateSet,
     execute: db.execute as ReturnType<typeof vi.fn>,
+    operations,
   };
 }
 
@@ -210,6 +221,22 @@ describe("public booking page", () => {
     expect(result.practice.name).toBe("Test Clinic");
     expect(result.types).toEqual([types[0]]);
   });
+
+  it("hides a published page with no configured active requestable type", async () => {
+    const emptyConfig = createDb({
+      selectResults: [[pageRow({ bookableTypeIds: [] })]],
+    });
+    await expect(
+      publicCaller(emptyConfig.db).getPage({ slug: "test-clinic" })
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    const staleConfig = createDb({
+      selectResults: [[pageRow({ bookableTypeIds: [TYPE_A] })], []],
+    });
+    await expect(
+      publicCaller(staleConfig.db).getPage({ slug: "test-clinic" })
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
 });
 
 describe("public availability", () => {
@@ -222,6 +249,7 @@ describe("public availability", () => {
     const result = await publicCaller(db).availableSlots({
       slug: "test-clinic",
       date: "2026-07-20",
+      typeId: TYPE_A,
     });
     expect(result).toEqual([]);
     // Page lookup only; the busy-appointments query is never made.
@@ -238,13 +266,37 @@ describe("public availability", () => {
       },
     ];
     const { db } = createDb({
-      selectResults: [[pageRow()], busy],
+      selectResults: [
+        [pageRow()],
+        [{ id: TYPE_A, name: "Wellness Exam", durationMinutes: 30 }],
+        busy,
+      ],
     });
     const result = await publicCaller(db).availableSlots({
       slug: "test-clinic",
       date: "2026-07-20",
+      typeId: TYPE_A,
     });
     expect(result).toEqual([{ time: "17:30", iso: "2026-07-20T17:30:00.000Z" }]);
+  });
+
+  it("rejects a stale or unrequestable type before reading appointments", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-19T12:00:00Z"));
+    const { db, select } = createDb({
+      selectResults: [
+        [pageRow({ bookableTypeIds: [TYPE_A] })],
+        [{ id: TYPE_A, name: "Wellness Exam", durationMinutes: 30 }],
+      ],
+    });
+    await expect(
+      publicCaller(db).availableSlots({
+        slug: "test-clinic",
+        date: "2026-07-20",
+        typeId: TYPE_B,
+      })
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(select).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -252,6 +304,7 @@ describe("public booking", () => {
   function bookInput(overrides?: Record<string, unknown>) {
     return {
       slug: "test-clinic",
+      typeId: TYPE_A,
       date: "2026-07-20",
       time: "09:00",
       contact: {
@@ -286,10 +339,16 @@ describe("public booking", () => {
       status: "scheduled",
       patientId: PATIENT_ID,
       clientId: CLIENT_ID,
-      typeId: null,
+      typeId: TYPE_A,
     };
     const { db, insertedValues, execute } = createDb({
-      selectResults: [[pageRow()], [], [], []],
+      selectResults: [
+        [pageRow()],
+        [{ id: TYPE_A, name: "Wellness Exam", durationMinutes: 30 }],
+        [],
+        [],
+        [],
+      ],
       insertResults: [
         [{ id: CLIENT_ID }],
         [{ id: PATIENT_ID, name: "Milo" }],
@@ -327,14 +386,16 @@ describe("public booking", () => {
       practiceId: PRACTICE_ID,
       clientId: CLIENT_ID,
       patientId: PATIENT_ID,
+      typeId: TYPE_A,
       status: "scheduled",
     });
-    expect(apptValues!.notes).toContain("[Online booking]");
+    expect(apptValues!.notes).toContain("[Online request]");
     expect(commValues).toMatchObject({
       practiceId: PRACTICE_ID,
       clientId: CLIENT_ID,
       channel: "portal",
       direction: "inbound",
+      subject: "New appointment request for Milo",
       status: "pending",
     });
     expect(mocks.dispatchWebhookEvent).toHaveBeenCalledWith(
@@ -349,12 +410,13 @@ describe("public booking", () => {
     );
   });
 
-  it("books as confirmed when the page auto-confirms", async () => {
+  it("keeps legacy auto-confirm pages request-only", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-19T12:00:00Z"));
     const { db, insertedValues } = createDb({
       selectResults: [
         [pageRow({ autoConfirm: true })],
+        [{ id: TYPE_A, name: "Wellness Exam", durationMinutes: 30 }],
         [],
         [{ id: CLIENT_ID }],
         [{ id: PATIENT_ID, name: "Milo" }],
@@ -362,16 +424,21 @@ describe("public booking", () => {
       insertResults: [[{ id: APPOINTMENT_ID, startTime: new Date(), endTime: new Date() }], []],
     });
     const result = await publicCaller(db).book(bookInput());
-    expect(result.requiresConfirmation).toBe(false);
+    expect(result.requiresConfirmation).toBe(true);
+    expect(result.message).toContain("request has been sent");
     const apptValues = insertedValues[0] as Record<string, unknown>;
-    expect(apptValues.status).toBe("confirmed");
+    expect(apptValues.status).toBe("scheduled");
   });
 
   it("rejects times that clash with an existing appointment", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-19T12:00:00Z"));
     const { db, insert } = createDb({
-      selectResults: [[pageRow()], [{ id: APPOINTMENT_ID }]],
+      selectResults: [
+        [pageRow()],
+        [{ id: TYPE_A, name: "Wellness Exam", durationMinutes: 30 }],
+        [{ id: APPOINTMENT_ID }],
+      ],
     });
     await expect(publicCaller(db).book(bookInput())).rejects.toMatchObject({
       code: "CONFLICT",
@@ -383,7 +450,12 @@ describe("public booking", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-19T12:00:00Z"));
     const { db, insert } = createDb({
-      selectResults: [[pageRow({ allowNewClients: false })], [], []],
+      selectResults: [
+        [pageRow({ allowNewClients: false })],
+        [{ id: TYPE_A, name: "Wellness Exam", durationMinutes: 30 }],
+        [],
+        [],
+      ],
     });
     await expect(publicCaller(db).book(bookInput())).rejects.toMatchObject({
       code: "FORBIDDEN",
@@ -414,7 +486,10 @@ describe("public booking", () => {
     vi.setSystemTime(new Date("2026-07-19T12:00:00Z"));
     const closedMonday = [null, null, ...ALL_DAYS_OPEN.slice(2)];
     const { db } = createDb({
-      selectResults: [[pageRow({ hours: closedMonday })]],
+      selectResults: [
+        [pageRow({ hours: closedMonday })],
+        [{ id: TYPE_A, name: "Wellness Exam", durationMinutes: 30 }],
+      ],
     });
     await expect(publicCaller(db).book(bookInput())).rejects.toMatchObject({
       code: "BAD_REQUEST",
@@ -425,7 +500,10 @@ describe("public booking", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-20T08:30:00Z"));
     const { db } = createDb({
-      selectResults: [[pageRow({ leadTimeMinutes: 120 })]],
+      selectResults: [
+        [pageRow({ leadTimeMinutes: 120 })],
+        [{ id: TYPE_A, name: "Wellness Exam", durationMinutes: 30 }],
+      ],
     });
     await expect(publicCaller(db).book(bookInput())).rejects.toMatchObject({
       code: "BAD_REQUEST",
@@ -502,20 +580,70 @@ describe("booking page admin", () => {
   });
 
   it("creates the page on first save", async () => {
-    const { db, insertedValues } = createDb({
-      selectResults: [[]],
+    const { db, insertedValues, operations } = createDb({
+      selectResults: [
+        [{ id: TYPE_A, name: "Wellness Exam", durationMinutes: 30 }],
+        [],
+      ],
       insertResults: [[{ slug: "test-clinic", published: true }]],
     });
     const result = await adminCaller(db).savePage({
       slug: "test-clinic",
       published: true,
-      config: {},
+      config: { autoConfirm: true, bookableTypeIds: [TYPE_A] },
     } as never);
     expect(result).toEqual({ slug: "test-clinic", published: true });
     expect(insertedValues[0]).toMatchObject({
       practiceId: PRACTICE_ID,
       slug: "test-clinic",
       published: true,
+      config: expect.objectContaining({ autoConfirm: false }),
+    });
+    expect(operations.indexOf("type-lock")).toBeGreaterThanOrEqual(0);
+    expect(operations.indexOf("type-lock")).toBeLessThan(
+      operations.indexOf("insert")
+    );
+  });
+
+  it("rejects publication unless a selected type is active in this practice", async () => {
+    const noSelection = createDb();
+    await expect(
+      adminCaller(noSelection.db).savePage({
+        slug: "test-clinic",
+        published: true,
+        config: {},
+      } as never)
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Select at least one active visit type before publishing the appointment request page.",
+    });
+
+    const staleSelection = createDb({ selectResults: [[]] });
+    await expect(
+      adminCaller(staleSelection.db).savePage({
+        slug: "test-clinic",
+        published: true,
+        config: { bookableTypeIds: [TYPE_A] },
+      } as never)
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+
+  it("drops stale selected type IDs when saving a draft", async () => {
+    const { db, insertedValues } = createDb({
+      selectResults: [
+        [{ id: TYPE_A, name: "Wellness Exam", durationMinutes: 30 }],
+        [],
+      ],
+      insertResults: [[{ slug: "test-clinic", published: false }]],
+    });
+    await adminCaller(db).savePage({
+      slug: "test-clinic",
+      published: false,
+      config: { bookableTypeIds: [TYPE_A, TYPE_B] },
+    } as never);
+    expect(insertedValues[0]).toMatchObject({
+      config: expect.objectContaining({ bookableTypeIds: [TYPE_A] }),
     });
   });
 
@@ -532,7 +660,11 @@ describe("booking page admin", () => {
     expect(result).toEqual({ slug: "new-slug", published: false });
     expect(insertedValues).toHaveLength(0);
     expect(updateSet).toHaveBeenCalledWith(
-      expect.objectContaining({ slug: "new-slug", published: false })
+      expect.objectContaining({
+        slug: "new-slug",
+        published: false,
+        config: expect.objectContaining({ autoConfirm: false }),
+      })
     );
   });
 
@@ -541,7 +673,10 @@ describe("booking page admin", () => {
       code: "23505",
     });
     const { db } = createDb({
-      selectResults: [[]],
+      selectResults: [
+        [{ id: TYPE_A, name: "Wellness Exam", durationMinutes: 30 }],
+        [],
+      ],
       insertError: duplicate,
     });
 
@@ -549,7 +684,7 @@ describe("booking page admin", () => {
       adminCaller(db).savePage({
         slug: "race-winner",
         published: true,
-        config: {},
+        config: { bookableTypeIds: [TYPE_A] },
       } as never)
     ).rejects.toMatchObject({
       code: "CONFLICT",
@@ -562,7 +697,10 @@ describe("booking page admin", () => {
       code: "23505",
     });
     const { db } = createDb({
-      selectResults: [[{ id: "existing-page" }]],
+      selectResults: [
+        [{ id: TYPE_A, name: "Wellness Exam", durationMinutes: 30 }],
+        [{ id: "existing-page" }],
+      ],
       updateError: duplicate,
     });
 
@@ -570,7 +708,7 @@ describe("booking page admin", () => {
       adminCaller(db).savePage({
         slug: "race-winner",
         published: true,
-        config: {},
+        config: { bookableTypeIds: [TYPE_A] },
       } as never)
     ).rejects.toMatchObject({
       code: "CONFLICT",

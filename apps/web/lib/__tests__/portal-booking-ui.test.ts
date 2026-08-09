@@ -3,6 +3,10 @@ import { describe, expect, it } from "vitest";
 
 describe("portal booking UI", () => {
   const source = readFileSync("app/portal/[token]/book/page.tsx", "utf8");
+  const appointmentsSource = readFileSync(
+    "app/portal/[token]/appointments/page.tsx",
+    "utf8"
+  );
 
   it("fails closed while portal client data is loading or invalid", () => {
     expect(source).toContain('import { EmptyState } from "@/components/common/empty-state"');
@@ -80,13 +84,16 @@ describe("portal booking UI", () => {
     expect(source).toContain("const appointmentTypesMissing =");
     expect(source).toContain("const appointmentTypesUnavailable =");
     expect(source).toContain("Boolean(types.error) || appointmentTypesMissing");
-    expect(source).toContain("Appointment types could not be verified");
-    expect(source).toContain("const hasValidAppointmentType = !typeId || Boolean(selectedType)");
-    expect(source).toContain("hasValidAppointmentType &&");
-    expect(source).toContain("if (!appointmentTypesUnavailable || !typeId) return;");
-    expect(source).toContain("setTypeId(\"\")");
+    expect(source).toContain("appointmentTypes.length === 0");
+    expect(source).toContain('title="Appointment requests are unavailable"');
     expect(source).toContain(
-      "typeId: hasValidAppointmentType && typeId ? typeId : undefined"
+      "const hasValidAppointmentType = Boolean(typeId && selectedType)"
+    );
+    expect(source).toContain(
+      "{ enabled: !!preferredDate && hasValidAppointmentType }"
+    );
+    expect(source).toContain(
+      "patientId,\n      typeId,\n      preferredDate,"
     );
     expect(source).toContain("slots.isLoading");
     expect(source).toContain("Checking open times");
@@ -108,5 +115,12 @@ describe("portal booking UI", () => {
     expect(source).toContain("maxLength={PORTAL_BOOKING_REASON_MAX_LENGTH}");
     expect(source).toContain("aria-invalid={reason.length > 0 && !hasValidReason}");
     expect(source).not.toContain("reason.trim() &&");
+  });
+
+  it("does not present an unconfirmed request as a scheduled appointment", () => {
+    expect(appointmentsSource).toContain(
+      'if (status === "scheduled") return "Requested — awaiting confirmation"'
+    );
+    expect(appointmentsSource).toContain("Upcoming and requests");
   });
 });

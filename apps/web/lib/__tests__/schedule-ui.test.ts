@@ -284,7 +284,38 @@ describe("schedule appointment form UX", () => {
     expect(source).toContain("rescheduleDate,");
     expect(source).toContain("rescheduleTime,");
     expect(source).toContain("timeZone");
-    expect(source).toContain("Move Appointment");
+    expect(source).toContain("Save changes");
+    expect(source).toContain('label: "Confirm",');
+    expect(source).toContain("Record client confirmation");
+    expect(source).toContain(
+      "Contact the client first. This records how they agreed to the"
+    );
+    expect(source).toContain("it does not send a message.");
+    expect(source).toContain('type="radio"');
+    expect(source).toContain("confirmationContactMethod");
+    expect(source).toContain("Record confirmation");
+    expect(source).toContain("doctorRequiredForAdvance");
+    expect(source).toContain("setRescheduleDoctorId");
+    expect(source).toContain("setRescheduleRoomId");
+    expect(source).toContain(
+      "Assign a doctor before confirming or checking in this appointment"
+    );
+    expect(source).toContain('disabled: doctorRequiredForAdvance');
+    expect(source).toContain('current === "confirmed" && (');
+    expect(source).toContain(
+      "Changing the date, time, or duration returns this appointment to"
+    );
+    expect(source).toContain(
+      "Appointment moved; contact the client and confirm the new time"
+    );
+    expect(source).toContain("resourceOptionsUnavailable");
+    expect(source).toContain("Retry options");
+    expect(source).toContain("max-h-[calc(100dvh-1.5rem)]");
+    expect(source).toContain("overflow-y-auto");
+    expect(source).toContain("htmlFor={rescheduleDoctorFieldId}");
+    expect(source).toContain("id={rescheduleDoctorFieldId}");
+    expect(source).toContain("htmlFor={rescheduleRoomFieldId}");
+    expect(source).toContain("id={rescheduleRoomFieldId}");
     expect(source).toContain('label: "Reopen", status: "scheduled"');
     expect(source).not.toContain('label: "Reschedule", status: "scheduled"');
   });

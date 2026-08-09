@@ -38,6 +38,9 @@ function formatDateTime(d: string | Date, timeZone?: string | null): string {
 }
 
 function formatStatusLabel(status: string): string {
+  // `scheduled` is the internal state for a request that clinic staff have
+  // not yet confirmed with the owner. Never present it as a firm appointment.
+  if (status === "scheduled") return "Requested — awaiting confirmation";
   // Pet-owner wording: "checked out" is clinic jargon.
   if (status === "checked_out") return "Completed";
   return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -102,13 +105,13 @@ export default function AppointmentsPage() {
       <section className="mb-10">
         <h2 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
           <span className="h-2 w-2 rounded-full bg-teal-500" />
-          Upcoming
+          Upcoming and requests
         </h2>
         {upcoming.length === 0 ? (
           <EmptyState
             className="py-10"
             icon={CalendarClock}
-            title="No upcoming appointments"
+            title="No upcoming appointments or requests"
             action={{
               label: "Request appointment",
               onClick: () => router.push(`/portal/${token}/book`),

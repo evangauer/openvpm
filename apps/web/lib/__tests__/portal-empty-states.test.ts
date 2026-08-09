@@ -89,7 +89,9 @@ describe("portal empty states", () => {
     );
     expect(appointments).not.toContain("Upcoming & Active");
     expect(appointments).toContain("Upcoming");
-    expect(appointments).toContain('title="No upcoming appointments"');
+    expect(appointments).toContain(
+      'title="No upcoming appointments or requests"'
+    );
     expect(appointments).toContain('title="No past appointments"');
     expect(appointments).toContain('label: "Request appointment"');
     expect(appointments).not.toContain("data.filter((a)");

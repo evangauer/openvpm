@@ -196,6 +196,38 @@ describe("notification target safety", () => {
     expect(insertValues).not.toHaveBeenCalled();
   });
 
+  it("rejects manual reminders for an unconfirmed appointment request", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [
+        [
+          {
+            id: APPOINTMENT_ID,
+            status: "scheduled",
+            startTime: new Date("2026-07-01T14:00:00Z"),
+            patientName: "Miso",
+            clientId: CLIENT_ID,
+            clientFirstName: "Ada",
+            clientLastName: "Lovelace",
+            clientEmail: "ada@example.com",
+            preferredContactMethod: "email",
+            smsConsent: false,
+            practiceName: "Neighborhood Veterinary",
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).sendAppointmentReminder({ appointmentId: APPOINTMENT_ID })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: "Confirm the appointment before sending a reminder.",
+    });
+    expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
+    expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("omits upcoming reminders filtered out by inactive recipient joins", async () => {
     const { db } = createDb({ selectResults: [[]] });
 
@@ -213,6 +245,7 @@ describe("notification target safety", () => {
         [
           {
             id: APPOINTMENT_ID,
+            status: "confirmed",
             startTime: new Date("2026-07-01T04:30:00Z"),
             patientName: "Miso",
             clientId: CLIENT_ID,
@@ -266,6 +299,7 @@ describe("notification target safety", () => {
         [
           {
             id: APPOINTMENT_ID,
+            status: "confirmed",
             startTime: new Date("2026-07-03T19:00:00Z"),
             patientName: "Miso",
             clientId: CLIENT_ID,
@@ -303,6 +337,7 @@ describe("notification target safety", () => {
         [
           {
             id: APPOINTMENT_ID,
+            status: "confirmed",
             startTime: new Date("2026-07-03T19:00:00Z"),
             patientName: "Miso",
             clientId: CLIENT_ID,
@@ -342,6 +377,7 @@ describe("notification target safety", () => {
         [
           {
             id: APPOINTMENT_ID,
+            status: "confirmed",
             startTime: new Date("2026-07-01T14:00:00Z"),
             patientName: "Miso",
             clientId: CLIENT_ID,
@@ -382,6 +418,7 @@ describe("notification target safety", () => {
         [
           {
             id: APPOINTMENT_ID,
+            status: "confirmed",
             startTime: new Date("2026-07-01T14:00:00Z"),
             patientName: "Miso",
             clientId: CLIENT_ID,
@@ -417,6 +454,7 @@ describe("notification target safety", () => {
         [
           {
             id: APPOINTMENT_ID,
+            status: "confirmed",
             startTime: new Date("2026-07-01T14:00:00Z"),
             patientName: "Miso",
             clientId: CLIENT_ID,
@@ -1420,6 +1458,13 @@ describe("notification query scoping", () => {
       "appointments.doctorId",
       "ctx.practiceId"
     );
+    expect(source).not.toContain(
+      'inArray(appointments.status, ["scheduled", "confirmed"])'
+    );
+    expect(source).toContain('if (appt.status !== "confirmed")');
+    expect(
+      source.match(/eq\(appointments\.status, "confirmed"\)/g)?.length
+    ).toBeGreaterThanOrEqual(2);
   });
 
   it("keeps active reminder SMS sender lookup tenant scoped and active", () => {

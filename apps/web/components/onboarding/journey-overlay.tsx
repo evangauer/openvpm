@@ -51,8 +51,8 @@ interface StepDef {
 
 /**
  * The effective step list. Billing ("add a card") only appears on the hosted
- * service; self-host has nothing to charge. The closing "all set" step always
- * comes last and offers the quick product tour.
+ * service; self-host has nothing to charge. The closing guided-setup step
+ * always comes last and offers the quick product tour.
  */
 function buildSteps(billingEnforced: boolean): StepDef[] {
   return [
@@ -66,7 +66,7 @@ function buildSteps(billingEnforced: boolean): StepDef[] {
     ...(billingEnforced
       ? [{ id: "billing" as const, title: "Add a card." }]
       : []),
-    { id: "allSet", title: "You're all set." },
+    { id: "allSet", title: "Guided setup complete." },
   ];
 }
 

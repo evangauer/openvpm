@@ -39,9 +39,9 @@ const bookingSlugInput = z
   .toLowerCase()
   .min(1)
   .max(BOOKING_SLUG_MAX_LENGTH);
-const bookingDateInput = clinicalDateInput("Booking date");
+const bookingDateInput = clinicalDateInput("Appointment request date");
 const bookingTimeInput = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, {
-  message: "Booking time must be in 24-hour HH:MM format.",
+  message: "Appointment request time must be in 24-hour HH:MM format.",
 });
 
 const PAGE_READ_IP_RATE_LIMIT = { limit: 300, windowMs: 15 * 60 * 1000 };
@@ -83,7 +83,7 @@ async function assertBookingIpRateLimit(
 function pageNotFound(): TRPCError {
   return new TRPCError({
     code: "NOT_FOUND",
-    message: "This booking page is not available.",
+    message: "This appointment request page is not available.",
   });
 }
 
@@ -180,8 +180,9 @@ function assertBookingBillingAccess(practice: {
 async function bookableTypesForPage(
   db: any,
   practiceId: string,
-  bookableTypeIds: string[] | null
+  bookableTypeIds: string[]
 ): Promise<Array<{ id: string; name: string; durationMinutes: number }>> {
+  if (bookableTypeIds.length === 0) return [];
   const rows = await db
     .select({
       id: appointmentTypes.id,
@@ -197,9 +198,58 @@ async function bookableTypesForPage(
     )
     .orderBy(asc(appointmentTypes.name));
 
-  if (!bookableTypeIds) return rows;
   const allowed = new Set(bookableTypeIds);
   return rows.filter((t: { id: string }) => allowed.has(t.id));
+}
+
+/**
+ * Lock the exact active type used by a request until the surrounding
+ * transaction commits. This prevents an appointment type from being archived
+ * after validation but before the appointment row is created.
+ */
+async function lockBookableTypeForRequest(
+  db: any,
+  practiceId: string,
+  bookableTypeIds: string[],
+  requestedTypeId: string
+): Promise<{ id: string; durationMinutes: number } | null> {
+  if (!bookableTypeIds.includes(requestedTypeId)) return null;
+  const [type] = await db
+    .select({
+      id: appointmentTypes.id,
+      durationMinutes: appointmentTypes.durationMinutes,
+    })
+    .from(appointmentTypes)
+    .where(
+      and(
+        eq(appointmentTypes.id, requestedTypeId),
+        eq(appointmentTypes.practiceId, practiceId),
+        isNull(appointmentTypes.deletedAt)
+      )
+    )
+    .for("share");
+  return type ?? null;
+}
+
+async function lockActiveSelectedTypeIds(
+  db: any,
+  practiceId: string,
+  selectedTypeIds: string[]
+): Promise<string[]> {
+  if (selectedTypeIds.length === 0) return [];
+  const rows = await db
+    .select({ id: appointmentTypes.id })
+    .from(appointmentTypes)
+    .where(
+      and(
+        eq(appointmentTypes.practiceId, practiceId),
+        inArray(appointmentTypes.id, selectedTypeIds),
+        isNull(appointmentTypes.deletedAt)
+      )
+    )
+    .for("share");
+  const active = new Set(rows.map((row: { id: string }) => row.id));
+  return [...new Set(selectedTypeIds)].filter((id) => active.has(id));
 }
 
 const contactInput = z.object({
@@ -238,6 +288,7 @@ export const bookingRouter = createRouter({
         practice.id,
         config.bookableTypeIds
       );
+      if (types.length === 0) throw pageNotFound();
 
       return {
         practice: {
@@ -262,7 +313,7 @@ export const bookingRouter = createRouter({
       z.object({
         slug: bookingSlugInput,
         date: bookingDateInput,
-        typeId: z.string().uuid().optional(),
+        typeId: z.string().uuid(),
       })
     )
     .query(async ({ ctx, input }) => {
@@ -279,22 +330,19 @@ export const bookingRouter = createRouter({
       const window = bookingWindowForDate(config, input.date, practice.timezone);
       if (!window) return [];
 
-      let durationMinutes = 30;
-      if (input.typeId) {
-        const types = await bookableTypesForPage(
-          ctx.db,
-          practice.id,
-          config.bookableTypeIds
-        );
-        const type = types.find((t: { id: string }) => t.id === input.typeId);
-        if (!type) {
-          throw new TRPCError({
-            code: "NOT_FOUND",
-            message: "Appointment type not found",
-          });
-        }
-        durationMinutes = type.durationMinutes;
+      const types = await bookableTypesForPage(
+        ctx.db,
+        practice.id,
+        config.bookableTypeIds
+      );
+      const type = types.find((candidate) => candidate.id === input.typeId);
+      if (!type) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Appointment type not found",
+        });
       }
+      const durationMinutes = type.durationMinutes;
 
       const busy = await ctx.db
         .select({
@@ -335,7 +383,7 @@ export const bookingRouter = createRouter({
     .input(
       z.object({
         slug: bookingSlugInput,
-        typeId: z.string().uuid().optional(),
+        typeId: z.string().uuid(),
         date: bookingDateInput,
         time: bookingTimeInput,
         contact: contactInput,
@@ -366,39 +414,43 @@ export const bookingRouter = createRouter({
       const { practice, config } = await getLivePage(ctx.db, input.slug);
       assertBookingBillingAccess(practice);
 
-      // Resolve the type for duration; only publicly bookable types count.
-      let durationMinutes = 30;
-      let typeId: string | null = null;
-      if (input.typeId) {
-        const types = await bookableTypesForPage(
-          ctx.db,
-          practice.id,
-          config.bookableTypeIds
-        );
-        const type = types.find((t: { id: string }) => t.id === input.typeId);
-        if (!type) {
-          throw new TRPCError({
-            code: "NOT_FOUND",
-            message: "Appointment type not found",
-          });
-        }
-        typeId = type.id;
-        durationMinutes = type.durationMinutes;
+      // Public and portal requests for one practice share a transaction lock,
+      // so neither path can pass the conflict check concurrently. Take it
+      // before the type row lock to keep request lock ordering consistent.
+      await ctx.db.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${`public-booking:${practice.id}`}::text))`
+      );
+
+      // Resolve and hold the type through appointment creation; only types
+      // explicitly offered on this page count.
+      const type = await lockBookableTypeForRequest(
+        ctx.db,
+        practice.id,
+        config.bookableTypeIds,
+        input.typeId
+      );
+      if (!type) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Appointment type not found",
+        });
       }
+      const typeId = type.id;
+      const durationMinutes = type.durationMinutes;
 
       // The requested slot must sit inside the page's hours, lead time, and
       // booking window for that calendar date.
       if (!isDateWithinBookingWindow(config, input.date)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "That date is outside the online booking window.",
+          message: "That date is outside the online appointment request window.",
         });
       }
       const window = bookingWindowForDate(config, input.date, practice.timezone);
       if (!window) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "Online booking is not available on that day.",
+          message: "Online appointment requests are not available on that day.",
         });
       }
       const [hour, minute] = input.time.split(":").map(Number);
@@ -412,7 +464,7 @@ export const bookingRouter = createRouter({
       if (slotStart < window.dayStart || slotEnd > window.dayEnd) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "Please choose a time within the clinic's booking hours.",
+          message: "Please choose a time within the clinic's request hours.",
         });
       }
       if (slotStart.getTime() < minimumBookableInstant(config).getTime()) {
@@ -421,13 +473,6 @@ export const bookingRouter = createRouter({
           message: "That time is too soon. Please choose a later time.",
         });
       }
-
-      // Public booking requests for one practice must not both pass the
-      // conflict check before either appointment commits. publicProcedure
-      // already supplies a transaction, so this lock is held through commit.
-      await ctx.db.execute(
-        sql`select pg_advisory_xact_lock(hashtext(${`public-booking:${practice.id}`}::text))`
-      );
 
       const [conflict] = await ctx.db
         .select({ id: appointments.id })
@@ -472,7 +517,7 @@ export const bookingRouter = createRouter({
           throw new TRPCError({
             code: "FORBIDDEN",
             message:
-              "Online booking is limited to existing clients. Please call the clinic to get set up.",
+              "Online appointment requests are limited to existing clients. Please call the clinic to get set up.",
           });
         }
         const [created] = await ctx.db
@@ -525,7 +570,6 @@ export const bookingRouter = createRouter({
         petName = created!.name;
       }
 
-      const status = config.autoConfirm ? "confirmed" : "scheduled";
       const [appt] = await ctx.db
         .insert(appointments)
         .values({
@@ -535,8 +579,10 @@ export const bookingRouter = createRouter({
           typeId,
           startTime: slotStart,
           endTime: slotEnd,
-          status,
-          notes: `[Online booking] ${input.reason}`,
+          // Public booking is deliberately request-only. Keep this invariant
+          // independent of legacy booking-page config stored in jsonb.
+          status: "scheduled",
+          notes: `[Online request] ${input.reason}`,
         })
         .returning();
       await recordActivationAfterAppointmentCreated(
@@ -545,14 +591,14 @@ export const bookingRouter = createRouter({
         "booking.book"
       );
 
-      // Surface the booking in the communications inbox so the front desk
-      // sees new online bookings alongside portal requests and messages.
+      // Surface the request in the communications inbox so the front desk
+      // sees it alongside portal requests and messages.
       await ctx.db.insert(communications).values({
         practiceId: practice.id,
         clientId,
         channel: "portal",
         direction: "inbound",
-        subject: `New online booking for ${petName}`,
+        subject: `New appointment request for ${petName}`,
         content: [
           `Client: ${input.contact.firstName} ${input.contact.lastName}${isNewClient ? " (new client)" : ""}`,
           `Pet: ${petName}`,
@@ -571,10 +617,9 @@ export const bookingRouter = createRouter({
 
       return {
         success: true as const,
-        requiresConfirmation: !config.autoConfirm,
-        message: config.autoConfirm
-          ? "You're booked! We'll see you then."
-          : "Your appointment request has been sent! The clinic will confirm your appointment.",
+        requiresConfirmation: true,
+        message:
+          "Your appointment request has been sent! The clinic will confirm your appointment.",
       };
     }),
 
@@ -650,55 +695,77 @@ export const bookingRouter = createRouter({
         });
       }
 
-      const [existing] = await ctx.db
-        .select({ id: bookingPages.id })
-        .from(bookingPages)
-        .where(
-          and(
-            eq(bookingPages.practiceId, ctx.practiceId),
-            isNull(bookingPages.deletedAt)
-          )
-        )
-        .limit(1);
+      return ctx.db.transaction(async (tx) => {
+        // Publication must be truthful. The shared locks are held until the
+        // page write commits, so a selected type cannot be archived between
+        // validation and publication.
+        const activeSelectedTypeIds = await lockActiveSelectedTypeIds(
+          tx,
+          ctx.practiceId,
+          input.config.bookableTypeIds
+        );
+        if (input.published && activeSelectedTypeIds.length === 0) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Select at least one active visit type before publishing the appointment request page.",
+          });
+        }
+        const config = {
+          ...input.config,
+          bookableTypeIds: activeSelectedTypeIds,
+        };
 
-      if (existing) {
+        const [existing] = await tx
+          .select({ id: bookingPages.id })
+          .from(bookingPages)
+          .where(
+            and(
+              eq(bookingPages.practiceId, ctx.practiceId),
+              isNull(bookingPages.deletedAt)
+            )
+          )
+          .limit(1);
+
+        if (existing) {
+          try {
+            const [updated] = await tx
+              .update(bookingPages)
+              .set({
+                slug: input.slug,
+                published: input.published,
+                config,
+              })
+              .where(eq(bookingPages.id, existing.id))
+              .returning({
+                slug: bookingPages.slug,
+                published: bookingPages.published,
+              });
+            return updated!;
+          } catch (error) {
+            if (isPostgresUniqueViolation(error)) throw bookingSlugConflict();
+            throw error;
+          }
+        }
+
         try {
-          const [updated] = await ctx.db
-            .update(bookingPages)
-            .set({
+          const [created] = await tx
+            .insert(bookingPages)
+            .values({
+              practiceId: ctx.practiceId,
               slug: input.slug,
               published: input.published,
-              config: input.config,
+              config,
             })
-            .where(eq(bookingPages.id, existing.id))
             .returning({
               slug: bookingPages.slug,
               published: bookingPages.published,
             });
-          return updated!;
+          return created!;
         } catch (error) {
           if (isPostgresUniqueViolation(error)) throw bookingSlugConflict();
           throw error;
         }
-      }
-
-      try {
-        const [created] = await ctx.db
-          .insert(bookingPages)
-          .values({
-            practiceId: ctx.practiceId,
-            slug: input.slug,
-            published: input.published,
-            config: input.config,
-          })
-          .returning({
-            slug: bookingPages.slug,
-            published: bookingPages.published,
-          });
-        return created!;
-      } catch (error) {
-        if (isPostgresUniqueViolation(error)) throw bookingSlugConflict();
-        throw error;
-      }
+      });
     }),
 });

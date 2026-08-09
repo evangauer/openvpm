@@ -48,14 +48,21 @@ export function BookingTab() {
   const utils = trpc.useUtils();
   const myPage = trpc.booking.getMyPage.useQuery();
   const types = trpc.settings.listAppointmentTypes.useQuery();
+  const [publishError, setPublishError] = useState<string | null>(null);
   const save = trpc.booking.savePage.useMutation({
     onSuccess: (saved) => {
+      setPublishError(null);
       toast.success(
-        saved.published ? "Booking page published" : "Booking page saved"
+        saved.published
+          ? "Appointment request page published"
+          : "Appointment request page saved"
       );
       utils.booking.getMyPage.invalidate();
     },
-    onError: (err) => toast.error(err.message),
+    onError: (err) => {
+      setPublishError(err.message);
+      toast.error(err.message);
+    },
   });
 
   const [slug, setSlug] = useState("");
@@ -88,15 +95,20 @@ export function BookingTab() {
   const origin =
     typeof window !== "undefined" ? window.location.origin : "";
   const pageUrl = `${origin}/book/${slug}`;
-  const embedSnippet = `<a href="${pageUrl}">Book an appointment</a>`;
+  const embedSnippet = `<a href="${pageUrl}">Request an appointment</a>`;
   const isLive = Boolean(myPage.data?.page?.published);
   const liveUrl = myPage.data?.page
     ? `${origin}/book/${myPage.data.page.slug}`
     : pageUrl;
 
   const allTypes = types.data ?? [];
+  const pageSettingsUnavailable = Boolean(myPage.error) || !myPage.data;
+  const appointmentTypesMissing =
+    !types.isLoading && !types.error && !types.data;
+  const appointmentTypesUnavailable =
+    Boolean(types.error) || appointmentTypesMissing;
   const bookableSet = useMemo(
-    () => (config.bookableTypeIds === null ? null : new Set(config.bookableTypeIds)),
+    () => new Set(config.bookableTypeIds),
     [config.bookableTypeIds]
   );
 
@@ -109,22 +121,14 @@ export function BookingTab() {
   }
 
   function toggleType(id: string) {
+    setPublishError(null);
     setConfig((c) => {
-      if (c.bookableTypeIds === null) {
-        // "All types" → uncheck one: keep every other type.
-        return {
-          ...c,
-          bookableTypeIds: allTypes.map((t) => t.id).filter((t) => t !== id),
-        };
-      }
       const set = new Set(c.bookableTypeIds);
       if (set.has(id)) set.delete(id);
       else set.add(id);
-      // Back to "all" when everything is selected again.
-      const nextIds = allTypes.filter((t) => set.has(t.id)).map((t) => t.id);
       return {
         ...c,
-        bookableTypeIds: nextIds.length === allTypes.length ? null : nextIds,
+        bookableTypeIds: allTypes.filter((t) => set.has(t.id)).map((t) => t.id),
       };
     });
   }
@@ -142,14 +146,82 @@ export function BookingTab() {
 
   function handleSave(nextPublished: boolean) {
     if (!slugValid || slugTaken) return;
+    if (nextPublished && bookableSet.size === 0) {
+      const message =
+        "Select at least one active visit type before publishing the appointment request page.";
+      setPublishError(message);
+      toast.error(message);
+      return;
+    }
+    setPublishError(null);
     setPublished(nextPublished);
     save.mutate({ slug, published: nextPublished, config });
   }
 
-  if (myPage.isLoading) {
+  if (myPage.isLoading || types.isLoading) {
     return (
       <div className="flex items-center justify-center py-16">
         <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
+      </div>
+    );
+  }
+
+  if (pageSettingsUnavailable || appointmentTypesUnavailable) {
+    return (
+      <div className="space-y-3">
+        {pageSettingsUnavailable ? (
+          <div
+            role="alert"
+            className="rounded-xl border border-red-200 bg-red-50 p-4 text-red-900"
+          >
+            <p className="text-sm font-semibold">
+              Appointment request settings could not be loaded
+            </p>
+            <p className="mt-1 text-sm text-red-800">
+              Nothing can be changed until the saved settings are available.
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="mt-3"
+              disabled={myPage.isFetching}
+              onClick={() => void myPage.refetch()}
+            >
+              {myPage.isFetching ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : null}
+              Retry loading settings
+            </Button>
+          </div>
+        ) : null}
+        {appointmentTypesUnavailable ? (
+          <div
+            role="alert"
+            className="rounded-xl border border-red-200 bg-red-50 p-4 text-red-900"
+          >
+            <p className="text-sm font-semibold">
+              Active visit types could not be loaded
+            </p>
+            <p className="mt-1 text-sm text-red-800">
+              Publishing and editing are unavailable so saved selections are
+              not accidentally erased.
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="mt-3"
+              disabled={types.isFetching}
+              onClick={() => void types.refetch()}
+            >
+              {types.isFetching ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : null}
+              Retry loading visit types
+            </Button>
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -159,23 +231,28 @@ export function BookingTab() {
       <div>
         <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
           <Globe className="h-5 w-5 text-teal-600" />
-          Online booking page
+          Online appointment requests
         </h2>
         <p className="text-sm text-gray-500 mt-1">
-          A public page where clients (new and existing) book appointments
-          straight into your calendar. Share the link, print the QR code, or
+          Give new and existing clients a simple way to request a preferred
+          appointment time. Every request lands on your schedule for your team
+          to review, assign, and confirm. Share the link, print the QR code, or
           add the button to your website.
         </p>
       </div>
 
       {/* Link + publish state */}
       <div className="rounded-xl border border-gray-200 p-4 space-y-3">
-        <label className="block text-sm font-medium text-gray-700">
-          Your booking link
+        <label
+          htmlFor="booking-page-slug"
+          className="block text-sm font-medium text-gray-700"
+        >
+          Your appointment request link
         </label>
         <div className="flex items-center gap-2">
           <span className="text-sm text-gray-500 shrink-0">{origin}/book/</span>
           <Input
+            id="booking-page-slug"
             value={slug}
             onChange={(e) =>
               setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))
@@ -243,9 +320,9 @@ export function BookingTab() {
       {/* Hours */}
       <div className="rounded-xl border border-gray-200 p-4 space-y-3">
         <div>
-          <h3 className="text-sm font-semibold text-gray-900">Booking hours</h3>
+          <h3 className="text-sm font-semibold text-gray-900">Request hours</h3>
           <p className="text-xs text-gray-500 mt-0.5">
-            When clients can book online. Uses your practice timezone.
+            When clients can request times online. Uses your practice timezone.
           </p>
         </div>
         <div className="space-y-2">
@@ -298,14 +375,15 @@ export function BookingTab() {
         </div>
       </div>
 
-      {/* What can be booked */}
+      {/* What can be requested */}
       <div className="rounded-xl border border-gray-200 p-4 space-y-3">
         <div>
           <h3 className="text-sm font-semibold text-gray-900">
-            Bookable visit types
+            Requestable visit types
           </h3>
           <p className="text-xs text-gray-500 mt-0.5">
-            Uncheck anything you don't want offered online.
+            Select each active visit type clients may request online. The public
+            page stays unavailable until at least one type is selected.
           </p>
         </div>
         {allTypes.length === 0 ? (
@@ -318,7 +396,7 @@ export function BookingTab() {
               <label key={t.id} className="flex items-center gap-2 text-sm text-gray-700">
                 <input
                   type="checkbox"
-                  checked={bookableSet === null || bookableSet.has(t.id)}
+                  checked={bookableSet.has(t.id)}
                   onChange={() => toggleType(t.id)}
                   className="h-4 w-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500"
                 />
@@ -330,15 +408,19 @@ export function BookingTab() {
         )}
       </div>
 
-      {/* Rules */}
+      {/* Request rules */}
       <div className="rounded-xl border border-gray-200 p-4 space-y-4">
-        <h3 className="text-sm font-semibold text-gray-900">Booking rules</h3>
+        <h3 className="text-sm font-semibold text-gray-900">Request rules</h3>
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+            <label
+              htmlFor="booking-minimum-notice"
+              className="block text-sm font-medium text-gray-700 mb-1.5"
+            >
               Minimum notice
             </label>
             <select
+              id="booking-minimum-notice"
               value={config.leadTimeMinutes}
               onChange={(e) =>
                 setConfig((c) => ({
@@ -356,10 +438,14 @@ export function BookingTab() {
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+            <label
+              htmlFor="booking-window"
+              className="block text-sm font-medium text-gray-700 mb-1.5"
+            >
               How far ahead
             </label>
             <select
+              id="booking-window"
               value={config.bookingWindowDays}
               onChange={(e) =>
                 setConfig((c) => ({
@@ -387,38 +473,31 @@ export function BookingTab() {
             className="mt-0.5 h-4 w-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500"
           />
           <span>
-            Let new clients book
+            Let new clients request appointments
             <span className="block text-xs text-gray-500">
               New clients and their pets are added to your records automatically.
             </span>
           </span>
         </label>
-        <label className="flex items-start gap-2 text-sm text-gray-700">
-          <input
-            type="checkbox"
-            checked={config.autoConfirm}
-            onChange={(e) =>
-              setConfig((c) => ({ ...c, autoConfirm: e.target.checked }))
-            }
-            className="mt-0.5 h-4 w-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500"
-          />
-          <span>
-            Confirm bookings automatically
-            <span className="block text-xs text-gray-500">
-              Off means bookings arrive as requests your team confirms.
-            </span>
-          </span>
-        </label>
+        <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          Requests are never confirmed automatically. Your team reviews the
+          requested time, assigns a doctor and room as needed, and confirms it
+          from the schedule.
+        </p>
       </div>
 
       {/* Look and feel */}
       <div className="rounded-xl border border-gray-200 p-4 space-y-4">
         <h3 className="text-sm font-semibold text-gray-900">Look and feel</h3>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">
+          <label
+            htmlFor="booking-welcome-message"
+            className="block text-sm font-medium text-gray-700 mb-1.5"
+          >
             Welcome message <span className="text-gray-400 font-normal">(optional)</span>
           </label>
           <textarea
+            id="booking-welcome-message"
             value={config.welcomeText}
             onChange={(e) =>
               setConfig((c) => ({ ...c, welcomeText: e.target.value }))
@@ -430,8 +509,14 @@ export function BookingTab() {
           />
         </div>
         <div className="flex items-center gap-3">
-          <label className="text-sm font-medium text-gray-700">Accent color</label>
+          <label
+            htmlFor="booking-accent-color"
+            className="text-sm font-medium text-gray-700"
+          >
+            Accent color
+          </label>
           <input
+            id="booking-accent-color"
             type="color"
             value={config.accentColor}
             onChange={(e) =>
@@ -447,7 +532,7 @@ export function BookingTab() {
         <div className="rounded-xl border border-gray-200 p-4">
           <h3 className="text-sm font-semibold text-gray-900 mb-1">QR code</h3>
           <p className="text-xs text-gray-500 mb-3">
-            Print it for your front desk. Clients scan it to book.
+            Print it for your front desk. Clients scan it to request a visit.
           </p>
           <div className="inline-block rounded-lg bg-white p-3 border border-gray-100">
             <QRCodeSVG value={liveUrl} size={144} />
@@ -456,6 +541,11 @@ export function BookingTab() {
       )}
 
       {/* Actions */}
+      {publishError ? (
+        <p role="alert" className="text-sm text-red-700">
+          {publishError}
+        </p>
+      ) : null}
       <div className="flex items-center gap-3">
         <Button
           type="button"

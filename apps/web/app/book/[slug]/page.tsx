@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { AlertCircle, CalendarX2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
@@ -26,6 +26,17 @@ function dateInputValue(d: Date): string {
 export default function PublicBookingPage() {
   const params = useParams();
   const slug = (params.slug as string) ?? "";
+  const formId = useId();
+  const typeFieldId = `${formId}-type`;
+  const dateFieldId = `${formId}-date`;
+  const firstNameFieldId = `${formId}-first-name`;
+  const lastNameFieldId = `${formId}-last-name`;
+  const emailFieldId = `${formId}-email`;
+  const phoneFieldId = `${formId}-phone`;
+  const websiteFieldId = `${formId}-website`;
+  const petNameFieldId = `${formId}-pet-name`;
+  const speciesFieldId = `${formId}-species`;
+  const reasonFieldId = `${formId}-reason`;
 
   const page = trpc.booking.getPage.useQuery({ slug }, { enabled: !!slug });
   const book = trpc.booking.book.useMutation();
@@ -44,8 +55,8 @@ export default function PublicBookingPage() {
   const [website, setWebsite] = useState("");
 
   const slots = trpc.booking.availableSlots.useQuery(
-    { slug, date, typeId: typeId || undefined },
-    { enabled: !!slug && !!date }
+    { slug, date, typeId },
+    { enabled: !!slug && !!date && !!typeId }
   );
 
   const dateBounds = useMemo(() => {
@@ -70,8 +81,8 @@ export default function PublicBookingPage() {
       <EmptyState
         className="py-16"
         icon={AlertCircle}
-        title="This booking page isn't available"
-        description="The link may be incorrect, or online booking may be turned off. Please contact the clinic directly."
+        title="This appointment request page isn't available"
+        description="The link may be incorrect, or online appointment requests may be turned off. Please contact the clinic directly."
       />
     );
   }
@@ -82,6 +93,7 @@ export default function PublicBookingPage() {
   const canSubmit = Boolean(
     date &&
       time &&
+      typeId &&
       firstName.trim() &&
       lastName.trim() &&
       email.trim() &&
@@ -95,7 +107,7 @@ export default function PublicBookingPage() {
     if (!canSubmit) return;
     book.mutate({
       slug,
-      typeId: typeId || undefined,
+      typeId,
       date,
       time,
       contact: {
@@ -127,9 +139,7 @@ export default function PublicBookingPage() {
             <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
           </svg>
         </div>
-        <h1 className="text-xl font-bold text-gray-900 mb-2">
-          {book.data.requiresConfirmation ? "Request sent!" : "You're booked!"}
-        </h1>
+        <h1 className="text-xl font-bold text-gray-900 mb-2">Request sent!</h1>
         <p className="text-gray-600 max-w-sm mx-auto">{book.data.message}</p>
         <p className="text-gray-500 text-sm mt-4">
           We sent the details to the clinic. Questions?{" "}
@@ -173,36 +183,53 @@ export default function PublicBookingPage() {
       </header>
 
       <form onSubmit={submit} className="rounded-2xl bg-white p-6 shadow-sm space-y-5">
-        <h2 className="text-base font-semibold text-gray-900">Book an appointment</h2>
-
-        {data.types.length > 0 && (
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
-              What do you need?
-            </label>
-            <select
-              value={typeId}
-              onChange={(e) => {
-                setTypeId(e.target.value);
-                setTime("");
-              }}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
-            >
-              <option value="">General visit (30 min)</option>
-              {data.types.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name} ({t.durationMinutes} min)
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
+        <div>
+          <h2 className="text-base font-semibold text-gray-900">
+            Request an appointment
+          </h2>
+          <p className="mt-1 text-sm text-gray-500">
+            Choose a preferred time. The clinic will review your request and
+            confirm the appointment with you.
+          </p>
+        </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">
+          <label
+            htmlFor={typeFieldId}
+            className="block text-sm font-medium text-gray-700 mb-1.5"
+          >
+            What do you need?
+          </label>
+          <select
+            id={typeFieldId}
+            value={typeId}
+            onChange={(e) => {
+              setTypeId(e.target.value);
+              setTime("");
+            }}
+            required
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+          >
+            <option value="" disabled>
+              Choose a visit type
+            </option>
+            {data.types.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name} ({t.durationMinutes} min)
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label
+            htmlFor={dateFieldId}
+            className="block text-sm font-medium text-gray-700 mb-1.5"
+          >
             Pick a day
           </label>
           <input
+            id={dateFieldId}
             type="date"
             value={date}
             onChange={(e) => {
@@ -216,9 +243,11 @@ export default function PublicBookingPage() {
           />
         </div>
 
-        {date && (
-          <div>
-            <p className="text-sm font-medium text-gray-700 mb-2">Pick a time</p>
+        {date && typeId && (
+          <fieldset>
+            <legend className="text-sm font-medium text-gray-700 mb-2">
+              Pick a time
+            </legend>
             {slots.isLoading && (
               <p className="text-xs text-gray-500">Checking open times…</p>
             )}
@@ -238,38 +267,50 @@ export default function PublicBookingPage() {
                 {slots.data.map((s) => {
                   const selected = time === s.time;
                   return (
-                    <button
-                      key={s.iso}
-                      type="button"
-                      onClick={() => setTime(s.time)}
-                      className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
-                        selected
-                          ? "text-white"
-                          : "border-gray-200 text-gray-600 hover:border-gray-400"
-                      }`}
-                      style={
-                        selected
-                          ? { backgroundColor: accent, borderColor: accent }
-                          : undefined
-                      }
-                    >
-                      {s.time}
-                    </button>
+                    <label key={s.iso} className="cursor-pointer">
+                      <input
+                        type="radio"
+                        name={`${formId}-time`}
+                        value={s.time}
+                        checked={selected}
+                        onChange={() => setTime(s.time)}
+                        required
+                        className="peer sr-only"
+                      />
+                      <span
+                        className={`block rounded-md border px-3 py-1.5 text-sm transition-colors peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-teal-500 peer-focus-visible:ring-offset-2 ${
+                          selected
+                            ? "text-white"
+                            : "border-gray-200 text-gray-600 hover:border-gray-400"
+                        }`}
+                        style={
+                          selected
+                            ? { backgroundColor: accent, borderColor: accent }
+                            : undefined
+                        }
+                      >
+                        {s.time}
+                      </span>
+                    </label>
                   );
                 })}
               </div>
             )}
-          </div>
+          </fieldset>
         )}
 
         <div className="border-t border-gray-100 pt-5 space-y-4">
           <p className="text-sm font-semibold text-gray-900">About you</p>
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <label
+                htmlFor={firstNameFieldId}
+                className="block text-sm font-medium text-gray-700 mb-1.5"
+              >
                 First name
               </label>
               <input
+                id={firstNameFieldId}
                 value={firstName}
                 onChange={(e) => setFirstName(e.target.value)}
                 required
@@ -279,10 +320,14 @@ export default function PublicBookingPage() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <label
+                htmlFor={lastNameFieldId}
+                className="block text-sm font-medium text-gray-700 mb-1.5"
+              >
                 Last name
               </label>
               <input
+                id={lastNameFieldId}
                 value={lastName}
                 onChange={(e) => setLastName(e.target.value)}
                 required
@@ -294,10 +339,14 @@ export default function PublicBookingPage() {
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <label
+                htmlFor={emailFieldId}
+                className="block text-sm font-medium text-gray-700 mb-1.5"
+              >
                 Email
               </label>
               <input
+                id={emailFieldId}
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -308,10 +357,14 @@ export default function PublicBookingPage() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <label
+                htmlFor={phoneFieldId}
+                className="block text-sm font-medium text-gray-700 mb-1.5"
+              >
                 Phone <span className="text-gray-400 font-normal">(optional)</span>
               </label>
               <input
+                id={phoneFieldId}
                 type="tel"
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
@@ -324,9 +377,10 @@ export default function PublicBookingPage() {
 
           {/* Honeypot: invisible to humans, present for bots. */}
           <div className="absolute -left-[9999px] top-auto" aria-hidden="true">
-            <label>
+            <label htmlFor={websiteFieldId}>
               Website
               <input
+                id={websiteFieldId}
                 tabIndex={-1}
                 autoComplete="off"
                 value={website}
@@ -337,10 +391,14 @@ export default function PublicBookingPage() {
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <label
+                htmlFor={petNameFieldId}
+                className="block text-sm font-medium text-gray-700 mb-1.5"
+              >
                 Pet's name
               </label>
               <input
+                id={petNameFieldId}
                 value={petName}
                 onChange={(e) => setPetName(e.target.value)}
                 required
@@ -349,10 +407,14 @@ export default function PublicBookingPage() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <label
+                htmlFor={speciesFieldId}
+                className="block text-sm font-medium text-gray-700 mb-1.5"
+              >
                 Pet type
               </label>
               <select
+                id={speciesFieldId}
                 value={species}
                 onChange={(e) => setSpecies(e.target.value as SpeciesValue)}
                 className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
@@ -367,10 +429,14 @@ export default function PublicBookingPage() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+            <label
+              htmlFor={reasonFieldId}
+              className="block text-sm font-medium text-gray-700 mb-1.5"
+            >
               What's this visit about?
             </label>
             <textarea
+              id={reasonFieldId}
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               required
@@ -391,10 +457,10 @@ export default function PublicBookingPage() {
           style={{ backgroundColor: accent }}
         >
           {book.isPending
-            ? "Booking…"
+            ? "Sending request…"
             : selectedType
-              ? `Book ${selectedType.name}`
-              : "Book appointment"}
+              ? `Request ${selectedType.name}`
+              : "Request appointment"}
         </button>
         <p className="text-center text-xs text-gray-400">
           Prefer to talk to a person?

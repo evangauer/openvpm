@@ -31,8 +31,8 @@ describe("parseBookingPageConfig", () => {
       accentColor: "teal",
     });
     expect(parsed.hours).toEqual(DEFAULT_WEEKLY_HOURS);
-    expect(parsed.bookableTypeIds).toBeNull();
-    expect(parsed.autoConfirm).toBe(true);
+    expect(parsed.bookableTypeIds).toEqual([]);
+    expect(parsed.autoConfirm).toBe(false);
     expect(parsed.leadTimeMinutes).toBe(
       DEFAULT_BOOKING_PAGE_CONFIG.leadTimeMinutes
     );
@@ -41,6 +41,17 @@ describe("parseBookingPageConfig", () => {
     );
     expect(parsed.welcomeText).toBe("Hi there");
     expect(parsed.accentColor).toBe(DEFAULT_BOOKING_PAGE_CONFIG.accentColor);
+  });
+
+  it("makes legacy auto-confirm settings inert", () => {
+    expect(parseBookingPageConfig({ autoConfirm: true }).autoConfirm).toBe(false);
+    expect(parseBookingPageConfig({ autoConfirm: false }).autoConfirm).toBe(false);
+  });
+
+  it("normalizes the legacy null requestable-type setting to fail closed", () => {
+    expect(parseBookingPageConfig({ bookableTypeIds: null }).bookableTypeIds).toEqual(
+      []
+    );
   });
 
   it("rejects hours where open is not before close", () => {

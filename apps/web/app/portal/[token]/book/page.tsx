@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useId, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { AlertCircle, PawPrint } from "lucide-react";
@@ -17,6 +17,13 @@ import { formatPortalDateInput } from "@/lib/portal/date";
 export default function BookAppointmentPage() {
   const params = useParams();
   const token = params.token as string;
+  const formId = useId();
+  const patientFieldId = `${formId}-patient`;
+  const typeFieldId = `${formId}-type`;
+  const dateFieldId = `${formId}-date`;
+  const timeFieldId = `${formId}-time`;
+  const timeHelpId = `${formId}-time-help`;
+  const reasonFieldId = `${formId}-reason`;
 
   const client = trpc.portal.getClient.useQuery({ token });
   const types = trpc.portal.getAppointmentTypes.useQuery({ token });
@@ -43,21 +50,15 @@ export default function BookAppointmentPage() {
     preferredTime,
     selectedDurationMinutes
   );
-  const hasValidAppointmentType = !typeId || Boolean(selectedType);
+  const hasValidAppointmentType = Boolean(typeId && selectedType);
   const hasValidReason = isPortalBookingReasonValid(reason);
   const showTimeBoundsError =
     preferredTime !== "" && hasValidBookingWindow && !hasValidPreferredTime;
 
-  useEffect(() => {
-    if (!appointmentTypesUnavailable || !typeId) return;
-    setTypeId("");
-    setPreferredTime("");
-  }, [appointmentTypesUnavailable, typeId]);
-
   // Suggested open times for the chosen date.
   const slots = trpc.portal.availableSlots.useQuery(
     { token, date: preferredDate, durationMinutes: selectedDurationMinutes },
-    { enabled: !!preferredDate }
+    { enabled: !!preferredDate && hasValidAppointmentType }
   );
   const slotsUnavailable = Boolean(
     preferredDate &&
@@ -86,6 +87,27 @@ export default function BookAppointmentPage() {
     );
   }
 
+  if (types.isLoading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-teal-600 border-t-transparent" />
+      </div>
+    );
+  }
+
+  if (appointmentTypesUnavailable || appointmentTypes.length === 0) {
+    return (
+      <div className="max-w-xl">
+        <EmptyState
+          className="py-12"
+          icon={AlertCircle}
+          title="Appointment requests are unavailable"
+          description="The clinic has not made any active visit types available. Please contact the clinic directly."
+        />
+      </div>
+    );
+  }
+
   const clientData = client.data;
   const today = formatPortalDateInput(new Date(), clientData.timezone);
   const pets = clientData.patients;
@@ -104,7 +126,7 @@ export default function BookAppointmentPage() {
     request.mutate({
       token,
       patientId,
-      typeId: hasValidAppointmentType && typeId ? typeId : undefined,
+      typeId,
       preferredDate,
       preferredTime,
       reason: reason.trim(),
@@ -158,10 +180,14 @@ export default function BookAppointmentPage() {
       ) : (
         <form onSubmit={submit} className="space-y-5">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+            <label
+              htmlFor={patientFieldId}
+              className="block text-sm font-medium text-gray-700 mb-1.5"
+            >
               Pet
             </label>
             <select
+              id={patientFieldId}
               value={patientId}
               onChange={(e) => setPatientId(e.target.value)}
               required
@@ -177,37 +203,43 @@ export default function BookAppointmentPage() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+            <label
+              htmlFor={typeFieldId}
+              className="block text-sm font-medium text-gray-700 mb-1.5"
+            >
               Reason for visit
             </label>
             <select
+              id={typeFieldId}
               value={typeId}
               onChange={(e) => {
                 setTypeId(e.target.value);
                 setPreferredTime("");
               }}
+              required
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
             >
-              <option value="">General visit</option>
+              <option value="" disabled>
+                Select a visit type…
+              </option>
               {appointmentTypes.map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.name}
                 </option>
               ))}
             </select>
-            {appointmentTypesUnavailable && (
-              <p className="mt-1.5 text-xs text-red-600">
-                Appointment types could not be verified. You can still request a general visit.
-              </p>
-            )}
           </div>
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <label
+                htmlFor={dateFieldId}
+                className="block text-sm font-medium text-gray-700 mb-1.5"
+              >
                 Preferred date
               </label>
               <input
+                id={dateFieldId}
                 type="date"
                 value={preferredDate}
                 onChange={(e) => {
@@ -220,10 +252,14 @@ export default function BookAppointmentPage() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <label
+                htmlFor={timeFieldId}
+                className="block text-sm font-medium text-gray-700 mb-1.5"
+              >
                 Preferred time
               </label>
               <input
+                id={timeFieldId}
                 type="time"
                 value={preferredTime}
                 onChange={(e) => setPreferredTime(e.target.value)}
@@ -231,12 +267,12 @@ export default function BookAppointmentPage() {
                 max={timeBounds.maxTime ?? timeBounds.minTime}
                 disabled={!hasValidBookingWindow}
                 aria-invalid={showTimeBoundsError}
-                aria-describedby="preferred-time-help"
+                aria-describedby={timeHelpId}
                 required
                 className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
               />
               <p
-                id="preferred-time-help"
+                id={timeHelpId}
                 className={`mt-1.5 text-xs ${
                   showTimeBoundsError ? "text-red-600" : "text-gray-500"
                 }`}
@@ -299,10 +335,14 @@ export default function BookAppointmentPage() {
             )}
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+            <label
+              htmlFor={reasonFieldId}
+              className="block text-sm font-medium text-gray-700 mb-1.5"
+            >
               Anything we should know?
             </label>
             <textarea
+              id={reasonFieldId}
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               required

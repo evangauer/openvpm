@@ -223,16 +223,18 @@ export function ActivationChecklist() {
     },
     {
       key: "booking",
-      label: "Publish online booking",
-      hint: "Put one appointment type live and test the client booking path.",
-      done: bookingData.page?.published === true,
+      label: "Configure appointment requests",
+      hint: "Choose which visit types and times clients can request, then publish the page.",
+      done:
+        bookingData.page?.published === true &&
+        bookingData.page.config.bookableTypeIds.length > 0,
       href: "/settings?tab=booking",
     },
     {
       key: "texting",
-      label: "Start texting registration",
-      hint: "Choose a number and submit carrier registration. Approval can take 1–2 weeks.",
-      done: textingData.hasAnyNumber,
+      label: "Finish texting activation",
+      hint: "Submit carrier registration and wait for approval. Texting is not live until an active number is enabled.",
+      done: textingData.hasActiveNumber,
       href: "/settings?tab=messaging&setup=texting",
     },
     ...(clientPaymentData.stripeConfigured
@@ -251,7 +253,7 @@ export function ActivationChecklist() {
           {
             key: "billing",
             label: "Confirm billing is connected",
-            hint: "Stripe keeps the trial ready to convert. Cancel anytime.",
+            hint: "A saved card lets the trial convert without interrupting access. Cancel anytime.",
             done: !!subscriptionData.hasBillingAccount,
             href: "/settings?tab=billing",
           } as Milestone,
@@ -322,10 +324,11 @@ export function ActivationChecklist() {
           </span>
           <div className="min-w-0 flex-1">
             <p className="font-heading text-sm font-semibold">
-              You&apos;re all set 🎉
+              Guided setup checks complete
             </p>
             <p className="text-xs text-zinc-400">
-              {practiceName} is ready to run.
+              Keep validating real clinic workflows with your team before
+              switching systems.
             </p>
           </div>
           <button
@@ -361,7 +364,7 @@ export function ActivationChecklist() {
           </span>
           <div className="min-w-0">
             <p className="truncate font-heading text-sm font-semibold">
-              Get {practiceName} running
+              Finish {practiceName}&apos;s setup checks
             </p>
             <p className="text-xs text-zinc-400">
               {pathway.shortLabel} · {doneCount} of {total} done

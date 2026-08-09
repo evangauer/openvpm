@@ -54,12 +54,15 @@ describe("dashboard onboarding UI states", () => {
     expect(activationSource).toContain(
       "done: onboardingData.hasRealData"
     );
-    expect(activationSource).toContain('label: "Publish online booking"');
+    expect(activationSource).toContain('label: "Configure appointment requests"');
     expect(activationSource).toContain(
-      "done: bookingData.page?.published === true"
+      "bookingData.page?.published === true &&"
     );
-    expect(activationSource).toContain('label: "Start texting registration"');
-    expect(activationSource).toContain("done: textingData.hasAnyNumber");
+    expect(activationSource).toContain(
+      "bookingData.page.config.bookableTypeIds.length > 0"
+    );
+    expect(activationSource).toContain('label: "Finish texting activation"');
+    expect(activationSource).toContain("done: textingData.hasActiveNumber");
     expect(activationSource).toContain('label: "Add one real client and pet"');
     expect(activationSource).toContain('href: "/clients/new"');
     expect(activationSource).toContain(

@@ -902,7 +902,7 @@ export const portalRouter = createRouter({
       z.object({
         token: portalTokenInput,
         patientId: z.string().uuid(),
-        typeId: z.string().uuid().optional(),
+        typeId: z.string().uuid(),
         preferredDate: portalBookingDateInput,
         preferredTime: portalBookingTimeInput,
         reason: z.string().trim().min(1).max(PORTAL_BOOKING_REASON_MAX_LENGTH),
@@ -944,27 +944,36 @@ export const portalRouter = createRouter({
         throw new TRPCError({ code: "NOT_FOUND", message: "Pet not found" });
       }
 
-      // Resolve the requested type (must belong to this practice) for duration.
-      let durationMinutes = 30;
-      let typeId: string | null = null;
-      if (input.typeId) {
-        const [type] = await ctx.db
-          .select({ id: appointmentTypes.id, durationMinutes: appointmentTypes.durationMinutes })
-          .from(appointmentTypes)
-          .where(
-            and(
-              eq(appointmentTypes.id, input.typeId),
-              eq(appointmentTypes.practiceId, client.practiceId),
-              isNull(appointmentTypes.deletedAt)
-            )
+      // Serialize portal and public requests for this practice before taking
+      // the type row lock. The public procedure transaction holds both locks
+      // through the conflict check and appointment insert.
+      await ctx.db.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${`public-booking:${client.practiceId}`}::text))`
+      );
+
+      // Every request must reference a verified active type in this practice.
+      const [type] = await ctx.db
+        .select({
+          id: appointmentTypes.id,
+          durationMinutes: appointmentTypes.durationMinutes,
+        })
+        .from(appointmentTypes)
+        .where(
+          and(
+            eq(appointmentTypes.id, input.typeId),
+            eq(appointmentTypes.practiceId, client.practiceId),
+            isNull(appointmentTypes.deletedAt)
           )
-          .limit(1);
-        if (!type) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Appointment type not found" });
-        }
-        typeId = type.id;
-        durationMinutes = type.durationMinutes;
+        )
+        .for("share");
+      if (!type) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Appointment type not found",
+        });
       }
+      const typeId = type.id;
+      const durationMinutes = type.durationMinutes;
 
       let slot;
       try {

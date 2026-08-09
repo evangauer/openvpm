@@ -639,6 +639,10 @@ describe("appointment reminder cron query scoping", () => {
     expect(source).toMatch(
       /innerJoin\(\s*practices,\s*and\(\s*eq\(appointments\.practiceId, practices\.id\),\s*isNull\(practices\.deletedAt\)\s*\)\s*\)/s
     );
+    expect(source).toContain('eq(appointments.status, "confirmed")');
+    expect(source).not.toContain(
+      'inArray(appointments.status, ["scheduled", "confirmed"])'
+    );
   });
 
   it("matches provider suppressions against trimmed normalized client emails", () => {

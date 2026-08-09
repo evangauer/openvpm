@@ -209,6 +209,7 @@ export const notificationsRouter = createRouter({
         .select({
           id: appointments.id,
           startTime: appointments.startTime,
+          status: appointments.status,
           patientName: patients.name,
           clientId: appointments.clientId,
           clientFirstName: clients.firstName,
@@ -274,6 +275,12 @@ export const notificationsRouter = createRouter({
 
       if (!appt) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Appointment not found" });
+      }
+      if (appt.status !== "confirmed") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Confirm the appointment before sending a reminder.",
+        });
       }
 
       // Manual send: respect the client's preferred channel + SMS consent.
@@ -548,7 +555,7 @@ export const notificationsRouter = createRouter({
           isNull(appointments.deletedAt),
           gte(appointments.startTime, now),
           lte(appointments.startTime, in24h),
-          inArray(appointments.status, ["scheduled", "confirmed"])
+          eq(appointments.status, "confirmed")
         )
       )
       .orderBy(appointments.startTime);
@@ -633,7 +640,8 @@ export const notificationsRouter = createRouter({
             isNull(patients.deletedAt),
             eq(clients.practiceId, ctx.practiceId),
             isNull(clients.deletedAt),
-            isNull(appointments.deletedAt)
+            isNull(appointments.deletedAt),
+            eq(appointments.status, "confirmed")
           )
         );
 

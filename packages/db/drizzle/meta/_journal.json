@@ -365,6 +365,13 @@
       "when": 1786237311529,
       "tag": "0051_wide_maximus",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1786240800000,
+      "tag": "0052_booking_page_request_types",
+      "breakpoints": true
     }
   ]
 }

@@ -735,4 +735,22 @@ describe("committed Drizzle migrations", () => {
       "REVOKE ALL ON dispense_charge_queue FROM authenticated",
     );
   });
+
+  it("backfills explicit requestable types for legacy booking pages", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries?: Array<{ tag?: string }> };
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0052_booking_page_request_types",
+    );
+
+    const sql = readRepoFile(
+      "packages/db/drizzle/0052_booking_page_request_types.sql",
+    );
+    expect(sql).toContain("at.practice_id = bp.practice_id");
+    expect(sql).toContain("at.deleted_at IS NULL");
+    expect(sql).toContain("'{bookableTypeIds}'");
+    expect(sql).toContain("jsonb_array_length(legacy.active_type_ids) = 0");
+    expect(sql).toContain("THEN false");
+  });
 });

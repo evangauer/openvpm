@@ -2,9 +2,9 @@
  * Pure config + hours logic for public booking pages. No I/O.
  *
  * A booking page's `config` jsonb is never trusted raw: everything read from
- * the database goes through `parseBookingPageConfig`, which fills defaults
- * and drops invalid values instead of throwing, so a bad config can never
- * take a published page down.
+ * the database goes through `parseBookingPageConfig`, which fills safe
+ * defaults and drops invalid values instead of throwing. Requestable visit
+ * types deliberately fail closed when missing or malformed.
  */
 
 import { z } from "zod";
@@ -116,10 +116,20 @@ export const BOOKING_WINDOW_MAX_DAYS = 365;
 
 const configSchema = z.object({
   hours: weeklyHoursSchema.catch(() => DEFAULT_WEEKLY_HOURS),
-  /** null = every non-deleted appointment type is bookable. */
-  bookableTypeIds: z.array(z.string().uuid()).nullable().catch(null),
-  /** false = bookings land as "scheduled" requests the team confirms. */
-  autoConfirm: z.boolean().catch(false),
+  /** Explicitly selected active appointment types; empty fails public booking closed. */
+  bookableTypeIds: z
+    .array(z.string().uuid())
+    .nullable()
+    .catch([])
+    .transform((ids) => ids ?? []),
+  /**
+   * Legacy compatibility only. Public booking is request-only, so old saved
+   * `true` values and stale clients are normalized to false on every read/write.
+   */
+  autoConfirm: z
+    .boolean()
+    .catch(false)
+    .transform(() => false),
   allowNewClients: z.boolean().catch(true),
   leadTimeMinutes: z
     .number()
@@ -150,7 +160,7 @@ export type BookingPageConfig = z.infer<typeof configSchema>;
 
 export const DEFAULT_BOOKING_PAGE_CONFIG: BookingPageConfig = {
   hours: DEFAULT_WEEKLY_HOURS,
-  bookableTypeIds: null,
+  bookableTypeIds: [],
   autoConfirm: false,
   allowNewClients: true,
   leadTimeMinutes: BOOKING_LEAD_TIME_DEFAULT_MINUTES,

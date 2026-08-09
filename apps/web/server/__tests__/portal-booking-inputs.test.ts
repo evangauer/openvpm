@@ -45,6 +45,7 @@ const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const CLIENT_ID = "00000000-0000-0000-0000-0000000000bb";
 const PATIENT_ID = "00000000-0000-0000-0000-000000000001";
 const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000002";
+const TYPE_ID = "00000000-0000-0000-0000-000000000003";
 const ACTIVE_PRACTICE = [{ id: PRACTICE_ID }];
 
 function callerWithDb(db: Record<string, unknown>, ip?: string) {
@@ -56,10 +57,15 @@ function createDb(opts?: {
   insertedRows?: unknown[];
 }) {
   const selectResults = [...(opts?.selectResults ?? [])];
+  const operations: string[] = [];
   const select = vi.fn(() => {
     const result = selectResults.shift() ?? [];
     const afterWhere = {
       limit: vi.fn(async () => result),
+      for: vi.fn(async () => {
+        operations.push("type-lock");
+        return result;
+      }),
       then: (
         resolve: (value: unknown[]) => unknown,
         reject?: (error: unknown) => unknown
@@ -73,18 +79,28 @@ function createDb(opts?: {
     };
     return builder;
   });
-  const insertValues = vi.fn(() => ({
-    returning: vi.fn(async () => opts?.insertedRows ?? []),
-  }));
+  const insertValues = vi.fn(() => {
+    operations.push("insert");
+    return {
+      returning: vi.fn(async () => opts?.insertedRows ?? []),
+    };
+  });
   const insert = vi.fn(() => ({ values: insertValues }));
+  const execute = vi.fn(async (statement: unknown) => {
+    operations.push(
+      JSON.stringify(statement).includes("pg_advisory_xact_lock")
+        ? "booking-lock"
+        : "execute"
+    );
+  });
   const db: Record<string, unknown> = {
     transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(db)),
-    execute: vi.fn(async () => undefined),
+    execute,
     select,
     insert,
     update: vi.fn(),
   };
-  return { db, select, insert, insertValues };
+  return { db, select, insert, insertValues, execute, operations };
 }
 
 function sqlIncludesColumnName(
@@ -163,6 +179,7 @@ describe("portal booking input validation", () => {
       callerWithDb(db).requestAppointment({
         token: oversizedToken,
         patientId: PATIENT_ID,
+        typeId: TYPE_ID,
         preferredDate: "2026-07-01",
         preferredTime: "09:00",
         reason: "Wellness visit",
@@ -328,6 +345,7 @@ describe("portal booking input validation", () => {
       callerWithDb(db).requestAppointment({
         token: TOKEN,
         patientId: PATIENT_ID,
+        typeId: TYPE_ID,
         preferredDate: "2026-02-30",
         preferredTime: "09:00",
         reason: "Wellness visit",
@@ -338,6 +356,7 @@ describe("portal booking input validation", () => {
       callerWithDb(db).requestAppointment({
         token: TOKEN,
         patientId: PATIENT_ID,
+        typeId: TYPE_ID,
         preferredDate: "2026-07-01",
         preferredTime: "25:00",
         reason: "Wellness visit",
@@ -355,6 +374,7 @@ describe("portal booking input validation", () => {
       callerWithDb(db).requestAppointment({
         token: TOKEN,
         patientId: PATIENT_ID,
+        typeId: TYPE_ID,
         preferredDate: "2026-07-01",
         preferredTime: "09:00",
         reason: "   ",
@@ -365,6 +385,7 @@ describe("portal booking input validation", () => {
       callerWithDb(db).requestAppointment({
         token: TOKEN,
         patientId: PATIENT_ID,
+        typeId: TYPE_ID,
         preferredDate: "2026-07-01",
         preferredTime: "09:00",
         reason: "A".repeat(PORTAL_BOOKING_REASON_MAX_LENGTH + 1),
@@ -387,6 +408,7 @@ describe("portal booking input validation", () => {
       callerWithDb(db).requestAppointment({
         token: TOKEN,
         patientId: PATIENT_ID,
+        typeId: TYPE_ID,
         preferredDate: "2026-07-01",
         preferredTime: "09:00",
         reason: "Wellness visit",
@@ -418,6 +440,7 @@ describe("portal booking input validation", () => {
         callerWithDb(db).requestAppointment({
           token: TOKEN,
           patientId: PATIENT_ID,
+          typeId: TYPE_ID,
           preferredDate: "2026-07-01",
           preferredTime: "09:00",
           reason: "Wellness visit",
@@ -462,6 +485,7 @@ describe("portal booking input validation", () => {
       callerWithDb(db).requestAppointment({
         token: TOKEN,
         patientId: PATIENT_ID,
+        typeId: TYPE_ID,
         preferredDate: "2026-07-01",
         preferredTime: "09:00",
         reason: "Wellness visit",
@@ -501,6 +525,7 @@ describe("portal booking input validation", () => {
       callerWithDb(db, IP).requestAppointment({
         token: TOKEN,
         patientId: PATIENT_ID,
+        typeId: TYPE_ID,
         preferredDate: "2026-07-01",
         preferredTime: "09:00",
         reason: "Wellness visit",
@@ -576,6 +601,7 @@ describe("portal booking input validation", () => {
         ACTIVE_PRACTICE,
         [{ timezone: "America/Los_Angeles" }],
         [{ id: PATIENT_ID, name: "Juniper" }],
+        [{ id: TYPE_ID, durationMinutes: 30 }],
         [{ id: APPOINTMENT_ID }],
       ],
     });
@@ -584,6 +610,7 @@ describe("portal booking input validation", () => {
       callerWithDb(db).requestAppointment({
         token: TOKEN,
         patientId: PATIENT_ID,
+        typeId: TYPE_ID,
         preferredDate: "2026-07-01",
         preferredTime: "09:00",
         reason: "Wellness visit",
@@ -613,6 +640,7 @@ describe("portal booking input validation", () => {
       callerWithDb(db).requestAppointment({
         token: TOKEN,
         patientId: PATIENT_ID,
+        typeId: TYPE_ID,
         preferredDate: "2026-07-01",
         preferredTime: "09:00",
         reason: "Wellness visit",
@@ -641,6 +669,7 @@ describe("portal booking input validation", () => {
       callerWithDb(db).requestAppointment({
         token: TOKEN,
         patientId: PATIENT_ID,
+        typeId: TYPE_ID,
         preferredDate: "2026-07-01",
         preferredTime: "09:00",
         reason: "Wellness visit",
@@ -670,6 +699,7 @@ describe("portal booking input validation", () => {
         ACTIVE_PRACTICE,
         [{ timezone: "America/Los_Angeles" }],
         [{ id: PATIENT_ID, name: "Juniper" }],
+        [{ id: TYPE_ID, durationMinutes: 30 }],
       ],
     });
 
@@ -677,6 +707,7 @@ describe("portal booking input validation", () => {
       callerWithDb(db).requestAppointment({
         token: TOKEN,
         patientId: PATIENT_ID,
+        typeId: TYPE_ID,
         preferredDate: "2026-07-01",
         preferredTime: "07:30",
         reason: "Wellness visit",
@@ -696,13 +727,14 @@ describe("portal booking input validation", () => {
   it("stores portal appointment requests in the practice timezone", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-01T14:00:00.000Z"));
-    const { db, insertValues } = createDb({
+    const { db, insertValues, execute, operations } = createDb({
       selectResults: [
         [{ id: CLIENT_ID, practiceId: PRACTICE_ID }],
         ACTIVE_PRACTICE,
         ACTIVE_PRACTICE,
         [{ timezone: "America/Los_Angeles" }],
         [{ id: PATIENT_ID, name: "Juniper" }],
+        [{ id: TYPE_ID, durationMinutes: 30 }],
         [],
       ],
       insertedRows: [
@@ -719,6 +751,7 @@ describe("portal booking input validation", () => {
       callerWithDb(db).requestAppointment({
         token: TOKEN,
         patientId: PATIENT_ID,
+        typeId: TYPE_ID,
         preferredDate: "2026-07-01",
         preferredTime: "09:00",
         reason: "Wellness visit",
@@ -734,9 +767,20 @@ describe("portal booking input validation", () => {
         practiceId: PRACTICE_ID,
         clientId: CLIENT_ID,
         patientId: PATIENT_ID,
+        typeId: TYPE_ID,
         startTime: new Date("2026-07-01T16:00:00.000Z"),
         endTime: new Date("2026-07-01T16:30:00.000Z"),
       })
+    );
+    expect(execute).toHaveBeenCalled();
+    expect(JSON.stringify(execute.mock.calls.at(-1)?.[0])).toContain(
+      "pg_advisory_xact_lock"
+    );
+    expect(operations.indexOf("booking-lock")).toBeLessThan(
+      operations.indexOf("type-lock")
+    );
+    expect(operations.indexOf("type-lock")).toBeLessThan(
+      operations.indexOf("insert")
     );
     expect(insertValues).toHaveBeenNthCalledWith(
       2,
@@ -783,5 +827,35 @@ describe("portal booking input validation", () => {
         source: "portal",
       })
     );
+  });
+
+  it("rejects stale or cross-practice appointment types before creating a request", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-01T14:00:00.000Z"));
+    const { db, insert } = createDb({
+      selectResults: [
+        [{ id: CLIENT_ID, practiceId: PRACTICE_ID }],
+        ACTIVE_PRACTICE,
+        ACTIVE_PRACTICE,
+        [{ timezone: "America/Los_Angeles" }],
+        [{ id: PATIENT_ID, name: "Juniper" }],
+        [],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).requestAppointment({
+        token: TOKEN,
+        patientId: PATIENT_ID,
+        typeId: TYPE_ID,
+        preferredDate: "2026-07-01",
+        preferredTime: "09:00",
+        reason: "Wellness visit",
+      })
+    ).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      message: "Appointment type not found",
+    });
+    expect(insert).not.toHaveBeenCalled();
   });
 });
