@@ -133,7 +133,41 @@ workflow after approval.
 
 For a Twilio fallback deployment, set `MESSAGING_PROVIDER=twilio` and provide
 `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_PHONE_NUMBER` instead of
-the Telnyx send envs.
+the Telnyx send envs. Every Twilio send configures the canonical
+`/api/webhooks/twilio` status callback with bounded connection-override retries;
+do not replace it with a clinic-specific callback.
+
+Authenticated Telnyx and Twilio delivery callbacks are inserted into the
+append-only `sms_delivery_events` ledger before attribution. Only normalized
+provider lifecycle fields are stored: provider/event/message ids, event type,
+bounded status/error tokens, timestamps, classification, and a deterministic
+redacted fingerprint. Raw callback payloads, sender/recipient phone numbers,
+and message bodies are never stored in this delivery ledger. Attribution uses
+only the exact provider plus provider message id from immutable accepted-send
+evidence; sender number and messaging-profile hints are never authority. The
+communication projection is monotone (`unknown < sent < failed < delivered`),
+so late or duplicate callbacks cannot downgrade a delivered message and a
+delivered callback can correct an earlier failure.
+
+Platform operators review `admin.smsDeliveryEventQueue`. Its actionable event
+items (unmatched, ambiguous identity, unknown status, projection miss) are
+separate from monitor-only accepted sends that remain without a provider-final
+state after the configured age threshold. An operator may retry exact
+attribution, repair a projection, or record a provider-portal classification
+only after one exact attempt exists. Truly unmatched/ambiguous evidence can
+only receive an append-only quarantine review; it cannot be manually linked to
+an arbitrary clinic or attempt. Provider evidence and every operator review
+are immutable unless the database owner explicitly enables the maintenance
+GUC. While an account is active there is no automated pruning job: append-only
+provider evidence must remain complete for clinic audit and incident recovery.
+Indefinite retention after account closure is not authorized. After the
+promised 60-day export period, the account-closure owner-maintenance procedure
+must purge the practice's SMS attempt/history rows and then any global delivery
+events that have no remaining exact accepted-send match and no unresolved
+identity incident. Missing attribution alone is not safe deletion authority;
+another practice may share the provider/message identity under investigation.
+Backups age out under the same closure policy. Provider identifiers and
+platform-operator identities in these ledgers are part of that purge scope.
 
 Self-hosted external SMS must also set `MESSAGING_REGISTERED_DISPLAY_NAME` to
 the exact clinic name approved on that provider's active campaign. OpenVPM

@@ -5,6 +5,7 @@ import type {
   SendMessageResult,
 } from "./types";
 import { cleanSender, envValue } from "./env";
+import { appBaseUrl } from "@/lib/app-url";
 
 // Initialised lazily so the module imports cleanly without credentials (local
 // dev / CI), mirroring the prior lib/sms.ts behaviour.
@@ -71,6 +72,10 @@ export const twilioProvider: MessagingProvider = {
       const message = await client.messages.create({
         to,
         body,
+        statusCallback: new URL(
+          "/api/webhooks/twilio#rc=5&rp=all",
+          appBaseUrl(),
+        ).toString(),
         ...(configuredSender.messagingServiceId
           ? { messagingServiceSid: configuredSender.messagingServiceId }
           : { from: configuredSender.from }),

@@ -77,6 +77,11 @@ const mocks = vi.hoisted(() => {
     deleteWhere,
     updateSet,
     updateWhere,
+    recordSmsDeliveryCallback: vi.fn(async () => ({
+      eventId: "00000000-0000-0000-0000-0000000000dd",
+      duplicate: false,
+      result: "projected",
+    })),
     validateRequest: vi.fn(() => true),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
       fn(db),
@@ -101,6 +106,10 @@ vi.mock("twilio", () => ({
   default: {
     validateRequest: mocks.validateRequest,
   },
+}));
+
+vi.mock("@/lib/messaging/sms-delivery-ledger", () => ({
+  recordSmsDeliveryCallback: mocks.recordSmsDeliveryCallback,
 }));
 
 const { POST } = await import("./route");
@@ -533,7 +542,7 @@ describe("Twilio webhook", () => {
     expect(mocks.updateSet).not.toHaveBeenCalled();
   });
 
-  it("updates transient failed delivery callbacks without suppressing recipients", async () => {
+  it("persists failed delivery callbacks without suppressing recipients", async () => {
     process.env.TWILIO_AUTH_TOKEN = "test-token";
     mocks.selectResults.push([
       {
@@ -553,13 +562,19 @@ describe("Twilio webhook", () => {
     );
 
     await expect(response.json()).resolves.toEqual({ ok: true });
-    expect(mocks.updateSet).toHaveBeenCalledWith({ status: "failed" });
-    const condition = mocks.updateWhere.mock.calls[0]?.[0];
-    expect(sqlIncludesColumnName(condition, "deleted_at")).toBe(true);
+    expect(mocks.recordSmsDeliveryCallback).toHaveBeenCalledWith({
+      provider: "twilio",
+      providerEventId: null,
+      providerMessageId: "SM-failed",
+      providerEventType: "message.status",
+      providerStatus: "undelivered",
+      providerErrorCode: "30008",
+      classification: "failed",
+    });
     expect(mocks.insertValues).not.toHaveBeenCalled();
   });
 
-  it("routes delivery callbacks by MessagingServiceSid when no sender number is stored", async () => {
+  it("never uses MessagingServiceSid as a delivery-attribution hint", async () => {
     process.env.TWILIO_AUTH_TOKEN = "test-token";
     mocks.selectResults.push([
       {
@@ -578,17 +593,49 @@ describe("Twilio webhook", () => {
     );
 
     await expect(response.json()).resolves.toEqual({ ok: true });
-    expect(mocks.withTenant).toHaveBeenCalledWith(
-      mocks.db,
-      "00000000-0000-0000-0000-0000000000aa",
-      expect.any(Function),
+    expect(mocks.recordSmsDeliveryCallback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "twilio",
+        providerMessageId: "SM-profile-failed",
+        classification: "failed",
+      }),
     );
-    const profileCondition = mocks.selectWhere.mock.calls[0]?.[0];
-    expect(
-      sqlIncludesColumnName(profileCondition, "messaging_profile_id"),
-    ).toBe(true);
-    expect(sqlIncludesValue(profileCondition, "MG123")).toBe(true);
-    expect(mocks.updateSet).toHaveBeenCalledWith({ status: "failed" });
+    expect(mocks.withTenant).not.toHaveBeenCalled();
+    expect(mocks.selectWhere).not.toHaveBeenCalled();
     expect(mocks.insertValues).not.toHaveBeenCalled();
+  });
+
+  it("ledgers unrecognized callback statuses instead of discarding them", async () => {
+    process.env.TWILIO_AUTH_TOKEN = "test-token";
+
+    const response = await POST(
+      twilioRequest({
+        MessageSid: "SM-new-status",
+        MessageStatus: "provider-added-state",
+      }),
+    );
+
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    expect(mocks.recordSmsDeliveryCallback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerMessageId: "SM-new-status",
+        providerStatus: "provider_added_state",
+        classification: "unknown",
+      }),
+    );
+  });
+
+  it("rejects a malformed status callback without its required MessageSid", async () => {
+    process.env.TWILIO_AUTH_TOKEN = "test-token";
+
+    const response = await POST(
+      twilioRequest({ MessageStatus: "delivered" }),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "missing delivery message id",
+    });
+    expect(mocks.recordSmsDeliveryCallback).not.toHaveBeenCalled();
   });
 });

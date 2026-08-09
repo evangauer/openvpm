@@ -1662,13 +1662,10 @@ describe("messaging location sender join scoping", () => {
     expect(source).toContain("findMessagingLocationForWebhook");
     expect(source).toContain("locationMessaging.messagingProfileId");
     expect(readSource("app/api/webhooks/telnyx/route.ts")).toContain(
-      "findMessagingLocationForWebhook({",
+      "handleInboundSmsReply({",
     );
     expect(readSource("app/api/webhooks/telnyx/route.ts")).toContain(
       'provider: "telnyx"',
-    );
-    expect(readSource("app/api/webhooks/twilio/route.ts")).toContain(
-      "findMessagingLocationForWebhook({",
     );
     expect(readSource("app/api/webhooks/twilio/route.ts")).toContain(
       'provider: "twilio"',

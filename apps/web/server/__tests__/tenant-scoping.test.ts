@@ -48,5 +48,6 @@ describe("tenant scoping", () => {
     );
     expect(source).toContain('"admin.reconcileSmsSendAttempt"');
     expect(source).toContain('"admin.resendSmsSendAttempt"');
+    expect(source).toContain('"admin.reconcileSmsDeliveryEvent"');
   });
 });

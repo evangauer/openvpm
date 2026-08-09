@@ -71,4 +71,36 @@ describe("twilioProvider", () => {
       });
     },
   );
+
+  it.each([
+    [
+      "messaging service",
+      { messagingServiceId: "MG123" },
+      { messagingServiceSid: "MG123" },
+    ],
+    ["bare number", { from: "+15555550100" }, { from: "+15555550100" }],
+  ] as const)(
+    "requests bounded status-callback retries for %s sends",
+    async (_label, sender, expectedSender) => {
+      vi.stubEnv("TWILIO_ACCOUNT_SID", "AC123");
+      vi.stubEnv("TWILIO_AUTH_TOKEN", "token");
+      vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.openvpm.test");
+      mocks.create.mockResolvedValue({ sid: "SM123" });
+
+      await expect(
+        twilioProvider.send({
+          to: "+15555550199",
+          body: "Reminder",
+          sender,
+        }),
+      ).resolves.toEqual({ status: "accepted", id: "SM123" });
+      expect(mocks.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ...expectedSender,
+          statusCallback:
+            "https://app.openvpm.test/api/webhooks/twilio#rc=5&rp=all",
+        }),
+      );
+    },
+  );
 });

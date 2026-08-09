@@ -20,6 +20,16 @@ proves the whole path works.
   rate-limit buckets, sessions, and expiring tokens
   (`PRACTICE_EXPORT_SYSTEM_EXCLUSIONS` documents each reason). The `practices`
   row itself is not exported; a restore targets an existing practice.
+- **SMS provider ledgers are audit-only in the JSON:** durable send attempts,
+  provider outcomes, delivery callbacks, and tenant-attributed attribution,
+  projection, and operator-reconciliation history are included for clinic
+  audit and portability. Platform-global quarantine, identity-conflict, and
+  review rows are excluded from the clinic-admin export. Ordinary clinic
+  restore intentionally inserts none of those four sections. They contain
+  environment-bound provider identities and acceptance authority that must not
+  be replayed into another practice or installation. Ordinary communications
+  remain restorable. `PRACTICE_EXPORT_AUDIT_ONLY_SECTIONS` documents this
+  boundary.
 - **Secrets are sanitized on export:** user password hashes are replaced with
   a placeholder (restored staff must reset their passwords), client portal
   tokens are cleared, API keys are disabled, webhook secrets are replaced and
@@ -77,10 +87,37 @@ snapshot. Wall-clock times from the 2026-07-10 drill are in brackets.
    - Webhooks are disabled with placeholder secrets; re-enable after rotating.
    - API keys are disabled; issue new ones.
    - Reconnect payment processing (Stripe state is not replayed).
+   - Re-provision/reconcile texting before enabling it. SMS send, outcome, and
+     delivery ledgers are visible in the source export for audit but are not
+     replayed by clinic restore.
 
 The restore is transactional and additive: it validates sections and
 cross-references first, inserts everything in one transaction, and skips rows
 that already exist. Backups up to 50 MB of JSON are accepted.
+
+For a same-install database disaster, restore the database snapshot/WAL under
+the database-owner procedure. That trusted owner-maintenance path preserves the
+global SMS ledgers and their provider identities. Do not use the clinic-admin
+JSON restore as a substitute, and do not weaken RLS or append-only triggers to
+force those rows into a fresh clinic.
+
+## Account-closure retention
+
+Append-only SMS provider ledgers are not automatically pruned while a practice
+is active. They contain provider message/event identifiers and may contain a
+redacted platform-operator identity, so they are explicitly in scope for
+account deletion. After the promised 60-day export window closes, a database
+owner must run the reviewed account-closure purge with
+`app.ledger_maintenance=on` in one transaction. Delete dependent delivery
+history before practice send-attempt history, then delete global delivery
+events only when no accepted send attempt in a remaining practice exactly
+matches `(provider, providerMessageId)` and no unresolved identity incident
+remains. Verify the closed practice has zero send attempts, attempt events,
+delivery history, and attributed delivery events before completing the
+request. Do not purge a global event that still matches another practice's
+accepted send or remains in an identity-conflict investigation, even if it
+currently has no attribution. Stored backups then age out under the
+account-closure policy; indefinite post-closure retention is not authorized.
 
 ## Repeatable drill
 

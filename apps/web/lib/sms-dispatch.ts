@@ -34,6 +34,10 @@ import {
 import { withSystem } from "@/lib/tenant-db";
 import { envValue } from "@/lib/messaging/env";
 import { alertOps } from "@/lib/alerts";
+import {
+  lockSmsDeliveryIdentity,
+  processPendingDeliveryEvidenceForAcceptedSend,
+} from "@/lib/messaging/sms-delivery-ledger";
 
 export const SMS_COMPLIANCE_FOOTER = "Reply STOP to opt out or HELP for help.";
 export const SMS_MAX_BODY_LENGTH = 1600;
@@ -502,6 +506,9 @@ async function appendProviderResult(
   result: SendMessageResult,
 ): Promise<void> {
   const normalized = normalizeProviderResult(result);
+  if (normalized.status === "accepted") {
+    await lockSmsDeliveryIdentity(tx, attempt.provider, normalized.id);
+  }
   await tx.insert(smsSendAttemptEvents).values({
     practiceId: attempt.practiceId,
     attemptId: attempt.id,
@@ -537,6 +544,14 @@ async function appendProviderResult(
         "Accepted SMS could not be projected to its linked communication",
       );
     }
+  }
+  if (normalized.status === "accepted") {
+    await processPendingDeliveryEvidenceForAcceptedSend(
+      tx,
+      attempt.provider,
+      normalized.id,
+      { identityLockHeld: true },
+    );
   }
 }
 
@@ -1221,6 +1236,13 @@ export async function reconcileSmsSendAttempt(options: {
         return eventToDispatchResult(attempt.id, prior, true);
       }
 
+      if (options.outcome === "accepted" && providerMessageId) {
+        await lockSmsDeliveryIdentity(
+          tx as unknown as Database,
+          attempt.provider,
+          providerMessageId,
+        );
+      }
       const [event] = await tx
         .insert(smsSendAttemptEvents)
         .values({
@@ -1284,6 +1306,14 @@ export async function reconcileSmsSendAttempt(options: {
             outcome: options.outcome,
           };
         }
+      }
+      if (options.outcome === "accepted" && providerMessageId) {
+        await processPendingDeliveryEvidenceForAcceptedSend(
+          tx as unknown as Database,
+          attempt.provider,
+          providerMessageId,
+          { identityLockHeld: true },
+        );
       }
       return eventToDispatchResult(attempt.id, event, false);
     });

@@ -98,6 +98,49 @@ GRANT SELECT, INSERT ON sms_consent_events TO openpims_app;
 REVOKE ALL ON sms_send_attempts, sms_send_attempt_events FROM openpims_app;
 GRANT SELECT, INSERT ON sms_send_attempts, sms_send_attempt_events TO openpims_app;
 
+-- Delivery callbacks can arrive before a tenant can be attributed. Raw
+-- evidence is therefore global/system-only, while attributed history is
+-- readable by its exact tenant. Both tables remain system-insert-only so a
+-- clinic session cannot forge provider or operator evidence.
+ALTER TABLE sms_delivery_events ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS delivery_evidence_select ON sms_delivery_events;
+CREATE POLICY delivery_evidence_select ON sms_delivery_events
+  FOR SELECT
+  USING (
+    app_rls_bypass()
+    OR EXISTS (
+      SELECT 1
+      FROM sms_delivery_event_history attributed
+      WHERE attributed.delivery_event_id = sms_delivery_events.id
+        AND attributed.result = 'attributed'
+        AND attributed.practice_id IS NOT NULL
+        AND attributed.practice_id = app_current_practice_id()
+    )
+  );
+DROP POLICY IF EXISTS delivery_evidence_insert ON sms_delivery_events;
+CREATE POLICY delivery_evidence_insert ON sms_delivery_events
+  FOR INSERT
+  WITH CHECK (app_rls_bypass());
+
+ALTER TABLE sms_delivery_event_history ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS delivery_history_select ON sms_delivery_event_history;
+CREATE POLICY delivery_history_select ON sms_delivery_event_history
+  FOR SELECT
+  USING (
+    app_rls_bypass()
+    OR (
+      practice_id IS NOT NULL
+      AND practice_id = app_current_practice_id()
+    )
+  );
+DROP POLICY IF EXISTS delivery_history_insert ON sms_delivery_event_history;
+CREATE POLICY delivery_history_insert ON sms_delivery_event_history
+  FOR INSERT
+  WITH CHECK (app_rls_bypass());
+
+REVOKE ALL ON sms_delivery_events, sms_delivery_event_history FROM openpims_app;
+GRANT SELECT, INSERT ON sms_delivery_events, sms_delivery_event_history TO openpims_app;
+
 -- Dispense charge snapshots are durable revenue work. The app may advance or
 -- reopen their attributed workflow status, while database triggers prevent
 -- snapshot changes and all deletion.
@@ -197,7 +240,7 @@ BEGIN
   FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format(
-        'REVOKE ALL ON auth_tokens, clinical_record_corrections, demo_accesses, dispense_charge_queue, funnel_events, patient_merge_events, practice_conversion_milestones, prescription_events, sessions, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
+        'REVOKE ALL ON auth_tokens, clinical_record_corrections, demo_accesses, dispense_charge_queue, funnel_events, patient_merge_events, practice_conversion_milestones, prescription_events, sessions, sms_delivery_event_history, sms_delivery_events, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
       );
     END IF;
   END LOOP;

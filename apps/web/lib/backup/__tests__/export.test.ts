@@ -4,6 +4,7 @@ import {
   backupKey,
   coerceRowDates,
   PRACTICE_EXPORT_SECRET_REPLACEMENTS,
+  PRACTICE_EXPORT_AUDIT_ONLY_SECTIONS,
   PRACTICE_EXPORT_SYSTEM_EXCLUSIONS,
   PRACTICE_EXPORT_SECTIONS,
   prepareLegacySmsConsentRestore,
@@ -143,10 +144,26 @@ describe("summarizePracticeExport", () => {
     expect(PRACTICE_EXPORT_SECTIONS).toContain("locationMessaging");
     expect(PRACTICE_EXPORT_SECTIONS).toContain("smsSuppressions");
     expect(PRACTICE_EXPORT_SECTIONS).toContain("smsConsentEvents");
+    expect(PRACTICE_EXPORT_SECTIONS).toContain("smsSendAttempts");
+    expect(PRACTICE_EXPORT_SECTIONS).toContain("smsSendAttemptEvents");
+    expect(PRACTICE_EXPORT_SECTIONS).toContain("smsDeliveryEvents");
+    expect(PRACTICE_EXPORT_SECTIONS).toContain("smsDeliveryEventHistory");
     expect(PRACTICE_EXPORT_SECTIONS).toContain("emailSuppressions");
     expect(PRACTICE_EXPORT_SECTIONS).toContain("webhooks");
     expect(PRACTICE_EXPORT_SECTIONS).toContain("apiKeys");
     expect(PRACTICE_EXPORT_SECTIONS).toContain("auditLog");
+  });
+
+  it("exports SMS provider ledgers for audit but marks them owner-restore only", () => {
+    expect(PRACTICE_EXPORT_AUDIT_ONLY_SECTIONS.smsSendAttempts).toContain(
+      "trusted owner-maintenance disaster recovery",
+    );
+    expect(PRACTICE_EXPORT_AUDIT_ONLY_SECTIONS.smsSendAttemptEvents).toContain(
+      "must not recreate",
+    );
+    expect(PRACTICE_EXPORT_AUDIT_ONLY_SECTIONS.smsDeliveryEvents).toContain(
+      "Environment-bound",
+    );
   });
 
   it("keeps volatile system ledgers out of restoreable practice backups", () => {
@@ -510,9 +527,149 @@ describe("practice backup secret handling", () => {
       },
     ]);
   });
+
+  it("redacts platform-operator identities from exported SMS ledgers", () => {
+    expect(
+      sanitizePracticeExportRows("smsSendAttempts", [
+        {
+          id: "attempt-operator",
+          requestedByActorType: "platform_operator",
+          requestedByIdentity: "private-operator@example.com",
+          requestedByName: "Private Operator",
+        },
+        {
+          id: "attempt-clinic",
+          requestedByActorType: "clinic_user",
+          requestedByIdentity: "clinic-user-1",
+          requestedByName: "Clinic User",
+        },
+      ]),
+    ).toEqual([
+      {
+        id: "attempt-operator",
+        requestedByActorType: "platform_operator",
+        requestedByIdentity: "platform-operator",
+        requestedByName: "OpenVPM operator",
+      },
+      {
+        id: "attempt-clinic",
+        requestedByActorType: "clinic_user",
+        requestedByIdentity: "clinic-user-1",
+        requestedByName: "Clinic User",
+      },
+    ]);
+
+    for (const section of [
+      "smsSendAttemptEvents",
+      "smsDeliveryEventHistory",
+    ] as const) {
+      expect(
+        sanitizePracticeExportRows(section, [
+          {
+            id: `${section}-operator`,
+            actorType: "platform_operator",
+            actorIdentity: "private-operator@example.com",
+            actorName: "Private Operator",
+          },
+          {
+            id: `${section}-clinic`,
+            actorType: "clinic_user",
+            actorIdentity: "clinic-user-1",
+            actorName: "Clinic User",
+          },
+        ]),
+      ).toEqual([
+        {
+          id: `${section}-operator`,
+          actorType: "platform_operator",
+          actorIdentity: "platform-operator",
+          actorName: "OpenVPM operator",
+        },
+        {
+          id: `${section}-clinic`,
+          actorType: "clinic_user",
+          actorIdentity: "clinic-user-1",
+          actorName: "Clinic User",
+        },
+      ]);
+    }
+  });
 });
 
 describe("restorePracticeData", () => {
+  it("does not restore any provider-authority SMS ledger through clinic restore", async () => {
+    const backup = {
+      ...emptyBackup(),
+      practiceId: "source-practice",
+      communications: [
+        {
+          id: "communication-1",
+          practiceId: "source-practice",
+          channel: "sms",
+          direction: "outbound",
+          status: "sent",
+        },
+      ],
+      smsSendAttempts: [
+        {
+          id: "attempt-1",
+          practiceId: "source-practice",
+          communicationId: "communication-1",
+        },
+      ],
+      smsSendAttemptEvents: [
+        {
+          id: "attempt-event-1",
+          practiceId: "source-practice",
+          attemptId: "attempt-1",
+          outcome: "accepted",
+          providerMessageId: "provider-message-1",
+        },
+      ],
+      smsDeliveryEvents: [{ id: "delivery-event-1" }],
+      smsDeliveryEventHistory: [
+        {
+          id: "delivery-history-1",
+          deliveryEventId: "delivery-event-1",
+          practiceId: "source-practice",
+          attemptId: "attempt-1",
+          communicationId: "communication-1",
+        },
+      ],
+    };
+    expect(validatePracticeExportRestore(backup)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const { db, inserted } = restoreDb();
+    const result = await restorePracticeData(
+      db as never,
+      "target-practice",
+      backup,
+    );
+
+    expect(result.restored).toMatchObject({
+      communications: 1,
+      smsSendAttempts: 0,
+      smsSendAttemptEvents: 0,
+      smsDeliveryEvents: 0,
+      smsDeliveryEventHistory: 0,
+    });
+    const restoredIds = inserted
+      .flatMap(({ rows }) => rows)
+      .map((row) => row.id);
+    expect(restoredIds).toContain("communication-1");
+    expect(restoredIds).not.toEqual(
+      expect.arrayContaining([
+        "attempt-1",
+        "attempt-event-1",
+        "delivery-event-1",
+        "delivery-history-1",
+      ]),
+    );
+  });
+
   it("validates that restore references resolve inside the same backup", () => {
     const backup = {
       ...emptyBackup(),

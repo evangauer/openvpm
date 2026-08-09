@@ -10,6 +10,7 @@ export type TelnyxMessagePayload = {
   status?: unknown;
   delivery_status?: unknown;
   to?: TelnyxRecipientStatus[] | TelnyxRecipientStatus;
+  errors?: Array<{ code?: unknown }>;
 };
 
 function stringValue(value: unknown): string | null {
@@ -40,18 +41,15 @@ export function telnyxDeliveryStatus(
 
   if (eventType !== "message.finalized") return null;
 
-  const recipientStatus = Array.isArray(payload.to)
-    ? stringValue(payload.to[0]?.status)
-    : stringValue(payload.to?.status);
-  const rawStatus =
-    stringValue(payload.delivery_status) ??
-    stringValue(payload.status) ??
-    recipientStatus;
-  const status = rawStatus?.toLowerCase().replace(/[\s-]+/g, "_");
+  const status = telnyxProviderStatus(payload);
 
   if (!status) return null;
   if (
-    status.includes("fail") ||
+    status === "sending_failed" ||
+    status === "delivery_failed" ||
+    status === "failed" ||
+    status === "gw_timeout" ||
+    status === "dlr_timeout" ||
     status === "undelivered" ||
     status === "rejected"
   ) {
@@ -60,9 +58,34 @@ export function telnyxDeliveryStatus(
   if (status === "delivered" || status === "delivery_success") {
     return "delivered";
   }
-  if (status === "sent" || status === "queued") {
+  if (
+    status === "queued" ||
+    status === "sending" ||
+    status === "sent" ||
+    status === "delivery_unconfirmed"
+  ) {
     return "sent";
   }
 
   return null;
+}
+
+export function telnyxProviderStatus(
+  payload: TelnyxMessagePayload | undefined,
+): string | null {
+  if (!payload) return null;
+  const recipientStatus = Array.isArray(payload.to)
+    ? stringValue(payload.to[0]?.status)
+    : stringValue(payload.to?.status);
+  const rawStatus =
+    stringValue(payload.delivery_status) ??
+    stringValue(payload.status) ??
+    recipientStatus;
+  return rawStatus?.toLowerCase().replace(/[\s-]+/g, "_") ?? null;
+}
+
+export function telnyxProviderErrorCode(
+  payload: TelnyxMessagePayload | undefined,
+): string | null {
+  return stringValue(payload?.errors?.[0]?.code);
 }

@@ -42,6 +42,8 @@ import {
   rooms,
   services,
   smsConsentEvents,
+  smsDeliveryEventHistory,
+  smsDeliveryEvents,
   smsSendAttemptEvents,
   smsSendAttempts,
   smsSuppressions,
@@ -92,6 +94,17 @@ export const PRACTICE_EXPORT_SYSTEM_EXCLUSIONS = {
     "Encrypted tax identity plus live carrier brand/campaign state. It is environment-bound, may be undecryptable under another key, and must never bind a restored clone to the real SMS provider. Recover it only through operational database disaster recovery.",
 } as const;
 
+export const PRACTICE_EXPORT_AUDIT_ONLY_SECTIONS = {
+  smsSendAttempts:
+    "Provider dispatch authority; exported for audit but restored only through trusted owner-maintenance disaster recovery.",
+  smsSendAttemptEvents:
+    "Provider acceptance evidence; ordinary clinic restore must not recreate provider message authority.",
+  smsDeliveryEvents:
+    "Environment-bound provider callback evidence; ordinary clinic restore cannot recreate global provider identities.",
+  smsDeliveryEventHistory:
+    "Tenant-attributed attribution, projection, and operator-reconciliation history; platform-global quarantine, conflict, and review rows are excluded. Ordinary clinic restore cannot recreate system evidence.",
+} as const;
+
 export const PRACTICE_EXPORT_SECRET_REPLACEMENTS = {
   passwordHash: "$2a$12$HNkF00edpp2mYk2gvvj8ne/PWjlXwgT5YZhAodh0/UVgTgtIPdnWS",
   apiKeyPrefix: "disabled",
@@ -104,6 +117,8 @@ export const PRACTICE_EXPORT_SECTIONS = [
   "locationMessaging",
   "smsSuppressions",
   "smsConsentEvents",
+  "smsDeliveryEvents",
+  "smsDeliveryEventHistory",
   "smsSendAttempts",
   "smsSendAttemptEvents",
   "emailSuppressions",
@@ -169,6 +184,8 @@ const PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS = [
   "patientMergeEvents",
   // Backward compatibility for backups created before SMS consent evidence.
   "smsConsentEvents",
+  "smsDeliveryEvents",
+  "smsDeliveryEventHistory",
   "smsSendAttempts",
   "smsSendAttemptEvents",
   "visitCloseouts",
@@ -226,6 +243,23 @@ export function sanitizePracticeExportRows(
           ...row,
           changes: redactSecrets(row.changes),
         };
+      case "smsSendAttempts":
+        return row.requestedByActorType === "platform_operator"
+          ? {
+              ...row,
+              requestedByIdentity: "platform-operator",
+              requestedByName: "OpenVPM operator",
+            }
+          : row;
+      case "smsSendAttemptEvents":
+      case "smsDeliveryEventHistory":
+        return row.actorType === "platform_operator"
+          ? {
+              ...row,
+              actorIdentity: "platform-operator",
+              actorName: "OpenVPM operator",
+            }
+          : row;
       default:
         return row;
     }
@@ -270,6 +304,13 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
   optionalRef("smsSendAttempts", "resendOfAttemptId", "smsSendAttempts"),
   requiredRef("smsSendAttemptEvents", "attemptId", "smsSendAttempts"),
   optionalRef("smsSendAttemptEvents", "actorUserId", "users"),
+  requiredRef(
+    "smsDeliveryEventHistory",
+    "deliveryEventId",
+    "smsDeliveryEvents",
+  ),
+  optionalRef("smsDeliveryEventHistory", "attemptId", "smsSendAttempts"),
+  optionalRef("smsDeliveryEventHistory", "communicationId", "communications"),
   optionalRef("users", "locationId", "locations"),
   optionalRef("rooms", "locationId", "locations"),
   requiredRef("patients", "clientId", "clients"),
@@ -1254,6 +1295,7 @@ export async function exportPracticeData(
     smsConsentEventRows,
     smsSendAttemptRows,
     smsSendAttemptEventRows,
+    practiceSmsDeliveryHistoryRows,
     emailSuppressionRows,
     webhookRows,
     apiKeyRows,
@@ -1302,6 +1344,7 @@ export async function exportPracticeData(
     allPracticeRows(db, smsConsentEvents, practiceId),
     allPracticeRows(db, smsSendAttempts, practiceId),
     allPracticeRows(db, smsSendAttemptEvents, practiceId),
+    allPracticeRows(db, smsDeliveryEventHistory, practiceId),
     activeRows(db, emailSuppressions, practiceId),
     activeRows(db, webhooks, practiceId),
     activeRows(db, apiKeys, practiceId),
@@ -1344,6 +1387,23 @@ export async function exportPracticeData(
     activeRows(db, controlledSubstanceLog, practiceId),
     allPracticeRows(db, communications, practiceId),
   ]);
+
+  const attributedDeliveryEventIds = new Set(
+    practiceSmsDeliveryHistoryRows
+      .filter((row) => row.result === "attributed")
+      .map((row) => row.deliveryEventId as string),
+  );
+  const smsDeliveryHistoryRows = practiceSmsDeliveryHistoryRows.filter((row) =>
+    attributedDeliveryEventIds.has(row.deliveryEventId as string),
+  );
+  const deliveryEventIds = [...attributedDeliveryEventIds];
+  const smsDeliveryEventRows =
+    deliveryEventIds.length === 0
+      ? []
+      : await db
+          .select()
+          .from(smsDeliveryEvents)
+          .where(inArray(smsDeliveryEvents.id, deliveryEventIds));
 
   const referencedPrescriptionIds = new Set(
     prescriptionEventRows.map((event) => event.prescriptionId),
@@ -1601,8 +1661,19 @@ export async function exportPracticeData(
     locationMessaging: locationMessagingRows,
     smsSuppressions: smsSuppressionRows,
     smsConsentEvents: smsConsentEventRows,
-    smsSendAttempts: smsSendAttemptRows,
-    smsSendAttemptEvents: smsSendAttemptEventRows,
+    smsSendAttempts: sanitizePracticeExportRows(
+      "smsSendAttempts",
+      smsSendAttemptRows,
+    ),
+    smsSendAttemptEvents: sanitizePracticeExportRows(
+      "smsSendAttemptEvents",
+      smsSendAttemptEventRows,
+    ),
+    smsDeliveryEvents: smsDeliveryEventRows,
+    smsDeliveryEventHistory: sanitizePracticeExportRows(
+      "smsDeliveryEventHistory",
+      smsDeliveryHistoryRows,
+    ),
     emailSuppressions: emailSuppressionRows,
     webhooks: sanitizePracticeExportRows("webhooks", webhookRows),
     apiKeys: sanitizePracticeExportRows("apiKeys", apiKeyRows),
@@ -1881,8 +1952,14 @@ async function restorePracticeDataRows(
   await restorePracticeRows("files", files);
   await restorePracticeRows("controlledSubstanceLog", controlledSubstanceLog);
   await restorePracticeRows("communications", communications);
-  await restorePracticeRows("smsSendAttempts", smsSendAttempts);
-  await restorePracticeRows("smsSendAttemptEvents", smsSendAttemptEvents);
+  // Provider callback evidence is exported for clinic audit/portability, but
+  // it is environment-bound global system state. Ordinary clinic restore must
+  // never recreate provider identities or operator history; same-install
+  // disaster recovery uses the owner-maintenance database path instead.
+  restored.smsDeliveryEvents = 0;
+  restored.smsDeliveryEventHistory = 0;
+  restored.smsSendAttempts = 0;
+  restored.smsSendAttemptEvents = 0;
 
   return {
     restored,

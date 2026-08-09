@@ -842,9 +842,7 @@ describe("committed Drizzle migrations", () => {
       "0056_lively_magdalene",
     );
 
-    const sql = readRepoFile(
-      "packages/db/drizzle/0056_lively_magdalene.sql",
-    );
+    const sql = readRepoFile("packages/db/drizzle/0056_lively_magdalene.sql");
     expect(sql).toContain('CREATE TABLE "practice_conversion_milestones"');
     expect(sql).toContain("practice_conversion_milestones_payment_shape_check");
     expect(sql).toContain(
@@ -857,9 +855,7 @@ describe("committed Drizzle migrations", () => {
       "practice_conversion_milestones_evidence_source_check",
     );
     expect(sql).toContain("stripe_events_conversion_evidence_shape_check");
-    expect(sql).toContain(
-      '"stripe_events"."amount_cents" is not null',
-    );
+    expect(sql).toContain('"stripe_events"."amount_cents" is not null');
     expect(sql).toContain('length(btrim("stripe_events"."object_id")) > 0');
     expect(sql).toContain("p.created_at");
     expect(sql).toContain("greatest(p.created_at, c.created_at, a.created_at)");
@@ -875,6 +871,37 @@ describe("committed Drizzle migrations", () => {
     );
     expect(sql).toContain(
       "REVOKE ALL ON practice_conversion_milestones, stripe_events",
+    );
+  });
+
+  it("creates the append-only SMS delivery ledger with valid self-FK ordering", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries?: Array<{ tag?: string }> };
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0058_mysterious_black_cat",
+    );
+
+    const sql = readRepoFile(
+      "packages/db/drizzle/0058_mysterious_black_cat.sql",
+    );
+    const referencedUniqueAt = sql.indexOf(
+      'CREATE UNIQUE INDEX "sms_delivery_event_history_event_id_uq"',
+    );
+    const reviewedHistoryFkAt = sql.indexOf(
+      'ADD CONSTRAINT "sms_delivery_event_history_reviewed_history_fk"',
+    );
+    expect(referencedUniqueAt).toBeGreaterThan(0);
+    expect(reviewedHistoryFkAt).toBeGreaterThan(referencedUniqueAt);
+    expect(sql).toContain('"reviewed_history_id" uuid');
+    expect(sql).toContain("sms_delivery_event_history_reviewed_history_uq");
+    expect(sql).toContain("sms_delivery_events_immutable");
+    expect(sql).toContain("sms_delivery_event_history_immutable");
+    expect(sql).toContain(
+      "ALTER TABLE sms_delivery_events ENABLE ROW LEVEL SECURITY",
+    );
+    expect(sql).toContain(
+      "GRANT SELECT, INSERT ON sms_delivery_events, sms_delivery_event_history TO openpims_app",
     );
   });
 });

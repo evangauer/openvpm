@@ -90,6 +90,11 @@ const mocks = vi.hoisted(() => {
     updateReturning,
     updateSet,
     updateWhere,
+    recordSmsDeliveryCallback: vi.fn(async () => ({
+      eventId: "00000000-0000-0000-0000-0000000000dd",
+      duplicate: false,
+      result: "projected",
+    })),
     verifyTelnyxSignature: vi.fn(() => true),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
       fn(db),
@@ -112,6 +117,10 @@ vi.mock("@/lib/tenant-db", () => ({
 
 vi.mock("@/lib/messaging/telnyx-signature", () => ({
   verifyTelnyxSignature: mocks.verifyTelnyxSignature,
+}));
+
+vi.mock("@/lib/messaging/sms-delivery-ledger", () => ({
+  recordSmsDeliveryCallback: mocks.recordSmsDeliveryCallback,
 }));
 
 const { POST } = await import("./route");
@@ -356,7 +365,7 @@ describe("Telnyx webhook", () => {
     expect(mocks.withTenant).not.toHaveBeenCalled();
   });
 
-  it("updates outbound communication status from delivery receipts", async () => {
+  it("persists authenticated delivery receipts before exact-ledger projection", async () => {
     process.env.TELNYX_PUBLIC_KEY = " test-public-key ";
     mocks.selectResults.push([
       {
@@ -366,6 +375,8 @@ describe("Telnyx webhook", () => {
     ]);
     const body = JSON.stringify({
       data: {
+        id: "evt-123",
+        occurred_at: "2026-08-09T12:00:00.000Z",
         event_type: "message.finalized",
         payload: {
           id: "msg-123",
@@ -392,25 +403,20 @@ describe("Telnyx webhook", () => {
         publicKeyB64: "test-public-key",
       }),
     );
-    expect(mocks.withTenant).toHaveBeenCalledWith(
-      mocks.db,
-      "00000000-0000-0000-0000-0000000000aa",
-      expect.any(Function),
-    );
-    expect(mocks.updateSet).toHaveBeenCalledWith({ status: "delivered" });
-    const condition = mocks.updateWhere.mock.calls[0]?.[0];
-    expect(sqlIncludesColumnParamPair(condition, "channel", "sms")).toBe(true);
-    expect(sqlIncludesColumnParamPair(condition, "direction", "outbound")).toBe(
-      true,
-    );
-    expect(sqlIncludesColumnParamPair(condition, "status", "pending")).toBe(
-      true,
-    );
-    expect(sqlIncludesColumnParamPair(condition, "status", "sent")).toBe(true);
-    expect(sqlIncludesColumnName(condition, "deleted_at")).toBe(true);
+    expect(mocks.recordSmsDeliveryCallback).toHaveBeenCalledWith({
+      provider: "telnyx",
+      providerEventId: "evt-123",
+      providerMessageId: "msg-123",
+      providerEventType: "message.finalized",
+      providerStatus: "delivered",
+      providerErrorCode: null,
+      classification: "delivered",
+      occurredAt: new Date("2026-08-09T12:00:00.000Z"),
+    });
+    expect(mocks.withTenant).not.toHaveBeenCalled();
   });
 
-  it("routes delivery receipts by messaging profile when no sender number is stored", async () => {
+  it("never uses sender-profile hints to attribute delivery receipts", async () => {
     process.env.TELNYX_PUBLIC_KEY = "test-public-key";
     mocks.selectResults.push([
       {
@@ -441,20 +447,18 @@ describe("Telnyx webhook", () => {
     );
 
     await expect(response.json()).resolves.toEqual({ ok: true });
-    expect(mocks.withTenant).toHaveBeenCalledWith(
-      mocks.db,
-      "00000000-0000-0000-0000-0000000000aa",
-      expect.any(Function),
+    expect(mocks.recordSmsDeliveryCallback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "telnyx",
+        providerMessageId: "msg-profile",
+        classification: "delivered",
+      }),
     );
-    expect(mocks.updateSet).toHaveBeenCalledWith({ status: "delivered" });
-    const senderCondition = mocks.selectWhere.mock.calls[0]?.[0];
-    expect(sqlIncludesColumnName(senderCondition, "messaging_profile_id")).toBe(
-      true,
-    );
-    expect(sqlIncludesValue(senderCondition, "profile-1")).toBe(true);
+    expect(mocks.withTenant).not.toHaveBeenCalled();
+    expect(mocks.selectWhere).not.toHaveBeenCalled();
   });
 
-  it("only applies sent delivery receipts to pending outbound communications", async () => {
+  it("classifies sent delivery receipts for the monotone ledger reducer", async () => {
     process.env.TELNYX_PUBLIC_KEY = "test-public-key";
     mocks.selectResults.push([
       {
@@ -485,12 +489,42 @@ describe("Telnyx webhook", () => {
     );
 
     await expect(response.json()).resolves.toEqual({ ok: true });
-    expect(mocks.updateSet).toHaveBeenCalledWith({ status: "sent" });
-    const condition = mocks.updateWhere.mock.calls[0]?.[0];
-    expect(sqlIncludesColumnParamPair(condition, "status", "pending")).toBe(
-      true,
+    expect(mocks.recordSmsDeliveryCallback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerMessageId: "msg-sent",
+        classification: "sent",
+      }),
     );
-    expect(sqlIncludesColumnParamPair(condition, "status", "sent")).toBe(false);
+  });
+
+  it("ledgers unrecognized delivery statuses for operator review", async () => {
+    process.env.TELNYX_PUBLIC_KEY = "test-public-key";
+    const body = JSON.stringify({
+      data: {
+        id: "evt-new-status",
+        event_type: "message.finalized",
+        payload: { id: "msg-new-status", status: "new_provider_state" },
+      },
+    });
+
+    const response = await POST(
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body,
+      }),
+    );
+
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    expect(mocks.recordSmsDeliveryCallback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerStatus: "new_provider_state",
+        classification: "unknown",
+      }),
+    );
   });
 
   it("logs inbound replies for active sender locations", async () => {
@@ -1185,7 +1219,7 @@ describe("Telnyx webhook", () => {
     expect(inserted.dedupeKey?.length).toBeLessThanOrEqual(160);
   });
 
-  it("updates generic failed delivery receipts without suppressing recipients", async () => {
+  it("ledgers generic failed delivery receipts without suppressing recipients", async () => {
     process.env.TELNYX_PUBLIC_KEY = "test-public-key";
     mocks.selectResults.push([
       {
@@ -1216,12 +1250,17 @@ describe("Telnyx webhook", () => {
     );
 
     await expect(response.json()).resolves.toEqual({ ok: true });
-    expect(mocks.updateSet).toHaveBeenCalledWith({ status: "failed" });
+    expect(mocks.recordSmsDeliveryCallback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerMessageId: "msg-failed",
+        classification: "failed",
+      }),
+    );
     expect(mocks.insertValues).not.toHaveBeenCalled();
     expect(mocks.insertConflict).not.toHaveBeenCalled();
   });
 
-  it("does not suppress recipients when a failed delivery receipt matches no outbound communication", async () => {
+  it("retains unmatched failed delivery receipts for reconciliation", async () => {
     process.env.TELNYX_PUBLIC_KEY = "test-public-key";
     mocks.selectResults.push([
       {
@@ -1253,8 +1292,12 @@ describe("Telnyx webhook", () => {
     );
 
     await expect(response.json()).resolves.toEqual({ ok: true });
-    expect(mocks.updateSet).toHaveBeenCalledWith({ status: "failed" });
-    expect(mocks.updateReturning).toHaveBeenCalled();
+    expect(mocks.recordSmsDeliveryCallback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerMessageId: "msg-unmatched-failed",
+        classification: "failed",
+      }),
+    );
     expect(mocks.insertValues).not.toHaveBeenCalled();
   });
 

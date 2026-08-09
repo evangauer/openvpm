@@ -125,6 +125,7 @@ const HOSTED_READ_ONLY_MUTATION_ALLOWLIST = new Set([
   "admin.reconcileMessagingRegistration",
   "admin.reconcileSmsSendAttempt",
   "admin.resendSmsSendAttempt",
+  "admin.reconcileSmsDeliveryEvent",
 ]);
 
 function practiceNotFound(): TRPCError {

@@ -1,9 +1,5 @@
 import { NextResponse } from "next/server";
 import Twilio from "twilio";
-import { and, eq, isNull, or } from "drizzle-orm";
-import { db } from "@openpims/db/client";
-import { communications } from "@openpims/db";
-import { withTenant } from "@/lib/tenant-db";
 import { appBaseUrl } from "@/lib/app-url";
 import { readRequestTextWithLimit } from "@/lib/request-json";
 import {
@@ -11,11 +7,13 @@ import {
   messagingWebhookContentLengthTooLarge,
 } from "@/lib/messaging-webhook-limits";
 import { normalizeE164 } from "@/lib/messaging";
-import {
-  findMessagingLocationForWebhook,
-  handleInboundSmsReply,
-} from "@/lib/messaging/inbound";
+import { handleInboundSmsReply } from "@/lib/messaging/inbound";
 import { envValue } from "@/lib/messaging/env";
+import { recordSmsDeliveryCallback } from "@/lib/messaging/sms-delivery-ledger";
+import {
+  twilioDeliveryClassification,
+  twilioProviderStatus,
+} from "@/lib/messaging/twilio-events";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,27 +23,6 @@ function payloadTooLargeResponse() {
     { error: "Messaging webhook payload too large" },
     { status: 413 },
   );
-}
-
-type DeliveryStatus = "sent" | "delivered" | "failed";
-
-function deliveryReceiptCurrentStatusCondition(deliveryStatus: DeliveryStatus) {
-  if (deliveryStatus === "sent") {
-    return eq(communications.status, "pending");
-  }
-
-  return or(
-    eq(communications.status, "pending"),
-    eq(communications.status, "sent"),
-  )!;
-}
-
-function twilioDeliveryStatus(status: string | null): DeliveryStatus | null {
-  const normalized = status?.toLowerCase();
-  if (normalized === "sent") return "sent";
-  if (normalized === "delivered") return "delivered";
-  if (normalized === "failed" || normalized === "undelivered") return "failed";
-  return null;
 }
 
 function nonBlankParam(value: string | undefined): string | null {
@@ -125,38 +102,26 @@ export async function POST(request: Request) {
     return NextResponse.json(result);
   }
 
-  const deliveryStatus = twilioDeliveryStatus(
-    params.MessageStatus ?? params.SmsStatus ?? null,
-  );
-  if (!deliveryStatus || !providerMessageId) {
+  const rawDeliveryStatus = params.MessageStatus ?? params.SmsStatus ?? null;
+  if (!rawDeliveryStatus) {
     return NextResponse.json({ ok: true });
   }
+  if (!providerMessageId) {
+    return NextResponse.json(
+      { error: "missing delivery message id" },
+      { status: 400 },
+    );
+  }
 
-  const loc = await findMessagingLocationForWebhook({
-    senderE164: fromPhone,
-    messagingProfileId,
+  await recordSmsDeliveryCallback({
     provider: "twilio",
+    providerEventId: nonBlankParam(params.EventSid),
+    providerMessageId,
+    providerEventType: "message.status",
+    providerStatus: twilioProviderStatus(rawDeliveryStatus),
+    providerErrorCode: nonBlankParam(params.ErrorCode),
+    classification: twilioDeliveryClassification(rawDeliveryStatus),
   });
-  if (!loc) {
-    return NextResponse.json({ ok: true });
-  }
-
-  await withTenant(db, loc.practiceId, (tx) =>
-    tx
-      .update(communications)
-      .set({ status: deliveryStatus })
-      .where(
-        and(
-          eq(communications.practiceId, loc.practiceId),
-          eq(communications.providerMessageId, providerMessageId),
-          eq(communications.channel, "sms"),
-          eq(communications.direction, "outbound"),
-          isNull(communications.deletedAt),
-          deliveryReceiptCurrentStatusCondition(deliveryStatus),
-        ),
-      )
-      .returning({ id: communications.id }),
-  );
 
   // A failed/undelivered DLR is not proof that the recipient is permanently
   // invalid: carrier congestion, filtering, and provider errors share these

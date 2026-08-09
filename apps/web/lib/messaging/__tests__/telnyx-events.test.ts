@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   telnyxDeliveryStatus,
   telnyxProviderMessageId,
+  telnyxProviderStatus,
 } from "../telnyx-events";
 
 describe("Telnyx event helpers", () => {
@@ -43,5 +44,26 @@ describe("Telnyx event helpers", () => {
       telnyxDeliveryStatus("message.delivery_failed", { id: "msg-1" })
     ).toBe("failed");
     expect(telnyxDeliveryStatus("message.received", { id: "msg-1" })).toBeNull();
+  });
+
+  it.each([
+    ["queued", "sent"],
+    ["sending", "sent"],
+    ["sent", "sent"],
+    ["delivery_unconfirmed", "sent"],
+    ["delivered", "delivered"],
+    ["delivery_success", "delivered"],
+    ["sending_failed", "failed"],
+    ["delivery_failed", "failed"],
+    ["failed", "failed"],
+    ["gw_timeout", "failed"],
+    ["dlr_timeout", "failed"],
+    ["undelivered", "failed"],
+    ["rejected", "failed"],
+    ["new_provider_state", null],
+  ] as const)("normalizes finalized status %s without overstating delivery", (raw, expected) => {
+    const payload = { status: raw };
+    expect(telnyxProviderStatus(payload)).toBe(raw);
+    expect(telnyxDeliveryStatus("message.finalized", payload)).toBe(expected);
   });
 });

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { and, asc, desc, eq, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, lte, ne, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { unstable_noStore as noStore } from "next/cache";
 import { TRPCError } from "@trpc/server";
@@ -14,6 +14,8 @@ import {
   messagingRegistrations,
   locationMessaging,
   communications,
+  smsDeliveryEventHistory,
+  smsDeliveryEvents,
   smsSendAttemptEvents,
   smsSendAttempts,
 } from "@openpims/db";
@@ -54,6 +56,7 @@ import {
 } from "@/lib/messaging/a2p-lifecycle";
 import { messagingProgramUrls } from "@/lib/messaging/public-program";
 import { reconcileSmsSendAttempt, resendSmsAttempt } from "@/lib/sms-dispatch";
+import { reconcileSmsDeliveryEvent } from "@/lib/messaging/sms-delivery-ledger";
 
 /**
  * Platform-operator only. Crosses tenant boundaries deliberately, so it is
@@ -70,6 +73,13 @@ const platformAdminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
 });
 
 const MESSAGING_SUBMISSION_LOCK_STALE_MS = 15 * 60 * 1000;
+
+function redactedOperatorIdentity(value: string | null): string | null {
+  if (!value) return null;
+  const [local, domain] = value.split("@");
+  if (!local || !domain) return "reviewer-recorded";
+  return `${local.slice(0, 1)}***@${domain}`;
+}
 
 function assertMessagingProviderMutationsEnabled() {
   const flag = process.env.MESSAGING_PROVISIONING_ENABLED?.trim().toLowerCase();
@@ -961,6 +971,457 @@ export const adminRouter = createRouter({
           );
       });
       return { ok: true, status: next, assigned: assignments.length };
+    }),
+
+  smsDeliveryEventQueue: platformAdminProcedure
+    .input(
+      z.object({
+        practiceId: z.string().uuid().optional(),
+        staleMinutes: z.number().int().min(15).max(10_080).default(60),
+        limit: z.number().int().min(1).max(100).default(50),
+      }),
+    )
+    .query(({ input }) => {
+      noStore();
+      return withSystem(db, async (tx) => {
+        const attributedPracticeId = sql<string | null>`(
+          select attributed.practice_id
+          from sms_delivery_event_history attributed
+          where attributed.delivery_event_id = ${smsDeliveryEvents.id}
+            and attributed.result = 'attributed'
+          limit 1
+        )`;
+        const attributedAttemptId = sql<string | null>`(
+          select attributed.attempt_id
+          from sms_delivery_event_history attributed
+          where attributed.delivery_event_id = ${smsDeliveryEvents.id}
+            and attributed.result = 'attributed'
+          limit 1
+        )`;
+        const hasAttribution = sql<boolean>`exists (
+          select 1
+          from sms_delivery_event_history attributed
+          where attributed.delivery_event_id = ${smsDeliveryEvents.id}
+            and attributed.result = 'attributed'
+        )`;
+        const hasPendingAmbiguity = sql<boolean>`exists (
+          select 1
+          from sms_delivery_event_history conflict
+          where conflict.delivery_event_id = ${smsDeliveryEvents.id}
+            and conflict.result = 'ambiguous'
+            and not exists (
+              select 1
+              from sms_delivery_event_history review
+              where review.reviewed_history_id = conflict.id
+            )
+        )`;
+        const hasPendingUnmatched = sql<boolean>`exists (
+          select 1
+          from sms_delivery_event_history unmatched
+          where unmatched.delivery_event_id = ${smsDeliveryEvents.id}
+            and unmatched.result = 'unmatched'
+            and not exists (
+              select 1
+              from sms_delivery_event_history any_conflict
+              where any_conflict.delivery_event_id = unmatched.delivery_event_id
+                and any_conflict.result = 'ambiguous'
+            )
+            and not exists (
+              select 1
+              from sms_delivery_event_history review
+              where review.reviewed_history_id = unmatched.id
+            )
+        )`;
+        const pendingHistoryId = sql<string | null>`(
+          select pending.id
+          from sms_delivery_event_history pending
+          where pending.delivery_event_id = ${smsDeliveryEvents.id}
+            and pending.result in ('ambiguous', 'unmatched')
+            and (
+              pending.result = 'ambiguous'
+              or not exists (
+                select 1
+                from sms_delivery_event_history any_conflict
+                where any_conflict.delivery_event_id = pending.delivery_event_id
+                  and any_conflict.result = 'ambiguous'
+              )
+            )
+            and not exists (
+              select 1
+              from sms_delivery_event_history review
+              where review.reviewed_history_id = pending.id
+            )
+          order by
+            case when pending.result = 'ambiguous' then 0 else 1 end,
+            pending.created_at desc,
+            pending.id desc
+          limit 1
+        )`;
+        const effectiveClassification = sql<string>`coalesce(
+          (
+            select reconciliation.classification::text
+            from sms_delivery_event_history reconciliation
+            where reconciliation.delivery_event_id = ${smsDeliveryEvents.id}
+              and reconciliation.result = 'reconciled'
+            order by reconciliation.created_at desc, reconciliation.id desc
+            limit 1
+          ),
+          ${smsDeliveryEvents.classification}::text
+        )`;
+        const latestProjectionResult = sql<string | null>`(
+          select projection.result::text
+          from sms_delivery_event_history projection
+          where projection.delivery_event_id = ${smsDeliveryEvents.id}
+            and projection.result in ('projected', 'projection_miss')
+          order by projection.created_at desc, projection.id desc
+          limit 1
+        )`;
+        const operatorReviewed = sql<boolean>`exists (
+          select 1
+          from sms_delivery_event_history review
+          where review.delivery_event_id = ${smsDeliveryEvents.id}
+            and review.result = 'operator_reviewed'
+        )`;
+        const latestReviewAt = sql<Date | null>`(
+          select review.created_at
+          from sms_delivery_event_history review
+          where review.delivery_event_id = ${smsDeliveryEvents.id}
+            and review.result = 'operator_reviewed'
+          order by review.created_at desc, review.id desc
+          limit 1
+        )`;
+        const latestReviewReason = sql<string | null>`(
+          select review.operator_reason_code::text
+          from sms_delivery_event_history review
+          where review.delivery_event_id = ${smsDeliveryEvents.id}
+            and review.result = 'operator_reviewed'
+          order by review.created_at desc, review.id desc
+          limit 1
+        )`;
+        const latestReviewerName = sql<string | null>`(
+          select review.actor_name
+          from sms_delivery_event_history review
+          where review.delivery_event_id = ${smsDeliveryEvents.id}
+            and review.result = 'operator_reviewed'
+          order by review.created_at desc, review.id desc
+          limit 1
+        )`;
+        const latestReviewerIdentity = sql<string | null>`(
+          select review.actor_identity
+          from sms_delivery_event_history review
+          where review.delivery_event_id = ${smsDeliveryEvents.id}
+            and review.result = 'operator_reviewed'
+          order by review.created_at desc, review.id desc
+          limit 1
+        )`;
+
+        const rows = await tx
+          .select({
+            eventId: smsDeliveryEvents.id,
+            receivedAt: smsDeliveryEvents.receivedAt,
+            provider: smsDeliveryEvents.provider,
+            providerEventType: smsDeliveryEvents.providerEventType,
+            providerStatus: smsDeliveryEvents.providerStatus,
+            providerErrorCode: smsDeliveryEvents.providerErrorCode,
+            classification: smsDeliveryEvents.classification,
+            practiceId: attributedPracticeId,
+            attemptId: attributedAttemptId,
+            pendingHistoryId,
+            operatorReviewed,
+            latestReviewAt,
+            latestReviewReason,
+            latestReviewerName,
+            latestReviewerIdentity,
+            queueReason: sql<
+              | "identity_conflict"
+              | "unmatched"
+              | "unknown_status"
+              | "projection_miss"
+            >`case
+                when ${hasPendingAmbiguity} then 'identity_conflict'
+                when not (${hasAttribution}) and ${hasPendingUnmatched} then 'unmatched'
+                when ${hasAttribution} and ${effectiveClassification} = 'unknown' then 'unknown_status'
+                else 'projection_miss'
+              end`,
+          })
+          .from(smsDeliveryEvents)
+          .where(
+            and(
+              input.practiceId
+                ? sql`${attributedPracticeId} = ${input.practiceId}`
+                : undefined,
+              sql`(
+                ${hasPendingAmbiguity}
+                or (not (${hasAttribution}) and ${hasPendingUnmatched})
+                or (${hasAttribution} and ${effectiveClassification} = 'unknown')
+                or ${latestProjectionResult} = 'projection_miss'
+              )`,
+            ),
+          )
+          .orderBy(asc(smsDeliveryEvents.receivedAt), asc(smsDeliveryEvents.id))
+          .limit(input.limit);
+
+        const receiptCutoff = new Date(
+          Date.now() - input.staleMinutes * 60 * 1000,
+        );
+        const acceptedProviderMessageId = sql<string | null>`coalesce(
+          (
+            select accepted_reconciliation.provider_message_id
+            from sms_send_attempt_events accepted_reconciliation
+            where accepted_reconciliation.practice_id = ${smsSendAttempts.practiceId}
+              and accepted_reconciliation.attempt_id = ${smsSendAttempts.id}
+              and accepted_reconciliation.kind = 'reconciliation'
+              and accepted_reconciliation.outcome = 'accepted'
+            order by accepted_reconciliation.created_at desc, accepted_reconciliation.id desc
+            limit 1
+          ),
+          (
+            select accepted_result.provider_message_id
+            from sms_send_attempt_events accepted_result
+            where accepted_result.practice_id = ${smsSendAttempts.practiceId}
+              and accepted_result.attempt_id = ${smsSendAttempts.id}
+              and accepted_result.kind = 'provider_result'
+              and accepted_result.outcome = 'accepted'
+            order by accepted_result.created_at desc, accepted_result.id desc
+            limit 1
+          )
+        )`;
+        const acceptedAt = sql<Date | null>`coalesce(
+          (
+            select accepted_reconciliation.created_at
+            from sms_send_attempt_events accepted_reconciliation
+            where accepted_reconciliation.practice_id = ${smsSendAttempts.practiceId}
+              and accepted_reconciliation.attempt_id = ${smsSendAttempts.id}
+              and accepted_reconciliation.kind = 'reconciliation'
+              and accepted_reconciliation.outcome = 'accepted'
+            order by accepted_reconciliation.created_at desc, accepted_reconciliation.id desc
+            limit 1
+          ),
+          (
+            select accepted_result.created_at
+            from sms_send_attempt_events accepted_result
+            where accepted_result.practice_id = ${smsSendAttempts.practiceId}
+              and accepted_result.attempt_id = ${smsSendAttempts.id}
+              and accepted_result.kind = 'provider_result'
+              and accepted_result.outcome = 'accepted'
+            order by accepted_result.created_at desc, accepted_result.id desc
+            limit 1
+          )
+        )`;
+        const missingReceiptRows = await tx
+          .select({
+            eventId: sql<null>`null::uuid`,
+            receivedAt: acceptedAt,
+            provider: smsSendAttempts.provider,
+            providerEventType: sql<string>`'message.status'`,
+            providerStatus: sql<null>`null::text`,
+            providerErrorCode: sql<null>`null::text`,
+            classification: sql<"unknown">`'unknown'`,
+            practiceId: smsSendAttempts.practiceId,
+            attemptId: smsSendAttempts.id,
+            pendingHistoryId: sql<null>`null::uuid`,
+            operatorReviewed: sql<false>`false`,
+            latestReviewAt: sql<null>`null::timestamptz`,
+            latestReviewReason: sql<null>`null::text`,
+            latestReviewerName: sql<null>`null::text`,
+            latestReviewerIdentity: sql<null>`null::text`,
+            queueReason: sql<"stale_without_final_delivery">`'stale_without_final_delivery'`,
+          })
+          .from(smsSendAttempts)
+          .where(
+            and(
+              ne(smsSendAttempts.provider, "console"),
+              sql`${acceptedProviderMessageId} is not null`,
+              sql`${acceptedAt} <= ${receiptCutoff}`,
+              input.practiceId
+                ? eq(smsSendAttempts.practiceId, input.practiceId)
+                : undefined,
+              sql`not exists (
+                select 1
+                from sms_delivery_events receipt
+                where receipt.provider = ${smsSendAttempts.provider}
+                  and receipt.provider_message_id = ${acceptedProviderMessageId}
+                  and (
+                    (
+                      receipt.provider = 'telnyx'
+                      and (
+                        receipt.provider_event_type = 'message.finalized'
+                        or receipt.classification in ('failed', 'delivered')
+                      )
+                    )
+                    or (
+                      receipt.provider = 'twilio'
+                      and receipt.classification in ('failed', 'delivered')
+                    )
+                  )
+              )`,
+            ),
+          )
+          .orderBy(asc(acceptedAt), asc(smsSendAttempts.id))
+          .limit(input.limit);
+
+        return {
+          cacheControl: "no-store" as const,
+          items: rows.map((row) => ({
+            ...row,
+            latestReviewerIdentity: redactedOperatorIdentity(
+              row.latestReviewerIdentity,
+            ),
+            // Provider ids remain inside the evidence/detail tool. The queue is
+            // safe to paste into an incident without leaking recipient/body data.
+            providerMessageHint: null,
+          })),
+          // Monitor-only: these attempts have durable acceptance evidence but
+          // no provider-final state after the age threshold. They have no
+          // delivery event to reconcile and cannot starve the actionable queue.
+          staleAcceptedWithoutFinalDelivery: missingReceiptRows.map((row) => ({
+            ...row,
+            latestReviewerIdentity: null,
+            providerMessageHint: null,
+          })),
+        };
+      });
+    }),
+
+  reconcileSmsDeliveryEvent: platformAdminProcedure
+    .input(
+      z.object({
+        deliveryEventId: z.string().uuid(),
+        reconciliationId: z.string().uuid(),
+        reviewedHistoryId: z.string().uuid().optional(),
+        classification: z.enum(["sent", "failed", "delivered"]).optional(),
+        reasonCode: z.enum([
+          "exact_attribution_retry",
+          "provider_portal_status_review",
+          "projection_repair",
+          "identity_conflict_review",
+          "unmatched_evidence_review",
+        ]),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      try {
+        return await reconcileSmsDeliveryEvent({
+          deliveryEventId: input.deliveryEventId,
+          reconciliationId: input.reconciliationId,
+          reviewedHistoryId: input.reviewedHistoryId,
+          classification: input.classification,
+          reasonCode: input.reasonCode,
+          actorIdentity: ctx.session!.user.email,
+          actorName: ctx.session!.user.name?.trim() || ctx.session!.user.email,
+        });
+      } catch (error) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            error instanceof Error
+              ? error.message
+              : "SMS delivery reconciliation failed.",
+        });
+      }
+    }),
+
+  smsDeliveryEventDetail: platformAdminProcedure
+    .input(
+      z.object({
+        deliveryEventId: z.string().uuid(),
+        historyLimit: z.number().int().min(1).max(200).default(100),
+      }),
+    )
+    .query(({ input }) => {
+      noStore();
+      return withSystem(db, async (tx) => {
+        const [event] = await tx
+          .select({
+            id: smsDeliveryEvents.id,
+            receivedAt: smsDeliveryEvents.receivedAt,
+            provider: smsDeliveryEvents.provider,
+            providerEventId: smsDeliveryEvents.providerEventId,
+            providerMessageId: smsDeliveryEvents.providerMessageId,
+            providerEventType: smsDeliveryEvents.providerEventType,
+            providerStatus: smsDeliveryEvents.providerStatus,
+            providerErrorCode: smsDeliveryEvents.providerErrorCode,
+            classification: smsDeliveryEvents.classification,
+            occurredAt: smsDeliveryEvents.occurredAt,
+            payloadFingerprintSha256:
+              smsDeliveryEvents.payloadFingerprintSha256,
+          })
+          .from(smsDeliveryEvents)
+          .where(eq(smsDeliveryEvents.id, input.deliveryEventId))
+          .limit(1);
+        if (!event) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "SMS delivery evidence not found.",
+          });
+        }
+        const candidateAttempts = event.providerMessageId
+          ? await tx
+              .select({
+                practiceId: smsSendAttempts.practiceId,
+                attemptId: smsSendAttempts.id,
+              })
+              .from(smsSendAttempts)
+              .innerJoin(
+                smsSendAttemptEvents,
+                and(
+                  eq(
+                    smsSendAttemptEvents.practiceId,
+                    smsSendAttempts.practiceId,
+                  ),
+                  eq(smsSendAttemptEvents.attemptId, smsSendAttempts.id),
+                  eq(smsSendAttemptEvents.outcome, "accepted"),
+                  eq(
+                    smsSendAttemptEvents.providerMessageId,
+                    event.providerMessageId,
+                  ),
+                ),
+              )
+              .where(eq(smsSendAttempts.provider, event.provider))
+              .groupBy(smsSendAttempts.practiceId, smsSendAttempts.id)
+              .orderBy(smsSendAttempts.practiceId, smsSendAttempts.id)
+              .limit(101)
+          : [];
+        const history = await tx
+          .select({
+            id: smsDeliveryEventHistory.id,
+            createdAt: smsDeliveryEventHistory.createdAt,
+            reviewedHistoryId: smsDeliveryEventHistory.reviewedHistoryId,
+            practiceId: smsDeliveryEventHistory.practiceId,
+            attemptId: smsDeliveryEventHistory.attemptId,
+            communicationId: smsDeliveryEventHistory.communicationId,
+            kind: smsDeliveryEventHistory.kind,
+            result: smsDeliveryEventHistory.result,
+            classification: smsDeliveryEventHistory.classification,
+            detail: smsDeliveryEventHistory.detail,
+            operatorReasonCode: smsDeliveryEventHistory.operatorReasonCode,
+            actorName: smsDeliveryEventHistory.actorName,
+            actorIdentity: smsDeliveryEventHistory.actorIdentity,
+            eventKey: smsDeliveryEventHistory.eventKey,
+          })
+          .from(smsDeliveryEventHistory)
+          .where(
+            eq(smsDeliveryEventHistory.deliveryEventId, input.deliveryEventId),
+          )
+          .orderBy(
+            desc(smsDeliveryEventHistory.createdAt),
+            desc(smsDeliveryEventHistory.id),
+          )
+          .limit(input.historyLimit + 1);
+        const truncated = history.length > input.historyLimit;
+        const visibleHistory = history.slice(0, input.historyLimit).reverse();
+        return {
+          cacheControl: "no-store" as const,
+          event,
+          candidateAttempts: candidateAttempts.slice(0, 100),
+          candidateAttemptsTruncated: candidateAttempts.length > 100,
+          history: visibleHistory.map((row) => ({
+            ...row,
+            actorIdentity: redactedOperatorIdentity(row.actorIdentity),
+          })),
+          truncated,
+        };
+      });
     }),
 
   smsSendAttemptQueue: platformAdminProcedure

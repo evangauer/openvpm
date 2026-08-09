@@ -1,28 +1,23 @@
 import { NextResponse } from "next/server";
-import { and, eq, isNull, or } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@openpims/db/client";
-import {
-  communications,
-  locationMessaging,
-  messagingRegistrations,
-} from "@openpims/db";
-import { withSystem, withTenant } from "@/lib/tenant-db";
+import { locationMessaging, messagingRegistrations } from "@openpims/db";
+import { withSystem } from "@/lib/tenant-db";
 import { readRequestTextWithLimit } from "@/lib/request-json";
 import {
   MESSAGING_WEBHOOK_BODY_MAX_BYTES,
   messagingWebhookContentLengthTooLarge,
 } from "@/lib/messaging-webhook-limits";
 import { normalizeE164 } from "@/lib/messaging";
-import {
-  findMessagingLocationForWebhook,
-  handleInboundSmsReply,
-} from "@/lib/messaging/inbound";
+import { handleInboundSmsReply } from "@/lib/messaging/inbound";
 import { envValue } from "@/lib/messaging/env";
 import {
   telnyxDeliveryStatus,
+  telnyxProviderErrorCode,
   telnyxProviderMessageId,
-  type CommunicationDeliveryStatus,
+  telnyxProviderStatus,
 } from "@/lib/messaging/telnyx-events";
+import { recordSmsDeliveryCallback } from "@/lib/messaging/sms-delivery-ledger";
 import { verifyTelnyxSignature } from "@/lib/messaging/telnyx-signature";
 import {
   mergeRegistrationStatus,
@@ -54,19 +49,6 @@ function payloadMessagingProfileId(payload: {
     payloadString(payload.messagingProfileId) ??
     payloadString(payload.messaging_profile?.id)
   );
-}
-
-function deliveryReceiptCurrentStatusCondition(
-  deliveryStatus: CommunicationDeliveryStatus,
-) {
-  if (deliveryStatus === "sent") {
-    return eq(communications.status, "pending");
-  }
-
-  return or(
-    eq(communications.status, "pending"),
-    eq(communications.status, "sent"),
-  )!;
 }
 
 const A2P_EVENT_TYPES = new Set([
@@ -282,6 +264,7 @@ export async function POST(request: Request) {
         type?: string;
         description?: string;
         reasons?: unknown;
+        errors?: Array<{ code?: unknown }>;
       }
     | undefined;
 
@@ -294,40 +277,25 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true });
   }
 
-  const deliveryStatus = telnyxDeliveryStatus(eventType, payload);
   const providerMessageId = telnyxProviderMessageId(payload);
   const messagingProfileId = payloadMessagingProfileId(payload);
-  if (deliveryStatus && providerMessageId) {
-    const fromPhone = normalizeE164(payload.from?.phone_number);
-    const loc = await findMessagingLocationForWebhook({
-      senderE164: fromPhone,
-      messagingProfileId,
+  if (eventType?.startsWith("message.") && eventType !== "message.received") {
+    const occurredAtRaw = payloadString(data?.occurred_at);
+    const occurredAt = occurredAtRaw ? new Date(occurredAtRaw) : null;
+    await recordSmsDeliveryCallback({
       provider: "telnyx",
+      providerEventId: payloadString(data?.id),
+      providerMessageId,
+      providerEventType: eventType,
+      providerStatus: telnyxProviderStatus(payload),
+      providerErrorCode: telnyxProviderErrorCode(payload),
+      classification: telnyxDeliveryStatus(eventType, payload) ?? "unknown",
+      occurredAt:
+        occurredAt && !Number.isNaN(occurredAt.getTime()) ? occurredAt : null,
     });
 
-    if (loc) {
-      await withTenant(db, loc.practiceId, (tx) =>
-        tx
-          .update(communications)
-          .set({ status: deliveryStatus })
-          .where(
-            and(
-              eq(communications.practiceId, loc.practiceId),
-              eq(communications.providerMessageId, providerMessageId),
-              eq(communications.channel, "sms"),
-              eq(communications.direction, "outbound"),
-              isNull(communications.deletedAt),
-              deliveryReceiptCurrentStatusCondition(deliveryStatus),
-            ),
-          )
-          .returning({ id: communications.id }),
-      );
-
-      // Generic Telnyx failure events do not distinguish a permanently invalid
-      // recipient from transient carrier/provider failures. Preserve delivery
-      // status, but leave automatic suppression to explicit STOP/opt-out events.
-    }
-
+    // Generic carrier failures are operational delivery evidence, not proof of
+    // a permanent invalid recipient. STOP remains the suppression authority.
     return NextResponse.json({ ok: true });
   }
 

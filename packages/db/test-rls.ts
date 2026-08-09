@@ -37,6 +37,8 @@ const aId = randomUUID();
 const bId = randomUUID();
 const aClient = randomUUID();
 const bClient = randomUUID();
+const aCommunication = randomUUID();
+const bCommunication = randomUUID();
 const aInvoice = randomUUID();
 const bInvoice = randomUUID();
 const aUser = randomUUID();
@@ -72,6 +74,12 @@ const aSmsSendAttemptEvent = randomUUID();
 const bSmsSendAttemptEvent = randomUUID();
 const aAppSmsSendAttempt = randomUUID();
 const aAppSmsSendAttemptEvent = randomUUID();
+const aSmsDeliveryEvent = randomUUID();
+const bSmsDeliveryEvent = randomUUID();
+const unmatchedSmsDeliveryEvent = randomUUID();
+const aSmsDeliveryHistory = randomUUID();
+const bSmsDeliveryHistory = randomUUID();
+const bSmsDeliveryConflictHistory = randomUUID();
 const funnelEventId = randomUUID();
 const conversionEvidenceKey = `practice:${aId}`;
 let failures = 0;
@@ -92,6 +100,11 @@ try {
   await owner`insert into practices (id, name) values (${aId}, 'RLS Test A'), (${bId}, 'RLS Test B')`;
   await owner`insert into clients (id, practice_id, first_name, last_name) values
     (${aClient}, ${aId}, 'Alice', 'A'), (${bClient}, ${bId}, 'Bob', 'B')`;
+  await owner`insert into communications
+    (id, practice_id, client_id, channel, direction, status)
+    values
+    (${aCommunication}, ${aId}, ${aClient}, 'sms', 'outbound', 'pending'),
+    (${bCommunication}, ${bId}, ${bClient}, 'sms', 'outbound', 'pending')`;
   await owner`insert into users (id, email, password_hash, name, role, practice_id) values
     (${aUser}, ${`rls-${aUser}@example.com`}, 'not-a-real-hash', 'RLS Admin A', 'admin', ${aId}),
     (${bUser}, ${`rls-${bUser}@example.com`}, 'not-a-real-hash', 'RLS Admin B', 'admin', ${bId})`;
@@ -111,6 +124,30 @@ try {
     values
     (${aSmsSendAttemptEvent}, ${aId}, ${aSmsSendAttempt}, 'provider_result', 'definite_failure', 'RLS test rejection', ${`rls:${aSmsSendAttemptEvent}`}),
     (${bSmsSendAttemptEvent}, ${bId}, ${bSmsSendAttempt}, 'provider_result', 'definite_failure', 'RLS test rejection', ${`rls:${bSmsSendAttemptEvent}`})`;
+  await owner`insert into sms_delivery_events
+    (id, provider, provider_message_id, provider_event_type, provider_status,
+     classification, event_key, payload_fingerprint_sha256)
+    values
+    (${aSmsDeliveryEvent}, 'telnyx', 'msg-rls-a', 'message.sent', 'sent',
+      'sent', ${`event:${aSmsDeliveryEvent}`}, ${"1".repeat(64)}),
+    (${bSmsDeliveryEvent}, 'telnyx', 'msg-rls-b', 'message.sent', 'sent',
+      'sent', ${`event:${bSmsDeliveryEvent}`}, ${"2".repeat(64)}),
+    (${unmatchedSmsDeliveryEvent}, 'twilio', null, 'message.status', 'mystery',
+      'unknown', ${`event:${unmatchedSmsDeliveryEvent}`}, ${"3".repeat(64)})`;
+  await owner`insert into sms_delivery_event_history
+    (id, delivery_event_id, practice_id, attempt_id, kind, result,
+     classification, event_key)
+    values
+    (${aSmsDeliveryHistory}, ${aSmsDeliveryEvent}, ${aId}, ${aSmsSendAttempt},
+      'automatic', 'attributed', 'sent', ${`rls:${aSmsDeliveryHistory}`}),
+    (${bSmsDeliveryHistory}, ${bSmsDeliveryEvent}, ${bId}, ${bSmsSendAttempt},
+      'automatic', 'attributed', 'sent', ${`rls:${bSmsDeliveryHistory}`})`;
+  await owner`insert into sms_delivery_event_history
+    (id, delivery_event_id, kind, result, classification, detail, event_key)
+    values
+    (${bSmsDeliveryConflictHistory}, ${bSmsDeliveryEvent}, 'automatic',
+      'ambiguous', 'sent', 'Redacted RLS identity conflict.',
+      ${`rls:${bSmsDeliveryConflictHistory}`})`;
   await owner`insert into patients (id, practice_id, client_id, name, species)
     select ${aPatient}, ${aId}, id, 'RLS Pet A', 'canine'
     from clients where practice_id = ${aId}`;
@@ -267,6 +304,176 @@ try {
     aSmsSendEvents.length === 1 &&
       aSmsSendEvents[0]!.id === aSmsSendAttemptEvent,
   );
+
+  const aDeliveryEvidence = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id from sms_delivery_events where id in (${aSmsDeliveryEvent}, ${bSmsDeliveryEvent}, ${unmatchedSmsDeliveryEvent})`;
+  });
+  check(
+    "tenant A sees only exactly attributed SMS delivery evidence",
+    aDeliveryEvidence.length === 1 &&
+      aDeliveryEvidence[0]!.id === aSmsDeliveryEvent,
+  );
+
+  const aDeliveryHistory = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id, practice_id from sms_delivery_event_history where id in (${aSmsDeliveryHistory}, ${bSmsDeliveryHistory})`;
+  });
+  check(
+    "tenant A sees only A's attributed SMS delivery history",
+    aDeliveryHistory.length === 1 &&
+      aDeliveryHistory[0]!.id === aSmsDeliveryHistory,
+  );
+
+  let tenantDeliveryEvidenceInsertBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into sms_delivery_events
+        (provider, provider_event_type, classification, event_key,
+         payload_fingerprint_sha256)
+        values ('telnyx', 'message.sent', 'sent', ${`forged:${randomUUID()}`}, ${"4".repeat(64)})`;
+    });
+  } catch {
+    tenantDeliveryEvidenceInsertBlocked = true;
+  }
+  check(
+    "tenant role cannot forge global SMS delivery evidence",
+    tenantDeliveryEvidenceInsertBlocked,
+  );
+
+  let tenantDeliveryHistoryInsertBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into sms_delivery_event_history
+        (delivery_event_id, practice_id, attempt_id, kind, result,
+         classification, event_key)
+        values (${aSmsDeliveryEvent}, ${aId}, ${aSmsSendAttempt}, 'automatic',
+          'projection_miss', 'sent', ${`forged:${randomUUID()}`})`;
+    });
+  } catch {
+    tenantDeliveryHistoryInsertBlocked = true;
+  }
+  check(
+    "tenant role cannot forge same-tenant SMS delivery history",
+    tenantDeliveryHistoryInsertBlocked,
+  );
+
+  let crossTenantDeliveryFkBlocked = false;
+  try {
+    await owner`insert into sms_delivery_event_history
+      (delivery_event_id, practice_id, attempt_id, kind, result,
+       classification, event_key)
+      values (${unmatchedSmsDeliveryEvent}, ${aId}, ${bSmsSendAttempt},
+        'automatic', 'projection_miss', 'unknown', ${`cross:${randomUUID()}`})`;
+  } catch {
+    crossTenantDeliveryFkBlocked = true;
+  }
+  check(
+    "delivery history composite FK rejects a cross-tenant attempt",
+    crossTenantDeliveryFkBlocked,
+  );
+
+  let crossTenantDeliveryCommunicationFkBlocked = false;
+  try {
+    await owner`insert into sms_delivery_event_history
+      (delivery_event_id, practice_id, attempt_id, communication_id, kind,
+       result, classification, event_key)
+      values (${unmatchedSmsDeliveryEvent}, ${aId}, ${aSmsSendAttempt},
+        ${bCommunication}, 'automatic', 'projection_miss', 'unknown',
+        ${`cross:${randomUUID()}`})`;
+  } catch {
+    crossTenantDeliveryCommunicationFkBlocked = true;
+  }
+  check(
+    "delivery history composite FK rejects a cross-tenant communication",
+    crossTenantDeliveryCommunicationFkBlocked,
+  );
+
+  let crossEventDeliveryReviewFkBlocked = false;
+  try {
+    await owner`insert into sms_delivery_event_history
+      (delivery_event_id, reviewed_history_id, kind, result, classification,
+       operator_reason_code, actor_type, actor_identity, actor_name, event_key)
+      values (${aSmsDeliveryEvent}, ${bSmsDeliveryConflictHistory},
+        'operator_reconciliation', 'operator_reviewed', 'sent',
+        'identity_conflict_review', 'platform_operator', 'rls-operator',
+        'RLS Operator', ${`cross-review:${randomUUID()}`})`;
+  } catch {
+    crossEventDeliveryReviewFkBlocked = true;
+  }
+  check(
+    "delivery history composite FK rejects reviewing another event's incident",
+    crossEventDeliveryReviewFkBlocked,
+  );
+
+  let deliveryReviewReasonShapeBlocked = false;
+  try {
+    await owner`insert into sms_delivery_event_history
+      (delivery_event_id, reviewed_history_id, kind, result, classification,
+       operator_reason_code, actor_type, actor_identity, actor_name, event_key)
+      values (${bSmsDeliveryEvent}, ${bSmsDeliveryConflictHistory},
+        'operator_reconciliation', 'operator_reviewed', 'sent',
+        'projection_repair', 'platform_operator', 'rls-operator',
+        'RLS Operator', ${`bad-review-reason:${randomUUID()}`})`;
+  } catch {
+    deliveryReviewReasonShapeBlocked = true;
+  }
+  check(
+    "delivery history rejects a projection reason on a quarantine review",
+    deliveryReviewReasonShapeBlocked,
+  );
+
+  let deliveryReconciliationReasonShapeBlocked = false;
+  try {
+    await owner`insert into sms_delivery_event_history
+      (delivery_event_id, practice_id, attempt_id, kind, result,
+       classification, operator_reason_code, actor_type, actor_identity,
+       actor_name, event_key)
+      values (${bSmsDeliveryEvent}, ${bId}, ${bSmsSendAttempt},
+        'operator_reconciliation', 'reconciled', 'sent',
+        'identity_conflict_review', 'platform_operator', 'rls-operator',
+        'RLS Operator', ${`bad-reconciliation-reason:${randomUUID()}`})`;
+  } catch {
+    deliveryReconciliationReasonShapeBlocked = true;
+  }
+  check(
+    "delivery history rejects a quarantine reason on a reconciliation",
+    deliveryReconciliationReasonShapeBlocked,
+  );
+
+  let automaticReconciliationShapeBlocked = false;
+  try {
+    await owner`insert into sms_delivery_event_history
+      (delivery_event_id, practice_id, attempt_id, kind, result,
+       classification, event_key)
+      values (${bSmsDeliveryEvent}, ${bId}, ${bSmsSendAttempt}, 'automatic',
+        'reconciled', 'sent', ${`automatic-reconciliation:${randomUUID()}`})`;
+  } catch {
+    automaticReconciliationShapeBlocked = true;
+  }
+  check(
+    "delivery history rejects an automatic operator reconciliation",
+    automaticReconciliationShapeBlocked,
+  );
+
+  let ownerDeliveryMutationBlockedWithoutMaintenance = false;
+  try {
+    await owner`update sms_delivery_events set provider_status = provider_status where id = ${aSmsDeliveryEvent}`;
+  } catch {
+    ownerDeliveryMutationBlockedWithoutMaintenance = true;
+  }
+  check(
+    "delivery evidence owner mutation requires the maintenance GUC",
+    ownerDeliveryMutationBlockedWithoutMaintenance,
+  );
+
+  await owner.begin(async (tx) => {
+    const maintenance = tx as unknown as typeof owner;
+    await maintenance`select set_config('app.ledger_maintenance', 'on', true)`;
+    await maintenance`update sms_delivery_events set provider_status = provider_status where id = ${aSmsDeliveryEvent}`;
+  });
 
   let smsSendAttemptUpdateBlocked = false;
   try {
@@ -742,6 +949,21 @@ try {
     "application role cannot delete prescription history even with bypass GUCs",
     bypassCannotDeletePrescriptionHistory,
   );
+
+  let bypassCannotDeleteDeliveryEvidence = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`select set_config('app.ledger_maintenance', 'on', true)`;
+      await tx`delete from sms_delivery_events where id = ${aSmsDeliveryEvent}`;
+    });
+  } catch {
+    bypassCannotDeleteDeliveryEvidence = true;
+  }
+  check(
+    "application role cannot mutate delivery evidence even with bypass GUCs",
+    bypassCannotDeleteDeliveryEvidence,
+  );
 } catch (err) {
   console.error("Unexpected error:", err);
   failures++;
@@ -750,9 +972,12 @@ try {
   await owner.begin(async (tx) => {
     const cleanup = tx as unknown as typeof owner;
     await cleanup`select set_config('app.ledger_maintenance', 'on', true)`;
+    await cleanup`delete from sms_delivery_event_history where id in (${aSmsDeliveryHistory}, ${bSmsDeliveryHistory}, ${bSmsDeliveryConflictHistory})`;
+    await cleanup`delete from sms_delivery_events where id in (${aSmsDeliveryEvent}, ${bSmsDeliveryEvent}, ${unmatchedSmsDeliveryEvent})`;
     await cleanup`delete from sms_send_attempt_events where id in (${aSmsSendAttemptEvent}, ${bSmsSendAttemptEvent}, ${aAppSmsSendAttemptEvent})`;
     await cleanup`delete from sms_send_attempts where id in (${aSmsSendAttempt}, ${bSmsSendAttempt}, ${aAppSmsSendAttempt})`;
     await cleanup`delete from sms_consent_events where id in (${aSmsConsentEvent}, ${bSmsConsentEvent})`;
+    await cleanup`delete from communications where id in (${aCommunication}, ${bCommunication})`;
     await cleanup`delete from patient_merge_events where id in (${aPatientMergeEvent}, ${bPatientMergeEvent})`;
     await cleanup`delete from dispense_charge_queue where id in (${aDispenseCharge}, ${bDispenseCharge})`;
     await cleanup`delete from invoice_adjustments where invoice_id in (${aInvoice}, ${bInvoice})`;
