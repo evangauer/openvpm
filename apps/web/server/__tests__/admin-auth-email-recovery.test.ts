@@ -59,6 +59,12 @@ describe("auth verification email recovery queue", () => {
       "original.webhook_id = quarantine.original_webhook_id",
     );
     expect(queue).toContain("webhook_payload_conflict");
+    expect(queue).toContain("provider_identity_conflicts as");
+    expect(queue).toContain(
+      "from auth_email_provider_identity_conflicts conflict",
+    );
+    expect(queue).toContain("attempt.id = conflict.attempt_id");
+    expect(queue).toContain("provider_identity_conflict");
   });
 
   it("keeps the operator result bounded, no-store, and recipient-free", () => {

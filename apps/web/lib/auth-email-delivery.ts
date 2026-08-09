@@ -5,6 +5,7 @@ import type { Database } from "@openpims/db/client";
 import {
   authEmailAttempts,
   authEmailDeliveryEvents,
+  authEmailProviderIdentityConflicts,
   authEmailWebhookConflicts,
 } from "@openpims/db";
 import { alertOps } from "@/lib/alerts";
@@ -201,6 +202,44 @@ async function hasSignedTaggedAcceptance(input: {
   }
 }
 
+async function persistProviderIdentityConflict(input: {
+  database: Database;
+  attemptId: string;
+  source: AuthEmailSource;
+  durableProviderMessageId: string;
+  conflictingProviderMessageId: string;
+}): Promise<"inserted" | "duplicate" | "failed"> {
+  try {
+    const [inserted] = await withSystem(input.database, (tx) =>
+      tx
+        .insert(authEmailProviderIdentityConflicts)
+        .values({
+          attemptId: input.attemptId,
+          provider: "resend",
+          source: input.source,
+          durableProviderMessageId: input.durableProviderMessageId,
+          conflictingProviderMessageId: input.conflictingProviderMessageId,
+        })
+        .onConflictDoNothing({
+          target: [
+            authEmailProviderIdentityConflicts.attemptId,
+            authEmailProviderIdentityConflicts.provider,
+            authEmailProviderIdentityConflicts.durableProviderMessageId,
+            authEmailProviderIdentityConflicts.conflictingProviderMessageId,
+          ],
+        })
+        .returning({ id: authEmailProviderIdentityConflicts.id }),
+    );
+    return inserted ? "inserted" : "duplicate";
+  } catch {
+    await safeAuthEmailAlert(
+      "Auth email provider identity conflict persistence failed",
+      "Conflicting verification provider identities could not be written to the durable ledger. Review auth email operations.",
+    );
+    return "failed";
+  }
+}
+
 /**
  * Reserve, dispatch, and record one verification email. Callers must invoke
  * this from a tRPC post-commit effect with the root pool. Reservation and
@@ -301,33 +340,62 @@ export async function sendTrackedVerificationEmail(input: {
     }));
   consistentState = consistentState || signedAcceptedState;
 
-  let identityConflict = providerIdentityConflict;
+  const resolutionIdentityConflict = Boolean(
+    recordedOutcome === "accepted" &&
+    provider === "resend" &&
+    providerMessageId &&
+    resolution.state?.outcome === "accepted" &&
+    resolution.state.providerMessageId &&
+    resolution.state.providerMessageId !== providerMessageId,
+  );
+  const conflictPersistence = resolutionIdentityConflict
+    ? await persistProviderIdentityConflict({
+        database: input.db,
+        attemptId,
+        source: input.source,
+        durableProviderMessageId: resolution.state?.providerMessageId ?? "",
+        conflictingProviderMessageId: providerMessageId ?? "",
+      })
+    : null;
+
+  let deliveryIdentityConflict = false;
   if (
+    !resolutionIdentityConflict &&
     recordedOutcome === "accepted" &&
     provider === "resend" &&
     providerMessageId
   ) {
-    identityConflict =
-      identityConflict ||
-      (resolution.state?.outcome === "accepted" &&
-        resolution.state.providerMessageId !== providerMessageId) ||
-      (await hasDeliveryIdentityMismatch({
-        database: input.db,
-        attemptId,
-        providerMessageId,
-      }));
+    deliveryIdentityConflict = await hasDeliveryIdentityMismatch({
+      database: input.db,
+      attemptId,
+      providerMessageId,
+    });
   }
+
+  const identityConflict =
+    providerIdentityConflict ||
+    resolutionIdentityConflict ||
+    deliveryIdentityConflict;
+  const shouldAlertIdentityConflict =
+    providerIdentityConflict ||
+    deliveryIdentityConflict ||
+    conflictPersistence === "inserted";
 
   const evidencePersisted = consistentState && !identityConflict;
   if (!evidencePersisted) {
-    await safeAuthEmailAlert(
-      identityConflict
-        ? "Auth email provider identity conflict"
-        : "Auth email outcome persistence failed",
-      identityConflict
-        ? "Provider acceptance disagrees with durable signed verification evidence. Review the recovery queue."
-        : "A verification provider outcome could not be confirmed in the durable ledger. Review the recovery queue.",
-    );
+    if (identityConflict) {
+      if (shouldAlertIdentityConflict) {
+        await safeAuthEmailAlert(
+          "Auth email provider identity conflict",
+          "Provider acceptance disagrees with durable signed verification evidence. Review the recovery queue.",
+        );
+      }
+    } else {
+      await safeAuthEmailAlert(
+        "Auth email outcome persistence failed",
+        "A verification provider outcome could not be confirmed in the durable ledger. Review the recovery queue.",
+      );
+    }
   }
 
   if (signedAcceptedState && resolution.state?.providerMessageId) {

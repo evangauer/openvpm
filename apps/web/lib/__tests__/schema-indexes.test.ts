@@ -7,6 +7,7 @@ import {
   appointments,
   authEmailAttempts,
   authEmailDeliveryEvents,
+  authEmailProviderIdentityConflicts,
   authEmailWebhookConflicts,
   authTokens,
   cases,
@@ -369,6 +370,14 @@ describe("hot table indexes", () => {
       [
         "auth_email_webhook_conflicts_identity_uq",
         "auth_email_webhook_conflicts_recovery_idx",
+      ],
+    ],
+    [
+      "auth_email_provider_identity_conflicts",
+      authEmailProviderIdentityConflicts,
+      [
+        "auth_email_provider_identity_conflicts_identity_uq",
+        "auth_email_provider_identity_conflicts_recovery_idx",
       ],
     ],
     ["sessions", sessions, ["sessions_expires_idx"]],

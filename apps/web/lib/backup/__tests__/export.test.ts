@@ -284,6 +284,7 @@ describe("summarizePracticeExport", () => {
     expect(sections).not.toContain("authEmailAttempts");
     expect(sections).not.toContain("authEmailDeliveryEvents");
     expect(sections).not.toContain("authEmailWebhookConflicts");
+    expect(sections).not.toContain("authEmailProviderIdentityConflicts");
     expect(PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.usageRecords).toContain("billing");
     expect(
       PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.practiceConversionMilestones,
@@ -306,6 +307,9 @@ describe("summarizePracticeExport", () => {
     expect(
       PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.authEmailWebhookConflicts,
     ).toContain("conflict evidence");
+    expect(
+      PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.authEmailProviderIdentityConflicts,
+    ).toContain("provider identity conflict evidence");
   });
 
   it("counts present sections and reports missing sections", () => {

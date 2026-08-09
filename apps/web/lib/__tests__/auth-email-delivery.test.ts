@@ -372,6 +372,93 @@ describe("tracked verification email dispatch", () => {
       expect.any(String),
     );
   });
+
+  it("durably records callback id A versus accepted API id B", async () => {
+    const { db, insertedValues } = databaseDouble({
+      updateResults: [[]],
+      selectResults: [[acceptedState("resend", "callback-id-a")]],
+    });
+    mocks.sendVerificationEmailWithProviderEvidence.mockResolvedValue({
+      success: true,
+      provider: "resend",
+      id: "api-id-b",
+      outcome: "accepted",
+    });
+
+    await expect(
+      sendTrackedVerificationEmail(trackedInput(db)),
+    ).resolves.toMatchObject({
+      success: true,
+      outcome: "accepted",
+      identityConflict: true,
+      evidencePersisted: false,
+      providerMessageId: "api-id-b",
+    });
+    expect(insertedValues[1]).toMatchObject({
+      provider: "resend",
+      source: "registration",
+      durableProviderMessageId: "callback-id-a",
+      conflictingProviderMessageId: "api-id-b",
+    });
+    expect(JSON.stringify(insertedValues[1])).not.toMatch(
+      /owner@example|token|subject|body/i,
+    );
+    expect(mocks.alertOps).toHaveBeenCalledTimes(1);
+    expect(mocks.alertOps).toHaveBeenCalledWith(
+      "Auth email provider identity conflict",
+      expect.any(String),
+    );
+  });
+
+  it("keeps accepted UX and emits a separate alert if identity conflict persistence fails", async () => {
+    const { db } = databaseDouble({
+      updateResults: [[]],
+      selectResults: [[acceptedState("resend", "callback-id-a")]],
+      insertErrorAtCall: 2,
+    });
+    mocks.sendVerificationEmailWithProviderEvidence.mockResolvedValue({
+      success: true,
+      provider: "resend",
+      id: "api-id-b",
+      outcome: "accepted",
+    });
+
+    await expect(
+      sendTrackedVerificationEmail(trackedInput(db)),
+    ).resolves.toMatchObject({
+      success: true,
+      outcome: "accepted",
+      identityConflict: true,
+      evidencePersisted: false,
+    });
+    expect(mocks.alertOps).toHaveBeenCalledTimes(1);
+    expect(mocks.alertOps).toHaveBeenCalledWith(
+      "Auth email provider identity conflict persistence failed",
+      expect.not.stringMatching(/callback-id-a|api-id-b|owner|token/i),
+    );
+    expect(
+      mocks.sendVerificationEmailWithProviderEvidence,
+    ).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not alert again when the same provider identity conflict already exists", async () => {
+    const { db } = databaseDouble({
+      updateResults: [[]],
+      selectResults: [[acceptedState("resend", "callback-id-a")]],
+      deliveryInsertResults: [[]],
+    });
+    mocks.sendVerificationEmailWithProviderEvidence.mockResolvedValue({
+      success: true,
+      provider: "resend",
+      id: "api-id-b",
+      outcome: "accepted",
+    });
+
+    await expect(
+      sendTrackedVerificationEmail(trackedInput(db)),
+    ).resolves.toMatchObject({ success: true, identityConflict: true });
+    expect(mocks.alertOps).not.toHaveBeenCalled();
+  });
 });
 
 describe("auth verification delivery evidence", () => {

@@ -797,6 +797,19 @@ export const adminRouter = createRouter({
             left join practices practice
               on practice.id = attempt.practice_id
              and practice.deleted_at is null
+          ), provider_identity_conflicts as (
+            select
+              conflict.occurred_at as "occurredAt",
+              practice.name as "practiceName",
+              conflict.source::text as source,
+              attempt.outcome::text as outcome,
+              'provider_identity_conflict'::text as reason
+            from auth_email_provider_identity_conflicts conflict
+            join auth_email_attempts attempt
+              on attempt.id = conflict.attempt_id
+            join practices practice
+              on practice.id = attempt.practice_id
+             and practice.deleted_at is null
           ), queue as (
             select * from attempt_issues
             union all
@@ -807,6 +820,8 @@ export const adminRouter = createRouter({
             select * from identity_mismatches
             union all
             select * from webhook_conflicts
+            union all
+            select * from provider_identity_conflicts
           )
           select
             "occurredAt",
@@ -844,7 +859,8 @@ export const adminRouter = createRouter({
               | "delivery_complained"
               | "delivery_identity_conflict"
               | "delivery_attribution_unmatched"
-              | "webhook_payload_conflict";
+              | "webhook_payload_conflict"
+              | "provider_identity_conflict";
             ageMinutes: number;
           }>(result).map((row) => ({
             ...row,

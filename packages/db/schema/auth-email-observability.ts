@@ -116,6 +116,54 @@ export const authEmailAttempts = pgTable(
   }),
 );
 
+/** Append-only evidence that the API and signed callback observed two ids. */
+export const authEmailProviderIdentityConflicts = pgTable(
+  "auth_email_provider_identity_conflicts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    attemptId: uuid("attempt_id")
+      .notNull()
+      .references(() => authEmailAttempts.id),
+    provider: varchar("provider", { length: 16 }).notNull().default("resend"),
+    source: authEmailSourceEnum("source").notNull(),
+    durableProviderMessageId: varchar("durable_provider_message_id", {
+      length: 128,
+    }).notNull(),
+    conflictingProviderMessageId: varchar("conflicting_provider_message_id", {
+      length: 128,
+    }).notNull(),
+  },
+  (table) => ({
+    identityUq: uniqueIndex(
+      "auth_email_provider_identity_conflicts_identity_uq",
+    ).on(
+      table.attemptId,
+      table.provider,
+      table.durableProviderMessageId,
+      table.conflictingProviderMessageId,
+    ),
+    recoveryIdx: index(
+      "auth_email_provider_identity_conflicts_recovery_idx",
+    ).on(table.occurredAt, table.id),
+    providerCheck: check(
+      "auth_email_provider_identity_conflicts_provider_check",
+      sql`${table.provider} = 'resend'`,
+    ),
+    distinctIdentityCheck: check(
+      "auth_email_provider_identity_conflicts_distinct_id_check",
+      sql`${table.durableProviderMessageId} <> ${table.conflictingProviderMessageId}`,
+    ),
+    identityShapeCheck: check(
+      "auth_email_provider_identity_conflicts_id_shape_check",
+      sql`length(btrim(${table.durableProviderMessageId})) > 0
+        and length(btrim(${table.conflictingProviderMessageId})) > 0`,
+    ),
+  }),
+);
+
 /**
  * Immutable, redacted evidence from a signed Resend webhook. Events may arrive
  * before the send result is persisted, so attribution can be absent while the

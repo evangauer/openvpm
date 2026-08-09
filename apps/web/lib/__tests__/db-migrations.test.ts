@@ -995,6 +995,9 @@ describe("committed Drizzle migrations", () => {
     expect(sql).toContain('CREATE TABLE "auth_email_attempts"');
     expect(sql).toContain('CREATE TABLE "auth_email_delivery_events"');
     expect(sql).toContain('CREATE TABLE "auth_email_webhook_conflicts"');
+    expect(sql).toContain(
+      'CREATE TABLE "auth_email_provider_identity_conflicts"',
+    );
     expect(sql).toContain("auth_email_attempts_outcome_shape_check");
     expect(sql).toContain("auth_email_attempts_state_guard");
     expect(sql).toContain("guard_auth_email_attempt_mutation");
@@ -1016,10 +1019,17 @@ describe("committed Drizzle migrations", () => {
     expect(sql).toContain("'^[0-9a-f]{64}$'");
     expect(sql).toContain("auth_email_delivery_events_immutable");
     expect(sql).toContain("auth_email_webhook_conflicts_identity_uq");
-    expect(
-      sql.indexOf("auth_email_delivery_events_webhook_uq"),
-    ).toBeLessThan(sql.indexOf("auth_email_webhook_conflicts_webhook_fk"));
+    expect(sql.indexOf("auth_email_delivery_events_webhook_uq")).toBeLessThan(
+      sql.indexOf("auth_email_webhook_conflicts_webhook_fk"),
+    );
     expect(sql).toContain("auth_email_webhook_conflicts_immutable");
+    expect(sql).toContain("auth_email_provider_identity_conflicts_immutable");
+    expect(sql).toContain(
+      "auth_email_provider_identity_conflicts_distinct_id_check",
+    );
+    expect(sql).toContain(
+      "auth_email_provider_identity_conflicts_id_shape_check",
+    );
     expect(sql).toContain(
       "auth_email_webhook_conflicts_raw_body_fingerprint_check",
     );
@@ -1033,10 +1043,13 @@ describe("committed Drizzle migrations", () => {
       "ALTER TABLE auth_email_webhook_conflicts ENABLE ROW LEVEL SECURITY",
     );
     expect(sql).toContain(
+      "ALTER TABLE auth_email_provider_identity_conflicts ENABLE ROW LEVEL SECURITY",
+    );
+    expect(sql).toContain(
       "GRANT SELECT, INSERT, UPDATE ON auth_email_attempts TO openpims_app",
     );
     expect(sql).toContain(
-      "GRANT SELECT, INSERT ON auth_email_delivery_events, auth_email_webhook_conflicts TO openpims_app",
+      "GRANT SELECT, INSERT ON auth_email_delivery_events, auth_email_webhook_conflicts, auth_email_provider_identity_conflicts TO openpims_app",
     );
     expect(sql).not.toMatch(
       /recipient|verify_url|auth_token|subject|html|\bto\b varchar/i,
@@ -1045,6 +1058,7 @@ describe("committed Drizzle migrations", () => {
     const reset = readRepoFile("packages/db/reset.ts");
     expect(reset).toContain('"auth_email_delivery_events"');
     expect(reset).toContain('"auth_email_webhook_conflicts"');
+    expect(reset).toContain('"auth_email_provider_identity_conflicts"');
     expect(reset).toContain('"auth_email_attempts"');
     expect(reset.indexOf('"auth_email_webhook_conflicts"')).toBeLessThan(
       reset.indexOf('"auth_email_delivery_events"'),
@@ -1062,7 +1076,10 @@ describe("committed Drizzle migrations", () => {
       "CREATE POLICY system_only ON auth_email_webhook_conflicts",
     );
     expect(rls).toContain(
-      "REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_webhook_conflicts FROM openpims_app",
+      "CREATE POLICY system_only ON auth_email_provider_identity_conflicts",
+    );
+    expect(rls).toContain(
+      "REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_webhook_conflicts, auth_email_provider_identity_conflicts FROM openpims_app",
     );
   });
 });

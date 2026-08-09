@@ -172,9 +172,15 @@ CREATE POLICY system_only ON auth_email_webhook_conflicts
   USING (app_rls_bypass())
   WITH CHECK (app_rls_bypass());
 
-REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_webhook_conflicts FROM openpims_app;
+ALTER TABLE auth_email_provider_identity_conflicts ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS system_only ON auth_email_provider_identity_conflicts;
+CREATE POLICY system_only ON auth_email_provider_identity_conflicts
+  USING (app_rls_bypass())
+  WITH CHECK (app_rls_bypass());
+
+REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_webhook_conflicts, auth_email_provider_identity_conflicts FROM openpims_app;
 GRANT SELECT, INSERT, UPDATE ON auth_email_attempts TO openpims_app;
-GRANT SELECT, INSERT ON auth_email_delivery_events, auth_email_webhook_conflicts TO openpims_app;
+GRANT SELECT, INSERT ON auth_email_delivery_events, auth_email_webhook_conflicts, auth_email_provider_identity_conflicts TO openpims_app;
 
 -- Dispense charge snapshots are durable revenue work. The app may advance or
 -- reopen their attributed workflow status, while database triggers prevent
@@ -275,7 +281,7 @@ BEGIN
   FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format(
-        'REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_webhook_conflicts, auth_tokens, clinical_record_corrections, demo_accesses, dispense_charge_queue, funnel_events, lab_result_events, lab_result_replacements, patient_merge_events, practice_conversion_milestones, prescription_events, sessions, sms_delivery_event_history, sms_delivery_events, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
+        'REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_webhook_conflicts, auth_email_provider_identity_conflicts, auth_tokens, clinical_record_corrections, demo_accesses, dispense_charge_queue, funnel_events, lab_result_events, lab_result_replacements, patient_merge_events, practice_conversion_milestones, prescription_events, sessions, sms_delivery_event_history, sms_delivery_events, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
       );
     END IF;
   END LOOP;

@@ -12790,6 +12790,143 @@
       },
       "isRLSEnabled": false
     },
+    "public.auth_email_provider_identity_conflicts": {
+      "name": "auth_email_provider_identity_conflicts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "occurred_at": {
+          "name": "occurred_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "attempt_id": {
+          "name": "attempt_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider": {
+          "name": "provider",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'resend'"
+        },
+        "source": {
+          "name": "source",
+          "type": "auth_email_source",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "durable_provider_message_id": {
+          "name": "durable_provider_message_id",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "conflicting_provider_message_id": {
+          "name": "conflicting_provider_message_id",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "auth_email_provider_identity_conflicts_identity_uq": {
+          "name": "auth_email_provider_identity_conflicts_identity_uq",
+          "columns": [
+            {
+              "expression": "attempt_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "durable_provider_message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "conflicting_provider_message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "auth_email_provider_identity_conflicts_recovery_idx": {
+          "name": "auth_email_provider_identity_conflicts_recovery_idx",
+          "columns": [
+            {
+              "expression": "occurred_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "auth_email_provider_identity_conflicts_attempt_fk": {
+          "name": "auth_email_provider_identity_conflicts_attempt_fk",
+          "tableFrom": "auth_email_provider_identity_conflicts",
+          "tableTo": "auth_email_attempts",
+          "columnsFrom": ["attempt_id"],
+          "columnsTo": ["id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "auth_email_provider_identity_conflicts_provider_check": {
+          "name": "auth_email_provider_identity_conflicts_provider_check",
+          "value": "\"auth_email_provider_identity_conflicts\".\"provider\" = 'resend'"
+        },
+        "auth_email_provider_identity_conflicts_distinct_id_check": {
+          "name": "auth_email_provider_identity_conflicts_distinct_id_check",
+          "value": "\"auth_email_provider_identity_conflicts\".\"durable_provider_message_id\" <> \"auth_email_provider_identity_conflicts\".\"conflicting_provider_message_id\""
+        },
+        "auth_email_provider_identity_conflicts_id_shape_check": {
+          "name": "auth_email_provider_identity_conflicts_id_shape_check",
+          "value": "length(btrim(\"auth_email_provider_identity_conflicts\".\"durable_provider_message_id\")) > 0\n        and length(btrim(\"auth_email_provider_identity_conflicts\".\"conflicting_provider_message_id\")) > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.auth_email_delivery_events": {
       "name": "auth_email_delivery_events",
       "schema": "",

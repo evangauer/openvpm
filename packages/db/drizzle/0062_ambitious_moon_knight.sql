@@ -33,6 +33,19 @@ CREATE TABLE "auth_email_attempts" (
       ))
 );
 --> statement-breakpoint
+CREATE TABLE "auth_email_provider_identity_conflicts" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"occurred_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"attempt_id" uuid NOT NULL,
+	"provider" varchar(16) DEFAULT 'resend' NOT NULL,
+	"source" "auth_email_source" NOT NULL,
+	"durable_provider_message_id" varchar(128) NOT NULL,
+	"conflicting_provider_message_id" varchar(128) NOT NULL,
+	CONSTRAINT "auth_email_provider_identity_conflicts_provider_check" CHECK ("auth_email_provider_identity_conflicts"."provider" = 'resend'),
+	CONSTRAINT "auth_email_provider_identity_conflicts_distinct_id_check" CHECK ("auth_email_provider_identity_conflicts"."durable_provider_message_id" <> "auth_email_provider_identity_conflicts"."conflicting_provider_message_id"),
+	CONSTRAINT "auth_email_provider_identity_conflicts_id_shape_check" CHECK (length(btrim("auth_email_provider_identity_conflicts"."durable_provider_message_id")) > 0 and length(btrim("auth_email_provider_identity_conflicts"."conflicting_provider_message_id")) > 0)
+);
+--> statement-breakpoint
 CREATE TABLE "auth_email_delivery_events" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"received_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -72,11 +85,14 @@ CREATE TABLE "auth_email_webhook_conflicts" (
 --> statement-breakpoint
 ALTER TABLE "auth_email_attempts" ADD CONSTRAINT "auth_email_attempts_practice_id_practices_id_fk" FOREIGN KEY ("practice_id") REFERENCES "public"."practices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "auth_email_attempts" ADD CONSTRAINT "auth_email_attempts_user_tenant_fk" FOREIGN KEY ("practice_id","user_id") REFERENCES "public"."users"("practice_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "auth_email_provider_identity_conflicts" ADD CONSTRAINT "auth_email_provider_identity_conflicts_attempt_fk" FOREIGN KEY ("attempt_id") REFERENCES "public"."auth_email_attempts"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "auth_email_delivery_events" ADD CONSTRAINT "auth_email_delivery_events_attempt_id_auth_email_attempts_id_fk" FOREIGN KEY ("attempt_id") REFERENCES "public"."auth_email_attempts"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "auth_email_attempts_idempotency_uq" ON "auth_email_attempts" USING btree ("idempotency_key");--> statement-breakpoint
 CREATE UNIQUE INDEX "auth_email_attempts_provider_message_uq" ON "auth_email_attempts" USING btree ("provider","provider_message_id") WHERE "auth_email_attempts"."provider_message_id" is not null;--> statement-breakpoint
 CREATE INDEX "auth_email_attempts_recovery_idx" ON "auth_email_attempts" USING btree ("outcome","created_at","id");--> statement-breakpoint
 CREATE INDEX "auth_email_attempts_practice_created_idx" ON "auth_email_attempts" USING btree ("practice_id","created_at","id");--> statement-breakpoint
+CREATE UNIQUE INDEX "auth_email_provider_identity_conflicts_identity_uq" ON "auth_email_provider_identity_conflicts" USING btree ("attempt_id","provider","durable_provider_message_id","conflicting_provider_message_id");--> statement-breakpoint
+CREATE INDEX "auth_email_provider_identity_conflicts_recovery_idx" ON "auth_email_provider_identity_conflicts" USING btree ("occurred_at","id");--> statement-breakpoint
 CREATE UNIQUE INDEX "auth_email_delivery_events_webhook_uq" ON "auth_email_delivery_events" USING btree ("webhook_id");--> statement-breakpoint
 ALTER TABLE "auth_email_webhook_conflicts" ADD CONSTRAINT "auth_email_webhook_conflicts_webhook_fk" FOREIGN KEY ("original_webhook_id") REFERENCES "public"."auth_email_delivery_events"("webhook_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "auth_email_delivery_events_attempt_timeline_idx" ON "auth_email_delivery_events" USING btree ("attempt_id","occurred_at","id");--> statement-breakpoint
@@ -175,6 +191,9 @@ CREATE TRIGGER auth_email_delivery_events_immutable
 CREATE TRIGGER auth_email_webhook_conflicts_immutable
 	BEFORE UPDATE OR DELETE ON auth_email_webhook_conflicts
 	FOR EACH ROW EXECUTE FUNCTION reject_auth_email_delivery_event_mutation();--> statement-breakpoint
+CREATE TRIGGER auth_email_provider_identity_conflicts_immutable
+	BEFORE UPDATE OR DELETE ON auth_email_provider_identity_conflicts
+	FOR EACH ROW EXECUTE FUNCTION reject_auth_email_delivery_event_mutation();--> statement-breakpoint
 ALTER TABLE auth_email_attempts ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE POLICY system_only ON auth_email_attempts
 	USING (coalesce(current_setting('app.rls_bypass', true), '') = 'on')
@@ -187,18 +206,22 @@ ALTER TABLE auth_email_webhook_conflicts ENABLE ROW LEVEL SECURITY;--> statement
 CREATE POLICY system_only ON auth_email_webhook_conflicts
 	USING (coalesce(current_setting('app.rls_bypass', true), '') = 'on')
 	WITH CHECK (coalesce(current_setting('app.rls_bypass', true), '') = 'on');--> statement-breakpoint
+ALTER TABLE auth_email_provider_identity_conflicts ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+CREATE POLICY system_only ON auth_email_provider_identity_conflicts
+	USING (coalesce(current_setting('app.rls_bypass', true), '') = 'on')
+	WITH CHECK (coalesce(current_setting('app.rls_bypass', true), '') = 'on');--> statement-breakpoint
 DO $$
 BEGIN
 	IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'openpims_app') THEN
-		REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_webhook_conflicts FROM openpims_app;
+		REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_webhook_conflicts, auth_email_provider_identity_conflicts FROM openpims_app;
 		GRANT SELECT, INSERT, UPDATE ON auth_email_attempts TO openpims_app;
-		GRANT SELECT, INSERT ON auth_email_delivery_events, auth_email_webhook_conflicts TO openpims_app;
+		GRANT SELECT, INSERT ON auth_email_delivery_events, auth_email_webhook_conflicts, auth_email_provider_identity_conflicts TO openpims_app;
 	END IF;
 	IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-		REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_webhook_conflicts FROM anon;
+		REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_webhook_conflicts, auth_email_provider_identity_conflicts FROM anon;
 	END IF;
 	IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
-		REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_webhook_conflicts FROM authenticated;
+		REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_webhook_conflicts, auth_email_provider_identity_conflicts FROM authenticated;
 	END IF;
 END
 $$;
