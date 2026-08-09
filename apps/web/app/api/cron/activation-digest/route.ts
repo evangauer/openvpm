@@ -168,7 +168,8 @@ function journeySection(title: string, funnel: JourneyFunnel): string {
     <td style="padding:2px 0;">${firstPositivePayment} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(positivePaymentRate)}</span></td>
   </tr>
 </table>
-<p style="margin:8px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Left before trying: ${funnel.totals.leftBeforeTrying} · Demo without signup: ${funnel.totals.demoAbandoned} · Signup without activation: ${funnel.totals.registrationAbandoned} · Activated without payment method: ${funnel.totals.activationAbandoned} · Payment method without positive payment after trial: ${funnel.totals.paymentAbandoned} · Client errors: ${funnel.totals.clientErrors}</p>`;
+<p style="margin:8px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Left before trying: ${funnel.totals.leftBeforeTrying} · Demo without signup: ${funnel.totals.demoAbandoned} · Signup without activation: ${funnel.totals.registrationAbandoned} · Activated without payment method: ${funnel.totals.activationAbandoned} · Payment method without positive payment after trial: ${funnel.totals.paymentAbandoned} · Client errors: ${funnel.totals.clientErrors}</p>
+<p style="margin:4px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Attribution quality: ${funnel.totals.historicalUnattributedRegistrations} historical/unknown registration(s) · ${funnel.totals.repairableAttributionGaps} captured-ID telemetry gap(s).</p>`;
 }
 
 function digestHtml(

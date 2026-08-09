@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   db: {},
   cronAuthError: vi.fn((): Response | null => null),
   reconcileConversionMilestones: vi.fn(),
+  reconcileRegistrationFirstTouches: vi.fn(),
   reportCronHeartbeat: vi.fn(async () => undefined),
   alertOps: vi.fn(async () => undefined),
 }));
@@ -12,6 +13,9 @@ vi.mock("@openpims/db/client", () => ({ db: mocks.db }));
 vi.mock("@/lib/cron-auth", () => ({ cronAuthError: mocks.cronAuthError }));
 vi.mock("@/lib/conversion-milestones", () => ({
   reconcileConversionMilestones: mocks.reconcileConversionMilestones,
+}));
+vi.mock("@/lib/funnel-events-server", () => ({
+  reconcileRegistrationFirstTouches: mocks.reconcileRegistrationFirstTouches,
 }));
 vi.mock("@/lib/cron-heartbeat", () => ({
   reportCronHeartbeat: mocks.reportCronHeartbeat,
@@ -32,6 +36,7 @@ describe("conversion reconciliation cron", () => {
 
     expect(response.status).toBe(401);
     expect(mocks.reconcileConversionMilestones).not.toHaveBeenCalled();
+    expect(mocks.reconcileRegistrationFirstTouches).not.toHaveBeenCalled();
   });
 
   it("reports exact local repairs and heartbeat counts", async () => {
@@ -40,6 +45,10 @@ describe("conversion reconciliation cron", () => {
       activationsRepaired: 1,
       paymentMethodsRepaired: 1,
       positivePaymentsRepaired: 1,
+    });
+    mocks.reconcileRegistrationFirstTouches.mockResolvedValueOnce({
+      validFunnelIdMissingTouchRepaired: 2,
+      missingFunnelIdHistoricalUnknown: 15,
     });
 
     const response = await GET(new Request("https://openvpm.test/api/cron/conversion-reconcile"));
@@ -50,14 +59,20 @@ describe("conversion reconciliation cron", () => {
       activationsRepaired: 1,
       paymentMethodsRepaired: 1,
       positivePaymentsRepaired: 1,
-      repaired: 5,
+      validFunnelIdMissingTouchRepaired: 2,
+      missingFunnelIdHistoricalUnknown: 15,
+      repaired: 7,
     });
     expect(mocks.reconcileConversionMilestones).toHaveBeenCalledWith(mocks.db);
+    expect(mocks.reconcileRegistrationFirstTouches).toHaveBeenCalledWith(mocks.db);
     expect(mocks.reportCronHeartbeat).toHaveBeenCalledWith(
       expect.objectContaining({
         job: "conversion-reconcile",
         status: "ok",
-        metrics: expect.objectContaining({ repaired: 5 }),
+        metrics: expect.objectContaining({
+          repaired: 7,
+          missingFunnelIdHistoricalUnknown: 15,
+        }),
       }),
     );
   });

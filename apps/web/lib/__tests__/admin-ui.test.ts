@@ -86,6 +86,8 @@ describe("admin UI", () => {
     expect(source).toContain("journey.totals.activationAbandoned");
     expect(source).toContain("journey.totals.paymentAbandoned");
     expect(source).toContain("journey.totals.clientErrors");
+    expect(source).toContain("journey.totals.historicalUnattributedRegistrations");
+    expect(source).toContain("journey.totals.repairableAttributionGaps");
     expect(source).toContain("journey.weeks.map");
     expect(source).toContain("Stalls require seven full days");
     expect(source).toContain("active trial with a collected");

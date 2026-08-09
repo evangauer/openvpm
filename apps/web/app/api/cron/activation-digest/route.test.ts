@@ -93,6 +93,8 @@ function journey(days: number): JourneyFunnel {
       activationAbandoned: 1,
       paymentAbandoned: 0,
       unattributedRegistrations: 0,
+      historicalUnattributedRegistrations: 0,
+      repairableAttributionGaps: 0,
       clientErrors: 2,
       demoRate: 0.4,
       registrationRate: 0.25,

@@ -46,7 +46,7 @@ describe("computeJourneyFunnel", () => {
           paymentAbandoned: "0",
         },
       ],
-      [{ count: "2" }],
+      [{ historicalUnknown: "2", repairableGap: "1" }],
       [{ count: "4" }]
     );
 
@@ -75,7 +75,9 @@ describe("computeJourneyFunnel", () => {
       registrationAbandoned: 3,
       activationAbandoned: 1,
       paymentAbandoned: 0,
-      unattributedRegistrations: 2,
+      unattributedRegistrations: 3,
+      historicalUnattributedRegistrations: 2,
+      repairableAttributionGaps: 1,
       clientErrors: 4,
       demoRate: 0.4,
       registrationRate: 0.25,

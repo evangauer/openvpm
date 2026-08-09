@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@openpims/db/client";
 import { alertOps } from "@/lib/alerts";
 import { reconcileConversionMilestones } from "@/lib/conversion-milestones";
+import { reconcileRegistrationFirstTouches } from "@/lib/funnel-events-server";
 import { cronAuthError } from "@/lib/cron-auth";
 import { reportCronHeartbeat } from "@/lib/cron-heartbeat";
 
@@ -17,11 +18,15 @@ export async function GET(request: Request) {
   if (authError) return authError;
 
   try {
-    const result = await reconcileConversionMilestones(db);
-    const repaired = Object.values(result).reduce(
+    const milestones = await reconcileConversionMilestones(db);
+    const attribution = await reconcileRegistrationFirstTouches(db);
+    const milestoneRepairs = Object.values(milestones).reduce(
       (total, count) => total + count,
       0,
     );
+    const repaired =
+      milestoneRepairs + attribution.validFunnelIdMissingTouchRepaired;
+    const result = { ...milestones, ...attribution };
     await reportCronHeartbeat({
       job: "conversion-reconcile",
       status: "ok",

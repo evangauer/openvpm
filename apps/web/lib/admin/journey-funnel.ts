@@ -29,6 +29,8 @@ export interface JourneyFunnelTotals {
   activationAbandoned: number;
   paymentAbandoned: number;
   unattributedRegistrations: number;
+  historicalUnattributedRegistrations: number;
+  repairableAttributionGaps: number;
   clientErrors: number;
   demoRate: number;
   registrationRate: number;
@@ -201,29 +203,33 @@ export async function computeJourneyFunnel(
     `);
 
     const unattributedResult = await tx.execute(sql`
-      select count(*)::int as count
+      select
+        count(*) filter (
+          where not (
+            coalesce(p.settings -> 'acquisition' ->> 'funnelId', '')
+              ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+          )
+        )::int as "historicalUnknown",
+        count(*) filter (
+          where coalesce(p.settings -> 'acquisition' ->> 'funnelId', '')
+              ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+            and not exists (
+              select 1
+              from funnel_events touch
+              where touch.anonymous_id = lower(
+                p.settings -> 'acquisition' ->> 'funnelId'
+              )
+                and touch.deleted_at is null
+                and touch.event_name in (
+                  'visit', 'demo_land', 'demo_gate_viewed',
+                  'demo_gate_submitted', 'signup_land'
+                )
+            )
+        )::int as "repairableGap"
       from practices p
       where p.created_at >= ${windowStart}::timestamptz
         and p.deleted_at is null
         and p.settings ->> 'analyticsExcluded' is distinct from 'true'
-        and (
-          not (
-            coalesce(p.settings -> 'acquisition' ->> 'funnelId', '')
-              ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
-          )
-          or not exists (
-            select 1
-            from funnel_events touch
-            where touch.anonymous_id = lower(
-              p.settings -> 'acquisition' ->> 'funnelId'
-            )
-              and touch.deleted_at is null
-              and touch.event_name in (
-                'visit', 'demo_land', 'demo_gate_viewed',
-                'demo_gate_submitted', 'signup_land'
-              )
-          )
-        )
     `);
     const errorsResult = await tx.execute(sql`
       select count(*)::int as count
@@ -254,9 +260,14 @@ export async function computeJourneyFunnel(
   const activated = sum("activated");
   const paymentMethodCollected = sum("paymentMethodCollected");
   const firstPositivePayment = sum("firstPositivePayment");
-  const unattributedRows = rowsFromExecute<{ count: number | string }>(
-    unattributedResult
-  );
+  const unattributedRows = rowsFromExecute<{
+    historicalUnknown: number | string;
+    repairableGap: number | string;
+  }>(unattributedResult);
+  const historicalUnattributedRegistrations =
+    Number(unattributedRows[0]?.historicalUnknown) || 0;
+  const repairableAttributionGaps =
+    Number(unattributedRows[0]?.repairableGap) || 0;
   const errorRows = rowsFromExecute<{ count: number | string }>(errorsResult);
 
   return {
@@ -274,7 +285,10 @@ export async function computeJourneyFunnel(
       registrationAbandoned: sum("registrationAbandoned"),
       activationAbandoned: sum("activationAbandoned"),
       paymentAbandoned: sum("paymentAbandoned"),
-      unattributedRegistrations: Number(unattributedRows[0]?.count) || 0,
+      unattributedRegistrations:
+        historicalUnattributedRegistrations + repairableAttributionGaps,
+      historicalUnattributedRegistrations,
+      repairableAttributionGaps,
       clientErrors: Number(errorRows[0]?.count) || 0,
       demoRate: funnelRate(demos, visitors),
       registrationRate: funnelRate(registrations, visitors),

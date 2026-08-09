@@ -688,8 +688,11 @@ export default function AdminPage() {
               Rates are visit-to-step for demo and registration, then step-to-step.{" "}
               Stalls require seven full days; an active trial with a collected
               payment method is not treated as payment-abandoned.
-              {journey.totals.unattributedRegistrations > 0
-                ? ` ${journey.totals.unattributedRegistrations} registration(s) could not be matched to a first touch.`
+              {journey.totals.historicalUnattributedRegistrations > 0
+                ? ` ${journey.totals.historicalUnattributedRegistrations} historical registration(s) have no captured journey ID and remain explicitly unknown.`
+                : ""}
+              {journey.totals.repairableAttributionGaps > 0
+                ? ` ${journey.totals.repairableAttributionGaps} registration(s) have a journey ID but are missing a first touch; reconciliation will repair them.`
                 : ""}
             </p>
           </>

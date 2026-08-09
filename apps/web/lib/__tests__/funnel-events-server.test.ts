@@ -18,9 +18,11 @@ const mocks = vi.hoisted(() => {
   const onConflictDoNothing = vi.fn(() => ({ returning }));
   const values = vi.fn(() => ({ onConflictDoNothing }));
   const insert = vi.fn(() => ({ values }));
+  const executeResults: unknown[][] = [];
+  const execute = vi.fn(async () => executeResults.shift() ?? []);
 
   return {
-    db: { select, insert },
+    db: { select, insert, execute },
     selectResults,
     insertResults,
     select,
@@ -28,6 +30,8 @@ const mocks = vi.hoisted(() => {
     values,
     onConflictDoNothing,
     returning,
+    executeResults,
+    execute,
     upsertPracticeConversionMilestone: vi.fn(async () => true),
     withSystem: vi.fn(
       async (database: unknown, fn: (tx: unknown) => Promise<unknown>) =>
@@ -46,6 +50,7 @@ vi.mock("@/lib/conversion-milestones", () => ({
 
 const {
   ensureRegistrationFirstTouch,
+  reconcileRegistrationFirstTouches,
   recordRegistration,
 } = await import("../funnel-events-server");
 
@@ -57,6 +62,7 @@ afterEach(() => {
   vi.clearAllMocks();
   mocks.selectResults.length = 0;
   mocks.insertResults.length = 0;
+  mocks.executeResults.length = 0;
 });
 
 describe("registration funnel attribution", () => {
@@ -161,6 +167,35 @@ describe("registration funnel attribution", () => {
     expect(mocks.select).toHaveBeenCalledOnce();
     expect(mocks.values).not.toHaveBeenCalled();
     expect(mocks.upsertPracticeConversionMilestone).toHaveBeenCalledOnce();
+  });
+
+  it("repairs only registrations with a captured UUID and reports unknown history", async () => {
+    mocks.executeResults.push(
+      [],
+      [
+        {
+          validFunnelIdMissingTouchRepaired: "2",
+          missingFunnelIdHistoricalUnknown: "15",
+        },
+      ]
+    );
+
+    await expect(
+      reconcileRegistrationFirstTouches(mocks.db as never)
+    ).resolves.toEqual({
+      validFunnelIdMissingTouchRepaired: 2,
+      missingFunnelIdHistoricalUnknown: 15,
+    });
+
+    const source = readFileSync(
+      new URL("../funnel-events-server.ts", import.meta.url),
+      "utf8"
+    );
+    expect(source).toContain("pg_advisory_xact_lock");
+    expect(source).toContain("jsonb_build_object('serverFallback', true, 'repaired', true)");
+    expect(source).toContain("missingFunnelIdHistoricalUnknown");
+    expect(source).not.toMatch(/from demo_accesses|client_ip/i);
+    expect(mocks.execute).toHaveBeenCalledTimes(2);
   });
 });
 

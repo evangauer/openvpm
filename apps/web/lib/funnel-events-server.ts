@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Database } from "@openpims/db/client";
 import { funnelEvents, practices } from "@openpims/db";
 import { withSystem } from "@/lib/tenant-db";
@@ -26,6 +26,17 @@ const FIRST_TOUCH_EVENT_NAMES = [
   "demo_gate_submitted",
   "signup_land",
 ];
+
+export interface RegistrationAttributionReconciliationResult {
+  validFunnelIdMissingTouchRepaired: number;
+  missingFunnelIdHistoricalUnknown: number;
+}
+
+function rowsFromExecute<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  const rows = (result as { rows?: unknown[] } | null)?.rows;
+  return Array.isArray(rows) ? (rows as T[]) : [];
+}
 
 export async function insertFunnelEvent(
   db: Database,
@@ -94,6 +105,99 @@ export async function ensureRegistrationFirstTouch(
     path: "/register",
     metadata: { serverFallback: true },
     createdAt: input.createdAt,
+  });
+}
+
+/**
+ * Repair only attribution that is already proven by a captured funnel UUID.
+ * Registrations without that UUID stay explicitly historical/unknown; no
+ * email, IP, timestamp proximity, or other probabilistic identity is invented.
+ */
+export async function reconcileRegistrationFirstTouches(
+  db: Database
+): Promise<RegistrationAttributionReconciliationResult> {
+  return withSystem(db, async (tx) => {
+    // Acquire this before the repair statement so a waiting transaction gets a
+    // fresh READ COMMITTED snapshot after the prior repair commits.
+    await tx.execute(sql`
+      select pg_advisory_xact_lock(
+        hashtext('openvpm:registration-first-touch-repair')
+      )
+    `);
+    const result = await tx.execute(sql`
+      with repairable as (
+        select distinct on (
+          lower(p.settings -> 'acquisition' ->> 'funnelId')
+        )
+          lower(p.settings -> 'acquisition' ->> 'funnelId') as anonymous_id,
+          nullif(btrim(p.settings -> 'acquisition' ->> 'source'), '') as source,
+          p.created_at
+        from practices p
+        where p.deleted_at is null
+          and p.settings ->> 'analyticsExcluded' is distinct from 'true'
+          and coalesce(p.settings -> 'acquisition' ->> 'funnelId', '')
+            ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+          and not exists (
+            select 1
+            from funnel_events touch
+            where touch.anonymous_id = lower(
+              p.settings -> 'acquisition' ->> 'funnelId'
+            )
+              and touch.deleted_at is null
+              and touch.event_name in (
+                'visit', 'demo_land', 'demo_gate_viewed',
+                'demo_gate_submitted', 'signup_land'
+              )
+          )
+        order by
+          lower(p.settings -> 'acquisition' ->> 'funnelId'),
+          p.created_at,
+          p.id
+      ), inserted as (
+        insert into funnel_events (
+          event_name,
+          anonymous_id,
+          source,
+          path,
+          metadata,
+          created_at
+        )
+        select
+          'signup_land',
+          repairable.anonymous_id,
+          repairable.source,
+          '/register',
+          jsonb_build_object('serverFallback', true, 'repaired', true),
+          repairable.created_at
+        from repairable
+        returning id
+      )
+      select
+        (select count(*)::int from inserted)
+          as "validFunnelIdMissingTouchRepaired",
+        (
+          select count(*)::int
+          from practices historical
+          where historical.deleted_at is null
+            and historical.settings ->> 'analyticsExcluded' is distinct from 'true'
+            and not (
+              coalesce(
+                historical.settings -> 'acquisition' ->> 'funnelId',
+                ''
+              ) ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+            )
+        ) as "missingFunnelIdHistoricalUnknown"
+    `);
+    const row = rowsFromExecute<{
+      validFunnelIdMissingTouchRepaired: number | string;
+      missingFunnelIdHistoricalUnknown: number | string;
+    }>(result)[0];
+    return {
+      validFunnelIdMissingTouchRepaired:
+        Number(row?.validFunnelIdMissingTouchRepaired) || 0,
+      missingFunnelIdHistoricalUnknown:
+        Number(row?.missingFunnelIdHistoricalUnknown) || 0,
+    };
   });
 }
 
