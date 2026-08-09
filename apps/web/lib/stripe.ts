@@ -10,6 +10,7 @@ import {
 import { envFlagEnabled } from "@/lib/env-bool";
 
 export const STRIPE_TAX_ENABLED_ENV = "STRIPE_TAX_ENABLED";
+export const INVOICE_CHECKOUT_CAPTURE_MODE = "manual_v1";
 
 function stripeIdempotencyKey(
   scope: string,
@@ -56,6 +57,187 @@ export async function createCheckoutSession(data: {
       : {}),
   });
   return { url: stripeCheckoutRedirectUrl(session.url) };
+}
+
+function checkoutAccountOptions(connectedAccountId?: string) {
+  return connectedAccountId
+    ? { stripeAccount: connectedAccountId }
+    : undefined;
+}
+
+/**
+ * Capture a Checkout authorization only after the webhook has locked and
+ * revalidated the invoice's live balance. Partial capture releases the unused
+ * authorization, so a stale Checkout session can never overpay the invoice.
+ */
+export async function captureStripeCheckoutAuthorization(data: {
+  paymentIntentId: string;
+  amountCents: number;
+  checkoutSessionId: string;
+  connectedAccountId?: string;
+}): Promise<{ amountCapturedCents: number }> {
+  if (!stripe) {
+    throw new Error("Stripe is not configured; cannot capture card payment.");
+  }
+  if (!Number.isInteger(data.amountCents) || data.amountCents <= 0) {
+    throw new Error("Stripe capture amount must be a positive integer.");
+  }
+
+  const accountOptions = checkoutAccountOptions(data.connectedAccountId);
+  const current = accountOptions
+    ? await stripe.paymentIntents.retrieve(data.paymentIntentId, accountOptions)
+    : await stripe.paymentIntents.retrieve(data.paymentIntentId);
+
+  // A transaction may fail after Stripe accepted the capture. On retry, use
+  // Stripe's authoritative captured amount instead of attempting a new charge.
+  if (current.status === "succeeded") {
+    return { amountCapturedCents: current.amount_received };
+  }
+  if (current.status !== "requires_capture") {
+    throw new Error(
+      `Stripe Checkout authorization is not capturable: ${current.status}`
+    );
+  }
+
+  const amountToCapture = Math.min(
+    data.amountCents,
+    current.amount_capturable
+  );
+  if (amountToCapture <= 0) {
+    throw new Error("Stripe Checkout authorization has no capturable amount.");
+  }
+  const originalApplicationFee = current.application_fee_amount ?? 0;
+  const proportionalApplicationFee =
+    data.connectedAccountId &&
+    originalApplicationFee > 0 &&
+    current.amount > 0 &&
+    amountToCapture > 1
+      ? Math.min(
+          Math.floor(
+            (originalApplicationFee * amountToCapture) / current.amount
+          ),
+          amountToCapture - 1
+        )
+      : 0;
+  const overrideApplicationFee =
+    Boolean(data.connectedAccountId) && originalApplicationFee > 0;
+  const captureParams: Stripe.PaymentIntentCaptureParams = {
+    amount_to_capture: amountToCapture,
+    ...(overrideApplicationFee
+      ? { application_fee_amount: proportionalApplicationFee }
+      : {}),
+  };
+  const captured = await stripe.paymentIntents.capture(
+    data.paymentIntentId,
+    captureParams,
+    {
+      idempotencyKey: stripeIdempotencyKey(
+        "invoice-capture",
+        data.checkoutSessionId,
+        captureParams
+      ),
+      ...(accountOptions ?? {}),
+    }
+  );
+  return { amountCapturedCents: captured.amount_received };
+}
+
+/**
+ * Resolve a Checkout payment that can no longer be attributed safely. Manual
+ * authorizations are canceled immediately; legacy automatic-capture sessions
+ * are refunded with stable idempotency.
+ */
+export async function refundInvalidStripeCheckoutPayment(data: {
+  externalId: string;
+  amountCents: number;
+  idempotencyKey: string;
+}): Promise<
+  | { outcome: "authorization_canceled" }
+  | { outcome: "no_funds" }
+  | { outcome: "refunded"; refundId: string; amountCents: number }
+> {
+  const parsed = parseStripeCheckoutExternalId(data.externalId);
+  if (!parsed) {
+    throw new Error("Invalid Stripe Checkout payment identity.");
+  }
+  if (!stripe) {
+    throw new Error("Stripe is not configured; cannot resolve card payment.");
+  }
+
+  const accountOptions = checkoutAccountOptions(parsed.connectedAccountId);
+  const session = accountOptions
+    ? await stripe.checkout.sessions.retrieve(parsed.sessionId, accountOptions)
+    : await stripe.checkout.sessions.retrieve(parsed.sessionId);
+  const paymentIntentId =
+    typeof session.payment_intent === "string"
+      ? session.payment_intent
+      : session.payment_intent?.id;
+  if (!paymentIntentId) {
+    throw new Error(
+      `Stripe Checkout session has no payment intent: ${parsed.sessionId}`
+    );
+  }
+  const paymentIntent =
+    typeof session.payment_intent === "object" && session.payment_intent
+      ? session.payment_intent
+      : accountOptions
+        ? await stripe.paymentIntents.retrieve(paymentIntentId, accountOptions)
+        : await stripe.paymentIntents.retrieve(paymentIntentId);
+
+  if (paymentIntent.status === "requires_capture") {
+    await stripe.paymentIntents.cancel(
+      paymentIntentId,
+      { cancellation_reason: "abandoned" },
+      {
+        idempotencyKey: stripeIdempotencyKey(
+          "invalid-checkout-cancel",
+          data.idempotencyKey
+        ),
+        ...(accountOptions ?? {}),
+      }
+    );
+    return { outcome: "authorization_canceled" };
+  }
+  if (
+    paymentIntent.status === "canceled" ||
+    paymentIntent.status === "requires_payment_method"
+  ) {
+    return { outcome: "no_funds" };
+  }
+  if (paymentIntent.status !== "succeeded") {
+    throw new Error(
+      `Stripe Checkout payment is not ready to resolve: ${paymentIntent.status}`
+    );
+  }
+
+  // An invalid Checkout must be reversed in full. Session.amount_total is
+  // nullable and webhook payloads can be stale, while the PaymentIntent is
+  // Stripe's authoritative record of money actually captured.
+  const refundableCents = paymentIntent.amount_received;
+  if (refundableCents <= 0) {
+    return { outcome: "no_funds" };
+  }
+  const refund = await stripe.refunds.create(
+    {
+      payment_intent: paymentIntentId,
+      amount: refundableCents,
+      ...(parsed.connectedAccountId
+        ? { refund_application_fee: true }
+        : {}),
+    },
+    {
+      idempotencyKey: stripeIdempotencyKey(
+        "invalid-checkout-refund",
+        data.idempotencyKey
+      ),
+      ...(accountOptions ?? {}),
+    }
+  );
+  return {
+    outcome: "refunded",
+    refundId: refund.id,
+    amountCents: refundableCents,
+  };
 }
 
 /**
@@ -146,6 +328,7 @@ export function buildInvoiceCheckoutSessionParams(data: {
 }): Stripe.Checkout.SessionCreateParams {
   const metadata: Record<string, string> = {
     invoiceId: data.invoiceId,
+    captureMode: INVOICE_CHECKOUT_CAPTURE_MODE,
     source: data.connectedAccountId
       ? "client_invoice_connect"
       : "client_invoice",
@@ -155,6 +338,7 @@ export function buildInvoiceCheckoutSessionParams(data: {
   }
   const paymentIntentData: Stripe.Checkout.SessionCreateParams.PaymentIntentData = {
     metadata,
+    capture_method: "manual",
   };
   if (data.applicationFeeAmount && data.applicationFeeAmount > 0) {
     paymentIntentData.application_fee_amount = data.applicationFeeAmount;

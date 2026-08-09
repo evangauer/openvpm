@@ -88,6 +88,11 @@ import {
 } from "@/lib/records/clinical-inputs";
 import { listOffsetInput } from "./pagination";
 import { rowsFromExecute } from "@/lib/db/execute-rows";
+import {
+  assertVisitInvoiceReadyForFinancialAction,
+  assertVisitReconciliationMutable,
+  markCompletedVisitCloseoutPaid,
+} from "../visit-billing-integrity";
 
 type BillingDb = Pick<Database, "select" | "insert" | "update" | "execute">;
 type ServiceCatalogDb = Pick<Database, "select" | "execute">;
@@ -104,6 +109,7 @@ type InvoiceForPayment = {
   status: "draft" | "sent" | "paid" | "overdue" | "void";
   isEstimate: boolean;
   appointmentId?: string | null;
+  dueDate?: string | null;
 };
 
 type InvoiceAdjustmentType = "credit" | "write_off";
@@ -136,9 +142,9 @@ const allowedInvoiceStatusTransitions: Record<
   InvoiceStatus,
   readonly InvoiceStatus[]
 > = {
-  draft: ["sent", "void"],
-  sent: ["overdue", "void"],
-  overdue: ["sent", "void"],
+  draft: ["sent"],
+  sent: ["overdue"],
+  overdue: ["sent"],
   paid: [],
   void: [],
 };
@@ -446,6 +452,7 @@ async function getInvoiceForPractice(
       status: invoices.status,
       isEstimate: invoices.isEstimate,
       appointmentId: invoices.appointmentId,
+      dueDate: invoices.dueDate,
     })
     .from(invoices)
     .where(
@@ -2078,6 +2085,7 @@ export const billingRouter = createRouter({
           });
         }
         if (charge.appointmentId) {
+          await assertVisitReconciliationMutable(txCtx, charge.appointmentId);
           const [workItem] = await tx
             .select()
             .from(visitWorkItems)
@@ -2357,7 +2365,7 @@ export const billingRouter = createRouter({
     .input(
       z.object({
         id: z.string().uuid(),
-        status: z.enum(["draft", "sent", "paid", "overdue", "void"]),
+        status: z.enum(["draft", "sent", "paid", "overdue"]),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -2369,20 +2377,17 @@ export const billingRouter = createRouter({
             "Record a payment or apply an adjustment to settle this invoice.",
         });
       }
-      if (existing.isEstimate && input.status !== "void") {
+      if (existing.isEstimate) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "Convert the estimate before changing invoice status.",
         });
       }
-      if (existing.status === "void" && input.status !== "void") {
+      if (existing.status === "void") {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "Cannot reopen a void invoice.",
         });
-      }
-      if (existing.status === "void" && input.status === "void") {
-        return existing;
       }
       if (!canTransitionInvoiceStatus(existing.status, input.status)) {
         throw new TRPCError({
@@ -2399,27 +2404,13 @@ export const billingRouter = createRouter({
         eq(invoices.isEstimate, existing.isEstimate),
         eq(invoices.paidAmount, existing.paidAmount ?? "0"),
       ];
-      if (input.status === "void") {
+      if (input.status === "sent" && existing.appointmentId) {
         return ctx.db.transaction(async (tx) => {
           const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
-          await lockAppointmentForInvoiceMutation(
+          await lockAppointmentForInvoiceMutation(txCtx, existing.appointmentId);
+          await assertVisitInvoiceReadyForFinancialAction(
             txCtx,
             existing.appointmentId
-          );
-          await assertInvoiceNotCompletedCloseout(txCtx, input.id);
-          const adjustedCents = await getInvoiceAdjustmentTotalCents(
-            txCtx,
-            input.id
-          );
-          if (moneyToCents(existing.paidAmount) > 0 || adjustedCents > 0) {
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message: "Cannot void an invoice with payments or adjustments.",
-            });
-          }
-          updateConditions.push(
-            noActivePaymentsForInvoice(),
-            noActiveAdjustmentsForInvoice()
           );
           const [invoice] = await tx
             .update(invoices)
@@ -2433,11 +2424,6 @@ export const billingRouter = createRouter({
               message:
                 "Invoice status changed while updating. Refresh and try again.",
             });
-          }
-
-          if (!existing.isEstimate) {
-            const items = await invoiceProductItemsForStock(txCtx, input.id);
-            await restoreProductStock(txCtx, items);
           }
 
           return invoice!;
@@ -3058,8 +3044,19 @@ export const billingRouter = createRouter({
           return { payment: existingPayment, replayed: true as const };
         }
 
-        const invoice = await getInvoiceForPractice(txCtx, input.invoiceId);
+        const invoiceIdentity = await getInvoiceForPractice(txCtx, input.invoiceId);
+        await lockAppointmentForInvoiceMutation(
+          txCtx,
+          invoiceIdentity.appointmentId
+        );
+        const invoice = invoiceIdentity.appointmentId
+          ? await getInvoiceForPractice(txCtx, input.invoiceId)
+          : invoiceIdentity;
         assertCanRecordPayment(invoice);
+        await assertVisitInvoiceReadyForFinancialAction(
+          txCtx,
+          invoice.appointmentId
+        );
         const totalCents = moneyToCents(invoice.total);
         const paidBeforeCents = moneyToCents(invoice.paidAmount);
         const adjustedCents = await getInvoiceAdjustmentTotalCents(
@@ -3119,6 +3116,17 @@ export const billingRouter = createRouter({
             externalId: operationKey,
           })
           .returning();
+
+        if (updates.status === "paid") {
+          await markCompletedVisitCloseoutPaid(txCtx, {
+            appointmentId: invoice.appointmentId,
+            invoiceId: invoice.id,
+            source: "dashboard_payment",
+            userId: ctx.user.id,
+            paymentId: createdPayment!.id,
+            paymentExternalId: operationKey,
+          });
+        }
 
         return {
           payment: createdPayment!,
@@ -3207,11 +3215,11 @@ export const billingRouter = createRouter({
       z.object({
         paymentId: z.string().uuid(),
         amount: paymentAmountSchema.optional(),
-        reason: z
-          .string()
-          .trim()
-          .max(BILLING_ADJUSTMENT_REASON_MAX_LENGTH)
-          .optional(),
+        reason: clinicalTextInput(
+          "Refund reason",
+          BILLING_ADJUSTMENT_REASON_MAX_LENGTH
+        ).min(5, "Explain why the payment is being refunded."),
+        dueDate: clinicalDateInput("Due date").optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -3245,24 +3253,6 @@ export const billingRouter = createRouter({
         });
       }
 
-      const refundExternalId = `refund:payment:${payment.id}`;
-      const [existingRefund] = await ctx.db
-        .select({ id: payments.id })
-        .from(payments)
-        .where(
-          and(
-            eq(payments.externalId, refundExternalId),
-            isNull(payments.deletedAt)
-          )
-        )
-        .limit(1);
-      if (existingRefund) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "This payment has already been refunded.",
-        });
-      }
-
       const amountCents = input.amount
         ? moneyToCents(input.amount)
         : originalCents;
@@ -3273,25 +3263,96 @@ export const billingRouter = createRouter({
         });
       }
 
-      const invoice = await getInvoiceForPractice(ctx, payment.invoiceId);
-      const adjustedCents = await getInvoiceAdjustmentTotalCents(
-        ctx,
-        payment.invoiceId
-      );
-      const paidBeforeCents = moneyToCents(invoice.paidAmount);
-      const paidAfterCents = paidBeforeCents - amountCents;
-      const updates: Record<string, any> = {
-        paidAmount: centsToMoney(paidAfterCents),
-      };
-      if (
-        invoice.status === "paid" &&
-        paidAfterCents + adjustedCents < moneyToCents(invoice.total)
-      ) {
-        // A refunded balance reopens the invoice for collection.
-        updates.status = "sent";
-      }
+      const refundExternalId = `refund:payment:${payment.id}`;
+      const invoiceIdentity = await getInvoiceForPractice(ctx, payment.invoiceId);
 
-      const refund = await ctx.db.transaction(async (tx) => {
+      const result = await ctx.db.transaction(async (tx) => {
+        const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
+        await lockAppointmentForInvoiceMutation(
+          txCtx,
+          invoiceIdentity.appointmentId
+        );
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${refundExternalId}, 0))`
+        );
+
+        const [existingRefund] = await tx
+          .select({ id: payments.id })
+          .from(payments)
+          .where(
+            and(
+              eq(payments.externalId, refundExternalId),
+              isNull(payments.deletedAt)
+            )
+          )
+          .limit(1);
+        if (existingRefund) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "This payment has already been refunded.",
+          });
+        }
+
+        const invoice = invoiceIdentity.appointmentId
+          ? await getInvoiceForPractice(txCtx, payment.invoiceId)
+          : invoiceIdentity;
+        const adjustedCents = await getInvoiceAdjustmentTotalCents(
+          txCtx,
+          payment.invoiceId
+        );
+        const paidBeforeCents = moneyToCents(invoice.paidAmount);
+        if (amountCents > paidBeforeCents) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Refund exceeds the amount currently paid on the invoice.",
+          });
+        }
+        const paidAfterCents = paidBeforeCents - amountCents;
+        const reopensInvoice =
+          invoice.status === "paid" &&
+          paidAfterCents + adjustedCents < moneyToCents(invoice.total);
+        const [closeout] = invoice.appointmentId
+          ? await tx
+              .select({
+                id: visitCloseouts.id,
+                chargeDisposition: visitCloseouts.chargeDisposition,
+                revision: visitCloseouts.revision,
+              })
+              .from(visitCloseouts)
+              .where(
+                and(
+                  eq(visitCloseouts.practiceId, ctx.practiceId),
+                  eq(visitCloseouts.appointmentId, invoice.appointmentId),
+                  eq(visitCloseouts.invoiceId, invoice.id),
+                  eq(visitCloseouts.status, "completed"),
+                  isNull(visitCloseouts.deletedAt)
+                )
+              )
+              .limit(1)
+              .for("update")
+          : [];
+        const reopensCompletedPaidCloseout =
+          reopensInvoice && closeout?.chargeDisposition === "paid";
+        if (reopensCompletedPaidCloseout && !invoice.dueDate && !input.dueDate) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Choose a due date before refunding this paid visit into accounts receivable.",
+          });
+        }
+        const nextStatus = reopensInvoice ? "sent" : invoice.status;
+        const updates: Record<string, any> = {
+          paidAmount: centsToMoney(paidAfterCents),
+          status: nextStatus,
+        };
+        if (reopensCompletedPaidCloseout && !invoice.dueDate) {
+          updates.dueDate = input.dueDate;
+        }
+        const nextDueDate =
+          "dueDate" in updates
+            ? (updates.dueDate ?? null)
+            : (invoice.dueDate ?? null);
+
         const [createdRefund] = await tx
           .insert(payments)
           .values({
@@ -3300,9 +3361,7 @@ export const billingRouter = createRouter({
             method: payment.method,
             receivedBy: ctx.user.id,
             externalId: refundExternalId,
-            notes: input.reason
-              ? `Refund: ${input.reason}`
-              : "Refund of recorded payment",
+            notes: `Refund: ${input.reason}`,
           })
           .returning();
 
@@ -3330,6 +3389,64 @@ export const billingRouter = createRouter({
           });
         }
 
+        if (reopensCompletedPaidCloseout) {
+          const [updatedCloseout] = await tx
+            .update(visitCloseouts)
+            .set({
+              chargeDisposition: "accounts_receivable",
+              revision: closeout.revision + 1,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(visitCloseouts.id, closeout.id),
+                eq(visitCloseouts.practiceId, ctx.practiceId),
+                eq(visitCloseouts.status, "completed"),
+                eq(visitCloseouts.chargeDisposition, "paid"),
+                eq(visitCloseouts.revision, closeout.revision),
+                isNull(visitCloseouts.deletedAt)
+              )
+            )
+            .returning({ id: visitCloseouts.id });
+          if (!updatedCloseout) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "Visit closeout changed while refunding. Refresh and try again.",
+            });
+          }
+        }
+
+        await tx.insert(auditLog).values({
+          practiceId: ctx.practiceId,
+          userId: ctx.user.id,
+          action: "payment_refunded",
+          entityType: "invoice",
+          entityId: invoice.id,
+          changes: {
+            reason: input.reason,
+            originalPaymentId: payment.id,
+            refundPaymentId: createdRefund!.id,
+            amount: centsToMoney(amountCents),
+            method: payment.method,
+            priorStatus: invoice.status,
+            nextStatus,
+            priorPaidAmount: centsToMoney(paidBeforeCents),
+            nextPaidAmount: centsToMoney(paidAfterCents),
+            priorDueDate: invoice.dueDate ?? null,
+            nextDueDate,
+            closeoutId: closeout?.id ?? null,
+            priorChargeDisposition: closeout?.chargeDisposition ?? null,
+            nextChargeDisposition: reopensCompletedPaidCloseout
+              ? "accounts_receivable"
+              : closeout?.chargeDisposition ?? null,
+            priorCloseoutRevision: closeout?.revision ?? null,
+            nextCloseoutRevision: reopensCompletedPaidCloseout
+              ? closeout.revision + 1
+              : closeout?.revision ?? null,
+          },
+        });
+
         // Real money moves last so any failure above (including the unique
         // refund id) means Stripe was never called; a Stripe failure here
         // rolls back the local record.
@@ -3355,20 +3472,24 @@ export const billingRouter = createRouter({
             .where(eq(payments.id, createdRefund!.id));
         }
 
-        return createdRefund!;
+        return {
+          refund: createdRefund!,
+          invoice,
+          paidAfterCents,
+        };
       });
 
       await dispatchWebhookEvent(ctx.practiceId, "invoice.refunded", {
         id: payment.invoiceId,
         paymentId: payment.id,
-        refundId: refund.id,
+        refundId: result.refund.id,
         amount: centsToMoney(amountCents),
-        paidAmount: centsToMoney(paidAfterCents),
-        total: invoice.total,
+        paidAmount: centsToMoney(result.paidAfterCents),
+        total: result.invoice.total,
         source: "dashboard",
       });
 
-      return refund;
+      return result.refund;
     }),
 
   /**
@@ -3436,6 +3557,7 @@ export const billingRouter = createRouter({
           paidAmount: invoices.paidAmount,
           status: invoices.status,
           isEstimate: invoices.isEstimate,
+          appointmentId: invoices.appointmentId,
           clientFirstName: clients.firstName,
           clientLastName: clients.lastName,
           clientEmail: clients.email,
@@ -3482,6 +3604,19 @@ export const billingRouter = createRouter({
       }
 
       assertCanRecordPayment(invoice);
+
+      if (invoice.appointmentId) {
+        await ctx.db.transaction(async (tx) => {
+          const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
+          await lockAppointmentForInvoiceMutation(txCtx, invoice.appointmentId);
+          const currentInvoice = await getInvoiceForPractice(txCtx, invoice.id);
+          assertCanRecordPayment(currentInvoice);
+          await assertVisitInvoiceReadyForFinancialAction(
+            txCtx,
+            currentInvoice.appointmentId
+          );
+        });
+      }
 
       const adjustedCents = await getInvoiceAdjustmentTotalCents(
         ctx,
@@ -3660,8 +3795,19 @@ export const billingRouter = createRouter({
           };
         }
 
-        const invoice = await getInvoiceForPractice(txCtx, input.invoiceId);
+        const invoiceIdentity = await getInvoiceForPractice(txCtx, input.invoiceId);
+        await lockAppointmentForInvoiceMutation(
+          txCtx,
+          invoiceIdentity.appointmentId
+        );
+        const invoice = invoiceIdentity.appointmentId
+          ? await getInvoiceForPractice(txCtx, input.invoiceId)
+          : invoiceIdentity;
         assertCanAdjustInvoice(invoice);
+        await assertVisitInvoiceReadyForFinancialAction(
+          txCtx,
+          invoice.appointmentId
+        );
         const adjustedBeforeCents = await getInvoiceAdjustmentTotalCents(
           txCtx,
           input.invoiceId
@@ -3722,6 +3868,16 @@ export const billingRouter = createRouter({
           })
           .returning();
 
+        if (closesInvoice) {
+          await markCompletedVisitCloseoutPaid(txCtx, {
+            appointmentId: invoice.appointmentId,
+            invoiceId: invoice.id,
+            source: "dashboard_adjustment",
+            userId: ctx.user.id,
+            adjustmentId: createdAdjustment!.id,
+          });
+        }
+
         return {
           adjustment: createdAdjustment!,
           replayed: false as const,
@@ -3767,8 +3923,7 @@ export const billingRouter = createRouter({
           .string()
           .trim()
           .min(5, "Explain why the invoice is being voided.")
-          .max(500)
-          .default("Invoice voided by billing staff."),
+          .max(500),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -3787,7 +3942,6 @@ export const billingRouter = createRouter({
         const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
         await lockAppointmentForInvoiceMutation(txCtx, invoice.appointmentId);
         await assertInvoiceNotCompletedCloseout(txCtx, input.id);
-        await assertInvoiceItemsNotReconciled(txCtx, input.id);
         const adjustedCents = await getInvoiceAdjustmentTotalCents(
           txCtx,
           input.id
@@ -3798,6 +3952,18 @@ export const billingRouter = createRouter({
             message: "Cannot void an invoice with payments or adjustments.",
           });
         }
+        const linkedWork = await tx
+          .select({ id: visitWorkItems.id })
+          .from(visitWorkItems)
+          .where(
+            and(
+              eq(visitWorkItems.practiceId, ctx.practiceId),
+              eq(visitWorkItems.invoiceId, input.id),
+              eq(visitWorkItems.status, "charged"),
+              isNull(visitWorkItems.deletedAt)
+            )
+          )
+          .for("update");
         const [updated] = await tx
           .update(invoices)
           .set({ status: "void" })
@@ -3827,6 +3993,47 @@ export const billingRouter = createRouter({
           await restoreProductStock(txCtx, items);
         }
         await reopenInvoiceDispenseCharges(txCtx, input.id);
+        if (linkedWork.length > 0) {
+          await tx
+            .update(visitWorkItems)
+            .set({
+              status: "unresolved",
+              invoiceId: null,
+              invoiceItemId: null,
+              noChargeReason: null,
+              voidReason: null,
+              resolvedBy: null,
+              resolvedAt: null,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(visitWorkItems.practiceId, ctx.practiceId),
+                inArray(
+                  visitWorkItems.id,
+                  linkedWork.map((work) => work.id)
+                ),
+                eq(visitWorkItems.status, "charged"),
+                eq(visitWorkItems.invoiceId, input.id),
+                isNull(visitWorkItems.deletedAt)
+              )
+            );
+        }
+        await tx.insert(auditLog).values({
+          practiceId: ctx.practiceId,
+          userId: ctx.user.id,
+          action: "invoice_voided",
+          entityType: "invoice",
+          entityId: input.id,
+          changes: {
+            reason: input.reason,
+            priorStatus: invoice.status,
+            nextStatus: "void",
+            isEstimate: invoice.isEstimate,
+            restoredInventory: !invoice.isEstimate,
+            reopenedVisitWorkItemIds: linkedWork.map((work) => work.id),
+          },
+        });
 
         return updated!;
       });

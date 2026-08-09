@@ -38,6 +38,8 @@ const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const USER_ID = "00000000-0000-0000-0000-000000000001";
 const INVOICE_ID = "00000000-0000-0000-0000-000000000002";
 const PAYMENT_ID = "00000000-0000-0000-0000-000000000003";
+const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000004";
+const CLOSEOUT_ID = "00000000-0000-0000-0000-000000000005";
 
 const paidInvoice = {
   id: INVOICE_ID,
@@ -69,13 +71,15 @@ function callerWithDb(db: Record<string, unknown>, role = "admin") {
 }
 
 function thenableRows(result: unknown[]) {
-  return {
-    limit: vi.fn(async () => result),
+  const rows = {
+    limit: vi.fn(() => rows),
+    for: vi.fn(async () => result),
     then: (
       resolve: (value: unknown[]) => unknown,
       reject?: (e: unknown) => unknown
     ) => Promise.resolve(result).then(resolve, reject),
   };
+  return rows;
 }
 
 function createDb(opts: {
@@ -135,8 +139,8 @@ describe("billing refunds", () => {
     const { db, insertValues, updateSet } = createDb({
       selectResults: [
         [cardPayment], // payment lookup
+        [paidInvoice], // invoice identity
         [], // no existing refund
-        [paidInvoice], // invoice
         [], // adjustments
       ],
     });
@@ -179,11 +183,43 @@ describe("billing refunds", () => {
     );
   });
 
+  it("audits only a due date that the refund actually persisted", async () => {
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [[cardPayment], [paidInvoice], [], []],
+    });
+
+    await callerWithDb(db).refundPayment({
+      paymentId: PAYMENT_ID,
+      reason: "Owner cancelled",
+      dueDate: "2026-09-15",
+    });
+
+    expect(updateSet).toHaveBeenCalledWith({
+      paidAmount: "0.00",
+      status: "sent",
+    });
+    expect(updateSet).not.toHaveBeenCalledWith(
+      expect.objectContaining({ dueDate: expect.anything() })
+    );
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "payment_refunded",
+        changes: expect.objectContaining({
+          priorDueDate: null,
+          nextDueDate: null,
+        }),
+      })
+    );
+  });
+
   it("requires the admin role", async () => {
     const { db } = createDb({ selectResults: [] });
 
     await expect(
-      callerWithDb(db, "front_desk").refundPayment({ paymentId: PAYMENT_ID })
+      callerWithDb(db, "front_desk").refundPayment({
+        paymentId: PAYMENT_ID,
+        reason: "Owner request",
+      })
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(mocks.refundStripeCheckoutPayment).not.toHaveBeenCalled();
   });
@@ -192,12 +228,16 @@ describe("billing refunds", () => {
     const { db, insert } = createDb({
       selectResults: [
         [cardPayment],
+        [paidInvoice],
         [{ id: "existing-refund" }], // refund already recorded
       ],
     });
 
     await expect(
-      callerWithDb(db).refundPayment({ paymentId: PAYMENT_ID })
+      callerWithDb(db).refundPayment({
+        paymentId: PAYMENT_ID,
+        reason: "Owner request",
+      })
     ).rejects.toMatchObject({
       code: "BAD_REQUEST",
       message: "This payment has already been refunded.",
@@ -212,7 +252,10 @@ describe("billing refunds", () => {
     });
 
     await expect(
-      callerWithDb(db).refundPayment({ paymentId: PAYMENT_ID })
+      callerWithDb(db).refundPayment({
+        paymentId: PAYMENT_ID,
+        reason: "Owner request",
+      })
     ).rejects.toMatchObject({
       code: "BAD_REQUEST",
       message: "Only payments can be refunded.",
@@ -228,6 +271,7 @@ describe("billing refunds", () => {
       callerWithDb(db).refundPayment({
         paymentId: PAYMENT_ID,
         amount: "150.00",
+        reason: "Owner request",
       })
     ).rejects.toMatchObject({
       code: "BAD_REQUEST",
@@ -238,7 +282,7 @@ describe("billing refunds", () => {
 
   it("surfaces a Stripe refund failure and records nothing", async () => {
     const { db } = createDb({
-      selectResults: [[cardPayment], [], [paidInvoice], []],
+      selectResults: [[cardPayment], [paidInvoice], [], []],
     });
     const errorSpy = vi
       .spyOn(console, "error")
@@ -249,7 +293,10 @@ describe("billing refunds", () => {
 
     try {
       await expect(
-        callerWithDb(db).refundPayment({ paymentId: PAYMENT_ID })
+        callerWithDb(db).refundPayment({
+          paymentId: PAYMENT_ID,
+          reason: "Owner request",
+        })
       ).rejects.toMatchObject({
         code: "BAD_GATEWAY",
         message: "Stripe could not process the refund. Nothing was recorded.",
@@ -267,10 +314,13 @@ describe("billing refunds", () => {
       externalId: null,
     };
     const { db, insertValues } = createDb({
-      selectResults: [[manualPayment], [], [paidInvoice], []],
+      selectResults: [[manualPayment], [paidInvoice], [], []],
     });
 
-    await callerWithDb(db).refundPayment({ paymentId: PAYMENT_ID });
+    await callerWithDb(db).refundPayment({
+      paymentId: PAYMENT_ID,
+      reason: "Owner request",
+    });
 
     // The helper is still consulted, but a null externalId is not a Stripe
     // payment, so no Stripe refund happens (mock resolves null).
@@ -284,6 +334,104 @@ describe("billing refunds", () => {
         amount: "-100.00",
         method: "cash",
         externalId: `refund:payment:${PAYMENT_ID}`,
+      })
+    );
+  });
+
+  it("requires a due date before reopening a completed paid visit", async () => {
+    const visitInvoice = {
+      ...paidInvoice,
+      appointmentId: APPOINTMENT_ID,
+      dueDate: null,
+    };
+    const { db, insert } = createDb({
+      selectResults: [
+        [cardPayment],
+        [visitInvoice],
+        [{ id: APPOINTMENT_ID }],
+        [],
+        [visitInvoice],
+        [],
+        [
+          {
+            id: CLOSEOUT_ID,
+            chargeDisposition: "paid",
+            revision: 4,
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).refundPayment({
+        paymentId: PAYMENT_ID,
+        reason: "Owner requested refund",
+      })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Choose a due date before refunding this paid visit into accounts receivable.",
+    });
+    expect(insert).not.toHaveBeenCalled();
+    expect(mocks.refundStripeCheckoutPayment).not.toHaveBeenCalled();
+  });
+
+  it("atomically reopens paid visit AR and audits an attributed refund", async () => {
+    const visitInvoice = {
+      ...paidInvoice,
+      appointmentId: APPOINTMENT_ID,
+      dueDate: null,
+    };
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [
+        [cardPayment],
+        [visitInvoice],
+        [{ id: APPOINTMENT_ID }],
+        [],
+        [visitInvoice],
+        [],
+        [
+          {
+            id: CLOSEOUT_ID,
+            chargeDisposition: "paid",
+            revision: 4,
+          },
+        ],
+      ],
+      updateReturns: [[{ id: INVOICE_ID }], [{ id: CLOSEOUT_ID }]],
+    });
+
+    await callerWithDb(db).refundPayment({
+      paymentId: PAYMENT_ID,
+      reason: "Owner requested refund",
+      dueDate: "2026-08-31",
+    });
+
+    expect(updateSet).toHaveBeenCalledWith({
+      paidAmount: "0.00",
+      status: "sent",
+      dueDate: "2026-08-31",
+    });
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chargeDisposition: "accounts_receivable",
+        revision: 5,
+      })
+    );
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "payment_refunded",
+        entityType: "invoice",
+        entityId: INVOICE_ID,
+        changes: expect.objectContaining({
+          reason: "Owner requested refund",
+          closeoutId: CLOSEOUT_ID,
+          priorChargeDisposition: "paid",
+          nextChargeDisposition: "accounts_receivable",
+          priorCloseoutRevision: 4,
+          nextCloseoutRevision: 5,
+          nextDueDate: "2026-08-31",
+        }),
       })
     );
   });

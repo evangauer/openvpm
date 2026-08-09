@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { eq, and, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
 import { db } from "@openpims/db/client";
 import {
+  appointments,
   clients,
   invoiceAdjustments,
   invoices,
@@ -31,6 +33,7 @@ import {
 import { rateLimit, rateLimitResponseHeaders } from "@/lib/rate-limit";
 import { clientIpFromRequest } from "@/lib/request-ip";
 import { readJsonRequestBody } from "@/lib/request-json";
+import { assertVisitInvoiceReadyForFinancialAction } from "@/server/visit-billing-integrity";
 
 const portalCheckoutInput = z.object({
   token: z.string().trim().min(1).max(PORTAL_ACCESS_TOKEN_MAX_LENGTH),
@@ -147,6 +150,7 @@ export async function POST(req: NextRequest) {
           clientId: invoices.clientId,
           patientId: invoices.patientId,
           practiceId: invoices.practiceId,
+          appointmentId: invoices.appointmentId,
         })
         .from(invoices)
         .where(
@@ -195,6 +199,43 @@ export async function POST(req: NextRequest) {
           { error: "Invoice is not ready for online payment" },
           { status: 400 },
         );
+      }
+
+      if (invoice.appointmentId) {
+        const [appointment] = await tx
+          .select({ id: appointments.id })
+          .from(appointments)
+          .where(
+            and(
+              eq(appointments.id, invoice.appointmentId),
+              eq(appointments.practiceId, invoice.practiceId),
+              isNull(appointments.deletedAt)
+            )
+          )
+          .for("update");
+        if (!appointment) {
+          return NextResponse.json(
+            { error: "The linked appointment is no longer available" },
+            { status: 409 }
+          );
+        }
+        try {
+          await assertVisitInvoiceReadyForFinancialAction(
+            { db: tx, practiceId: invoice.practiceId },
+            invoice.appointmentId
+          );
+        } catch (err) {
+          if (
+            err instanceof TRPCError &&
+            err.code === "PRECONDITION_FAILED"
+          ) {
+            return NextResponse.json(
+              { error: err.message },
+              { status: 409 }
+            );
+          }
+          throw err;
+        }
       }
 
       const adjustmentRows = await tx

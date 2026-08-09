@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,7 @@ export function ActionConfirmationDialog({
   confirmVariant = "default",
   isPending = false,
   reason,
+  children,
   onCancel,
   onConfirm,
 }: {
@@ -33,6 +34,7 @@ export function ActionConfirmationDialog({
   confirmVariant?: "default" | "destructive";
   isPending?: boolean;
   reason?: ReasonInput;
+  children?: ReactNode;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -143,6 +145,8 @@ export function ActionConfirmationDialog({
             </p>
           </div>
         ) : null}
+
+        {children ? <div className="mt-4">{children}</div> : null}
 
         <div className="mt-5 flex justify-end gap-2">
           <Button variant="outline" disabled={isPending} onClick={onCancel}>

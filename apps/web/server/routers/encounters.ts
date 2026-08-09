@@ -55,7 +55,11 @@ import { canTransitionAppointmentStatus } from "@/lib/scheduling/appointment-sta
 import { formatDateInputForTimeZone } from "@/lib/date-input";
 import { clinicalDateInput } from "@/lib/records/clinical-inputs";
 import { effectivePrescriptionStatus } from "@/lib/records/prescription-lifecycle";
-import { rowsFromExecute } from "@/lib/db/execute-rows";
+import {
+  assertNoUnresolvedVisitWork,
+  assertVisitReconciliationMutable,
+  syncVisitWorkItems,
+} from "../visit-billing-integrity";
 
 type EncounterDb = Pick<Database, "select" | "insert" | "update" | "execute">;
 
@@ -512,57 +516,6 @@ async function invoiceReadiness(
   };
 }
 
-/**
- * Re-materialize any visit-linked source records that predate the ledger or
- * arrived through a trusted non-dashboard path. Each statement is tenant and
- * appointment scoped, and unique source indexes make retries idempotent.
- */
-async function syncVisitWorkItems(
-  ctx: EncounterContext,
-  appointmentId: string
-) {
-  await ctx.db.execute(sql`
-    insert into ${visitWorkItems}
-      (practice_id, appointment_id, vaccination_record_id)
-    select ${vaccinationRecords.practiceId}, ${vaccinationRecords.appointmentId}, ${vaccinationRecords.id}
-    from ${vaccinationRecords}
-    where ${vaccinationRecords.practiceId} = ${ctx.practiceId}
-      and ${vaccinationRecords.appointmentId} = ${appointmentId}
-      and ${vaccinationRecords.deletedAt} is null
-    on conflict do nothing
-  `);
-  await ctx.db.execute(sql`
-    insert into ${visitWorkItems}
-      (practice_id, appointment_id, lab_result_id)
-    select ${labResults.practiceId}, ${labResults.appointmentId}, ${labResults.id}
-    from ${labResults}
-    where ${labResults.practiceId} = ${ctx.practiceId}
-      and ${labResults.appointmentId} = ${appointmentId}
-      and ${labResults.deletedAt} is null
-    on conflict do nothing
-  `);
-  await ctx.db.execute(sql`
-    insert into ${visitWorkItems}
-      (practice_id, appointment_id, procedure_id)
-    select ${procedures.practiceId}, ${procedures.appointmentId}, ${procedures.id}
-    from ${procedures}
-    where ${procedures.practiceId} = ${ctx.practiceId}
-      and ${procedures.appointmentId} = ${appointmentId}
-      and ${procedures.deletedAt} is null
-    on conflict do nothing
-  `);
-  await ctx.db.execute(sql`
-    insert into ${visitWorkItems}
-      (practice_id, appointment_id, prescription_id)
-    select ${prescriptions.practiceId}, ${prescriptions.appointmentId}, ${prescriptions.id}
-    from ${prescriptions}
-    where ${prescriptions.practiceId} = ${ctx.practiceId}
-      and ${prescriptions.appointmentId} = ${appointmentId}
-      and ${prescriptions.deletedAt} is null
-    on conflict do nothing
-  `);
-}
-
 async function lockInitialDispenseCharge(
   ctx: EncounterContext,
   prescriptionId: string,
@@ -595,47 +548,6 @@ async function lockInitialDispenseCharge(
     .limit(1)
     .for("update");
   return charge ?? null;
-}
-
-async function assertNoUnresolvedVisitWork(
-  ctx: EncounterContext,
-  appointmentId: string
-) {
-  const rows = await ctx.db.execute(sql`
-    select ${visitWorkItems.id}
-    from ${visitWorkItems}
-    left join ${invoiceItems}
-      on ${invoiceItems.id} = ${visitWorkItems.invoiceItemId}
-    left join ${invoices}
-      on ${invoices.id} = ${visitWorkItems.invoiceId}
-      and ${invoices.practiceId} = ${ctx.practiceId}
-      and ${invoices.appointmentId} = ${appointmentId}
-    where ${visitWorkItems.practiceId} = ${ctx.practiceId}
-      and ${visitWorkItems.appointmentId} = ${appointmentId}
-      and (
-        ${visitWorkItems.status} = 'unresolved'
-        or (
-          ${visitWorkItems.status} = 'charged'
-          and (
-            ${invoiceItems.id} is null
-            or ${invoiceItems.deletedAt} is not null
-            or ${invoices.id} is null
-            or ${invoices.deletedAt} is not null
-            or ${invoices.status} = 'void'
-          )
-        )
-      )
-      and ${visitWorkItems.deletedAt} is null
-    order by ${visitWorkItems.createdAt}, ${visitWorkItems.id}
-    limit 1
-  `);
-  if (rowsFromExecute<{ id: string }>(rows).length > 0) {
-    throw new TRPCError({
-      code: "PRECONDITION_FAILED",
-      message:
-        "Resolve every performed vaccination, lab, procedure, and prescription as charged, no charge, or void/corrected before checkout.",
-    });
-  }
 }
 
 export const encountersRouter = createRouter({
@@ -1405,6 +1317,7 @@ export const encountersRouter = createRouter({
               "Visit reconciliation can be corrected only while the exam is open.",
           });
         }
+        await assertVisitReconciliationMutable(txCtx, input.appointmentId);
         const [workItem] = await tx
           .select()
           .from(visitWorkItems)

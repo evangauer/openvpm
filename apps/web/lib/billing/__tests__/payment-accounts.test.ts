@@ -63,5 +63,9 @@ describe("Stripe Connect payment accounts", () => {
 
     vi.stubEnv("STRIPE_CONNECT_APPLICATION_FEE_BPS", "250");
     expect(stripeConnectApplicationFeeAmount(10_000)).toBe(250);
+
+    vi.stubEnv("STRIPE_CONNECT_APPLICATION_FEE_BPS", "10000");
+    expect(stripeConnectApplicationFeeAmount(1)).toBeUndefined();
+    expect(stripeConnectApplicationFeeAmount(2)).toBe(1);
   });
 });

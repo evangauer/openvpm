@@ -203,6 +203,15 @@ describe("billing invoice payment actions", () => {
     expect(source).toContain("Take Card");
   });
 
+  it("offers invoice email only while a balance-bearing invoice is sent or overdue", () => {
+    expect(source).toContain(
+      '(invoice.status === "sent" ||\n                          invoice.status === "overdue")'
+    );
+    expect(source).not.toContain(
+      'invoice.status === "overdue" ||\n                          invoice.status === "paid"'
+    );
+  });
+
   it("uses accessible in-app dialogs for irreversible billing actions", () => {
     expect(source).toContain("<ActionConfirmationDialog");
     expect(source).toContain('title="Void invoice?"');

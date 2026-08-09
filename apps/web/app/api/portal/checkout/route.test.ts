@@ -8,17 +8,20 @@ const ROUTE_SOURCE = readFileSync(
 );
 
 const mocks = vi.hoisted(() => {
-  const selectResults: unknown[][] = [];
+  const selectResults: Array<unknown[] | Error> = [];
   const select = vi.fn(() => {
     const result = selectResults.shift() ?? [];
+    const resultPromise = () =>
+      result instanceof Error ? Promise.reject(result) : Promise.resolve(result);
     const builder = {
       from: vi.fn(() => builder),
       where: vi.fn(() => builder),
-      limit: vi.fn(async () => result),
+      limit: vi.fn(() => resultPromise()),
+      for: vi.fn(() => resultPromise()),
       then: (
         resolve: (value: unknown[]) => unknown,
         reject?: (error: unknown) => unknown
-      ) => Promise.resolve(result).then(resolve, reject),
+      ) => resultPromise().then(resolve, reject),
     };
     return builder;
   });
@@ -95,6 +98,7 @@ const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const CLIENT_ID = "00000000-0000-0000-0000-0000000000bb";
 const INVOICE_ID = "00000000-0000-0000-0000-0000000000cc";
 const PATIENT_ID = "00000000-0000-0000-0000-0000000000dd";
+const APPOINTMENT_ID = "00000000-0000-0000-0000-0000000000ee";
 const IP = "203.0.113.10";
 const TOKEN_BUCKET =
   "portal-checkout:token:0ba11c8c03cc892e40cac090ac14c4db6e655ecfaff2490257fbe4c10fba19f9";
@@ -484,6 +488,55 @@ describe("portal checkout route", () => {
     );
     // Self-host: the platform Stripe key IS the practice's account.
     expect(mocks.getChargeableStripeConnectAccountId).not.toHaveBeenCalled();
+  });
+
+  it("returns a controlled conflict when a linked visit is not ready", async () => {
+    mocks.selectResults.push(
+      [client()],
+      [invoice({ appointmentId: APPOINTMENT_ID })],
+      [{ id: APPOINTMENT_ID }],
+      [{ status: "draft" }]
+    );
+
+    const response = await POST(
+      portalRequest({ token: "portal-token", invoiceId: INVOICE_ID })
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "Finalize the clinical handoff before sending or collecting this visit invoice.",
+    });
+    expect(mocks.createCheckoutSession).not.toHaveBeenCalled();
+  });
+
+  it("does not expose database failures as visit-readiness conflicts", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    mocks.selectResults.push(
+      [client()],
+      [invoice({ appointmentId: APPOINTMENT_ID })],
+      [{ id: APPOINTMENT_ID }],
+      new Error("database unavailable: secret detail")
+    );
+
+    try {
+      const response = await POST(
+        portalRequest({ token: "portal-token", invoiceId: INVOICE_ID })
+      );
+
+      expect(response.status).toBe(500);
+      await expect(response.json()).resolves.toEqual({
+        error: "Internal server error",
+      });
+      expect(consoleError).toHaveBeenCalledWith(
+        "[Portal Checkout] Error:",
+        expect.any(Error)
+      );
+      expect(mocks.createCheckoutSession).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("hosted: routes portal checkout through the practice's Connect account", async () => {

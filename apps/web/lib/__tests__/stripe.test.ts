@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildInvoiceCheckoutSessionParams,
   buildSubscriptionCheckoutSessionParams,
+  INVOICE_CHECKOUT_CAPTURE_MODE,
   STRIPE_TAX_ENABLED_ENV,
 } from "../stripe";
 import { TRIAL_DAYS } from "../billing/plans";
@@ -17,6 +18,9 @@ async function importStripeWithMock() {
   const checkoutCreate = vi.fn();
   const checkoutRetrieve = vi.fn();
   const refundCreate = vi.fn();
+  const paymentIntentCapture = vi.fn();
+  const paymentIntentCancel = vi.fn();
+  const paymentIntentRetrieve = vi.fn();
   const billingPortalCreate = vi.fn();
   const accountCreate = vi.fn();
   const accountRetrieve = vi.fn();
@@ -31,6 +35,11 @@ async function importStripeWithMock() {
         sessions: { create: checkoutCreate, retrieve: checkoutRetrieve },
       };
       refunds = { create: refundCreate };
+      paymentIntents = {
+        cancel: paymentIntentCancel,
+        capture: paymentIntentCapture,
+        retrieve: paymentIntentRetrieve,
+      };
       billingPortal = { sessions: { create: billingPortalCreate } };
       accounts = {
         create: accountCreate,
@@ -49,6 +58,9 @@ async function importStripeWithMock() {
     checkoutCreate,
     checkoutRetrieve,
     refundCreate,
+    paymentIntentCapture,
+    paymentIntentCancel,
+    paymentIntentRetrieve,
     billingPortalCreate,
     accountCreate,
     accountRetrieve,
@@ -216,9 +228,18 @@ describe("buildInvoiceCheckoutSessionParams", () => {
       mode: "payment",
       customer_email: "client@example.com",
       client_reference_id: "invoice_123",
-      metadata: { invoiceId: "invoice_123", source: "client_invoice" },
+      metadata: {
+        invoiceId: "invoice_123",
+        captureMode: INVOICE_CHECKOUT_CAPTURE_MODE,
+        source: "client_invoice",
+      },
       payment_intent_data: {
-        metadata: { invoiceId: "invoice_123", source: "client_invoice" },
+        capture_method: "manual",
+        metadata: {
+          invoiceId: "invoice_123",
+          captureMode: INVOICE_CHECKOUT_CAPTURE_MODE,
+          source: "client_invoice",
+        },
       },
       success_url: "https://app.example.com/billing?payment=success",
       cancel_url: "https://app.example.com/billing?payment=cancelled",
@@ -307,15 +328,18 @@ describe("buildInvoiceCheckoutSessionParams", () => {
 
     expect(params.metadata).toEqual({
       invoiceId: "invoice_123",
+      captureMode: INVOICE_CHECKOUT_CAPTURE_MODE,
       source: "client_invoice_connect",
       stripeConnectAccountId: "acct_123",
     });
     expect(params.payment_intent_data).toEqual({
       metadata: {
         invoiceId: "invoice_123",
+        captureMode: INVOICE_CHECKOUT_CAPTURE_MODE,
         source: "client_invoice_connect",
         stripeConnectAccountId: "acct_123",
       },
+      capture_method: "manual",
       application_fee_amount: 125,
     });
   });
@@ -345,7 +369,11 @@ describe("create Stripe hosted sessions", () => {
     expect(checkoutCreate).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
-        metadata: { invoiceId: "invoice_123", source: "client_invoice" },
+        metadata: {
+          invoiceId: "invoice_123",
+          captureMode: INVOICE_CHECKOUT_CAPTURE_MODE,
+          source: "client_invoice",
+        },
       }),
       expect.objectContaining({
         idempotencyKey: expect.stringMatching(
@@ -469,6 +497,208 @@ describe("create Stripe hosted sessions", () => {
       expect.objectContaining({
         idempotencyKey: expect.stringMatching(
           /^openvpm:refund:refund:payment:payment_123:/
+        ),
+        stripeAccount: "acct_9",
+      })
+    );
+  });
+
+  it("captures only the live invoice balance from a manual authorization", async () => {
+    const {
+      stripeModule,
+      paymentIntentCapture,
+      paymentIntentRetrieve,
+    } = await importStripeWithMock();
+    paymentIntentRetrieve.mockResolvedValue({
+      status: "requires_capture",
+      amount: 12550,
+      amount_capturable: 12550,
+      application_fee_amount: 125,
+    });
+    paymentIntentCapture.mockResolvedValue({ amount_received: 5000 });
+
+    await expect(
+      stripeModule.captureStripeCheckoutAuthorization({
+        paymentIntentId: "pi_123",
+        amountCents: 5000,
+        checkoutSessionId: "cs_123",
+        connectedAccountId: "acct_123",
+      })
+    ).resolves.toEqual({ amountCapturedCents: 5000 });
+
+    expect(paymentIntentRetrieve).toHaveBeenCalledWith("pi_123", {
+      stripeAccount: "acct_123",
+    });
+    expect(paymentIntentCapture).toHaveBeenCalledWith(
+      "pi_123",
+      { amount_to_capture: 5000, application_fee_amount: 49 },
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(
+          /^openvpm:invoice-capture:cs_123:/
+        ),
+        stripeAccount: "acct_123",
+      })
+    );
+  });
+
+  it("overrides a partial Connect capture fee to zero for a one-cent balance", async () => {
+    const {
+      stripeModule,
+      paymentIntentCapture,
+      paymentIntentRetrieve,
+    } = await importStripeWithMock();
+    paymentIntentRetrieve.mockResolvedValue({
+      status: "requires_capture",
+      amount: 10000,
+      amount_capturable: 10000,
+      application_fee_amount: 250,
+    });
+    paymentIntentCapture.mockResolvedValue({ amount_received: 1 });
+
+    await stripeModule.captureStripeCheckoutAuthorization({
+      paymentIntentId: "pi_one_cent",
+      amountCents: 1,
+      checkoutSessionId: "cs_one_cent",
+      connectedAccountId: "acct_123",
+    });
+
+    expect(paymentIntentCapture).toHaveBeenCalledWith(
+      "pi_one_cent",
+      { amount_to_capture: 1, application_fee_amount: 0 },
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(
+          /^openvpm:invoice-capture:cs_one_cent:/
+        ),
+        stripeAccount: "acct_123",
+      })
+    );
+  });
+
+  it("cancels an invalid manual Checkout authorization immediately", async () => {
+    const {
+      stripeModule,
+      checkoutRetrieve,
+      paymentIntentCancel,
+      paymentIntentRetrieve,
+      refundCreate,
+    } = await importStripeWithMock();
+    checkoutRetrieve.mockResolvedValue({ payment_intent: "pi_123" });
+    paymentIntentRetrieve.mockResolvedValue({
+      status: "requires_capture",
+      amount_received: 0,
+    });
+
+    await expect(
+      stripeModule.refundInvalidStripeCheckoutPayment({
+        externalId: "stripe:checkout:cs_123",
+        amountCents: 12550,
+        idempotencyKey: "invalid:cs_123",
+      })
+    ).resolves.toEqual({ outcome: "authorization_canceled" });
+    expect(paymentIntentCancel).toHaveBeenCalledWith(
+      "pi_123",
+      { cancellation_reason: "abandoned" },
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(
+          /^openvpm:invalid-checkout-cancel:invalid:cs_123:/
+        ),
+      })
+    );
+    expect(refundCreate).not.toHaveBeenCalled();
+  });
+
+  it("treats an already-canceled invalid authorization as a safe replay", async () => {
+    const {
+      stripeModule,
+      checkoutRetrieve,
+      paymentIntentCancel,
+      paymentIntentRetrieve,
+    } = await importStripeWithMock();
+    checkoutRetrieve.mockResolvedValue({ payment_intent: "pi_canceled" });
+    paymentIntentRetrieve.mockResolvedValue({
+      status: "canceled",
+      amount_received: 0,
+    });
+
+    await expect(
+      stripeModule.refundInvalidStripeCheckoutPayment({
+        externalId: "stripe:checkout:cs_canceled",
+        amountCents: 12550,
+        idempotencyKey: "invalid:cs_canceled",
+      })
+    ).resolves.toEqual({ outcome: "no_funds" });
+    expect(paymentIntentCancel).not.toHaveBeenCalled();
+  });
+
+  it("cancels invalid Connect authorization on the event account", async () => {
+    const {
+      stripeModule,
+      checkoutRetrieve,
+      paymentIntentCancel,
+      paymentIntentRetrieve,
+    } = await importStripeWithMock();
+    checkoutRetrieve.mockResolvedValue({ payment_intent: "pi_connect_cancel" });
+    paymentIntentRetrieve.mockResolvedValue({
+      status: "requires_capture",
+      amount_received: 0,
+    });
+    paymentIntentCancel.mockResolvedValue({ status: "canceled" });
+
+    await expect(
+      stripeModule.refundInvalidStripeCheckoutPayment({
+        externalId: "stripe:connect:acct_9:checkout:cs_connect_cancel",
+        amountCents: 12550,
+        idempotencyKey: "invalid:cs_connect_cancel",
+      })
+    ).resolves.toEqual({ outcome: "authorization_canceled" });
+    expect(paymentIntentCancel).toHaveBeenCalledWith(
+      "pi_connect_cancel",
+      { cancellation_reason: "abandoned" },
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(
+          /^openvpm:invalid-checkout-cancel:invalid:cs_connect_cancel:/
+        ),
+        stripeAccount: "acct_9",
+      })
+    );
+  });
+
+  it("refunds the full captured legacy payment from Stripe's authoritative amount", async () => {
+    const {
+      stripeModule,
+      checkoutRetrieve,
+      paymentIntentRetrieve,
+      refundCreate,
+    } = await importStripeWithMock();
+    checkoutRetrieve.mockResolvedValue({ payment_intent: "pi_legacy" });
+    paymentIntentRetrieve.mockResolvedValue({
+      status: "succeeded",
+      amount_received: 12550,
+    });
+    refundCreate.mockResolvedValue({ id: "re_legacy" });
+
+    await expect(
+      stripeModule.refundInvalidStripeCheckoutPayment({
+        externalId: "stripe:connect:acct_9:checkout:cs_legacy",
+        // Checkout Session amount_total is nullable/stale; it must not cap the
+        // reversal of funds Stripe says were captured.
+        amountCents: 0,
+        idempotencyKey: "invalid:cs_legacy",
+      })
+    ).resolves.toEqual({
+      outcome: "refunded",
+      refundId: "re_legacy",
+      amountCents: 12550,
+    });
+    expect(refundCreate).toHaveBeenCalledWith(
+      {
+        payment_intent: "pi_legacy",
+        amount: 12550,
+        refund_application_fee: true,
+      },
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(
+          /^openvpm:invalid-checkout-refund:invalid:cs_legacy:/
         ),
         stripeAccount: "acct_9",
       })

@@ -22,6 +22,7 @@ const { billingRouter } = await import("../routers/billing");
 const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const USER_ID = "00000000-0000-0000-0000-000000000001";
 const INVOICE_ID = "00000000-0000-0000-0000-000000000002";
+const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000003";
 
 const baseInvoice = {
   id: INVOICE_ID,
@@ -73,13 +74,15 @@ function callerWithDb(db: Record<string, unknown>) {
 }
 
 function thenableRows(result: unknown[]) {
-  return {
-    limit: vi.fn(async () => result),
+  const rows = {
+    limit: vi.fn(() => rows),
+    for: vi.fn(async () => result),
     then: (
       resolve: (value: unknown[]) => unknown,
       reject?: (e: unknown) => unknown
     ) => Promise.resolve(result).then(resolve, reject),
   };
+  return rows;
 }
 
 function createDb(selectResults: unknown[][]) {
@@ -187,6 +190,25 @@ describe("billing card checkout", () => {
       message: "Mark the invoice as sent before recording payment.",
     });
 
+    expect(mocks.createCheckoutSession).not.toHaveBeenCalled();
+  });
+
+  it("rejects checkout until an appointment-linked visit is finalized", async () => {
+    const visitInvoice = { ...baseInvoice, appointmentId: APPOINTMENT_ID };
+    const { db } = createDb([
+      [visitInvoice],
+      [{ id: APPOINTMENT_ID }],
+      [visitInvoice],
+      [{ status: "draft" }],
+    ]);
+
+    await expect(
+      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Finalize the clinical handoff before sending or collecting this visit invoice.",
+    });
     expect(mocks.createCheckoutSession).not.toHaveBeenCalled();
   });
 

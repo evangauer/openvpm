@@ -26,6 +26,8 @@ const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const USER_ID = "00000000-0000-0000-0000-000000000001";
 const INVOICE_ID = "00000000-0000-0000-0000-000000000002";
 const OPERATION_ID = "00000000-0000-0000-0000-000000000009";
+const APPOINTMENT_ID = "00000000-0000-0000-0000-00000000000a";
+const CLOSEOUT_ID = "00000000-0000-0000-0000-00000000000b";
 
 const baseInvoice = {
   id: INVOICE_ID,
@@ -65,11 +67,13 @@ function callerWithDb(
 }
 
 function thenableRows(result: unknown[]) {
-  return {
-    limit: vi.fn(async () => result),
+  const builder = {
+    limit: vi.fn(() => builder),
+    for: vi.fn(async () => result),
     then: (resolve: (value: unknown[]) => unknown, reject?: (e: unknown) => unknown) =>
       Promise.resolve(result).then(resolve, reject),
   };
+  return builder;
 }
 
 function createDb(opts: {
@@ -428,6 +432,55 @@ describe("billing payments", () => {
     );
   });
 
+  it("atomically settles a completed accounts-receivable visit", async () => {
+    const linkedInvoice = { ...baseInvoice, appointmentId: APPOINTMENT_ID };
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [
+        [linkedInvoice],
+        [{ id: APPOINTMENT_ID }],
+        [linkedInvoice],
+        [{ status: "completed" }],
+        [],
+        [{
+          id: CLOSEOUT_ID,
+          chargeDisposition: "accounts_receivable",
+          revision: 3,
+        }],
+      ],
+      updateReturns: [[{ id: INVOICE_ID }], [{ id: CLOSEOUT_ID }]],
+    });
+
+    await callerWithDb(db).recordPayment({
+      invoiceId: INVOICE_ID,
+      amount: "80.00",
+      method: "credit_card",
+    });
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chargeDisposition: "paid",
+        revision: 4,
+      })
+    );
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: PRACTICE_ID,
+        userId: USER_ID,
+        action: "visit_closeout_settled",
+        entityType: "visit_closeout",
+        entityId: CLOSEOUT_ID,
+        changes: expect.objectContaining({
+          invoiceId: INVOICE_ID,
+          source: "dashboard_payment",
+          priorChargeDisposition: "accounts_receivable",
+          nextChargeDisposition: "paid",
+          priorRevision: 3,
+          nextRevision: 4,
+        }),
+      })
+    );
+  });
+
   it("requires a payment or adjustment to settle an invoice", async () => {
     const { db, updateSet } = createDb({
       selectResults: [[baseInvoice]],
@@ -448,25 +501,23 @@ describe("billing payments", () => {
     expect(mocks.dispatchWebhookEvent).not.toHaveBeenCalled();
   });
 
-  it("does not void an invoice when history changed concurrently", async () => {
-    const { db, updateSet } = createDb({
-      selectResults: [[{ ...baseInvoice, paidAmount: "0.00" }], []],
+  it("rejects generic status updates that attempt to void", async () => {
+    const { db, select, updateSet } = createDb({
+      selectResults: [],
       includeOperationLookup: false,
-      updateReturns: [[]],
     });
 
     await expect(
       callerWithDb(db).updateInvoiceStatus({
         id: INVOICE_ID,
         status: "void",
-      })
+      } as never)
     ).rejects.toMatchObject({
       code: "BAD_REQUEST",
-      message:
-        "Invoice status changed while updating. Refresh and try again.",
     });
 
-    expect(updateSet).toHaveBeenCalledWith({ status: "void" });
+    expect(select).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
     expect(mocks.dispatchWebhookEvent).not.toHaveBeenCalled();
   });
 

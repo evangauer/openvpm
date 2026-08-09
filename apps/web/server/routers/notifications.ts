@@ -19,6 +19,7 @@ import {
   users,
   communications,
   invoices,
+  invoiceAdjustments,
   vaccinationRecords,
   practices,
   locationMessaging,
@@ -50,6 +51,12 @@ import {
   getVaccinationRecallPreview,
   sendVaccinationRecallReminders,
 } from "../vaccination-recalls";
+import { assertVisitInvoiceReadyForFinancialAction } from "../visit-billing-integrity";
+import {
+  centsToMoney,
+  invoiceBalanceCents,
+  moneyToCents,
+} from "@/lib/billing/invoice-balance";
 
 const DEFAULT_PRACTICE_NAME = "your clinic";
 
@@ -406,7 +413,11 @@ export const notificationsRouter = createRouter({
         .select({
           id: invoices.id,
           total: invoices.total,
+          paidAmount: invoices.paidAmount,
           dueDate: invoices.dueDate,
+          status: invoices.status,
+          isEstimate: invoices.isEstimate,
+          appointmentId: invoices.appointmentId,
           clientId: invoices.clientId,
           clientFirstName: clients.firstName,
           clientLastName: clients.lastName,
@@ -446,6 +457,25 @@ export const notificationsRouter = createRouter({
       if (!invoice) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Invoice not found" });
       }
+      if (invoice.isEstimate) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Convert the estimate before emailing an invoice.",
+        });
+      }
+      if (
+        invoice.status !== "sent" &&
+        invoice.status !== "overdue"
+      ) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Only sent or overdue invoices can be emailed. Use the receipt for paid invoices.",
+        });
+      }
+      await assertVisitInvoiceReadyForFinancialAction(
+        ctx,
+        invoice.appointmentId
+      );
       const clientEmail = normalizeEmailSuppressionAddress(invoice.clientEmail);
       if (!clientEmail) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Client does not have an email address on file" });
@@ -459,10 +489,35 @@ export const notificationsRouter = createRouter({
         });
       }
 
-      // Format the total in the practice's region currency.
+      const adjustmentRows = await ctx.db
+        .select({ amount: invoiceAdjustments.amount })
+        .from(invoiceAdjustments)
+        .where(
+          and(
+            eq(invoiceAdjustments.invoiceId, invoice.id),
+            sql`exists (
+              select 1
+              from ${invoices}
+              where ${invoices.id} = ${invoiceAdjustments.invoiceId}
+                and ${invoices.practiceId} = ${ctx.practiceId}
+                and ${invoices.clientId} = ${invoice.clientId}
+                and ${invoices.deletedAt} is null
+            )`,
+            isNull(invoiceAdjustments.deletedAt)
+          )
+        );
+      const adjustedCents = adjustmentRows.reduce(
+        (sum, row) => sum + moneyToCents(row.amount),
+        0
+      );
+      const amountDue = centsToMoney(
+        invoiceBalanceCents(invoice, adjustedCents)
+      );
+
+      // Format the live balance in the practice's region currency.
       const practice = await practiceNotificationSettings(ctx);
       const totalFormatted = formatCurrency(
-        invoice.total ?? 0,
+        amountDue,
         practice.currency,
         practice.country
       );
@@ -490,7 +545,7 @@ export const notificationsRouter = createRouter({
         channel: "email",
         direction: "outbound",
         subject: "Invoice",
-        content: `Invoice sent — total: ${totalFormatted}`,
+        content: `Invoice sent — amount due: ${totalFormatted}`,
         status: "sent",
         providerMessageId: emailResult.id,
       });

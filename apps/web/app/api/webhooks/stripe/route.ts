@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { TRPCError } from "@trpc/server";
 import { eq, and, isNull, sum } from "drizzle-orm";
 import { db } from "@openpims/db/client";
 import {
@@ -6,8 +7,13 @@ import {
   invoices,
   payments,
   practices,
+  appointments,
 } from "@openpims/db";
-import { constructWebhookEvent } from "@/lib/stripe";
+import {
+  captureStripeCheckoutAuthorization,
+  constructWebhookEvent,
+  INVOICE_CHECKOUT_CAPTURE_MODE,
+} from "@/lib/stripe";
 import { withSystem } from "@/lib/tenant-db";
 import { claimStripeEvent } from "@/lib/billing/stripe-events";
 import {
@@ -25,6 +31,11 @@ import {
   STRIPE_WEBHOOK_BODY_MAX_BYTES,
   stripeWebhookContentLengthTooLarge,
 } from "@/lib/stripe-webhook-limits";
+import {
+  assertVisitInvoiceReadyForFinancialAction,
+  markCompletedVisitCloseoutPaid,
+} from "@/server/visit-billing-integrity";
+import { resolveInvalidInvoiceCheckout } from "@/server/stripe-checkout-resolution";
 
 function payloadTooLargeResponse() {
   return NextResponse.json(
@@ -71,6 +82,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    if (event.type === "checkout.session.completed") {
+      const candidate = event.data.object as {
+        metadata?: { invoiceId?: string; source?: string };
+      };
+      if (candidate.metadata?.source !== "client_invoice") {
+        return NextResponse.json({ received: true });
+      }
+    }
+
     // Webhook has no tenant session, so claim/process in system context. The
     // event claim lives in the same transaction as side effects; if processing
     // throws, the claim rolls back and Stripe can retry.
@@ -91,25 +111,118 @@ export async function POST(req: NextRequest) {
       if (event.type === "checkout.session.completed") {
         const session = event.data.object as {
           id?: string;
-          metadata?: { invoiceId?: string };
+          metadata?: {
+            invoiceId?: string;
+            captureMode?: string;
+            source?: string;
+          };
           amount_total?: number | null;
+          payment_intent?: string | { id?: string } | null;
         };
 
         const invoiceId = session.metadata?.invoiceId;
-        if (!invoiceId) {
-          console.error("[Stripe Webhook] No invoiceId in session metadata");
+        if (!session.id) {
+          console.error("[Stripe Webhook] Invoice Checkout is missing session id");
           return;
         }
 
         // Calculate payment amount from Stripe (convert cents to dollars)
         const amountCents = session.amount_total ?? 0;
-        const amountDollars = (amountCents / 100).toFixed(2);
-        const externalId = `stripe:checkout:${session.id ?? event.id}`;
+        const checkoutSessionId = session.id;
+        const externalId = `stripe:checkout:${checkoutSessionId}`;
+        const manualCapture =
+          session.metadata?.captureMode === INVOICE_CHECKOUT_CAPTURE_MODE;
+        const paymentIntentId =
+          typeof session.payment_intent === "string"
+            ? session.payment_intent
+            : session.payment_intent?.id;
+        let resolutionPracticeId: string | null = null;
+
+        const resolveInvalidCheckout = async (reason: string) => {
+          const resolution = await resolveInvalidInvoiceCheckout(tx, {
+            eventId: event.id,
+            endpoint: "client-invoice",
+            externalId,
+            sessionId: checkoutSessionId,
+            invoiceId,
+            practiceId: resolutionPracticeId,
+            amountCents,
+            reason,
+          });
+          console.error("[Stripe Webhook] Checkout could not be attributed", {
+            invoiceId,
+            sessionId: session.id,
+            reason,
+            resolution: resolution.outcome,
+          });
+        };
+
+        if (!invoiceId) {
+          await resolveInvalidCheckout("missing_invoice_metadata");
+          return;
+        }
+
+        const [invoiceIdentity] = await tx
+          .select({
+            id: invoices.id,
+            practiceId: invoices.practiceId,
+            appointmentId: invoices.appointmentId,
+          })
+          .from(invoices)
+          .innerJoin(
+            practices,
+            and(
+              eq(practices.id, invoices.practiceId),
+              isNull(practices.deletedAt),
+            ),
+          )
+          .where(and(eq(invoices.id, invoiceId), isNull(invoices.deletedAt)))
+          .limit(1);
+
+        if (!invoiceIdentity) {
+          await resolveInvalidCheckout("invoice_not_found");
+          return;
+        }
+        resolutionPracticeId = invoiceIdentity.practiceId;
+
+        if (invoiceIdentity.appointmentId) {
+          const [appointment] = await tx
+            .select({ id: appointments.id })
+            .from(appointments)
+            .where(
+              and(
+                eq(appointments.id, invoiceIdentity.appointmentId),
+                eq(appointments.practiceId, invoiceIdentity.practiceId),
+                isNull(appointments.deletedAt)
+              )
+            )
+            .for("update", { of: appointments });
+          if (!appointment) {
+            await resolveInvalidCheckout("appointment_not_found");
+            return;
+          }
+          try {
+            await assertVisitInvoiceReadyForFinancialAction(
+              { db: tx, practiceId: invoiceIdentity.practiceId },
+              invoiceIdentity.appointmentId
+            );
+          } catch (err) {
+            if (
+              err instanceof TRPCError &&
+              err.code === "PRECONDITION_FAILED"
+            ) {
+              await resolveInvalidCheckout("visit_not_ready");
+              return;
+            }
+            throw err;
+          }
+        }
 
         const [invoice] = await tx
           .select({
             id: invoices.id,
             practiceId: invoices.practiceId,
+            appointmentId: invoices.appointmentId,
             total: invoices.total,
             paidAmount: invoices.paidAmount,
             status: invoices.status,
@@ -124,28 +237,11 @@ export async function POST(req: NextRequest) {
             ),
           )
           .where(and(eq(invoices.id, invoiceId), isNull(invoices.deletedAt)))
-          .limit(1);
+          .limit(1)
+          .for("update", { of: invoices });
 
         if (!invoice) {
-          console.error("[Stripe Webhook] Invoice not found for Checkout", {
-            invoiceId,
-            sessionId: session.id,
-          });
-          return;
-        }
-
-        if (
-          invoice.isEstimate ||
-          invoice.status === "draft" ||
-          invoice.status === "paid" ||
-          invoice.status === "void"
-        ) {
-          console.error("[Stripe Webhook] Checkout for non-payable invoice", {
-            invoiceId,
-            status: invoice.status,
-            isEstimate: invoice.isEstimate,
-            sessionId: session.id,
-          });
+          await resolveInvalidCheckout("invoice_not_found");
           return;
         }
 
@@ -163,6 +259,20 @@ export async function POST(req: NextRequest) {
           );
         }
 
+        if (
+          invoice.isEstimate ||
+          invoice.status === "draft" ||
+          invoice.status === "paid" ||
+          invoice.status === "void"
+        ) {
+          if (!existingPayment) {
+            await resolveInvalidCheckout(
+              invoice.isEstimate ? "estimate" : `invoice_${invoice.status}`
+            );
+          }
+          return;
+        }
+
         const adjustmentRows = await tx
           .select({ amount: invoiceAdjustments.amount })
           .from(invoiceAdjustments)
@@ -177,13 +287,46 @@ export async function POST(req: NextRequest) {
           0,
         );
 
+        let recordedPaymentAmountCents: number | null = null;
         if (!existingPayment) {
           const balanceCents = invoiceBalanceCents(invoice, adjustedCents);
-          if (amountCents <= 0 || amountCents > balanceCents) {
-            throw new Error(
-              `Stripe Checkout amount no longer matches invoice balance: ${invoiceId}`,
-            );
+          if (amountCents <= 0 || balanceCents <= 0) {
+            await resolveInvalidCheckout("no_live_balance");
+            return;
           }
+
+          let paymentAmountCents = amountCents;
+          if (manualCapture) {
+            if (!paymentIntentId) {
+              throw new Error(
+                `Manual Stripe Checkout is missing its PaymentIntent: ${checkoutSessionId}`
+              );
+            }
+            const captured = await captureStripeCheckoutAuthorization({
+              paymentIntentId,
+              amountCents: Math.min(amountCents, balanceCents),
+              checkoutSessionId,
+            });
+            paymentAmountCents = captured.amountCapturedCents;
+            // A previous webhook attempt may have captured successfully before
+            // its DB transaction rolled back. Never attribute that capture over
+            // a balance that changed before Stripe retried the event.
+            if (
+              paymentAmountCents <= 0 ||
+              paymentAmountCents > balanceCents
+            ) {
+              await resolveInvalidCheckout("captured_amount_exceeds_balance");
+              return;
+            }
+          } else if (amountCents > balanceCents) {
+            // Sessions created before manual capture was deployed have already
+            // moved money. Refund the full stale payment instead of orphaning it.
+            await resolveInvalidCheckout("legacy_amount_exceeds_balance");
+            return;
+          }
+
+          const amountDollars = (paymentAmountCents / 100).toFixed(2);
+          recordedPaymentAmountCents = paymentAmountCents;
 
           // Record the payment once per Checkout Session. The Stripe event ledger
           // handles normal redelivery; this protects money state if Stripe ever
@@ -245,6 +388,16 @@ export async function POST(req: NextRequest) {
         }
 
         if (updates.status === "paid") {
+          await markCompletedVisitCloseoutPaid(
+            { db: tx, practiceId: invoice.practiceId },
+            {
+              appointmentId: invoice.appointmentId,
+              invoiceId,
+              source: "stripe",
+              paymentId: existingPayment?.id ?? null,
+              paymentExternalId: externalId,
+            }
+          );
           paidInvoiceEvents.push({
             practiceId: invoice.practiceId,
             payload: {
@@ -260,7 +413,7 @@ export async function POST(req: NextRequest) {
         // Receipt only for a newly recorded payment, never on redelivery.
         if (!existingPayment) {
           const receipt = await loadClientReceipt(tx, invoiceId, {
-            amountPaidCents: amountCents,
+            amountPaidCents: recordedPaymentAmountCents!,
             balanceRemainingCents: totalCents - paidCents - adjustedCents,
           });
           if (receipt) clientReceipts.push(receipt);

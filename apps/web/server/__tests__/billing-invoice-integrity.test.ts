@@ -1193,6 +1193,7 @@ describe("billing invoice integrity", () => {
             resolutionReason: waiverReason,
           },
         ],
+        [],
         [
           {
             id: "00000000-0000-0000-0000-00000000000a",
@@ -1492,83 +1493,80 @@ describe("billing invoice integrity", () => {
     expect(updateSet).toHaveBeenCalledTimes(2);
   });
 
-  it("restores product stock when voiding a real invoice through status updates", async () => {
-    const { db, updateSet } = createDb({
-      selectResults: [
-        [
-          {
-            id: INVOICE_ID,
-            total: "30.00",
-            paidAmount: "0.00",
-            status: "sent",
-            isEstimate: false,
-          },
-        ],
-        [],
-        [],
-        [{ itemType: "product", itemId: PRODUCT_ID, quantity: 2 }],
-      ],
-      updateReturns: [
-        [{ id: INVOICE_ID, status: "void", isEstimate: false }],
-        [{ id: PRODUCT_ID, stockQuantity: 12 }],
-      ],
-    });
+  it("rejects voiding through the generic status endpoint", async () => {
+    const { db, select, updateSet } = createDb({ selectResults: [] });
 
     await expect(
-      callerWithDb(db).updateInvoiceStatus({ id: INVOICE_ID, status: "void" })
-    ).resolves.toMatchObject({ status: "void" });
+      callerWithDb(db).updateInvoiceStatus({
+        id: INVOICE_ID,
+        status: "void",
+      } as never)
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
-    expect(updateSet).toHaveBeenNthCalledWith(1, { status: "void" });
-    expect(updateSet).toHaveBeenNthCalledWith(2, {
-      stockQuantity: expect.anything(),
-    });
-  });
-
-  it("does not restore stock when a void status update is repeated", async () => {
-    const { db, updateSet } = createDb({
-      selectResults: [
-        [
-          {
-            id: INVOICE_ID,
-            total: "30.00",
-            paidAmount: "0.00",
-            status: "void",
-            isEstimate: false,
-          },
-        ],
-      ],
-    });
-
-    await expect(
-      callerWithDb(db).updateInvoiceStatus({ id: INVOICE_ID, status: "void" })
-    ).resolves.toMatchObject({ status: "void" });
-
+    expect(select).not.toHaveBeenCalled();
     expect(updateSet).not.toHaveBeenCalled();
   });
 
-  it("does not restore stock when voiding an estimate", async () => {
-    const { db, updateSet } = createDb({
+  it("requires reconciled visit work before sending an invoice", async () => {
+    const visitInvoice = {
+      id: INVOICE_ID,
+      total: "30.00",
+      paidAmount: "0.00",
+      status: "draft",
+      isEstimate: false,
+      appointmentId: APPOINTMENT_ID,
+    };
+    const { db, execute, updateSet } = createDb({
       selectResults: [
-        [
-          {
-            id: INVOICE_ID,
-            total: "30.00",
-            paidAmount: "0.00",
-            status: "sent",
-            isEstimate: true,
-          },
-        ],
-        [],
+        [visitInvoice],
+        [{ id: APPOINTMENT_ID }],
+        [{ status: "clinical_finalized" }],
       ],
-      updateReturns: [[{ id: INVOICE_ID, status: "void", isEstimate: true }]],
+      executeResults: Array.from({ length: 6 }, () => [
+        { id: "unresolved-work" },
+      ]),
     });
 
     await expect(
-      callerWithDb(db).updateInvoiceStatus({ id: INVOICE_ID, status: "void" })
-    ).resolves.toMatchObject({ status: "void" });
+      callerWithDb(db).updateInvoiceStatus({
+        id: INVOICE_ID,
+        status: "sent",
+      })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Resolve every performed vaccination, lab, procedure, and prescription before sending or collecting this visit invoice.",
+    });
+    expect(execute).toHaveBeenCalledTimes(6);
+    expect(updateSet).not.toHaveBeenCalled();
+  });
 
-    expect(updateSet).toHaveBeenCalledTimes(1);
-    expect(updateSet).toHaveBeenCalledWith({ status: "void" });
+  it("sends a clinically finalized visit invoice after reconciliation", async () => {
+    const visitInvoice = {
+      id: INVOICE_ID,
+      total: "30.00",
+      paidAmount: "0.00",
+      status: "draft",
+      isEstimate: false,
+      appointmentId: APPOINTMENT_ID,
+    };
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [visitInvoice],
+        [{ id: APPOINTMENT_ID }],
+        [{ status: "clinical_finalized" }],
+      ],
+      executeResults: [[], [], [], [], [], []],
+      updateReturns: [[{ ...visitInvoice, status: "sent" }]],
+    });
+
+    await expect(
+      callerWithDb(db).updateInvoiceStatus({
+        id: INVOICE_ID,
+        status: "sent",
+      })
+    ).resolves.toMatchObject({ status: "sent" });
+    expect(updateSet).toHaveBeenCalledWith({ status: "sent" });
   });
 
   it("restores product stock when using the dedicated void endpoint", async () => {
@@ -1585,6 +1583,7 @@ describe("billing invoice integrity", () => {
         ],
         [],
         [],
+        [],
         [{ itemType: "product", itemId: PRODUCT_ID, quantity: 2 }],
       ],
       updateReturns: [
@@ -1594,13 +1593,69 @@ describe("billing invoice integrity", () => {
     });
 
     await expect(
-      callerWithDb(db).voidInvoice({ id: INVOICE_ID })
+      callerWithDb(db).voidInvoice({
+        id: INVOICE_ID,
+        reason: "Duplicate invoice",
+      })
     ).resolves.toMatchObject({ status: "void" });
 
     expect(updateSet).toHaveBeenNthCalledWith(1, { status: "void" });
     expect(updateSet).toHaveBeenNthCalledWith(2, {
       stockQuantity: expect.anything(),
     });
+  });
+
+  it("atomically reopens charged visit work and audits a dedicated void", async () => {
+    const workItemId = "00000000-0000-0000-0000-00000000000b";
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [
+        [
+          {
+            id: INVOICE_ID,
+            total: "30.00",
+            paidAmount: "0.00",
+            status: "sent",
+            isEstimate: false,
+            appointmentId: APPOINTMENT_ID,
+          },
+        ],
+        [{ id: APPOINTMENT_ID }],
+        [],
+        [],
+        [{ id: workItemId }],
+        [],
+      ],
+      executeResults: [[]],
+      updateReturns: [[{ id: INVOICE_ID, status: "void", isEstimate: false }]],
+    });
+
+    await callerWithDb(db).voidInvoice({
+      id: INVOICE_ID,
+      reason: "Duplicate invoice",
+    });
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "unresolved",
+        invoiceId: null,
+        invoiceItemId: null,
+        resolvedBy: null,
+        resolvedAt: null,
+      })
+    );
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "invoice_voided",
+        entityType: "invoice",
+        entityId: INVOICE_ID,
+        changes: expect.objectContaining({
+          reason: "Duplicate invoice",
+          priorStatus: "sent",
+          nextStatus: "void",
+          reopenedVisitWorkItemIds: [workItemId],
+        }),
+      })
+    );
   });
 
   it("does not void an invoice referenced by a completed visit closeout", async () => {
@@ -1622,7 +1677,10 @@ describe("billing invoice integrity", () => {
     });
 
     await expect(
-      callerWithDb(db).voidInvoice({ id: INVOICE_ID })
+      callerWithDb(db).voidInvoice({
+        id: INVOICE_ID,
+        reason: "Duplicate invoice",
+      })
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message:
@@ -1650,7 +1708,10 @@ describe("billing invoice integrity", () => {
     });
 
     await expect(
-      callerWithDb(db).voidInvoice({ id: INVOICE_ID })
+      callerWithDb(db).voidInvoice({
+        id: INVOICE_ID,
+        reason: "Duplicate invoice",
+      })
     ).resolves.toMatchObject({ status: "void" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -1674,7 +1735,10 @@ describe("billing invoice integrity", () => {
     });
 
     await expect(
-      callerWithDb(db).voidInvoice({ id: INVOICE_ID })
+      callerWithDb(db).voidInvoice({
+        id: INVOICE_ID,
+        reason: "Duplicate invoice",
+      })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).toHaveBeenCalledTimes(1);

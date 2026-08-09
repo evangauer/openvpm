@@ -81,8 +81,11 @@ export function stripeConnectApplicationFeeAmount(
   paymentAmountCents: number
 ): number | undefined {
   const bps = stripeConnectApplicationFeeBps();
-  if (bps <= 0 || paymentAmountCents <= 0) return undefined;
-  return Math.floor((paymentAmountCents * bps) / 10_000);
+  if (bps <= 0 || paymentAmountCents <= 1) return undefined;
+  const fee = Math.floor((paymentAmountCents * bps) / 10_000);
+  if (fee <= 0) return undefined;
+  // Always leave at least one cent of a client payment with the clinic.
+  return Math.min(fee, paymentAmountCents - 1);
 }
 
 export function stripeConnectAccountState(

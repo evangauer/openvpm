@@ -1369,7 +1369,9 @@ function InvoiceRow({
                         <Download className="mr-1 h-3.5 w-3.5" />
                         Download PDF
                       </Button>
-                      {canManageBilling && (
+                      {canManageBilling &&
+                        (invoice.status === "sent" ||
+                          invoice.status === "overdue") && (
                         <EmailInvoiceButton invoiceId={invoice.id} />
                       )}
                     </div>
@@ -1383,6 +1385,7 @@ function InvoiceRow({
                     invoicePaidAmount={detail.data.paidAmount}
                     invoiceAdjustedAmount={detail.data.adjustedAmount}
                     invoiceBalanceDue={detail.data.balanceDue}
+                    invoiceDueDate={detail.data.dueDate}
                     invoiceStatus={invoice.status}
                     billingTimeZone={billingTimeZone}
                     canManageBilling={canManageBilling}
@@ -1436,6 +1439,7 @@ function PaymentSection({
   invoicePaidAmount,
   invoiceAdjustedAmount,
   invoiceBalanceDue,
+  invoiceDueDate,
   invoiceStatus,
   billingTimeZone,
   canManageBilling,
@@ -1444,6 +1448,7 @@ function PaymentSection({
   invoicePaidAmount: string | null;
   invoiceAdjustedAmount: string | null;
   invoiceBalanceDue: string | null;
+  invoiceDueDate: string | null;
   invoiceStatus: string;
   billingTimeZone?: string | null;
   canManageBilling: boolean;
@@ -1463,6 +1468,8 @@ function PaymentSection({
     paymentId: string;
     amount: string;
   } | null>(null);
+  const [refundReason, setRefundReason] = useState("");
+  const [refundDueDate, setRefundDueDate] = useState("");
   const paymentOperationId = useRef<string | null>(null);
   const adjustmentOperationId = useRef<string | null>(null);
 
@@ -1526,6 +1533,8 @@ function PaymentSection({
     onSuccess: () => {
       toast.success("Payment refunded");
       setRefundTarget(null);
+      setRefundReason("");
+      setRefundDueDate("");
       utils.billing.listPayments.invalidate({ invoiceId });
       utils.billing.listInvoices.invalidate();
       utils.billing.getInvoice.invalidate({ id: invoiceId });
@@ -1613,11 +1622,22 @@ function PaymentSection({
   const closeRefundDialog = () => {
     if (refundPayment.isPending) return;
     setRefundTarget(null);
+    setRefundReason("");
+    setRefundDueDate("");
   };
 
   const confirmRefund = () => {
-    if (!refundTarget) return;
-    refundPayment.mutate({ paymentId: refundTarget.paymentId });
+    if (
+      !refundTarget ||
+      refundReason.trim().length < BILLING_ACTION_REASON_MIN_LENGTH
+    ) {
+      return;
+    }
+    refundPayment.mutate({
+      paymentId: refundTarget.paymentId,
+      reason: refundReason.trim(),
+      dueDate: refundDueDate || undefined,
+    });
   };
 
   return (
@@ -1886,12 +1906,14 @@ function PaymentSection({
                         size="sm"
                         className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive"
                         disabled={refundPayment.isPending}
-                        onClick={() =>
+                        onClick={() => {
+                          setRefundReason("");
+                          setRefundDueDate(invoiceDueDate ?? "");
                           setRefundTarget({
                             paymentId: payment.id,
                             amount: payment.amount,
-                          })
-                        }
+                          });
+                        }}
                       >
                         Refund
                       </Button>
@@ -1974,9 +1996,35 @@ function PaymentSection({
         confirmLabel="Refund payment"
         confirmVariant="destructive"
         isPending={refundPayment.isPending}
+        reason={{
+          label: "Reason for refund",
+          value: refundReason,
+          onChange: setRefundReason,
+          placeholder: "Explain the refund for the audit trail",
+          minLength: BILLING_ACTION_REASON_MIN_LENGTH,
+          maxLength: BILLING_ACTION_REASON_MAX_LENGTH,
+        }}
         onCancel={closeRefundDialog}
         onConfirm={confirmRefund}
-      />
+      >
+        <label
+          htmlFor={`refund-due-date-${invoiceId}`}
+          className="text-sm font-medium"
+        >
+          Due date if this refund reopens the visit balance
+        </label>
+        <Input
+          id={`refund-due-date-${invoiceId}`}
+          type="date"
+          className="mt-2"
+          value={refundDueDate}
+          disabled={refundPayment.isPending || Boolean(invoiceDueDate)}
+          onChange={(event) => setRefundDueDate(event.target.value)}
+        />
+        <p className="mt-1 text-xs text-muted-foreground">
+          Required when a completed, paid visit becomes accounts receivable.
+        </p>
+      </ActionConfirmationDialog>
     </div>
   );
 }

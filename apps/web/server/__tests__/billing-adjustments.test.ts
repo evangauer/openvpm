@@ -19,6 +19,8 @@ const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const USER_ID = "00000000-0000-0000-0000-000000000001";
 const INVOICE_ID = "00000000-0000-0000-0000-000000000002";
 const OPERATION_ID = "00000000-0000-0000-0000-000000000009";
+const APPOINTMENT_ID = "00000000-0000-0000-0000-00000000000a";
+const CLOSEOUT_ID = "00000000-0000-0000-0000-00000000000b";
 
 const baseInvoice = {
   id: INVOICE_ID,
@@ -58,14 +60,16 @@ function callerWithDb(
 }
 
 function thenableRows(result: unknown[]) {
-  return {
-    limit: vi.fn(async () => result),
-    orderBy: vi.fn(async () => result),
+  const builder = {
+    limit: vi.fn(() => builder),
+    orderBy: vi.fn(() => builder),
+    for: vi.fn(async () => result),
     then: (
       resolve: (value: unknown[]) => unknown,
       reject?: (e: unknown) => unknown
     ) => Promise.resolve(result).then(resolve, reject),
   };
+  return builder;
 }
 
 function createDb(opts: {
@@ -278,6 +282,52 @@ describe("billing invoice adjustments", () => {
     );
   });
 
+  it("settles the completed visit when an adjustment closes accounts receivable", async () => {
+    const linkedInvoice = { ...baseInvoice, appointmentId: APPOINTMENT_ID };
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [
+        [linkedInvoice],
+        [{ id: APPOINTMENT_ID }],
+        [linkedInvoice],
+        [{ status: "completed" }],
+        [],
+        [{
+          id: CLOSEOUT_ID,
+          chargeDisposition: "accounts_receivable",
+          revision: 6,
+        }],
+      ],
+      updateReturns: [[{ id: INVOICE_ID }], [{ id: CLOSEOUT_ID }]],
+    });
+
+    await callerWithDb(db).applyInvoiceAdjustment({
+      invoiceId: INVOICE_ID,
+      type: "write_off",
+      amount: "80.00",
+      reason: "Bad debt",
+    });
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chargeDisposition: "paid",
+        revision: 7,
+      })
+    );
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: PRACTICE_ID,
+        userId: USER_ID,
+        action: "visit_closeout_settled",
+        entityId: CLOSEOUT_ID,
+        changes: expect.objectContaining({
+          source: "dashboard_adjustment",
+          priorRevision: 6,
+          nextRevision: 7,
+        }),
+      })
+    );
+  });
+
   it("returns the original adjustment for an exact operation retry", async () => {
     const replayAdjustment = {
       id: "00000000-0000-0000-0000-000000000003",
@@ -413,7 +463,10 @@ describe("billing invoice adjustments", () => {
     });
 
     await expect(
-      callerWithDb(db).voidInvoice({ id: INVOICE_ID })
+      callerWithDb(db).voidInvoice({
+        id: INVOICE_ID,
+        reason: "Duplicate invoice",
+      })
     ).resolves.toMatchObject({ status: "void" });
 
     expect(updateSet).toHaveBeenCalledWith({ status: "void" });
@@ -427,7 +480,10 @@ describe("billing invoice adjustments", () => {
     });
 
     await expect(
-      callerWithDb(db).voidInvoice({ id: INVOICE_ID })
+      callerWithDb(db).voidInvoice({
+        id: INVOICE_ID,
+        reason: "Duplicate invoice",
+      })
     ).rejects.toMatchObject({
       code: "BAD_REQUEST",
       message: "Invoice changed while voiding. Refresh and try again.",
@@ -443,7 +499,10 @@ describe("billing invoice adjustments", () => {
     });
 
     await expect(
-      callerWithDb(db).voidInvoice({ id: INVOICE_ID })
+      callerWithDb(db).voidInvoice({
+        id: INVOICE_ID,
+        reason: "Duplicate invoice",
+      })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();

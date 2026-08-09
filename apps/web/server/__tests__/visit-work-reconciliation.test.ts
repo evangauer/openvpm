@@ -348,7 +348,12 @@ describe("visit work reconciliation", () => {
     };
     const reopened = { ...unresolvedWork };
     const { db, updateSet, insertValues } = createDb({
-      selectResults: [[openAppointment], [{ id: PATIENT_ID }], [charged]],
+      selectResults: [
+        [openAppointment],
+        [{ id: PATIENT_ID }],
+        [],
+        [charged],
+      ],
       updateResults: [[reopened]],
     });
 
@@ -383,6 +388,30 @@ describe("visit work reconciliation", () => {
     );
   });
 
+  it("requires the finalized invoice to be voided before reopening visit work", async () => {
+    const { db, updateSet, insertValues } = createDb({
+      selectResults: [
+        [openAppointment],
+        [{ id: PATIENT_ID }],
+        [{ status: "sent" }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).reopenVisitWork({
+        appointmentId: APPOINTMENT_ID,
+        workItemId: WORK_ITEM_ID,
+        reason: "Linked the wrong invoice line",
+      })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Void the finalized visit invoice with a reason before reopening its reconciled work.",
+    });
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
   it("returns a waived medication dispense to pending when reopening no-charge work", async () => {
     const noChargeWork = {
       ...unresolvedWork,
@@ -400,6 +429,7 @@ describe("visit work reconciliation", () => {
       selectResults: [
         [openAppointment],
         [{ id: PATIENT_ID }],
+        [],
         [noChargeWork],
         [
           {
@@ -462,6 +492,10 @@ describe("visit work reconciliation", () => {
       new URL("../routers/records.ts", import.meta.url),
       "utf8",
     );
+    const integrity = readFileSync(
+      new URL("../visit-billing-integrity.ts", import.meta.url),
+      "utf8",
+    );
     const migration = readFileSync(
       new URL(
         "../../../../packages/db/drizzle/0045_visit_work_ledger.sql",
@@ -476,13 +510,26 @@ describe("visit work reconciliation", () => {
     );
     expect(router).toContain("eq(invoices.practiceId, ctx.practiceId)");
     expect(router).toContain("eq(invoices.appointmentId, input.appointmentId)");
-    expect(router).toContain(
+    expect(integrity).toContain(
       "(practice_id, appointment_id, vaccination_record_id)",
+    );
+    expect(integrity).toContain(
+      "eq(visitCloseouts.practiceId, ctx.practiceId)",
+    );
+    expect(integrity).toContain(
+      "eq(visitCloseouts.appointmentId, input.appointmentId)",
+    );
+    expect(integrity).toContain(
+      "eq(visitCloseouts.invoiceId, input.invoiceId)",
+    );
+    expect(integrity).toContain(
+      'eq(visitCloseouts.chargeDisposition, "accounts_receivable")',
     );
     expect(recordsRouter).toContain(
       "(practice_id, appointment_id, vaccination_record_id)",
     );
     expect(router).not.toContain("(${visitWorkItems.practiceId}");
+    expect(integrity).not.toContain("(${visitWorkItems.practiceId}");
     expect(recordsRouter).not.toContain("(${visitWorkItems.practiceId}");
     expect(migration).toContain("visit_work_items_vaccination_source_fk");
     expect(migration).toContain("visit_work_items_lab_result_source_fk");

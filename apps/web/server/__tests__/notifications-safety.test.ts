@@ -1286,6 +1286,63 @@ describe("notification target safety", () => {
     expect(insertValues).not.toHaveBeenCalled();
   });
 
+  it("does not email a draft invoice", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [
+        [
+          {
+            id: INVOICE_ID,
+            total: "123.45",
+            paidAmount: "25.00",
+            dueDate: null,
+            status: "draft",
+            isEstimate: false,
+            clientId: CLIENT_ID,
+            clientFirstName: "Ada",
+            clientLastName: "Lovelace",
+            clientEmail: "ada@example.com",
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).sendInvoiceEmail({ invoiceId: INVOICE_ID })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Only sent or overdue invoices can be emailed. Use the receipt for paid invoices.",
+    });
+    expect(mocks.sendInvoiceEmail).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("does not email a paid invoice as though its total were still due", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [
+        [
+          {
+            id: INVOICE_ID,
+            total: "123.45",
+            dueDate: null,
+            status: "paid",
+            isEstimate: false,
+            clientId: CLIENT_ID,
+            clientFirstName: "Ada",
+            clientLastName: "Lovelace",
+            clientEmail: "ada@example.com",
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).sendInvoiceEmail({ invoiceId: INVOICE_ID })
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(mocks.sendInvoiceEmail).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("brands manual invoice emails with practice identity and formatted due dates", async () => {
     mocks.sendInvoiceEmail.mockResolvedValueOnce({
       success: true,
@@ -1298,13 +1355,17 @@ describe("notification target safety", () => {
           {
             id: INVOICE_ID,
             total: "123.45",
+            paidAmount: "25.00",
             dueDate: "2026-07-01",
+            status: "sent",
+            isEstimate: false,
             clientId: CLIENT_ID,
             clientFirstName: "Ada",
             clientLastName: "Lovelace",
             clientEmail: " Ada@Example.COM ",
           },
         ],
+        [{ amount: "10.00" }],
         [PRACTICE_SETTINGS],
       ],
     });
@@ -1317,7 +1378,7 @@ describe("notification target safety", () => {
       expect.objectContaining({
         to: "ada@example.com",
         clientName: "Ada Lovelace",
-        invoiceTotal: "$123.45",
+        invoiceTotal: "$88.45",
         dueDate: "Jul 1, 2026",
         practiceName: "Neighborhood Veterinary",
         practicePhone: "555-0100",
@@ -1329,7 +1390,7 @@ describe("notification target safety", () => {
         clientId: CLIENT_ID,
         channel: "email",
         subject: "Invoice",
-        content: "Invoice sent — total: $123.45",
+        content: "Invoice sent — amount due: $88.45",
         status: "sent",
         providerMessageId: "email-invoice-1",
       })
@@ -1343,7 +1404,10 @@ describe("notification target safety", () => {
           {
             id: INVOICE_ID,
             total: "123.45",
+            paidAmount: "0.00",
             dueDate: "2026-07-01",
+            status: "sent",
+            isEstimate: false,
             clientId: CLIENT_ID,
             clientFirstName: "Ada",
             clientLastName: "Lovelace",
@@ -1379,12 +1443,15 @@ describe("notification target safety", () => {
             id: INVOICE_ID,
             total: "123.45",
             dueDate: "2026-07-01",
+            status: "sent",
+            isEstimate: false,
             clientId: CLIENT_ID,
             clientFirstName: "Ada",
             clientLastName: "Lovelace",
             clientEmail: "ada@example.com",
           },
         ],
+        [],
         [PRACTICE_SETTINGS],
       ],
     });
