@@ -156,6 +156,12 @@ describe("lab result clinical safety contract", () => {
     );
 
     expect(creation).toContain("input.replacesLabResultId && ctx.user.role");
+    expect(router).toContain(
+      "input.replacesLabResultId && !input.resultValue?.trim()",
+    );
+    expect(router).toContain(
+      "A fresh result value is required when replacing an entered-in-error lab result.",
+    );
     expect(creation).toContain('kind: "create"');
     expect(creation).toContain(
       "replacesLabResultId: input.replacesLabResultId ?? null",
@@ -246,6 +252,12 @@ describe("lab result clinical safety contract", () => {
     expect(records).toContain("replacementPatient?.id === selectedPatient?.id");
     expect(records).toContain("replacementSourceLabResult?.appointmentId ??");
     expect(records).toContain("Only the test name was copied");
+    expect(records).toContain(
+      "!replacesLabResultId || Boolean(labForm.resultValue.trim())",
+    );
+    expect(records).toContain(
+      "A replacement cannot be saved as an empty pending result.",
+    );
     expect(records).toContain('resultValue: ""');
     expect(records).toContain('resultFlag: "unknown"');
     expect(records).toContain("lab.replacementLabResultPatientId ?? patientId");

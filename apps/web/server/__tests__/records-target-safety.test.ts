@@ -295,6 +295,32 @@ describe("records target safety", () => {
     expect(insertValues).not.toHaveBeenCalled();
   });
 
+  it("rejects an empty lab replacement before DB work", async () => {
+    const { db, select, insertValues } = createDb();
+
+    await expect(
+      callerWithDb(db).createLabResult({
+        patientId: PATIENT_ID,
+        testName: "CBC",
+        operationId: FORM_ID,
+        replacesLabResultId: RECORD_ID,
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    await expect(
+      callerWithDb(db).createLabResult({
+        patientId: PATIENT_ID,
+        testName: "CBC",
+        resultValue: "   ",
+        operationId: FORM_ID,
+        replacesLabResultId: RECORD_ID,
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    expect(select).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("rejects clinical record text that exceeds backing columns before DB work", async () => {
     const { db, select, insertValues } = createDb();
 

@@ -1085,6 +1085,7 @@ function RecordsPageContent() {
   const canSubmitLabResult =
     Boolean(patientId) &&
     (!replacesLabResultId || Boolean(replacementPatient)) &&
+    (!replacesLabResultId || Boolean(labForm.resultValue.trim())) &&
     isLabRequiredTextInputValid(labForm.testName, LAB_TEST_NAME_MAX_LENGTH) &&
     isLabOptionalTextInputValid(
       labForm.resultValue,
@@ -2785,7 +2786,9 @@ function RecordsPageContent() {
                       </div>
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      Entering a value records this result as completed and sends it to the clinic Lab Inbox for review. A result without values stays pending.
+                      {replacesLabResultId
+                        ? "Enter a fresh result value to create a completed replacement and send it to the clinic Lab Inbox for review. A replacement cannot be saved as an empty pending result."
+                        : "Entering a value records this result as completed and sends it to the clinic Lab Inbox for review. A result without values stays pending."}
                     </p>
                     <div className="flex gap-2">
                       <Button

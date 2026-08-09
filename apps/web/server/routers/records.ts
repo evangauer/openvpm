@@ -333,6 +333,14 @@ const createLabResultInput = z
         message: "A result value is required before a lab result can be completed.",
       });
     }
+    if (input.replacesLabResultId && !input.resultValue?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["resultValue"],
+        message:
+          "A fresh result value is required when replacing an entered-in-error lab result.",
+      });
+    }
     if (
       input.status === "pending" &&
       (input.resultValue != null ||
