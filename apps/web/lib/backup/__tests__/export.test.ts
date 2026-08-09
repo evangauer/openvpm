@@ -133,6 +133,95 @@ function validPatientMergeBackup() {
   };
 }
 
+const LAB_CORRECTION_OPERATION_1 = "00000000-0000-4000-8000-000000000021";
+const LAB_CORRECTION_OPERATION_2 = "00000000-0000-4000-8000-000000000022";
+const LAB_REPLACEMENT_OPERATION_1 = "00000000-0000-4000-8000-000000000023";
+const LAB_REPLACEMENT_OPERATION_2 = "00000000-0000-4000-8000-000000000024";
+
+function validLabReplacementBackup() {
+  const operationHash = "a".repeat(64);
+  return {
+    practiceId: "practice-1",
+    ...emptyBackup(),
+    users: [
+      {
+        id: "user-1",
+        practiceId: "practice-1",
+        name: "Dr. Rivera",
+      },
+    ],
+    clients: [{ id: "client-1", practiceId: "practice-1" }],
+    patients: [
+      {
+        id: "patient-1",
+        practiceId: "practice-1",
+        clientId: "client-1",
+      },
+    ],
+    labResults: ["lab-1", "lab-2", "lab-3"].map((id) => ({
+      id,
+      practiceId: "practice-1",
+      patientId: "patient-1",
+      appointmentId: null,
+      orderedBy: "user-1",
+    })),
+    clinicalRecordCorrections: [
+      {
+        id: "correction-1",
+        practiceId: "practice-1",
+        recordType: "lab_result",
+        soapNoteId: null,
+        vitalSignId: null,
+        vaccinationRecordId: null,
+        labResultId: "lab-1",
+        patientId: "patient-1",
+        appointmentId: null,
+        correctedBy: "user-1",
+        operationId: LAB_CORRECTION_OPERATION_1,
+        operationPayloadHash: operationHash,
+      },
+      {
+        id: "correction-2",
+        practiceId: "practice-1",
+        recordType: "lab_result",
+        soapNoteId: null,
+        vitalSignId: null,
+        vaccinationRecordId: null,
+        labResultId: "lab-2",
+        patientId: "patient-1",
+        appointmentId: null,
+        correctedBy: "user-1",
+        operationId: LAB_CORRECTION_OPERATION_2,
+        operationPayloadHash: operationHash,
+      },
+    ],
+    labResultReplacements: [
+      {
+        id: "replacement-link-1",
+        practiceId: "practice-1",
+        correctionId: "correction-1",
+        sourceLabResultId: "lab-1",
+        replacementLabResultId: "lab-2",
+        actorId: "user-1",
+        actorName: "Dr. Rivera",
+        operationId: LAB_REPLACEMENT_OPERATION_1,
+        operationPayloadHash: operationHash,
+      },
+      {
+        id: "replacement-link-2",
+        practiceId: "practice-1",
+        correctionId: "correction-2",
+        sourceLabResultId: "lab-2",
+        replacementLabResultId: "lab-3",
+        actorId: "user-1",
+        actorName: "Dr. Rivera",
+        operationId: LAB_REPLACEMENT_OPERATION_2,
+        operationPayloadHash: operationHash,
+      },
+    ],
+  };
+}
+
 describe("summarizePracticeExport", () => {
   it("requires module-owned sections in full-practice backups", () => {
     expect(PRACTICE_EXPORT_SECTIONS).toContain("insurancePolicies");
@@ -152,6 +241,23 @@ describe("summarizePracticeExport", () => {
     expect(PRACTICE_EXPORT_SECTIONS).toContain("webhooks");
     expect(PRACTICE_EXPORT_SECTIONS).toContain("apiKeys");
     expect(PRACTICE_EXPORT_SECTIONS).toContain("auditLog");
+  });
+
+  it("requires replacement lineage in current backups but accepts its legacy absence", () => {
+    const currentMissing: Record<string, unknown> = {
+      formatVersion: 2,
+      ...emptyBackup(),
+    };
+    delete currentMissing["labResultReplacements"];
+    expect(summarizePracticeExport(currentMissing).missingSections).toContain(
+      "labResultReplacements",
+    );
+
+    const legacyMissing: Record<string, unknown> = { ...emptyBackup() };
+    delete legacyMissing["labResultReplacements"];
+    expect(
+      summarizePracticeExport(legacyMissing).missingSections,
+    ).not.toContain("labResultReplacements");
   });
 
   it("exports SMS provider ledgers for audit but marks them owner-restore only", () => {
@@ -963,12 +1069,12 @@ describe("restorePracticeData", () => {
         clinicalRecordCorrections: [
           {
             ...backup.clinicalRecordCorrections[0],
-            recordType: "lab_result",
+            recordType: "unexpected",
           },
         ],
       }).errors,
     ).toContain(
-      "clinicalRecordCorrections[correction-1].recordType must be soap_note, vital_sign, or vaccination_record.",
+      "clinicalRecordCorrections[correction-1].recordType must be soap_note, vital_sign, vaccination_record, or lab_result.",
     );
 
     expect(
@@ -999,6 +1105,70 @@ describe("restorePracticeData", () => {
       }).errors,
     ).toContain(
       "clinicalRecordCorrections[correction-4] duplicates an existing correction source.",
+    );
+  });
+
+  it("validates exact append-only lab replacement chains", () => {
+    const backup = validLabReplacementBackup();
+    expect(validatePracticeExportRestore(backup)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    expect(
+      validatePracticeExportRestore({
+        ...backup,
+        labResultReplacements: [
+          ...backup.labResultReplacements,
+          {
+            ...backup.labResultReplacements[0],
+            id: "replacement-link-duplicate",
+            operationId: "00000000-0000-4000-8000-000000000025",
+          },
+        ],
+      }).errors,
+    ).toContain(
+      "labResultReplacements[replacement-link-duplicate].sourceLabResultId must be unique within its practice.",
+    );
+
+    expect(
+      validatePracticeExportRestore({
+        ...backup,
+        labResultReplacements: [
+          {
+            ...backup.labResultReplacements[0],
+            correctionId: "correction-2",
+          },
+        ],
+      }).errors,
+    ).toContain(
+      "labResultReplacements[replacement-link-1].correctionId must identify the exact lab correction for its source.",
+    );
+
+    expect(
+      validatePracticeExportRestore({
+        ...backup,
+        labResultReplacements: [
+          backup.labResultReplacements[0],
+          {
+            ...backup.labResultReplacements[1],
+            replacementLabResultId: "lab-1",
+          },
+        ],
+      }).errors,
+    ).toContain(
+      'labResultReplacements contains a directed replacement cycle at lab result "lab-1".',
+    );
+
+    expect(
+      validatePracticeExportRestore({
+        ...backup,
+        labResults: backup.labResults.map((row) =>
+          row.id === "lab-3" ? { ...row, practiceId: "practice-2" } : row,
+        ),
+      }).errors,
+    ).toContain(
+      "labResultReplacements[replacement-link-2].practiceId must match all linked evidence.",
     );
   });
 

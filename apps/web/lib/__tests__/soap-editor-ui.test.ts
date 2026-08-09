@@ -285,7 +285,10 @@ describe("records lab result form UX", () => {
       "utf8"
     );
 
-    expect(recordsSource).toContain("buildLabTrends(labResultsList ?? [], recordsTimeZone)");
+    expect(recordsSource).toContain("buildLabTrends(");
+    expect(recordsSource).toContain(
+      "(labResultsList ?? []).filter((result) => !result.correctionId)",
+    );
     expect(recordsSource).toContain("const LabTrendCharts = dynamic");
     expect(recordsSource).toContain("<LabTrendCharts groups={labTrendGroups} />");
     expect(chartSource).toContain("export function LabTrendCharts");

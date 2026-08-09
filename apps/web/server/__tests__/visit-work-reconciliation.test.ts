@@ -132,9 +132,17 @@ describe("visit work reconciliation", () => {
       unresolvedCount: 1,
       items: [{ id: WORK_ITEM_ID, sourceLabel: "Dental cleaning" }],
     });
-    // Tenant context, a deterministic vaccination-source lock, and four
+    // Tenant context, deterministic vaccination/lab-source locks, and four
     // bounded source upserts all finish before the list query resolves.
-    expect(execute).toHaveBeenCalledTimes(6);
+    expect(execute).toHaveBeenCalledTimes(7);
+    const integritySource = readFileSync(
+      "server/visit-billing-integrity.ts",
+      "utf8",
+    );
+    expect(integritySource).toContain("'lab-result-source:' ||");
+    expect(integritySource).toMatch(
+      /select \$\{labResults\.id\} as id[\s\S]*order by \$\{labResults\.id\}[\s\S]*\) as lab_source/,
+    );
   });
 
   it("does not create unresolved ledger work for a historical closed visit", async () => {

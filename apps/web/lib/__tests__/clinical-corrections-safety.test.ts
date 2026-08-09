@@ -4,6 +4,7 @@ import { getTableConfig } from "drizzle-orm/pg-core";
 import {
   appointments,
   clinicalRecordCorrections,
+  labResultReplacements,
   patients,
   soapNotes,
   users,
@@ -231,6 +232,89 @@ describe("clinical correction schema and migration", () => {
     expect(migration).toContain("FROM public.vaccination_records source");
     expect(migration).toContain(
       "source.appointment_id IS NOT DISTINCT FROM NEW.appointment_id",
+    );
+  });
+
+  it("models lab replacement lineage as a separate exact append-only ledger", () => {
+    const correctionConfig = getTableConfig(clinicalRecordCorrections);
+    const replacementConfig = getTableConfig(labResultReplacements);
+    const correctionColumns = correctionConfig.columns.map(
+      (column) => column.name,
+    );
+    const correctionIndexes = correctionConfig.indexes.map(
+      (index) => index.config.name,
+    );
+    const replacementColumns = replacementConfig.columns.map(
+      (column) => column.name,
+    );
+    const replacementIndexes = replacementConfig.indexes.map(
+      (index) => index.config.name,
+    );
+    const replacementForeignKeys = replacementConfig.foreignKeys.map(
+      (foreignKey) => foreignKey.reference().name,
+    );
+
+    expect(correctionColumns).toEqual(
+      expect.arrayContaining([
+        "lab_result_id",
+        "operation_id",
+        "operation_payload_hash",
+      ]),
+    );
+    expect(correctionIndexes).toEqual(
+      expect.arrayContaining([
+        "clinical_record_corrections_lab_result_uq",
+        "clinical_record_corrections_operation_uq",
+        "clinical_record_corrections_practice_record_lab_source_uq",
+      ]),
+    );
+    expect(replacementColumns).toEqual(
+      expect.arrayContaining([
+        "practice_id",
+        "correction_id",
+        "source_lab_result_id",
+        "replacement_lab_result_id",
+        "actor_id",
+        "actor_name",
+        "operation_id",
+        "operation_payload_hash",
+      ]),
+    );
+    expect(replacementColumns).not.toContain("updated_at");
+    expect(replacementColumns).not.toContain("deleted_at");
+    expect(replacementIndexes).toEqual(
+      expect.arrayContaining([
+        "lab_result_replacements_source_uq",
+        "lab_result_replacements_replacement_uq",
+        "lab_result_replacements_operation_uq",
+      ]),
+    );
+    expect(replacementForeignKeys).toEqual(
+      expect.arrayContaining([
+        "lab_result_replacements_source_tenant_fk",
+        "lab_result_replacements_replacement_tenant_fk",
+        "lab_result_replacements_correction_source_tenant_fk",
+        "lab_result_replacements_actor_tenant_fk",
+      ]),
+    );
+    const exactCorrectionReference = replacementConfig.foreignKeys
+      .find(
+        (foreignKey) =>
+          foreignKey.reference().name ===
+          "lab_result_replacements_correction_source_tenant_fk",
+      )
+      ?.reference();
+    expect({
+      columns: exactCorrectionReference?.columns.map((column) => column.name),
+      foreignColumns: exactCorrectionReference?.foreignColumns.map(
+        (column) => column.name,
+      ),
+    }).toEqual({
+      columns: ["practice_id", "correction_id", "source_lab_result_id"],
+      foreignColumns: ["practice_id", "id", "lab_result_id"],
+    });
+    expect(replacementConfig.checks.map((check) => check.name)).toContain(
+      "lab_result_replacements_shape_check",
     );
   });
 });

@@ -1565,7 +1565,7 @@ describe("billing invoice integrity", () => {
         [{ id: APPOINTMENT_ID }],
         [{ status: "clinical_finalized" }],
       ],
-      executeResults: Array.from({ length: 7 }, () => [
+      executeResults: Array.from({ length: 8 }, () => [
         { id: "unresolved-work" },
       ]),
     });
@@ -1580,7 +1580,7 @@ describe("billing invoice integrity", () => {
       message:
         "Resolve every performed vaccination, lab, procedure, and prescription before sending or collecting this visit invoice.",
     });
-    expect(execute).toHaveBeenCalledTimes(7);
+    expect(execute).toHaveBeenCalledTimes(8);
     expect(updateSet).not.toHaveBeenCalled();
   });
 
@@ -1599,7 +1599,7 @@ describe("billing invoice integrity", () => {
         [{ id: APPOINTMENT_ID }],
         [{ status: "clinical_finalized" }],
       ],
-      executeResults: [[], [], [], [], [], [], []],
+      executeResults: [[], [], [], [], [], [], [], []],
       updateReturns: [[{ ...visitInvoice, status: "sent" }]],
     });
 

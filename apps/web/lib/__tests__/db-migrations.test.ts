@@ -923,4 +923,61 @@ describe("committed Drizzle migrations", () => {
     expect(referencedUniqueAt).toBeGreaterThan(0);
     expect(resultTenantFkAt).toBeGreaterThan(referencedUniqueAt);
   });
+
+  it("creates exact, immutable lab correction and replacement evidence", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries?: Array<{ tag?: string }> };
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0060_warm_rawhide_kid",
+    );
+
+    const sql = readRepoFile("packages/db/drizzle/0060_warm_rawhide_kid.sql");
+    const correctionSourceUniqueAt = sql.indexOf(
+      'CREATE UNIQUE INDEX "clinical_record_corrections_practice_record_lab_source_uq"',
+    );
+    const exactCorrectionFkAt = sql.indexOf(
+      'ADD CONSTRAINT "lab_result_replacements_correction_source_tenant_fk"',
+    );
+    expect(correctionSourceUniqueAt).toBeGreaterThan(0);
+    expect(exactCorrectionFkAt).toBeGreaterThan(correctionSourceUniqueAt);
+    expect(sql).not.toContain("ADD VALUE 'lab_result'");
+    expect(sql).toContain(
+      'ALTER TYPE "public"."clinical_correction_record_type" RENAME TO "clinical_correction_record_type_old"',
+    );
+    expect(sql).toContain(
+      'CREATE TYPE "public"."clinical_correction_record_type" AS ENUM',
+    );
+    expect(sql).toContain(
+      'USING "record_type"::text::"public"."clinical_correction_record_type"',
+    );
+    expect(sql).toContain("ELSIF NEW.record_type = 'lab_result' THEN");
+    expect(sql).toContain("FROM public.lab_results source");
+    expect(sql).toContain('CREATE TABLE "lab_result_replacements"');
+    expect(sql).toContain(
+      'CREATE UNIQUE INDEX "lab_result_replacements_source_uq"',
+    );
+    expect(sql).toContain(
+      'CREATE UNIQUE INDEX "lab_result_replacements_replacement_uq"',
+    );
+    expect(sql).toContain(
+      "pg_catalog.hashtextextended('lab-result-replacement-graph:' || NEW.practice_id::text, 0)",
+    );
+    expect(sql).toContain("WITH RECURSIVE descendants(id) AS");
+    expect(sql).toContain(
+      "Lab result replacement lineage cannot contain a cycle.",
+    );
+    expect(sql).toContain("Lab result replacement evidence is append-only");
+    expect(sql).toContain("current_setting('app.ledger_maintenance', true)");
+    expect(sql).toContain("current_user = (");
+    expect(sql).toContain(
+      'ALTER TABLE "lab_result_replacements" ENABLE ROW LEVEL SECURITY',
+    );
+    expect(sql).toContain(
+      "GRANT SELECT, INSERT ON lab_result_replacements TO openpims_app",
+    );
+    expect(sql).toContain(
+      "REVOKE ALL ON lab_result_replacements FROM authenticated",
+    );
+  });
 });

@@ -19,10 +19,12 @@ import {
   Tag,
   AlertTriangle,
   CheckCircle2,
+  History,
   Loader2,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
+import { formatClinicalDateTime } from "@/lib/records/clinical-dates";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -280,6 +282,15 @@ type LabResultFormState = {
   resultFlag: "unknown" | "normal" | "abnormal" | "critical";
 };
 
+type ReplacementPatientOption = {
+  id: string;
+  name: string;
+  species: string | null;
+  breed: string | null;
+  clientFirstName: string | null;
+  clientLastName: string | null;
+};
+
 type VaccinationFormState = {
   vaccineName: string;
   lotNumber: string;
@@ -499,6 +510,85 @@ function RecordsLoadingPanel({ label }: { label: string }) {
   );
 }
 
+function CorrectedLabResultHistory({
+  resultId,
+  timeZone,
+}: {
+  resultId: string;
+  timeZone?: string | null;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const history = trpc.records.listLabResultHistory.useQuery(
+    { id: resultId },
+    { enabled: expanded, staleTime: 60_000 }
+  );
+
+  return (
+    <div className="mt-2 border-t border-border pt-2">
+      <Button
+        type="button"
+        size="sm"
+        variant="ghost"
+        className="px-2"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((value) => !value)}
+      >
+        <History className="mr-1.5 h-4 w-4" aria-hidden="true" />
+        {expanded ? "Hide evidence history" : "Show evidence history"}
+      </Button>
+      {expanded ? (
+        <div className="mt-2 space-y-2" aria-live="polite">
+          {history.isLoading ? (
+            <p className="text-xs text-muted-foreground">Loading evidence…</p>
+          ) : history.error ? (
+            <p role="alert" className="text-xs text-destructive">
+              Evidence history could not be loaded. {history.error.message}
+            </p>
+          ) : history.data?.length ? (
+            <ol className="space-y-2">
+              {history.data.map((event) => (
+                <li
+                  key={event.id}
+                  className="rounded-md bg-muted/50 px-3 py-2 text-xs"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-medium capitalize">
+                      {event.eventType.replaceAll("_", " ")}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {formatClinicalDateTime(
+                        event.createdAt,
+                        timeZone,
+                        "Time unavailable"
+                      )}{" "}
+                      · {event.actorName}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-muted-foreground">
+                    {event.resultValue
+                      ? `Snapshot: ${event.resultValue}${event.unit ? ` ${event.unit}` : ""}${
+                          event.referenceRangeLow != null &&
+                          event.referenceRangeHigh != null
+                            ? ` · reference ${event.referenceRangeLow}–${event.referenceRangeHigh}`
+                            : ""
+                        } · ${event.resultFlag}`
+                      : "Values pending at this event"}
+                  </p>
+                  {event.note ? <p className="mt-1">{event.note}</p> : null}
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              No immutable event history is available for this legacy result.
+            </p>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function RecordsPageContent() {
   const router = useRouter();
   const utils = trpc.useUtils();
@@ -509,9 +599,12 @@ function RecordsPageContent() {
   const shouldOpenPrescription =
     searchParams.get("tab") === "prescriptions" &&
     searchParams.get("new") === "1";
+  const requestedAmendLabResultId = searchParams.get("amendLabResultId");
   const appliedVisitLink = useRef(false);
+  const appliedLabAmendLink = useRef<string | null>(null);
   const prescriptionOperationId = useRef<string | null>(null);
   const labResultCreationOperationId = useRef<string | null>(null);
+  const labCorrectionOperationIds = useRef(new Map<string, string>());
   const labReviewOperationIds = useRef(new Map<string, string>());
   const userRole = session?.user?.role;
   const [searchQuery, setSearchQuery] = useState("");
@@ -528,6 +621,12 @@ function RecordsPageContent() {
   const [showVaccinationForm, setShowVaccinationForm] = useState(false);
   const [showProblemForm, setShowProblemForm] = useState(false);
   const [showLabForm, setShowLabForm] = useState(false);
+  const [replacesLabResultId, setReplacesLabResultId] = useState<string | null>(
+    null
+  );
+  const [replacementPatient, setReplacementPatient] =
+    useState<ReplacementPatientOption | null>(null);
+  const [replacementPatientSearch, setReplacementPatientSearch] = useState("");
   const [showProcedureForm, setShowProcedureForm] = useState(false);
   const [showPrescriptionForm, setShowPrescriptionForm] = useState(false);
   const [vaccinationForm, setVaccinationForm] = useState<VaccinationFormState>(
@@ -547,6 +646,9 @@ function RecordsPageContent() {
   );
   const trimmedSearchQuery = searchQuery.trim();
   const canSearchPatients = isPatientSearchInputValid(searchQuery);
+  const canSearchReplacementPatients =
+    Boolean(replacesLabResultId) &&
+    isPatientSearchInputValid(replacementPatientSearch);
 
   const linkedPatientQuery = trpc.patients.getById.useQuery(
     { id: linkedPatientId || "00000000-0000-0000-0000-000000000000" },
@@ -589,6 +691,10 @@ function RecordsPageContent() {
     !isSearchingPatients &&
     !patientSearchError &&
     !searchResults;
+  const replacementPatientResults = trpc.patients.search.useQuery(
+    { query: replacementPatientSearch.trim() },
+    { enabled: canSearchReplacementPatients }
+  );
 
   const patientId = selectedPatient?.id ?? "";
   const recordsSettings = trpc.records.settings.useQuery(undefined, {
@@ -691,8 +797,15 @@ function RecordsPageContent() {
     !isLoadingLabResults &&
     !labResultsError &&
     !labResultsList;
+  const replacementSourceLabResult = replacesLabResultId
+    ? labResultsList?.find((result) => result.id === replacesLabResultId) ?? null
+    : null;
   const labTrendGroups = useMemo(
-    () => buildLabTrends(labResultsList ?? [], recordsTimeZone),
+    () =>
+      buildLabTrends(
+        (labResultsList ?? []).filter((result) => !result.correctionId),
+        recordsTimeZone
+      ),
     [labResultsList, recordsTimeZone]
   );
   const {
@@ -727,6 +840,40 @@ function RecordsPageContent() {
     userRole === "technician";
   const canReviewLabResults =
     userRole === "admin" || userRole === "veterinarian";
+
+  useEffect(() => {
+    if (
+      !canCorrectClinicalRecords ||
+      !requestedAmendLabResultId ||
+      appliedLabAmendLink.current === requestedAmendLabResultId
+    ) {
+      return;
+    }
+    const source = labResultsList?.find(
+      (result) => result.id === requestedAmendLabResultId
+    );
+    if (!source || !source.correctionId || source.replacementLabResultId) return;
+    setActiveTab("labResults");
+    setLabForm({
+      testName: source.testName,
+      resultValue: "",
+      unit: "",
+      referenceRangeLow: "",
+      referenceRangeHigh: "",
+      resultFlag: "unknown",
+    });
+    setReplacesLabResultId(source.id);
+    setReplacementPatient(selectedPatient);
+    setReplacementPatientSearch("");
+    setShowLabForm(true);
+    labResultCreationOperationId.current = null;
+    appliedLabAmendLink.current = source.id;
+  }, [
+    canCorrectClinicalRecords,
+    labResultsList,
+    requestedAmendLabResultId,
+    selectedPatient,
+  ]);
   const canCreateProcedures =
     userRole === "admin" || userRole === "veterinarian";
   const medicationNameForSafety = prescriptionForm.medicationName.trim();
@@ -828,32 +975,60 @@ function RecordsPageContent() {
     },
   });
   const createLabResult = trpc.records.createLabResult.useMutation({
-    onSuccess: async () => {
-      toast.success("Lab result created");
+    onSuccess: async (result) => {
+      toast.success(
+        replacesLabResultId
+          ? "Replacement lab result created"
+          : "Lab result created"
+      );
       await Promise.all([
         refetchLabResults(),
         utils.records.listLabReviewInbox.invalidate(),
       ]);
       setShowLabForm(false);
       setLabForm(initialLabResultForm());
+      setReplacesLabResultId(null);
       labResultCreationOperationId.current = null;
+      if (replacementPatient && result.patientId === replacementPatient.id) {
+        setSelectedPatient(replacementPatient);
+        setSearchQuery(replacementPatient.name);
+        router.replace(
+          `/records?patientId=${replacementPatient.id}&tab=labResults#lab-result-${result.id}`
+        );
+      }
+      setReplacementPatient(null);
+      setReplacementPatientSearch("");
     },
     onError: (err) => {
       toast.error(err.message);
     },
   });
-  const updateLabResultStatus =
-    trpc.records.updateLabResultStatus.useMutation({
-      onSuccess: (result) => {
-        toast.success("Lab result status updated");
-        labReviewOperationIds.current.delete(result.id);
-        refetchLabResults();
-        utils.records.listLabReviewInbox.invalidate();
+  const correctLabResult = trpc.records.markLabResultEnteredInError.useMutation(
+    {
+      onSuccess: async (correction) => {
+        toast.success("Lab result retained and marked entered in error");
+        if (correction.labResultId) {
+          labCorrectionOperationIds.current.delete(correction.labResultId);
+        }
+        await Promise.all([
+          refetchLabResults(),
+          utils.records.listLabReviewInbox.invalidate(),
+        ]);
       },
-      onError: (err) => {
-        toast.error(err.message);
-      },
-    });
+      onError: (error) => toast.error(error.message),
+    }
+  );
+  const updateLabResultStatus = trpc.records.updateLabResultStatus.useMutation({
+    onSuccess: (result) => {
+      toast.success("Lab result status updated");
+      labReviewOperationIds.current.delete(result.id);
+      refetchLabResults();
+      utils.records.listLabReviewInbox.invalidate();
+    },
+    onError: (err) => {
+      toast.error(err.message);
+    },
+  });
   const createProcedure = trpc.records.createProcedure.useMutation({
     onSuccess: () => {
       toast.success("Procedure recorded");
@@ -909,6 +1084,7 @@ function RecordsPageContent() {
     !createProblem.isPending;
   const canSubmitLabResult =
     Boolean(patientId) &&
+    (!replacesLabResultId || Boolean(replacementPatient)) &&
     isLabRequiredTextInputValid(labForm.testName, LAB_TEST_NAME_MAX_LENGTH) &&
     isLabOptionalTextInputValid(
       labForm.resultValue,
@@ -1263,6 +1439,7 @@ function RecordsPageContent() {
                                 <p className="text-sm">{note.plan || "--"}</p>
                               </div>
                               <ClinicalCorrectionControl
+                                timeZone={recordsTimeZone}
                                 correction={
                                   note.correctionId &&
                                   note.correctionReason &&
@@ -1530,6 +1707,7 @@ function RecordsPageContent() {
                                   </span>
                                 )}
                                 <ClinicalCorrectionControl
+                                  timeZone={recordsTimeZone}
                                   correction={
                                     vax.correctionId &&
                                     vax.correctionReason &&
@@ -2339,6 +2517,10 @@ function RecordsPageContent() {
                       size="sm"
                       onClick={() => {
                         if (showLabForm) setLabForm(initialLabResultForm());
+                        setReplacesLabResultId(null);
+                        setReplacementPatient(null);
+                        setReplacementPatientSearch("");
+                        labResultCreationOperationId.current = null;
                         setShowLabForm(!showLabForm);
                       }}
                     >
@@ -2356,11 +2538,20 @@ function RecordsPageContent() {
                       if (!canSubmitLabResult) return;
                       labResultCreationOperationId.current ??= crypto.randomUUID();
                       createLabResult.mutate({
-                        patientId,
+                        patientId:
+                          replacesLabResultId && replacementPatient
+                            ? replacementPatient.id
+                            : patientId,
                         appointmentId:
-                          linkedAppointmentId && linkedPatientId === patientId
-                            ? linkedAppointmentId
-                            : undefined,
+                          replacesLabResultId &&
+                          replacementPatient?.id === selectedPatient?.id
+                            ? replacementSourceLabResult?.appointmentId ??
+                              undefined
+                            : !replacesLabResultId &&
+                                linkedAppointmentId &&
+                                linkedPatientId === patientId
+                              ? linkedAppointmentId
+                              : undefined,
                         testName: labForm.testName.trim(),
                         resultValue: labForm.resultValue.trim() || undefined,
                         unit: labForm.unit.trim() || undefined,
@@ -2375,9 +2566,91 @@ function RecordsPageContent() {
                           ? labForm.resultFlag
                           : "unknown",
                         operationId: labResultCreationOperationId.current,
+                        replacesLabResultId:
+                          replacesLabResultId ?? undefined,
                       });
                     }}
                   >
+                    {replacesLabResultId ? (
+                      <div className="space-y-3 rounded-md border border-blue-300 bg-blue-50 px-3 py-3 text-sm text-blue-950 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-100">
+                        <div>
+                          <p className="font-medium">
+                            Creating an attributed replacement
+                          </p>
+                          <p className="mt-1 text-xs">
+                            Source chart: {selectedPatient?.name ?? "Unknown"} · Correct destination: {replacementPatient?.name ?? "Choose a patient"}. Only the test name was copied. Deliberately review the destination and enter new values before saving; nothing is submitted automatically.
+                          </p>
+                          <p className="mt-2 text-xs">
+                            If the original visit is still open and this work
+                            was unbilled, a same-patient replacement creates new
+                            unresolved visit work. Prior charged or no-charge
+                            work stays unchanged and is not billed again.
+                            Closed-visit and wrong-patient replacements from this
+                            dashboard create no visit work.
+                          </p>
+                        </div>
+                        <div className="rounded-md border border-blue-200 bg-background/80 p-3 text-foreground dark:border-blue-900">
+                          <label className="block text-xs font-medium">
+                            Replacement patient
+                            <Input
+                              className="mt-1"
+                              value={replacementPatientSearch}
+                              onChange={(event) =>
+                                setReplacementPatientSearch(event.target.value)
+                              }
+                              placeholder="Search another patient by name or owner"
+                            />
+                          </label>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            Leave {selectedPatient?.name ?? "this patient"}{" "}
+                            selected for a same-patient correction, or search
+                            and deliberately choose the correct chart for a
+                            wrong-patient repair.
+                          </p>
+                          {canSearchReplacementPatients ? (
+                            <div className="mt-2 max-h-40 space-y-1 overflow-y-auto">
+                              {replacementPatientResults.isLoading ? (
+                                <p className="px-2 py-1 text-xs text-muted-foreground">
+                                  Searching patients…
+                                </p>
+                              ) : replacementPatientResults.data?.length ? (
+                                replacementPatientResults.data.map((option) => (
+                                  <button
+                                    key={option.id}
+                                    type="button"
+                                    className={cn(
+                                      "flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-xs hover:bg-muted",
+                                      replacementPatient?.id === option.id &&
+                                        "bg-muted font-medium"
+                                    )}
+                                    onClick={() => {
+                                      setReplacementPatient(option);
+                                      setReplacementPatientSearch("");
+                                      labResultCreationOperationId.current =
+                                        null;
+                                    }}
+                                  >
+                                    <span>{option.name}</span>
+                                    <span className="text-muted-foreground">
+                                      {[
+                                        option.clientFirstName,
+                                        option.clientLastName,
+                                      ]
+                                        .filter(Boolean)
+                                        .join(" ") || "Owner unavailable"}
+                                    </span>
+                                  </button>
+                                ))
+                              ) : (
+                                <p className="px-2 py-1 text-xs text-muted-foreground">
+                                  No matching patient found.
+                                </p>
+                              )}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
                       <div className="col-span-2 sm:col-span-1">
                         <label className="block text-xs font-medium text-muted-foreground mb-1">
@@ -2529,6 +2802,15 @@ function RecordsPageContent() {
                         onClick={() => {
                           setShowLabForm(false);
                           setLabForm(initialLabResultForm());
+                          setReplacesLabResultId(null);
+                          setReplacementPatient(null);
+                          setReplacementPatientSearch("");
+                          appliedLabAmendLink.current = null;
+                          const params = new URLSearchParams(
+                            searchParams.toString()
+                          );
+                          params.delete("amendLabResultId");
+                          router.replace(`/records?${params.toString()}`);
                           labResultCreationOperationId.current = null;
                         }}
                       >
@@ -2596,10 +2878,31 @@ function RecordsPageContent() {
                             return (
                               <tr
                                 key={lab.id}
-                                className="border-b border-border last:border-0"
+                                id={`lab-result-${lab.id}`}
+                                className={cn(
+                                  "border-b border-border last:border-0",
+                                  lab.correctionId &&
+                                    "bg-destructive/5 text-muted-foreground"
+                                )}
                               >
                                 <td className="px-4 py-3 font-medium">
                                   {lab.testName}
+                                  {lab.replacesLabResultId ? (
+                                    <a
+                                      href={`/records?patientId=${lab.replacesLabResultPatientId ?? patientId}&tab=labResults#lab-result-${lab.replacesLabResultId}`}
+                                      className="mt-1 block text-xs font-normal text-primary hover:underline"
+                                    >
+                                      Replaces entered-in-error result
+                                    </a>
+                                  ) : null}
+                                  {lab.replacementLabResultId ? (
+                                    <a
+                                      href={`/records?patientId=${lab.replacementLabResultPatientId ?? patientId}&tab=labResults#lab-result-${lab.replacementLabResultId}`}
+                                      className="mt-1 block text-xs font-normal text-primary hover:underline"
+                                    >
+                                      View replacement result
+                                    </a>
+                                  ) : null}
                                 </td>
                                 <td
                                   className={cn(
@@ -2675,48 +2978,143 @@ function RecordsPageContent() {
                                     : "--"}
                                 </td>
                                 <td className="px-4 py-3">
-                                  {canReviewLabResults &&
-                                  lab.status === "completed" &&
-                                  (lab.resultFlag !== "critical" ||
-                                    lab.followUpStatus !== "not_required") ? (
-                                    <Button
-                                      variant="ghost"
-                                      size="sm"
-                                      onClick={() =>
-                                        updateLabResultStatus.mutate({
-                                          id: lab.id,
-                                          status: "reviewed",
-                                          operationId:
-                                            labReviewOperationIds.current.get(lab.id) ??
-                                            (() => {
-                                              const operationId = crypto.randomUUID();
-                                              labReviewOperationIds.current.set(lab.id, operationId);
-                                              return operationId;
-                                            })(),
-                                        })
-                                      }
-                                      disabled={
-                                        updateLabResultStatus.isPending
-                                      }
-                                    >
-                                      Mark Reviewed
-                                    </Button>
-                                  ) : lab.status === "completed" &&
-                                    lab.resultFlag === "critical" &&
-                                    lab.followUpStatus === "not_required" &&
-                                    canManageLabResults ? (
-                                    <Button asChild variant="ghost" size="sm">
-                                      <Link href={`/lab-results?resultId=${lab.id}`}>
-                                        Assign follow-up
-                                      </Link>
-                                    </Button>
-                                  ) : lab.status === "pending" && canManageLabResults ? (
-                                    <Button asChild variant="ghost" size="sm">
-                                      <Link href={`/lab-results?resultId=${lab.id}`}>
-                                        Open selected result
-                                      </Link>
-                                    </Button>
-                                  ) : null}
+                                  {lab.correctionId ? (
+                                    <div className="min-w-64">
+                                      <ClinicalCorrectionControl
+                                        timeZone={recordsTimeZone}
+                                        correction={
+                                          lab.correctionReason && lab.correctedAt
+                                            ? {
+                                                id: lab.correctionId,
+                                                reason: lab.correctionReason,
+                                                correctedAt: lab.correctedAt,
+                                                correctedByName:
+                                                  lab.correctedByName,
+                                              }
+                                            : null
+                                        }
+                                        canCorrect={false}
+                                        isPending={false}
+                                        onCorrect={async () => undefined}
+                                      />
+                                      <CorrectedLabResultHistory
+                                        resultId={lab.id}
+                                        timeZone={recordsTimeZone}
+                                      />
+                                      {canCorrectClinicalRecords &&
+                                      !lab.replacementLabResultId ? (
+                                        <Button
+                                          type="button"
+                                          variant="outline"
+                                          size="sm"
+                                          className="mt-2"
+                                          onClick={() => {
+                                            const params = new URLSearchParams(
+                                              searchParams.toString()
+                                            );
+                                            params.set("patientId", patientId);
+                                            params.set("tab", "labResults");
+                                            params.set(
+                                              "amendLabResultId",
+                                              lab.id
+                                            );
+                                            router.replace(
+                                              `/records?${params.toString()}#lab-result-${lab.id}`
+                                            );
+                                            setLabForm({
+                                              testName: lab.testName,
+                                              resultValue: "",
+                                              unit: "",
+                                              referenceRangeLow: "",
+                                              referenceRangeHigh: "",
+                                              resultFlag: "unknown",
+                                            });
+                                            setReplacesLabResultId(lab.id);
+                                            setReplacementPatient(
+                                              selectedPatient
+                                            );
+                                            setReplacementPatientSearch("");
+                                            setShowLabForm(true);
+                                            labResultCreationOperationId.current =
+                                              null;
+                                          }}
+                                        >
+                                          Create replacement
+                                        </Button>
+                                      ) : null}
+                                    </div>
+                                  ) : (
+                                    <div className="min-w-52 space-y-2">
+                                      {canReviewLabResults &&
+                                      lab.status === "completed" &&
+                                      (lab.resultFlag !== "critical" ||
+                                        lab.followUpStatus !== "not_required") ? (
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          onClick={() =>
+                                            updateLabResultStatus.mutate({
+                                              id: lab.id,
+                                              status: "reviewed",
+                                              operationId:
+                                                labReviewOperationIds.current.get(lab.id) ??
+                                                (() => {
+                                                  const operationId = crypto.randomUUID();
+                                                  labReviewOperationIds.current.set(lab.id, operationId);
+                                                  return operationId;
+                                                })(),
+                                            })
+                                          }
+                                          disabled={
+                                            updateLabResultStatus.isPending
+                                          }
+                                        >
+                                          Mark Reviewed
+                                        </Button>
+                                      ) : lab.status === "completed" &&
+                                        lab.resultFlag === "critical" &&
+                                        lab.followUpStatus === "not_required" &&
+                                        canManageLabResults ? (
+                                        <Button asChild variant="ghost" size="sm">
+                                          <Link href={`/lab-results?resultId=${lab.id}`}>
+                                            Assign follow-up
+                                          </Link>
+                                        </Button>
+                                      ) : lab.status === "pending" && canManageLabResults ? (
+                                        <Button asChild variant="ghost" size="sm">
+                                          <Link href={`/lab-results?resultId=${lab.id}`}>
+                                            Open selected result
+                                          </Link>
+                                        </Button>
+                                      ) : null}
+                                      <ClinicalCorrectionControl
+                                        timeZone={recordsTimeZone}
+                                        correction={null}
+                                        canCorrect={canCorrectClinicalRecords}
+                                        isPending={correctLabResult.isPending}
+                                        description="The original result and immutable event evidence remain permanently visible in chart history. It will leave the active Lab Inbox, trends, and follow-up workflows. Unresolved unbilled visit work is voided; charged or no-charge financial history is never changed. Create an attributed replacement after confirming this correction."
+                                        onCorrect={async (reason) => {
+                                          let operationId =
+                                            labCorrectionOperationIds.current.get(
+                                              lab.id
+                                            );
+                                          if (!operationId) {
+                                            operationId = crypto.randomUUID();
+                                            labCorrectionOperationIds.current.set(
+                                              lab.id,
+                                              operationId
+                                            );
+                                          }
+                                          await correctLabResult.mutateAsync({
+                                            patientId,
+                                            recordId: lab.id,
+                                            operationId,
+                                            reason,
+                                          });
+                                        }}
+                                      />
+                                    </div>
+                                  )}
                                 </td>
                               </tr>
                             );

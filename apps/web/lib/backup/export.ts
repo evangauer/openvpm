@@ -26,6 +26,7 @@ import {
   insurancePolicies,
   labResults,
   labResultEvents,
+  labResultReplacements,
   locationMessaging,
   locations,
   patientAllergies,
@@ -161,6 +162,7 @@ export const PRACTICE_EXPORT_SECTIONS = [
   "problemList",
   "vitalSigns",
   "clinicalRecordCorrections",
+  "labResultReplacements",
   "cases",
   "caseEntries",
   "treatmentPlans",
@@ -195,13 +197,17 @@ const PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS = [
   // Backward compatibility for backups created before the lab result safety
   // ledger and clinic-wide review inbox were introduced.
   "labResultEvents",
+  "labResultReplacements",
 ] as const satisfies readonly PracticeExportSection[];
 
 export type PracticeExport = {
+  formatVersion: number;
   practiceId: string;
   exportedAt: string;
   counts: Record<PracticeExportSection, number>;
 } & Record<PracticeExportSection, unknown[]>;
+
+export const PRACTICE_EXPORT_FORMAT_VERSION = 2;
 
 type Row = Record<string, unknown>;
 
@@ -395,6 +401,15 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
     "vaccinationRecordId",
     "vaccinationRecords",
   ),
+  optionalRef("clinicalRecordCorrections", "labResultId", "labResults"),
+  requiredRef(
+    "labResultReplacements",
+    "correctionId",
+    "clinicalRecordCorrections",
+  ),
+  requiredRef("labResultReplacements", "sourceLabResultId", "labResults"),
+  requiredRef("labResultReplacements", "replacementLabResultId", "labResults"),
+  requiredRef("labResultReplacements", "actorId", "users"),
   requiredRef("cases", "patientId", "patients"),
   optionalRef("cases", "primaryVetId", "users"),
   requiredRef("caseEntries", "caseId", "cases"),
@@ -463,6 +478,7 @@ export function summarizePracticeExport(data: unknown): {
     if (Array.isArray(record[section])) return false;
     const isBackwardCompatibleAbsence =
       !Object.prototype.hasOwnProperty.call(record, section) &&
+      record.formatVersion !== PRACTICE_EXPORT_FORMAT_VERSION &&
       PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS.includes(section as never);
     return !isBackwardCompatibleAbsence;
   });
@@ -957,6 +973,7 @@ export function validatePracticeExportRestore(data: unknown): {
   const vitalRows = rowsById("vitalSigns");
   const vaccinationRows = rowsById("vaccinationRecords");
   const correctedSources = new Set<string>();
+  const correctionOperationIds = new Set<string>();
   rowsFor(data, "clinicalRecordCorrections").forEach((row, index) => {
     const label = `clinicalRecordCorrections[${rowLabel(row, index)}]`;
     let source: Row | undefined;
@@ -976,6 +993,12 @@ export function validatePracticeExportRestore(data: unknown): {
       if (row.vaccinationRecordId != null) {
         pushError(
           `${label}.vaccinationRecordId must be null for recordType soap_note.`,
+        );
+        return;
+      }
+      if (row.labResultId != null) {
+        pushError(
+          `${label}.labResultId must be null for recordType soap_note.`,
         );
         return;
       }
@@ -1000,6 +1023,12 @@ export function validatePracticeExportRestore(data: unknown): {
         );
         return;
       }
+      if (row.labResultId != null) {
+        pushError(
+          `${label}.labResultId must be null for recordType vital_sign.`,
+        );
+        return;
+      }
       source = vitalRows.get(row.vitalSignId);
       sourceIdentity = `vital_sign:${row.vitalSignId}`;
     } else if (row.recordType === "vaccination_record") {
@@ -1012,18 +1041,67 @@ export function validatePracticeExportRestore(data: unknown): {
         );
         return;
       }
-      if (row.soapNoteId != null || row.vitalSignId != null) {
+      if (
+        row.soapNoteId != null ||
+        row.vitalSignId != null ||
+        row.labResultId != null
+      ) {
         pushError(
-          `${label}.soapNoteId and .vitalSignId must be null for recordType vaccination_record.`,
+          `${label} may only set .vaccinationRecordId for recordType vaccination_record.`,
         );
         return;
       }
       source = vaccinationRows.get(row.vaccinationRecordId);
       sourceIdentity = `vaccination_record:${row.vaccinationRecordId}`;
+    } else if (row.recordType === "lab_result") {
+      if (typeof row.labResultId !== "string" || row.labResultId.length === 0) {
+        pushError(
+          `${label}.labResultId is required for recordType lab_result.`,
+        );
+        return;
+      }
+      if (
+        row.soapNoteId != null ||
+        row.vitalSignId != null ||
+        row.vaccinationRecordId != null
+      ) {
+        pushError(
+          `${label} may only set .labResultId for recordType lab_result.`,
+        );
+        return;
+      }
+      if (
+        typeof row.operationId !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          row.operationId,
+        ) ||
+        typeof row.operationPayloadHash !== "string" ||
+        !/^[0-9a-f]{64}$/.test(row.operationPayloadHash)
+      ) {
+        pushError(
+          `${label} lab correction requires durable operation identity.`,
+        );
+        return;
+      }
+      if (correctionOperationIds.has(row.operationId)) {
+        pushError(`${label}.operationId must be unique within its practice.`);
+        return;
+      }
+      correctionOperationIds.add(row.operationId);
+      source = labRows.get(row.labResultId);
+      sourceIdentity = `lab_result:${row.labResultId}`;
     } else {
       pushError(
-        `${label}.recordType must be soap_note, vital_sign, or vaccination_record.`,
+        `${label}.recordType must be soap_note, vital_sign, vaccination_record, or lab_result.`,
       );
+      return;
+    }
+
+    if (
+      row.recordType !== "lab_result" &&
+      (row.operationId != null || row.operationPayloadHash != null)
+    ) {
+      pushError(`${label} non-lab correction cannot carry operation identity.`);
       return;
     }
 
@@ -1045,6 +1123,97 @@ export function validatePracticeExportRestore(data: unknown): {
       );
     }
   });
+
+  const correctionRows = rowsById("clinicalRecordCorrections");
+  const replacementSources = new Set<string>();
+  const replacements = new Set<string>();
+  const replacementOperations = new Set<string>();
+  const replacementEdges = new Map<string, string>();
+  rowsFor(data, "labResultReplacements").forEach((row, index) => {
+    const label = `labResultReplacements[${rowLabel(row, index)}]`;
+    const correction =
+      typeof row.correctionId === "string"
+        ? correctionRows.get(row.correctionId)
+        : undefined;
+    const source =
+      typeof row.sourceLabResultId === "string"
+        ? labRows.get(row.sourceLabResultId)
+        : undefined;
+    const replacement =
+      typeof row.replacementLabResultId === "string"
+        ? labRows.get(row.replacementLabResultId)
+        : undefined;
+    if (!correction || !source || !replacement) return;
+
+    if (
+      correction.recordType !== "lab_result" ||
+      correction.labResultId !== row.sourceLabResultId
+    ) {
+      pushError(
+        `${label}.correctionId must identify the exact lab correction for its source.`,
+      );
+    }
+    if (row.sourceLabResultId === row.replacementLabResultId) {
+      pushError(`${label} cannot replace a result with itself.`);
+    }
+    if (
+      row.practiceId !== source.practiceId ||
+      row.practiceId !== replacement.practiceId ||
+      row.practiceId !== correction.practiceId
+    ) {
+      pushError(`${label}.practiceId must match all linked evidence.`);
+    }
+    if (replacementSources.has(row.sourceLabResultId as string)) {
+      pushError(
+        `${label}.sourceLabResultId must be unique within its practice.`,
+      );
+    }
+    replacementSources.add(row.sourceLabResultId as string);
+    if (replacements.has(row.replacementLabResultId as string)) {
+      pushError(`${label}.replacementLabResultId may replace only one source.`);
+    }
+    replacements.add(row.replacementLabResultId as string);
+    if (
+      typeof row.operationId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        row.operationId,
+      ) ||
+      typeof row.operationPayloadHash !== "string" ||
+      !/^[0-9a-f]{64}$/.test(row.operationPayloadHash)
+    ) {
+      pushError(`${label} requires valid operation identity and payload hash.`);
+    } else if (replacementOperations.has(row.operationId)) {
+      pushError(`${label}.operationId must be unique within its practice.`);
+    } else {
+      replacementOperations.add(row.operationId);
+    }
+    if (
+      typeof row.actorName !== "string" ||
+      row.actorName.trim().length < 1 ||
+      row.actorName.length > 255
+    ) {
+      pushError(`${label}.actorName must contain bounded attribution.`);
+    }
+    replacementEdges.set(
+      row.sourceLabResultId as string,
+      row.replacementLabResultId as string,
+    );
+  });
+
+  for (const sourceId of replacementEdges.keys()) {
+    const visited = new Set<string>();
+    let current: string | undefined = sourceId;
+    while (current) {
+      if (visited.has(current)) {
+        pushError(
+          `labResultReplacements contains a directed replacement cycle at lab result "${current}".`,
+        );
+        break;
+      }
+      visited.add(current);
+      current = replacementEdges.get(current);
+    }
+  }
 
   return { valid: errors.length === 0, errors };
 }
@@ -1361,6 +1530,7 @@ export async function exportPracticeData(
     problemRows,
     allVitalRows,
     clinicalCorrectionRows,
+    labReplacementRows,
     caseRows,
     treatmentPlanRows,
     allPrescriptionRows,
@@ -1411,6 +1581,7 @@ export async function exportPracticeData(
     activeRows(db, problemList, practiceId),
     allPracticeRows(db, vitalSigns, practiceId),
     allPracticeRows(db, clinicalRecordCorrections, practiceId),
+    allPracticeRows(db, labResultReplacements, practiceId),
     activeRows(db, cases, practiceId),
     activeRows(db, treatmentPlans, practiceId),
     allPracticeRows(db, prescriptions, practiceId),
@@ -1525,6 +1696,7 @@ export async function exportPracticeData(
       ...prescriptionEventRows.map((event) => event.actorId),
       ...prescriptionRows.map((prescription) => prescription.prescribedBy),
       ...clinicalCorrectionRows.map((correction) => correction.correctedBy),
+      ...labReplacementRows.map((replacement) => replacement.actorId),
       ...soapNoteRows.map((note) => note.authorId),
       ...vitalRows.map((vital) => vital.recordedBy),
       ...vaccinationRows.map((vaccination) => vaccination.administeredBy),
@@ -1761,6 +1933,7 @@ export async function exportPracticeData(
     problemList: problemRows,
     vitalSigns: vitalRows,
     clinicalRecordCorrections: clinicalCorrectionRows,
+    labResultReplacements: labReplacementRows,
     cases: caseRows,
     caseEntries: caseEntryRows,
     treatmentPlans: treatmentPlanRows,
@@ -1775,6 +1948,7 @@ export async function exportPracticeData(
   };
 
   const exported = {
+    formatVersion: PRACTICE_EXPORT_FORMAT_VERSION,
     practiceId,
     exportedAt,
     counts: countsFor(sections),
@@ -1999,6 +2173,7 @@ async function restorePracticeDataRows(
     "clinicalRecordCorrections",
     clinicalRecordCorrections,
   );
+  await restorePracticeRows("labResultReplacements", labResultReplacements);
   await restorePracticeRows("cases", cases);
   await restoreChildRows("caseEntries", caseEntries);
   await restorePracticeRows("treatmentPlans", treatmentPlans);

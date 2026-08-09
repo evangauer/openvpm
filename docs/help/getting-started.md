@@ -22,6 +22,13 @@ results, mark completed results reviewed, and assign any client or patient
 follow-up to a named teammate. Completion, review, and follow-up evidence stays
 with the result after the visit is checked out.
 
+If a manual result is a duplicate, typo, or attached to the wrong patient, an
+administrator or veterinarian can mark it entered in error from the patient’s
+Lab Results chart. The original evidence remains visible but leaves active
+queues and trends. Use **Create replacement**, confirm the correct patient,
+and enter fresh values to create a linked amendment without overwriting the
+source.
+
 ## Bill in one click
 
 **Billing** turns a visit into a bill. Add the services, send it, and take

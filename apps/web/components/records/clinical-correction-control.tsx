@@ -9,6 +9,7 @@ import {
   CLINICAL_CORRECTION_REASON_MAX_LENGTH,
   isClinicalCorrectionReasonValid,
 } from "@/lib/records/clinical-correction-policy";
+import { formatClinicalDateTime } from "@/lib/records/clinical-dates";
 
 type ExistingCorrection = {
   id: string;
@@ -22,21 +23,26 @@ export function ClinicalCorrectionControl({
   canCorrect,
   isPending,
   onCorrect,
+  description,
+  timeZone,
 }: {
   correction?: ExistingCorrection | null;
   canCorrect: boolean;
   isPending: boolean;
   onCorrect: (reason: string) => Promise<unknown>;
+  description?: string;
+  timeZone?: string | null;
 }) {
   const [editing, setEditing] = useState(false);
   const [reason, setReason] = useState("");
   const reasonId = useId();
 
   if (correction) {
-    const correctedAt = new Date(correction.correctedAt);
-    const dateLabel = Number.isNaN(correctedAt.getTime())
-      ? "Unknown time"
-      : correctedAt.toLocaleString();
+    const dateLabel = formatClinicalDateTime(
+      correction.correctedAt,
+      timeZone,
+      "Unknown time",
+    );
     return (
       <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm">
         <div className="flex items-center gap-2 font-medium text-destructive">
@@ -87,9 +93,8 @@ export function ClinicalCorrectionControl({
             Mark record entered in error?
           </DialogPrimitive.Title>
           <DialogPrimitive.Description className="mt-2 text-sm text-muted-foreground">
-            The original record will remain visible in staff chart history, but
-            it will no longer be used for current clinical summaries, client
-            portal records, reminders, or certificates.
+            {description ??
+              "The original record will remain visible in staff chart history, but it will no longer be used for current clinical summaries, client portal records, reminders, or certificates."}
           </DialogPrimitive.Description>
           <div className="mt-4">
             <label

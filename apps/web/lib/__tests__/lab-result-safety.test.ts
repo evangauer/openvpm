@@ -3,6 +3,14 @@ import { describe, expect, it } from "vitest";
 
 const read = (path: string) => readFileSync(path, "utf8");
 
+function sourceSection(source: string, start: string, end: string): string {
+  const startAt = source.indexOf(start);
+  const endAt = source.indexOf(end, startAt + start.length);
+  expect(startAt).toBeGreaterThanOrEqual(0);
+  expect(endAt).toBeGreaterThan(startAt);
+  return source.slice(startAt, endAt);
+}
+
 describe("lab result clinical safety contract", () => {
   it("keeps immutable events tied to an exact bounded result snapshot", () => {
     const schema = read("../../packages/db/schema/lab-result-events.ts");
@@ -105,5 +113,204 @@ describe("lab result clinical safety contract", () => {
     expect(seed).toContain("operationId: result.creationOperationId!");
     expect(seed).toContain("operationPayloadHash: result.creationPayloadHash!");
     expect(seed).not.toContain("legacyLabResultShape");
+  });
+
+  it("serializes correction semantics and preserves financial history", () => {
+    const router = read("server/routers/records.ts");
+    const correction = sourceSection(
+      router,
+      "markLabResultEnteredInError: protectedProcedure",
+      "createLabResult: protectedProcedure",
+    );
+
+    expect(correction).toContain('kind: "lab_result_entered_in_error"');
+    expect(correction).toContain("reason: input.reason");
+    expect(correction.indexOf("lockLabOperation")).toBeLessThan(
+      correction.indexOf("lockLabResultSource"),
+    );
+    expect(correction.indexOf("lockLabResultSource")).toBeLessThan(
+      correction.indexOf("const [operationReplay]"),
+    );
+    expect(correction).toContain(
+      "sourceCorrection.operationPayloadHash === operationPayloadHash",
+    );
+    expect(correction).toContain("return sourceCorrection");
+    expect(correction).toContain(
+      "This lab result already has a different correction. Refresh the chart.",
+    );
+    expect(correction).toContain('recordType: "lab_result"');
+    expect(correction).toContain('action: "entered_in_error"');
+    expect(correction).toContain('eq(visitWorkItems.status, "unresolved")');
+    expect(correction).toContain("isNull(visitWorkItems.invoiceId)");
+    expect(correction).toContain("isNull(visitWorkItems.invoiceItemId)");
+    expect(correction).not.toContain('eq(visitWorkItems.status, "charged")');
+    expect(correction).not.toContain('eq(visitWorkItems.status, "no_charge")');
+  });
+
+  it("creates and replays exact replacement evidence with bounded visit work", () => {
+    const router = read("server/routers/records.ts");
+    const creation = sourceSection(
+      router,
+      "createLabResult: protectedProcedure",
+      "updateLabResultStatus: protectedProcedure",
+    );
+
+    expect(creation).toContain("input.replacesLabResultId && ctx.user.role");
+    expect(creation).toContain('kind: "create"');
+    expect(creation).toContain(
+      "replacesLabResultId: input.replacesLabResultId ?? null",
+    );
+    expect(creation.indexOf("lockLabOperation")).toBeLessThan(
+      creation.indexOf("lockLabResultSource"),
+    );
+    expect(creation.indexOf("lockLabResultSource")).toBeLessThan(
+      creation.indexOf("const existingReplay"),
+    );
+    expect(creation.match(/assertLabReplacementReplay/g)).toHaveLength(2);
+    expect(creation).toContain("replacementCorrectionId = source.correctionId");
+    expect(creation).toContain("await tx.insert(labResultReplacements).values");
+    expect(creation).toMatch(
+      /sourceWork\?\.status === "charged"\s*\|\|\s*sourceWork\?\.status === "no_charge"/,
+    );
+    expect(creation).toContain(
+      'replacementAppointment.status === "checked_in"',
+    );
+    expect(creation).toContain('replacementAppointment.status === "in_exam"');
+    expect(creation).toContain(
+      "if (created?.appointmentId && shouldRegisterVisitWork)",
+    );
+    expect(creation).toContain(
+      "await registerVisitWorkItem(txCtx, created.appointmentId",
+    );
+  });
+
+  it("locks every active lifecycle mutation before replay and CAS", () => {
+    const router = read("server/routers/records.ts");
+    const routeNames = [
+      [
+        "updateLabResultStatus: protectedProcedure",
+        "completeLabResult: protectedProcedure",
+      ],
+      [
+        "completeLabResult: protectedProcedure",
+        "assignLabFollowUp: protectedProcedure",
+      ],
+      [
+        "assignLabFollowUp: protectedProcedure",
+        "completeLabFollowUp: protectedProcedure",
+      ],
+      ["completeLabFollowUp: protectedProcedure", "// Procedures"],
+    ] as const;
+
+    for (const [start, end] of routeNames) {
+      const lifecycle = sourceSection(router, start, end);
+      expect(lifecycle.indexOf("lockLabOperation")).toBeLessThan(
+        lifecycle.indexOf("lockLabResultSource"),
+      );
+      expect(lifecycle.indexOf("lockLabResultSource")).toBeLessThan(
+        lifecycle.indexOf("getLabOperationReplay"),
+      );
+      expect(lifecycle).toContain("activeLabResultPredicate(ctx.practiceId)");
+      expect(lifecycle).toContain(".update(labResults)");
+      expect(lifecycle).toContain(".returning()");
+    }
+  });
+
+  it("excludes corrected results from active queues and trends but exposes chart evidence", () => {
+    const router = read("server/routers/records.ts");
+    const records = read("app/(dashboard)/records/page.tsx");
+    const inbox = sourceSection(
+      router,
+      "listLabReviewInbox: protectedProcedure",
+      "listLabAssignees: protectedProcedure",
+    );
+
+    expect(inbox).toContain("activeLabResultPredicate(ctx.practiceId)");
+    expect(records).toContain(
+      "(labResultsList ?? []).filter((result) => !result.correctionId)",
+    );
+    expect(records).toContain("function CorrectedLabResultHistory");
+    expect(records).toContain("{ enabled: expanded, staleTime: 60_000 }");
+    expect(records).toContain("formatClinicalDateTime(");
+    expect(records).toContain('"Time unavailable"');
+    expect(records).toContain("Show evidence history");
+    expect(records).toContain("event.eventType.replaceAll");
+  });
+
+  it("supports deliberate cross-patient repair and exact bidirectional navigation", () => {
+    const records = read("app/(dashboard)/records/page.tsx");
+
+    expect(records).toContain("canSearchReplacementPatients");
+    expect(records).toContain("Replacement patient");
+    expect(records).toContain("wrong-patient repair");
+    expect(records).toContain("replacementPatient?.id === selectedPatient?.id");
+    expect(records).toContain("replacementSourceLabResult?.appointmentId ??");
+    expect(records).toContain("Only the test name was copied");
+    expect(records).toContain('resultValue: ""');
+    expect(records).toContain('resultFlag: "unknown"');
+    expect(records).toContain("lab.replacementLabResultPatientId ?? patientId");
+    expect(records).toContain("lab.replacesLabResultPatientId ?? patientId");
+    expect(records).toMatch(/Prior charged\s+or/);
+    expect(records).toMatch(/wrong-patient\s+replacements/);
+  });
+
+  it("renders correction attribution in the practice timezone", () => {
+    const records = read("app/(dashboard)/records/page.tsx");
+    const correctionControl = read(
+      "components/records/clinical-correction-control.tsx",
+    );
+
+    expect(correctionControl).toContain("formatClinicalDateTime(");
+    expect(correctionControl).toContain('"Unknown time"');
+    expect(correctionControl).not.toContain("correctedAt.toLocaleString()");
+    expect(
+      records.match(/timeZone=\{recordsTimeZone\}/g)?.length ?? 0,
+    ).toBeGreaterThanOrEqual(4);
+  });
+
+  it("registers correction and replacement ledgers in backup and RLS maintenance", () => {
+    const backup = read("lib/backup/export.ts");
+    const rls = read("../../packages/db/rls/enable-rls.sql");
+    const rlsTest = read("../../packages/db/test-rls.ts");
+    const reset = read("../../packages/db/reset.ts");
+
+    expect(backup).toContain("labResultReplacements: labReplacementRows");
+    expect(backup).toContain(
+      'restorePracticeRows("labResultReplacements", labResultReplacements)',
+    );
+    expect(backup).toContain(
+      ".correctionId must identify the exact lab correction for its source.",
+    );
+    expect(backup).toContain("directed replacement cycle");
+    expect(rls).toContain("'lab_result_replacements'");
+    expect(rls).toContain(
+      "GRANT SELECT, INSERT ON lab_result_replacements TO openpims_app",
+    );
+    expect(rls).toContain(
+      "clinical_record_corrections, demo_accesses, dispense_charge_queue, funnel_events, lab_result_events, lab_result_replacements",
+    );
+    expect(rls).toContain("FROM %I', r");
+    expect(rlsTest).toContain("cross-tenant lab replacement INSERT is blocked");
+    expect(rlsTest).toContain(
+      "lab replacement owner mutation requires the maintenance GUC",
+    );
+    expect(rlsTest).toContain(
+      "application role cannot delete correction evidence even with bypass GUCs",
+    );
+    expect(reset.indexOf('"lab_result_replacements"')).toBeLessThan(
+      reset.indexOf('"clinical_record_corrections"'),
+    );
+  });
+
+  it("seeds a reviewed fresh-value replacement at creation time", () => {
+    const seed = read("../../packages/db/seed.ts");
+
+    expect(seed).toContain("Incorrect transcribed value retained");
+    expect(seed).not.toContain("Duplicate manual entry retained");
+    expect(seed).toContain('const replacementValue = "87"');
+    expect(seed).toContain('status: "reviewed"');
+    expect(seed).toContain("createdAt: replacementCreatedAt");
+    expect(seed).toContain("await db.insert(labResultReplacements).values");
+    expect(seed).toContain("Lab results: ${insertedLabResults.length + 1}");
   });
 });

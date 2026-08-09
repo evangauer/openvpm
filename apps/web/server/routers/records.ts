@@ -22,6 +22,7 @@ import {
   vaccinationRecords,
   labResults,
   labResultEvents,
+  labResultReplacements,
   procedures,
   problemList,
   prescriptions,
@@ -149,6 +150,15 @@ function activePracticePredicate(practiceId: string) {
     from ${practices}
     where ${practices.id} = ${practiceId}
       and ${practices.deletedAt} is null
+  )`;
+}
+
+function activeLabResultPredicate(practiceId: string) {
+  return sql`not exists (
+    select 1
+    from ${clinicalRecordCorrections} as lab_correction
+    where lab_correction.practice_id = ${practiceId}
+      and lab_correction.lab_result_id = ${labResults.id}
   )`;
 }
 
@@ -301,6 +311,7 @@ const createLabResultInput = z
     status: z.enum(["pending", "completed"]).default("pending"),
     resultFlag: z.enum(labResultFlagValues).default("unknown"),
     operationId: z.string().uuid(),
+    replacesLabResultId: z.string().uuid().optional(),
   })
   .superRefine((input, ctx) => {
     if (
@@ -356,6 +367,62 @@ async function lockLabOperation(ctx: RecordsContext, operationId: string) {
       hashtextextended(${`${ctx.practiceId}:${operationId}`}, 0)
     )`,
   );
+}
+
+async function lockLabResultSource(ctx: RecordsContext, resultId: string) {
+  await ctx.db.execute(
+    sql`select pg_advisory_xact_lock(
+      hashtextextended(${`lab-result-source:${ctx.practiceId}:${resultId}`}, 0)
+    )`,
+  );
+}
+
+async function assertLabReplacementReplay(
+  ctx: RecordsContext,
+  expected: {
+    sourceLabResultId: string;
+    replacementLabResultId: string;
+    operationId: string;
+    payloadHash: string;
+  },
+) {
+  const [link] = await ctx.db
+    .select({
+      sourceLabResultId: labResultReplacements.sourceLabResultId,
+      replacementLabResultId: labResultReplacements.replacementLabResultId,
+      operationPayloadHash: labResultReplacements.operationPayloadHash,
+      correctionRecordType: clinicalRecordCorrections.recordType,
+      correctionLabResultId: clinicalRecordCorrections.labResultId,
+    })
+    .from(labResultReplacements)
+    .innerJoin(
+      clinicalRecordCorrections,
+      and(
+        eq(clinicalRecordCorrections.id, labResultReplacements.correctionId),
+        eq(clinicalRecordCorrections.practiceId, ctx.practiceId),
+      ),
+    )
+    .where(
+      and(
+        eq(labResultReplacements.practiceId, ctx.practiceId),
+        eq(labResultReplacements.operationId, expected.operationId),
+      ),
+    )
+    .limit(1);
+  if (
+    !link ||
+    link.sourceLabResultId !== expected.sourceLabResultId ||
+    link.replacementLabResultId !== expected.replacementLabResultId ||
+    link.operationPayloadHash !== expected.payloadHash ||
+    link.correctionRecordType !== "lab_result" ||
+    link.correctionLabResultId !== expected.sourceLabResultId
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message:
+        "Replacement creation evidence is missing or conflicts with this operation. Refresh the chart.",
+    });
+  }
 }
 
 async function getLabOperationReplay(
@@ -981,8 +1048,9 @@ async function getLabStatusForUpdate(
         eq(labResults.id, id),
         eq(labResults.practiceId, ctx.practiceId),
         activePracticePredicate(ctx.practiceId),
-        isNull(labResults.deletedAt)
-      )
+        activeLabResultPredicate(ctx.practiceId),
+        isNull(labResults.deletedAt),
+      ),
     )
     .limit(1);
 
@@ -2013,6 +2081,7 @@ export const recordsRouter = createRouter({
       const rows = await ctx.db
         .select({
           id: labResults.id,
+          appointmentId: labResults.appointmentId,
           testName: labResults.testName,
           resultValue: labResults.resultValue,
           unit: labResults.unit,
@@ -2043,6 +2112,44 @@ export const recordsRouter = createRouter({
           followUpNote: labResults.followUpNote,
           followUpCompletedAt: labResults.followUpCompletedAt,
           followUpOutcome: labResults.followUpOutcome,
+          replacesLabResultId: sql<string | null>`(
+            select replacement_link.source_lab_result_id
+            from ${labResultReplacements} as replacement_link
+            where replacement_link.practice_id = ${ctx.practiceId}
+              and replacement_link.replacement_lab_result_id = ${labResults.id}
+            limit 1
+          )`,
+          replacesLabResultPatientId: sql<string | null>`(
+            select source_result.patient_id
+            from ${labResultReplacements} as replacement_link
+            inner join ${labResults} as source_result
+              on source_result.practice_id = ${ctx.practiceId}
+             and source_result.id = replacement_link.source_lab_result_id
+            where replacement_link.practice_id = ${ctx.practiceId}
+              and replacement_link.replacement_lab_result_id = ${labResults.id}
+            limit 1
+          )`,
+          replacementLabResultId: sql<string | null>`(
+            select replacement_link.replacement_lab_result_id
+            from ${labResultReplacements} as replacement_link
+            where replacement_link.practice_id = ${ctx.practiceId}
+              and replacement_link.source_lab_result_id = ${labResults.id}
+            limit 1
+          )`,
+          replacementLabResultPatientId: sql<string | null>`(
+            select replacement_result.patient_id
+            from ${labResultReplacements} as replacement_link
+            inner join ${labResults} as replacement_result
+              on replacement_result.practice_id = ${ctx.practiceId}
+             and replacement_result.id = replacement_link.replacement_lab_result_id
+            where replacement_link.practice_id = ${ctx.practiceId}
+              and replacement_link.source_lab_result_id = ${labResults.id}
+            limit 1
+          )`,
+          correctionId: clinicalRecordCorrections.id,
+          correctionReason: clinicalRecordCorrections.reason,
+          correctedAt: clinicalRecordCorrections.createdAt,
+          correctedByName: clinicalRecordCorrections.correctedByName,
           createdAt: labResults.createdAt,
         })
         .from(labResults)
@@ -2066,6 +2173,13 @@ export const recordsRouter = createRouter({
             eq(labResults.followUpAssignedTo, followUpAssignee.id),
             eq(followUpAssignee.practiceId, ctx.practiceId)
           )
+        )
+        .leftJoin(
+          clinicalRecordCorrections,
+          and(
+            eq(clinicalRecordCorrections.practiceId, ctx.practiceId),
+            eq(clinicalRecordCorrections.labResultId, labResults.id),
+          ),
         )
         .where(
           and(
@@ -2148,6 +2262,7 @@ export const recordsRouter = createRouter({
       const conditions = [
         eq(labResults.practiceId, ctx.practiceId),
         activePracticePredicate(ctx.practiceId),
+        activeLabResultPredicate(ctx.practiceId),
         isNull(labResults.deletedAt),
       ];
 
@@ -2318,10 +2433,172 @@ export const recordsRouter = createRouter({
         .orderBy(asc(users.name));
     }),
 
+  markLabResultEnteredInError: protectedProcedure
+    .use(requireRole("admin", "veterinarian"))
+    .input(
+      z.object({
+        patientId: z.string().uuid(),
+        recordId: z.string().uuid(),
+        operationId: z.string().uuid(),
+        reason: z
+          .string()
+          .trim()
+          .min(CLINICAL_CORRECTION_REASON_MIN_LENGTH)
+          .max(CLINICAL_CORRECTION_REASON_MAX_LENGTH),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const operationPayloadHash = labOperationHash({
+        kind: "lab_result_entered_in_error",
+        patientId: input.patientId,
+        recordId: input.recordId,
+        reason: input.reason,
+      });
+
+      return ctx.db.transaction(async (tx) => {
+        const txCtx: RecordsContext = { db: tx, practiceId: ctx.practiceId };
+        await lockLabOperation(txCtx, input.operationId);
+        await lockLabResultSource(txCtx, input.recordId);
+
+        const [operationReplay] = await tx
+          .select()
+          .from(clinicalRecordCorrections)
+          .where(
+            and(
+              eq(clinicalRecordCorrections.practiceId, ctx.practiceId),
+              eq(clinicalRecordCorrections.operationId, input.operationId),
+            ),
+          )
+          .limit(1);
+        if (operationReplay) {
+          if (
+            operationReplay.recordType !== "lab_result" ||
+            operationReplay.labResultId !== input.recordId ||
+            operationReplay.patientId !== input.patientId ||
+            operationReplay.operationPayloadHash !== operationPayloadHash
+          ) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "This correction operation id was already used for different clinical evidence.",
+            });
+          }
+          return operationReplay;
+        }
+
+        const [source] = await tx
+          .select({
+            id: labResults.id,
+            patientId: labResults.patientId,
+            appointmentId: labResults.appointmentId,
+          })
+          .from(labResults)
+          .where(
+            and(
+              eq(labResults.id, input.recordId),
+              eq(labResults.patientId, input.patientId),
+              eq(labResults.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(labResults.deletedAt),
+            ),
+          )
+          .limit(1)
+          .for("update", { of: labResults });
+        if (!source) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Clinical record not found",
+          });
+        }
+
+        const [sourceCorrection] = await tx
+          .select()
+          .from(clinicalRecordCorrections)
+          .where(
+            and(
+              eq(clinicalRecordCorrections.practiceId, ctx.practiceId),
+              eq(clinicalRecordCorrections.labResultId, source.id),
+            ),
+          )
+          .limit(1);
+        if (sourceCorrection) {
+          if (
+            sourceCorrection.recordType === "lab_result" &&
+            sourceCorrection.labResultId === source.id &&
+            sourceCorrection.patientId === source.patientId &&
+            sourceCorrection.operationPayloadHash === operationPayloadHash
+          ) {
+            return sourceCorrection;
+          }
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "This lab result already has a different correction. Refresh the chart.",
+          });
+        }
+
+        const [created] = await tx
+          .insert(clinicalRecordCorrections)
+          .values({
+            practiceId: ctx.practiceId,
+            recordType: "lab_result",
+            action: "entered_in_error",
+            labResultId: source.id,
+            patientId: source.patientId,
+            appointmentId: source.appointmentId,
+            reason: input.reason,
+            correctedBy: ctx.user.id,
+            correctedByName: ctx.user.name,
+            operationId: input.operationId,
+            operationPayloadHash,
+          })
+          .onConflictDoNothing()
+          .returning();
+        if (!created) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Clinical correction changed; refresh and retry.",
+          });
+        }
+
+        // Preserve the work item and all financial history. Only unresolved,
+        // unbilled work is voided so visit closeout cannot be blocked by an
+        // entered-in-error lab result.
+        const occurredAt = new Date();
+        await tx
+          .update(visitWorkItems)
+          .set({
+            status: "voided",
+            voidReason: input.reason,
+            resolvedBy: ctx.user.id,
+            resolvedAt: occurredAt,
+            updatedAt: occurredAt,
+          })
+          .where(
+            and(
+              eq(visitWorkItems.practiceId, ctx.practiceId),
+              eq(visitWorkItems.labResultId, source.id),
+              eq(visitWorkItems.status, "unresolved"),
+              isNull(visitWorkItems.invoiceId),
+              isNull(visitWorkItems.invoiceItemId),
+              isNull(visitWorkItems.deletedAt),
+            ),
+          );
+        return created;
+      });
+    }),
+
   createLabResult: protectedProcedure
     .use(requireRole("admin", "veterinarian", "technician"))
     .input(createLabResultInput)
     .mutation(async ({ ctx, input }) => {
+      if (input.replacesLabResultId && ctx.user.role === "technician") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message:
+            "A veterinarian or administrator must create a replacement lab result.",
+        });
+      }
       const creationPayloadHash = labOperationHash({
         kind: "create",
         patientId: input.patientId,
@@ -2333,10 +2610,14 @@ export const recordsRouter = createRouter({
         referenceRangeHigh: input.referenceRangeHigh ?? null,
         status: input.status,
         resultFlag: input.resultFlag,
+        replacesLabResultId: input.replacesLabResultId ?? null,
       });
       const operation = await ctx.db.transaction(async (tx) => {
         const txCtx: RecordsContext = { db: tx, practiceId: ctx.practiceId };
         await lockLabOperation(txCtx, input.operationId);
+        if (input.replacesLabResultId) {
+          await lockLabResultSource(txCtx, input.replacesLabResultId);
+        }
         const existingReplay = await tx
           .select(getTableColumns(labResults))
           .from(labResults)
@@ -2354,19 +2635,136 @@ export const recordsRouter = createRouter({
               message: "This lab creation id was already used for different result data.",
             });
           }
+          if (input.replacesLabResultId) {
+            await assertLabReplacementReplay(txCtx, {
+              sourceLabResultId: input.replacesLabResultId,
+              replacementLabResultId: existingReplay[0].id,
+              operationId: input.operationId,
+              payloadHash: creationPayloadHash,
+            });
+          }
           return { result: existingReplay[0], replayed: true as const };
         }
         await assertPatientBelongsToPractice(txCtx, input.patientId);
+        let replacementCorrectionId: string | null = null;
+        let shouldRegisterVisitWork = Boolean(input.appointmentId);
+        if (input.replacesLabResultId) {
+          const [source] = await tx
+            .select({
+              id: labResults.id,
+              correctionId: clinicalRecordCorrections.id,
+            })
+            .from(labResults)
+            .innerJoin(
+              clinicalRecordCorrections,
+              and(
+                eq(clinicalRecordCorrections.practiceId, ctx.practiceId),
+                eq(clinicalRecordCorrections.labResultId, labResults.id),
+              ),
+            )
+            .where(
+              and(
+                eq(labResults.id, input.replacesLabResultId),
+                eq(labResults.practiceId, ctx.practiceId),
+                activePracticePredicate(ctx.practiceId),
+                isNull(labResults.deletedAt),
+              ),
+            )
+            .limit(1)
+            .for("share", { of: labResults });
+          if (!source) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "A replacement must point to an entered-in-error result in this patient chart.",
+            });
+          }
+          replacementCorrectionId = source.correctionId;
+
+          const [existingReplacement] = await tx
+            .select({ id: labResults.id })
+            .from(labResultReplacements)
+            .innerJoin(
+              labResults,
+              and(
+                eq(labResults.id, labResultReplacements.replacementLabResultId),
+                eq(labResults.practiceId, ctx.practiceId),
+              ),
+            )
+            .where(
+              and(
+                eq(labResultReplacements.practiceId, ctx.practiceId),
+                eq(labResultReplacements.sourceLabResultId, source.id),
+                isNull(labResults.deletedAt),
+              ),
+            )
+            .limit(1);
+          if (existingReplacement) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "This entered-in-error result already has a replacement. Refresh the chart.",
+            });
+          }
+          const [sourceWork] = await tx
+            .select({ status: visitWorkItems.status })
+            .from(visitWorkItems)
+            .where(
+              and(
+                eq(visitWorkItems.practiceId, ctx.practiceId),
+                eq(visitWorkItems.labResultId, source.id),
+                isNull(visitWorkItems.deletedAt),
+              ),
+            )
+            .limit(1);
+          if (
+            sourceWork?.status === "charged" ||
+            sourceWork?.status === "no_charge"
+          ) {
+            shouldRegisterVisitWork = false;
+          }
+        }
         if (input.appointmentId) {
-          await lockOpenAppointmentForClinicalWork(
-            txCtx,
-            input.appointmentId,
-            input.patientId,
-            "lab work"
-          );
+          if (input.replacesLabResultId) {
+            const [replacementAppointment] = await tx
+              .select({ status: appointments.status })
+              .from(appointments)
+              .where(
+                and(
+                  eq(appointments.id, input.appointmentId),
+                  eq(appointments.patientId, input.patientId),
+                  eq(appointments.practiceId, ctx.practiceId),
+                  activePracticePredicate(ctx.practiceId),
+                  isNull(appointments.deletedAt),
+                ),
+              )
+              .limit(1)
+              .for("update", { of: appointments });
+            if (!replacementAppointment) {
+              throw new TRPCError({
+                code: "NOT_FOUND",
+                message: "Appointment not found",
+              });
+            }
+            shouldRegisterVisitWork =
+              shouldRegisterVisitWork &&
+              (replacementAppointment.status === "checked_in" ||
+                replacementAppointment.status === "in_exam");
+          } else {
+            await lockOpenAppointmentForClinicalWork(
+              txCtx,
+              input.appointmentId,
+              input.patientId,
+              "lab work",
+            );
+          }
         }
         const occurredAt = new Date();
-        const { operationId, ...resultInput } = input;
+        const {
+          operationId,
+          replacesLabResultId: _replacementIntent,
+          ...resultInput
+        } = input;
         const [created] = await tx
           .insert(labResults)
           .values({
@@ -2377,9 +2775,7 @@ export const recordsRouter = createRouter({
             creationOperationId: operationId,
             creationPayloadHash,
           })
-          .onConflictDoNothing({
-            target: [labResults.practiceId, labResults.creationOperationId],
-          })
+          .onConflictDoNothing()
           .returning();
         if (!created) {
           const [replay] = await tx
@@ -2395,7 +2791,17 @@ export const recordsRouter = createRouter({
           if (!replay || replay.creationPayloadHash !== creationPayloadHash) {
             throw new TRPCError({
               code: "CONFLICT",
-              message: "This lab creation id conflicts with different result data.",
+              message: input.replacesLabResultId
+                ? "This entered-in-error result already has a replacement, or this creation id conflicts. Refresh the chart."
+                : "This lab creation id conflicts with different result data.",
+            });
+          }
+          if (input.replacesLabResultId) {
+            await assertLabReplacementReplay(txCtx, {
+              sourceLabResultId: input.replacesLabResultId,
+              replacementLabResultId: replay.id,
+              operationId: input.operationId,
+              payloadHash: creationPayloadHash,
             });
           }
           return { result: replay, replayed: true as const };
@@ -2421,7 +2827,19 @@ export const recordsRouter = createRouter({
           operationId,
           operationPayloadHash: creationPayloadHash,
         });
-        if (created?.appointmentId) {
+        if (input.replacesLabResultId && replacementCorrectionId) {
+          await tx.insert(labResultReplacements).values({
+            practiceId: ctx.practiceId,
+            correctionId: replacementCorrectionId,
+            sourceLabResultId: input.replacesLabResultId,
+            replacementLabResultId: created.id,
+            actorId: ctx.user.id,
+            actorName: ctx.user.name,
+            operationId,
+            operationPayloadHash: creationPayloadHash,
+          });
+        }
+        if (created?.appointmentId && shouldRegisterVisitWork) {
           await registerVisitWorkItem(txCtx, created.appointmentId, {
             labResultId: created.id,
           });
@@ -2462,6 +2880,7 @@ export const recordsRouter = createRouter({
       const result = await ctx.db.transaction(async (tx) => {
         const txCtx: RecordsContext = { db: tx, practiceId: ctx.practiceId };
         await lockLabOperation(txCtx, input.operationId);
+        await lockLabResultSource(txCtx, input.id);
         const replay = await getLabOperationReplay(txCtx, input.operationId, {
           resultId: input.id,
           eventTypes: ["reviewed"],
@@ -2497,8 +2916,9 @@ export const recordsRouter = createRouter({
               eq(labResults.practiceId, ctx.practiceId),
               eq(labResults.status, existing.status),
               activePracticePredicate(ctx.practiceId),
-              isNull(labResults.deletedAt)
-            )
+              activeLabResultPredicate(ctx.practiceId),
+              isNull(labResults.deletedAt),
+            ),
           )
           .returning();
         if (!updated) {
@@ -2570,6 +2990,7 @@ export const recordsRouter = createRouter({
       return ctx.db.transaction(async (tx) => {
         const txCtx: RecordsContext = { db: tx, practiceId: ctx.practiceId };
         await lockLabOperation(txCtx, input.operationId);
+        await lockLabResultSource(txCtx, input.id);
         const replay = await getLabOperationReplay(txCtx, input.operationId, {
           resultId: input.id,
           eventTypes: ["completed"],
@@ -2609,8 +3030,9 @@ export const recordsRouter = createRouter({
               eq(labResults.practiceId, ctx.practiceId),
               eq(labResults.status, "pending"),
               activePracticePredicate(ctx.practiceId),
-              isNull(labResults.deletedAt)
-            )
+              activeLabResultPredicate(ctx.practiceId),
+              isNull(labResults.deletedAt),
+            ),
           )
           .returning();
         if (!updated) {
@@ -2666,6 +3088,7 @@ export const recordsRouter = createRouter({
       return ctx.db.transaction(async (tx) => {
         const txCtx: RecordsContext = { db: tx, practiceId: ctx.practiceId };
         await lockLabOperation(txCtx, input.operationId);
+        await lockLabResultSource(txCtx, input.id);
         const replay = await getLabOperationReplay(txCtx, input.operationId, {
           resultId: input.id,
           eventTypes: ["follow_up_assigned", "follow_up_reassigned"],
@@ -2727,8 +3150,9 @@ export const recordsRouter = createRouter({
               eq(labResults.followUpStatus, existing.followUpStatus),
               sql`${labResults.followUpAssignedTo} is not distinct from ${existing.followUpAssignedTo}::uuid`,
               activePracticePredicate(ctx.practiceId),
-              isNull(labResults.deletedAt)
-            )
+              activeLabResultPredicate(ctx.practiceId),
+              isNull(labResults.deletedAt),
+            ),
           )
           .returning();
         if (!updated) {
@@ -2779,6 +3203,7 @@ export const recordsRouter = createRouter({
       const result = await ctx.db.transaction(async (tx) => {
         const txCtx: RecordsContext = { db: tx, practiceId: ctx.practiceId };
         await lockLabOperation(txCtx, input.operationId);
+        await lockLabResultSource(txCtx, input.id);
         const replay = await getLabOperationReplay(txCtx, input.operationId, {
           resultId: input.id,
           eventTypes: ["follow_up_completed"],
@@ -2821,8 +3246,9 @@ export const recordsRouter = createRouter({
               eq(labResults.followUpStatus, "open"),
               eq(labResults.followUpAssignedTo, existing.followUpAssignedTo),
               activePracticePredicate(ctx.practiceId),
-              isNull(labResults.deletedAt)
-            )
+              activeLabResultPredicate(ctx.practiceId),
+              isNull(labResults.deletedAt),
+            ),
           )
           .returning();
         if (!updated) {

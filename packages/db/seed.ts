@@ -18,6 +18,8 @@ import {
   prescriptions,
   labResults,
   labResultEvents,
+  clinicalRecordCorrections,
+  labResultReplacements,
   procedures,
   invoices,
   invoiceItems,
@@ -823,7 +825,160 @@ async function seed() {
     }
   }
   await db.insert(labResultEvents).values(labEventValues);
-  console.log(`Lab results: ${insertedLabResults.length} created with ${labEventValues.length} evidence events`);
+  const enteredInErrorSource = insertedLabResults.find(
+    (result) => result.status === "completed",
+  );
+  if (!enteredInErrorSource?.orderedBy) {
+    throw new Error("Demo lab correction fixture requires a completed source.");
+  }
+  const correctionOperationId = crypto.randomUUID();
+  const correctionPayloadHash = crypto
+    .createHash("sha256")
+    .update(`seed:lab:entered-in-error:${correctionOperationId}`)
+    .digest("hex");
+  const correctionCreatedAt = addMinutes(
+    enteredInErrorSource.completedAt ?? enteredInErrorSource.createdAt,
+    5,
+  );
+  const [labCorrection] = await db
+    .insert(clinicalRecordCorrections)
+    .values({
+      practiceId,
+      recordType: "lab_result",
+      action: "entered_in_error",
+      labResultId: enteredInErrorSource.id,
+      patientId: enteredInErrorSource.patientId,
+      appointmentId: enteredInErrorSource.appointmentId,
+      reason:
+        "Incorrect transcribed value retained for demonstration and audit.",
+      correctedBy: enteredInErrorSource.orderedBy,
+      correctedByName:
+        userNameById.get(enteredInErrorSource.orderedBy) ?? "Seed clinician",
+      operationId: correctionOperationId,
+      operationPayloadHash: correctionPayloadHash,
+      createdAt: correctionCreatedAt,
+    })
+    .returning();
+  const replacementOperationId = crypto.randomUUID();
+  const replacementPayloadHash = crypto
+    .createHash("sha256")
+    .update(`seed:lab:replacement:${replacementOperationId}`)
+    .digest("hex");
+  const replacementCreatedAt = addMinutes(correctionCreatedAt, 5);
+  const replacementCompletedAt = addMinutes(replacementCreatedAt, 15);
+  const replacementReviewedAt = addMinutes(replacementCompletedAt, 10);
+  const replacementValue = "87";
+  const [replacementResult] = await db
+    .insert(labResults)
+    .values({
+      practiceId,
+      patientId: enteredInErrorSource.patientId,
+      creationOperationId: replacementOperationId,
+      creationPayloadHash: replacementPayloadHash,
+      testName: enteredInErrorSource.testName,
+      resultValue: replacementValue,
+      unit: enteredInErrorSource.unit,
+      referenceRangeLow: enteredInErrorSource.referenceRangeLow,
+      referenceRangeHigh: enteredInErrorSource.referenceRangeHigh,
+      status: "reviewed",
+      resultFlag: "normal",
+      orderedBy: enteredInErrorSource.orderedBy,
+      completedAt: replacementCompletedAt,
+      reviewedBy: enteredInErrorSource.orderedBy,
+      reviewedAt: replacementReviewedAt,
+      createdAt: replacementCreatedAt,
+      updatedAt: replacementReviewedAt,
+    })
+    .returning();
+  const replacementCompletionOperationId = crypto.randomUUID();
+  const replacementReviewOperationId = crypto.randomUUID();
+  const replacementActorName =
+    userNameById.get(enteredInErrorSource.orderedBy) ?? "Seed clinician";
+  await db.insert(labResultEvents).values([
+    {
+      practiceId,
+      labResultId: replacementResult!.id,
+      patientId: replacementResult!.patientId,
+      appointmentId: null,
+      eventType: "created",
+      statusBefore: null,
+      statusAfter: "pending",
+      resultValue: null,
+      unit: null,
+      referenceRangeLow: null,
+      referenceRangeHigh: null,
+      resultFlag: "unknown",
+      followUpStatus: "not_required",
+      actorId: enteredInErrorSource.orderedBy,
+      actorName: replacementActorName,
+      createdAt: replacementCreatedAt,
+      operationId: replacementOperationId,
+      operationPayloadHash: replacementPayloadHash,
+    },
+    {
+      practiceId,
+      labResultId: replacementResult!.id,
+      patientId: replacementResult!.patientId,
+      appointmentId: null,
+      eventType: "completed",
+      statusBefore: "pending",
+      statusAfter: "completed",
+      resultValue: replacementValue,
+      unit: replacementResult!.unit,
+      referenceRangeLow: replacementResult!.referenceRangeLow,
+      referenceRangeHigh: replacementResult!.referenceRangeHigh,
+      resultFlag: "normal",
+      followUpStatus: "not_required",
+      actorId: enteredInErrorSource.orderedBy,
+      actorName: replacementActorName,
+      note: "Fresh replacement value recorded after correction.",
+      createdAt: replacementCompletedAt,
+      operationId: replacementCompletionOperationId,
+      operationPayloadHash: crypto
+        .createHash("sha256")
+        .update(
+          `seed:lab:replacement-complete:${replacementCompletionOperationId}`,
+        )
+        .digest("hex"),
+    },
+    {
+      practiceId,
+      labResultId: replacementResult!.id,
+      patientId: replacementResult!.patientId,
+      appointmentId: null,
+      eventType: "reviewed",
+      statusBefore: "completed",
+      statusAfter: "reviewed",
+      resultValue: replacementValue,
+      unit: replacementResult!.unit,
+      referenceRangeLow: replacementResult!.referenceRangeLow,
+      referenceRangeHigh: replacementResult!.referenceRangeHigh,
+      resultFlag: "normal",
+      followUpStatus: "not_required",
+      actorId: enteredInErrorSource.orderedBy,
+      actorName: replacementActorName,
+      createdAt: replacementReviewedAt,
+      operationId: replacementReviewOperationId,
+      operationPayloadHash: crypto
+        .createHash("sha256")
+        .update(`seed:lab:replacement-review:${replacementReviewOperationId}`)
+        .digest("hex"),
+    },
+  ]);
+  await db.insert(labResultReplacements).values({
+    practiceId,
+    correctionId: labCorrection!.id,
+    sourceLabResultId: enteredInErrorSource.id,
+    replacementLabResultId: replacementResult!.id,
+    actorId: enteredInErrorSource.orderedBy,
+    actorName: replacementActorName,
+    operationId: replacementOperationId,
+    operationPayloadHash: replacementPayloadHash,
+    createdAt: replacementCreatedAt,
+  });
+  console.log(
+    `Lab results: ${insertedLabResults.length + 1} created with ${labEventValues.length + 3} evidence events`,
+  );
 
   // =========================================================================
   // 11c. Procedures
@@ -1479,7 +1634,7 @@ Summary:
   - ${soapNotesCount} SOAP notes
   - ${vaccinationValues.length} vaccination records
   - ${prescriptionValues.length} prescriptions
-  - ${labResultValues.length} lab results
+  - ${labResultValues.length + 1} lab results
   - ${procedureValues.length} procedures
   - ${insertedInvoices.length} invoices with ${invoiceItemValues.length} line items
   - ${insertedPayments.length} payments

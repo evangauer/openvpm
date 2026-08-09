@@ -130,6 +130,22 @@ export async function syncVisitWorkItems(ctx: VisitBillingContext, appointmentId
       for update
     `);
     await tx.execute(sql`
+      select pg_advisory_xact_lock(
+        hashtextextended(
+          'lab-result-source:' || ${ctx.practiceId}::text || ':' || lab_source.id::text,
+          0
+        )
+      )
+      from (
+        select ${labResults.id} as id
+        from ${labResults}
+        where ${labResults.practiceId} = ${ctx.practiceId}
+          and ${labResults.appointmentId} = ${appointmentId}
+          and ${labResults.deletedAt} is null
+        order by ${labResults.id}
+      ) as lab_source
+    `);
+    await tx.execute(sql`
       insert into ${visitWorkItems}
         (practice_id, appointment_id, vaccination_record_id)
       select ${vaccinationRecords.practiceId}, ${vaccinationRecords.appointmentId}, ${vaccinationRecords.id}
@@ -153,6 +169,12 @@ export async function syncVisitWorkItems(ctx: VisitBillingContext, appointmentId
       where ${labResults.practiceId} = ${ctx.practiceId}
         and ${labResults.appointmentId} = ${appointmentId}
         and ${labResults.deletedAt} is null
+        and not exists (
+          select 1
+          from ${clinicalRecordCorrections} as lab_correction
+          where lab_correction.practice_id = ${ctx.practiceId}
+            and lab_correction.lab_result_id = ${labResults.id}
+        )
       on conflict do nothing
     `);
     await tx.execute(sql`

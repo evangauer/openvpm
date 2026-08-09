@@ -421,6 +421,13 @@
       "when": 1786272808904,
       "tag": "0059_daffy_darkstar",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1786274928585,
+      "tag": "0060_warm_rawhide_kid",
+      "breakpoints": true
     }
   ]
 }

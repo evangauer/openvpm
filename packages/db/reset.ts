@@ -28,6 +28,8 @@ const TABLES = [
   "dispense_charge_queue",
   "invoice_items",
   "invoices",
+  "lab_result_replacements",
+  "clinical_record_corrections",
   "lab_result_events",
   "lab_results",
   "procedures",

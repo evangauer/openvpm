@@ -74,6 +74,12 @@ const aSmsSendAttemptEvent = randomUUID();
 const bSmsSendAttemptEvent = randomUUID();
 const aLabResult = randomUUID();
 const bLabResult = randomUUID();
+const aReplacementLabResult = randomUUID();
+const bReplacementLabResult = randomUUID();
+const aLabCorrection = randomUUID();
+const bLabCorrection = randomUUID();
+const aLabReplacement = randomUUID();
+const bLabReplacement = randomUUID();
 const aLabResultEvent = randomUUID();
 const bLabResultEvent = randomUUID();
 const aAppSmsSendAttempt = randomUUID();
@@ -162,7 +168,9 @@ try {
     (id, practice_id, patient_id, test_name, result_value, status, completed_at, ordered_by)
     values
     (${aLabResult}, ${aId}, ${aPatient}, 'RLS CBC A', '12.5', 'completed', now(), ${aUser}),
-    (${bLabResult}, ${bId}, ${bPatient}, 'RLS CBC B', '8.2', 'completed', now(), ${bUser})`;
+    (${bLabResult}, ${bId}, ${bPatient}, 'RLS CBC B', '8.2', 'completed', now(), ${bUser}),
+    (${aReplacementLabResult}, ${aId}, ${aPatient}, 'RLS CBC A replacement', null, 'pending', null, ${aUser}),
+    (${bReplacementLabResult}, ${bId}, ${bPatient}, 'RLS CBC B replacement', null, 'pending', null, ${bUser})`;
   await owner`insert into lab_result_events
     (id, practice_id, lab_result_id, patient_id, event_type, status_before,
      status_after, result_value, result_flag, actor_id, actor_name, operation_id,
@@ -172,6 +180,25 @@ try {
       'completed', '12.5', 'normal', ${aUser}, 'RLS Admin A', ${randomUUID()}, ${"a".repeat(64)}),
     (${bLabResultEvent}, ${bId}, ${bLabResult}, ${bPatient}, 'completed', 'pending',
       'completed', '8.2', 'normal', ${bUser}, 'RLS Admin B', ${randomUUID()}, ${"b".repeat(64)})`;
+  const aCorrectionOperation = randomUUID();
+  const bCorrectionOperation = randomUUID();
+  await owner`insert into clinical_record_corrections
+    (id, practice_id, record_type, lab_result_id, patient_id, reason,
+     corrected_by, corrected_by_name, operation_id, operation_payload_hash)
+    values
+    (${aLabCorrection}, ${aId}, 'lab_result', ${aLabResult}, ${aPatient},
+      'RLS correction A.', ${aUser}, 'RLS Admin A', ${aCorrectionOperation}, ${"c".repeat(64)}),
+    (${bLabCorrection}, ${bId}, 'lab_result', ${bLabResult}, ${bPatient},
+      'RLS correction B.', ${bUser}, 'RLS Admin B', ${bCorrectionOperation}, ${"d".repeat(64)})`;
+  await owner`insert into lab_result_replacements
+    (id, practice_id, correction_id, source_lab_result_id,
+     replacement_lab_result_id, actor_id, actor_name, operation_id,
+     operation_payload_hash)
+    values
+    (${aLabReplacement}, ${aId}, ${aLabCorrection}, ${aLabResult},
+      ${aReplacementLabResult}, ${aUser}, 'RLS Admin A', ${randomUUID()}, ${"e".repeat(64)}),
+    (${bLabReplacement}, ${bId}, ${bLabCorrection}, ${bLabResult},
+      ${bReplacementLabResult}, ${bUser}, 'RLS Admin B', ${randomUUID()}, ${"f".repeat(64)})`;
   await owner`insert into patients (id, practice_id, client_id, name, species)
     select ${aMergeTargetPatient}, ${aId}, id, 'RLS Canonical Pet A', 'canine'
     from clients where practice_id = ${aId}`;
@@ -606,6 +633,113 @@ try {
       aLabResultEvents[0]!.id === aLabResultEvent &&
       aLabResultEvents[0]!.practice_id === aId,
   );
+  const aLabReplacementRows = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id, practice_id from lab_result_replacements where id in (${aLabReplacement}, ${bLabReplacement})`;
+  });
+  check(
+    "tenant A sees only A's lab replacement evidence",
+    aLabReplacementRows.length === 1 &&
+      aLabReplacementRows[0]!.id === aLabReplacement &&
+      aLabReplacementRows[0]!.practice_id === aId,
+  );
+  const aLabCorrectionRows = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id, practice_id from clinical_record_corrections where id in (${aLabCorrection}, ${bLabCorrection})`;
+  });
+  check(
+    "tenant A sees only A's lab correction evidence",
+    aLabCorrectionRows.length === 1 &&
+      aLabCorrectionRows[0]!.id === aLabCorrection &&
+      aLabCorrectionRows[0]!.practice_id === aId,
+  );
+
+  const labReplacementPrivileges = await owner`
+    select
+      has_table_privilege('openpims_app', 'lab_result_replacements', 'SELECT') as can_select,
+      has_table_privilege('openpims_app', 'lab_result_replacements', 'INSERT') as can_insert,
+      has_table_privilege('openpims_app', 'lab_result_replacements', 'UPDATE') as can_update,
+      has_table_privilege('openpims_app', 'lab_result_replacements', 'DELETE') as can_delete
+  `;
+  check(
+    "app role can append/read but cannot mutate lab replacement evidence",
+    labReplacementPrivileges.length === 1 &&
+      labReplacementPrivileges[0]!.can_select === true &&
+      labReplacementPrivileges[0]!.can_insert === true &&
+      labReplacementPrivileges[0]!.can_update === false &&
+      labReplacementPrivileges[0]!.can_delete === false,
+  );
+
+  let crossTenantLabReplacementInsertBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into lab_result_replacements
+        (practice_id, correction_id, source_lab_result_id,
+         replacement_lab_result_id, actor_id, actor_name, operation_id,
+         operation_payload_hash)
+        values (${bId}, ${bLabCorrection}, ${bLabResult},
+          ${bReplacementLabResult}, ${bUser}, 'RLS Admin B', ${randomUUID()},
+          ${"1".repeat(64)})`;
+    });
+  } catch {
+    crossTenantLabReplacementInsertBlocked = true;
+  }
+  check(
+    "cross-tenant lab replacement INSERT is blocked",
+    crossTenantLabReplacementInsertBlocked,
+  );
+  let mixedTenantLabReplacementInsertBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into lab_result_replacements
+        (practice_id, correction_id, source_lab_result_id,
+         replacement_lab_result_id, actor_id, actor_name, operation_id,
+         operation_payload_hash)
+        values (${aId}, ${bLabCorrection}, ${bLabResult},
+          ${bReplacementLabResult}, ${bUser}, 'Mixed tenant actor',
+          ${randomUUID()}, ${"2".repeat(64)})`;
+    });
+  } catch {
+    mixedTenantLabReplacementInsertBlocked = true;
+  }
+  check(
+    "tenant-safe replacement FKs reject mixed-practice evidence",
+    mixedTenantLabReplacementInsertBlocked,
+  );
+
+  let ownerReplacementMutationBlockedWithoutMaintenance = false;
+  try {
+    await owner`update lab_result_replacements set actor_name = actor_name where id = ${aLabReplacement}`;
+  } catch {
+    ownerReplacementMutationBlockedWithoutMaintenance = true;
+  }
+  check(
+    "lab replacement owner mutation requires the maintenance GUC",
+    ownerReplacementMutationBlockedWithoutMaintenance,
+  );
+  await owner.begin(async (tx) => {
+    const maintenance = tx as unknown as typeof owner;
+    await maintenance`select set_config('app.ledger_maintenance', 'on', true)`;
+    await maintenance`update lab_result_replacements set actor_name = actor_name where id = ${aLabReplacement}`;
+  });
+
+  let ownerCorrectionMutationBlockedWithoutMaintenance = false;
+  try {
+    await owner`update clinical_record_corrections set reason = reason where id = ${aLabCorrection}`;
+  } catch {
+    ownerCorrectionMutationBlockedWithoutMaintenance = true;
+  }
+  check(
+    "clinical correction owner mutation requires the maintenance GUC",
+    ownerCorrectionMutationBlockedWithoutMaintenance,
+  );
+  await owner.begin(async (tx) => {
+    const maintenance = tx as unknown as typeof owner;
+    await maintenance`select set_config('app.ledger_maintenance', 'on', true)`;
+    await maintenance`update clinical_record_corrections set reason = reason where id = ${aLabCorrection}`;
+  });
 
   let ownerLabMutationBlockedWithoutMaintenance = false;
   try {
@@ -1093,6 +1227,34 @@ try {
     "application role cannot delete lab evidence even with bypass GUCs",
     bypassCannotDeleteLabEvidence,
   );
+  let bypassCannotDeleteLabReplacement = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`select set_config('app.ledger_maintenance', 'on', true)`;
+      await tx`delete from lab_result_replacements where id = ${aLabReplacement}`;
+    });
+  } catch {
+    bypassCannotDeleteLabReplacement = true;
+  }
+  check(
+    "application role cannot delete lab replacement evidence even with bypass GUCs",
+    bypassCannotDeleteLabReplacement,
+  );
+  let bypassCannotDeleteClinicalCorrection = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`select set_config('app.ledger_maintenance', 'on', true)`;
+      await tx`delete from clinical_record_corrections where id = ${aLabCorrection}`;
+    });
+  } catch {
+    bypassCannotDeleteClinicalCorrection = true;
+  }
+  check(
+    "application role cannot delete correction evidence even with bypass GUCs",
+    bypassCannotDeleteClinicalCorrection,
+  );
 } catch (err) {
   console.error("Unexpected error:", err);
   failures++;
@@ -1104,7 +1266,9 @@ try {
     await cleanup`delete from sms_delivery_event_history where id in (${aSmsDeliveryHistory}, ${bSmsDeliveryHistory}, ${bSmsDeliveryConflictHistory})`;
     await cleanup`delete from sms_delivery_events where id in (${aSmsDeliveryEvent}, ${bSmsDeliveryEvent}, ${unmatchedSmsDeliveryEvent})`;
     await cleanup`delete from lab_result_events where id in (${aLabResultEvent}, ${bLabResultEvent})`;
-    await cleanup`delete from lab_results where id in (${aLabResult}, ${bLabResult})`;
+    await cleanup`delete from lab_result_replacements where id in (${aLabReplacement}, ${bLabReplacement})`;
+    await cleanup`delete from clinical_record_corrections where id in (${aLabCorrection}, ${bLabCorrection})`;
+    await cleanup`delete from lab_results where id in (${aLabResult}, ${bLabResult}, ${aReplacementLabResult}, ${bReplacementLabResult})`;
     await cleanup`delete from sms_send_attempt_events where id in (${aSmsSendAttemptEvent}, ${bSmsSendAttemptEvent}, ${aAppSmsSendAttemptEvent})`;
     await cleanup`delete from sms_send_attempts where id in (${aSmsSendAttempt}, ${bSmsSendAttempt}, ${aAppSmsSendAttempt})`;
     await cleanup`delete from sms_consent_events where id in (${aSmsConsentEvent}, ${bSmsConsentEvent})`;

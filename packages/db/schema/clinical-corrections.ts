@@ -13,12 +13,17 @@ import {
 import { appointments } from "./scheduling";
 import { patients } from "./patients";
 import { practices } from "./practices";
-import { soapNotes, vaccinationRecords, vitalSigns } from "./clinical";
+import {
+  labResults,
+  soapNotes,
+  vaccinationRecords,
+  vitalSigns,
+} from "./clinical";
 import { users } from "./users";
 
 export const clinicalCorrectionRecordTypeEnum = pgEnum(
   "clinical_correction_record_type",
-  ["soap_note", "vital_sign", "vaccination_record"],
+  ["soap_note", "vital_sign", "vaccination_record", "lab_result"],
 );
 
 export const clinicalCorrectionActionEnum = pgEnum(
@@ -49,6 +54,7 @@ export const clinicalRecordCorrections = pgTable(
     vaccinationRecordId: uuid("vaccination_record_id").references(
       () => vaccinationRecords.id,
     ),
+    labResultId: uuid("lab_result_id").references(() => labResults.id),
     patientId: uuid("patient_id")
       .notNull()
       .references(() => patients.id),
@@ -58,6 +64,8 @@ export const clinicalRecordCorrections = pgTable(
       .notNull()
       .references(() => users.id),
     correctedByName: varchar("corrected_by_name", { length: 255 }).notNull(),
+    operationId: uuid("operation_id"),
+    operationPayloadHash: varchar("operation_payload_hash", { length: 64 }),
   },
   (table) => ({
     practicePatientHistoryIdx: index(
@@ -80,6 +88,15 @@ export const clinicalRecordCorrections = pgTable(
     )
       .on(table.practiceId, table.vaccinationRecordId)
       .where(sql`${table.vaccinationRecordId} is not null`),
+    labResultUq: uniqueIndex("clinical_record_corrections_lab_result_uq")
+      .on(table.practiceId, table.labResultId)
+      .where(sql`${table.labResultId} is not null`),
+    operationUq: uniqueIndex("clinical_record_corrections_operation_uq")
+      .on(table.practiceId, table.operationId)
+      .where(sql`${table.operationId} is not null`),
+    practiceRecordLabSourceUq: uniqueIndex(
+      "clinical_record_corrections_practice_record_lab_source_uq",
+    ).on(table.practiceId, table.id, table.labResultId),
     appointmentPracticeFk: foreignKey({
       columns: [table.practiceId, table.appointmentId, table.patientId],
       foreignColumns: [
@@ -114,6 +131,11 @@ export const clinicalRecordCorrections = pgTable(
       foreignColumns: [vaccinationRecords.practiceId, vaccinationRecords.id],
       name: "clinical_record_corrections_vaccination_source_fk",
     }),
+    labResultSourceFk: foreignKey({
+      columns: [table.practiceId, table.labResultId],
+      foreignColumns: [labResults.practiceId, labResults.id],
+      name: "clinical_record_corrections_lab_result_source_fk",
+    }),
     sourceTypeCheck: check(
       "clinical_record_corrections_source_type_check",
       sql`(
@@ -121,17 +143,38 @@ export const clinicalRecordCorrections = pgTable(
         and ${table.soapNoteId} is not null
         and ${table.vitalSignId} is null
         and ${table.vaccinationRecordId} is null
+        and ${table.labResultId} is null
       ) or (
         ${table.recordType} = 'vital_sign'
         and ${table.vitalSignId} is not null
         and ${table.soapNoteId} is null
         and ${table.vaccinationRecordId} is null
+        and ${table.labResultId} is null
       ) or (
         ${table.recordType} = 'vaccination_record'
         and ${table.vaccinationRecordId} is not null
         and ${table.soapNoteId} is null
         and ${table.vitalSignId} is null
+        and ${table.labResultId} is null
+      ) or (
+        ${table.recordType} = 'lab_result'
+        and ${table.labResultId} is not null
+        and ${table.soapNoteId} is null
+        and ${table.vitalSignId} is null
+        and ${table.vaccinationRecordId} is null
       )`,
+    ),
+    operationShapeCheck: check(
+      "clinical_record_corrections_operation_shape_check",
+      sql`(
+          ${table.recordType} = 'lab_result'
+          and ${table.operationId} is not null
+          and ${table.operationPayloadHash} ~ '^[0-9a-f]{64}$'
+        ) or (
+          ${table.recordType} <> 'lab_result'
+          and ${table.operationId} is null
+          and ${table.operationPayloadHash} is null
+        )`,
     ),
     reasonLengthCheck: check(
       "clinical_record_corrections_reason_length_check",
@@ -174,6 +217,10 @@ export const clinicalRecordCorrectionsRelations = relations(
     vaccinationRecord: one(vaccinationRecords, {
       fields: [clinicalRecordCorrections.vaccinationRecordId],
       references: [vaccinationRecords.id],
+    }),
+    labResult: one(labResults, {
+      fields: [clinicalRecordCorrections.labResultId],
+      references: [labResults.id],
     }),
   }),
 );

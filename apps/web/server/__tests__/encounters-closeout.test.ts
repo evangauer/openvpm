@@ -226,7 +226,16 @@ describe("encounter closeout safety", () => {
         [{ id: PATIENT_ID }],
         [clinicalFinalized],
       ],
-      executeResults: [[], [], [], [], [], [], { rows: [{ id: WORK_ITEM_ID }] }],
+      executeResults: [
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        { rows: [{ id: WORK_ITEM_ID }] },
+      ],
     });
 
     const result = callerWithDb(db).completeVisit({
@@ -237,8 +246,8 @@ describe("encounter closeout safety", () => {
       handoffMethod: "verbal",
     });
     const error = await result.catch((caught) => caught);
-    expect(execute).toHaveBeenCalledTimes(7);
-    expect(await execute.mock.results[6]?.value).toEqual({
+    expect(execute).toHaveBeenCalledTimes(8);
+    expect(await execute.mock.results[7]?.value).toEqual({
       rows: [{ id: WORK_ITEM_ID }],
     });
     expect(error).toMatchObject({

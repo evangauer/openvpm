@@ -82,7 +82,9 @@ snapshot. Wall-clock times from the 2026-07-10 drill are in brackets.
 
 6. **Verify:** client list, one patient chart (vaccinations tab), one
    invoice, and the Lab Inbox review/follow-up evidence for one completed
-   result. Row counts in the success box should match the dry-run counts.
+   result. For a backup containing a lab correction, confirm the retained
+   entered-in-error source links bidirectionally to its replacement. Row counts
+   in the success box should match the dry-run counts.
 
 7. **After-restore hygiene** (by design, see sanitization above):
    - Staff accounts exist but need password resets.
