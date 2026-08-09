@@ -11,7 +11,8 @@ proves the whole path works.
   `backups/{practiceId}/{YYYY-MM-DD}.json` (date in the practice's timezone).
 - **What:** every practice-owned table, active rows only. That includes the
   full clinical record (SOAP notes, clinical notes, vitals, vaccinations,
-  labs, procedures, prescriptions, problem lists, cases, treatment plans,
+  labs plus their immutable completion/review/follow-up history, procedures,
+  prescriptions, problem lists, cases, treatment plans,
   controlled-substance log), clients and patients, scheduling, billing
   (invoices, items, payments, adjustments, claims), inventory, staff, and the
   audit log. The canonical section list is `PRACTICE_EXPORT_SECTIONS` in
@@ -80,7 +81,8 @@ snapshot. Wall-clock times from the 2026-07-10 drill are in brackets.
    then **Restore into Fresh Practice**. [under 1s for a small clinic]
 
 6. **Verify:** client list, one patient chart (vaccinations tab), one
-   invoice. Row counts in the success box should match the dry-run counts.
+   invoice, and the Lab Inbox review/follow-up evidence for one completed
+   result. Row counts in the success box should match the dry-run counts.
 
 7. **After-restore hygiene** (by design, see sanitization above):
    - Staff accounts exist but need password resets.

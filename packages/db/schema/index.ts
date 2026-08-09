@@ -5,6 +5,7 @@ export * from "./patients";
 export * from "./patient-merge-events";
 export * from "./scheduling";
 export * from "./clinical";
+export * from "./lab-result-events";
 export * from "./clinical-corrections";
 export * from "./prescriptions";
 export * from "./prescription-events";

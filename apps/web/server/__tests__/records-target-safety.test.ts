@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { SOAP_SECTION_MAX_LENGTH } from "@/lib/records/soap-content";
 import { SOAP_NOTE_TEMPLATES } from "@/lib/records/soap-templates";
@@ -43,6 +44,11 @@ const PATIENT_ID = "00000000-0000-0000-0000-000000000002";
 const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000003";
 const RECORD_ID = "00000000-0000-0000-0000-000000000004";
 const FORM_ID = "00000000-0000-0000-0000-000000000005";
+const OTHER_USER_ID = "00000000-0000-0000-0000-000000000006";
+
+function operationHash(payload: Record<string, unknown>): string {
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+}
 
 function callerWithDb(db: Record<string, unknown>, role = "veterinarian") {
   const session = {
@@ -76,6 +82,7 @@ function createDb(opts?: {
     };
     const builder = {
       from: vi.fn(() => builder),
+      innerJoin: vi.fn(() => builder),
       leftJoin: vi.fn(() => builder),
       where: vi.fn(() => afterWhere),
       orderBy: vi.fn(() => builder),
@@ -85,10 +92,13 @@ function createDb(opts?: {
   });
 
   const insertReturning = vi.fn(async () => opts?.insertedRows ?? []);
-  const insertValues = vi.fn(() => ({
-    returning: insertReturning,
-    onConflictDoNothing: vi.fn(async () => undefined),
-  }));
+  const insertValues = vi.fn(() => {
+    const builder = {
+      returning: insertReturning,
+      onConflictDoNothing: vi.fn(() => builder),
+    };
+    return builder;
+  });
   const insert = vi.fn(() => ({ values: insertValues }));
 
   const updateReturning = vi.fn(async () => opts?.updatedRows ?? []);
@@ -322,6 +332,7 @@ describe("records target safety", () => {
       callerWithDb(db).createLabResult({
         patientId: PATIENT_ID,
         testName: "A".repeat(LAB_TEST_NAME_MAX_LENGTH + 1),
+        operationId: FORM_ID,
       })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
@@ -330,6 +341,7 @@ describe("records target safety", () => {
         patientId: PATIENT_ID,
         testName: "CBC",
         resultValue: "A".repeat(LAB_RESULT_VALUE_MAX_LENGTH + 1),
+        operationId: FORM_ID,
       })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
@@ -338,6 +350,7 @@ describe("records target safety", () => {
         patientId: PATIENT_ID,
         testName: "CBC",
         unit: "A".repeat(LAB_UNIT_MAX_LENGTH + 1),
+        operationId: FORM_ID,
       })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
@@ -543,13 +556,19 @@ describe("records target safety", () => {
 
   it("emits a webhook after creating a lab result", async () => {
     const { db } = createDb({
-      selectResults: [patientRow],
+      selectResults: [[], patientRow],
       insertedRows: [
         {
           id: RECORD_ID,
           patientId: PATIENT_ID,
           testName: "CBC",
           status: "pending",
+          resultValue: null,
+          unit: null,
+          referenceRangeLow: null,
+          referenceRangeHigh: null,
+          resultFlag: "unknown",
+          followUpStatus: "not_required",
           orderedBy: USER_ID,
         },
       ],
@@ -559,6 +578,7 @@ describe("records target safety", () => {
       callerWithDb(db).createLabResult({
         patientId: PATIENT_ID,
         testName: "CBC",
+        operationId: FORM_ID,
       })
     ).resolves.toMatchObject({ id: RECORD_ID, testName: "CBC" });
 
@@ -584,6 +604,7 @@ describe("records target safety", () => {
         patientId: PATIENT_ID,
         testName: "CBC",
         referenceRangeLow: "not numeric",
+        operationId: FORM_ID,
       })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
@@ -593,6 +614,7 @@ describe("records target safety", () => {
         testName: "CBC",
         referenceRangeLow: "30.000",
         referenceRangeHigh: "7.000",
+        operationId: FORM_ID,
       })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
@@ -676,7 +698,7 @@ describe("records target safety", () => {
   });
 
   it("rejects stale or cross-tenant problem status updates", async () => {
-    const { db, updateSet } = createDb({ selectResults: [[]] });
+    const { db, updateSet } = createDb({ selectResults: [[], []] });
 
     await expect(
       callerWithDb(db).updateProblemStatus({
@@ -749,6 +771,7 @@ describe("records target safety", () => {
       callerWithDb(db).updateLabResultStatus({
         id: RECORD_ID,
         status: "reviewed",
+        operationId: FORM_ID,
       })
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
@@ -757,13 +780,14 @@ describe("records target safety", () => {
 
   it("requires lab result status transitions to follow pending, completed, reviewed order", async () => {
     const pending = createDb({
-      selectResults: [[{ status: "pending" }]],
+      selectResults: [[], [{ status: "pending" }]],
     });
 
     await expect(
       callerWithDb(pending.db).updateLabResultStatus({
         id: RECORD_ID,
         status: "reviewed",
+        operationId: FORM_ID,
       })
     ).rejects.toMatchObject({
       code: "BAD_REQUEST",
@@ -771,29 +795,144 @@ describe("records target safety", () => {
     });
     expect(pending.updateSet).not.toHaveBeenCalled();
 
-    const reviewed = createDb({
-      selectResults: [[{ status: "reviewed" }]],
-    });
+  });
+
+  it("returns tenant-scoped immutable lab evidence with value snapshots", async () => {
+    const event = {
+      id: FORM_ID,
+      eventType: "reviewed",
+      statusBefore: "completed",
+      statusAfter: "reviewed",
+      resultValue: "12.5",
+      unit: "mg/dL",
+      referenceRangeLow: "8.000",
+      referenceRangeHigh: "18.000",
+      resultFlag: "abnormal",
+      actorName: "Doctor",
+      createdAt: new Date("2026-08-09T12:00:00.000Z"),
+    };
+    const { db } = createDb({ selectResults: [[{ id: RECORD_ID }], [event]] });
 
     await expect(
-      callerWithDb(reviewed.db).updateLabResultStatus({
-        id: RECORD_ID,
-        status: "completed",
-      })
-    ).rejects.toMatchObject({
-      code: "BAD_REQUEST",
-      message: "Cannot change lab result status from reviewed to completed.",
+      callerWithDb(db).listLabResultHistory({ id: RECORD_ID }),
+    ).resolves.toEqual([event]);
+  });
+
+  it("blocks front desk from direct per-patient lab values and history", async () => {
+    const { db, select } = createDb();
+    const caller = callerWithDb(db, "front_desk");
+
+    await expect(
+      caller.listLabResults({ patientId: PATIENT_ID }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(
+      caller.listLabResultHistory({ id: RECORD_ID }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it("returns front desk only its assigned open follow-up with clinical values redacted", async () => {
+    const assigned = {
+      id: RECORD_ID,
+      patientId: PATIENT_ID,
+      patientName: "Patient",
+      testName: "CBC",
+      status: "completed",
+      resultValue: "2.1",
+      unit: "mmol/L",
+      referenceRangeLow: "3.500",
+      referenceRangeHigh: "5.500",
+      resultFlag: "critical",
+      orderedByName: "Clinician",
+      completedAt: new Date(),
+      completionActorName: "Technician",
+      reviewedAt: new Date(),
+      reviewedByName: "Reviewer",
+      followUpStatus: "open",
+      followUpAssignedTo: USER_ID,
+      followUpAssigneeName: "Front Desk",
+      followUpNote: "Call the owner and book the repeat test.",
+      followUpOutcome: null,
+    };
+    const { db } = createDb({
+      selectResults: [[
+        assigned,
+        { ...assigned, id: FORM_ID, followUpAssignedTo: OTHER_USER_ID },
+        { ...assigned, id: APPOINTMENT_ID, followUpStatus: "completed" },
+      ]],
     });
-    expect(reviewed.updateSet).not.toHaveBeenCalled();
+
+    const result = await callerWithDb(db, "front_desk").listLabReviewInbox({
+      filter: "all",
+      limit: 100,
+    });
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toMatchObject({
+      id: RECORD_ID,
+      patientName: "Patient",
+      testName: "CBC",
+      resultValue: null,
+      unit: null,
+      referenceRangeLow: null,
+      referenceRangeHigh: null,
+      resultFlag: "unknown",
+      orderedByName: null,
+      completedAt: null,
+      completionActorName: null,
+      reviewedAt: null,
+      reviewedByName: null,
+      followUpAssignedTo: USER_ID,
+      followUpNote: "Call the owner and book the repeat test.",
+    });
+  });
+
+  it("returns an exact tenant-scoped lab inbox result without applying the broad queue filter", async () => {
+    const selected = {
+      id: RECORD_ID,
+      patientId: PATIENT_ID,
+      patientName: "Patient",
+      testName: "CBC",
+      status: "reviewed",
+      resultValue: "12.5",
+      resultFlag: "normal",
+      followUpStatus: "not_required",
+    };
+    const { db } = createDb({ selectResults: [[selected]] });
+
+    await expect(
+      callerWithDb(db).listLabReviewInbox({
+        resultId: RECORD_ID,
+        filter: "action_required",
+        limit: 100,
+      }),
+    ).resolves.toEqual({ items: [selected], truncated: false });
   });
 
   it("reviews completed lab results and stamps the reviewer", async () => {
-    const { db, updateSet } = createDb({
-      selectResults: [[{ status: "completed" }]],
+    const { db, updateSet, insertValues } = createDb({
+      selectResults: [
+        [],
+        [{
+          status: "completed",
+          resultValue: "12.5",
+          resultFlag: "abnormal",
+          followUpStatus: "not_required",
+        }],
+      ],
       updatedRows: [
         {
           id: RECORD_ID,
+          patientId: PATIENT_ID,
+          appointmentId: null,
           status: "reviewed",
+          resultValue: "12.5",
+          unit: "mg/dL",
+          referenceRangeLow: "8.000",
+          referenceRangeHigh: "18.000",
+          resultFlag: "abnormal",
+          followUpStatus: "not_required",
+          followUpAssignedTo: null,
           reviewedBy: USER_ID,
         },
       ],
@@ -803,6 +942,7 @@ describe("records target safety", () => {
       callerWithDb(db).updateLabResultStatus({
         id: RECORD_ID,
         status: "reviewed",
+        operationId: FORM_ID,
       })
     ).resolves.toMatchObject({
       id: RECORD_ID,
@@ -814,13 +954,583 @@ describe("records target safety", () => {
       expect.objectContaining({
         status: "reviewed",
         reviewedBy: USER_ID,
+        reviewedAt: expect.any(Date),
+        updatedAt: expect.any(Date),
+      })
+    );
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        labResultId: RECORD_ID,
+        eventType: "reviewed",
+        statusBefore: "completed",
+        statusAfter: "reviewed",
+        resultValue: "12.5",
+        unit: "mg/dL",
+        referenceRangeLow: "8.000",
+        referenceRangeHigh: "18.000",
+        actorId: USER_ID,
       })
     );
   });
 
+  it("requires owned follow-up before a critical result can be reviewed", async () => {
+    const { db, updateSet, insertValues } = createDb({
+      selectResults: [
+        [],
+        [{
+          status: "completed",
+          resultValue: "2.1",
+          resultFlag: "critical",
+          followUpStatus: "not_required",
+        }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).updateLabResultStatus({
+        id: RECORD_ID,
+        status: "reviewed",
+        operationId: FORM_ID,
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "Assign owned follow-up for this critical result before recording clinical review.",
+    });
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("replays an identical lab operation without a second write", async () => {
+    const payloadHash = operationHash({
+      kind: "review",
+      id: RECORD_ID,
+      status: "reviewed",
+    });
+    const reviewed = {
+      id: RECORD_ID,
+      patientId: PATIENT_ID,
+      status: "reviewed",
+      resultValue: "12.5",
+      resultFlag: "normal",
+      followUpStatus: "not_required",
+    };
+    const { db, updateSet, insertValues } = createDb({
+      selectResults: [
+        [{
+          labResultId: RECORD_ID,
+          eventType: "reviewed",
+          operationPayloadHash: payloadHash,
+        }],
+        [reviewed],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).updateLabResultStatus({
+        id: RECORD_ID,
+        status: "reviewed",
+        operationId: FORM_ID,
+      }),
+    ).resolves.toMatchObject(reviewed);
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("rejects reuse of a lab operation id for different evidence", async () => {
+    const { db, updateSet, insertValues } = createDb({
+      selectResults: [[{
+        labResultId: RECORD_ID,
+        eventType: "reviewed",
+        operationPayloadHash: "f".repeat(64),
+      }]],
+    });
+
+    await expect(
+      callerWithDb(db).updateLabResultStatus({
+        id: RECORD_ID,
+        status: "reviewed",
+        operationId: FORM_ID,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("completes a pending lab result with values and immutable evidence", async () => {
+    const { db, updateSet, insertValues } = createDb({
+      selectResults: [
+        [],
+        [
+          {
+            id: RECORD_ID,
+            patientId: PATIENT_ID,
+            appointmentId: APPOINTMENT_ID,
+            resultValue: null,
+            resultFlag: "unknown",
+            status: "pending",
+            followUpStatus: "not_required",
+            followUpAssignedTo: null,
+          },
+        ],
+      ],
+      updatedRows: [
+        {
+          id: RECORD_ID,
+          patientId: PATIENT_ID,
+          appointmentId: APPOINTMENT_ID,
+          status: "completed",
+          resultValue: "2.1",
+          unit: "mmol/L",
+          referenceRangeLow: null,
+          referenceRangeHigh: null,
+          resultFlag: "critical",
+          followUpStatus: "not_required",
+          followUpAssignedTo: null,
+        },
+      ],
+    });
+
+    await expect(
+      callerWithDb(db, "technician").completeLabResult({
+        id: RECORD_ID,
+        resultValue: "2.1",
+        unit: "mmol/L",
+        resultFlag: "critical",
+        operationId: FORM_ID,
+      })
+    ).resolves.toMatchObject({ status: "completed", resultFlag: "critical" });
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resultValue: "2.1",
+        status: "completed",
+        completedAt: expect.any(Date),
+        updatedAt: expect.any(Date),
+      })
+    );
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        labResultId: RECORD_ID,
+        eventType: "completed",
+        statusBefore: "pending",
+        statusAfter: "completed",
+        resultFlag: "critical",
+        resultValue: "2.1",
+        unit: "mmol/L",
+        actorId: USER_ID,
+      })
+    );
+  });
+
+  it("does not turn a pending result critical while its open follow-up has no due time", async () => {
+    const { db, updateSet, insertValues } = createDb({
+      selectResults: [
+        [],
+        [{
+          id: RECORD_ID,
+          patientId: PATIENT_ID,
+          appointmentId: null,
+          resultValue: null,
+          resultFlag: "unknown",
+          status: "pending",
+          followUpStatus: "open",
+          followUpAssignedTo: OTHER_USER_ID,
+          followUpDueAt: null,
+        }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db, "technician").completeLabResult({
+        id: RECORD_ID,
+        resultValue: "2.1",
+        resultFlag: "critical",
+        operationId: FORM_ID,
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "Set a due date on the open follow-up before recording this result as critical.",
+    });
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("keeps lab follow-up ownership durable and attributed", async () => {
+    const existing = {
+      id: RECORD_ID,
+      patientId: PATIENT_ID,
+      appointmentId: APPOINTMENT_ID,
+      resultValue: "2.1",
+      resultFlag: "critical",
+      status: "reviewed",
+      followUpStatus: "not_required",
+      followUpAssignedTo: null,
+    };
+    const { db, updateSet, insertValues } = createDb({
+      selectResults: [[], [existing], [{ id: USER_ID, role: "technician" }]],
+      updatedRows: [
+        {
+          ...existing,
+          followUpStatus: "open",
+          followUpAssignedTo: USER_ID,
+        },
+      ],
+    });
+
+    await expect(
+      callerWithDb(db, "technician").assignLabFollowUp({
+        id: RECORD_ID,
+        assigneeId: USER_ID,
+        dueAt: "2026-08-10T18:00:00.000Z",
+        note: "Call the owner today.",
+        operationId: FORM_ID,
+      })
+    ).resolves.toMatchObject({
+      followUpStatus: "open",
+      followUpAssignedTo: USER_ID,
+    });
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        followUpStatus: "open",
+        followUpAssignedTo: USER_ID,
+        followUpDueAt: new Date("2026-08-10T18:00:00.000Z"),
+        followUpNote: "Call the owner today.",
+        updatedAt: expect.any(Date),
+      })
+    );
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "follow_up_assigned",
+        resultValue: "2.1",
+        resultFlag: "critical",
+        followUpAssignedTo: USER_ID,
+        actorId: USER_ID,
+      })
+    );
+  });
+
+  it("does not allow pre-result follow-up to satisfy later critical review", async () => {
+    const pending = createDb({
+      selectResults: [
+        [],
+        [{
+          id: RECORD_ID,
+          status: "pending",
+          resultValue: null,
+          resultFlag: "unknown",
+          followUpStatus: "not_required",
+          followUpAssignedTo: null,
+        }],
+      ],
+    });
+    await expect(
+      callerWithDb(pending.db).assignLabFollowUp({
+        id: RECORD_ID,
+        assigneeId: OTHER_USER_ID,
+        note: "Call after values arrive.",
+        operationId: FORM_ID,
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "Enter and complete the lab values before assigning follow-up.",
+    });
+    expect(pending.updateSet).not.toHaveBeenCalled();
+
+    const laterCritical = createDb({
+      selectResults: [
+        [],
+        [{
+          id: RECORD_ID,
+          status: "completed",
+          resultValue: "2.1",
+          resultFlag: "critical",
+          followUpStatus: "not_required",
+        }],
+      ],
+    });
+    await expect(
+      callerWithDb(laterCritical.db).updateLabResultStatus({
+        id: RECORD_ID,
+        status: "reviewed",
+        operationId: FORM_ID,
+      }),
+    ).rejects.toMatchObject({
+      message: "Assign owned follow-up for this critical result before recording clinical review.",
+    });
+    expect(laterCritical.updateSet).not.toHaveBeenCalled();
+  });
+
+  it("requires a due time when assigning critical-result follow-up", async () => {
+    const existing = {
+      id: RECORD_ID,
+      patientId: PATIENT_ID,
+      appointmentId: null,
+      resultValue: "2.1",
+      resultFlag: "critical",
+      status: "completed",
+      followUpStatus: "not_required",
+      followUpAssignedTo: null,
+    };
+    const { db, updateSet, insertValues } = createDb({
+      selectResults: [
+        [],
+        [existing],
+        [{ id: OTHER_USER_ID, role: "technician" }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).assignLabFollowUp({
+        id: RECORD_ID,
+        assigneeId: OTHER_USER_ID,
+        note: "Repeat test and call the owner.",
+        operationId: FORM_ID,
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "Critical-result follow-up requires a due date and time.",
+    });
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("requires clinical instructions when assigning lab follow-up to front desk", async () => {
+    const existing = {
+      id: RECORD_ID,
+      patientId: PATIENT_ID,
+      appointmentId: null,
+      resultValue: "12.5",
+      resultFlag: "abnormal",
+      status: "reviewed",
+      followUpStatus: "not_required",
+      followUpAssignedTo: null,
+    };
+    const { db, updateSet, insertValues } = createDb({
+      selectResults: [
+        [],
+        [existing],
+        [{ id: OTHER_USER_ID, role: "front_desk" }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).assignLabFollowUp({
+        id: RECORD_ID,
+        assigneeId: OTHER_USER_ID,
+        operationId: FORM_ID,
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "Front desk follow-up requires actionable instructions from the clinical team.",
+    });
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("lets front desk complete only their own lab follow-up with an outcome", async () => {
+    const existing = {
+      id: RECORD_ID,
+      patientId: PATIENT_ID,
+      appointmentId: null,
+      resultValue: "2.1",
+      unit: "mmol/L",
+      referenceRangeLow: "3.500",
+      referenceRangeHigh: "5.500",
+      resultFlag: "critical",
+      status: "reviewed",
+      followUpStatus: "open",
+      followUpAssignedTo: USER_ID,
+      followUpDueAt: new Date("2026-08-10T18:00:00.000Z"),
+    };
+    const { db, updateSet, insertValues } = createDb({
+      selectResults: [[], [existing]],
+      updatedRows: [{
+        ...existing,
+        followUpStatus: "completed",
+        followUpOutcome: "Owner reached; repeat test booked.",
+      }],
+    });
+
+    const result = await callerWithDb(db, "front_desk").completeLabFollowUp({
+      id: RECORD_ID,
+      outcome: "Owner reached; repeat test booked.",
+      operationId: FORM_ID,
+    });
+    expect(result).toEqual(expect.objectContaining({
+      id: RECORD_ID,
+      patientId: PATIENT_ID,
+      followUpStatus: "completed",
+      followUpAssignedTo: USER_ID,
+    }));
+    expect(result).not.toHaveProperty("resultValue");
+    expect(result).not.toHaveProperty("referenceRangeLow");
+    expect(result).not.toHaveProperty("resultFlag");
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        followUpStatus: "completed",
+        followUpCompletedBy: USER_ID,
+        followUpOutcome: "Owner reached; repeat test booked.",
+        updatedAt: expect.any(Date),
+      }),
+    );
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "follow_up_completed",
+        resultValue: "2.1",
+        unit: "mmol/L",
+        referenceRangeLow: "3.500",
+        referenceRangeHigh: "5.500",
+        followUpAssignedTo: USER_ID,
+        followUpDueAt: new Date("2026-08-10T18:00:00.000Z"),
+        note: "Owner reached; repeat test booked.",
+      }),
+    );
+  });
+
+  it("redacts front desk follow-up replay responses without a second write", async () => {
+    const payloadHash = operationHash({
+      kind: "complete_follow_up",
+      id: RECORD_ID,
+      outcome: "Owner reached and informed.",
+    });
+    const completed = {
+      id: RECORD_ID,
+      patientId: PATIENT_ID,
+      appointmentId: APPOINTMENT_ID,
+      resultValue: "2.1",
+      unit: "mmol/L",
+      referenceRangeLow: "3.500",
+      referenceRangeHigh: "5.500",
+      resultFlag: "critical",
+      status: "reviewed",
+      followUpStatus: "completed",
+      followUpAssignedTo: USER_ID,
+      followUpCompletedAt: new Date("2026-08-10T18:05:00.000Z"),
+    };
+    const { db, updateSet, insertValues } = createDb({
+      selectResults: [
+        [{
+          labResultId: RECORD_ID,
+          eventType: "follow_up_completed",
+          operationPayloadHash: payloadHash,
+        }],
+        [completed],
+      ],
+    });
+
+    const result = await callerWithDb(db, "front_desk").completeLabFollowUp({
+      id: RECORD_ID,
+      outcome: "Owner reached and informed.",
+      operationId: FORM_ID,
+    });
+
+    expect(result).toEqual({
+      id: RECORD_ID,
+      patientId: PATIENT_ID,
+      followUpStatus: "completed",
+      followUpAssignedTo: USER_ID,
+      followUpCompletedAt: completed.followUpCompletedAt,
+    });
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("blocks completion of pre-result follow-up even for its front desk assignee", async () => {
+    const { db, updateSet, insertValues } = createDb({
+      selectResults: [
+        [],
+        [{
+          id: RECORD_ID,
+          status: "pending",
+          resultValue: null,
+          resultFlag: "unknown",
+          followUpStatus: "open",
+          followUpAssignedTo: USER_ID,
+        }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db, "front_desk").completeLabFollowUp({
+        id: RECORD_ID,
+        outcome: "Owner reached and informed.",
+        operationId: FORM_ID,
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "Lab follow-up cannot be completed before result values are available.",
+    });
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("blocks front desk from completing another teammate's follow-up", async () => {
+    const { db, updateSet, insertValues } = createDb({
+      selectResults: [
+        [],
+        [{
+          id: RECORD_ID,
+          resultValue: "2.1",
+          resultFlag: "critical",
+          status: "reviewed",
+          followUpStatus: "open",
+          followUpAssignedTo: OTHER_USER_ID,
+        }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db, "front_desk").completeLabFollowUp({
+        id: RECORD_ID,
+        outcome: "Owner reached and informed.",
+        operationId: FORM_ID,
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("rejects blank lab follow-up outcomes before database work", async () => {
+    const { db, select, updateSet } = createDb();
+
+    await expect(
+      callerWithDb(db, "front_desk").completeLabFollowUp({
+        id: RECORD_ID,
+        outcome: "  ",
+        operationId: FORM_ID,
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(select).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("does not let technicians attest clinical review", async () => {
+    const { db, updateSet } = createDb();
+
+    await expect(
+      callerWithDb(db, "technician").updateLabResultStatus({
+        id: RECORD_ID,
+        status: "reviewed",
+        operationId: FORM_ID,
+      })
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
   it("rejects lab status updates that lose a concurrent race", async () => {
     const { db, updateSet } = createDb({
-      selectResults: [[{ status: "completed" }]],
+      selectResults: [
+        [],
+        [{
+          status: "completed",
+          resultValue: "12.5",
+          resultFlag: "normal",
+          followUpStatus: "not_required",
+        }],
+      ],
       updatedRows: [],
     });
 
@@ -828,6 +1538,7 @@ describe("records target safety", () => {
       callerWithDb(db).updateLabResultStatus({
         id: RECORD_ID,
         status: "reviewed",
+        operationId: FORM_ID,
       })
     ).rejects.toMatchObject({
       code: "BAD_REQUEST",

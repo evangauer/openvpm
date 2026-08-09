@@ -683,7 +683,6 @@ describe("records list query scoping", () => {
       "soapNotes.authorId",
       "vaccinationRecords.administeredBy",
       "prescriptions.prescribedBy",
-      "labResults.orderedBy",
       "procedures.performedBy",
     ]) {
       expect(source).toMatch(
@@ -696,6 +695,9 @@ describe("records list query scoping", () => {
         ),
       );
     }
+    expect(source).toMatch(
+      /leftJoin\(\s*orderedBy,\s*and\(\s*eq\(labResults\.orderedBy, orderedBy\.id\),\s*eq\(orderedBy\.practiceId, ctx\.practiceId\)\s*,?\s*\)\s*,?\s*\)/s,
+    );
   });
 
   it("keeps prescription inventory joins tenant scoped and active", () => {

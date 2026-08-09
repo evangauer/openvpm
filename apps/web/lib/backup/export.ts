@@ -25,6 +25,7 @@ import {
   insuranceClaims,
   insurancePolicies,
   labResults,
+  labResultEvents,
   locationMessaging,
   locations,
   patientAllergies,
@@ -154,6 +155,7 @@ export const PRACTICE_EXPORT_SECTIONS = [
   "soapNotes",
   "vaccinationRecords",
   "labResults",
+  "labResultEvents",
   "procedures",
   "clinicalNotes",
   "problemList",
@@ -190,6 +192,9 @@ const PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS = [
   "smsSendAttemptEvents",
   "visitCloseouts",
   "clinicalRecordCorrections",
+  // Backward compatibility for backups created before the lab result safety
+  // ledger and clinic-wide review inbox were introduced.
+  "labResultEvents",
 ] as const satisfies readonly PracticeExportSection[];
 
 export type PracticeExport = {
@@ -364,6 +369,13 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
   optionalRef("labResults", "appointmentId", "appointments"),
   optionalRef("labResults", "orderedBy", "users"),
   optionalRef("labResults", "reviewedBy", "users"),
+  optionalRef("labResults", "followUpAssignedTo", "users"),
+  optionalRef("labResults", "followUpCompletedBy", "users"),
+  requiredRef("labResultEvents", "labResultId", "labResults"),
+  requiredRef("labResultEvents", "patientId", "patients"),
+  optionalRef("labResultEvents", "appointmentId", "appointments"),
+  requiredRef("labResultEvents", "actorId", "users"),
+  optionalRef("labResultEvents", "followUpAssignedTo", "users"),
   requiredRef("procedures", "patientId", "patients"),
   optionalRef("procedures", "appointmentId", "appointments"),
   optionalRef("procedures", "performedBy", "users"),
@@ -643,7 +655,12 @@ export function validatePracticeExportRestore(data: unknown): {
     );
   const appointmentRows = rowsById("appointments");
 
-  for (const section of ["soapNotes", "vitalSigns"] as const) {
+  for (const section of [
+    "soapNotes",
+    "vitalSigns",
+    "labResults",
+    "labResultEvents",
+  ] as const) {
     rowsFor(data, section).forEach((row, index) => {
       if (typeof row.appointmentId !== "string") return;
       const appointment = appointmentRows.get(row.appointmentId);
@@ -656,6 +673,21 @@ export function validatePracticeExportRestore(data: unknown): {
       }
     });
   }
+
+  const labRows = rowsById("labResults");
+  rowsFor(data, "labResultEvents").forEach((row, index) => {
+    if (typeof row.labResultId !== "string") return;
+    const result = labRows.get(row.labResultId);
+    if (!result) return;
+    if (
+      result.patientId !== row.patientId ||
+      result.appointmentId !== row.appointmentId
+    ) {
+      pushError(
+        `labResultEvents[${rowLabel(row, index)}] must match its lab result patient and appointment.`,
+      );
+    }
+  });
 
   const record = isRecord(data) ? data : {};
   if (Array.isArray(record.patientMergeEvents)) {
@@ -1323,6 +1355,7 @@ export async function exportPracticeData(
     allSoapNoteRows,
     allVaccinationRows,
     labRows,
+    labResultEventRows,
     procedureRows,
     clinicalNoteRows,
     problemRows,
@@ -1371,7 +1404,8 @@ export async function exportPracticeData(
     activeRows(db, wellnessEnrollments, practiceId),
     allPracticeRows(db, soapNotes, practiceId),
     allPracticeRows(db, vaccinationRecords, practiceId),
-    activeRows(db, labResults, practiceId),
+    allPracticeRows(db, labResults, practiceId),
+    allPracticeRows(db, labResultEvents, practiceId),
     activeRows(db, procedures, practiceId),
     activeRows(db, clinicalNotes, practiceId),
     activeRows(db, problemList, practiceId),
@@ -1446,6 +1480,8 @@ export async function exportPracticeData(
       ...soapNoteRows.map((note) => note.appointmentId),
       ...vitalRows.map((vital) => vital.appointmentId),
       ...vaccinationRows.map((vaccination) => vaccination.appointmentId),
+      ...labRows.map((result) => result.appointmentId),
+      ...labResultEventRows.map((event) => event.appointmentId),
     ].filter((id): id is string => typeof id === "string"),
   );
   const appointmentRows = allAppointmentRows.filter(
@@ -1461,6 +1497,8 @@ export async function exportPracticeData(
       ...soapNoteRows.map((note) => note.patientId),
       ...vitalRows.map((vital) => vital.patientId),
       ...vaccinationRows.map((vaccination) => vaccination.patientId),
+      ...labRows.map((result) => result.patientId),
+      ...labResultEventRows.map((event) => event.patientId),
       ...appointmentRows.map((appointment) => appointment.patientId),
       ...patientMergeRows.flatMap((event) => [
         event.sourcePatientId,
@@ -1490,6 +1528,16 @@ export async function exportPracticeData(
       ...soapNoteRows.map((note) => note.authorId),
       ...vitalRows.map((vital) => vital.recordedBy),
       ...vaccinationRows.map((vaccination) => vaccination.administeredBy),
+      ...labRows.flatMap((result) => [
+        result.orderedBy,
+        result.reviewedBy,
+        result.followUpAssignedTo,
+        result.followUpCompletedBy,
+      ]),
+      ...labResultEventRows.flatMap((event) => [
+        event.actorId,
+        event.followUpAssignedTo,
+      ]),
       ...appointmentRows.map((appointment) => appointment.doctorId),
       ...patientMergeRows.map((event) => event.performedBy),
       ...smsConsentEventRows.map((event) => event.actorUserId),
@@ -1707,6 +1755,7 @@ export async function exportPracticeData(
     soapNotes: soapNoteRows,
     vaccinationRecords: vaccinationRows,
     labResults: labRows,
+    labResultEvents: labResultEventRows,
     procedures: procedureRows,
     clinicalNotes: clinicalNoteRows,
     problemList: problemRows,
@@ -1767,6 +1816,86 @@ async function restorePracticeDataRows(
   );
   const dispenseChargeRestoreRows = rowsFor(data, "dispenseChargeQueue");
   const smsConsentRestore = prepareLegacySmsConsentRestore(data);
+  const labResultRestoreRows = rowsFor(data, "labResults").map((row) => {
+    const fallbackTime = row.updatedAt ?? row.createdAt;
+    const hasResult =
+      typeof row.resultValue === "string" && row.resultValue.trim().length > 0;
+    let normalizedStatus =
+      row.status === "pending" && hasResult
+        ? "completed"
+        : (row.status === "completed" || row.status === "reviewed") &&
+            !hasResult
+          ? "pending"
+          : row.status === "reviewed" &&
+              (typeof row.reviewedBy !== "string" || !row.reviewedBy)
+            ? "completed"
+            : row.status;
+    const criticalFollowUpWithoutDue =
+      row.resultFlag === "critical" &&
+      (row.followUpStatus === "open" || row.followUpStatus === "completed") &&
+      row.followUpDueAt == null;
+    const clearFollowUp =
+      normalizedStatus === "pending" || criticalFollowUpWithoutDue;
+    const normalizedFollowUp = clearFollowUp
+      ? {
+          followUpStatus: "not_required",
+          followUpAssignedTo: null,
+          followUpDueAt: null,
+          followUpNote: null,
+          followUpCompletedBy: null,
+          followUpCompletedAt: null,
+          followUpOutcome: null,
+        }
+      : {};
+    const effectiveFollowUpStatus = clearFollowUp
+      ? "not_required"
+      : row.followUpStatus ?? "not_required";
+    if (
+      normalizedStatus === "reviewed" &&
+      row.resultFlag === "critical" &&
+      effectiveFollowUpStatus === "not_required"
+    ) {
+      normalizedStatus = "completed";
+    }
+    if (normalizedStatus === "reviewed") {
+      return {
+        ...row,
+        ...normalizedFollowUp,
+        status: "reviewed",
+        completedAt: row.completedAt ?? fallbackTime,
+        reviewedAt: row.reviewedAt ?? fallbackTime,
+      };
+    }
+    if (normalizedStatus === "completed") {
+      return {
+        ...row,
+        ...normalizedFollowUp,
+        status: "completed",
+        completedAt: row.completedAt ?? fallbackTime,
+        reviewedAt: null,
+        reviewedBy: null,
+      };
+    }
+    return {
+      ...row,
+      status: "pending",
+      resultValue: null,
+      unit: null,
+      referenceRangeLow: null,
+      referenceRangeHigh: null,
+      resultFlag: "unknown",
+      completedAt: null,
+      reviewedAt: null,
+      reviewedBy: null,
+      followUpStatus: "not_required",
+      followUpAssignedTo: null,
+      followUpDueAt: null,
+      followUpNote: null,
+      followUpCompletedBy: null,
+      followUpCompletedAt: null,
+      followUpOutcome: null,
+    };
+  });
 
   const restored = {} as Record<PracticeExportSection, number>;
   const restorePracticeRows = async (
@@ -1855,7 +1984,14 @@ async function restorePracticeDataRows(
   await restorePracticeRows("problemList", problemList);
   await restorePracticeRows("soapNotes", soapNotes);
   await restorePracticeRows("vaccinationRecords", vaccinationRecords);
-  await restorePracticeRows("labResults", labResults);
+  restored.labResults = await restoreRows(
+    db,
+    labResults,
+    "labResults",
+    labResultRestoreRows,
+    { practiceId },
+  );
+  await restorePracticeRows("labResultEvents", labResultEvents);
   await restorePracticeRows("procedures", procedures);
   await restorePracticeRows("clinicalNotes", clinicalNotes);
   await restorePracticeRows("vitalSigns", vitalSigns);

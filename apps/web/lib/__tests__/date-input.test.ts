@@ -3,7 +3,9 @@ import {
   dateInputDayUtcRange,
   dateInputTimeUtcInstant,
   dateInputUtcRangeForTimeZone,
+  dateTimeLocalInputUtcInstant,
   formatDateInputForTimeZone,
+  formatDateTimeLocalInputForTimeZone,
   formatDateInputLocal,
 } from "../date-input";
 
@@ -124,5 +126,44 @@ describe("date input helpers", () => {
     );
 
     expect(instant.toISOString()).toBe("2026-07-15T07:00:00.000Z");
+  });
+
+  it("parses datetime-local values in the clinic timezone, not browser timezone", () => {
+    const originalTimeZone = process.env.TZ;
+    try {
+      process.env.TZ = "UTC";
+      const fromUtcBrowser = dateTimeLocalInputUtcInstant(
+        "2026-08-10T12:30",
+        "America/Denver",
+      );
+      process.env.TZ = "America/New_York";
+      const fromEasternBrowser = dateTimeLocalInputUtcInstant(
+        "2026-08-10T12:30",
+        "America/Denver",
+      );
+
+      expect(fromUtcBrowser?.toISOString()).toBe("2026-08-10T18:30:00.000Z");
+      expect(fromEasternBrowser?.toISOString()).toBe(fromUtcBrowser?.toISOString());
+    } finally {
+      process.env.TZ = originalTimeZone;
+    }
+  });
+
+  it("rejects a clinic-local time skipped by daylight saving", () => {
+    expect(
+      dateTimeLocalInputUtcInstant(
+        "2026-03-08T02:30",
+        "America/Denver",
+      ),
+    ).toBeNull();
+  });
+
+  it("formats an existing due instant for datetime-local reassignment", () => {
+    expect(
+      formatDateTimeLocalInputForTimeZone(
+        "2026-08-10T18:30:00.000Z",
+        "America/Denver",
+      ),
+    ).toBe("2026-08-10T12:30");
   });
 });

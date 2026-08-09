@@ -217,3 +217,77 @@ export function dateInputTimeUtcInstant(
     timeZone
   );
 }
+
+/** Parse a browser datetime-local value as clinic wall time, never workstation time. */
+export function dateTimeLocalInputUtcInstant(
+  value: string,
+  timeZone?: string | null,
+): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+  if (!match) return null;
+  const [, yearText, monthText, dayText, hourText, minuteText] = match;
+  const target: ZonedDateParts = {
+    year: Number(yearText),
+    month: Number(monthText),
+    day: Number(dayText),
+    hour: Number(hourText),
+    minute: Number(minuteText),
+    second: 0,
+  };
+  if (
+    target.month < 1 ||
+    target.month > 12 ||
+    target.day < 1 ||
+    target.day > 31 ||
+    target.hour < 0 ||
+    target.hour > 23 ||
+    target.minute < 0 ||
+    target.minute > 59
+  ) return null;
+  const calendarCheck = new Date(Date.UTC(target.year, target.month - 1, target.day));
+  if (
+    calendarCheck.getUTCFullYear() !== target.year ||
+    calendarCheck.getUTCMonth() !== target.month - 1 ||
+    calendarCheck.getUTCDate() !== target.day
+  ) return null;
+
+  const instant = dateInputTimeUtcInstant(
+    `${yearText}-${monthText}-${dayText}`,
+    { hour: target.hour, minute: target.minute },
+    timeZone,
+  );
+  if (Number.isNaN(instant.getTime())) return null;
+
+  const normalizedTimeZone = normalizeTimeZone(timeZone);
+  const roundTrip = normalizedTimeZone
+    ? timeZoneDateTimeParts(instant, normalizedTimeZone)
+    : {
+        year: instant.getFullYear(),
+        month: instant.getMonth() + 1,
+        day: instant.getDate(),
+        hour: instant.getHours(),
+        minute: instant.getMinutes(),
+        second: instant.getSeconds(),
+      };
+  if (
+    !roundTrip ||
+    roundTrip.year !== target.year ||
+    roundTrip.month !== target.month ||
+    roundTrip.day !== target.day ||
+    roundTrip.hour !== target.hour ||
+    roundTrip.minute !== target.minute
+  ) return null;
+  return instant;
+}
+
+export function formatDateTimeLocalInputForTimeZone(
+  value: Date | string | null | undefined,
+  timeZone?: string | null,
+): string {
+  if (!value || !normalizeTimeZone(timeZone)) return "";
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const parts = timeZoneDateTimeParts(date, timeZone!.trim());
+  if (!parts) return "";
+  return `${String(parts.year).padStart(4, "0")}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}T${String(parts.hour).padStart(2, "0")}:${String(parts.minute).padStart(2, "0")}`;
+}

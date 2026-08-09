@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { createHash } from "node:crypto";
 import {
   eq,
   and,
@@ -9,13 +10,18 @@ import {
   sql,
   or,
   gte,
+  ne,
+  asc,
+  getTableColumns,
 } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import {
   soapNotes,
   vaccinationRecords,
   labResults,
+  labResultEvents,
   procedures,
   problemList,
   prescriptions,
@@ -128,6 +134,8 @@ type ProblemStatus = (typeof PROBLEM_STATUSES)[number];
 
 const labStatusValues = ["pending", "completed", "reviewed"] as const;
 type LabStatus = (typeof labStatusValues)[number];
+const labResultFlagValues = ["unknown", "normal", "abnormal", "critical"] as const;
+const labFollowUpStatusValues = ["not_required", "open", "completed"] as const;
 
 const labStatusTransitions: Record<LabStatus, readonly LabStatus[]> = {
   pending: ["pending", "completed"],
@@ -290,7 +298,9 @@ const createLabResultInput = z
     unit: optionalClinicalTextInput("Unit", LAB_UNIT_MAX_LENGTH),
     referenceRangeLow: labReferenceInput("Reference range low").optional(),
     referenceRangeHigh: labReferenceInput("Reference range high").optional(),
-    status: z.enum(labStatusValues).default("pending"),
+    status: z.enum(["pending", "completed"]).default("pending"),
+    resultFlag: z.enum(labResultFlagValues).default("unknown"),
+    operationId: z.string().uuid(),
   })
   .superRefine((input, ctx) => {
     if (
@@ -305,7 +315,99 @@ const createLabResultInput = z
         message: "Reference range high must be greater than or equal to low.",
       });
     }
+    if (input.status === "completed" && !input.resultValue?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["resultValue"],
+        message: "A result value is required before a lab result can be completed.",
+      });
+    }
+    if (
+      input.status === "pending" &&
+      (input.resultValue != null ||
+        input.unit != null ||
+        input.referenceRangeLow != null ||
+        input.referenceRangeHigh != null ||
+        input.resultFlag !== "unknown")
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["status"],
+        message: "Pending lab results cannot carry partial values. Complete the result when values are available.",
+      });
+    }
   });
+
+type LabEventType =
+  | "created"
+  | "completed"
+  | "reviewed"
+  | "follow_up_assigned"
+  | "follow_up_reassigned"
+  | "follow_up_completed";
+
+function labOperationHash(payload: Record<string, unknown>): string {
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+}
+
+async function lockLabOperation(ctx: RecordsContext, operationId: string) {
+  await ctx.db.execute(
+    sql`select pg_advisory_xact_lock(
+      hashtextextended(${`${ctx.practiceId}:${operationId}`}, 0)
+    )`,
+  );
+}
+
+async function getLabOperationReplay(
+  ctx: RecordsContext,
+  operationId: string,
+  expected: {
+    resultId?: string;
+    eventTypes: readonly LabEventType[];
+    payloadHash: string;
+  },
+) {
+  const [event] = await ctx.db
+    .select({
+      labResultId: labResultEvents.labResultId,
+      eventType: labResultEvents.eventType,
+      operationPayloadHash: labResultEvents.operationPayloadHash,
+    })
+    .from(labResultEvents)
+    .where(
+      and(
+        eq(labResultEvents.practiceId, ctx.practiceId),
+        eq(labResultEvents.operationId, operationId),
+      ),
+    )
+    .limit(1);
+  if (!event) return null;
+  if (
+    (expected.resultId && event.labResultId !== expected.resultId) ||
+    !expected.eventTypes.includes(event.eventType) ||
+    event.operationPayloadHash !== expected.payloadHash
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "This lab operation id was already used for different clinical evidence.",
+    });
+  }
+  return getLabStatusForUpdate(ctx, event.labResultId);
+}
+
+function labMutationResultForRole(
+  result: typeof labResults.$inferSelect,
+  role: string,
+) {
+  if (role !== "front_desk") return result;
+  return {
+    id: result.id,
+    patientId: result.patientId,
+    followUpStatus: result.followUpStatus,
+    followUpAssignedTo: result.followUpAssignedTo,
+    followUpCompletedAt: result.followUpCompletedAt,
+  };
+}
 
 async function assertPatientBelongsToPractice(
   ctx: RecordsContext,
@@ -870,9 +972,9 @@ async function getProblemStatusForUpdate(
 async function getLabStatusForUpdate(
   ctx: RecordsContext,
   id: string
-): Promise<{ status: LabStatus }> {
+) {
   const [result] = await ctx.db
-    .select({ status: labResults.status })
+    .select(getTableColumns(labResults))
     .from(labResults)
     .where(
       and(
@@ -1902,8 +2004,12 @@ export const recordsRouter = createRouter({
 
   // Lab Results
   listLabResults: protectedProcedure
+    .use(requireRole("admin", "veterinarian", "technician", "viewer"))
     .input(z.object({ patientId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
+      const orderedBy = alias(users, "lab_ordered_by");
+      const reviewedBy = alias(users, "lab_reviewed_by");
+      const followUpAssignee = alias(users, "lab_follow_up_assignee");
       const rows = await ctx.db
         .select({
           id: labResults.id,
@@ -1913,16 +2019,52 @@ export const recordsRouter = createRouter({
           referenceRangeLow: labResults.referenceRangeLow,
           referenceRangeHigh: labResults.referenceRangeHigh,
           status: labResults.status,
-          orderedByName: users.name,
+          resultFlag: labResults.resultFlag,
+          orderedByName: orderedBy.name,
+          completedAt: labResults.completedAt,
+          completionActorName: sql<string | null>`(
+            select event.actor_name
+            from lab_result_events event
+            where event.practice_id = ${ctx.practiceId}
+              and event.lab_result_id = ${labResults.id}
+              and (
+                event.event_type = 'completed'
+                or (event.event_type = 'created' and event.status_after = 'completed')
+              )
+            order by event.created_at asc, event.id asc
+            limit 1
+          )`,
+          reviewedAt: labResults.reviewedAt,
+          reviewedByName: reviewedBy.name,
+          followUpStatus: labResults.followUpStatus,
+          followUpAssignedTo: labResults.followUpAssignedTo,
+          followUpAssigneeName: followUpAssignee.name,
+          followUpDueAt: labResults.followUpDueAt,
+          followUpNote: labResults.followUpNote,
+          followUpCompletedAt: labResults.followUpCompletedAt,
+          followUpOutcome: labResults.followUpOutcome,
           createdAt: labResults.createdAt,
         })
         .from(labResults)
         .leftJoin(
-          users,
+          orderedBy,
           and(
-            eq(labResults.orderedBy, users.id),
-            eq(users.practiceId, ctx.practiceId),
-            isNull(users.deletedAt)
+            eq(labResults.orderedBy, orderedBy.id),
+            eq(orderedBy.practiceId, ctx.practiceId)
+          )
+        )
+        .leftJoin(
+          reviewedBy,
+          and(
+            eq(labResults.reviewedBy, reviewedBy.id),
+            eq(reviewedBy.practiceId, ctx.practiceId)
+          )
+        )
+        .leftJoin(
+          followUpAssignee,
+          and(
+            eq(labResults.followUpAssignedTo, followUpAssignee.id),
+            eq(followUpAssignee.practiceId, ctx.practiceId)
           )
         )
         .where(
@@ -1937,12 +2079,283 @@ export const recordsRouter = createRouter({
       return rows;
     }),
 
+  listLabResultHistory: protectedProcedure
+    .use(requireRole("admin", "veterinarian", "technician", "viewer"))
+    .input(z.object({ id: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const [result] = await ctx.db
+        .select({ id: labResults.id })
+        .from(labResults)
+        .where(
+          and(
+            eq(labResults.id, input.id),
+            eq(labResults.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(labResults.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (!result) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Lab result not found in this clinic.",
+        });
+      }
+
+      return ctx.db
+        .select({
+          id: labResultEvents.id,
+          createdAt: labResultEvents.createdAt,
+          eventType: labResultEvents.eventType,
+          statusBefore: labResultEvents.statusBefore,
+          statusAfter: labResultEvents.statusAfter,
+          resultValue: labResultEvents.resultValue,
+          unit: labResultEvents.unit,
+          referenceRangeLow: labResultEvents.referenceRangeLow,
+          referenceRangeHigh: labResultEvents.referenceRangeHigh,
+          resultFlag: labResultEvents.resultFlag,
+          followUpStatus: labResultEvents.followUpStatus,
+          followUpAssignedTo: labResultEvents.followUpAssignedTo,
+          followUpDueAt: labResultEvents.followUpDueAt,
+          actorName: labResultEvents.actorName,
+          note: labResultEvents.note,
+        })
+        .from(labResultEvents)
+        .where(
+          and(
+            eq(labResultEvents.practiceId, ctx.practiceId),
+            eq(labResultEvents.labResultId, input.id),
+          ),
+        )
+        .orderBy(desc(labResultEvents.createdAt), desc(labResultEvents.id));
+    }),
+
+  listLabReviewInbox: protectedProcedure
+    .input(
+      z.object({
+        resultId: z.string().uuid().optional(),
+        filter: z
+          .enum(["action_required", "awaiting_results", "awaiting_review", "critical", "follow_up", "all"])
+          .default("action_required"),
+        limit: z.number().int().min(1).max(100).default(50),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const orderedBy = alias(users, "inbox_lab_ordered_by");
+      const reviewedBy = alias(users, "inbox_lab_reviewed_by");
+      const assignee = alias(users, "inbox_lab_assignee");
+      const clinician = alias(users, "inbox_lab_clinician");
+      const conditions = [
+        eq(labResults.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(labResults.deletedAt),
+      ];
+
+      const frontDeskMode = ctx.user.role === "front_desk";
+      if (input.resultId) {
+        conditions.push(eq(labResults.id, input.resultId));
+      }
+      if (frontDeskMode) {
+        conditions.push(
+          eq(labResults.followUpStatus, "open"),
+          eq(labResults.followUpAssignedTo, ctx.user.id),
+        );
+      } else if (!input.resultId && input.filter === "action_required") {
+        conditions.push(
+          or(ne(labResults.status, "reviewed"), eq(labResults.followUpStatus, "open"))!
+        );
+      } else if (!input.resultId && input.filter === "awaiting_results") {
+        conditions.push(eq(labResults.status, "pending"));
+      } else if (!input.resultId && input.filter === "awaiting_review") {
+        conditions.push(eq(labResults.status, "completed"));
+      } else if (!input.resultId && input.filter === "critical") {
+        conditions.push(eq(labResults.resultFlag, "critical"));
+      } else if (!input.resultId && input.filter === "follow_up") {
+        conditions.push(eq(labResults.followUpStatus, "open"));
+      }
+
+      const rows = await ctx.db
+        .select({
+          id: labResults.id,
+          patientId: labResults.patientId,
+          patientName: patients.name,
+          appointmentId: labResults.appointmentId,
+          appointmentStart: appointments.startTime,
+          appointmentStatus: appointments.status,
+          clinicianName: clinician.name,
+          testName: labResults.testName,
+          resultValue: labResults.resultValue,
+          unit: labResults.unit,
+          referenceRangeLow: labResults.referenceRangeLow,
+          referenceRangeHigh: labResults.referenceRangeHigh,
+          resultFlag: labResults.resultFlag,
+          status: labResults.status,
+          orderedByName: orderedBy.name,
+          completedAt: labResults.completedAt,
+          completionActorName: sql<string | null>`(
+            select event.actor_name
+            from lab_result_events event
+            where event.practice_id = ${ctx.practiceId}
+              and event.lab_result_id = ${labResults.id}
+              and (
+                event.event_type = 'completed'
+                or (event.event_type = 'created' and event.status_after = 'completed')
+              )
+            order by event.created_at asc, event.id asc
+            limit 1
+          )`,
+          reviewedAt: labResults.reviewedAt,
+          reviewedByName: reviewedBy.name,
+          followUpStatus: labResults.followUpStatus,
+          followUpAssignedTo: labResults.followUpAssignedTo,
+          followUpAssigneeName: assignee.name,
+          followUpDueAt: labResults.followUpDueAt,
+          followUpNote: labResults.followUpNote,
+          followUpCompletedAt: labResults.followUpCompletedAt,
+          followUpOutcome: labResults.followUpOutcome,
+          createdAt: labResults.createdAt,
+        })
+        .from(labResults)
+        .innerJoin(
+          patients,
+          and(
+            eq(labResults.patientId, patients.id),
+            eq(patients.practiceId, ctx.practiceId)
+          )
+        )
+        .leftJoin(
+          appointments,
+          and(
+            eq(labResults.appointmentId, appointments.id),
+            eq(appointments.practiceId, ctx.practiceId)
+          )
+        )
+        .leftJoin(
+          clinician,
+          and(
+            eq(appointments.doctorId, clinician.id),
+            eq(clinician.practiceId, ctx.practiceId)
+          )
+        )
+        .leftJoin(
+          orderedBy,
+          and(
+            eq(labResults.orderedBy, orderedBy.id),
+            eq(orderedBy.practiceId, ctx.practiceId)
+          )
+        )
+        .leftJoin(
+          reviewedBy,
+          and(
+            eq(labResults.reviewedBy, reviewedBy.id),
+            eq(reviewedBy.practiceId, ctx.practiceId)
+          )
+        )
+        .leftJoin(
+          assignee,
+          and(
+            eq(labResults.followUpAssignedTo, assignee.id),
+            eq(assignee.practiceId, ctx.practiceId)
+          )
+        )
+        .where(and(...conditions))
+        .orderBy(
+          asc(sql`case ${labResults.resultFlag}
+            when 'critical' then 0 else 1 end`),
+          asc(sql`case ${labResults.followUpStatus}
+            when 'open' then 0 else 1 end`),
+          asc(sql`case when ${labResults.followUpStatus} = 'open'
+            then coalesce(${labResults.followUpDueAt}, 'infinity'::timestamptz)
+            else 'infinity'::timestamptz end`),
+          asc(sql`case ${labResults.status}
+            when 'completed' then 0 when 'pending' then 1 else 2 end`),
+          asc(sql`coalesce(${labResults.completedAt}, ${labResults.createdAt})`),
+          asc(labResults.id)
+        )
+        .limit(input.resultId ? 2 : input.limit + 1);
+      const visibleRows = frontDeskMode
+        ? rows
+            .filter(
+              (row) =>
+                row.followUpStatus === "open" &&
+                row.followUpAssignedTo === ctx.user.id,
+            )
+            .map((row) => ({
+              ...row,
+              resultValue: null,
+              unit: null,
+              referenceRangeLow: null,
+              referenceRangeHigh: null,
+              resultFlag: "unknown" as const,
+              orderedByName: null,
+              completedAt: null,
+              completionActorName: null,
+              reviewedAt: null,
+              reviewedByName: null,
+              followUpOutcome: null,
+            }))
+        : rows;
+      return {
+        items: visibleRows.slice(0, input.limit),
+        truncated: !input.resultId && visibleRows.length > input.limit,
+      };
+    }),
+
+  listLabAssignees: protectedProcedure
+    .use(requireRole("admin", "veterinarian", "technician"))
+    .query(async ({ ctx }) => {
+      return ctx.db
+        .select({ id: users.id, name: users.name, role: users.role })
+        .from(users)
+        .where(
+          and(
+            eq(users.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            ne(users.role, "viewer"),
+            isNull(users.deletedAt)
+          )
+        )
+        .orderBy(asc(users.name));
+    }),
+
   createLabResult: protectedProcedure
-    .use(requireRole("admin", "veterinarian"))
+    .use(requireRole("admin", "veterinarian", "technician"))
     .input(createLabResultInput)
     .mutation(async ({ ctx, input }) => {
-      const result = await ctx.db.transaction(async (tx) => {
+      const creationPayloadHash = labOperationHash({
+        kind: "create",
+        patientId: input.patientId,
+        appointmentId: input.appointmentId ?? null,
+        testName: input.testName,
+        resultValue: input.resultValue ?? null,
+        unit: input.unit ?? null,
+        referenceRangeLow: input.referenceRangeLow ?? null,
+        referenceRangeHigh: input.referenceRangeHigh ?? null,
+        status: input.status,
+        resultFlag: input.resultFlag,
+      });
+      const operation = await ctx.db.transaction(async (tx) => {
         const txCtx: RecordsContext = { db: tx, practiceId: ctx.practiceId };
+        await lockLabOperation(txCtx, input.operationId);
+        const existingReplay = await tx
+          .select(getTableColumns(labResults))
+          .from(labResults)
+          .where(
+            and(
+              eq(labResults.practiceId, ctx.practiceId),
+              eq(labResults.creationOperationId, input.operationId),
+            ),
+          )
+          .limit(1);
+        if (existingReplay[0]) {
+          if (existingReplay[0].creationPayloadHash !== creationPayloadHash) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "This lab creation id was already used for different result data.",
+            });
+          }
+          return { result: existingReplay[0], replayed: true as const };
+        }
         await assertPatientBelongsToPractice(txCtx, input.patientId);
         if (input.appointmentId) {
           await lockOpenAppointmentForClinicalWork(
@@ -1952,68 +2365,495 @@ export const recordsRouter = createRouter({
             "lab work"
           );
         }
+        const occurredAt = new Date();
+        const { operationId, ...resultInput } = input;
         const [created] = await tx
           .insert(labResults)
           .values({
-            ...input,
+            ...resultInput,
+            completedAt: input.status === "completed" ? occurredAt : null,
             orderedBy: ctx.user.id,
             practiceId: ctx.practiceId,
+            creationOperationId: operationId,
+            creationPayloadHash,
+          })
+          .onConflictDoNothing({
+            target: [labResults.practiceId, labResults.creationOperationId],
           })
           .returning();
+        if (!created) {
+          const [replay] = await tx
+            .select(getTableColumns(labResults))
+            .from(labResults)
+            .where(
+              and(
+                eq(labResults.practiceId, ctx.practiceId),
+                eq(labResults.creationOperationId, operationId),
+              ),
+            )
+            .limit(1);
+          if (!replay || replay.creationPayloadHash !== creationPayloadHash) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "This lab creation id conflicts with different result data.",
+            });
+          }
+          return { result: replay, replayed: true as const };
+        }
+        await tx.insert(labResultEvents).values({
+          practiceId: ctx.practiceId,
+          labResultId: created.id,
+          patientId: created.patientId,
+          appointmentId: created.appointmentId,
+          eventType: "created",
+          createdAt: created.createdAt,
+          statusBefore: null,
+          statusAfter: created.status,
+          resultValue: created.resultValue,
+          unit: created.unit,
+          referenceRangeLow: created.referenceRangeLow,
+          referenceRangeHigh: created.referenceRangeHigh,
+          resultFlag: created.resultFlag,
+          followUpStatus: created.followUpStatus,
+          actorId: ctx.user.id,
+          actorName: ctx.user.name,
+          note: created.status === "completed" ? "Result values available at entry." : null,
+          operationId,
+          operationPayloadHash: creationPayloadHash,
+        });
         if (created?.appointmentId) {
           await registerVisitWorkItem(txCtx, created.appointmentId, {
             labResultId: created.id,
           });
         }
-        return created!;
+        return { result: created, replayed: false as const };
       });
-      await dispatchWebhookEvent(ctx.practiceId, "lab_result.created", {
-        id: result.id,
-        patientId: result.patientId,
-        testName: result.testName,
-        status: result.status,
-        orderedBy: result.orderedBy,
-        source: "dashboard",
+      if (!operation.replayed) {
+        await dispatchWebhookEvent(ctx.practiceId, "lab_result.created", {
+          id: operation.result.id,
+          patientId: operation.result.patientId,
+          testName: operation.result.testName,
+          status: operation.result.status,
+          orderedBy: operation.result.orderedBy,
+          source: "dashboard",
+        });
+      }
+      return operation.result;
+    }),
+
+  updateLabResultStatus: protectedProcedure
+    .use(requireRole("admin", "veterinarian", "technician"))
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        status: z.literal("reviewed"),
+        operationId: z.string().uuid(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      if (input.status === "reviewed" && ctx.user.role === "technician") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "A veterinarian or administrator must review lab results." });
+      }
+      const payloadHash = labOperationHash({
+        kind: "review",
+        id: input.id,
+        status: input.status,
+      });
+      const result = await ctx.db.transaction(async (tx) => {
+        const txCtx: RecordsContext = { db: tx, practiceId: ctx.practiceId };
+        await lockLabOperation(txCtx, input.operationId);
+        const replay = await getLabOperationReplay(txCtx, input.operationId, {
+          resultId: input.id,
+          eventTypes: ["reviewed"],
+          payloadHash,
+        });
+        if (replay) return replay;
+        const existing = await getLabStatusForUpdate(txCtx, input.id);
+        assertLabStatusTransition(existing.status, input.status);
+        if (!existing.resultValue?.trim()) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "A lab result cannot be reviewed without recorded values." });
+        }
+        if (
+          existing.resultFlag === "critical" &&
+          existing.followUpStatus === "not_required"
+        ) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Assign owned follow-up for this critical result before recording clinical review.",
+          });
+        }
+        const occurredAt = new Date();
+        const [updated] = await tx
+          .update(labResults)
+          .set({
+            status: input.status,
+            reviewedBy: ctx.user.id,
+            reviewedAt: occurredAt,
+            updatedAt: occurredAt,
+          })
+          .where(
+            and(
+              eq(labResults.id, input.id),
+              eq(labResults.practiceId, ctx.practiceId),
+              eq(labResults.status, existing.status),
+              activePracticePredicate(ctx.practiceId),
+              isNull(labResults.deletedAt)
+            )
+          )
+          .returning();
+        if (!updated) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Lab result changed while updating. Refresh and try again.",
+          });
+        }
+        await tx.insert(labResultEvents).values({
+          practiceId: ctx.practiceId,
+          labResultId: updated.id,
+          patientId: updated.patientId,
+          appointmentId: updated.appointmentId,
+          eventType: "reviewed",
+          createdAt: occurredAt,
+          statusBefore: existing.status,
+          statusAfter: updated.status,
+          resultValue: updated.resultValue,
+          unit: updated.unit,
+          referenceRangeLow: updated.referenceRangeLow,
+          referenceRangeHigh: updated.referenceRangeHigh,
+          resultFlag: updated.resultFlag,
+          followUpStatus: updated.followUpStatus,
+          followUpAssignedTo: updated.followUpAssignedTo,
+          followUpDueAt: updated.followUpDueAt,
+          actorId: ctx.user.id,
+          actorName: ctx.user.name,
+          operationId: input.operationId,
+          operationPayloadHash: payloadHash,
+        });
+        return updated;
       });
       return result;
     }),
 
-  updateLabResultStatus: protectedProcedure
-    .use(requireRole("admin", "veterinarian"))
+  completeLabResult: protectedProcedure
+    .use(requireRole("admin", "veterinarian", "technician"))
+    .input(
+      z
+        .object({
+          id: z.string().uuid(),
+          resultValue: clinicalTextInput("Result value", LAB_RESULT_VALUE_MAX_LENGTH),
+          unit: optionalClinicalTextInput("Unit", LAB_UNIT_MAX_LENGTH),
+          referenceRangeLow: labReferenceInput("Reference range low").optional(),
+          referenceRangeHigh: labReferenceInput("Reference range high").optional(),
+          resultFlag: z.enum(labResultFlagValues).default("unknown"),
+          operationId: z.string().uuid(),
+        })
+        .superRefine((input, refineCtx) => {
+          if (!isOrderedLabReferenceRange(input.referenceRangeLow, input.referenceRangeHigh)) {
+            refineCtx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["referenceRangeHigh"],
+              message: "Reference range high must be greater than or equal to low.",
+            });
+          }
+        })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const payloadHash = labOperationHash({
+        kind: "complete",
+        id: input.id,
+        resultValue: input.resultValue,
+        unit: input.unit ?? null,
+        referenceRangeLow: input.referenceRangeLow ?? null,
+        referenceRangeHigh: input.referenceRangeHigh ?? null,
+        resultFlag: input.resultFlag,
+      });
+      return ctx.db.transaction(async (tx) => {
+        const txCtx: RecordsContext = { db: tx, practiceId: ctx.practiceId };
+        await lockLabOperation(txCtx, input.operationId);
+        const replay = await getLabOperationReplay(txCtx, input.operationId, {
+          resultId: input.id,
+          eventTypes: ["completed"],
+          payloadHash,
+        });
+        if (replay) return replay;
+        const existing = await getLabStatusForUpdate(txCtx, input.id);
+        if (existing.status !== "pending") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Only pending lab results can be completed with new values." });
+        }
+        if (
+          input.resultFlag === "critical" &&
+          existing.followUpStatus === "open" &&
+          !existing.followUpDueAt
+        ) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Set a due date on the open follow-up before recording this result as critical.",
+          });
+        }
+        const occurredAt = new Date();
+        const [updated] = await tx
+          .update(labResults)
+          .set({
+            resultValue: input.resultValue,
+            unit: input.unit ?? null,
+            referenceRangeLow: input.referenceRangeLow ?? null,
+            referenceRangeHigh: input.referenceRangeHigh ?? null,
+            resultFlag: input.resultFlag,
+            status: "completed",
+            completedAt: occurredAt,
+            updatedAt: occurredAt,
+          })
+          .where(
+            and(
+              eq(labResults.id, input.id),
+              eq(labResults.practiceId, ctx.practiceId),
+              eq(labResults.status, "pending"),
+              activePracticePredicate(ctx.practiceId),
+              isNull(labResults.deletedAt)
+            )
+          )
+          .returning();
+        if (!updated) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Lab result changed while completing. Refresh and try again." });
+        }
+        await tx.insert(labResultEvents).values({
+          practiceId: ctx.practiceId,
+          labResultId: updated.id,
+          patientId: updated.patientId,
+          appointmentId: updated.appointmentId,
+          eventType: "completed",
+          createdAt: occurredAt,
+          statusBefore: "pending",
+          statusAfter: "completed",
+          resultValue: updated.resultValue,
+          unit: updated.unit,
+          referenceRangeLow: updated.referenceRangeLow,
+          referenceRangeHigh: updated.referenceRangeHigh,
+          resultFlag: updated.resultFlag,
+          followUpStatus: updated.followUpStatus,
+          followUpAssignedTo: updated.followUpAssignedTo,
+          followUpDueAt: updated.followUpDueAt,
+          actorId: ctx.user.id,
+          actorName: ctx.user.name,
+          operationId: input.operationId,
+          operationPayloadHash: payloadHash,
+        });
+        return updated;
+      });
+    }),
+
+  assignLabFollowUp: protectedProcedure
+    .use(requireRole("admin", "veterinarian", "technician"))
     .input(
       z.object({
         id: z.string().uuid(),
-        status: z.enum(labStatusValues),
+        assigneeId: z.string().uuid(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().trim().max(1000).optional(),
+        operationId: z.string().uuid(),
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const existing = await getLabStatusForUpdate(ctx, input.id);
-      assertLabStatusTransition(existing.status, input.status);
-      const [result] = await ctx.db
-        .update(labResults)
-        .set({
-          status: input.status,
-          ...(input.status === "reviewed"
-            ? { reviewedBy: ctx.user.id }
-            : {}),
-        })
-        .where(
-          and(
-            eq(labResults.id, input.id),
-            eq(labResults.practiceId, ctx.practiceId),
-            eq(labResults.status, existing.status),
-            activePracticePredicate(ctx.practiceId),
-            isNull(labResults.deletedAt)
-          )
-        )
-        .returning();
-      if (!result) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "Lab result changed while updating. Refresh and try again.",
+      const dueAt = input.dueAt ? new Date(input.dueAt).toISOString() : null;
+      const note = input.note?.trim() || null;
+      const payloadHash = labOperationHash({
+        kind: "assign_follow_up",
+        id: input.id,
+        assigneeId: input.assigneeId,
+        dueAt,
+        note,
+      });
+      return ctx.db.transaction(async (tx) => {
+        const txCtx: RecordsContext = { db: tx, practiceId: ctx.practiceId };
+        await lockLabOperation(txCtx, input.operationId);
+        const replay = await getLabOperationReplay(txCtx, input.operationId, {
+          resultId: input.id,
+          eventTypes: ["follow_up_assigned", "follow_up_reassigned"],
+          payloadHash,
         });
-      }
-      return result;
+        if (replay) return replay;
+        const existing = await getLabStatusForUpdate(txCtx, input.id);
+        if (existing.status === "pending") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Enter and complete the lab values before assigning follow-up.",
+          });
+        }
+        const [assignee] = await tx
+          .select({ id: users.id, role: users.role })
+          .from(users)
+          .where(
+            and(
+              eq(users.id, input.assigneeId),
+              eq(users.practiceId, ctx.practiceId),
+              ne(users.role, "viewer"),
+              isNull(users.deletedAt)
+            )
+          )
+          .limit(1);
+        if (!assignee) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active clinic teammate." });
+        }
+        if (existing.resultFlag === "critical" && !dueAt) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Critical-result follow-up requires a due date and time.",
+          });
+        }
+        if (assignee.role === "front_desk" && !note) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Front desk follow-up requires actionable instructions from the clinical team.",
+          });
+        }
+        const occurredAt = new Date();
+        const [updated] = await tx
+          .update(labResults)
+          .set({
+            followUpStatus: "open",
+            followUpAssignedTo: input.assigneeId,
+            followUpDueAt: dueAt ? new Date(dueAt) : null,
+            followUpNote: note,
+            followUpCompletedBy: null,
+            followUpCompletedAt: null,
+            followUpOutcome: null,
+            updatedAt: occurredAt,
+          })
+          .where(
+            and(
+              eq(labResults.id, input.id),
+              eq(labResults.practiceId, ctx.practiceId),
+              eq(labResults.status, existing.status),
+              eq(labResults.followUpStatus, existing.followUpStatus),
+              sql`${labResults.followUpAssignedTo} is not distinct from ${existing.followUpAssignedTo}::uuid`,
+              activePracticePredicate(ctx.practiceId),
+              isNull(labResults.deletedAt)
+            )
+          )
+          .returning();
+        if (!updated) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Lab result changed while assigning follow-up. Refresh and try again." });
+        }
+        await tx.insert(labResultEvents).values({
+          practiceId: ctx.practiceId,
+          labResultId: updated.id,
+          patientId: updated.patientId,
+          appointmentId: updated.appointmentId,
+          eventType: existing.followUpStatus === "not_required" ? "follow_up_assigned" : "follow_up_reassigned",
+          createdAt: occurredAt,
+          statusBefore: updated.status,
+          statusAfter: updated.status,
+          resultValue: updated.resultValue,
+          unit: updated.unit,
+          referenceRangeLow: updated.referenceRangeLow,
+          referenceRangeHigh: updated.referenceRangeHigh,
+          resultFlag: updated.resultFlag,
+          followUpStatus: "open",
+          followUpAssignedTo: input.assigneeId,
+          followUpDueAt: dueAt ? new Date(dueAt) : null,
+          actorId: ctx.user.id,
+          actorName: ctx.user.name,
+          note,
+          operationId: input.operationId,
+          operationPayloadHash: payloadHash,
+        });
+        return updated;
+      });
+    }),
+
+  completeLabFollowUp: protectedProcedure
+    .use(requireRole("admin", "veterinarian", "technician", "front_desk"))
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        outcome: z.string().trim().min(3).max(1000),
+        operationId: z.string().uuid(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const payloadHash = labOperationHash({
+        kind: "complete_follow_up",
+        id: input.id,
+        outcome: input.outcome,
+      });
+      const result = await ctx.db.transaction(async (tx) => {
+        const txCtx: RecordsContext = { db: tx, practiceId: ctx.practiceId };
+        await lockLabOperation(txCtx, input.operationId);
+        const replay = await getLabOperationReplay(txCtx, input.operationId, {
+          resultId: input.id,
+          eventTypes: ["follow_up_completed"],
+          payloadHash,
+        });
+        if (replay) return replay;
+        const existing = await getLabStatusForUpdate(txCtx, input.id);
+        if (existing.status === "pending") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Lab follow-up cannot be completed before result values are available.",
+          });
+        }
+        if (existing.followUpStatus !== "open" || !existing.followUpAssignedTo) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "This lab result has no open follow-up." });
+        }
+        if (
+          ctx.user.role === "front_desk" &&
+          existing.followUpAssignedTo !== ctx.user.id
+        ) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Front desk staff can complete only lab follow-up assigned to them.",
+          });
+        }
+        const occurredAt = new Date();
+        const [updated] = await tx
+          .update(labResults)
+          .set({
+            followUpStatus: "completed",
+            followUpCompletedBy: ctx.user.id,
+            followUpCompletedAt: occurredAt,
+            followUpOutcome: input.outcome,
+            updatedAt: occurredAt,
+          })
+          .where(
+            and(
+              eq(labResults.id, input.id),
+              eq(labResults.practiceId, ctx.practiceId),
+              eq(labResults.followUpStatus, "open"),
+              eq(labResults.followUpAssignedTo, existing.followUpAssignedTo),
+              activePracticePredicate(ctx.practiceId),
+              isNull(labResults.deletedAt)
+            )
+          )
+          .returning();
+        if (!updated) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Lab follow-up changed while completing. Refresh and try again." });
+        }
+        await tx.insert(labResultEvents).values({
+          practiceId: ctx.practiceId,
+          labResultId: updated.id,
+          patientId: updated.patientId,
+          appointmentId: updated.appointmentId,
+          eventType: "follow_up_completed",
+          createdAt: occurredAt,
+          statusBefore: updated.status,
+          statusAfter: updated.status,
+          resultValue: updated.resultValue,
+          unit: updated.unit,
+          referenceRangeLow: updated.referenceRangeLow,
+          referenceRangeHigh: updated.referenceRangeHigh,
+          resultFlag: updated.resultFlag,
+          followUpStatus: "completed",
+          followUpAssignedTo: updated.followUpAssignedTo,
+          followUpDueAt: updated.followUpDueAt,
+          actorId: ctx.user.id,
+          actorName: ctx.user.name,
+          note: input.outcome,
+          operationId: input.operationId,
+          operationPayloadHash: payloadHash,
+        });
+        return updated;
+      });
+      return labMutationResultForRole(result, ctx.user.role);
     }),
 
   // Procedures

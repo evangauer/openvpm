@@ -72,6 +72,10 @@ const aSmsSendAttempt = randomUUID();
 const bSmsSendAttempt = randomUUID();
 const aSmsSendAttemptEvent = randomUUID();
 const bSmsSendAttemptEvent = randomUUID();
+const aLabResult = randomUUID();
+const bLabResult = randomUUID();
+const aLabResultEvent = randomUUID();
+const bLabResultEvent = randomUUID();
 const aAppSmsSendAttempt = randomUUID();
 const aAppSmsSendAttemptEvent = randomUUID();
 const aSmsDeliveryEvent = randomUUID();
@@ -154,6 +158,20 @@ try {
   await owner`insert into patients (id, practice_id, client_id, name, species)
     select ${bPatient}, ${bId}, id, 'RLS Pet B', 'feline'
     from clients where practice_id = ${bId}`;
+  await owner`insert into lab_results
+    (id, practice_id, patient_id, test_name, result_value, status, completed_at, ordered_by)
+    values
+    (${aLabResult}, ${aId}, ${aPatient}, 'RLS CBC A', '12.5', 'completed', now(), ${aUser}),
+    (${bLabResult}, ${bId}, ${bPatient}, 'RLS CBC B', '8.2', 'completed', now(), ${bUser})`;
+  await owner`insert into lab_result_events
+    (id, practice_id, lab_result_id, patient_id, event_type, status_before,
+     status_after, result_value, result_flag, actor_id, actor_name, operation_id,
+     operation_payload_hash)
+    values
+    (${aLabResultEvent}, ${aId}, ${aLabResult}, ${aPatient}, 'completed', 'pending',
+      'completed', '12.5', 'normal', ${aUser}, 'RLS Admin A', ${randomUUID()}, ${"a".repeat(64)}),
+    (${bLabResultEvent}, ${bId}, ${bLabResult}, ${bPatient}, 'completed', 'pending',
+      'completed', '8.2', 'normal', ${bUser}, 'RLS Admin B', ${randomUUID()}, ${"b".repeat(64)})`;
   await owner`insert into patients (id, practice_id, client_id, name, species)
     select ${aMergeTargetPatient}, ${aId}, id, 'RLS Canonical Pet A', 'canine'
     from clients where practice_id = ${aId}`;
@@ -578,6 +596,85 @@ try {
     aPrescriptionEvents.length === 1 &&
       aPrescriptionEvents[0]!.id === aPrescriptionEvent,
   );
+  const aLabResultEvents = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id, practice_id from lab_result_events where id in (${aLabResultEvent}, ${bLabResultEvent})`;
+  });
+  check(
+    "tenant A sees only A's lab result evidence",
+    aLabResultEvents.length === 1 &&
+      aLabResultEvents[0]!.id === aLabResultEvent &&
+      aLabResultEvents[0]!.practice_id === aId,
+  );
+
+  let labResultEventUpdateBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`update lab_result_events set actor_name = 'tampered' where id = ${aLabResultEvent}`;
+    });
+  } catch {
+    labResultEventUpdateBlocked = true;
+  }
+  check(
+    "application role cannot rewrite lab result evidence",
+    labResultEventUpdateBlocked,
+  );
+
+  let crossTenantLabEventInsertBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into lab_result_events
+        (practice_id, lab_result_id, patient_id, event_type, status_before,
+         status_after, result_value, result_flag, actor_id, actor_name, operation_id,
+         operation_payload_hash)
+        values (${aId}, ${bLabResult}, ${aPatient}, 'reviewed', 'completed',
+          'reviewed', '8.2', 'normal', ${aUser}, 'RLS Admin A', ${randomUUID()}, ${"c".repeat(64)})`;
+    });
+  } catch {
+    crossTenantLabEventInsertBlocked = true;
+  }
+  check(
+    "cross-tenant lab result evidence INSERT is blocked",
+    crossTenantLabEventInsertBlocked,
+  );
+
+  let crossTenantLabActorBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into lab_result_events
+        (practice_id, lab_result_id, patient_id, event_type, status_before,
+         status_after, result_value, result_flag, actor_id, actor_name, operation_id,
+         operation_payload_hash)
+        values (${aId}, ${aLabResult}, ${aPatient}, 'reviewed', 'completed',
+          'reviewed', '12.5', 'normal', ${bUser}, 'RLS Admin B', ${randomUUID()}, ${"d".repeat(64)})`;
+    });
+  } catch {
+    crossTenantLabActorBlocked = true;
+  }
+  check("cross-tenant lab evidence actor is blocked", crossTenantLabActorBlocked);
+
+  let crossTenantLabAssigneeBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into lab_result_events
+        (practice_id, lab_result_id, patient_id, event_type, status_before,
+         status_after, result_value, result_flag, follow_up_status, follow_up_assigned_to,
+         actor_id, actor_name, operation_id, operation_payload_hash)
+        values (${aId}, ${aLabResult}, ${aPatient}, 'follow_up_assigned', 'completed',
+          'completed', '12.5', 'normal', 'open', ${bUser}, ${aUser}, 'RLS Admin A',
+          ${randomUUID()}, ${"e".repeat(64)})`;
+    });
+  } catch {
+    crossTenantLabAssigneeBlocked = true;
+  }
+  check(
+    "cross-tenant lab follow-up assignee is blocked",
+    crossTenantLabAssigneeBlocked,
+  );
   const aDispenseCharges = await appTransaction(async (tx) => {
     await tx`select set_config('app.current_practice_id', ${aId}, true)`;
     return tx`select id, practice_id from dispense_charge_queue where id in (${aDispenseCharge}, ${bDispenseCharge})`;
@@ -964,6 +1061,21 @@ try {
     "application role cannot mutate delivery evidence even with bypass GUCs",
     bypassCannotDeleteDeliveryEvidence,
   );
+
+  let bypassCannotDeleteLabEvidence = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`select set_config('app.ledger_maintenance', 'on', true)`;
+      await tx`delete from lab_result_events where id = ${aLabResultEvent}`;
+    });
+  } catch {
+    bypassCannotDeleteLabEvidence = true;
+  }
+  check(
+    "application role cannot delete lab evidence even with bypass GUCs",
+    bypassCannotDeleteLabEvidence,
+  );
 } catch (err) {
   console.error("Unexpected error:", err);
   failures++;
@@ -974,6 +1086,8 @@ try {
     await cleanup`select set_config('app.ledger_maintenance', 'on', true)`;
     await cleanup`delete from sms_delivery_event_history where id in (${aSmsDeliveryHistory}, ${bSmsDeliveryHistory}, ${bSmsDeliveryConflictHistory})`;
     await cleanup`delete from sms_delivery_events where id in (${aSmsDeliveryEvent}, ${bSmsDeliveryEvent}, ${unmatchedSmsDeliveryEvent})`;
+    await cleanup`delete from lab_result_events where id in (${aLabResultEvent}, ${bLabResultEvent})`;
+    await cleanup`delete from lab_results where id in (${aLabResult}, ${bLabResult})`;
     await cleanup`delete from sms_send_attempt_events where id in (${aSmsSendAttemptEvent}, ${bSmsSendAttemptEvent}, ${aAppSmsSendAttemptEvent})`;
     await cleanup`delete from sms_send_attempts where id in (${aSmsSendAttempt}, ${bSmsSendAttempt}, ${aAppSmsSendAttempt})`;
     await cleanup`delete from sms_consent_events where id in (${aSmsConsentEvent}, ${bSmsConsentEvent})`;

@@ -17,6 +17,7 @@ import {
   vaccinationRecords,
   prescriptions,
   labResults,
+  labResultEvents,
   procedures,
   invoices,
   invoiceItems,
@@ -677,60 +678,152 @@ async function seed() {
     { testName: "Albumin", unit: "g/dL", low: "2.3", high: "4.0", normalValue: () => (2.3 + Math.random() * 1.7).toFixed(1) },
   ];
 
-  const labResultValues: {
-    practiceId: string;
-    patientId: string;
-    testName: string;
-    resultValue: string;
-    unit: string;
-    referenceRangeLow: string;
-    referenceRangeHigh: string;
-    status: "pending" | "completed" | "reviewed";
-    orderedBy: string;
-    reviewedBy?: string;
-  }[] = [];
+  const labResultValues: (typeof labResults.$inferInsert)[] = [];
 
-  // Create 12 lab results across different patients
+  // Create 12 lab results across different patients. Pending rows intentionally
+  // carry no partial values; completed/reviewed rows carry explicit evidence.
   const labPatients = pickN(insertedPatients.slice(0, 20), 8);
   for (let i = 0; i < 12; i++) {
     const patient = labPatients[i % labPatients.length]!;
     const test = labTestData[i % labTestData.length]!;
     const vet = pickRandom(vets);
 
-    // Make some results out of range (elevated BUN for seniors, high ALT, etc.)
-    let resultValue: string;
+    let measuredValue: string;
     if (i === 1) {
-      // Elevated BUN
-      resultValue = "42.5";
+      measuredValue = "42.5";
     } else if (i === 3) {
-      // High ALT
-      resultValue = "198";
+      measuredValue = "198";
     } else if (i === 7) {
-      // Low T4
-      resultValue = "0.6";
+      measuredValue = "0.6";
     } else {
-      resultValue = test.normalValue();
+      measuredValue = test.normalValue();
     }
 
-    const statusOptions: ("pending" | "completed" | "reviewed")[] = ["pending", "completed", "reviewed"];
-    const status = i < 3 ? "pending" : i < 7 ? "completed" : "reviewed";
+    const status: "pending" | "completed" | "reviewed" =
+      i < 3 ? "pending" : i < 7 ? "completed" : "reviewed";
+    const hasValues = status !== "pending";
+    const createdAt = daysAgo(14 - i);
+    const completedAt = hasValues ? addMinutes(createdAt, 30) : null;
+    const reviewedAt = status === "reviewed"
+      ? addMinutes(completedAt!, 45)
+      : null;
+    const creationOperationId = crypto.randomUUID();
+    const creationPayloadHash = crypto
+      .createHash("sha256")
+      .update(`seed:lab:create:${creationOperationId}`)
+      .digest("hex");
+    const resultFlag = status === "pending"
+      ? "unknown"
+      : i === 3 || i === 7
+        ? "abnormal"
+        : "normal";
 
     labResultValues.push({
       practiceId,
       patientId: patient.id,
+      creationOperationId,
+      creationPayloadHash,
       testName: test.testName,
-      resultValue,
-      unit: test.unit,
-      referenceRangeLow: test.low,
-      referenceRangeHigh: test.high,
+      resultValue: hasValues ? measuredValue : null,
+      unit: hasValues ? test.unit : null,
+      referenceRangeLow: hasValues ? test.low : null,
+      referenceRangeHigh: hasValues ? test.high : null,
       status,
+      resultFlag,
       orderedBy: vet.id,
-      ...(status === "reviewed" ? { reviewedBy: vet.id } : {}),
+      completedAt,
+      reviewedBy: status === "reviewed" ? vet.id : null,
+      reviewedAt,
+      createdAt,
+      updatedAt: reviewedAt ?? completedAt ?? createdAt,
     });
   }
 
-  await db.insert(labResults).values(labResultValues);
-  console.log(`Lab results: ${labResultValues.length} created`);
+  const insertedLabResults = await db
+    .insert(labResults)
+    .values(labResultValues)
+    .returning();
+
+  const userNameById = new Map(insertedUsers.map((user) => [user.id, user.name]));
+  const labEventValues: (typeof labResultEvents.$inferInsert)[] = [];
+  for (const result of insertedLabResults) {
+    const actorName = userNameById.get(result.orderedBy ?? "") ?? "Seed clinician";
+    labEventValues.push({
+      practiceId,
+      labResultId: result.id,
+      patientId: result.patientId,
+      appointmentId: result.appointmentId,
+      eventType: "created",
+      statusBefore: null,
+      statusAfter: "pending",
+      resultValue: null,
+      unit: null,
+      referenceRangeLow: null,
+      referenceRangeHigh: null,
+      resultFlag: "unknown",
+      followUpStatus: "not_required",
+      actorId: result.orderedBy!,
+      actorName,
+      createdAt: result.createdAt,
+      operationId: result.creationOperationId!,
+      operationPayloadHash: result.creationPayloadHash!,
+    });
+    if (result.status !== "pending") {
+      const completionOperationId = crypto.randomUUID();
+      labEventValues.push({
+        practiceId,
+        labResultId: result.id,
+        patientId: result.patientId,
+        appointmentId: result.appointmentId,
+        eventType: "completed",
+        statusBefore: "pending",
+        statusAfter: "completed",
+        resultValue: result.resultValue,
+        unit: result.unit,
+        referenceRangeLow: result.referenceRangeLow,
+        referenceRangeHigh: result.referenceRangeHigh,
+        resultFlag: result.resultFlag,
+        followUpStatus: "not_required",
+        actorId: result.orderedBy!,
+        actorName,
+        note: "Seeded result values recorded.",
+        createdAt: result.completedAt!,
+        operationId: completionOperationId,
+        operationPayloadHash: crypto
+          .createHash("sha256")
+          .update(`seed:lab:complete:${completionOperationId}`)
+          .digest("hex"),
+      });
+    }
+    if (result.status === "reviewed") {
+      const reviewOperationId = crypto.randomUUID();
+      labEventValues.push({
+        practiceId,
+        labResultId: result.id,
+        patientId: result.patientId,
+        appointmentId: result.appointmentId,
+        eventType: "reviewed",
+        statusBefore: "completed",
+        statusAfter: "reviewed",
+        resultValue: result.resultValue,
+        unit: result.unit,
+        referenceRangeLow: result.referenceRangeLow,
+        referenceRangeHigh: result.referenceRangeHigh,
+        resultFlag: result.resultFlag,
+        followUpStatus: "not_required",
+        actorId: result.reviewedBy!,
+        actorName,
+        createdAt: result.reviewedAt!,
+        operationId: reviewOperationId,
+        operationPayloadHash: crypto
+          .createHash("sha256")
+          .update(`seed:lab:review:${reviewOperationId}`)
+          .digest("hex"),
+      });
+    }
+  }
+  await db.insert(labResultEvents).values(labEventValues);
+  console.log(`Lab results: ${insertedLabResults.length} created with ${labEventValues.length} evidence events`);
 
   // =========================================================================
   // 11c. Procedures

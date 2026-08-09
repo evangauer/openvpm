@@ -53,7 +53,7 @@ DECLARE
   tbls text[] := array[
     'api_keys','appointment_types','appointment_waitlist','appointments','audit_log','booking_pages',
     'capture_sessions','cases','clients','clinical_notes','clinical_record_corrections','communications','consent_forms','consent_requests','controlled_substance_log','dispense_charge_queue','email_suppressions',
-    'files','insurance_claims','insurance_policies','invoices','lab_results','location_messaging','messaging_registrations','migration_runs',
+    'files','insurance_claims','insurance_policies','invoices','lab_result_events','lab_results','location_messaging','messaging_registrations','migration_runs',
     'locations','patient_merge_events','patients','practice_payment_accounts','prescription_events','prescriptions','problem_list','procedures','products','purchase_orders',
     'recurring_series','rooms','services','sms_consent_events','sms_send_attempt_events','sms_send_attempts','sms_suppressions','soap_notes','staff_schedules','suppliers',
     'treatment_plans','treatment_templates','usage_records','users','vaccination_records',
@@ -82,6 +82,11 @@ REVOKE UPDATE, DELETE ON clinical_record_corrections FROM openpims_app;
 -- service, but even the application role cannot rewrite or remove history.
 REVOKE ALL ON prescription_events FROM openpims_app;
 GRANT SELECT, INSERT ON prescription_events TO openpims_app;
+
+-- Lab result lifecycle events are immutable clinical safety evidence. The app
+-- may append completion, review, and follow-up events but never rewrite them.
+REVOKE ALL ON lab_result_events FROM openpims_app;
+GRANT SELECT, INSERT ON lab_result_events TO openpims_app;
 
 -- Patient merge events are an append-only identity correction ledger. The app
 -- can create and read attributed events but cannot rewrite or remove lineage.
@@ -240,7 +245,7 @@ BEGIN
   FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format(
-        'REVOKE ALL ON auth_tokens, clinical_record_corrections, demo_accesses, dispense_charge_queue, funnel_events, patient_merge_events, practice_conversion_milestones, prescription_events, sessions, sms_delivery_event_history, sms_delivery_events, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
+        'REVOKE ALL ON auth_tokens, clinical_record_corrections, demo_accesses, dispense_charge_queue, funnel_events, lab_result_events, patient_merge_events, practice_conversion_milestones, prescription_events, sessions, sms_delivery_event_history, sms_delivery_events, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
       );
     END IF;
   END LOOP;

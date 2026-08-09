@@ -414,6 +414,13 @@
       "when": 1786270181496,
       "tag": "0058_mysterious_black_cat",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1786272808904,
+      "tag": "0059_daffy_darkstar",
+      "breakpoints": true
     }
   ]
 }

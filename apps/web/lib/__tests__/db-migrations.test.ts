@@ -904,4 +904,23 @@ describe("committed Drizzle migrations", () => {
       "GRANT SELECT, INSERT ON sms_delivery_events, sms_delivery_event_history TO openpims_app",
     );
   });
+
+  it("creates lab tenant uniqueness before the event ledger references it", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries?: Array<{ tag?: string }> };
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0059_daffy_darkstar",
+    );
+
+    const sql = readRepoFile("packages/db/drizzle/0059_daffy_darkstar.sql");
+    const referencedUniqueAt = sql.indexOf(
+      'CREATE UNIQUE INDEX "lab_results_practice_record_uq"',
+    );
+    const resultTenantFkAt = sql.indexOf(
+      'ADD CONSTRAINT "lab_result_events_result_tenant_fk"',
+    );
+    expect(referencedUniqueAt).toBeGreaterThan(0);
+    expect(resultTenantFkAt).toBeGreaterThan(referencedUniqueAt);
+  });
 });

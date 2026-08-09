@@ -15,6 +15,13 @@ calendar. Click any open slot to book a visit.
 to see their whole story: medical records, appointments, weight history,
 vitals, vaccinations, and invoices, all on one chart.
 
+## Close the loop on lab results
+
+**Lab Inbox** is the clinic-wide safety queue. Enter values for pending manual
+results, mark completed results reviewed, and assign any client or patient
+follow-up to a named teammate. Completion, review, and follow-up evidence stays
+with the result after the visit is checked out.
+
 ## Bill in one click
 
 **Billing** turns a visit into a bill. Add the services, send it, and take

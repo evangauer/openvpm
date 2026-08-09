@@ -33,6 +33,19 @@ export const labStatusEnum = pgEnum("lab_status", [
   "reviewed",
 ]);
 
+export const labResultFlagEnum = pgEnum("lab_result_flag", [
+  "unknown",
+  "normal",
+  "abnormal",
+  "critical",
+]);
+
+export const labFollowUpStatusEnum = pgEnum("lab_follow_up_status", [
+  "not_required",
+  "open",
+  "completed",
+]);
+
 export const noteTypeEnum = pgEnum("note_type", [
   "general",
   "follow_up",
@@ -196,6 +209,8 @@ export const labResults = pgTable(
       .notNull()
       .references(() => patients.id),
     appointmentId: uuid("appointment_id").references(() => appointments.id),
+    creationOperationId: uuid("creation_operation_id"),
+    creationPayloadHash: varchar("creation_payload_hash", { length: 64 }),
     testName: varchar("test_name", { length: 255 }).notNull(),
     resultValue: varchar("result_value", { length: 128 }),
     unit: varchar("unit", { length: 32 }),
@@ -208,8 +223,26 @@ export const labResults = pgTable(
       scale: 3,
     }),
     status: labStatusEnum("status").notNull().default("pending"),
+    resultFlag: labResultFlagEnum("result_flag").notNull().default("unknown"),
     orderedBy: uuid("ordered_by").references(() => users.id),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
     reviewedBy: uuid("reviewed_by").references(() => users.id),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    followUpStatus: labFollowUpStatusEnum("follow_up_status")
+      .notNull()
+      .default("not_required"),
+    followUpAssignedTo: uuid("follow_up_assigned_to").references(
+      () => users.id,
+    ),
+    followUpDueAt: timestamp("follow_up_due_at", { withTimezone: true }),
+    followUpNote: varchar("follow_up_note", { length: 1000 }),
+    followUpCompletedBy: uuid("follow_up_completed_by").references(
+      () => users.id,
+    ),
+    followUpCompletedAt: timestamp("follow_up_completed_at", {
+      withTimezone: true,
+    }),
+    followUpOutcome: varchar("follow_up_outcome", { length: 1000 }),
   },
   (table) => ({
     patientIdx: index("lab_results_patient_idx").on(
@@ -221,6 +254,28 @@ export const labResults = pgTable(
       table.status,
       table.deletedAt,
     ),
+    reviewInboxIdx: index("lab_results_review_inbox_idx").on(
+      table.practiceId,
+      table.status,
+      table.resultFlag,
+      table.completedAt,
+      table.id,
+    ),
+    followUpInboxIdx: index("lab_results_follow_up_inbox_idx").on(
+      table.practiceId,
+      table.followUpStatus,
+      table.followUpAssignedTo,
+      table.followUpDueAt,
+      table.id,
+    ),
+    practiceRecordUq: uniqueIndex("lab_results_practice_record_uq").on(
+      table.practiceId,
+      table.id,
+    ),
+    creationOperationUq: uniqueIndex("lab_results_creation_operation_uq").on(
+      table.practiceId,
+      table.creationOperationId,
+    ),
     appointmentIdx: index("lab_results_appointment_idx").on(
       table.practiceId,
       table.appointmentId,
@@ -231,11 +286,113 @@ export const labResults = pgTable(
       table.appointmentId,
       table.id,
     ),
+    patientPracticeFk: foreignKey({
+      columns: [table.practiceId, table.patientId],
+      foreignColumns: [patients.practiceId, patients.id],
+      name: "lab_results_practice_patient_fk",
+    }),
     appointmentPracticeFk: foreignKey({
-      columns: [table.practiceId, table.appointmentId],
-      foreignColumns: [appointments.practiceId, appointments.id],
+      columns: [table.practiceId, table.appointmentId, table.patientId],
+      foreignColumns: [
+        appointments.practiceId,
+        appointments.id,
+        appointments.patientId,
+      ],
       name: "lab_results_practice_appointment_fk",
     }),
+    orderedByPracticeFk: foreignKey({
+      columns: [table.practiceId, table.orderedBy],
+      foreignColumns: [users.practiceId, users.id],
+      name: "lab_results_practice_ordered_by_fk",
+    }),
+    reviewedByPracticeFk: foreignKey({
+      columns: [table.practiceId, table.reviewedBy],
+      foreignColumns: [users.practiceId, users.id],
+      name: "lab_results_practice_reviewed_by_fk",
+    }),
+    followUpAssignedPracticeFk: foreignKey({
+      columns: [table.practiceId, table.followUpAssignedTo],
+      foreignColumns: [users.practiceId, users.id],
+      name: "lab_results_practice_follow_up_assigned_fk",
+    }),
+    followUpCompletedPracticeFk: foreignKey({
+      columns: [table.practiceId, table.followUpCompletedBy],
+      foreignColumns: [users.practiceId, users.id],
+      name: "lab_results_practice_follow_up_completed_fk",
+    }),
+    lifecycleShapeCheck: check(
+      "lab_results_lifecycle_shape_check",
+      sql`(
+          ${table.status} = 'pending'
+          and ${table.completedAt} is null
+          and ${table.reviewedAt} is null
+          and ${table.reviewedBy} is null
+        ) or (
+          ${table.status} = 'completed'
+          and ${table.completedAt} is not null
+          and ${table.reviewedAt} is null
+          and ${table.reviewedBy} is null
+        ) or (
+          ${table.status} = 'reviewed'
+          and ${table.completedAt} is not null
+          and ${table.reviewedAt} is not null
+          and ${table.reviewedBy} is not null
+        )`,
+    ),
+    creationOperationShapeCheck: check(
+      "lab_results_creation_operation_shape_check",
+      sql`(${table.creationOperationId} is null and ${table.creationPayloadHash} is null)
+        or (${table.creationOperationId} is not null and ${table.creationPayloadHash} ~ '^[0-9a-f]{64}$')`,
+    ),
+    resultShapeCheck: check(
+      "lab_results_result_shape_check",
+      sql`(
+          ${table.status} = 'pending'
+          and ${table.resultValue} is null
+          and ${table.unit} is null
+          and ${table.referenceRangeLow} is null
+          and ${table.referenceRangeHigh} is null
+          and ${table.resultFlag} = 'unknown'
+        ) or (
+          ${table.status} in ('completed', 'reviewed')
+          and length(btrim(coalesce(${table.resultValue}, ''))) > 0
+        )`,
+    ),
+    followUpShapeCheck: check(
+      "lab_results_follow_up_shape_check",
+      sql`(${table.status} <> 'pending' or ${table.followUpStatus} = 'not_required')
+        and not (
+          ${table.status} = 'reviewed'
+          and ${table.resultFlag} = 'critical'
+          and ${table.followUpStatus} = 'not_required'
+        )
+        and not (
+          ${table.resultFlag} = 'critical'
+          and ${table.followUpStatus} in ('open', 'completed')
+          and ${table.followUpDueAt} is null
+        )
+        and ((
+          ${table.followUpStatus} = 'not_required'
+          and ${table.followUpAssignedTo} is null
+          and ${table.followUpDueAt} is null
+          and ${table.followUpNote} is null
+          and ${table.followUpCompletedBy} is null
+          and ${table.followUpCompletedAt} is null
+          and ${table.followUpOutcome} is null
+        ) or (
+          ${table.followUpStatus} = 'open'
+          and ${table.followUpAssignedTo} is not null
+          and ${table.followUpCompletedBy} is null
+          and ${table.followUpCompletedAt} is null
+          and ${table.followUpOutcome} is null
+        ) or (
+          ${table.followUpStatus} = 'completed'
+          and ${table.followUpAssignedTo} is not null
+          and ${table.followUpCompletedBy} is not null
+          and ${table.followUpCompletedAt} is not null
+          and length(btrim(coalesce(${table.followUpOutcome}, ''))) between 3 and 1000
+        ))`,
+    ),
   }),
 );
 

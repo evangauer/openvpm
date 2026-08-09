@@ -258,9 +258,10 @@ describe("records lab result form UX", () => {
     expect(source).toContain("const canSubmitLabResult =");
     expect(source).toContain("{canManageLabResults && (");
     expect(source).toContain("{canManageLabResults && showLabForm && (");
-    expect(source).toContain(
-      'lab.status === "completed" ? ('
+    expect(source).toMatch(
+      /canReviewLabResults\s*&&\s*lab\.status === "completed"/,
     );
+    expect(source).toContain('lab.followUpStatus !== "not_required"');
     expect(source).toContain("isLabOptionalReferenceInputValid");
     expect(source).toContain("isLabReferenceRangeOrdered");
     expect(source).toContain("labForm.resultValue.trim() || undefined");
@@ -518,9 +519,11 @@ describe("records page state handling", () => {
     );
     expect(source).toContain("{canManageLabResults && (");
     expect(source).toContain("{canManageLabResults && showLabForm && (");
-    expect(source).toContain(
-      'canManageLabResults &&\n                                  lab.status === "completed" ? ('
+    expect(source).toMatch(
+      /canReviewLabResults\s*&&\s*lab\.status === "completed"/,
     );
+    expect(source).toContain('href={`/lab-results?resultId=${lab.id}`}');
+    expect(source).toContain("Open selected result");
     expect(source).toContain("{canCreateProcedures && (");
     expect(source).toContain("{canCreateProcedures && showProcedureForm && (");
   });

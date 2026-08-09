@@ -20,6 +20,7 @@ import {
   Loader2,
   AlertCircle,
   Syringe,
+  FlaskConical,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 
@@ -62,6 +63,12 @@ const navigationItems: CommandItemConfig[] = [
   { label: "Schedule", href: "/schedule", Icon: Calendar, roles: allRoles },
   { label: "Whiteboard", href: "/whiteboard", Icon: Clipboard, roles: allRoles },
   { label: "Records", href: "/records", Icon: FileText, roles: allRoles },
+  {
+    label: "Lab Inbox",
+    href: "/lab-results",
+    Icon: FlaskConical,
+    roles: ["admin", "veterinarian", "technician", "front_desk", "viewer"],
+  },
   { label: "Billing", href: "/billing", Icon: DollarSign, roles: allRoles },
   { label: "Inventory", href: "/inventory", Icon: Package, roles: allRoles },
   { label: "Inbox", href: "/inbox", Icon: Mail, roles: allRoles },

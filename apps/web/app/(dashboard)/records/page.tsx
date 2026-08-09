@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
@@ -276,6 +277,7 @@ type LabResultFormState = {
   unit: string;
   referenceRangeLow: string;
   referenceRangeHigh: string;
+  resultFlag: "unknown" | "normal" | "abnormal" | "critical";
 };
 
 type VaccinationFormState = {
@@ -319,6 +321,7 @@ function initialLabResultForm(): LabResultFormState {
     unit: "",
     referenceRangeLow: "",
     referenceRangeHigh: "",
+    resultFlag: "unknown",
   };
 }
 
@@ -508,6 +511,8 @@ function RecordsPageContent() {
     searchParams.get("new") === "1";
   const appliedVisitLink = useRef(false);
   const prescriptionOperationId = useRef<string | null>(null);
+  const labResultCreationOperationId = useRef<string | null>(null);
+  const labReviewOperationIds = useRef(new Map<string, string>());
   const userRole = session?.user?.role;
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedPatient, setSelectedPatient] = useState<{
@@ -560,8 +565,9 @@ function RecordsPageContent() {
       clientLastName: linkedPatient.clientLastName,
     });
     setSearchQuery(linkedPatient.name);
-    if (searchParams.get("tab") === "prescriptions") {
-      setActiveTab("prescriptions");
+    const linkedTab = searchParams.get("tab");
+    if (linkedTab === "prescriptions" || linkedTab === "labResults") {
+      setActiveTab(linkedTab);
     }
     if (shouldOpenPrescription) {
       setShowPrescriptionForm(true);
@@ -716,6 +722,10 @@ function RecordsPageContent() {
     userRole === "veterinarian" ||
     userRole === "technician";
   const canManageLabResults =
+    userRole === "admin" ||
+    userRole === "veterinarian" ||
+    userRole === "technician";
+  const canReviewLabResults =
     userRole === "admin" || userRole === "veterinarian";
   const canCreateProcedures =
     userRole === "admin" || userRole === "veterinarian";
@@ -818,11 +828,15 @@ function RecordsPageContent() {
     },
   });
   const createLabResult = trpc.records.createLabResult.useMutation({
-    onSuccess: () => {
+    onSuccess: async () => {
       toast.success("Lab result created");
-      refetchLabResults();
+      await Promise.all([
+        refetchLabResults(),
+        utils.records.listLabReviewInbox.invalidate(),
+      ]);
       setShowLabForm(false);
       setLabForm(initialLabResultForm());
+      labResultCreationOperationId.current = null;
     },
     onError: (err) => {
       toast.error(err.message);
@@ -830,9 +844,11 @@ function RecordsPageContent() {
   });
   const updateLabResultStatus =
     trpc.records.updateLabResultStatus.useMutation({
-      onSuccess: () => {
+      onSuccess: (result) => {
         toast.success("Lab result status updated");
+        labReviewOperationIds.current.delete(result.id);
         refetchLabResults();
+        utils.records.listLabReviewInbox.invalidate();
       },
       onError: (err) => {
         toast.error(err.message);
@@ -2338,6 +2354,7 @@ function RecordsPageContent() {
                     onSubmit={(e) => {
                       e.preventDefault();
                       if (!canSubmitLabResult) return;
+                      labResultCreationOperationId.current ??= crypto.randomUUID();
                       createLabResult.mutate({
                         patientId,
                         appointmentId:
@@ -2351,6 +2368,13 @@ function RecordsPageContent() {
                           labForm.referenceRangeLow.trim() || undefined,
                         referenceRangeHigh:
                           labForm.referenceRangeHigh.trim() || undefined,
+                        status: labForm.resultValue.trim()
+                          ? "completed"
+                          : "pending",
+                        resultFlag: labForm.resultValue.trim()
+                          ? labForm.resultFlag
+                          : "unknown",
+                        operationId: labResultCreationOperationId.current,
                       });
                     }}
                   >
@@ -2389,6 +2413,31 @@ function RecordsPageContent() {
                           }
                           placeholder="e.g. 12.5"
                         />
+                      </div>
+                      <div>
+                        <label
+                          htmlFor="lab-result-flag"
+                          className="block text-xs font-medium text-muted-foreground mb-1"
+                        >
+                          Clinical flag
+                        </label>
+                        <select
+                          id="lab-result-flag"
+                          value={labForm.resultFlag}
+                          disabled={!labForm.resultValue.trim()}
+                          onChange={(event) =>
+                            setLabForm((form) => ({
+                              ...form,
+                              resultFlag: event.target.value as LabResultFormState["resultFlag"],
+                            }))
+                          }
+                          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <option value="unknown">Not assessed</option>
+                          <option value="normal">Normal</option>
+                          <option value="abnormal">Abnormal</option>
+                          <option value="critical">Critical</option>
+                        </select>
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-muted-foreground mb-1">
@@ -2462,6 +2511,9 @@ function RecordsPageContent() {
                         />
                       </div>
                     </div>
+                    <p className="text-xs text-muted-foreground">
+                      Entering a value records this result as completed and sends it to the clinic Lab Inbox for review. A result without values stays pending.
+                    </p>
                     <div className="flex gap-2">
                       <Button
                         type="submit"
@@ -2477,6 +2529,7 @@ function RecordsPageContent() {
                         onClick={() => {
                           setShowLabForm(false);
                           setLabForm(initialLabResultForm());
+                          labResultCreationOperationId.current = null;
                         }}
                       >
                         Cancel
@@ -2518,6 +2571,9 @@ function RecordsPageContent() {
                             </th>
                             <th className="px-4 py-3 text-left font-medium text-muted-foreground">
                               Status
+                            </th>
+                            <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                              Review evidence
                             </th>
                             <th className="px-4 py-3 text-left font-medium text-muted-foreground">
                               Ordered By
@@ -2565,14 +2621,47 @@ function RecordsPageContent() {
                                     : "--"}
                                 </td>
                                 <td className="px-4 py-3">
-                                  <span
-                                    className={cn(
-                                      "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize",
-                                      getLabStatusBadge(lab.status)
-                                    )}
-                                  >
-                                    {lab.status}
-                                  </span>
+                                  <div className="flex flex-col items-start gap-1">
+                                    <span
+                                      className={cn(
+                                        "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize",
+                                        getLabStatusBadge(lab.status)
+                                      )}
+                                    >
+                                      {lab.status}
+                                    </span>
+                                    {lab.resultFlag !== "unknown" ? (
+                                      <span className={cn(
+                                        "text-xs font-medium capitalize",
+                                        lab.resultFlag === "critical"
+                                          ? "text-red-700 dark:text-red-300"
+                                          : lab.resultFlag === "abnormal"
+                                            ? "text-amber-700 dark:text-amber-300"
+                                            : "text-emerald-700 dark:text-emerald-300",
+                                      )}>
+                                        {lab.resultFlag}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                </td>
+                                <td className="px-4 py-3 text-xs text-muted-foreground">
+                                  {lab.completedAt ? (
+                                    <span className="block">
+                                      Completed {formatClinicalDate(lab.completedAt, recordsTimeZone)} · {lab.completionActorName ?? "actor unavailable (legacy)"}
+                                    </span>
+                                  ) : (
+                                    "Awaiting values"
+                                  )}
+                                  {lab.reviewedAt ? (
+                                    <span className="mt-1 block">
+                                      Reviewed {formatClinicalDate(lab.reviewedAt, recordsTimeZone)}{lab.reviewedByName ? ` by ${lab.reviewedByName}` : ""}
+                                    </span>
+                                  ) : null}
+                                  {lab.followUpStatus === "open" ? (
+                                    <span className="mt-1 block font-medium text-amber-700 dark:text-amber-300">
+                                      Follow-up: {lab.followUpAssigneeName ?? "assigned"}
+                                    </span>
+                                  ) : null}
                                 </td>
                                 <td className="px-4 py-3 text-muted-foreground">
                                   {lab.orderedByName ?? "--"}
@@ -2586,8 +2675,10 @@ function RecordsPageContent() {
                                     : "--"}
                                 </td>
                                 <td className="px-4 py-3">
-                                  {canManageLabResults &&
-                                  lab.status === "completed" ? (
+                                  {canReviewLabResults &&
+                                  lab.status === "completed" &&
+                                  (lab.resultFlag !== "critical" ||
+                                    lab.followUpStatus !== "not_required") ? (
                                     <Button
                                       variant="ghost"
                                       size="sm"
@@ -2595,6 +2686,13 @@ function RecordsPageContent() {
                                         updateLabResultStatus.mutate({
                                           id: lab.id,
                                           status: "reviewed",
+                                          operationId:
+                                            labReviewOperationIds.current.get(lab.id) ??
+                                            (() => {
+                                              const operationId = crypto.randomUUID();
+                                              labReviewOperationIds.current.set(lab.id, operationId);
+                                              return operationId;
+                                            })(),
                                         })
                                       }
                                       disabled={
@@ -2602,6 +2700,21 @@ function RecordsPageContent() {
                                       }
                                     >
                                       Mark Reviewed
+                                    </Button>
+                                  ) : lab.status === "completed" &&
+                                    lab.resultFlag === "critical" &&
+                                    lab.followUpStatus === "not_required" &&
+                                    canManageLabResults ? (
+                                    <Button asChild variant="ghost" size="sm">
+                                      <Link href={`/lab-results?resultId=${lab.id}`}>
+                                        Assign follow-up
+                                      </Link>
+                                    </Button>
+                                  ) : lab.status === "pending" && canManageLabResults ? (
+                                    <Button asChild variant="ghost" size="sm">
+                                      <Link href={`/lab-results?resultId=${lab.id}`}>
+                                        Open selected result
+                                      </Link>
                                     </Button>
                                   ) : null}
                                 </td>
