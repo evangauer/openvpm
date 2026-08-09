@@ -790,7 +790,10 @@ export const appointmentsRouter = createRouter({
               isNull(appointments.deletedAt)
             )
           )
-          .for("update");
+          // PostgreSQL cannot lock the nullable side of the appointment type
+          // LEFT JOIN. Lock only the appointment row that owns the status
+          // transition; the type row is read solely for policy metadata.
+          .for("update", { of: appointments });
 
         if (!current) {
           throw new TRPCError({

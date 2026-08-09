@@ -1484,6 +1484,12 @@ describe("appointments display join scoping", () => {
     expect(joins?.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("locks only the appointment row during joined status transitions", () => {
+    expect(source).toMatch(
+      /updateStatus:[\s\S]*?leftJoin\([\s\S]*?appointmentTypes[\s\S]*?\.for\("update", \{ of: appointments \}\)/,
+    );
+  });
+
   it("uses the practice timezone when calculating available slots", () => {
     expect(source).toContain("const timezone = await practiceTimeZone(ctx)");
     expect(source).toContain("return practice.timezone ?? null");
