@@ -4,14 +4,14 @@ import type Stripe from "stripe";
 import { db } from "@openpims/db/client";
 import { practices } from "@openpims/db";
 import { constructSubscriptionWebhookEvent, stripe } from "@/lib/stripe";
-import { tierForStripePrice, normalizeBillingStatus } from "@/lib/billing/plans";
+import {
+  tierForStripePrice,
+  normalizeBillingStatus,
+} from "@/lib/billing/plans";
 import { syncPracticeSubscriptionQuantities } from "@/lib/billing/subscription-sync";
 import { alertOps } from "@/lib/alerts";
 import { withSystem } from "@/lib/tenant-db";
-import {
-  sendPaymentReceiptEmail,
-  sendPaymentFailedEmail,
-} from "@/lib/email";
+import { sendPaymentReceiptEmail, sendPaymentFailedEmail } from "@/lib/email";
 import { sendLifecycleEmail } from "@/lib/email-lifecycle";
 import {
   attachStripeEventPractice,
@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
 
   const body = await readRequestTextWithLimit(
     req,
-    STRIPE_WEBHOOK_BODY_MAX_BYTES
+    STRIPE_WEBHOOK_BODY_MAX_BYTES,
   );
   if (!body.ok) {
     return payloadTooLargeResponse();
@@ -53,14 +53,20 @@ export async function POST(req: NextRequest) {
 
   const signature = req.headers.get("stripe-signature");
   if (!signature) {
-    return NextResponse.json({ error: "Missing stripe-signature header" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Missing stripe-signature header" },
+      { status: 400 },
+    );
   }
 
   let event: Stripe.Event | null;
   try {
     event = await constructSubscriptionWebhookEvent(body.text, signature);
   } catch (err) {
-    console.error("[Stripe Subscription Webhook] signature verification failed:", err);
+    console.error(
+      "[Stripe Subscription Webhook] signature verification failed:",
+      err,
+    );
     return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
   }
   if (!event) {
@@ -84,7 +90,8 @@ export async function POST(req: NextRequest) {
       switch (event.type) {
         case "checkout.session.completed": {
           const s = event.data.object as Stripe.Checkout.Session;
-          const practiceId = s.client_reference_id ?? s.metadata?.practiceId ?? null;
+          const practiceId =
+            s.client_reference_id ?? s.metadata?.practiceId ?? null;
           const subscriptionId =
             typeof s.subscription === "string"
               ? s.subscription
@@ -98,14 +105,18 @@ export async function POST(req: NextRequest) {
                   typeof s.customer === "string" ? s.customer : s.customer!.id,
                 stripeSubscriptionId: subscriptionId,
               })
-              .where(and(eq(practices.id, practiceId), isNull(practices.deletedAt)))
+              .where(
+                and(eq(practices.id, practiceId), isNull(practices.deletedAt)),
+              )
               .returning({ id: practices.id });
             activePracticeId = practice?.id ?? null;
           } else if (practiceId) {
             const [practice] = await tx
               .select({ id: practices.id })
               .from(practices)
-              .where(and(eq(practices.id, practiceId), isNull(practices.deletedAt)))
+              .where(
+                and(eq(practices.id, practiceId), isNull(practices.deletedAt)),
+              )
               .limit(1);
             activePracticeId = practice?.id ?? null;
           }
@@ -118,12 +129,15 @@ export async function POST(req: NextRequest) {
           }
           if (activePracticeId && subscriptionId) {
             if (!stripe) {
-              throw new Error("Stripe is unavailable while reconciling Checkout.");
+              throw new Error(
+                "Stripe is unavailable while reconciling Checkout.",
+              );
             }
             // Checkout is itself a signed, authoritative link between the
             // practice and subscription. Apply the current Stripe state now so
             // access never depends on customer.subscription.* event ordering.
-            const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+            const subscription =
+              await stripe.subscriptions.retrieve(subscriptionId);
             await applySubscription(tx, subscription, activePracticeId);
           }
           break;
@@ -175,12 +189,18 @@ export async function POST(req: NextRequest) {
               // A successful subscription charge is a second authoritative
               // self-healing point if a subscription-created/updated event was
               // omitted or arrived out of order.
-              const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-              subscriptionPracticeId = await applySubscription(tx, subscription);
+              const subscription =
+                await stripe.subscriptions.retrieve(subscriptionId);
+              subscriptionPracticeId = await applySubscription(
+                tx,
+                subscription,
+              );
             }
             const practice = subscriptionPracticeId
               ? await practiceById(tx, subscriptionPracticeId)
-              : await practiceForCustomer(tx, customerId);
+              : subscriptionId
+                ? null
+                : await practiceForCustomer(tx, customerId);
             if (practice && conversionEvidence) {
               await attachStripeEventPractice(tx, {
                 eventId: event.id,
@@ -259,7 +279,6 @@ export async function POST(req: NextRequest) {
           break;
       }
     });
-
   } catch (err) {
     console.error("[Stripe Subscription Webhook] handler error:", err);
     await alertOps(
@@ -305,7 +324,8 @@ async function applySubscription(
     sub.items?.data
       ?.map((item) => tierForStripePrice(item.price?.id))
       .find(Boolean) ?? null;
-  const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer?.id;
+  const customerId =
+    typeof sub.customer === "string" ? sub.customer : sub.customer?.id;
   const billingStatus = normalizeBillingStatus(sub.status);
 
   const [practice] = await tx
@@ -392,7 +412,9 @@ function stripeEventCreatedAt(created: number | null | undefined): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function normalizedCurrency(currency: string | null | undefined): string | null {
+function normalizedCurrency(
+  currency: string | null | undefined,
+): string | null {
   const normalized = currency?.trim().toLowerCase();
   return normalized && /^[a-z]{3}$/.test(normalized) ? normalized : null;
 }
@@ -449,10 +471,7 @@ async function resolvePracticeIdForSubscription(
     );
   }
   const match = matches[0]!;
-  if (
-    match.stripeSubscriptionId &&
-    match.stripeSubscriptionId !== sub.id
-  ) {
+  if (match.stripeSubscriptionId && match.stripeSubscriptionId !== sub.id) {
     throw new Error(
       `Stripe customer fallback for ${sub.id} conflicts with an existing subscription.`,
     );
@@ -537,7 +556,10 @@ function formatUnixDate(
   }
 }
 
-function invoicePeriodLabel(inv: Stripe.Invoice, timeZone?: string | null): string {
+function invoicePeriodLabel(
+  inv: Stripe.Invoice,
+  timeZone?: string | null,
+): string {
   const s = formatUnixDate(inv.period_start, timeZone);
   const e = formatUnixDate(inv.period_end, timeZone);
   if (s && e) return `${s} – ${e}`;

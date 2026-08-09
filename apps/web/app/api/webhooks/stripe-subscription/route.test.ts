@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => {
       limit: vi.fn(async () => result),
       then: (
         resolve: (value: unknown[]) => unknown,
-        reject?: (error: unknown) => unknown
+        reject?: (error: unknown) => unknown,
       ) => Promise.resolve(result).then(resolve, reject),
     };
     return builder;
@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => {
 
   return {
     db,
+    select,
     selectResults,
     updateReturns,
     updateSet,
@@ -41,12 +42,12 @@ const mocks = vi.hoisted(() => {
     syncPracticeSubscriptionQuantities: vi.fn(async () => ({ status: "ok" })),
     alertOps: vi.fn(async () => undefined),
     sendLifecycleEmail: vi.fn(
-      async (_opts: { send: () => Promise<unknown> }) => undefined
+      async (_opts: { send: () => Promise<unknown> }) => undefined,
     ),
     sendPaymentReceiptEmail: vi.fn(async () => undefined),
     sendPaymentFailedEmail: vi.fn(async () => undefined),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
-      fn(db)
+      fn(db),
     ),
   };
 });
@@ -96,11 +97,13 @@ vi.mock("@/lib/conversion-milestones", () => ({
 }));
 
 const { POST } = await import("./route");
-const { STRIPE_WEBHOOK_BODY_MAX_BYTES } = await import(
-  "@/lib/stripe-webhook-limits"
-);
+const { STRIPE_WEBHOOK_BODY_MAX_BYTES } =
+  await import("@/lib/stripe-webhook-limits");
 
-const ROUTE_SOURCE = readFileSync(new URL("./route.ts", import.meta.url), "utf8");
+const ROUTE_SOURCE = readFileSync(
+  new URL("./route.ts", import.meta.url),
+  "utf8",
+);
 const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const CUSTOMER_ID = "cus_test_123";
 const SUBSCRIPTION_ID = "sub_test_123";
@@ -193,12 +196,8 @@ function invoicePaymentSucceededEvent(subscriptionId?: string) {
         customer: CUSTOMER_ID,
         amount_paid: 7900,
         currency: "usd",
-        period_start: Math.floor(
-          Date.parse("2026-07-01T02:00:00.000Z") / 1000
-        ),
-        period_end: Math.floor(
-          Date.parse("2026-08-01T02:00:00.000Z") / 1000
-        ),
+        period_start: Math.floor(Date.parse("2026-07-01T02:00:00.000Z") / 1000),
+        period_end: Math.floor(Date.parse("2026-08-01T02:00:00.000Z") / 1000),
         hosted_invoice_url: "https://billing.stripe.test/in_paid",
         parent: subscriptionId
           ? {
@@ -227,7 +226,7 @@ function invoicePaymentFailedEvent() {
         currency: "usd",
         attempt_count: 2,
         next_payment_attempt: Math.floor(
-          Date.parse("2026-07-01T02:00:00.000Z") / 1000
+          Date.parse("2026-07-01T02:00:00.000Z") / 1000,
         ),
       },
     },
@@ -238,7 +237,7 @@ function invokeLifecycleSendOnce() {
   mocks.sendLifecycleEmail.mockImplementationOnce(
     async (opts: { send: () => Promise<unknown> }) => {
       await opts.send();
-    }
+    },
   );
 }
 
@@ -286,7 +285,7 @@ describe("Stripe subscription webhook", () => {
   it("claims and applies Checkout subscription state after linking an active practice", async () => {
     process.env.STRIPE_PRICE_CLOUD_LOCATION = PRICE_ID;
     mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
-      checkoutCompletedEvent()
+      checkoutCompletedEvent(),
     );
     mocks.retrieveSubscription.mockResolvedValueOnce(
       stripeSubscription("trialing"),
@@ -336,7 +335,7 @@ describe("Stripe subscription webhook", () => {
 
   it("does not sync Checkout quantities when no active practice was updated", async () => {
     mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
-      checkoutCompletedEvent()
+      checkoutCompletedEvent(),
     );
     mocks.updateReturns.push([]);
 
@@ -350,7 +349,7 @@ describe("Stripe subscription webhook", () => {
   it("applies subscription updates only after touching an active practice", async () => {
     process.env.STRIPE_PRICE_CLOUD_LOCATION = PRICE_ID;
     mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
-      subscriptionUpdatedEvent()
+      subscriptionUpdatedEvent(),
     );
     mocks.updateReturns.push([{ id: PRACTICE_ID }]);
 
@@ -364,7 +363,7 @@ describe("Stripe subscription webhook", () => {
         stripeCustomerId: CUSTOMER_ID,
         stripeSubscriptionId: SUBSCRIPTION_ID,
         trialEndsAt: null,
-      })
+      }),
     );
     expect(mocks.syncPracticeSubscriptionQuantities).toHaveBeenCalledWith({
       db: mocks.db,
@@ -401,6 +400,28 @@ describe("Stripe subscription webhook", () => {
     expect(mocks.retrieveSubscription).not.toHaveBeenCalled();
   });
 
+  it("does not customer-fallback a subscription invoice when its strict practice mapping is inactive", async () => {
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
+      invoicePaymentSucceededEvent(SUBSCRIPTION_ID),
+    );
+    mocks.retrieveSubscription.mockResolvedValueOnce(stripeSubscription());
+    // applySubscription resolved the signed metadata id, but that practice is
+    // missing/deleted and therefore cannot be updated.
+    mocks.updateReturns.push([]);
+
+    const response = await POST(stripeRequest());
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ received: true });
+    expect(mocks.retrieveSubscription).toHaveBeenCalledWith(SUBSCRIPTION_ID);
+    expect(mocks.select).not.toHaveBeenCalled();
+    expect(mocks.attachStripeEventPractice).not.toHaveBeenCalled();
+    expect(mocks.sendLifecycleEmail).not.toHaveBeenCalled();
+    expect(
+      mocks.projectStripeConversionMilestonesForEvent,
+    ).toHaveBeenCalledWith(mocks.db, "evt_invoice_paid");
+  });
+
   it("keeps successful billing committed when milestone projection needs repair", async () => {
     mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
       checkoutCompletedEvent(),
@@ -426,7 +447,10 @@ describe("Stripe subscription webhook", () => {
     async (order) => {
       process.env.STRIPE_PRICE_CLOUD_LOCATION = PRICE_ID;
       const checkout = checkoutCompletedEvent();
-      const updated = subscriptionUpdatedEvent("active", "evt_subscription_active");
+      const updated = subscriptionUpdatedEvent(
+        "active",
+        "evt_subscription_active",
+      );
       const events =
         order === "checkout-first" ? [checkout, updated] : [updated, checkout];
       mocks.constructSubscriptionWebhookEvent
@@ -441,10 +465,14 @@ describe("Stripe subscription webhook", () => {
         [{ id: PRACTICE_ID }],
       );
 
-      await expect(POST(stripeRequest()).then((r) => r.json())).resolves.toEqual({
+      await expect(
+        POST(stripeRequest()).then((r) => r.json()),
+      ).resolves.toEqual({
         received: true,
       });
-      await expect(POST(stripeRequest()).then((r) => r.json())).resolves.toEqual({
+      await expect(
+        POST(stripeRequest()).then((r) => r.json()),
+      ).resolves.toEqual({
         received: true,
       });
 
@@ -521,7 +549,7 @@ describe("Stripe subscription webhook", () => {
 
   it("normalizes subscription receipt billing contacts before claiming and sending", async () => {
     mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
-      invoicePaymentSucceededEvent()
+      invoicePaymentSucceededEvent(),
     );
     mocks.selectResults.push([
       {
@@ -542,7 +570,7 @@ describe("Stripe subscription webhook", () => {
         to: "owner@example.com",
         emailType: "receipt",
         dedupeKey: "lc:receipt:in_paid",
-      })
+      }),
     );
     expect(mocks.sendPaymentReceiptEmail).toHaveBeenCalledWith({
       to: "owner@example.com",
@@ -608,7 +636,7 @@ describe("Stripe subscription webhook", () => {
 
   it("skips subscription receipts when the billing contact is blank", async () => {
     mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
-      invoicePaymentSucceededEvent()
+      invoicePaymentSucceededEvent(),
     );
     mocks.selectResults.push([
       {
@@ -628,7 +656,7 @@ describe("Stripe subscription webhook", () => {
 
   it("normalizes subscription dunning contacts before claiming and sending", async () => {
     mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
-      invoicePaymentFailedEvent()
+      invoicePaymentFailedEvent(),
     );
     mocks.selectResults.push([
       {
@@ -652,7 +680,7 @@ describe("Stripe subscription webhook", () => {
         to: "owner@example.com",
         emailType: "dunning",
         dedupeKey: "lc:dunning:in_failed:2",
-      })
+      }),
     );
     expect(mocks.sendPaymentFailedEmail).toHaveBeenCalledWith({
       to: "owner@example.com",
@@ -664,7 +692,7 @@ describe("Stripe subscription webhook", () => {
 
   it("still marks the practice past_due when the dunning contact is blank", async () => {
     mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
-      invoicePaymentFailedEvent()
+      invoicePaymentFailedEvent(),
     );
     mocks.selectResults.push([
       {
@@ -686,12 +714,14 @@ describe("Stripe subscription webhook", () => {
   });
 
   it("keeps destructive and customer webhook updates active-practice scoped", () => {
-    expect(ROUTE_SOURCE).toContain("eq(practices.stripeSubscriptionId, sub.id)");
-    expect(ROUTE_SOURCE).toMatch(
-      /eq\(practices\.stripeCustomerId, customerId\),\s*isNull\(practices\.deletedAt\)/s
+    expect(ROUTE_SOURCE).toContain(
+      "eq(practices.stripeSubscriptionId, sub.id)",
     );
     expect(ROUTE_SOURCE).toMatch(
-      /eq\(practices\.id, practiceId\),\s*isNull\(practices\.deletedAt\)/s
+      /eq\(practices\.stripeCustomerId, customerId\),\s*isNull\(practices\.deletedAt\)/s,
+    );
+    expect(ROUTE_SOURCE).toMatch(
+      /eq\(practices\.id, practiceId\),\s*isNull\(practices\.deletedAt\)/s,
     );
   });
 });

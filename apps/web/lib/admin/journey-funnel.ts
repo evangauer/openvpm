@@ -84,7 +84,8 @@ export async function computeJourneyFunnel(
         where fe.deleted_at is null
           and fe.anonymous_id is not null
           and fe.event_name in (
-            'visit', 'demo_land', 'demo_gate_viewed', 'signup_land'
+            'visit', 'demo_land', 'demo_gate_viewed', 'demo_gate_submitted',
+            'signup_land'
           )
         group by fe.anonymous_id
       ), first_touch as (
@@ -218,7 +219,8 @@ export async function computeJourneyFunnel(
             )
               and touch.deleted_at is null
               and touch.event_name in (
-                'visit', 'demo_land', 'demo_gate_viewed', 'signup_land'
+                'visit', 'demo_land', 'demo_gate_viewed',
+                'demo_gate_submitted', 'signup_land'
               )
           )
         )

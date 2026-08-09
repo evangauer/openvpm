@@ -23,6 +23,7 @@ const FIRST_TOUCH_EVENT_NAMES = [
   "visit",
   "demo_land",
   "demo_gate_viewed",
+  "demo_gate_submitted",
   "signup_land",
 ];
 

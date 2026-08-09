@@ -105,15 +105,12 @@ function validDate(value: Date | string | null | undefined): Date | null {
 export function classifyRecoveryTrial(
   billingStatus: string,
   trialEndsAt: Date | string | null | undefined,
-  now: Date
+  now: Date,
 ): RecoveryTrialState {
   const end = validDate(trialEndsAt);
   if (billingStatus !== "trialing" || !end) return "no_trial";
   if (end.getTime() <= now.getTime()) return "expired";
-  if (
-    end.getTime() <=
-    now.getTime() + TRIAL_ENDING_SOON_DAYS * DAY_MS
-  ) {
+  if (end.getTime() <= now.getTime() + TRIAL_ENDING_SOON_DAYS * DAY_MS) {
     return "ending_soon";
   }
   return "active";
@@ -179,6 +176,7 @@ export function deriveRecoveryStage(input: {
 }
 
 export function deriveRecoveryNextAction(input: {
+  billingStatus: string;
   trialState: RecoveryTrialState;
   stage: RecoveryStage;
   setupStage: string;
@@ -197,20 +195,35 @@ export function deriveRecoveryNextAction(input: {
         : "Restore an admin contact",
     };
   }
-  if (input.stage === "first_positive_payment") {
-    return { priority: 20, label: "Support retention and expansion" };
+  if (input.billingStatus === "past_due") {
+    return { priority: 92, label: "Resolve the past-due subscription" };
   }
   if (input.trialState === "expired") {
     return { priority: 90, label: "Review a qualified trial extension" };
   }
-  if (input.trialState === "no_trial") {
+  if (input.trialState === "no_trial" && input.billingStatus !== "active") {
     return { priority: 85, label: "Restore trial or billing access" };
+  }
+  if (input.stage === "first_positive_payment") {
+    return { priority: 20, label: "Support retention and expansion" };
+  }
+  if (
+    input.billingStatus === "active" &&
+    input.stage !== "payment_method_collected"
+  ) {
+    return {
+      priority: 50,
+      label: "Review unknown historical payment evidence",
+    };
   }
   if (
     input.trialState === "ending_soon" &&
     input.stage !== "payment_method_collected"
   ) {
-    return { priority: 80, label: "Help add a payment method before trial end" };
+    return {
+      priority: 80,
+      label: "Help add a payment method before trial end",
+    };
   }
   switch (input.stage) {
     case "registered":
@@ -226,7 +239,10 @@ export function deriveRecoveryNextAction(input: {
     case "activated":
       return { priority: 55, label: "Invite clinic to add a payment method" };
     case "payment_method_collected":
-      return { priority: 45, label: "Support the first successful clinic week" };
+      return {
+        priority: 45,
+        label: "Support the first successful clinic week",
+      };
   }
 }
 
@@ -236,7 +252,7 @@ export function deriveRecoveryNextAction(input: {
  */
 export async function computeActivationRecovery(
   db: Database,
-  now: Date = new Date()
+  now: Date = new Date(),
 ): Promise<ActivationRecoveryPractice[]> {
   const result = await withSystem(db, (tx) =>
     tx.execute(sql`
@@ -343,7 +359,7 @@ export async function computeActivationRecovery(
       left join appointment_stats on appointment_stats.practice_id = pb.id
       left join milestone_stats on milestone_stats.practice_id = pb.id
       order by pb.created_at, pb.id
-    `)
+    `),
   );
 
   const practices = rowsFromExecute<RecoveryRow>(result).map((row) => {
@@ -360,13 +376,15 @@ export async function computeActivationRecovery(
       setup.helpRequestedAt,
     ].reduce<Date>(
       (latest, candidate) =>
-        candidate && candidate.getTime() > latest.getTime() ? candidate : latest,
-      createdAt
+        candidate && candidate.getTime() > latest.getTime()
+          ? candidate
+          : latest,
+      createdAt,
     );
     const trialState = classifyRecoveryTrial(
       row.billingStatus,
       trialEndsAt,
-      now
+      now,
     );
     const authoritativeStage = deriveRecoveryStage({
       activated: row.activated,
@@ -378,6 +396,7 @@ export async function computeActivationRecovery(
       realAppointmentCount,
     });
     const nextAction = deriveRecoveryNextAction({
+      billingStatus: row.billingStatus,
       trialState,
       stage: authoritativeStage,
       setupStage: setup.stage,
@@ -406,8 +425,8 @@ export async function computeActivationRecovery(
       stallAgeDays: Math.max(
         0,
         Math.floor(
-          (now.getTime() - lastMeaningfulActivityAt.getTime()) / DAY_MS
-        )
+          (now.getTime() - lastMeaningfulActivityAt.getTime()) / DAY_MS,
+        ),
       ),
       authoritativeStage,
       nextAction: nextAction.label,
@@ -420,7 +439,7 @@ export async function computeActivationRecovery(
       b.nextActionPriority - a.nextActionPriority ||
       b.stallAgeDays - a.stallAgeDays ||
       a.createdAt.getTime() - b.createdAt.getTime() ||
-      a.practiceId.localeCompare(b.practiceId)
+      a.practiceId.localeCompare(b.practiceId),
   );
   return practices.map((practice, index) => ({
     ...practice,

@@ -74,6 +74,17 @@ describe("registration funnel attribution", () => {
     expect(mocks.insert).not.toHaveBeenCalled();
   });
 
+  it("treats the durable demo-gate submission as first-party touch evidence", () => {
+    const source = readFileSync(
+      new URL("../funnel-events-server.ts", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).toMatch(
+      /FIRST_TOUCH_EVENT_NAMES[\s\S]*"demo_gate_submitted"/,
+    );
+  });
+
   it("creates a privacy-bounded signup touch when browser telemetry is absent", async () => {
     mocks.selectResults.push([]);
 

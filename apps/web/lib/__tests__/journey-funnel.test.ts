@@ -117,6 +117,9 @@ describe("computeJourneyFunnel", () => {
 
     expect(source).toContain("export const ABANDONMENT_GRACE_DAYS = 7");
     expect(source).toContain("with first_touch_all_time as (");
+    expect(source).toMatch(
+      /first_touch_all_time[\s\S]*'demo_gate_submitted'/,
+    );
     expect(source).not.toContain(
       "fe.created_at >= ${windowStart}::timestamptz",
     );
