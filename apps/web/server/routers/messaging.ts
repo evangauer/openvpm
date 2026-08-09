@@ -65,12 +65,22 @@ const messagingPhoneInput = z
     return e164;
   });
 
+function isHttpsUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 const httpsUrlInput = z
   .string()
   .trim()
   .url()
   .max(500)
-  .refine((value) => new URL(value).protocol === "https:", {
+  // Refinements still run after an earlier Zod string issue. Keep this check
+  // total so an empty clinic default becomes "no prefill" instead of a 500.
+  .refine(isHttpsUrl, {
     message: "Use a public HTTPS URL.",
   });
 

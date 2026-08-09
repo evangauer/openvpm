@@ -257,6 +257,37 @@ describe("messaging location target safety", () => {
     });
   });
 
+  it("keeps carrier registration available when the clinic website is blank", async () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.openvpm.com");
+    const { db } = createDb({
+      selectResults: [
+        [
+          {
+            name: "Healthy Pets",
+            email: "clinic@example.com",
+            phone: "+15555550100",
+            website: "",
+            primaryLocationPhone: null,
+          },
+        ],
+      ],
+    });
+
+    await expect(callerWithDb(db).getRegistrationDefaults()).resolves.toEqual({
+      displayName: "Healthy Pets",
+      contactFirstName: "Admin",
+      contactLastName: "",
+      contactEmail: "clinic@example.com",
+      businessPhone: "+15555550100",
+      website: "",
+      programUrl: `https://app.openvpm.com/sms/${PRACTICE_ID}`,
+      privacyPolicyUrl:
+        `https://app.openvpm.com/sms/${PRACTICE_ID}/privacy`,
+      termsUrl: `https://app.openvpm.com/sms/${PRACTICE_ID}/terms`,
+      optInUrl: `https://app.openvpm.com/sms/${PRACTICE_ID}/opt-in`,
+    });
+  });
+
   it("encrypts clinic tax IDs and upserts registration details tenant-scoped", async () => {
     vi.stubEnv(
       "MESSAGING_REGISTRATION_ENCRYPTION_KEY",
