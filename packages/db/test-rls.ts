@@ -66,6 +66,12 @@ const aDispenseCharge = randomUUID();
 const bDispenseCharge = randomUUID();
 const aSmsConsentEvent = randomUUID();
 const bSmsConsentEvent = randomUUID();
+const aSmsSendAttempt = randomUUID();
+const bSmsSendAttempt = randomUUID();
+const aSmsSendAttemptEvent = randomUUID();
+const bSmsSendAttemptEvent = randomUUID();
+const aAppSmsSendAttempt = randomUUID();
+const aAppSmsSendAttemptEvent = randomUUID();
 const funnelEventId = randomUUID();
 const conversionEvidenceKey = `practice:${aId}`;
 let failures = 0;
@@ -94,6 +100,17 @@ try {
     values
     (${aSmsConsentEvent}, ${aId}, ${aClient}, '+15555550101', 'revoked', 'rls_test:v1', 'Tenant A event', 'system', ${`rls:${aSmsConsentEvent}`}),
     (${bSmsConsentEvent}, ${bId}, ${bClient}, '+15555550102', 'revoked', 'rls_test:v1', 'Tenant B event', 'system', ${`rls:${bSmsConsentEvent}`})`;
+  await owner`insert into sms_send_attempts
+    (id, practice_id, source, source_id, idempotency_key, destination_e164,
+     registered_display_name, body, body_sha256, provider)
+    values
+    (${aSmsSendAttempt}, ${aId}, 'rls_test', ${aSmsSendAttempt}, ${`rls:${aSmsSendAttempt}`}, '+15555550101', 'RLS Clinic A', 'RLS Clinic A: Test. Reply STOP to opt out or HELP for help.', ${"a".repeat(64)}, 'console'),
+    (${bSmsSendAttempt}, ${bId}, 'rls_test', ${bSmsSendAttempt}, ${`rls:${bSmsSendAttempt}`}, '+15555550102', 'RLS Clinic B', 'RLS Clinic B: Test. Reply STOP to opt out or HELP for help.', ${"b".repeat(64)}, 'console')`;
+  await owner`insert into sms_send_attempt_events
+    (id, practice_id, attempt_id, kind, outcome, detail, event_key)
+    values
+    (${aSmsSendAttemptEvent}, ${aId}, ${aSmsSendAttempt}, 'provider_result', 'definite_failure', 'RLS test rejection', ${`rls:${aSmsSendAttemptEvent}`}),
+    (${bSmsSendAttemptEvent}, ${bId}, ${bSmsSendAttempt}, 'provider_result', 'definite_failure', 'RLS test rejection', ${`rls:${bSmsSendAttemptEvent}`})`;
   await owner`insert into patients (id, practice_id, client_id, name, species)
     select ${aPatient}, ${aId}, id, 'RLS Pet A', 'canine'
     from clients where practice_id = ${aId}`;
@@ -229,6 +246,120 @@ try {
   check(
     "cross-tenant SMS consent INSERT is blocked",
     crossTenantSmsConsentInsertBlocked,
+  );
+
+  const aSmsSendAttempts = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id, practice_id from sms_send_attempts where id in (${aSmsSendAttempt}, ${bSmsSendAttempt})`;
+  });
+  check(
+    "tenant A sees only A's SMS send attempts",
+    aSmsSendAttempts.length === 1 &&
+      aSmsSendAttempts[0]!.id === aSmsSendAttempt,
+  );
+
+  const aSmsSendEvents = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id, practice_id from sms_send_attempt_events where id in (${aSmsSendAttemptEvent}, ${bSmsSendAttemptEvent})`;
+  });
+  check(
+    "tenant A sees only A's SMS send outcome events",
+    aSmsSendEvents.length === 1 &&
+      aSmsSendEvents[0]!.id === aSmsSendAttemptEvent,
+  );
+
+  let smsSendAttemptUpdateBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`update sms_send_attempts set source = 'tampered' where id = ${aSmsSendAttempt}`;
+    });
+  } catch {
+    smsSendAttemptUpdateBlocked = true;
+  }
+  check(
+    "application role cannot rewrite SMS send attempts",
+    smsSendAttemptUpdateBlocked,
+  );
+
+  let smsSendEventDeleteBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`delete from sms_send_attempt_events where id = ${aSmsSendAttemptEvent}`;
+    });
+  } catch {
+    smsSendEventDeleteBlocked = true;
+  }
+  check(
+    "application role cannot delete SMS send outcome events",
+    smsSendEventDeleteBlocked,
+  );
+
+  let sameTenantSmsSendInsertAllowed = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into sms_send_attempts
+        (id, practice_id, source, source_id, idempotency_key,
+         destination_e164, registered_display_name, body, body_sha256, provider)
+        values (${aAppSmsSendAttempt}, ${aId}, 'rls_app_test',
+          ${aAppSmsSendAttempt}, ${`rls:${aAppSmsSendAttempt}`},
+          '+15555550103', 'RLS Clinic A',
+          'RLS Clinic A: App test. Reply STOP to opt out or HELP for help.',
+          ${"c".repeat(64)}, 'console')`;
+      await tx`insert into sms_send_attempt_events
+        (id, practice_id, attempt_id, kind, outcome, detail, event_key)
+        values (${aAppSmsSendAttemptEvent}, ${aId}, ${aAppSmsSendAttempt},
+          'provider_result', 'definite_failure', 'App role test rejection',
+          ${`rls:${aAppSmsSendAttemptEvent}`})`;
+    });
+    sameTenantSmsSendInsertAllowed = true;
+  } catch {
+    sameTenantSmsSendInsertAllowed = false;
+  }
+  check(
+    "same-tenant app role can append SMS attempt and provider outcome",
+    sameTenantSmsSendInsertAllowed,
+  );
+
+  let crossTenantSmsAttemptInsertBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into sms_send_attempts
+        (practice_id, source, source_id, idempotency_key, destination_e164,
+         registered_display_name, body, body_sha256, provider)
+        values (${bId}, 'rls_cross_tenant', ${randomUUID()},
+          ${`rls:cross:${randomUUID()}`}, '+15555550104', 'RLS Clinic B',
+          'RLS Clinic B: Cross test. Reply STOP to opt out or HELP for help.',
+          ${"d".repeat(64)}, 'console')`;
+    });
+  } catch {
+    crossTenantSmsAttemptInsertBlocked = true;
+  }
+  check(
+    "cross-tenant SMS send attempt INSERT is blocked",
+    crossTenantSmsAttemptInsertBlocked,
+  );
+
+  let crossTenantSmsSendInsertBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into sms_send_attempt_events
+        (practice_id, attempt_id, kind, outcome, detail, actor_type,
+         actor_identity, actor_name, event_key)
+        values (${bId}, ${bSmsSendAttempt}, 'reconciliation', 'definite_failure',
+          'Cross tenant', 'platform_operator', 'operator@example.com',
+          'RLS Operator', ${`rls:cross:${randomUUID()}`})`;
+    });
+  } catch {
+    crossTenantSmsSendInsertBlocked = true;
+  }
+  check(
+    "cross-tenant SMS send event INSERT is blocked",
+    crossTenantSmsSendInsertBlocked,
   );
 
   const aPrescriptionEvents = await appTransaction(async (tx) => {
@@ -619,6 +750,8 @@ try {
   await owner.begin(async (tx) => {
     const cleanup = tx as unknown as typeof owner;
     await cleanup`select set_config('app.ledger_maintenance', 'on', true)`;
+    await cleanup`delete from sms_send_attempt_events where id in (${aSmsSendAttemptEvent}, ${bSmsSendAttemptEvent}, ${aAppSmsSendAttemptEvent})`;
+    await cleanup`delete from sms_send_attempts where id in (${aSmsSendAttempt}, ${bSmsSendAttempt}, ${aAppSmsSendAttempt})`;
     await cleanup`delete from sms_consent_events where id in (${aSmsConsentEvent}, ${bSmsConsentEvent})`;
     await cleanup`delete from patient_merge_events where id in (${aPatientMergeEvent}, ${bPatientMergeEvent})`;
     await cleanup`delete from dispense_charge_queue where id in (${aDispenseCharge}, ${bDispenseCharge})`;

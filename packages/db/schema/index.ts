@@ -22,6 +22,7 @@ export * from "./usage";
 export * from "./auth-tokens";
 export * from "./messaging";
 export * from "./sms-consent-events";
+export * from "./sms-send-attempts";
 export * from "./demo-access";
 export * from "./booking";
 export * from "./funnel-events";

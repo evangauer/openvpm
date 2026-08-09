@@ -135,6 +135,13 @@ For a Twilio fallback deployment, set `MESSAGING_PROVIDER=twilio` and provide
 `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_PHONE_NUMBER` instead of
 the Telnyx send envs.
 
+Self-hosted external SMS must also set `MESSAGING_REGISTERED_DISPLAY_NAME` to
+the exact clinic name approved on that provider's active campaign. OpenVPM
+snapshots that identity on every durable send attempt and adds the canonical
+STOP/HELP footer. Hosted sends do not use this override: they require an active,
+provider-matching `messaging_registrations` row. Console-only local testing may
+use the practice name because it never contacts a carrier.
+
 Hosted AI defaults to Claude and requires `ANTHROPIC_API_KEY`. If you choose a
 Gemini `AI_MODEL`, set either `GOOGLE_API_KEY` or the legacy
 `GOOGLE_GENERATIVE_AI_API_KEY`; `/api/health` requires one matching provider

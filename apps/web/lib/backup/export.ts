@@ -42,6 +42,8 @@ import {
   rooms,
   services,
   smsConsentEvents,
+  smsSendAttemptEvents,
+  smsSendAttempts,
   smsSuppressions,
   soapNotes,
   staffSchedules,
@@ -102,6 +104,8 @@ export const PRACTICE_EXPORT_SECTIONS = [
   "locationMessaging",
   "smsSuppressions",
   "smsConsentEvents",
+  "smsSendAttempts",
+  "smsSendAttemptEvents",
   "emailSuppressions",
   "webhooks",
   "apiKeys",
@@ -165,6 +169,8 @@ const PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS = [
   "patientMergeEvents",
   // Backward compatibility for backups created before SMS consent evidence.
   "smsConsentEvents",
+  "smsSendAttempts",
+  "smsSendAttemptEvents",
   "visitCloseouts",
   "clinicalRecordCorrections",
 ] as const satisfies readonly PracticeExportSection[];
@@ -257,6 +263,13 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
   optionalRef("smsConsentEvents", "clientId", "clients"),
   optionalRef("smsConsentEvents", "locationId", "locations"),
   optionalRef("smsConsentEvents", "actorUserId", "users"),
+  optionalRef("smsSendAttempts", "clientId", "clients"),
+  optionalRef("smsSendAttempts", "locationId", "locations"),
+  optionalRef("smsSendAttempts", "communicationId", "communications"),
+  optionalRef("smsSendAttempts", "requestedByUserId", "users"),
+  optionalRef("smsSendAttempts", "resendOfAttemptId", "smsSendAttempts"),
+  requiredRef("smsSendAttemptEvents", "attemptId", "smsSendAttempts"),
+  optionalRef("smsSendAttemptEvents", "actorUserId", "users"),
   optionalRef("users", "locationId", "locations"),
   optionalRef("rooms", "locationId", "locations"),
   requiredRef("patients", "clientId", "clients"),
@@ -1239,6 +1252,8 @@ export async function exportPracticeData(
     locationMessagingRows,
     smsSuppressionRows,
     smsConsentEventRows,
+    smsSendAttemptRows,
+    smsSendAttemptEventRows,
     emailSuppressionRows,
     webhookRows,
     apiKeyRows,
@@ -1279,12 +1294,14 @@ export async function exportPracticeData(
     visitCloseoutRows,
     fileRows,
     controlledSubstanceRows,
-    communicationRows,
+    allCommunicationRows,
   ] = await Promise.all([
     allPracticeRows(db, locations, practiceId),
     activeRows(db, locationMessaging, practiceId),
     activeRows(db, smsSuppressions, practiceId),
     allPracticeRows(db, smsConsentEvents, practiceId),
+    allPracticeRows(db, smsSendAttempts, practiceId),
+    allPracticeRows(db, smsSendAttemptEvents, practiceId),
     activeRows(db, emailSuppressions, practiceId),
     activeRows(db, webhooks, practiceId),
     activeRows(db, apiKeys, practiceId),
@@ -1325,7 +1342,7 @@ export async function exportPracticeData(
     activeRows(db, visitCloseouts, practiceId),
     activeRows(db, files, practiceId),
     activeRows(db, controlledSubstanceLog, practiceId),
-    activeRows(db, communications, practiceId),
+    allPracticeRows(db, communications, practiceId),
   ]);
 
   const referencedPrescriptionIds = new Set(
@@ -1416,6 +1433,8 @@ export async function exportPracticeData(
       ...appointmentRows.map((appointment) => appointment.doctorId),
       ...patientMergeRows.map((event) => event.performedBy),
       ...smsConsentEventRows.map((event) => event.actorUserId),
+      ...smsSendAttemptRows.map((attempt) => attempt.requestedByUserId),
+      ...smsSendAttemptEventRows.map((event) => event.actorUserId),
     ].filter((id): id is string => typeof id === "string"),
   );
   const userRows = allUserRows.filter(
@@ -1427,6 +1446,7 @@ export async function exportPracticeData(
       ...appointmentRows.map((appointment) => appointment.clientId),
       ...patientMergeRows.map((event) => event.clientId),
       ...smsConsentEventRows.map((event) => event.clientId),
+      ...smsSendAttemptRows.map((attempt) => attempt.clientId),
     ].filter((id): id is string => typeof id === "string"),
   );
   const clientRows = allClientRows.filter(
@@ -1437,6 +1457,7 @@ export async function exportPracticeData(
       ...productRows.map((product) => product.locationId),
       ...userRows.map((user) => user.locationId),
       ...smsConsentEventRows.map((event) => event.locationId),
+      ...smsSendAttemptRows.map((attempt) => attempt.locationId),
       ...allRoomRows.map((room) =>
         appointmentRows.some((appointment) => appointment.roomId === room.id)
           ? room.locationId
@@ -1464,6 +1485,16 @@ export async function exportPracticeData(
   );
   const roomRows = allRoomRows.filter(
     (room) => room.deletedAt == null || referencedRoomIds.has(room.id),
+  );
+  const referencedCommunicationIds = new Set(
+    smsSendAttemptRows
+      .map((attempt) => attempt.communicationId)
+      .filter((id): id is string => typeof id === "string"),
+  );
+  const communicationRows = allCommunicationRows.filter(
+    (communication) =>
+      communication.deletedAt == null ||
+      referencedCommunicationIds.has(communication.id),
   );
   const referencedRecurringSeriesIds = new Set(
     appointmentRows
@@ -1570,6 +1601,8 @@ export async function exportPracticeData(
     locationMessaging: locationMessagingRows,
     smsSuppressions: smsSuppressionRows,
     smsConsentEvents: smsConsentEventRows,
+    smsSendAttempts: smsSendAttemptRows,
+    smsSendAttemptEvents: smsSendAttemptEventRows,
     emailSuppressions: emailSuppressionRows,
     webhooks: sanitizePracticeExportRows("webhooks", webhookRows),
     apiKeys: sanitizePracticeExportRows("apiKeys", apiKeyRows),
@@ -1848,6 +1881,8 @@ async function restorePracticeDataRows(
   await restorePracticeRows("files", files);
   await restorePracticeRows("controlledSubstanceLog", controlledSubstanceLog);
   await restorePracticeRows("communications", communications);
+  await restorePracticeRows("smsSendAttempts", smsSendAttempts);
+  await restorePracticeRows("smsSendAttemptEvents", smsSendAttemptEvents);
 
   return {
     restored,

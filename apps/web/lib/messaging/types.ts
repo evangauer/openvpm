@@ -29,12 +29,14 @@ export interface SendMessageInput {
   sender: MessagingSender;
 }
 
-export interface SendMessageResult {
-  success: boolean;
-  /** Provider message id (Telnyx message id / Twilio SID) on success. */
-  id?: string;
-  error?: string;
-}
+export type SendMessageResult =
+  | {
+      status: "accepted";
+      /** A provider acceptance without a durable, nonblank id is ambiguous. */
+      id: string;
+    }
+  | { status: "definite_failure"; error: string }
+  | { status: "outcome_unknown"; error: string };
 
 export interface MessagingProvider {
   readonly name: MessagingProviderName;

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { eq, and, isNull, gte, lte, lt, inArray, sql } from "drizzle-orm";
+import { eq, and, isNull, gte, lte, lt, inArray, or, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import type { Database } from "@openpims/db/client";
@@ -36,6 +36,13 @@ import {
   normalizeEmailSuppressionAddress,
 } from "@/lib/email-suppression";
 import { hasNonBlankMessagingSender } from "@/lib/messaging/sender-query";
+import {
+  appointmentReminderDedupeKey,
+  appointmentReminderSmsIdempotencyKey,
+  claimAppointmentReminderCommunication,
+} from "@/lib/messaging/appointment-reminder";
+import { withDurableSmsCommunication } from "@/lib/messaging/durable-sms-communication";
+import { alertOps } from "@/lib/alerts";
 import {
   getVaccinationRecallPreview,
   sendVaccinationRecallReminders,
@@ -205,7 +212,7 @@ async function activeReminderSmsSender(
     db: NotificationsDb;
     practiceId: string;
   },
-  locationId?: string
+  locationId?: string,
 ): Promise<{ locationId: string } | null> {
   const smsSenders = await ctx.db
     .select({ locationId: locationMessaging.locationId })
@@ -216,8 +223,8 @@ async function activeReminderSmsSender(
         eq(locations.id, locationMessaging.locationId),
         eq(locations.practiceId, ctx.practiceId),
         activePracticePredicate(ctx.practiceId),
-        isNull(locations.deletedAt)
-      )
+        isNull(locations.deletedAt),
+      ),
     )
     .where(
       and(
@@ -230,8 +237,8 @@ async function activeReminderSmsSender(
         eq(locationMessaging.enabled, true),
         eq(locationMessaging.registrationStatus, "active"),
         ...(locationId ? [eq(locationMessaging.locationId, locationId)] : []),
-        hasNonBlankMessagingSender()
-      )
+        hasNonBlankMessagingSender(),
+      ),
     )
     .limit(2);
   return smsSenders.length === 1 ? smsSenders[0]! : null;
@@ -270,8 +277,8 @@ export const notificationsRouter = createRouter({
             eq(patients.clientId, appointments.clientId),
             eq(patients.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(patients.deletedAt)
-          )
+            isNull(patients.deletedAt),
+          ),
         )
         .leftJoin(
           clients,
@@ -279,32 +286,32 @@ export const notificationsRouter = createRouter({
             eq(appointments.clientId, clients.id),
             eq(clients.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(clients.deletedAt)
-          )
+            isNull(clients.deletedAt),
+          ),
         )
         .leftJoin(
           emailSuppressions,
           and(
             eq(emailSuppressions.practiceId, ctx.practiceId),
             sql`${emailSuppressions.email} = lower(trim(${clients.email}))`,
-            isNull(emailSuppressions.deletedAt)
-          )
+            isNull(emailSuppressions.deletedAt),
+          ),
         )
         .leftJoin(
           practices,
           and(
             eq(appointments.practiceId, practices.id),
             eq(practices.id, ctx.practiceId),
-            isNull(practices.deletedAt)
-          )
+            isNull(practices.deletedAt),
+          ),
         )
         .leftJoin(
           rooms,
           and(
             eq(appointments.roomId, rooms.id),
             eq(rooms.practiceId, ctx.practiceId),
-            isNull(rooms.deletedAt)
-          )
+            isNull(rooms.deletedAt),
+          ),
         )
         .where(
           and(
@@ -315,8 +322,8 @@ export const notificationsRouter = createRouter({
             isNull(patients.deletedAt),
             eq(clients.practiceId, ctx.practiceId),
             isNull(clients.deletedAt),
-            isNull(appointments.deletedAt)
-          )
+            isNull(appointments.deletedAt),
+          ),
         )
         .limit(1);
 
@@ -335,23 +342,52 @@ export const notificationsRouter = createRouter({
 
       // Manual send: respect the client's preferred channel + SMS consent.
       // Quiet hours don't apply — this is a deliberate staff action.
-      const logReminder = (
+      let reminderCommunicationId: string | null = null;
+      let durableSmsCommunication = false;
+      const logReminder = async (
         channel: "sms" | "email",
-        providerMessageId?: string
-      ) =>
-        ctx.db.insert(communications).values({
-          practiceId: ctx.practiceId,
-          clientId: appt.clientId!,
-          channel,
-          direction: "outbound",
-          subject: "Appointment Reminder",
-          content: `Appointment reminder sent for ${appt.patientName} on ${formatDate(
-            appt.startTime,
-            appt.practiceTimezone
-          )}`,
-          status: "sent",
-          providerMessageId,
-        });
+        providerMessageId?: string,
+        status: "sent" | "failed" = "sent",
+      ) => {
+        const project = (tx: Pick<Database, "update">) =>
+          tx
+            .update(communications)
+            .set({
+              channel,
+              content: `Appointment reminder ${status === "sent" ? "sent" : "failed"} for ${appt.patientName} on ${formatDate(
+                appt.startTime,
+                appt.practiceTimezone,
+              )}`,
+              status,
+              providerMessageId,
+            })
+            .where(
+              and(
+                eq(communications.id, reminderCommunicationId!),
+                eq(communications.practiceId, ctx.practiceId),
+                or(
+                  eq(communications.status, "pending"),
+                  and(
+                    eq(communications.status, "sent"),
+                    providerMessageId
+                      ? eq(communications.providerMessageId, providerMessageId)
+                      : undefined,
+                  ),
+                ),
+                isNull(communications.deletedAt),
+              ),
+            );
+        if (!durableSmsCommunication) return project(ctx.db);
+        try {
+          return await withDurableSmsCommunication(ctx.practiceId, project);
+        } catch (error) {
+          await alertOps(
+            "SMS appointment reminder projection failed",
+            `practice=${ctx.practiceId} communication=${reminderCommunicationId ?? "unknown"} source=appointment_reminder status=${status}`,
+          ).catch(() => undefined);
+          throw error;
+        }
+      };
 
       const sendEmail = async () => {
         const clientEmail = normalizeEmailSuppressionAddress(appt.clientEmail);
@@ -365,7 +401,7 @@ export const notificationsRouter = createRouter({
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: emailSuppressionSendBlockMessage(
-              appt.emailSuppressionReason
+              appt.emailSuppressionReason,
             ),
           });
         }
@@ -379,6 +415,7 @@ export const notificationsRouter = createRouter({
           practicePhone: appt.practicePhone ?? undefined,
         });
         if (!result.success) {
+          await logReminder("email", undefined, "failed");
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: result.error ?? "Could not send email reminder",
@@ -387,7 +424,7 @@ export const notificationsRouter = createRouter({
         await logReminder("email", result.id);
       };
 
-      const channel = pickReminderChannel({
+      let channel = pickReminderChannel({
         preferredContactMethod: appt.preferredContactMethod,
         phone: appt.clientPhone,
         smsConsent: appt.smsConsent ?? false,
@@ -411,41 +448,95 @@ export const notificationsRouter = createRouter({
         });
       }
 
+      let smsSender: { locationId: string } | null = null;
       if (channel === "sms") {
-        const smsSender = appt.locationId
+        smsSender = appt.locationId
           ? await activeReminderSmsSender(ctx, appt.locationId)
           : null;
-        const result = smsSender
-          ? await sendAppointmentReminderSms({
-              to: appt.clientPhone!,
-              patientName: appt.patientName ?? "Unknown",
-              appointmentDate: formatDate(
-                appt.startTime,
-                appt.practiceTimezone
-              ),
-              appointmentTime: formatTime(
-                appt.startTime,
-                appt.practiceTimezone
-              ),
-              practiceName: practiceDisplayName(appt.practiceName),
-              practicePhone: appt.practicePhone ?? undefined,
-              practiceId: ctx.practiceId,
-              locationId: smsSender.locationId,
-              clientId: appt.clientId!,
-            })
-          : {
-              success: false,
-              error:
+        if (!smsSender) {
+          if (
+            normalizeEmailSuppressionAddress(appt.clientEmail) &&
+            !appt.emailSuppressionReason
+          ) {
+            channel = "email";
+          } else {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message:
                 "Set up an active texting number before sending SMS reminders",
-            };
+            });
+          }
+        }
+      }
+      if (channel === "email") {
+        if (!normalizeEmailSuppressionAddress(appt.clientEmail)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Client does not have an email address on file",
+          });
+        }
+        if (appt.emailSuppressionReason) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: emailSuppressionSendBlockMessage(
+              appt.emailSuppressionReason,
+            ),
+          });
+        }
+      }
+
+      const claimOptions = {
+        practiceId: ctx.practiceId,
+        appointmentId: appt.id,
+        clientId: appt.clientId!,
+        channel,
+        patientName: appt.patientName,
+        startTime: new Date(appt.startTime),
+      };
+      durableSmsCommunication = channel === "sms";
+      reminderCommunicationId = durableSmsCommunication
+        ? await withDurableSmsCommunication(ctx.practiceId, (tx) =>
+            claimAppointmentReminderCommunication(tx, claimOptions),
+          )
+        : await claimAppointmentReminderCommunication(ctx.db, claimOptions);
+      if (!reminderCommunicationId) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message:
+            "A reminder for this appointment is already pending or was already sent.",
+        });
+      }
+
+      if (channel === "sms") {
+        const result = await sendAppointmentReminderSms({
+          to: appt.clientPhone!,
+          patientName: appt.patientName ?? "Unknown",
+          appointmentDate: formatDate(appt.startTime, appt.practiceTimezone),
+          appointmentTime: formatTime(appt.startTime, appt.practiceTimezone),
+          practiceName: practiceDisplayName(appt.practiceName),
+          practicePhone: appt.practicePhone ?? undefined,
+          practiceId: ctx.practiceId,
+          locationId: smsSender!.locationId,
+          clientId: appt.clientId!,
+          communicationId: reminderCommunicationId,
+          source: "appointment_reminder",
+          sourceId: appointmentReminderDedupeKey(appt),
+          idempotencyKey: appointmentReminderSmsIdempotencyKey(appt),
+        });
         if (result.success) {
           await logReminder("sms", result.sid);
           return { success: true, channel: "sms" as const };
         }
         // SMS blocked (e.g. opted out) — fall back to email if we can.
-        if (normalizeEmailSuppressionAddress(appt.clientEmail)) {
+        if (
+          result.outcome !== "outcome_unknown" &&
+          normalizeEmailSuppressionAddress(appt.clientEmail)
+        ) {
           await sendEmail();
           return { success: true, channel: "email" as const };
+        }
+        if (result.outcome === "definite_failure") {
+          await logReminder("sms", undefined, "failed");
         }
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -484,16 +575,16 @@ export const notificationsRouter = createRouter({
             eq(invoices.clientId, clients.id),
             eq(clients.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(clients.deletedAt)
-          )
+            isNull(clients.deletedAt),
+          ),
         )
         .leftJoin(
           emailSuppressions,
           and(
             eq(emailSuppressions.practiceId, ctx.practiceId),
             sql`${emailSuppressions.email} = lower(trim(${clients.email}))`,
-            isNull(emailSuppressions.deletedAt)
-          )
+            isNull(emailSuppressions.deletedAt),
+          ),
         )
         .where(
           and(
@@ -502,8 +593,8 @@ export const notificationsRouter = createRouter({
             activePracticePredicate(ctx.practiceId),
             eq(clients.practiceId, ctx.practiceId),
             isNull(clients.deletedAt),
-            isNull(invoices.deletedAt)
-          )
+            isNull(invoices.deletedAt),
+          ),
         )
         .limit(1);
 
@@ -528,7 +619,7 @@ export const notificationsRouter = createRouter({
       }
       await assertVisitInvoiceReadyForFinancialAction(
         ctx,
-        invoice.appointmentId
+        invoice.appointmentId,
       );
       const clientEmail = normalizeEmailSuppressionAddress(invoice.clientEmail);
       if (!clientEmail) {
@@ -541,7 +632,7 @@ export const notificationsRouter = createRouter({
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: emailSuppressionSendBlockMessage(
-            invoice.emailSuppressionReason
+            invoice.emailSuppressionReason,
           ),
         });
       }
@@ -560,15 +651,15 @@ export const notificationsRouter = createRouter({
                 and ${invoices.clientId} = ${invoice.clientId}
                 and ${invoices.deletedAt} is null
             )`,
-            isNull(invoiceAdjustments.deletedAt)
-          )
+            isNull(invoiceAdjustments.deletedAt),
+          ),
         );
       const adjustedCents = adjustmentRows.reduce(
         (sum, row) => sum + moneyToCents(row.amount),
-        0
+        0,
       );
       const amountDue = centsToMoney(
-        invoiceBalanceCents(invoice, adjustedCents)
+        invoiceBalanceCents(invoice, adjustedCents),
       );
 
       // Format the live balance in the practice's region currency.
@@ -576,7 +667,7 @@ export const notificationsRouter = createRouter({
       const totalFormatted = formatCurrency(
         amountDue,
         practice.currency,
-        practice.country
+        practice.country,
       );
 
       const emailResult = await sendInvoiceEmail({
@@ -587,7 +678,7 @@ export const notificationsRouter = createRouter({
           ? formatClinicalDate(
               invoice.dueDate,
               practice.timezone,
-              invoice.dueDate
+              invoice.dueDate,
             )
           : undefined,
         practiceName: practice.name,
@@ -639,8 +730,8 @@ export const notificationsRouter = createRouter({
           eq(patients.clientId, appointments.clientId),
           eq(patients.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(patients.deletedAt)
-        )
+          isNull(patients.deletedAt),
+        ),
       )
       .leftJoin(
         clients,
@@ -648,8 +739,8 @@ export const notificationsRouter = createRouter({
           eq(appointments.clientId, clients.id),
           eq(clients.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(clients.deletedAt)
-        )
+          isNull(clients.deletedAt),
+        ),
       )
       .leftJoin(
         users,
@@ -657,8 +748,8 @@ export const notificationsRouter = createRouter({
           eq(appointments.doctorId, users.id),
           eq(users.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(users.deletedAt)
-        )
+          isNull(users.deletedAt),
+        ),
       )
       .where(
         and(
@@ -671,8 +762,8 @@ export const notificationsRouter = createRouter({
           isNull(appointments.deletedAt),
           gte(appointments.startTime, now),
           lte(appointments.startTime, in24h),
-          eq(appointments.status, "confirmed")
-        )
+          eq(appointments.status, "confirmed"),
+        ),
       )
       .orderBy(appointments.startTime);
   }),
@@ -685,9 +776,9 @@ export const notificationsRouter = createRouter({
           .array(z.string().uuid())
           .max(
             REMINDER_BATCH_MAX_TARGETS,
-            `Bulk reminders can target at most ${REMINDER_BATCH_MAX_TARGETS} appointments.`
+            `Bulk reminders can target at most ${REMINDER_BATCH_MAX_TARGETS} appointments.`,
           ),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
@@ -720,8 +811,8 @@ export const notificationsRouter = createRouter({
             eq(patients.clientId, appointments.clientId),
             eq(patients.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(patients.deletedAt)
-          )
+            isNull(patients.deletedAt),
+          ),
         )
         .leftJoin(
           clients,
@@ -729,32 +820,32 @@ export const notificationsRouter = createRouter({
             eq(appointments.clientId, clients.id),
             eq(clients.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(clients.deletedAt)
-          )
+            isNull(clients.deletedAt),
+          ),
         )
         .leftJoin(
           emailSuppressions,
           and(
             eq(emailSuppressions.practiceId, ctx.practiceId),
             sql`${emailSuppressions.email} = lower(trim(${clients.email}))`,
-            isNull(emailSuppressions.deletedAt)
-          )
+            isNull(emailSuppressions.deletedAt),
+          ),
         )
         .leftJoin(
           practices,
           and(
             eq(appointments.practiceId, practices.id),
             eq(practices.id, ctx.practiceId),
-            isNull(practices.deletedAt)
-          )
+            isNull(practices.deletedAt),
+          ),
         )
         .leftJoin(
           rooms,
           and(
             eq(appointments.roomId, rooms.id),
             eq(rooms.practiceId, ctx.practiceId),
-            isNull(rooms.deletedAt)
-          )
+            isNull(rooms.deletedAt),
+          ),
         )
         .where(
           and(
@@ -766,8 +857,8 @@ export const notificationsRouter = createRouter({
             eq(clients.practiceId, ctx.practiceId),
             isNull(clients.deletedAt),
             isNull(appointments.deletedAt),
-            eq(appointments.status, "confirmed")
-          )
+            eq(appointments.status, "confirmed"),
+          ),
         );
 
       let sent = 0;
@@ -789,31 +880,63 @@ export const notificationsRouter = createRouter({
       for (const appt of appts) {
         const appointmentDate = formatDate(
           appt.startTime,
-          appt.practiceTimezone
+          appt.practiceTimezone,
         );
         const appointmentTime = formatTime(
           appt.startTime,
-          appt.practiceTimezone
+          appt.practiceTimezone,
         );
 
-        const logReminder = (
+        let reminderCommunicationId: string | null = null;
+        let durableSmsCommunication = false;
+        const logReminder = async (
           channel: "sms" | "email",
-          providerMessageId?: string
-        ) =>
-          ctx.db.insert(communications).values({
-            practiceId: ctx.practiceId,
-            clientId: appt.clientId!,
-            channel,
-            direction: "outbound",
-            subject: "Appointment Reminder",
-            content: `Reminder sent for ${appt.patientName} on ${appointmentDate}`,
-            status: "sent",
-            providerMessageId,
-          });
+          providerMessageId?: string,
+          status: "sent" | "failed" = "sent",
+        ) => {
+          const project = (tx: Pick<Database, "update">) =>
+            tx
+              .update(communications)
+              .set({
+                channel,
+                content: `Reminder ${status === "sent" ? "sent" : "failed"} for ${appt.patientName} on ${appointmentDate}`,
+                status,
+                providerMessageId,
+              })
+              .where(
+                and(
+                  eq(communications.id, reminderCommunicationId!),
+                  eq(communications.practiceId, ctx.practiceId),
+                  or(
+                    eq(communications.status, "pending"),
+                    and(
+                      eq(communications.status, "sent"),
+                      providerMessageId
+                        ? eq(
+                            communications.providerMessageId,
+                            providerMessageId,
+                          )
+                        : undefined,
+                    ),
+                  ),
+                  isNull(communications.deletedAt),
+                ),
+              );
+          if (!durableSmsCommunication) return project(ctx.db);
+          try {
+            return await withDurableSmsCommunication(ctx.practiceId, project);
+          } catch (error) {
+            await alertOps(
+              "SMS appointment reminder projection failed",
+              `practice=${ctx.practiceId} communication=${reminderCommunicationId ?? "unknown"} source=appointment_reminder status=${status}`,
+            ).catch(() => undefined);
+            throw error;
+          }
+        };
 
         const sendEmail = async (): Promise<boolean> => {
           const clientEmail = normalizeEmailSuppressionAddress(
-            appt.clientEmail
+            appt.clientEmail,
           );
           if (!clientEmail) return false;
           if (appt.emailSuppressionReason) return false;
@@ -835,7 +958,7 @@ export const notificationsRouter = createRouter({
           }
         };
 
-        const channel = pickReminderChannel({
+        let channel = pickReminderChannel({
           preferredContactMethod: appt.preferredContactMethod,
           phone: appt.clientPhone,
           smsConsent: appt.smsConsent ?? false,
@@ -843,36 +966,86 @@ export const notificationsRouter = createRouter({
           quietHours: isQuietHours(new Date(), appt.practiceTimezone),
         });
 
+        if (channel === "none" || channel === "skip") {
+          failed++;
+          continue;
+        }
+        let smsSender: { locationId: string } | null = null;
         if (channel === "sms") {
-          const smsSender = await getSmsSender(appt.locationId);
-          let result: { success: boolean; sid?: string; error?: string };
-          if (smsSender) {
-            try {
-              result = await sendAppointmentReminderSms({
-                to: appt.clientPhone!,
-                patientName: appt.patientName ?? "Unknown",
-                appointmentDate,
-                appointmentTime,
-                practiceName: practiceDisplayName(appt.practiceName),
-                practicePhone: appt.practicePhone ?? undefined,
-                practiceId: ctx.practiceId,
-                locationId: smsSender.locationId,
-                clientId: appt.clientId!,
-              });
-            } catch (error) {
-              result = {
-                success: false,
-                error:
-                  error instanceof Error
-                    ? error.message
-                    : "Could not send SMS reminder",
-              };
+          smsSender = await getSmsSender(appt.locationId);
+          if (!smsSender) {
+            if (
+              normalizeEmailSuppressionAddress(appt.clientEmail) &&
+              !appt.emailSuppressionReason
+            ) {
+              channel = "email";
+            } else {
+              failed++;
+              continue;
             }
-          } else {
+          }
+        }
+        if (
+          channel === "email" &&
+          (!normalizeEmailSuppressionAddress(appt.clientEmail) ||
+            appt.emailSuppressionReason)
+        ) {
+          failed++;
+          continue;
+        }
+        const claimOptions = {
+          practiceId: ctx.practiceId,
+          appointmentId: appt.id,
+          clientId: appt.clientId!,
+          channel,
+          patientName: appt.patientName,
+          startTime: new Date(appt.startTime),
+        };
+        durableSmsCommunication = channel === "sms";
+        reminderCommunicationId = durableSmsCommunication
+          ? await withDurableSmsCommunication(ctx.practiceId, (tx) =>
+              claimAppointmentReminderCommunication(tx, claimOptions),
+            )
+          : await claimAppointmentReminderCommunication(ctx.db, claimOptions);
+        if (!reminderCommunicationId) {
+          failed++;
+          continue;
+        }
+
+        if (channel === "sms") {
+          let result:
+            | Awaited<ReturnType<typeof sendAppointmentReminderSms>>
+            | {
+                success: false;
+                outcome: "definite_failure";
+                replayed: false;
+                error: string;
+              };
+          try {
+            result = await sendAppointmentReminderSms({
+              to: appt.clientPhone!,
+              patientName: appt.patientName ?? "Unknown",
+              appointmentDate,
+              appointmentTime,
+              practiceName: practiceDisplayName(appt.practiceName),
+              practicePhone: appt.practicePhone ?? undefined,
+              practiceId: ctx.practiceId,
+              locationId: smsSender!.locationId,
+              clientId: appt.clientId!,
+              communicationId: reminderCommunicationId,
+              source: "appointment_reminder",
+              sourceId: appointmentReminderDedupeKey(appt),
+              idempotencyKey: appointmentReminderSmsIdempotencyKey(appt),
+            });
+          } catch (error) {
             result = {
               success: false,
+              outcome: "outcome_unknown",
+              replayed: false,
               error:
-                "Set up an active texting number before sending SMS reminders",
+                error instanceof Error
+                  ? error.message
+                  : "Could not send SMS reminder",
             };
           }
           if (result.success) {
@@ -881,9 +1054,13 @@ export const notificationsRouter = createRouter({
             continue;
           }
 
-          if (await sendEmail()) {
+          if (result.outcome !== "outcome_unknown" && (await sendEmail())) {
             sent++;
             continue;
+          }
+
+          if (result.outcome === "definite_failure") {
+            await logReminder("sms", undefined, "failed");
           }
 
           failed++;
@@ -894,6 +1071,7 @@ export const notificationsRouter = createRouter({
           if (await sendEmail()) {
             sent++;
           } else {
+            await logReminder("email", undefined, "failed");
             failed++;
           }
           continue;
@@ -927,8 +1105,8 @@ export const notificationsRouter = createRouter({
           eq(vaccinationRecords.patientId, patients.id),
           eq(patients.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(patients.deletedAt)
-        )
+          isNull(patients.deletedAt),
+        ),
       )
       .innerJoin(
         clients,
@@ -936,8 +1114,8 @@ export const notificationsRouter = createRouter({
           eq(patients.clientId, clients.id),
           eq(clients.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(clients.deletedAt)
-        )
+          isNull(clients.deletedAt),
+        ),
       )
       .where(
         and(
@@ -950,8 +1128,8 @@ export const notificationsRouter = createRouter({
           isNull(patients.deletedAt),
           eq(clients.practiceId, ctx.practiceId),
           isNull(clients.deletedAt),
-          lt(vaccinationRecords.nextDueDate, today)
-        )
+          lt(vaccinationRecords.nextDueDate, today),
+        ),
       )
       .orderBy(patients.name);
 
@@ -1010,15 +1188,15 @@ export const notificationsRouter = createRouter({
           .array(z.string().uuid())
           .max(
             REMINDER_BATCH_MAX_TARGETS,
-            `Vaccination reminders can target at most ${REMINDER_BATCH_MAX_TARGETS} patients.`
+            `Vaccination reminders can target at most ${REMINDER_BATCH_MAX_TARGETS} patients.`,
           ),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
       const result = await sendVaccinationRecallReminders(
         ctx,
-        input.patientIds
+        input.patientIds,
       );
       if (!result) throw practiceNotFound();
       return result;

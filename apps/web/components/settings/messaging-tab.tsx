@@ -390,7 +390,11 @@ function ConfiguredLocation({
             variant="outline"
             disabled={!canSendTest || testSend.isPending}
             onClick={() =>
-              testSend.mutate({ locationId: loc.locationId, to: testTo.trim() })
+              testSend.mutate({
+                locationId: loc.locationId,
+                to: testTo.trim(),
+                requestId: crypto.randomUUID(),
+              })
             }
           >
             {testSend.isPending ? (

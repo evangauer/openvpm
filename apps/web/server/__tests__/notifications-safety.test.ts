@@ -28,6 +28,9 @@ const mocks = vi.hoisted(() => ({
     error: undefined as string | undefined,
   })),
   recordAuditLog: vi.fn(async () => undefined),
+  alertOps: vi.fn(async () => undefined),
+  durableDb: {} as Record<string, unknown>,
+  withDurableSmsCommunication: vi.fn(),
 }));
 
 vi.mock("@/lib/email", () => ({
@@ -43,6 +46,12 @@ vi.mock("@/lib/sms", () => ({
 
 vi.mock("@/lib/audit", () => ({
   recordAuditLog: mocks.recordAuditLog,
+}));
+
+vi.mock("@/lib/alerts", () => ({ alertOps: mocks.alertOps }));
+
+vi.mock("@/lib/messaging/durable-sms-communication", () => ({
+  withDurableSmsCommunication: mocks.withDurableSmsCommunication,
 }));
 
 const { REMINDER_BATCH_MAX_TARGETS, notificationsRouter } =
@@ -70,6 +79,11 @@ const PRACTICE_SETTINGS = {
 };
 
 function callerWithDb(db: Record<string, unknown>) {
+  mocks.durableDb = db;
+  mocks.withDurableSmsCommunication.mockImplementation(
+    (_practiceId: string, fn: (durableDb: unknown) => unknown) =>
+      fn(mocks.durableDb),
+  );
   const session = {
     user: {
       id: USER_ID,
@@ -97,7 +111,7 @@ function createDb(opts?: {
       orderBy: vi.fn(async () => result),
       then: (
         resolve: (value: unknown[]) => unknown,
-        reject?: (error: unknown) => unknown
+        reject?: (error: unknown) => unknown,
       ) => Promise.resolve(result).then(resolve, reject),
     };
     const builder = {
@@ -117,7 +131,7 @@ function createDb(opts?: {
     onConflictDoNothing,
     then: (
       resolve: (value: undefined) => unknown,
-      reject?: (error: unknown) => unknown
+      reject?: (error: unknown) => unknown,
     ) => Promise.resolve(undefined).then(resolve, reject),
   }));
   const insert = vi.fn(() => ({ values: insertValues }));
@@ -153,7 +167,7 @@ describe("notification target safety", () => {
     const caller = callerWithDb(db);
 
     await expect(
-      caller.sendAppointmentReminder({ appointmentId: APPOINTMENT_ID })
+      caller.sendAppointmentReminder({ appointmentId: APPOINTMENT_ID }),
     ).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
@@ -165,7 +179,7 @@ describe("notification target safety", () => {
     });
 
     await expect(
-      caller.sendInvoiceEmail({ invoiceId: INVOICE_ID })
+      caller.sendInvoiceEmail({ invoiceId: INVOICE_ID }),
     ).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
@@ -189,7 +203,7 @@ describe("notification target safety", () => {
     await expect(
       callerWithDb(db).sendAppointmentReminder({
         appointmentId: APPOINTMENT_ID,
-      })
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
@@ -198,7 +212,7 @@ describe("notification target safety", () => {
   });
 
   it("rejects manual reminders for an unconfirmed appointment request", async () => {
-    const { db, insertValues } = createDb({
+    const { db, insertValues, updateSet } = createDb({
       selectResults: [
         [
           {
@@ -221,7 +235,7 @@ describe("notification target safety", () => {
     await expect(
       callerWithDb(db).sendAppointmentReminder({
         appointmentId: APPOINTMENT_ID,
-      })
+      }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message: "Confirm the appointment before sending a reminder.",
@@ -243,7 +257,7 @@ describe("notification target safety", () => {
       sid: "sms-manual-1",
       error: undefined,
     });
-    const { db, insertValues } = createDb({
+    const { db, insertValues, updateSet } = createDb({
       selectResults: [
         [
           {
@@ -271,7 +285,7 @@ describe("notification target safety", () => {
     await expect(
       callerWithDb(db).sendAppointmentReminder({
         appointmentId: APPOINTMENT_ID,
-      })
+      }),
     ).resolves.toEqual({ success: true, channel: "sms" });
 
     expect(mocks.sendAppointmentReminderSms).toHaveBeenCalledWith(
@@ -284,23 +298,30 @@ describe("notification target safety", () => {
         practiceId: PRACTICE_ID,
         locationId: LOCATION_ID,
         clientId: CLIENT_ID,
-      })
+      }),
     );
     expect(insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
         practiceId: PRACTICE_ID,
         clientId: CLIENT_ID,
         channel: "sms",
-        content: "Appointment reminder sent for Miso on Tuesday, June 30, 2026",
+        direction: "outbound",
+        status: "pending",
+      }),
+    );
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "sms",
         status: "sent",
         providerMessageId: "sms-manual-1",
-      })
+      }),
     );
+    expect(mocks.withDurableSmsCommunication).toHaveBeenCalledTimes(2);
   });
 
   it("blocks an SMS-only manual reminder during the clinic's quiet hours", async () => {
     vi.setSystemTime(new Date("2026-07-02T05:00:00Z")); // 10 PM in Los Angeles
-    const { db, insertValues } = createDb({
+    const { db, insertValues, updateSet } = createDb({
       selectResults: [
         [
           {
@@ -327,7 +348,7 @@ describe("notification target safety", () => {
     await expect(
       callerWithDb(db).sendAppointmentReminder({
         appointmentId: APPOINTMENT_ID,
-      })
+      }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message:
@@ -341,7 +362,7 @@ describe("notification target safety", () => {
 
   it("falls back to email instead of texting during quiet hours", async () => {
     vi.setSystemTime(new Date("2026-07-02T05:00:00Z")); // 10 PM in Los Angeles
-    const { db, insertValues } = createDb({
+    const { db, insertValues, updateSet } = createDb({
       selectResults: [
         [
           {
@@ -368,13 +389,16 @@ describe("notification target safety", () => {
     await expect(
       callerWithDb(db).sendAppointmentReminder({
         appointmentId: APPOINTMENT_ID,
-      })
+      }),
     ).resolves.toEqual({ success: true, channel: "email" });
 
     expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
     expect(mocks.sendAppointmentReminder).toHaveBeenCalledOnce();
     expect(insertValues).toHaveBeenCalledWith(
-      expect.objectContaining({ channel: "email", status: "sent" })
+      expect.objectContaining({ channel: "email", status: "pending" }),
+    );
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: "email", status: "sent" }),
     );
   });
 
@@ -384,7 +408,7 @@ describe("notification target safety", () => {
       id: "email-manual-1",
       error: undefined,
     });
-    const { db, insertValues } = createDb({
+    const { db, insertValues, updateSet } = createDb({
       selectResults: [
         [
           {
@@ -410,7 +434,7 @@ describe("notification target safety", () => {
     await expect(
       callerWithDb(db).sendAppointmentReminder({
         appointmentId: APPOINTMENT_ID,
-      })
+      }),
     ).resolves.toEqual({ success: true, channel: "email" });
 
     expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
@@ -420,14 +444,20 @@ describe("notification target safety", () => {
         practiceId: PRACTICE_ID,
         clientId: CLIENT_ID,
         channel: "email",
+        status: "pending",
+      }),
+    );
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "email",
         status: "sent",
         providerMessageId: "email-manual-1",
-      })
+      }),
     );
   });
 
   it("blocks manual appointment reminder emails to provider-suppressed recipients", async () => {
-    const { db, insertValues } = createDb({
+    const { db, insertValues, updateSet } = createDb({
       selectResults: [
         [
           {
@@ -453,7 +483,7 @@ describe("notification target safety", () => {
     await expect(
       callerWithDb(db).sendAppointmentReminder({
         appointmentId: APPOINTMENT_ID,
-      })
+      }),
     ).rejects.toMatchObject({
       code: "BAD_REQUEST",
       message:
@@ -465,7 +495,7 @@ describe("notification target safety", () => {
   });
 
   it("rejects manual SMS-only reminders when no active sender exists", async () => {
-    const { db, insertValues } = createDb({
+    const { db, insertValues, updateSet } = createDb({
       selectResults: [
         [
           {
@@ -491,7 +521,7 @@ describe("notification target safety", () => {
     await expect(
       callerWithDb(db).sendAppointmentReminder({
         appointmentId: APPOINTMENT_ID,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
@@ -500,7 +530,7 @@ describe("notification target safety", () => {
   });
 
   it("counts stale or cross-tenant appointment ids as failed bulk reminders", async () => {
-    const { db, insertValues } = createDb({
+    const { db, insertValues, updateSet } = createDb({
       selectResults: [
         [
           {
@@ -526,7 +556,7 @@ describe("notification target safety", () => {
     await expect(
       callerWithDb(db).sendBulkReminders({
         appointmentIds: [APPOINTMENT_ID, STALE_APPOINTMENT_ID],
-      })
+      }),
     ).resolves.toEqual({ sent: 1, failed: 1 });
 
     expect(mocks.sendAppointmentReminder).toHaveBeenCalledOnce();
@@ -537,7 +567,7 @@ describe("notification target safety", () => {
         appointmentTime: "9:30 PM",
         practiceName: "Neighborhood Veterinary",
         practicePhone: "555-0100",
-      })
+      }),
     );
     expect(insertValues).toHaveBeenCalledTimes(1);
     expect(insertValues).toHaveBeenCalledWith(
@@ -545,14 +575,16 @@ describe("notification target safety", () => {
         practiceId: PRACTICE_ID,
         clientId: CLIENT_ID,
         channel: "email",
-        content: "Reminder sent for Miso on Tuesday, June 30, 2026",
-        status: "sent",
-      })
+        status: "pending",
+      }),
+    );
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: "email", status: "sent" }),
     );
   });
 
   it("routes bulk SMS reminders through an active practice sender", async () => {
-    const { db, insertValues } = createDb({
+    const { db, insertValues, updateSet } = createDb({
       selectResults: [
         [
           {
@@ -579,7 +611,7 @@ describe("notification target safety", () => {
     await expect(
       callerWithDb(db).sendBulkReminders({
         appointmentIds: [APPOINTMENT_ID, STALE_APPOINTMENT_ID],
-      })
+      }),
     ).resolves.toEqual({ sent: 1, failed: 1 });
 
     expect(mocks.sendAppointmentReminderSms).toHaveBeenCalledOnce();
@@ -593,7 +625,7 @@ describe("notification target safety", () => {
         practiceId: PRACTICE_ID,
         locationId: LOCATION_ID,
         clientId: CLIENT_ID,
-      })
+      }),
     );
     expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
     expect(insertValues).toHaveBeenCalledTimes(1);
@@ -602,9 +634,11 @@ describe("notification target safety", () => {
         practiceId: PRACTICE_ID,
         clientId: CLIENT_ID,
         channel: "sms",
-        content: "Reminder sent for Miso on Tuesday, June 30, 2026",
-        status: "sent",
-      })
+        status: "pending",
+      }),
+    );
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: "sms", status: "sent" }),
     );
   });
 
@@ -614,7 +648,7 @@ describe("notification target safety", () => {
       id: "email-bulk-1",
       error: undefined,
     });
-    const { db, insertValues } = createDb({
+    const { db, insertValues, updateSet } = createDb({
       selectResults: [
         [
           {
@@ -639,7 +673,7 @@ describe("notification target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).sendBulkReminders({ appointmentIds: [APPOINTMENT_ID] })
+      callerWithDb(db).sendBulkReminders({ appointmentIds: [APPOINTMENT_ID] }),
     ).resolves.toEqual({ sent: 1, failed: 0 });
 
     expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
@@ -649,10 +683,15 @@ describe("notification target safety", () => {
         practiceId: PRACTICE_ID,
         clientId: CLIENT_ID,
         channel: "email",
-        content: "Reminder sent for Miso on Wednesday, July 1, 2026",
+        status: "pending",
+      }),
+    );
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "email",
         status: "sent",
         providerMessageId: "email-bulk-1",
-      })
+      }),
     );
   });
 
@@ -682,16 +721,16 @@ describe("notification target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).sendBulkReminders({ appointmentIds: [APPOINTMENT_ID] })
+      callerWithDb(db).sendBulkReminders({ appointmentIds: [APPOINTMENT_ID] }),
     ).resolves.toEqual({ sent: 0, failed: 1 });
 
     expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
     expect(insertValues).not.toHaveBeenCalled();
   });
 
-  it("falls back to email when bulk SMS transport throws", async () => {
+  it("preserves the pending claim when bulk SMS transport throws", async () => {
     mocks.sendAppointmentReminderSms.mockRejectedValueOnce(
-      new Error("Provider unavailable")
+      new Error("Provider unavailable"),
     );
     const { db, insertValues } = createDb({
       selectResults: [
@@ -718,19 +757,18 @@ describe("notification target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).sendBulkReminders({ appointmentIds: [APPOINTMENT_ID] })
-    ).resolves.toEqual({ sent: 1, failed: 0 });
+      callerWithDb(db).sendBulkReminders({ appointmentIds: [APPOINTMENT_ID] }),
+    ).resolves.toEqual({ sent: 0, failed: 1 });
 
     expect(mocks.sendAppointmentReminderSms).toHaveBeenCalledOnce();
-    expect(mocks.sendAppointmentReminder).toHaveBeenCalledOnce();
+    expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
     expect(insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
         practiceId: PRACTICE_ID,
         clientId: CLIENT_ID,
-        channel: "email",
-        content: "Reminder sent for Miso on Wednesday, July 1, 2026",
-        status: "sent",
-      })
+        channel: "sms",
+        status: "pending",
+      }),
     );
   });
 
@@ -759,7 +797,7 @@ describe("notification target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).sendBulkReminders({ appointmentIds: [APPOINTMENT_ID] })
+      callerWithDb(db).sendBulkReminders({ appointmentIds: [APPOINTMENT_ID] }),
     ).resolves.toEqual({ sent: 0, failed: 1 });
 
     expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
@@ -773,7 +811,7 @@ describe("notification target safety", () => {
     await expect(
       callerWithDb(db).sendBulkReminders({
         appointmentIds: [STALE_APPOINTMENT_ID],
-      })
+      }),
     ).resolves.toEqual({ sent: 0, failed: 1 });
 
     expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
@@ -788,18 +826,18 @@ describe("notification target safety", () => {
       callerWithDb(db).sendBulkReminders({
         appointmentIds: Array.from(
           { length: REMINDER_BATCH_MAX_TARGETS + 1 },
-          () => APPOINTMENT_ID
+          () => APPOINTMENT_ID,
         ),
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).sendVaccinationReminders({
         patientIds: Array.from(
           { length: REMINDER_BATCH_MAX_TARGETS + 1 },
-          () => PATIENT_ID
+          () => PATIENT_ID,
         ),
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(select).not.toHaveBeenCalled();
@@ -839,7 +877,7 @@ describe("notification target safety", () => {
     await expect(
       callerWithDb(db).sendVaccinationReminders({
         patientIds: [PATIENT_ID, STALE_PATIENT_ID],
-      })
+      }),
     ).resolves.toEqual({ sent: 1, failed: 0, blocked: 1, deduped: 0 });
 
     expect(mocks.sendVaccinationReminder).toHaveBeenCalledOnce();
@@ -849,7 +887,7 @@ describe("notification target safety", () => {
         dueDate: "Jun 1, 2026",
         practiceName: "Neighborhood Veterinary",
         practicePhone: "555-0100",
-      })
+      }),
     );
     expect(insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -859,13 +897,13 @@ describe("notification target safety", () => {
         subject: "Vaccination Reminder",
         status: "pending",
         dedupeKey: expect.stringContaining("vaccination-recall:v1"),
-      })
+      }),
     );
     expect(updateSet).toHaveBeenCalledWith(
       expect.objectContaining({
         channel: "email",
         status: "sent",
-      })
+      }),
     );
   });
 
@@ -910,7 +948,7 @@ describe("notification target safety", () => {
     await expect(
       callerWithDb(db).sendVaccinationReminders({
         patientIds: [PATIENT_ID, STALE_PATIENT_ID],
-      })
+      }),
     ).resolves.toEqual({ sent: 1, failed: 0, blocked: 1, deduped: 0 });
 
     expect(mocks.sendVaccinationReminderSms).toHaveBeenCalledOnce();
@@ -923,7 +961,7 @@ describe("notification target safety", () => {
         practicePhone: "555-0100",
         practiceId: PRACTICE_ID,
         locationId: LOCATION_ID,
-      })
+      }),
     );
     expect(mocks.sendVaccinationReminder).not.toHaveBeenCalled();
     expect(insertValues).toHaveBeenCalledTimes(1);
@@ -936,7 +974,7 @@ describe("notification target safety", () => {
         content: "Vaccination reminder for Miso: Rabies, Bordetella",
         status: "pending",
         dedupeKey: expect.stringContaining("vaccination-recall:v1"),
-      })
+      }),
     );
     expect(updateSet).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -944,7 +982,7 @@ describe("notification target safety", () => {
         content: "Vaccination reminder sent for Miso: Rabies, Bordetella",
         status: "sent",
         providerMessageId: "sms-vax-1",
-      })
+      }),
     );
   });
 
@@ -973,7 +1011,7 @@ describe("notification target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).sendVaccinationReminders({ patientIds: [PATIENT_ID] })
+      callerWithDb(db).sendVaccinationReminders({ patientIds: [PATIENT_ID] }),
     ).resolves.toEqual({ sent: 1, failed: 0, blocked: 0, deduped: 0 });
 
     expect(mocks.sendVaccinationReminderSms).not.toHaveBeenCalled();
@@ -985,14 +1023,14 @@ describe("notification target safety", () => {
         channel: "email",
         subject: "Vaccination Reminder",
         status: "pending",
-      })
+      }),
     );
     expect(updateSet).toHaveBeenCalledWith(
       expect.objectContaining({
         channel: "email",
         content: "Vaccination reminder sent for Miso: Rabies",
         status: "sent",
-      })
+      }),
     );
   });
 
@@ -1021,13 +1059,13 @@ describe("notification target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).sendVaccinationReminders({ patientIds: [PATIENT_ID] })
+      callerWithDb(db).sendVaccinationReminders({ patientIds: [PATIENT_ID] }),
     ).resolves.toEqual({ sent: 1, failed: 0, blocked: 0, deduped: 0 });
 
     expect(mocks.sendVaccinationReminderSms).not.toHaveBeenCalled();
     expect(mocks.sendVaccinationReminder).toHaveBeenCalledOnce();
     expect(updateSet).toHaveBeenCalledWith(
-      expect.objectContaining({ channel: "email", status: "sent" })
+      expect.objectContaining({ channel: "email", status: "sent" }),
     );
   });
 
@@ -1074,7 +1112,7 @@ describe("notification target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).sendVaccinationReminders({ patientIds: [PATIENT_ID] })
+      callerWithDb(db).sendVaccinationReminders({ patientIds: [PATIENT_ID] }),
     ).resolves.toEqual({ sent: 1, failed: 0, blocked: 0, deduped: 0 });
 
     expect(mocks.sendVaccinationReminder).toHaveBeenCalledOnce();
@@ -1082,7 +1120,7 @@ describe("notification target safety", () => {
       expect.objectContaining({
         vaccineName: "Rabies, Bordetella",
         dueDate: "Jun 1, 2026",
-      })
+      }),
     );
     expect(insertValues).toHaveBeenCalledTimes(1);
     expect(insertValues).toHaveBeenCalledWith(
@@ -1094,7 +1132,7 @@ describe("notification target safety", () => {
         content: "Vaccination reminder for Miso: Rabies, Bordetella",
         status: "pending",
         dedupeKey: expect.stringContaining("vaccination-recall:v1"),
-      })
+      }),
     );
     expect(updateSet).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1102,7 +1140,7 @@ describe("notification target safety", () => {
         content: "Vaccination reminder sent for Miso: Rabies, Bordetella",
         status: "sent",
         providerMessageId: "email-vax-combined",
-      })
+      }),
     );
   });
 
@@ -1131,16 +1169,16 @@ describe("notification target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).sendVaccinationReminders({ patientIds: [PATIENT_ID] })
+      callerWithDb(db).sendVaccinationReminders({ patientIds: [PATIENT_ID] }),
     ).resolves.toEqual({ sent: 0, failed: 0, blocked: 1, deduped: 0 });
 
     expect(mocks.sendVaccinationReminder).not.toHaveBeenCalled();
     expect(insertValues).not.toHaveBeenCalled();
   });
 
-  it("falls back to email when vaccination SMS transport throws", async () => {
+  it("preserves the pending claim when vaccination SMS transport throws", async () => {
     mocks.sendVaccinationReminderSms.mockRejectedValueOnce(
-      new Error("Provider unavailable")
+      new Error("Provider unavailable"),
     );
     const { db, insertValues, updateSet } = createDb({
       selectResults: [
@@ -1166,11 +1204,11 @@ describe("notification target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).sendVaccinationReminders({ patientIds: [PATIENT_ID] })
-    ).resolves.toEqual({ sent: 1, failed: 0, blocked: 0, deduped: 0 });
+      callerWithDb(db).sendVaccinationReminders({ patientIds: [PATIENT_ID] }),
+    ).resolves.toEqual({ sent: 0, failed: 1, blocked: 0, deduped: 0 });
 
     expect(mocks.sendVaccinationReminderSms).toHaveBeenCalledOnce();
-    expect(mocks.sendVaccinationReminder).toHaveBeenCalledOnce();
+    expect(mocks.sendVaccinationReminder).not.toHaveBeenCalled();
     expect(insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
         practiceId: PRACTICE_ID,
@@ -1178,15 +1216,9 @@ describe("notification target safety", () => {
         channel: "sms",
         subject: "Vaccination Reminder",
         status: "pending",
-      })
+      }),
     );
-    expect(updateSet).toHaveBeenCalledWith(
-      expect.objectContaining({
-        channel: "email",
-        content: "Vaccination reminder sent for Miso: Rabies",
-        status: "sent",
-      })
-    );
+    expect(updateSet).not.toHaveBeenCalled();
   });
 
   it("releases a failed recall claim so a deliberate retry is possible", async () => {
@@ -1224,11 +1256,11 @@ describe("notification target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).sendVaccinationReminders({ patientIds: [PATIENT_ID] })
+      callerWithDb(db).sendVaccinationReminders({ patientIds: [PATIENT_ID] }),
     ).resolves.toEqual({ sent: 0, failed: 1, blocked: 0, deduped: 0 });
 
     expect(updateSet).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "failed", dedupeKey: null })
+      expect.objectContaining({ status: "failed", dedupeKey: null }),
     );
   });
 
@@ -1257,7 +1289,7 @@ describe("notification target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).sendVaccinationReminders({ patientIds: [PATIENT_ID] })
+      callerWithDb(db).sendVaccinationReminders({ patientIds: [PATIENT_ID] }),
     ).resolves.toEqual({ sent: 0, failed: 0, blocked: 1, deduped: 0 });
 
     expect(mocks.sendVaccinationReminderSms).not.toHaveBeenCalled();
@@ -1303,7 +1335,7 @@ describe("notification target safety", () => {
     const { db, insertValues } = createDb({ selectResults: [[]] });
 
     await expect(
-      callerWithDb(db).sendInvoiceEmail({ invoiceId: INVOICE_ID })
+      callerWithDb(db).sendInvoiceEmail({ invoiceId: INVOICE_ID }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(mocks.sendInvoiceEmail).not.toHaveBeenCalled();
@@ -1331,7 +1363,7 @@ describe("notification target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).sendInvoiceEmail({ invoiceId: INVOICE_ID })
+      callerWithDb(db).sendInvoiceEmail({ invoiceId: INVOICE_ID }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message:
@@ -1361,7 +1393,7 @@ describe("notification target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).sendInvoiceEmail({ invoiceId: INVOICE_ID })
+      callerWithDb(db).sendInvoiceEmail({ invoiceId: INVOICE_ID }),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     expect(mocks.sendInvoiceEmail).not.toHaveBeenCalled();
     expect(insertValues).not.toHaveBeenCalled();
@@ -1395,7 +1427,7 @@ describe("notification target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).sendInvoiceEmail({ invoiceId: INVOICE_ID })
+      callerWithDb(db).sendInvoiceEmail({ invoiceId: INVOICE_ID }),
     ).resolves.toEqual({ success: true });
 
     expect(mocks.sendInvoiceEmail).toHaveBeenCalledWith(
@@ -1406,7 +1438,7 @@ describe("notification target safety", () => {
         dueDate: "Jul 1, 2026",
         practiceName: "Neighborhood Veterinary",
         practicePhone: "555-0100",
-      })
+      }),
     );
     expect(insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1417,7 +1449,7 @@ describe("notification target safety", () => {
         content: "Invoice sent — amount due: $88.45",
         status: "sent",
         providerMessageId: "email-invoice-1",
-      })
+      }),
     );
   });
 
@@ -1443,7 +1475,7 @@ describe("notification target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).sendInvoiceEmail({ invoiceId: INVOICE_ID })
+      callerWithDb(db).sendInvoiceEmail({ invoiceId: INVOICE_ID }),
     ).rejects.toMatchObject({
       code: "BAD_REQUEST",
       message:
@@ -1481,7 +1513,7 @@ describe("notification target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).sendInvoiceEmail({ invoiceId: INVOICE_ID })
+      callerWithDb(db).sendInvoiceEmail({ invoiceId: INVOICE_ID }),
     ).rejects.toMatchObject({
       code: "BAD_REQUEST",
       message: "Email provider rejected the message",
@@ -1494,11 +1526,11 @@ describe("notification target safety", () => {
 describe("notification query scoping", () => {
   const routerSource = readFileSync(
     new URL("../routers/notifications.ts", import.meta.url),
-    "utf8"
+    "utf8",
   );
   const recallSource = readFileSync(
     new URL("../vaccination-recalls.ts", import.meta.url),
-    "utf8"
+    "utf8",
   );
   const source = `${routerSource}\n${recallSource}`;
 
@@ -1507,22 +1539,22 @@ describe("notification query scoping", () => {
     table: string,
     foreignKey: string,
     tenantExpr: string,
-    minCount = 1
+    minCount = 1,
   ) {
     const joins = source.match(
       new RegExp(
         `${joinKind}\\(\\s*${table},\\s*and\\(\\s*eq\\(${foreignKey.replace(
           ".",
-          "\\."
+          "\\.",
         )}, ${table}\\.id\\),\\s*eq\\(${table}\\.practiceId, ${tenantExpr.replace(
           ".",
-          "\\."
+          "\\.",
         )}\\),\\s*activePracticePredicate\\(${tenantExpr.replace(
           ".",
-          "\\."
-        )}\\),\\s*isNull\\(${table}\\.deletedAt\\)\\s*\\)\\s*\\)`,
-        "gs"
-      )
+          "\\.",
+        )}\\),\\s*isNull\\(${table}\\.deletedAt\\),?\\s*\\),?\\s*\\)`,
+        "gs",
+      ),
     );
     expect(joins?.length).toBeGreaterThanOrEqual(minCount);
   }
@@ -1533,7 +1565,7 @@ describe("notification query scoping", () => {
     expect(source).toContain("throw practiceNotFound()");
 
     const appointmentPatientJoins = source.match(
-      /leftJoin\(\s*patients,\s*and\(\s*eq\(appointments\.patientId, patients\.id\),\s*eq\(patients\.clientId, appointments\.clientId\),\s*eq\(patients\.practiceId, ctx\.practiceId\),\s*activePracticePredicate\(ctx\.practiceId\),\s*isNull\(patients\.deletedAt\)\s*\)\s*\)/gs
+      /leftJoin\(\s*patients,\s*and\(\s*eq\(appointments\.patientId, patients\.id\),\s*eq\(patients\.clientId, appointments\.clientId\),\s*eq\(patients\.practiceId, ctx\.practiceId\),\s*activePracticePredicate\(ctx\.practiceId\),\s*isNull\(patients\.deletedAt\),?\s*\),?\s*\)/gs,
     );
     expect(appointmentPatientJoins?.length).toBeGreaterThanOrEqual(3);
     expectScopedJoin(
@@ -1541,31 +1573,31 @@ describe("notification query scoping", () => {
       "clients",
       "appointments.clientId",
       "ctx.practiceId",
-      3
+      3,
     );
     expectScopedJoin(
       "leftJoin",
       "users",
       "appointments.doctorId",
-      "ctx.practiceId"
+      "ctx.practiceId",
     );
     expect(source).not.toContain(
-      'inArray(appointments.status, ["scheduled", "confirmed"])'
+      'inArray(appointments.status, ["scheduled", "confirmed"])',
     );
     expect(source).toContain('if (appt.status !== "confirmed")');
     expect(
-      source.match(/eq\(appointments\.status, "confirmed"\)/g)?.length
+      source.match(/eq\(appointments\.status, "confirmed"\)/g)?.length,
     ).toBeGreaterThanOrEqual(2);
   });
 
   it("keeps active reminder SMS sender lookup tenant scoped and active", () => {
     const senderBlock = source.slice(
       source.indexOf("async function activeReminderSmsSender"),
-      source.indexOf("export const notificationsRouter")
+      source.indexOf("export const notificationsRouter"),
     );
 
     expect(senderBlock).toContain(
-      "eq(locationMessaging.practiceId, ctx.practiceId)"
+      "eq(locationMessaging.practiceId, ctx.practiceId)",
     );
     expect(senderBlock).toContain("activePracticePredicate(ctx.practiceId)");
     expect(senderBlock).toContain("eq(locations.practiceId, ctx.practiceId)");
@@ -1573,14 +1605,14 @@ describe("notification query scoping", () => {
     expect(senderBlock).toContain("isNull(locations.deletedAt)");
     expect(senderBlock).toContain("eq(locationMessaging.enabled, true)");
     expect(senderBlock).toContain(
-      'eq(locationMessaging.registrationStatus, "active")'
+      'eq(locationMessaging.registrationStatus, "active")',
     );
     expect(senderBlock).toContain("hasNonBlankMessagingSender()");
     expect(senderBlock).not.toContain(
-      "isNotNull(locationMessaging.senderE164)"
+      "isNotNull(locationMessaging.senderE164)",
     );
     expect(senderBlock).not.toContain(
-      "isNotNull(locationMessaging.messagingProfileId)"
+      "isNotNull(locationMessaging.messagingProfileId)",
     );
   });
 
@@ -1589,54 +1621,54 @@ describe("notification query scoping", () => {
       "leftJoin",
       "clients",
       "invoices.clientId",
-      "ctx.practiceId"
+      "ctx.practiceId",
     );
     expectScopedJoin(
       "innerJoin",
       "patients",
       "vaccinationRecords.patientId",
       "ctx.practiceId",
-      2
+      2,
     );
     expectScopedJoin(
       "innerJoin",
       "clients",
       "patients.clientId",
       "ctx.practiceId",
-      2
+      2,
     );
   });
 
   it("matches provider suppressions against trimmed normalized client emails", () => {
     const suppressionJoins = source.match(
-      /sql`\$\{emailSuppressions\.email\} = lower\(trim\(\$\{clients\.email\}\)\)`/g
+      /sql`\$\{emailSuppressions\.email\} = lower\(trim\(\$\{clients\.email\}\)\)`/g,
     );
 
     expect(suppressionJoins?.length).toBeGreaterThanOrEqual(4);
     expect(source).not.toContain(
-      "sql`${emailSuppressions.email} = lower(${clients.email})`"
+      "sql`${emailSuppressions.email} = lower(${clients.email})`",
     );
   });
 
   it("uses the practice timezone for vaccination overdue cutoffs", () => {
     const recallPreviewBlock = recallSource.slice(
       recallSource.indexOf("async function loadVaccinationRecallRecipients"),
-      recallSource.indexOf("export async function getVaccinationRecallPreview")
+      recallSource.indexOf("export async function getVaccinationRecallPreview"),
     );
     const vaccinationBlock = source.slice(
       source.indexOf("getOverdueVaccinations:"),
-      source.indexOf("sendVaccinationReminders:")
+      source.indexOf("sendVaccinationReminders:"),
     );
 
     expect(source).toContain("async function practiceDateInput");
     expect(source).toContain(
-      "formatDateInputForTimeZone(new Date(), practice.timezone)"
+      "formatDateInputForTimeZone(new Date(), practice.timezone)",
     );
     expect(vaccinationBlock).toContain(
-      "const today = await practiceDateInput(ctx)"
+      "const today = await practiceDateInput(ctx)",
     );
     expect(recallPreviewBlock).toContain(
-      "const today = formatDateInputForTimeZone(new Date(), practice.timezone)"
+      "const today = formatDateInputForTimeZone(new Date(), practice.timezone)",
     );
     expect(recallPreviewBlock).toContain("latestVaccinationRecordPredicate()");
     expect(recallPreviewBlock).toContain('eq(patients.status, "active")');
@@ -1645,17 +1677,17 @@ describe("notification query scoping", () => {
 
   it("formats manual appointment reminder labels in the practice timezone", () => {
     expect(source).toContain(
-      "function formatDate(d: Date | string, timeZone?: string | null)"
+      "function formatDate(d: Date | string, timeZone?: string | null)",
     );
     expect(source).toContain(
-      "function formatTime(d: Date | string, timeZone?: string | null)"
+      "function formatTime(d: Date | string, timeZone?: string | null)",
     );
     expect(source).toContain("practiceTimezone: practices.timezone");
     expect(source).toContain(
-      "formatDate(appt.startTime, appt.practiceTimezone)"
+      "formatDate(appt.startTime, appt.practiceTimezone)",
     );
     expect(source).toContain(
-      "formatTime(appt.startTime, appt.practiceTimezone)"
+      "formatTime(appt.startTime, appt.practiceTimezone)",
     );
     expect(source).not.toContain("formatDate(appt.startTime)");
     expect(source).not.toContain("formatTime(appt.startTime)");
@@ -1665,7 +1697,7 @@ describe("notification query scoping", () => {
     expect(source).toContain("function practiceDisplayName");
     expect(source).toContain("async function practiceNotificationSettings");
     expect(source).toContain(
-      "practiceName: practiceDisplayName(appt.practiceName)"
+      "practiceName: practiceDisplayName(appt.practiceName)",
     );
     expect(source).toContain("name: practiceDisplayName(practice.name)");
     expect(source).not.toContain("practice?.name");

@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { and, eq, isNull, sql, desc } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, lte, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
+import { unstable_noStore as noStore } from "next/cache";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure } from "../trpc";
 import { db } from "@openpims/db/client";
@@ -12,6 +13,9 @@ import {
   locations,
   messagingRegistrations,
   locationMessaging,
+  communications,
+  smsSendAttemptEvents,
+  smsSendAttempts,
 } from "@openpims/db";
 import { isPlatformAdmin } from "@/lib/platform-admin";
 import { computeActivationFunnel } from "@/lib/admin/activation-funnel";
@@ -49,6 +53,7 @@ import {
   observedRegistrationStatus,
 } from "@/lib/messaging/a2p-lifecycle";
 import { messagingProgramUrls } from "@/lib/messaging/public-program";
+import { reconcileSmsSendAttempt, resendSmsAttempt } from "@/lib/sms-dispatch";
 
 /**
  * Platform-operator only. Crosses tenant boundaries deliberately, so it is
@@ -56,7 +61,10 @@ import { messagingProgramUrls } from "@/lib/messaging/public-program";
  */
 const platformAdminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
   if (!isPlatformAdmin(ctx.session?.user?.email)) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "Platform admin access only." });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Platform admin access only.",
+    });
   }
   return next();
 });
@@ -128,11 +136,10 @@ export function messagingCampaignCopy(input: {
   return {
     description:
       "Veterinary clinic communications including appointment reminders, vaccination and care follow-ups, and two-way client support. Messages are sent only to clients whose SMS consent is recorded by the clinic.",
-    sample1: `${input.displayName}: Reminder—your pet's appointment is tomorrow at 10:00 AM. Call ${input.businessPhone} if you need to reschedule. Reply STOP to opt out.`,
-    sample2: `${input.displayName}: Your pet's care instructions are ready. Reply here with questions or call ${input.businessPhone}. Reply STOP to opt out.`,
-    sample3: `${input.displayName}: Clinic text messaging information: ${input.programUrl} Reply HELP for help or STOP to opt out.`,
-    messageFlow:
-      `Clients opt in during phone or in-person intake. Clinic staff read or show the exact disclosure at ${input.optInUrl}, ask for an explicit choice, and record the consent decision, timestamp, disclosure, consent source, and mobile number in OpenVPM. The consent control is optional and unchecked by default. No SMS is sent before consent is recorded. Message frequency varies. Message and data rates may apply. Consent is not a condition of purchase. Reply STOP to opt out or HELP for help. Privacy: ${input.privacyPolicyUrl} Terms: ${input.termsUrl}`,
+    sample1: `${input.displayName}: Reminder—your pet's appointment is tomorrow at 10:00 AM. Call ${input.businessPhone} if you need to reschedule. Reply STOP to opt out or HELP for help.`,
+    sample2: `${input.displayName}: Your pet's care instructions are ready. Reply here with questions or call ${input.businessPhone}. Reply STOP to opt out or HELP for help.`,
+    sample3: `${input.displayName}: Clinic text messaging information: ${input.programUrl} Reply STOP to opt out or HELP for help.`,
+    messageFlow: `Clients opt in during phone or in-person intake. Clinic staff read or show the exact disclosure at ${input.optInUrl}, ask for an explicit choice, and record the consent decision, timestamp, disclosure, consent source, and mobile number in OpenVPM. The consent control is optional and unchecked by default. No SMS is sent before consent is recorded. Message frequency varies. Message and data rates may apply. Consent is not a condition of purchase. Reply STOP to opt out or HELP for help. Privacy: ${input.privacyPolicyUrl} Terms: ${input.termsUrl}`,
     helpMessage: `Contact ${input.displayName} at ${input.businessPhone} or ${input.website}. Reply STOP to opt out.`,
     optinMessage: `${input.displayName}: You agreed to receive clinic service texts. Frequency varies. Msg & data rates may apply. Consent is not a condition of purchase. Reply HELP for help or STOP to opt out.`,
     optoutMessage: `${input.displayName}: You have been unsubscribed and will receive no further SMS messages. Reply START to opt back in.`,
@@ -147,8 +154,8 @@ async function registrationForOperator(practiceId: string) {
       .where(
         and(
           eq(messagingRegistrations.practiceId, practiceId),
-          isNull(messagingRegistrations.deletedAt)
-        )
+          isNull(messagingRegistrations.deletedAt),
+        ),
       )
       .limit(1);
     if (!row) {
@@ -187,8 +194,8 @@ async function claimRegistrationOperation(opts: {
           isNull(messagingRegistrations.submissionLockId),
           opts.allowReviewedRetry
             ? sql`true`
-            : sql`${messagingRegistrations.lastError} is null`
-        )
+            : sql`${messagingRegistrations.lastError} is null`,
+        ),
       )
       .returning({ id: messagingRegistrations.id });
     if (!claimed) {
@@ -220,8 +227,8 @@ async function finishRegistrationOperation(opts: {
         and(
           eq(messagingRegistrations.id, opts.registrationId),
           eq(messagingRegistrations.submissionLockId, opts.lockId),
-          isNull(messagingRegistrations.deletedAt)
-        )
+          isNull(messagingRegistrations.deletedAt),
+        ),
       )
       .returning({ id: messagingRegistrations.id });
     if (!updated) {
@@ -265,8 +272,8 @@ async function failRegistrationOperation(opts: {
         and(
           eq(locationMessaging.practiceId, opts.practiceId),
           eq(locationMessaging.provider, "telnyx"),
-          isNull(locationMessaging.deletedAt)
-        )
+          isNull(locationMessaging.deletedAt),
+        ),
       );
   });
 }
@@ -345,38 +352,47 @@ export const adminRouter = createRouter({
   overview: platformAdminProcedure.query(async () =>
     // Bypass tenant RLS — this view legitimately spans all practices.
     withSystem(db, async (tx) => {
-    const rows = await tx
-      .select({
-        id: practices.id,
-        name: practices.name,
-        tier: practices.subscriptionTier,
-        billingStatus: practices.billingStatus,
-        trialEndsAt: practices.trialEndsAt,
-        timezone: practices.timezone,
-        country: practices.country,
-        createdAt: practices.createdAt,
-        settings: practices.settings,
-      })
-      .from(practices)
-      .where(isNull(practices.deletedAt))
-      .orderBy(desc(practices.createdAt));
-
-    const countBy = async (
-      table: typeof users | typeof clients | typeof patients | typeof locations
-    ) => {
-      const res = await tx
+      const rows = await tx
         .select({
-          practiceId: table.practiceId,
-          c: sql<number>`count(*)::int`,
+          id: practices.id,
+          name: practices.name,
+          tier: practices.subscriptionTier,
+          billingStatus: practices.billingStatus,
+          trialEndsAt: practices.trialEndsAt,
+          timezone: practices.timezone,
+          country: practices.country,
+          createdAt: practices.createdAt,
+          settings: practices.settings,
         })
-        .from(table)
-        .where(isNull(table.deletedAt))
-        .groupBy(table.practiceId);
-      return new Map(res.map((r) => [r.practiceId, Number(r.c)]));
-    };
+        .from(practices)
+        .where(isNull(practices.deletedAt))
+        .orderBy(desc(practices.createdAt));
 
-    const [userCounts, clientCounts, patientCounts, locationCounts, adminRows] =
-      await Promise.all([
+      const countBy = async (
+        table:
+          | typeof users
+          | typeof clients
+          | typeof patients
+          | typeof locations,
+      ) => {
+        const res = await tx
+          .select({
+            practiceId: table.practiceId,
+            c: sql<number>`count(*)::int`,
+          })
+          .from(table)
+          .where(isNull(table.deletedAt))
+          .groupBy(table.practiceId);
+        return new Map(res.map((r) => [r.practiceId, Number(r.c)]));
+      };
+
+      const [
+        userCounts,
+        clientCounts,
+        patientCounts,
+        locationCounts,
+        adminRows,
+      ] = await Promise.all([
         countBy(users),
         countBy(clients),
         countBy(patients),
@@ -394,76 +410,79 @@ export const adminRouter = createRouter({
           .orderBy(users.practiceId, users.createdAt),
       ]);
 
-    const primaryAdminByPractice = new Map<
-      string,
-      (typeof adminRows)[number]
-    >();
-    for (const admin of adminRows) {
-      if (!primaryAdminByPractice.has(admin.practiceId)) {
-        primaryAdminByPractice.set(admin.practiceId, admin);
+      const primaryAdminByPractice = new Map<
+        string,
+        (typeof adminRows)[number]
+      >();
+      for (const admin of adminRows) {
+        if (!primaryAdminByPractice.has(admin.practiceId)) {
+          primaryAdminByPractice.set(admin.practiceId, admin);
+        }
       }
-    }
 
-    const practiceRows = rows.map((p) => {
-      const { settings, ...practice } = p;
-      const primaryAdmin = primaryAdminByPractice.get(p.id);
-      const userCount = userCounts.get(p.id) ?? 0;
-      const locationCount = Math.max(1, locationCounts.get(p.id) ?? 0);
-      const estimatedMrr =
-        p.billingStatus === "active" && getPlan(p.tier).tier === "cloud"
-          ? locationCount * CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD +
-            userCount * CLOUD_SEAT_UNIT_PRICE_MONTHLY_USD
-          : 0;
-      return {
-        ...practice,
-        ...conversionContext(settings),
-        userCount,
-        locationCount,
-        estimatedMrr,
-        clientCount: clientCounts.get(p.id) ?? 0,
-        patientCount: patientCounts.get(p.id) ?? 0,
-        adminName: primaryAdmin?.name ?? null,
-        adminEmail: primaryAdmin?.email ?? null,
-        adminEmailVerifiedAt: primaryAdmin?.emailVerifiedAt ?? null,
-      };
-    });
+      const practiceRows = rows.map((p) => {
+        const { settings, ...practice } = p;
+        const primaryAdmin = primaryAdminByPractice.get(p.id);
+        const userCount = userCounts.get(p.id) ?? 0;
+        const locationCount = Math.max(1, locationCounts.get(p.id) ?? 0);
+        const estimatedMrr =
+          p.billingStatus === "active" && getPlan(p.tier).tier === "cloud"
+            ? locationCount * CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD +
+              userCount * CLOUD_SEAT_UNIT_PRICE_MONTHLY_USD
+            : 0;
+        return {
+          ...practice,
+          ...conversionContext(settings),
+          userCount,
+          locationCount,
+          estimatedMrr,
+          clientCount: clientCounts.get(p.id) ?? 0,
+          patientCount: patientCounts.get(p.id) ?? 0,
+          adminName: primaryAdmin?.name ?? null,
+          adminEmail: primaryAdmin?.email ?? null,
+          adminEmailVerifiedAt: primaryAdmin?.emailVerifiedAt ?? null,
+        };
+      });
 
-    // MRR: active hosted Cloud subscriptions use hybrid location + staff pricing.
-    const estimatedMrr = practiceRows
-      .filter(
-        (p) => p.billingStatus === "active" && getPlan(p.tier).tier === "cloud"
-      )
-      .reduce((sum, p) => sum + p.estimatedMrr, 0);
-
-    const byTier: Record<PlanTier, number> = {
-      free: 0,
-      cloud: 0,
-      enterprise: 0,
-    };
-    for (const p of practiceRows) {
-      const t = getPlan(p.tier).tier;
-      byTier[t] += 1;
-    }
-
-    const overviewNow = new Date();
-
-    return {
-      practices: practiceRows,
-      totals: {
-        practices: practiceRows.length,
-        estimatedMrr,
-        byTier,
-        activeTrials: practiceRows.filter(
+      // MRR: active hosted Cloud subscriptions use hybrid location + staff pricing.
+      const estimatedMrr = practiceRows
+        .filter(
           (p) =>
-            p.billingStatus === "trialing" &&
-            p.trialEndsAt != null &&
-            p.trialEndsAt.getTime() > overviewNow.getTime()
-        ).length,
-        active: practiceRows.filter((p) => p.billingStatus === "active").length,
-        pastDue: practiceRows.filter((p) => p.billingStatus === "past_due").length,
-      },
-    };
-    })
+            p.billingStatus === "active" && getPlan(p.tier).tier === "cloud",
+        )
+        .reduce((sum, p) => sum + p.estimatedMrr, 0);
+
+      const byTier: Record<PlanTier, number> = {
+        free: 0,
+        cloud: 0,
+        enterprise: 0,
+      };
+      for (const p of practiceRows) {
+        const t = getPlan(p.tier).tier;
+        byTier[t] += 1;
+      }
+
+      const overviewNow = new Date();
+
+      return {
+        practices: practiceRows,
+        totals: {
+          practices: practiceRows.length,
+          estimatedMrr,
+          byTier,
+          activeTrials: practiceRows.filter(
+            (p) =>
+              p.billingStatus === "trialing" &&
+              p.trialEndsAt != null &&
+              p.trialEndsAt.getTime() > overviewNow.getTime(),
+          ).length,
+          active: practiceRows.filter((p) => p.billingStatus === "active")
+            .length,
+          pastDue: practiceRows.filter((p) => p.billingStatus === "past_due")
+            .length,
+        },
+      };
+    }),
   ),
 
   /**
@@ -477,7 +496,7 @@ export const adminRouter = createRouter({
       z.object({
         practiceId: z.string().uuid(),
         days: z.number().int().min(1).max(90),
-      })
+      }),
     )
     .mutation(async ({ input }) =>
       withSystem(db, async (tx) => {
@@ -489,12 +508,18 @@ export const adminRouter = createRouter({
           })
           .from(practices)
           .where(
-            and(eq(practices.id, input.practiceId), isNull(practices.deletedAt))
+            and(
+              eq(practices.id, input.practiceId),
+              isNull(practices.deletedAt),
+            ),
           )
           .limit(1);
 
         if (!practice) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Practice not found." });
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Practice not found.",
+          });
         }
         if (practice.billingStatus !== "trialing") {
           throw new TRPCError({
@@ -517,7 +542,7 @@ export const adminRouter = createRouter({
           .where(eq(practices.id, input.practiceId));
 
         return { practiceId: input.practiceId, trialEndsAt };
-      })
+      }),
     ),
 
   /** Reversibly exclude internal/test practices from conversion reporting. */
@@ -526,20 +551,25 @@ export const adminRouter = createRouter({
       z.object({
         practiceId: z.string().uuid(),
         excluded: z.boolean(),
-      })
+      }),
     )
     .mutation(async ({ input }) =>
       withSystem(db, async (tx) => {
         const [updated] = await tx
           .update(practices)
           .set({
-            settings: sql`coalesce(${practices.settings}, '{}'::jsonb) || ${JSON.stringify({
-              analyticsExcluded: input.excluded,
-            })}::jsonb`,
+            settings: sql`coalesce(${practices.settings}, '{}'::jsonb) || ${JSON.stringify(
+              {
+                analyticsExcluded: input.excluded,
+              },
+            )}::jsonb`,
             updatedAt: new Date(),
           })
           .where(
-            and(eq(practices.id, input.practiceId), isNull(practices.deletedAt))
+            and(
+              eq(practices.id, input.practiceId),
+              isNull(practices.deletedAt),
+            ),
           )
           .returning({ id: practices.id });
 
@@ -550,7 +580,7 @@ export const adminRouter = createRouter({
           });
         }
         return { practiceId: input.practiceId, excluded: input.excluded };
-      })
+      }),
     ),
 
   /** Redacted A2P work queue. Legal tax IDs are never exposed here. */
@@ -583,8 +613,8 @@ export const adminRouter = createRouter({
           practices,
           and(
             eq(practices.id, messagingRegistrations.practiceId),
-            isNull(practices.deletedAt)
-          )
+            isNull(practices.deletedAt),
+          ),
         )
         .where(isNull(messagingRegistrations.deletedAt))
         .orderBy(desc(messagingRegistrations.updatedAt));
@@ -601,10 +631,10 @@ export const adminRouter = createRouter({
       return rows.map((row) => ({
         ...row,
         senders: senders.filter(
-          (sender) => sender.practiceId === row.practiceId
+          (sender) => sender.practiceId === row.practiceId,
         ),
       }));
-    })
+    }),
   ),
 
   /** Fee-bearing TCR brand creation; platform operator only and explicitly confirmed. */
@@ -614,7 +644,7 @@ export const adminRouter = createRouter({
         practiceId: z.string().uuid(),
         confirmProviderCharges: z.literal(true),
         retryAfterProviderReview: z.boolean().default(false),
-      })
+      }),
     )
     .mutation(async ({ input }) => {
       assertMessagingProviderMutationsEnabled();
@@ -685,7 +715,7 @@ export const adminRouter = createRouter({
         practiceId: z.string().uuid(),
         confirmProviderCharges: z.literal(true),
         retryAfterProviderReview: z.boolean().default(false),
-      })
+      }),
     )
     .mutation(async ({ input }) => {
       assertMessagingProviderMutationsEnabled();
@@ -707,7 +737,7 @@ export const adminRouter = createRouter({
       const brand = await getA2pBrand(registration.providerBrandId);
       if (
         !new Set(["VERIFIED", "VETTED_VERIFIED"]).has(
-          brand.identityStatus ?? ""
+          brand.identityStatus ?? "",
         )
       ) {
         await withSystem(db, async (tx) => {
@@ -828,7 +858,7 @@ export const adminRouter = createRouter({
       z.object({
         practiceId: z.string().uuid(),
         confirmProviderMutation: z.literal(true),
-      })
+      }),
     )
     .mutation(async ({ input }) => {
       assertMessagingProviderMutationsEnabled();
@@ -859,9 +889,9 @@ export const adminRouter = createRouter({
               eq(locationMessaging.practiceId, input.practiceId),
               eq(locationMessaging.provider, "telnyx"),
               isNull(locationMessaging.deletedAt),
-              sql`nullif(trim(${locationMessaging.senderE164}), '') is not null`
-            )
-          )
+              sql`nullif(trim(${locationMessaging.senderE164}), '') is not null`,
+            ),
+          ),
       );
       if (senders.length === 0) {
         throw new TRPCError({
@@ -877,7 +907,7 @@ export const adminRouter = createRouter({
           await ensureA2pNumberAssignment({
             phoneNumber: sender.phoneNumber,
             campaignId: registration.providerCampaignId,
-          })
+          }),
         );
       }
       const observed = observedRegistrationStatus({
@@ -926,12 +956,265 @@ export const adminRouter = createRouter({
             and(
               eq(locationMessaging.practiceId, input.practiceId),
               eq(locationMessaging.provider, "telnyx"),
-              isNull(locationMessaging.deletedAt)
-            )
+              isNull(locationMessaging.deletedAt),
+            ),
           );
       });
       return { ok: true, status: next, assigned: assignments.length };
     }),
+
+  smsSendAttemptQueue: platformAdminProcedure
+    .input(
+      z.object({
+        practiceId: z.string().uuid().optional(),
+        staleMinutes: z
+          .number()
+          .int()
+          .min(15)
+          .max(7 * 24 * 60)
+          .default(15),
+        limit: z.number().int().min(1).max(100).default(50),
+      }),
+    )
+    .query(({ input }) => {
+      noStore();
+      const cutoff = new Date(Date.now() - input.staleMinutes * 60 * 1000);
+      return withSystem(db, async (tx) => {
+        const hasAnyEvent = sql<boolean>`exists (
+          select 1
+          from sms_send_attempt_events queue_event
+          where queue_event.practice_id = ${smsSendAttempts.practiceId}
+            and queue_event.attempt_id = ${smsSendAttempts.id}
+        )`;
+        const effectiveOutcome = sql<string | null>`coalesce(
+          (
+            select reconciliation.outcome::text
+            from sms_send_attempt_events reconciliation
+            where reconciliation.practice_id = ${smsSendAttempts.practiceId}
+              and reconciliation.attempt_id = ${smsSendAttempts.id}
+              and reconciliation.kind = 'reconciliation'
+            order by reconciliation.created_at desc, reconciliation.id desc
+            limit 1
+          ),
+          (
+            select provider_result.outcome::text
+            from sms_send_attempt_events provider_result
+            where provider_result.practice_id = ${smsSendAttempts.practiceId}
+              and provider_result.attempt_id = ${smsSendAttempts.id}
+              and provider_result.kind = 'provider_result'
+            order by provider_result.created_at desc, provider_result.id desc
+            limit 1
+          )
+        )`;
+        const attemptItems = await tx
+          .select({
+            attemptId: smsSendAttempts.id,
+            practiceId: smsSendAttempts.practiceId,
+            createdAt: smsSendAttempts.createdAt,
+            communicationId: smsSendAttempts.communicationId,
+            source: smsSendAttempts.source,
+            provider: smsSendAttempts.provider,
+            classification: sql<
+              | "missing_provider_result"
+              | "outcome_unknown"
+              | "terminal_projection_pending"
+            >`case
+                when not (${hasAnyEvent}) then 'missing_provider_result'
+                when (${effectiveOutcome}) = 'outcome_unknown' then 'outcome_unknown'
+                else 'terminal_projection_pending'
+              end`,
+          })
+          .from(smsSendAttempts)
+          .where(
+            and(
+              lte(smsSendAttempts.createdAt, cutoff),
+              input.practiceId
+                ? eq(smsSendAttempts.practiceId, input.practiceId)
+                : undefined,
+              sql`(
+                (${effectiveOutcome}) is null
+                or (${effectiveOutcome}) = 'outcome_unknown'
+                or (
+                  (${effectiveOutcome}) in ('accepted', 'definite_failure')
+                  and exists (
+                    select 1
+                    from communications pending_projection
+                    where pending_projection.practice_id = ${smsSendAttempts.practiceId}
+                      and pending_projection.id = ${smsSendAttempts.communicationId}
+                      and pending_projection.status = 'pending'
+                      and pending_projection.deleted_at is null
+                  )
+                )
+              )`,
+            ),
+          )
+          .orderBy(asc(smsSendAttempts.createdAt), asc(smsSendAttempts.id))
+          .limit(input.limit);
+        const orphanItems = await tx
+          .select({
+            attemptId: sql<string | null>`null::uuid`,
+            practiceId: communications.practiceId,
+            createdAt: communications.createdAt,
+            communicationId: communications.id,
+            source: sql<"communication_claim">`'communication_claim'`,
+            provider: sql<null>`null::text`,
+            classification: sql<"orphan_pending_communication">`'orphan_pending_communication'`,
+          })
+          .from(communications)
+          .where(
+            and(
+              lte(communications.createdAt, cutoff),
+              eq(communications.channel, "sms"),
+              eq(communications.direction, "outbound"),
+              eq(communications.status, "pending"),
+              isNull(communications.deletedAt),
+              input.practiceId
+                ? eq(communications.practiceId, input.practiceId)
+                : undefined,
+              sql`not exists (
+                select 1
+                from sms_send_attempts orphan_attempt
+                where orphan_attempt.practice_id = ${communications.practiceId}
+                  and orphan_attempt.communication_id = ${communications.id}
+              )`,
+            ),
+          )
+          .orderBy(asc(communications.createdAt), asc(communications.id))
+          .limit(input.limit);
+        const items = [...attemptItems, ...orphanItems]
+          .sort((left, right) => {
+            const byTime =
+              new Date(left.createdAt).getTime() -
+              new Date(right.createdAt).getTime();
+            if (byTime !== 0) return byTime;
+            return (left.attemptId ?? left.communicationId ?? "").localeCompare(
+              right.attemptId ?? right.communicationId ?? "",
+            );
+          })
+          .slice(0, input.limit);
+        return { cacheControl: "no-store" as const, items };
+      });
+    }),
+
+  smsSendAttempt: platformAdminProcedure
+    .input(
+      z.object({
+        practiceId: z.string().uuid(),
+        attemptId: z.string().uuid(),
+      }),
+    )
+    .query(({ input }) => {
+      noStore();
+      return withSystem(db, async (tx) => {
+        const [attempt] = await tx
+          .select({
+            id: smsSendAttempts.id,
+            createdAt: smsSendAttempts.createdAt,
+            practiceId: smsSendAttempts.practiceId,
+            clientId: smsSendAttempts.clientId,
+            locationId: smsSendAttempts.locationId,
+            communicationId: smsSendAttempts.communicationId,
+            resendOfAttemptId: smsSendAttempts.resendOfAttemptId,
+            source: smsSendAttempts.source,
+            sourceId: smsSendAttempts.sourceId,
+            idempotencyKey: smsSendAttempts.idempotencyKey,
+            registeredDisplayName: smsSendAttempts.registeredDisplayName,
+            provider: smsSendAttempts.provider,
+            senderMessagingServiceId: smsSendAttempts.senderMessagingServiceId,
+            senderE164: smsSendAttempts.senderE164,
+            requestedByActorType: smsSendAttempts.requestedByActorType,
+            requestedByUserId: smsSendAttempts.requestedByUserId,
+            requestedByIdentity: smsSendAttempts.requestedByIdentity,
+            requestedByName: smsSendAttempts.requestedByName,
+          })
+          .from(smsSendAttempts)
+          .where(
+            and(
+              eq(smsSendAttempts.practiceId, input.practiceId),
+              eq(smsSendAttempts.id, input.attemptId),
+            ),
+          )
+          .limit(1);
+        if (!attempt) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "SMS send attempt not found.",
+          });
+        }
+        const events = await tx
+          .select({
+            id: smsSendAttemptEvents.id,
+            createdAt: smsSendAttemptEvents.createdAt,
+            kind: smsSendAttemptEvents.kind,
+            outcome: smsSendAttemptEvents.outcome,
+            providerMessageId: smsSendAttemptEvents.providerMessageId,
+            detail: smsSendAttemptEvents.detail,
+            actorType: smsSendAttemptEvents.actorType,
+            actorUserId: smsSendAttemptEvents.actorUserId,
+            actorIdentity: smsSendAttemptEvents.actorIdentity,
+            actorName: smsSendAttemptEvents.actorName,
+            eventKey: smsSendAttemptEvents.eventKey,
+          })
+          .from(smsSendAttemptEvents)
+          .where(
+            and(
+              eq(smsSendAttemptEvents.practiceId, input.practiceId),
+              eq(smsSendAttemptEvents.attemptId, input.attemptId),
+            ),
+          )
+          .orderBy(
+            desc(smsSendAttemptEvents.createdAt),
+            desc(smsSendAttemptEvents.id),
+          );
+        return { cacheControl: "no-store" as const, attempt, events };
+      });
+    }),
+
+  reconcileSmsSendAttempt: platformAdminProcedure
+    .input(
+      z.object({
+        practiceId: z.string().uuid(),
+        attemptId: z.string().uuid(),
+        reconciliationId: z.string().uuid(),
+        outcome: z.enum(["accepted", "definite_failure"]),
+        providerMessageId: z.string().trim().min(1).max(255).optional(),
+        detail: z.string().trim().min(1).max(2000),
+      }),
+    )
+    .mutation(({ ctx, input }) =>
+      reconcileSmsSendAttempt({
+        practiceId: input.practiceId,
+        attemptId: input.attemptId,
+        outcome: input.outcome,
+        providerMessageId: input.providerMessageId,
+        detail: input.detail,
+        actorType: "platform_operator",
+        actorUserId: ctx.session!.user.id,
+        actorIdentity: ctx.session!.user.email,
+        actorName: ctx.session!.user.name?.trim() || ctx.session!.user.email,
+        reconciliationKey: `operator-reconciliation:${input.reconciliationId}`,
+      }),
+    ),
+
+  resendSmsSendAttempt: platformAdminProcedure
+    .input(
+      z.object({
+        practiceId: z.string().uuid(),
+        attemptId: z.string().uuid(),
+        resendId: z.string().uuid(),
+      }),
+    )
+    .mutation(({ ctx, input }) =>
+      resendSmsAttempt({
+        practiceId: input.practiceId,
+        attemptId: input.attemptId,
+        idempotencyKey: `sms:operator-resend:${input.resendId}`,
+        actorType: "platform_operator",
+        actorUserId: ctx.session!.user.id,
+        actorIdentity: ctx.session!.user.email,
+        actorName: ctx.session!.user.name?.trim() || ctx.session!.user.email,
+      }),
+    ),
 
   /**
    * Recover an ambiguous provider timeout after an operator confirms the IDs in
@@ -945,7 +1228,7 @@ export const adminRouter = createRouter({
         providerBrandId: z.string().trim().min(3).max(128),
         providerCampaignId: z.string().trim().min(3).max(128).optional(),
         confirmProviderPortalReviewed: z.literal(true),
-      })
+      }),
     )
     .mutation(async ({ input }) =>
       withSystem(db, async (tx) => {
@@ -967,8 +1250,8 @@ export const adminRouter = createRouter({
           .where(
             and(
               eq(messagingRegistrations.practiceId, input.practiceId),
-              isNull(messagingRegistrations.deletedAt)
-            )
+              isNull(messagingRegistrations.deletedAt),
+            ),
           )
           .returning({ id: messagingRegistrations.id });
         if (!updated) {
@@ -978,7 +1261,7 @@ export const adminRouter = createRouter({
           });
         }
         return { ok: true };
-      })
+      }),
     ),
 
   /**
@@ -993,7 +1276,7 @@ export const adminRouter = createRouter({
         providerObject: z.enum(["brand", "campaign"]),
         confirmProviderPortalReviewed: z.literal(true),
         confirmNoProviderObjectExists: z.literal("NO_PROVIDER_OBJECT"),
-      })
+      }),
     )
     .mutation(async ({ input }) =>
       withSystem(db, async (tx) => {
@@ -1009,8 +1292,8 @@ export const adminRouter = createRouter({
           .where(
             and(
               eq(messagingRegistrations.practiceId, input.practiceId),
-              isNull(messagingRegistrations.deletedAt)
-            )
+              isNull(messagingRegistrations.deletedAt),
+            ),
           )
           .limit(1);
         if (!registration?.submissionLockId || !registration.submissionLockAt) {
@@ -1058,10 +1341,10 @@ export const adminRouter = createRouter({
               eq(messagingRegistrations.id, registration.id),
               eq(
                 messagingRegistrations.submissionLockId,
-                registration.submissionLockId
+                registration.submissionLockId,
               ),
-              isNull(messagingRegistrations.deletedAt)
-            )
+              isNull(messagingRegistrations.deletedAt),
+            ),
           )
           .returning({ id: messagingRegistrations.id });
         if (!updated) {
@@ -1083,11 +1366,11 @@ export const adminRouter = createRouter({
             and(
               eq(locationMessaging.practiceId, input.practiceId),
               eq(locationMessaging.provider, "telnyx"),
-              isNull(locationMessaging.deletedAt)
-            )
+              isNull(locationMessaging.deletedAt),
+            ),
           );
         return { ok: true, providerObject: input.providerObject };
-      })
+      }),
     ),
 
   /** Read-only provider reconciliation. Safe to retry and never enables sending. */
@@ -1115,9 +1398,9 @@ export const adminRouter = createRouter({
                 eq(locationMessaging.practiceId, input.practiceId),
                 eq(locationMessaging.provider, "telnyx"),
                 isNull(locationMessaging.deletedAt),
-                sql`nullif(trim(${locationMessaging.senderE164}), '') is not null`
-              )
-            )
+                sql`nullif(trim(${locationMessaging.senderE164}), '') is not null`,
+              ),
+            ),
         );
         const assignments: Array<TelnyxNumberAssignment | null> = [];
         if (campaign) {
@@ -1186,8 +1469,8 @@ export const adminRouter = createRouter({
               and(
                 eq(locationMessaging.practiceId, input.practiceId),
                 eq(locationMessaging.provider, "telnyx"),
-                isNull(locationMessaging.deletedAt)
-              )
+                isNull(locationMessaging.deletedAt),
+              ),
             );
         });
         return { ok: true, status: next, assignments: assignments.length };
@@ -1204,13 +1487,13 @@ export const adminRouter = createRouter({
     .input(
       z
         .object({ days: z.number().int().min(1).max(365).default(30) })
-        .optional()
+        .optional(),
     )
     .query(({ input }) => computeActivationFunnel(db, input?.days ?? 30)),
 
   /** Ranked, cross-tenant operator queue for recovering clinic activation. */
   activationRecovery: platformAdminProcedure.query(() =>
-    computeActivationRecovery(db, new Date())
+    computeActivationRecovery(db, new Date()),
   ),
 
   /** Privacy-safe first-touch cohorts spanning visit through paid. */
@@ -1218,7 +1501,7 @@ export const adminRouter = createRouter({
     .input(
       z
         .object({ days: z.number().int().min(1).max(365).default(30) })
-        .optional()
+        .optional(),
     )
     .query(({ input }) => computeJourneyFunnel(db, input?.days ?? 30)),
 });

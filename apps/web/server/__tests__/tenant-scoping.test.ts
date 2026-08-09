@@ -32,12 +32,21 @@ describe("tenant scoping", () => {
       if (ALLOWLIST[file]) return;
       expect(
         src.includes("practiceId"),
-        `${file} queries the DB but never references practiceId — possible cross-tenant leak`
+        `${file} queries the DB but never references practiceId — possible cross-tenant leak`,
       ).toBe(true);
     });
   }
 
   it("keeps the allowlist small and intentional", () => {
     expect(Object.keys(ALLOWLIST).length).toBeLessThanOrEqual(3);
+  });
+
+  it("keeps platform SMS recovery available during operator read-only billing", () => {
+    const source = readFileSync(
+      fileURLToPath(new URL("../trpc.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(source).toContain('"admin.reconcileSmsSendAttempt"');
+    expect(source).toContain('"admin.resendSmsSendAttempt"');
   });
 });

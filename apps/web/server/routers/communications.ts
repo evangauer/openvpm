@@ -18,6 +18,7 @@ import { normalizeE164 } from "@/lib/messaging";
 import { hasNonBlankMessagingSender } from "@/lib/messaging/sender-query";
 import { isQuietHours } from "@/lib/messaging/reminders";
 import { sendSms } from "@/lib/sms";
+import { withDurableSmsCommunication } from "@/lib/messaging/durable-sms-communication";
 import { listOffsetInput } from "./pagination";
 import {
   emailSuppressionSendBlockMessage,
@@ -36,7 +37,7 @@ export {
 } from "@/lib/communications/policy";
 
 const inboxStaffProcedure = protectedProcedure.use(
-  requireRole("admin", "veterinarian", "technician", "front_desk")
+  requireRole("admin", "veterinarian", "technician", "front_desk"),
 );
 
 function escapeHtml(value: string): string {
@@ -99,7 +100,7 @@ function renderComposedEmail(opts: {
 }
 
 function validReplyToEmail(
-  value: string | null | undefined
+  value: string | null | undefined,
 ): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
@@ -165,7 +166,7 @@ function dbNumber(value: number | string | bigint | null | undefined): number {
 }
 
 async function practiceTimeZone(
-  ctx: CommunicationsContext
+  ctx: CommunicationsContext,
 ): Promise<string | null> {
   const [practice] = await ctx.db
     .select({ timezone: practices.timezone })
@@ -190,11 +191,12 @@ const createCommunicationInput = z
       .min(1, "Message content is required")
       .max(
         COMMUNICATION_CONTENT_MAX_LENGTH,
-        `Message content must be at most ${COMMUNICATION_CONTENT_MAX_LENGTH} characters.`
+        `Message content must be at most ${COMMUNICATION_CONTENT_MAX_LENGTH} characters.`,
       ),
     status: z
       .enum(["pending", "sent", "delivered", "read", "failed"])
       .optional(),
+    requestId: z.string().uuid().optional(),
   })
   .superRefine((input, ctx) => {
     if (
@@ -205,6 +207,17 @@ const createCommunicationInput = z
         code: z.ZodIssueCode.custom,
         path: ["content"],
         message: `SMS messages must be at most ${SMS_COMMUNICATION_CONTENT_MAX_LENGTH} characters.`,
+      });
+    }
+    if (
+      input.channel === "sms" &&
+      input.direction === "outbound" &&
+      !input.requestId
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["requestId"],
+        message: "A stable request ID is required to send an SMS.",
       });
     }
   });
@@ -224,7 +237,7 @@ export const communicationsRouter = createRouter({
         inboxFilter: z.enum(["all", "unread", "sent"]).optional(),
         limit: z.number().int().min(1).max(100).default(25),
         offset: listOffsetInput,
-      })
+      }),
     )
     .query(async ({ ctx, input }) => {
       const conditions = [
@@ -236,8 +249,8 @@ export const communicationsRouter = createRouter({
           and(
             eq(clients.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(clients.deletedAt)
-          )
+            isNull(clients.deletedAt),
+          ),
         )!,
       ];
 
@@ -253,7 +266,7 @@ export const communicationsRouter = createRouter({
         conditions.push(
           eq(communications.direction, "inbound"),
           isNull(communications.readAt),
-          ne(communications.status, "read")
+          ne(communications.status, "read"),
         );
       } else if (input.inboxFilter === "sent") {
         conditions.push(
@@ -261,8 +274,8 @@ export const communicationsRouter = createRouter({
           or(
             eq(communications.status, "sent"),
             eq(communications.status, "delivered"),
-            eq(communications.status, "read")
-          )!
+            eq(communications.status, "read"),
+          )!,
         );
       }
 
@@ -291,8 +304,8 @@ export const communicationsRouter = createRouter({
               eq(communications.clientId, clients.id),
               eq(clients.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(clients.deletedAt)
-            )
+              isNull(clients.deletedAt),
+            ),
           )
           .leftJoin(
             users,
@@ -300,8 +313,8 @@ export const communicationsRouter = createRouter({
               eq(communications.assignedTo, users.id),
               eq(users.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(users.deletedAt)
-            )
+              isNull(users.deletedAt),
+            ),
           )
           .where(and(...conditions))
           .orderBy(desc(communications.createdAt))
@@ -316,8 +329,8 @@ export const communicationsRouter = createRouter({
               eq(communications.clientId, clients.id),
               eq(clients.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(clients.deletedAt)
-            )
+              isNull(clients.deletedAt),
+            ),
           )
           .where(and(...conditions)),
       ]);
@@ -334,7 +347,7 @@ export const communicationsRouter = createRouter({
         inboxFilter: z.enum(["all", "unread", "sent"]).optional(),
         limit: z.number().int().min(1).max(100).default(25),
         offset: listOffsetInput,
-      })
+      }),
     )
     .query(async ({ ctx, input }) => {
       const filterClause =
@@ -470,8 +483,8 @@ export const communicationsRouter = createRouter({
             eq(communications.clientId, clients.id),
             eq(clients.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(clients.deletedAt)
-          )
+            isNull(clients.deletedAt),
+          ),
         )
         .leftJoin(
           users,
@@ -479,16 +492,16 @@ export const communicationsRouter = createRouter({
             eq(communications.assignedTo, users.id),
             eq(users.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(users.deletedAt)
-          )
+            isNull(users.deletedAt),
+          ),
         )
         .where(
           and(
             eq(communications.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
             eq(communications.clientId, input.clientId),
-            isNull(communications.deletedAt)
-          )
+            isNull(communications.deletedAt),
+          ),
         )
         .orderBy(desc(communications.createdAt));
     }),
@@ -504,8 +517,8 @@ export const communicationsRouter = createRouter({
             eq(clients.id, input.clientId),
             eq(clients.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(clients.deletedAt)
-          )
+            isNull(clients.deletedAt),
+          ),
         )
         .limit(1);
 
@@ -524,8 +537,8 @@ export const communicationsRouter = createRouter({
             eq(communications.direction, "inbound"),
             isNull(communications.readAt),
             ne(communications.status, "read"),
-            isNull(communications.deletedAt)
-          )
+            isNull(communications.deletedAt),
+          ),
         )
         .returning({ id: communications.id });
 
@@ -538,15 +551,15 @@ export const communicationsRouter = createRouter({
         clientId: z.string().uuid(),
         action: z.enum(["assign_to_me", "unassign"]),
         expectedAssignedTo: z.string().uuid().nullable(),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       return ctx.db.transaction(async (tx) => {
         await tx.execute(
           sql`select pg_advisory_xact_lock(hashtext(${inboxAssignmentLockKey(
             ctx.practiceId,
-            input.clientId
-          )}::text))`
+            input.clientId,
+          )}::text))`,
         );
 
         const [client] = await tx
@@ -557,8 +570,8 @@ export const communicationsRouter = createRouter({
               eq(clients.id, input.clientId),
               eq(clients.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(clients.deletedAt)
-            )
+              isNull(clients.deletedAt),
+            ),
           )
           .limit(1);
 
@@ -578,8 +591,8 @@ export const communicationsRouter = createRouter({
               activePracticePredicate(ctx.practiceId),
               eq(communications.clientId, input.clientId),
               isNotNull(communications.assignedTo),
-              isNull(communications.deletedAt)
-            )
+              isNull(communications.deletedAt),
+            ),
           )
           .orderBy(desc(communications.createdAt), desc(communications.id))
           .limit(1);
@@ -601,8 +614,8 @@ export const communicationsRouter = createRouter({
               eq(communications.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
               eq(communications.clientId, input.clientId),
-              isNull(communications.deletedAt)
-            )
+              isNull(communications.deletedAt),
+            ),
           )
           .returning({ id: communications.id });
 
@@ -620,7 +633,7 @@ export const communicationsRouter = createRouter({
       z.object({
         communicationId: z.string().uuid(),
         clientId: z.string().uuid(),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const [comm] = await ctx.db
@@ -635,8 +648,8 @@ export const communicationsRouter = createRouter({
             eq(communications.id, input.communicationId),
             eq(communications.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(communications.deletedAt)
-          )
+            isNull(communications.deletedAt),
+          ),
         )
         .limit(1);
 
@@ -669,8 +682,8 @@ export const communicationsRouter = createRouter({
             eq(clients.id, input.clientId),
             eq(clients.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(clients.deletedAt)
-          )
+            isNull(clients.deletedAt),
+          ),
         )
         .limit(1);
 
@@ -687,8 +700,8 @@ export const communicationsRouter = createRouter({
             activePracticePredicate(ctx.practiceId),
             eq(communications.clientId, input.clientId),
             isNotNull(communications.assignedTo),
-            isNull(communications.deletedAt)
-          )
+            isNull(communications.deletedAt),
+          ),
         )
         .orderBy(desc(communications.createdAt))
         .limit(1);
@@ -706,8 +719,8 @@ export const communicationsRouter = createRouter({
             eq(communications.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
             isNull(communications.clientId),
-            isNull(communications.deletedAt)
-          )
+            isNull(communications.deletedAt),
+          ),
         )
         .returning({
           id: communications.id,
@@ -764,16 +777,16 @@ export const communicationsRouter = createRouter({
             eq(emailSuppressions.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
             sql`${emailSuppressions.email} = lower(trim(${clients.email}))`,
-            isNull(emailSuppressions.deletedAt)
-          )
+            isNull(emailSuppressions.deletedAt),
+          ),
         )
         .where(
           and(
             eq(clients.id, input.clientId),
             eq(clients.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(clients.deletedAt)
-          )
+            isNull(clients.deletedAt),
+          ),
         )
         .limit(1);
 
@@ -811,8 +824,8 @@ export const communicationsRouter = createRouter({
             activePracticePredicate(ctx.practiceId),
             eq(communications.clientId, input.clientId),
             isNotNull(communications.assignedTo),
-            isNull(communications.deletedAt)
-          )
+            isNull(communications.deletedAt),
+          ),
         )
         .orderBy(desc(communications.createdAt))
         .limit(1);
@@ -857,8 +870,8 @@ export const communicationsRouter = createRouter({
               eq(locations.id, locationMessaging.locationId),
               eq(locations.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(locations.deletedAt)
-            )
+              isNull(locations.deletedAt),
+            ),
           )
           .where(
             and(
@@ -869,8 +882,8 @@ export const communicationsRouter = createRouter({
               isNull(locations.deletedAt),
               eq(locationMessaging.enabled, true),
               eq(locationMessaging.registrationStatus, "active"),
-              hasNonBlankMessagingSender()
-            )
+              hasNonBlankMessagingSender(),
+            ),
           )
           .limit(2);
 
@@ -909,14 +922,19 @@ export const communicationsRouter = createRouter({
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: emailSuppressionSendBlockMessage(
-            client.emailSuppressionReason
+            client.emailSuppressionReason,
           ),
         });
       }
 
-      const [comm] = await ctx.db
-        .insert(communications)
-        .values({
+      const inboxSmsDedupeKey =
+        isDeliverableOutbound && input.channel === "sms"
+          ? `sms:inbox:${ctx.practiceId}:${input.requestId!}`
+          : undefined;
+      const insertCommunication = async (
+        tx: Pick<Database, "insert" | "select">,
+      ) => {
+        const insert = tx.insert(communications).values({
           practiceId: ctx.practiceId,
           clientId: input.clientId,
           channel: input.channel,
@@ -924,6 +942,7 @@ export const communicationsRouter = createRouter({
           subject,
           content,
           assignedTo,
+          dedupeKey: inboxSmsDedupeKey,
           readAt: input.status === "read" ? new Date() : undefined,
           status: isDeliverableOutbound
             ? "pending"
@@ -933,13 +952,75 @@ export const communicationsRouter = createRouter({
                   ? "delivered"
                   : "sent"
                 : "pending")),
-        })
-        .returning();
+        });
+        if (!inboxSmsDedupeKey) {
+          const [communication] = await insert.returning();
+          return { communication, replayed: false };
+        }
+
+        const [inserted] = await insert
+          .onConflictDoNothing({ target: communications.dedupeKey })
+          .returning();
+        if (inserted) return { communication: inserted, replayed: false };
+
+        const [existing] = await tx
+          .select()
+          .from(communications)
+          .where(
+            and(
+              eq(communications.practiceId, ctx.practiceId),
+              eq(communications.dedupeKey, inboxSmsDedupeKey),
+              eq(communications.clientId, input.clientId),
+              eq(communications.channel, "sms"),
+              eq(communications.direction, "outbound"),
+              isNull(communications.deletedAt),
+            ),
+          )
+          .for("update")
+          .limit(1);
+        if (!existing) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "SMS request ID is already in use.",
+          });
+        }
+        if (
+          existing.content !== content ||
+          (existing.subject ?? undefined) !== subject
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "SMS request ID was already used for different message data.",
+          });
+        }
+        return { communication: existing, replayed: true };
+      };
+      const durableSmsCommunication =
+        isDeliverableOutbound && input.channel === "sms";
+      const claim = durableSmsCommunication
+        ? await withDurableSmsCommunication(ctx.practiceId, insertCommunication)
+        : await insertCommunication(ctx.db);
+      const comm = claim.communication;
 
       if (!comm) {
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: "Could not create communication",
+        });
+      }
+
+      if (
+        claim.replayed &&
+        new Set(["sent", "delivered", "read"]).has(comm.status)
+      ) {
+        return comm;
+      }
+      if (claim.replayed && comm.status === "failed") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "This SMS request failed definitively. Start a new send to create a new request ID.",
         });
       }
 
@@ -950,6 +1031,7 @@ export const communicationsRouter = createRouter({
         id?: string;
         sid?: string;
         error?: string;
+        outcome?: "accepted" | "definite_failure" | "outcome_unknown";
       };
       let providerMessageId: string | undefined;
       try {
@@ -960,6 +1042,10 @@ export const communicationsRouter = createRouter({
             practiceId: ctx.practiceId,
             locationId: smsSenderLocationId,
             clientId: input.clientId,
+            communicationId: comm.id,
+            source: "inbox",
+            sourceId: input.requestId!,
+            idempotencyKey: inboxSmsDedupeKey!,
           });
           providerMessageId = deliveryResult.sid;
         } else {
@@ -978,11 +1064,25 @@ export const communicationsRouter = createRouter({
       } catch (error) {
         deliveryResult = {
           success: false,
+          outcome:
+            input.channel === "sms" ? "outcome_unknown" : "definite_failure",
           error:
             error instanceof Error && error.message
               ? error.message
               : "Message delivery failed",
         };
+      }
+
+      if (
+        input.channel === "sms" &&
+        !deliveryResult.success &&
+        deliveryResult.outcome === "outcome_unknown"
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message:
+            "The texting provider outcome is unknown. This message will not be retried automatically; contact OpenVPM support before sending it again.",
+        });
       }
 
       const status = deliveryResult.success ? "sent" : "failed";
@@ -994,19 +1094,34 @@ export const communicationsRouter = createRouter({
         updatePatch.providerMessageId = providerMessageId;
       }
 
-      const [updated] = await ctx.db
-        .update(communications)
-        .set(updatePatch)
-        .where(
-          and(
-            eq(communications.id, comm.id),
-            eq(communications.practiceId, ctx.practiceId),
-            activePracticePredicate(ctx.practiceId),
-            eq(communications.status, "pending"),
-            isNull(communications.deletedAt)
+      const projectCommunication = (tx: Pick<Database, "update">) =>
+        tx
+          .update(communications)
+          .set(updatePatch)
+          .where(
+            and(
+              eq(communications.id, comm.id),
+              eq(communications.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              or(
+                eq(communications.status, "pending"),
+                and(
+                  eq(communications.status, "sent"),
+                  providerMessageId
+                    ? eq(communications.providerMessageId, providerMessageId)
+                    : undefined,
+                ),
+              ),
+              isNull(communications.deletedAt),
+            ),
           )
-        )
-        .returning();
+          .returning();
+      const [updated] = durableSmsCommunication
+        ? await withDurableSmsCommunication(
+            ctx.practiceId,
+            projectCommunication,
+          )
+        : await projectCommunication(ctx.db);
 
       if (!updated) {
         await alertOps(
@@ -1017,7 +1132,7 @@ export const communicationsRouter = createRouter({
             `channel=${input.channel}`,
             `status=${status}`,
             `providerMessageId=${providerMessageId ?? "none"}`,
-          ].join(" ")
+          ].join(" "),
         );
 
         if (deliveryResult.success) {
@@ -1044,7 +1159,7 @@ export const communicationsRouter = createRouter({
       z.object({
         id: z.string().uuid(),
         status: z.enum(["pending", "sent", "delivered", "read", "failed"]),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       if (input.status !== "read") {
@@ -1068,8 +1183,8 @@ export const communicationsRouter = createRouter({
             eq(communications.direction, "inbound"),
             isNull(communications.readAt),
             ne(communications.status, "read"),
-            isNull(communications.deletedAt)
-          )
+            isNull(communications.deletedAt),
+          ),
         )
         .returning();
       if (!comm) {

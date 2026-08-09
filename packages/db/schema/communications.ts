@@ -23,10 +23,7 @@ export const channelEnum = pgEnum("comm_channel", [
   "portal",
 ]);
 
-export const directionEnum = pgEnum("comm_direction", [
-  "inbound",
-  "outbound",
-]);
+export const directionEnum = pgEnum("comm_direction", ["inbound", "outbound"]);
 
 export const commStatusEnum = pgEnum("comm_status", [
   "pending",
@@ -59,38 +56,42 @@ export const communications = pgTable(
     dedupeKey: varchar("dedupe_key", { length: 160 }),
   },
   (table) => ({
+    tenantIdUq: uniqueIndex("communications_practice_id_uq").on(
+      table.practiceId,
+      table.id,
+    ),
     practiceListIdx: index("communications_practice_list_idx").on(
       table.practiceId,
       table.deletedAt,
-      table.createdAt
+      table.createdAt,
     ),
     clientTimelineIdx: index("communications_client_timeline_idx").on(
       table.practiceId,
       table.clientId,
       table.deletedAt,
-      table.createdAt
+      table.createdAt,
     ),
     inboxStatusIdx: index("communications_inbox_status_idx").on(
       table.practiceId,
       table.direction,
       table.status,
-      table.deletedAt
+      table.deletedAt,
     ),
     assignedIdx: index("communications_assigned_idx").on(
       table.practiceId,
       table.assignedTo,
-      table.deletedAt
+      table.deletedAt,
     ),
     dedupeKeyIdx: uniqueIndex("communications_dedupe_key_idx").on(
-      table.dedupeKey
+      table.dedupeKey,
     ),
     providerMessageIdx: index("communications_provider_message_idx").on(
       table.practiceId,
       table.providerMessageId,
       table.channel,
-      table.direction
+      table.direction,
     ),
-  })
+  }),
 );
 
 export const webhooks = pgTable(
@@ -109,9 +110,9 @@ export const webhooks = pgTable(
     practiceActiveIdx: index("webhooks_practice_active_idx").on(
       table.practiceId,
       table.deletedAt,
-      table.active
+      table.active,
     ),
-  })
+  }),
 );
 
 export const apiKeys = pgTable(
@@ -134,9 +135,9 @@ export const apiKeys = pgTable(
     practiceCreatedIdx: index("api_keys_practice_created_idx").on(
       table.practiceId,
       table.deletedAt,
-      table.createdAt
+      table.createdAt,
     ),
-  })
+  }),
 );
 
 export const auditLog = pgTable(
@@ -152,29 +153,32 @@ export const auditLog = pgTable(
     ipAddress: varchar("ip_address", { length: 45 }),
   },
   (table) => ({
-    practiceIdx: index("audit_log_practice_idx").on(table.practiceId, table.createdAt),
-    entityIdx: index("audit_log_entity_idx").on(table.entityType, table.entityId),
-  })
+    practiceIdx: index("audit_log_practice_idx").on(
+      table.practiceId,
+      table.createdAt,
+    ),
+    entityIdx: index("audit_log_entity_idx").on(
+      table.entityType,
+      table.entityId,
+    ),
+  }),
 );
 
 // Relations
-export const communicationsRelations = relations(
-  communications,
-  ({ one }) => ({
-    practice: one(practices, {
-      fields: [communications.practiceId],
-      references: [practices.id],
-    }),
-    client: one(clients, {
-      fields: [communications.clientId],
-      references: [clients.id],
-    }),
-    assignedToUser: one(users, {
-      fields: [communications.assignedTo],
-      references: [users.id],
-    }),
-  })
-);
+export const communicationsRelations = relations(communications, ({ one }) => ({
+  practice: one(practices, {
+    fields: [communications.practiceId],
+    references: [practices.id],
+  }),
+  client: one(clients, {
+    fields: [communications.clientId],
+    references: [clients.id],
+  }),
+  assignedToUser: one(users, {
+    fields: [communications.assignedTo],
+    references: [users.id],
+  }),
+}));
 
 export const webhooksRelations = relations(webhooks, ({ one }) => ({
   practice: one(practices, {

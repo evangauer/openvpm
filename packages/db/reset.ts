@@ -19,6 +19,8 @@ const TABLES = [
   "api_keys",
   "treatment_template_items",
   "treatment_templates",
+  "sms_send_attempt_events",
+  "sms_send_attempts",
   "sms_consent_events",
   "patient_merge_events",
   "dispense_charge_queue",

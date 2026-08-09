@@ -1,4 +1,9 @@
-import type { MessagingProvider, SendMessageInput, SendMessageResult } from "./types";
+import type {
+  MessagingProvider,
+  SendMessageInput,
+  SendMessageResult,
+} from "./types";
+import { randomUUID } from "node:crypto";
 
 /**
  * Dev/CI fallback: logs the message instead of sending when no real provider is
@@ -11,13 +16,22 @@ export const consoleProvider: MessagingProvider = {
     return true;
   },
 
-  async send({ to, body, sender }: SendMessageInput): Promise<SendMessageResult> {
+  async send({
+    to,
+    body,
+    sender,
+  }: SendMessageInput): Promise<SendMessageResult> {
     console.log("──────────────────────────────────────────");
     console.log("[SMS] No messaging provider configured – logging to console");
-    console.log(`  From: ${sender.messagingServiceId ?? sender.from ?? "(unset)"}`);
+    console.log(
+      `  From: ${sender.messagingServiceId ?? sender.from ?? "(unset)"}`,
+    );
     console.log(`  To:   ${to}`);
     console.log(`  Body: ${body}`);
     console.log("──────────────────────────────────────────");
-    return { success: true, id: "dev-console" };
+    // The immutable send ledger enforces provider-message uniqueness within a
+    // practice, so local sends need the same one-message/one-id property as a
+    // real carrier response.
+    return { status: "accepted", id: `dev-console:${randomUUID()}` };
   },
 };

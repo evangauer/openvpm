@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { Database } from "@openpims/db/client";
 import {
   clients,
@@ -19,6 +19,12 @@ import { normalizeE164 } from "@/lib/messaging/phone";
 import { hasNonBlankMessagingSender } from "@/lib/messaging/sender-query";
 import { formatClinicalDate } from "@/lib/records/clinical-dates";
 import { sendVaccinationReminderSms } from "@/lib/sms";
+import { withDurableSmsCommunication } from "@/lib/messaging/durable-sms-communication";
+import {
+  recoverStaleUnreservedSmsCommunication,
+  STALE_SMS_COMMUNICATION_CLAIM_MS,
+} from "@/lib/messaging/durable-sms-communication";
+import { alertOps } from "@/lib/alerts";
 import {
   evaluateVaccinationRecallRecipient,
   vaccinationRecallDedupeKey,
@@ -112,8 +118,8 @@ async function activeReminderSmsSender(ctx: {
         eq(locations.id, locationMessaging.locationId),
         eq(locations.practiceId, ctx.practiceId),
         activePracticePredicate(ctx.practiceId),
-        isNull(locations.deletedAt)
-      )
+        isNull(locations.deletedAt),
+      ),
     )
     .where(
       and(
@@ -124,8 +130,8 @@ async function activeReminderSmsSender(ctx: {
         isNull(locations.deletedAt),
         eq(locationMessaging.enabled, true),
         eq(locationMessaging.registrationStatus, "active"),
-        hasNonBlankMessagingSender()
-      )
+        hasNonBlankMessagingSender(),
+      ),
     )
     .limit(2);
   return senders.length === 1 ? senders[0]! : null;
@@ -179,7 +185,7 @@ function groupRows(rows: VaccinationRecallRow[]): VaccinationRecallCandidate[] {
     vaccines: candidate.vaccines.sort(
       (left, right) =>
         left.nextDueDate.localeCompare(right.nextDueDate) ||
-        left.vaccineName.localeCompare(right.vaccineName)
+        left.vaccineName.localeCompare(right.vaccineName),
     ),
   }));
 }
@@ -195,7 +201,7 @@ export type VaccinationRecallPreview = {
 
 async function loadVaccinationRecallRecipients(
   ctx: { db: Database; practiceId: string },
-  patientIds?: string[]
+  patientIds?: string[],
 ) {
   const practice = await practiceNotificationSettings(ctx);
   if (!practice) return null;
@@ -227,8 +233,8 @@ async function loadVaccinationRecallRecipients(
         eq(vaccinationRecords.patientId, patients.id),
         eq(patients.practiceId, ctx.practiceId),
         activePracticePredicate(ctx.practiceId),
-        isNull(patients.deletedAt)
-      )
+        isNull(patients.deletedAt),
+      ),
     )
     .innerJoin(
       clients,
@@ -236,16 +242,16 @@ async function loadVaccinationRecallRecipients(
         eq(patients.clientId, clients.id),
         eq(clients.practiceId, ctx.practiceId),
         activePracticePredicate(ctx.practiceId),
-        isNull(clients.deletedAt)
-      )
+        isNull(clients.deletedAt),
+      ),
     )
     .leftJoin(
       emailSuppressions,
       and(
         eq(emailSuppressions.practiceId, ctx.practiceId),
         sql`${emailSuppressions.email} = lower(trim(${clients.email}))`,
-        isNull(emailSuppressions.deletedAt)
-      )
+        isNull(emailSuppressions.deletedAt),
+      ),
     )
     .where(
       and(
@@ -260,8 +266,8 @@ async function loadVaccinationRecallRecipients(
         targetPredicate,
         lt(vaccinationRecords.nextDueDate, today),
         validVaccinationRecordPredicate(),
-        latestVaccinationRecordPredicate()
-      )
+        latestVaccinationRecordPredicate(),
+      ),
     )
     .orderBy(patients.name, vaccinationRecords.nextDueDate);
 
@@ -275,24 +281,33 @@ async function loadVaccinationRecallRecipients(
         and(
           eq(smsSuppressions.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(smsSuppressions.deletedAt)
-        )
+          isNull(smsSuppressions.deletedAt),
+        ),
       ),
   ]);
   const smsSuppressedPhones = new Set(
     suppressedRows
       .map((row) => normalizeE164(row.phone))
-      .filter((phone): phone is string => Boolean(phone))
+      .filter((phone): phone is string => Boolean(phone)),
   );
   const dedupeKeys = candidates.map((candidate) =>
-    vaccinationRecallDedupeKey(ctx.practiceId, candidate)
+    vaccinationRecallDedupeKey(ctx.practiceId, candidate),
   );
   const priorRows =
     dedupeKeys.length > 0
       ? await ctx.db
           .select({
+            id: communications.id,
             dedupeKey: communications.dedupeKey,
+            channel: communications.channel,
+            status: communications.status,
             createdAt: communications.createdAt,
+            hasSmsAttempt: sql<boolean>`exists (
+              select 1
+              from sms_send_attempts recall_attempt
+              where recall_attempt.practice_id = ${communications.practiceId}
+                and recall_attempt.communication_id = ${communications.id}
+            )`,
           })
           .from(communications)
           .where(
@@ -306,14 +321,22 @@ async function loadVaccinationRecallRecipients(
                 "delivered",
                 "read",
               ]),
-              isNull(communications.deletedAt)
-            )
+              isNull(communications.deletedAt),
+            ),
           )
       : [];
   const priorByKey = new Map(
-    priorRows.flatMap((row) =>
-      row.dedupeKey ? [[row.dedupeKey, { createdAt: row.createdAt }]] : []
-    )
+    priorRows.flatMap((row) => {
+      const isRecoverableOrphan =
+        row.channel === "sms" &&
+        row.status === "pending" &&
+        new Date(row.createdAt).getTime() <=
+          Date.now() - STALE_SMS_COMMUNICATION_CLAIM_MS &&
+        !row.hasSmsAttempt;
+      return row.dedupeKey && !isRecoverableOrphan
+        ? [[row.dedupeKey, { createdAt: row.createdAt }]]
+        : [];
+    }),
   );
   const practiceSettings = vaccinationRecallPracticeSettings(practice.settings);
   const quietHours = isQuietHours(new Date(), practice.timezone);
@@ -346,7 +369,7 @@ export async function getVaccinationRecallPreview(ctx: {
     blocked: result.recipients.filter((item) => item.status === "blocked")
       .length,
     alreadySent: result.recipients.filter(
-      (item) => item.status === "already_sent"
+      (item) => item.status === "already_sent",
     ).length,
     recipients: result.recipients,
   };
@@ -354,7 +377,7 @@ export async function getVaccinationRecallPreview(ctx: {
 
 export async function sendVaccinationRecallReminders(
   ctx: { db: Database; practiceId: string },
-  patientIds: string[]
+  patientIds: string[],
 ) {
   if (patientIds.length === 0) {
     return { sent: 0, failed: 0, blocked: 0, deduped: 0 };
@@ -370,29 +393,45 @@ export async function sendVaccinationRecallReminders(
     recipients.length +
     recipients.filter((recipient) => recipient.status === "blocked").length;
   let deduped = recipients.filter(
-    (recipient) => recipient.status === "already_sent"
+    (recipient) => recipient.status === "already_sent",
   ).length;
 
   for (const recipient of recipients) {
     if (recipient.status !== "eligible" || !recipient.channel) continue;
+    const reminderChannel = recipient.channel;
     const vaccineNames = recipient.vaccines
       .map((vaccine) => vaccine.vaccineName)
       .join(", ");
     const dueDate = recipient.vaccines[0]?.nextDueDate;
-    const [claim] = await ctx.db
-      .insert(communications)
-      .values({
+    const durableSmsCommunication =
+      reminderChannel === "sms" && Boolean(smsSender);
+    const claimCommunication = async (
+      tx: Pick<Database, "insert" | "select">,
+    ) => {
+      const [insertedClaim] = await tx
+        .insert(communications)
+        .values({
+          practiceId: ctx.practiceId,
+          clientId: recipient.clientId,
+          channel: reminderChannel,
+          direction: "outbound",
+          subject: "Vaccination Reminder",
+          content: `Vaccination reminder for ${recipient.patientName}: ${vaccineNames}`,
+          status: "pending",
+          dedupeKey: recipient.dedupeKey,
+        })
+        .onConflictDoNothing({ target: communications.dedupeKey })
+        .returning({ id: communications.id });
+      if (insertedClaim || reminderChannel !== "sms") return insertedClaim;
+      const recoveredId = await recoverStaleUnreservedSmsCommunication(tx, {
         practiceId: ctx.practiceId,
-        clientId: recipient.clientId,
-        channel: recipient.channel,
-        direction: "outbound",
-        subject: "Vaccination Reminder",
-        content: `Vaccination reminder for ${recipient.patientName}: ${vaccineNames}`,
-        status: "pending",
         dedupeKey: recipient.dedupeKey,
-      })
-      .onConflictDoNothing({ target: communications.dedupeKey })
-      .returning({ id: communications.id });
+      });
+      return recoveredId ? { id: recoveredId } : undefined;
+    };
+    const claim = durableSmsCommunication
+      ? await withDurableSmsCommunication(ctx.practiceId, claimCommunication)
+      : await claimCommunication(ctx.db);
     if (!claim) {
       deduped++;
       continue;
@@ -400,7 +439,7 @@ export async function sendVaccinationRecallReminders(
 
     const sendEmail = async () => {
       const clientEmail = normalizeEmailSuppressionAddress(
-        recipient.clientEmail
+        recipient.clientEmail,
       );
       if (!clientEmail || recipient.emailSuppressionReason || !dueDate) {
         return { success: false as const };
@@ -423,6 +462,7 @@ export async function sendVaccinationRecallReminders(
     let deliveredChannel: "sms" | "email" = recipient.channel;
     let providerMessageId: string | undefined;
     let delivered = false;
+    let smsOutcomeUnknown = false;
     if (recipient.channel === "sms" && smsSender) {
       try {
         const smsResult = await sendVaccinationReminderSms({
@@ -434,13 +474,18 @@ export async function sendVaccinationRecallReminders(
           practiceId: ctx.practiceId,
           locationId: smsSender.locationId,
           clientId: recipient.clientId,
+          communicationId: claim.id,
+          sourceId: recipient.dedupeKey,
+          idempotencyKey: `sms:${recipient.dedupeKey}`,
         });
         delivered = smsResult.success;
         providerMessageId = smsResult.sid;
+        smsOutcomeUnknown = smsResult.outcome === "outcome_unknown";
       } catch {
         delivered = false;
+        smsOutcomeUnknown = true;
       }
-      if (!delivered) {
+      if (!delivered && !smsOutcomeUnknown) {
         const emailResult = await sendEmail();
         delivered = emailResult.success;
         if (delivered) {
@@ -454,42 +499,81 @@ export async function sendVaccinationRecallReminders(
       providerMessageId = emailResult.id;
     }
 
+    if (smsOutcomeUnknown) {
+      // Preserve pending + dedupeKey. The immutable SMS ledger is authoritative
+      // until a provider event or operator reconciliation resolves the attempt.
+      failed++;
+      continue;
+    }
+
     if (delivered) {
-      await ctx.db
+      const projectSent = (tx: Pick<Database, "update">) =>
+        tx
+          .update(communications)
+          .set({
+            channel: deliveredChannel,
+            content: `Vaccination reminder sent for ${recipient.patientName}: ${vaccineNames}`,
+            status: "sent",
+            providerMessageId,
+          })
+          .where(
+            and(
+              eq(communications.id, claim.id),
+              eq(communications.practiceId, ctx.practiceId),
+              eq(communications.dedupeKey, recipient.dedupeKey),
+              or(
+                eq(communications.status, "pending"),
+                and(
+                  eq(communications.status, "sent"),
+                  providerMessageId
+                    ? eq(communications.providerMessageId, providerMessageId)
+                    : undefined,
+                ),
+              ),
+              isNull(communications.deletedAt),
+            ),
+          );
+      try {
+        if (durableSmsCommunication) {
+          await withDurableSmsCommunication(ctx.practiceId, projectSent);
+        } else {
+          await projectSent(ctx.db);
+        }
+      } catch (error) {
+        if (durableSmsCommunication) {
+          await alertOps(
+            "SMS vaccination reminder projection failed",
+            `practice=${ctx.practiceId} communication=${claim.id} source=vaccination_recall status=sent`,
+          ).catch(() => undefined);
+        }
+        throw error;
+      }
+      sent++;
+      continue;
+    }
+
+    const projectFailed = (tx: Pick<Database, "update">) =>
+      tx
         .update(communications)
         .set({
-          channel: deliveredChannel,
-          content: `Vaccination reminder sent for ${recipient.patientName}: ${vaccineNames}`,
-          status: "sent",
-          providerMessageId,
+          content: `Vaccination reminder failed for ${recipient.patientName}: ${vaccineNames}`,
+          status: "failed",
+          dedupeKey: null,
         })
         .where(
           and(
             eq(communications.id, claim.id),
             eq(communications.practiceId, ctx.practiceId),
             eq(communications.dedupeKey, recipient.dedupeKey),
-            isNull(communications.deletedAt)
-          )
+            eq(communications.status, "pending"),
+            isNull(communications.deletedAt),
+          ),
         );
-      sent++;
-      continue;
+    if (durableSmsCommunication) {
+      await withDurableSmsCommunication(ctx.practiceId, projectFailed);
+    } else {
+      await projectFailed(ctx.db);
     }
-
-    await ctx.db
-      .update(communications)
-      .set({
-        content: `Vaccination reminder failed for ${recipient.patientName}: ${vaccineNames}`,
-        status: "failed",
-        dedupeKey: null,
-      })
-      .where(
-        and(
-          eq(communications.id, claim.id),
-          eq(communications.practiceId, ctx.practiceId),
-          eq(communications.dedupeKey, recipient.dedupeKey),
-          isNull(communications.deletedAt)
-        )
-      );
     failed++;
   }
 

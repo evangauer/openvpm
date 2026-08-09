@@ -52,31 +52,31 @@ function clientIp(req?: Request): string | null {
 
 async function activeSessionOrNull(
   database: Database,
-  session: AppSession | null
+  session: AppSession | null,
 ): Promise<AppSession | null> {
   if (!session?.user?.id || !session.user.practiceId) {
     return null;
   }
 
-  const [activeUser] = await withTenant(database, session.user.practiceId, (tx) =>
-    tx
-      .select({ id: users.id })
-      .from(users)
-      .innerJoin(
-        practices,
-        and(
-          eq(practices.id, users.practiceId),
-          isNull(practices.deletedAt)
+  const [activeUser] = await withTenant(
+    database,
+    session.user.practiceId,
+    (tx) =>
+      tx
+        .select({ id: users.id })
+        .from(users)
+        .innerJoin(
+          practices,
+          and(eq(practices.id, users.practiceId), isNull(practices.deletedAt)),
         )
-      )
-      .where(
-        and(
-          eq(users.id, session.user.id),
-          eq(users.practiceId, session.user.practiceId),
-          isNull(users.deletedAt)
+        .where(
+          and(
+            eq(users.id, session.user.id),
+            eq(users.practiceId, session.user.practiceId),
+            isNull(users.deletedAt),
+          ),
         )
-      )
-      .limit(1)
+        .limit(1),
   );
 
   return activeUser ? session : null;
@@ -123,6 +123,8 @@ const HOSTED_READ_ONLY_MUTATION_ALLOWLIST = new Set([
   "admin.attachMessagingProviderIds",
   "admin.clearStaleMessagingSubmissionLock",
   "admin.reconcileMessagingRegistration",
+  "admin.reconcileSmsSendAttempt",
+  "admin.resendSmsSendAttempt",
 ]);
 
 function practiceNotFound(): TRPCError {
@@ -135,9 +137,7 @@ function practiceNotFound(): TRPCError {
  * limits), so they run in a system DB context that bypasses tenant RLS.
  */
 export const publicProcedure = t.procedure.use(async ({ ctx, next }) => {
-  return withSystem(ctx.db, (tx) =>
-    next({ ctx: { ...ctx, db: tx } })
-  );
+  return withSystem(ctx.db, (tx) => next({ ctx: { ...ctx, db: tx } }));
 });
 
 /** Requires an authenticated session */
@@ -177,7 +177,7 @@ export const protectedProcedure = t.procedure.use(
           })
           .from(practices)
           .where(
-            and(eq(practices.id, user.practiceId), isNull(practices.deletedAt))
+            and(eq(practices.id, user.practiceId), isNull(practices.deletedAt)),
           )
           .limit(1);
         if (!practice) {
@@ -187,7 +187,7 @@ export const protectedProcedure = t.procedure.use(
           !hasHostedFullAccess(
             practice.tier,
             practice.billingStatus,
-            practice.trialEndsAt
+            practice.trialEndsAt,
           )
         ) {
           throw new TRPCError({
@@ -199,7 +199,12 @@ export const protectedProcedure = t.procedure.use(
       }
 
       const result = await next({
-        ctx: { session: ctx.session, user, practiceId: user.practiceId, db: tx },
+        ctx: {
+          session: ctx.session,
+          user,
+          practiceId: user.practiceId,
+          db: tx,
+        },
       });
 
       // Audit every successful mutation: who changed what, when, from where.
@@ -215,13 +220,13 @@ export const protectedProcedure = t.procedure.use(
             path,
             rawInput,
             resultData: (result as { data?: unknown }).data,
-          })
+          }),
         ).catch(() => {});
       }
 
       return result;
     });
-  }
+  },
 );
 
 /**
@@ -247,8 +252,8 @@ export function requireFeature(feature: Feature) {
         .where(
           and(
             eq(practices.id, ctx.session.user.practiceId),
-            isNull(practices.deletedAt)
-          )
+            isNull(practices.deletedAt),
+          ),
         )
         .limit(1);
       if (!practice) {
@@ -257,7 +262,7 @@ export function requireFeature(feature: Feature) {
       const tier = effectiveTier(
         practice.tier,
         practice.billingStatus,
-        practice.trialEndsAt
+        practice.trialEndsAt,
       );
       if (!isEntitled(tier, feature, true)) {
         throw new TRPCError({

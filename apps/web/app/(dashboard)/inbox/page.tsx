@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import Link from "next/link";
 import { useSession } from "next-auth/react";
 import {
@@ -130,7 +130,7 @@ function formatInboxDate(date: Date, timeZone?: string | null): string {
 
 function relativeTime(
   date: Date | string | null,
-  timeZone?: string | null
+  timeZone?: string | null,
 ): string {
   if (!date) return "";
   const now = new Date();
@@ -143,10 +143,10 @@ function relativeTime(
   const diffHr = Math.floor(diffMin / 60);
   if (diffHr < 24) return `${diffHr}h ago`;
   const todayDay = dateInputDayNumber(
-    formatDateInputForTimeZone(now, timeZone)
+    formatDateInputForTimeZone(now, timeZone),
   );
   const messageDay = dateInputDayNumber(
-    formatDateInputForTimeZone(d, timeZone)
+    formatDateInputForTimeZone(d, timeZone),
   );
   const diffDay =
     todayDay !== null && messageDay !== null
@@ -211,18 +211,17 @@ export default function InboxPage() {
     error: inboxError,
   } = trpc.communications.listConversations.useQuery(
     { inboxFilter: filter, limit: 50, offset: 0 },
-    { refetchInterval: 30000 }
+    { refetchInterval: 30000 },
   );
 
   const {
     data: timeline,
     isLoading: timelineLoading,
     error: timelineError,
-  } =
-    trpc.communications.getByClient.useQuery(
-      { clientId: selectedClientId! },
-      { enabled: !!selectedClientId }
-    );
+  } = trpc.communications.getByClient.useQuery(
+    { clientId: selectedClientId! },
+    { enabled: !!selectedClientId },
+  );
 
   const {
     data: searchResults,
@@ -230,7 +229,7 @@ export default function InboxPage() {
     error: searchError,
   } = trpc.clients.search.useQuery(
     { query: trimmedNewClientSearch },
-    { enabled: canSearchNewClients }
+    { enabled: canSearchNewClients },
   );
 
   const {
@@ -239,7 +238,7 @@ export default function InboxPage() {
     error: linkClientError,
   } = trpc.clients.search.useQuery(
     { query: trimmedLinkClientSearch },
-    { enabled: Boolean(selectedUnmatched && canSearchLinkClients) }
+    { enabled: Boolean(selectedUnmatched && canSearchLinkClients) },
   );
 
   const {
@@ -259,11 +258,9 @@ export default function InboxPage() {
     (Boolean(messagingStatusError) || !messagingStatus);
   const smsComposeBlocked =
     composeChannel === "sms" && smsSummary?.smsComposeEnabled !== true;
-  const showSmsBanner = Boolean(
-    smsSummary?.showBanner && !smsBannerDismissed
-  );
+  const showSmsBanner = Boolean(smsSummary?.showBanner && !smsBannerDismissed);
   const showSmsStatusError = Boolean(
-    smsStatusUnavailable && !smsBannerDismissed
+    smsStatusUnavailable && !smsBannerDismissed,
   );
   const currentUserId = session?.user?.id;
   const canMutateInbox = canMutateInboxRole(session?.user?.role);
@@ -302,8 +299,13 @@ export default function InboxPage() {
     }
   }, [inboxSettingsError, inboxSettingsMissing]);
 
+  const smsComposeRequest = useRef<{
+    fingerprint: string;
+    requestId: string;
+  } | null>(null);
   const createMutation = trpc.communications.create.useMutation({
     onSuccess: () => {
+      smsComposeRequest.current = null;
       toast.success("Message sent");
       utils.communications.listConversations.invalidate();
       if (selectedClientId) {
@@ -315,6 +317,9 @@ export default function InboxPage() {
       setComposeSubject("");
     },
     onError: (err) => {
+      if (err.data?.code === "BAD_REQUEST") {
+        smsComposeRequest.current = null;
+      }
       toast.error(err.message);
       utils.communications.listConversations.invalidate();
       if (selectedClientId) {
@@ -332,7 +337,7 @@ export default function InboxPage() {
         ? "portal"
         : "email";
   const composeContentMaxLength = communicationContentMaxLength(
-    composeDeliveryChannel
+    composeDeliveryChannel,
   );
   const composeContentInvalid =
     composeContent.length > 0 &&
@@ -398,7 +403,7 @@ export default function InboxPage() {
     if (!commsData?.items) return [];
     return (commsData.items as InboxListItem[]).map((item) => {
       const unreadCount = Number(
-        item.unreadCount ?? (isUnreadInboxMessage(item) ? 1 : 0)
+        item.unreadCount ?? (isUnreadInboxMessage(item) ? 1 : 0),
       );
       if (!item.clientId) {
         return {
@@ -429,9 +434,9 @@ export default function InboxPage() {
     () =>
       conversationGroups.find(
         (group) =>
-          group.kind === "client" && group.clientId === selectedClientId
+          group.kind === "client" && group.clientId === selectedClientId,
       ),
-    [conversationGroups, selectedClientId]
+    [conversationGroups, selectedClientId],
   );
   const assignmentSource = selectedGroup?.latest ?? timeline?.[0];
   const assignedTo = assignmentSource?.assignedTo ?? null;
@@ -443,16 +448,16 @@ export default function InboxPage() {
       : `Assigned to ${assignedToName ?? "staff"}`
     : "Unassigned";
   const SelectedUnmatchedIcon = selectedUnmatched
-    ? channelIcons[selectedUnmatched.channel as Channel] ?? MessageSquare
+    ? (channelIcons[selectedUnmatched.channel as Channel] ?? MessageSquare)
     : MessageSquare;
   const selectedUnmatchedChannel = selectedUnmatched
-    ? channelLabels[selectedUnmatched.channel as Channel] ?? "Message"
+    ? (channelLabels[selectedUnmatched.channel as Channel] ?? "Message")
     : "Message";
 
   function handleSelectClient(
     clientId: string,
     clientName: string,
-    unreadCount = 0
+    unreadCount = 0,
   ) {
     setSelectedClientId(clientId);
     setSelectedClientName(clientName);
@@ -482,25 +487,38 @@ export default function InboxPage() {
       toast.error(
         smsStatusUnavailable
           ? "Unable to check texting setup"
-          : smsSummary?.title ?? "Checking texting setup"
+          : (smsSummary?.title ?? "Checking texting setup"),
       );
       return;
     }
     if (!canSendCompose) return;
+    const trimmedContent = composeContent.trim();
+    const trimmedSubject = composeSubject.trim();
+    let requestId: string | undefined;
+    if (composeChannel === "sms") {
+      const fingerprint = `${selectedClientId}\u0000${trimmedContent}`;
+      if (smsComposeRequest.current?.fingerprint !== fingerprint) {
+        smsComposeRequest.current = {
+          fingerprint,
+          requestId: crypto.randomUUID(),
+        };
+      }
+      requestId = smsComposeRequest.current.requestId;
+    }
     createMutation.mutate({
       clientId: selectedClientId,
       channel: composeChannel,
       direction: "outbound",
       subject:
-        composeChannel === "email"
-          ? composeSubject.trim() || undefined
-          : undefined,
-      content: composeContent.trim(),
+        composeChannel === "email" ? trimmedSubject || undefined : undefined,
+      content: trimmedContent,
+      ...(requestId ? { requestId } : {}),
     });
   }
 
   function handleNewMessage() {
     if (!canMutateInbox) return;
+    smsComposeRequest.current = null;
     setNewMessageMode(true);
     setSelectedClientId(null);
     setSelectedClientName("");
@@ -535,7 +553,7 @@ export default function InboxPage() {
           setSelectedClientName(clientName);
           setLinkClientSearch("");
         },
-      }
+      },
     );
   }
 
@@ -551,9 +569,7 @@ export default function InboxPage() {
       <div className="flex items-center justify-between mb-4">
         <div>
           <h2 className="font-heading text-xl font-semibold">Inbox</h2>
-          <p className="text-sm text-muted-foreground">
-            Client communications
-          </p>
+          <p className="text-sm text-muted-foreground">Client communications</p>
         </div>
         {canMutateInbox ? (
           <Button onClick={handleNewMessage} className="gap-2">
@@ -653,7 +669,7 @@ export default function InboxPage() {
             "w-full flex-col border-border shrink-0 md:flex md:w-80 md:border-r",
             selectedClientId || selectedUnmatched || newMessageMode
               ? "hidden"
-              : "flex"
+              : "flex",
           )}
         >
           {/* Filter tabs */}
@@ -666,7 +682,7 @@ export default function InboxPage() {
                   "flex-1 px-3 py-2.5 text-sm font-medium transition-colors",
                   filter === tab.key
                     ? "border-b-2 border-primary text-primary"
-                    : "text-muted-foreground hover:text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
                 )}
               >
                 {tab.label}
@@ -715,15 +731,13 @@ export default function InboxPage() {
                         ? handleSelectClient(
                             group.clientId,
                             group.clientName,
-                            group.unreadCount
+                            group.unreadCount,
                           )
                         : handleSelectUnmatched(group.latest)
                     }
                     className={cn(
                       "w-full text-left px-4 py-3 border-b border-border transition-colors",
-                      isSelected
-                        ? "bg-accent"
-                        : "hover:bg-accent/50"
+                      isSelected ? "bg-accent" : "hover:bg-accent/50",
                     )}
                   >
                     <div className="flex items-start gap-3">
@@ -741,7 +755,7 @@ export default function InboxPage() {
                           <span
                             className={cn(
                               "text-sm truncate",
-                              isUnread ? "font-semibold" : "font-medium"
+                              isUnread ? "font-semibold" : "font-medium",
                             )}
                           >
                             {group.clientName}
@@ -751,7 +765,7 @@ export default function InboxPage() {
                             <span className="text-xs">
                               {relativeTime(
                                 group.latest.createdAt,
-                                inboxTimeZone
+                                inboxTimeZone,
                               )}
                             </span>
                           </div>
@@ -789,7 +803,7 @@ export default function InboxPage() {
             "flex-1 flex-col min-w-0 md:flex",
             selectedClientId || selectedUnmatched || newMessageMode
               ? "flex"
-              : "hidden"
+              : "hidden",
           )}
         >
           {(selectedClientId || selectedUnmatched || newMessageMode) && (
@@ -840,7 +854,7 @@ export default function InboxPage() {
                       onClick={() =>
                         handleSelectClient(
                           client.id,
-                          `${client.firstName} ${client.lastName}`
+                          `${client.firstName} ${client.lastName}`,
                         )
                       }
                       className="w-full text-left px-3 py-2 rounded-md hover:bg-accent transition-colors"
@@ -918,7 +932,7 @@ export default function InboxPage() {
                       <span className="text-[10px]">
                         {relativeTime(
                           selectedUnmatched.createdAt,
-                          inboxTimeZone
+                          inboxTimeZone,
                         )}
                       </span>
                       {selectedUnmatched.status ? (
@@ -978,7 +992,9 @@ export default function InboxPage() {
                                 {client.firstName} {client.lastName}
                               </div>
                               <div className="truncate text-xs text-muted-foreground">
-                                {client.email || client.phone || "No contact info"}
+                                {client.email ||
+                                  client.phone ||
+                                  "No contact info"}
                               </div>
                             </div>
                             <UserPlus className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -1071,7 +1087,7 @@ export default function InboxPage() {
                         key={msg.id}
                         className={cn(
                           "flex gap-2",
-                          isOutbound ? "justify-end" : "justify-start"
+                          isOutbound ? "justify-end" : "justify-start",
                         )}
                       >
                         <div
@@ -1079,7 +1095,7 @@ export default function InboxPage() {
                             "max-w-[70%] rounded-lg px-3 py-2",
                             isOutbound
                               ? "bg-primary text-primary-foreground"
-                              : "bg-muted"
+                              : "bg-muted",
                           )}
                         >
                           {/* Direction + channel */}
@@ -1088,7 +1104,7 @@ export default function InboxPage() {
                               "flex items-center gap-1.5 mb-1",
                               isOutbound
                                 ? "text-primary-foreground/70"
-                                : "text-muted-foreground"
+                                : "text-muted-foreground",
                             )}
                           >
                             {isOutbound ? (
@@ -1108,7 +1124,7 @@ export default function InboxPage() {
                                 "text-xs font-semibold mb-0.5",
                                 isOutbound
                                   ? "text-primary-foreground/90"
-                                  : "text-foreground"
+                                  : "text-foreground",
                               )}
                             >
                               {msg.subject}
@@ -1124,7 +1140,7 @@ export default function InboxPage() {
                               "flex items-center gap-1 mt-1",
                               isOutbound
                                 ? "text-primary-foreground/50"
-                                : "text-muted-foreground"
+                                : "text-muted-foreground",
                             )}
                           >
                             <Clock className="h-2.5 w-2.5" />

@@ -23,7 +23,7 @@ describe("telnyxProvider", () => {
         sender: { messagingServiceId: "mp-1" },
       })
     ).resolves.toEqual({
-      success: false,
+      status: "definite_failure",
       error: "Telnyx is not configured (TELNYX_API_KEY missing).",
     });
     expect(fetchMock).not.toHaveBeenCalled();
@@ -45,7 +45,7 @@ describe("telnyxProvider", () => {
         body: "Reminder",
         sender: { messagingServiceId: " mp-1 " },
       })
-    ).resolves.toEqual({ success: true, id: "msg-1" });
+    ).resolves.toEqual({ status: "accepted", id: "msg-1" });
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.telnyx.com/v2/messages",
@@ -88,8 +88,64 @@ describe("telnyxProvider", () => {
     await vi.advanceTimersByTimeAsync(TELNYX_API_TIMEOUT_MS);
 
     await expect(result).resolves.toEqual({
-      success: false,
+      status: "outcome_unknown",
       error: "aborted",
     });
+  });
+
+  it.each([408, 429, 500, 503])(
+    "treats HTTP %s as outcome unknown",
+    async (status) => {
+      vi.stubEnv("TELNYX_API_KEY", "KEY123");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response("transient", { status })),
+      );
+
+      await expect(
+        telnyxProvider.send({
+          to: "+15555550199",
+          body: "Reminder",
+          sender: { from: "+15555550100" },
+        }),
+      ).resolves.toMatchObject({ status: "outcome_unknown" });
+    },
+  );
+
+  it("treats a non-transient 4xx rejection as definite failure", async () => {
+    vi.stubEnv("TELNYX_API_KEY", "KEY123");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("invalid destination", { status: 400 })),
+    );
+
+    await expect(
+      telnyxProvider.send({
+        to: "+15555550199",
+        body: "Reminder",
+        sender: { from: "+15555550100" },
+      }),
+    ).resolves.toMatchObject({ status: "definite_failure" });
+  });
+
+  it("treats 2xx without a provider id as outcome unknown", async () => {
+    vi.stubEnv("TELNYX_API_KEY", "KEY123");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ data: {} }), {
+            headers: { "Content-Type": "application/json" },
+          }),
+      ),
+    );
+
+    await expect(
+      telnyxProvider.send({
+        to: "+15555550199",
+        body: "Reminder",
+        sender: { from: "+15555550100" },
+      }),
+    ).resolves.toMatchObject({ status: "outcome_unknown" });
   });
 });

@@ -30,7 +30,10 @@ export const telnyxProvider: MessagingProvider = {
   async send({ to, body, sender }: SendMessageInput): Promise<SendMessageResult> {
     const key = apiKey();
     if (!key) {
-      return { success: false, error: "Telnyx is not configured (TELNYX_API_KEY missing)." };
+      return {
+        status: "definite_failure",
+        error: "Telnyx is not configured (TELNYX_API_KEY missing).",
+      };
     }
 
     const configuredSender = cleanSender(sender);
@@ -41,7 +44,7 @@ export const telnyxProvider: MessagingProvider = {
       payload.from = configuredSender.from;
     } else {
       return {
-        success: false,
+        status: "definite_failure",
         error: "No Telnyx sender (messaging profile or from-number) configured.",
       };
     }
@@ -57,16 +60,27 @@ export const telnyxProvider: MessagingProvider = {
       });
       if (!res.ok) {
         const detail = await res.text().catch(() => "");
+        const status =
+          res.status === 408 || res.status === 429 || res.status >= 500
+            ? "outcome_unknown"
+            : "definite_failure";
         return {
-          success: false,
+          status,
           error: `Telnyx send failed (${res.status}): ${detail.slice(0, 300)}`,
         };
       }
       const json = (await res.json()) as { data?: { id?: string } };
-      return { success: true, id: json.data?.id };
+      const id = json.data?.id?.trim();
+      return id
+        ? { status: "accepted", id }
+        : {
+            status: "outcome_unknown",
+            error:
+              "Telnyx accepted the request but returned no provider message id.",
+          };
     } catch (err) {
       return {
-        success: false,
+        status: "outcome_unknown",
         error: err instanceof Error ? err.message : "Unknown Telnyx error",
       };
     }

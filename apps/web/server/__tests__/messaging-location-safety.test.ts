@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => {
   class MockTelnyxError extends Error {
     constructor(
       message: string,
-      readonly status: number
+      readonly status: number,
     ) {
       super(message);
     }
@@ -119,7 +119,7 @@ function callerWithDb(db: Record<string, unknown>) {
 function sqlIncludesColumnParamPair(
   value: unknown,
   columnName: string,
-  paramValue: unknown
+  paramValue: unknown,
 ): boolean {
   if (!value || typeof value !== "object") {
     return false;
@@ -134,7 +134,7 @@ function sqlIncludesColumnParamPair(
     (item) =>
       !!item &&
       typeof item === "object" &&
-      (item as { name?: unknown }).name === columnName
+      (item as { name?: unknown }).name === columnName,
   );
   const hasParam = chunk.queryChunks.some((item) => {
     if (!item || typeof item !== "object") {
@@ -149,7 +149,7 @@ function sqlIncludesColumnParamPair(
   return (
     (hasColumn && hasParam) ||
     chunk.queryChunks.some((item) =>
-      sqlIncludesColumnParamPair(item, columnName, paramValue)
+      sqlIncludesColumnParamPair(item, columnName, paramValue),
     )
   );
 }
@@ -169,7 +169,7 @@ function createDb(opts?: {
     limit: selectLimit,
     then: (
       resolve: (value: unknown[]) => unknown,
-      reject: (reason: unknown) => unknown
+      reject: (reason: unknown) => unknown,
     ) => Promise.resolve(nextSelectRows()).then(resolve, reject),
   }));
   const selectInnerJoin = vi.fn(() => ({ where: selectWhere }));
@@ -252,13 +252,13 @@ describe("messaging provisioning kill-switch", () => {
     const { db, select } = createDb();
 
     await expect(
-      callerWithDb(db).provisionNumber(startNumberInput())
+      callerWithDb(db).provisionNumber(startNumberInput()),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message: expect.stringContaining("almost ready"),
     });
     await expect(
-      callerWithDb(db).searchNumbers({ areaCode: "212" })
+      callerWithDb(db).searchNumbers({ areaCode: "212" }),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
     // No DB reads and no Telnyx calls happen while the switch is off.
@@ -279,7 +279,7 @@ describe("messaging provisioning kill-switch", () => {
     });
 
     await expect(
-      callerWithDb(db).provisionNumber(startNumberInput())
+      callerWithDb(db).provisionNumber(startNumberInput()),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message: expect.stringContaining("approved pilot clinics"),
@@ -341,7 +341,7 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).getRegistrationDefaults()
+      callerWithDb(db).getRegistrationDefaults(),
     ).resolves.toMatchObject({
       displayName: "",
       contactEmail: "admin@example.com",
@@ -383,7 +383,7 @@ describe("messaging location target safety", () => {
   it("encrypts clinic tax IDs and upserts registration details tenant-scoped", async () => {
     vi.stubEnv(
       "MESSAGING_REGISTRATION_ENCRYPTION_KEY",
-      Buffer.alloc(32, 9).toString("base64")
+      Buffer.alloc(32, 9).toString("base64"),
     );
     const { db, insertValues } = createDb({ selectResults: [[]] });
 
@@ -405,7 +405,7 @@ describe("messaging location target safety", () => {
         privacyPolicyUrl: "https://example.com/privacy",
         termsUrl: "https://example.com/terms",
         certifyAccuracyAndConsent: true,
-      })
+      }),
     ).resolves.toEqual({ ok: true, taxIdLast4: "6789" });
 
     const values = insertValues.mock.calls[0]?.[0] as Record<string, unknown>;
@@ -424,7 +424,7 @@ describe("messaging location target safety", () => {
   it("uses the hosted clinic SMS policies when custom links are omitted", async () => {
     vi.stubEnv(
       "MESSAGING_REGISTRATION_ENCRYPTION_KEY",
-      Buffer.alloc(32, 9).toString("base64")
+      Buffer.alloc(32, 9).toString("base64"),
     );
     vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.openvpm.com");
     const { db, insertValues } = createDb({ selectResults: [[]] });
@@ -459,14 +459,15 @@ describe("messaging location target safety", () => {
       callerWithDb(db).provisionNumber({
         ...startNumberInput(),
         phoneNumber: "12345",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).testSend({
         locationId: LOCATION_ID,
         to: "1".repeat(33),
-      })
+        requestId: "00000000-0000-0000-0000-000000000099",
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(select).not.toHaveBeenCalled();
@@ -490,14 +491,14 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      caller.searchNumbers({ areaCode: "212" })
+      caller.searchNumbers({ areaCode: "212" }),
     ).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
     });
 
     await expect(
-      caller.provisionNumber(startNumberInput())
+      caller.provisionNumber(startNumberInput()),
     ).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
@@ -524,7 +525,7 @@ describe("messaging location target safety", () => {
     expect(mocks.usageForPractice).toHaveBeenCalledWith(
       PRACTICE_ID,
       "sms",
-      "2026-06"
+      "2026-06",
     );
   });
 
@@ -532,7 +533,7 @@ describe("messaging location target safety", () => {
     const { db } = createDb({ selectResults: [[]] });
 
     await expect(
-      callerWithDb(db).checkEligibility({ locationId: LOCATION_ID })
+      callerWithDb(db).checkEligibility({ locationId: LOCATION_ID }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(mocks.findMessagingProfilesByName).not.toHaveBeenCalled();
@@ -544,7 +545,7 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).checkEligibility({ locationId: LOCATION_ID })
+      callerWithDb(db).checkEligibility({ locationId: LOCATION_ID }),
     ).resolves.toEqual({
       eligible: false,
       detail: expect.stringContaining("has not ported or changed"),
@@ -561,7 +562,7 @@ describe("messaging location target safety", () => {
       callerWithDb(db).provisionNumber({
         locationId: LOCATION_ID,
         mode: "host",
-      })
+      }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message: expect.stringContaining("has not ported or changed"),
@@ -577,7 +578,7 @@ describe("messaging location target safety", () => {
     const { db } = createDb({ selectResults: [[]] });
 
     await expect(
-      callerWithDb(db).provisionNumber(startNumberInput())
+      callerWithDb(db).provisionNumber(startNumberInput()),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(mocks.createMessagingProfile).not.toHaveBeenCalled();
@@ -592,7 +593,7 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      callerWithDb(missingEnv.db).provisionNumber(startNumberInput())
+      callerWithDb(missingEnv.db).provisionNumber(startNumberInput()),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message:
@@ -607,7 +608,7 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      callerWithDb(localEnv.db).provisionNumber(startNumberInput())
+      callerWithDb(localEnv.db).provisionNumber(startNumberInput()),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
     });
@@ -624,7 +625,7 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).provisionNumber(startNumberInput())
+      callerWithDb(db).provisionNumber(startNumberInput()),
     ).rejects.toMatchObject({
       code: "CONFLICT",
       message: expect.stringContaining("could not reserve"),
@@ -642,7 +643,7 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).provisionNumber(startNumberInput())
+      callerWithDb(db).provisionNumber(startNumberInput()),
     ).resolves.toMatchObject({
       ok: true,
       senderE164: "+15555550100",
@@ -667,7 +668,7 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).provisionNumber(startNumberInput())
+      callerWithDb(db).provisionNumber(startNumberInput()),
     ).resolves.toEqual({
       ok: true,
       senderE164: "+15555550100",
@@ -693,7 +694,7 @@ describe("messaging location target safety", () => {
         registrationStatus: "not_started",
         registrationDetail: expect.stringContaining("Number order accepted"),
         enabled: false,
-      })
+      }),
     );
     expect(insertUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -706,7 +707,7 @@ describe("messaging location target safety", () => {
           deletedAt: null,
           updatedAt: expect.any(Date),
         }),
-      })
+      }),
     );
   });
 
@@ -728,7 +729,7 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).provisionNumber(startNumberInput())
+      callerWithDb(db).provisionNumber(startNumberInput()),
     ).resolves.toEqual({
       ok: true,
       senderE164: "+15555550100",
@@ -776,7 +777,7 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).provisionNumber(resumeNumberInput())
+      callerWithDb(db).provisionNumber(resumeNumberInput()),
     ).resolves.toMatchObject({ recovered: true, numberSource: "purchased" });
 
     expect(mocks.createMessagingProfile).not.toHaveBeenCalled();
@@ -785,7 +786,7 @@ describe("messaging location target safety", () => {
       expect.objectContaining({
         registrationStatus: "not_started",
         enabled: false,
-      })
+      }),
     );
   });
 
@@ -824,7 +825,7 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).provisionNumber(resumeNumberInput())
+      callerWithDb(db).provisionNumber(resumeNumberInput()),
     ).resolves.toMatchObject({ recovered: true, senderE164: "+15555550100" });
 
     expect(mocks.buyNumber).not.toHaveBeenCalled();
@@ -833,7 +834,7 @@ describe("messaging location target safety", () => {
         messagingProfileId: "profile_123",
         senderE164: "+15555550100",
         registrationStatus: "not_started",
-      })
+      }),
     );
   });
 
@@ -867,12 +868,12 @@ describe("messaging location target safety", () => {
         },
       ]);
     mocks.buyNumber.mockRejectedValueOnce(
-      new mocks.TelnyxMutationUncertainError(`${scenario}: reconcile required`)
+      new mocks.TelnyxMutationUncertainError(`${scenario}: reconcile required`),
     );
 
     const first = createDb({ selectResults: [[{ id: LOCATION_ID }], []] });
     await expect(
-      callerWithDb(first.db).provisionNumber(startNumberInput())
+      callerWithDb(first.db).provisionNumber(startNumberInput()),
     ).rejects.toMatchObject({ code: "BAD_GATEWAY" });
 
     const retry = createDb({
@@ -890,7 +891,7 @@ describe("messaging location target safety", () => {
       ],
     });
     await expect(
-      callerWithDb(retry.db).provisionNumber(resumeNumberInput())
+      callerWithDb(retry.db).provisionNumber(resumeNumberInput()),
     ).resolves.toMatchObject({ recovered: true });
     expect(mocks.buyNumber).toHaveBeenCalledTimes(1);
   });
@@ -907,8 +908,8 @@ describe("messaging location target safety", () => {
       process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
       mocks.createMessagingProfile.mockRejectedValueOnce(
         new mocks.TelnyxMutationUncertainError(
-          `${scenario}: profile reconciliation required`
-        )
+          `${scenario}: profile reconciliation required`,
+        ),
       );
       mocks.reserveMessagingProfileAttempt.mockResolvedValueOnce(true);
       const gate = preparedMessagingGate();
@@ -917,7 +918,7 @@ describe("messaging location target safety", () => {
       });
 
       await expect(
-        callerWithDb(first.db).provisionNumber(startNumberInput())
+        callerWithDb(first.db).provisionNumber(startNumberInput()),
       ).rejects.toMatchObject({ code: "BAD_GATEWAY" });
       expect(mocks.reserveMessagingProfileAttempt).toHaveBeenCalledWith({
         practiceId: PRACTICE_ID,
@@ -925,11 +926,11 @@ describe("messaging location target safety", () => {
         senderE164: "+15555550100",
         customerReference: `openvpm:${PRACTICE_ID}:${LOCATION_ID}`,
         detail: expect.stringContaining(
-          "will not create another provider profile"
+          "will not create another provider profile",
         ),
       });
       expect(
-        mocks.reserveMessagingProfileAttempt.mock.invocationCallOrder[0]
+        mocks.reserveMessagingProfileAttempt.mock.invocationCallOrder[0],
       ).toBeLessThan(mocks.createMessagingProfile.mock.invocationCallOrder[0]!);
       expect(first.insertValues).toHaveBeenLastCalledWith(
         expect.objectContaining({
@@ -938,14 +939,14 @@ describe("messaging location target safety", () => {
           numberSource: "purchased",
           registrationStatus: "failed",
           enabled: false,
-        })
+        }),
       );
 
       const retry = createDb({
         selectResults: [[{ id: LOCATION_ID }], [gate]],
       });
       await expect(
-        callerWithDb(retry.db).provisionNumber(resumeNumberInput())
+        callerWithDb(retry.db).provisionNumber(resumeNumberInput()),
       ).rejects.toMatchObject({
         code: "CONFLICT",
         message: expect.stringContaining("No additional purchase"),
@@ -954,7 +955,7 @@ describe("messaging location target safety", () => {
       expect(mocks.createMessagingProfile).toHaveBeenCalledTimes(1);
       expect(mocks.buyNumber).not.toHaveBeenCalled();
       expect(mocks.releaseMessagingProfileAttempt).not.toHaveBeenCalled();
-    }
+    },
   );
 
   it("keeps resume read-only when the exact profile later becomes visible", async () => {
@@ -972,20 +973,20 @@ describe("messaging location target safety", () => {
         },
       ]);
     mocks.createMessagingProfile.mockRejectedValueOnce(
-      new mocks.TelnyxMutationUncertainError("profile response timed out")
+      new mocks.TelnyxMutationUncertainError("profile response timed out"),
     );
     const first = createDb({
       selectResults: [[{ id: LOCATION_ID }], [gate], [gate]],
     });
     await expect(
-      callerWithDb(first.db).provisionNumber(startNumberInput())
+      callerWithDb(first.db).provisionNumber(startNumberInput()),
     ).rejects.toMatchObject({ code: "BAD_GATEWAY" });
 
     const retry = createDb({
       selectResults: [[{ id: LOCATION_ID }], [gate], [gate]],
     });
     await expect(
-      callerWithDb(retry.db).provisionNumber(resumeNumberInput())
+      callerWithDb(retry.db).provisionNumber(resumeNumberInput()),
     ).rejects.toMatchObject({ code: "CONFLICT" });
 
     expect(mocks.createMessagingProfile).toHaveBeenCalledTimes(1);
@@ -1028,7 +1029,7 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).provisionNumber(resumeNumberInput())
+      callerWithDb(db).provisionNumber(resumeNumberInput()),
     ).rejects.toMatchObject({
       code: "CONFLICT",
       message: expect.stringContaining("No additional purchase"),
@@ -1043,7 +1044,7 @@ describe("messaging location target safety", () => {
       callerWithDb(noConfirmation.db).provisionNumber({
         ...startNumberInput(),
         confirmProviderCharges: false,
-      } as never)
+      } as never),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     mocks.reserveMessagingProfileAttempt
@@ -1066,7 +1067,7 @@ describe("messaging location target safety", () => {
       selectResults: [[{ id: LOCATION_ID }], [gate]],
     });
     await expect(
-      callerWithDb(changedQuote.db).provisionNumber(startNumberInput())
+      callerWithDb(changedQuote.db).provisionNumber(startNumberInput()),
     ).rejects.toMatchObject({
       code: "CONFLICT",
       message: expect.stringContaining("price changed"),
@@ -1077,7 +1078,7 @@ describe("messaging location target safety", () => {
       senderE164: "+15555550100",
       customerReference: `openvpm:${PRACTICE_ID}:${LOCATION_ID}`,
       detail: expect.stringContaining(
-        "will not create another provider profile"
+        "will not create another provider profile",
       ),
     });
     expect(mocks.createMessagingProfile).not.toHaveBeenCalled();
@@ -1087,7 +1088,7 @@ describe("messaging location target safety", () => {
       selectResults: [[{ id: LOCATION_ID }], [gate]],
     });
     await expect(
-      callerWithDb(retryAfterRelease.db).provisionNumber(startNumberInput())
+      callerWithDb(retryAfterRelease.db).provisionNumber(startNumberInput()),
     ).resolves.toMatchObject({
       ok: true,
       senderE164: "+15555550100",
@@ -1100,14 +1101,14 @@ describe("messaging location target safety", () => {
     process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
     const gate = preparedMessagingGate();
     mocks.findMessagingProfilesByName.mockRejectedValueOnce(
-      new mocks.TelnyxNotConfiguredError()
+      new mocks.TelnyxNotConfiguredError(),
     );
 
     const missingConfig = createDb({
       selectResults: [[{ id: LOCATION_ID }], [gate], [gate]],
     });
     await expect(
-      callerWithDb(missingConfig.db).provisionNumber(startNumberInput())
+      callerWithDb(missingConfig.db).provisionNumber(startNumberInput()),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
     expect(mocks.releaseMessagingProfileAttempt).toHaveBeenCalledWith({
@@ -1116,7 +1117,7 @@ describe("messaging location target safety", () => {
       senderE164: "+15555550100",
       customerReference: `openvpm:${PRACTICE_ID}:${LOCATION_ID}`,
       detail: expect.stringContaining(
-        "will not create another provider profile"
+        "will not create another provider profile",
       ),
     });
     expect(mocks.createMessagingProfile).not.toHaveBeenCalled();
@@ -1127,8 +1128,8 @@ describe("messaging location target safety", () => {
     });
     await expect(
       callerWithDb(retryAfterConfiguration.db).provisionNumber(
-        startNumberInput()
-      )
+        startNumberInput(),
+      ),
     ).resolves.toMatchObject({
       ok: true,
       senderE164: "+15555550100",
@@ -1141,7 +1142,7 @@ describe("messaging location target safety", () => {
     process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
     const gate = preparedMessagingGate();
     mocks.findOwnedPhoneNumbers.mockRejectedValueOnce(
-      new mocks.TelnyxNotConfiguredError()
+      new mocks.TelnyxNotConfiguredError(),
     );
 
     const interruptedAfterProfile = createDb({
@@ -1149,8 +1150,8 @@ describe("messaging location target safety", () => {
     });
     await expect(
       callerWithDb(interruptedAfterProfile.db).provisionNumber(
-        startNumberInput()
-      )
+        startNumberInput(),
+      ),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
     expect(mocks.createMessagingProfile).toHaveBeenCalledTimes(1);
@@ -1177,7 +1178,7 @@ describe("messaging location target safety", () => {
       ],
     });
     await expect(
-      callerWithDb(retry.db).provisionNumber(resumeNumberInput())
+      callerWithDb(retry.db).provisionNumber(resumeNumberInput()),
     ).rejects.toMatchObject({
       code: "CONFLICT",
       message: expect.stringContaining("No additional purchase"),
@@ -1209,7 +1210,7 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).provisionNumber(startNumberInput())
+      callerWithDb(db).provisionNumber(startNumberInput()),
     ).rejects.toMatchObject({
       code: "CONFLICT",
       message: expect.stringContaining("more than one incomplete"),
@@ -1234,7 +1235,7 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).provisionNumber(startNumberInput())
+      callerWithDb(db).provisionNumber(startNumberInput()),
     ).rejects.toMatchObject({
       code: "CONFLICT",
       message: expect.stringContaining("unsafe settings"),
@@ -1267,7 +1268,7 @@ describe("messaging location target safety", () => {
       .mockResolvedValueOnce(undefined);
 
     await expect(
-      callerWithDb(db).provisionNumber(startNumberInput())
+      callerWithDb(db).provisionNumber(startNumberInput()),
     ).rejects.toMatchObject({
       code: "INTERNAL_SERVER_ERROR",
       message: expect.not.stringContaining("database write failed"),
@@ -1281,11 +1282,11 @@ describe("messaging location target safety", () => {
         senderE164: "+15555550100",
         registrationStatus: "failed",
         enabled: false,
-      })
+      }),
     );
     expect(errorLog).toHaveBeenCalledWith(
       "Unexpected messaging provisioning failure",
-      expect.any(Error)
+      expect.any(Error),
     );
   });
 
@@ -1310,7 +1311,7 @@ describe("messaging location target safety", () => {
     insertUpdate.mockRejectedValueOnce(new Error("database write failed"));
 
     await expect(
-      callerWithDb(db).provisionNumber(startNumberInput())
+      callerWithDb(db).provisionNumber(startNumberInput()),
     ).rejects.toMatchObject({ code: "INTERNAL_SERVER_ERROR" });
 
     expect(mocks.deleteOwnedPhoneNumber).not.toHaveBeenCalled();
@@ -1321,14 +1322,14 @@ describe("messaging location target safety", () => {
   it("keeps a deterministic profile recoverable after an uncertain order timeout", async () => {
     process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
     mocks.buyNumber.mockRejectedValue(
-      new mocks.TelnyxMutationUncertainError("request outcome uncertain")
+      new mocks.TelnyxMutationUncertainError("request outcome uncertain"),
     );
     const { db, insertValues } = createDb({
       selectResults: [[{ id: LOCATION_ID }], []],
     });
 
     await expect(
-      callerWithDb(db).provisionNumber(startNumberInput())
+      callerWithDb(db).provisionNumber(startNumberInput()),
     ).rejects.toMatchObject({ code: "BAD_GATEWAY" });
 
     expect(mocks.deleteOwnedPhoneNumber).not.toHaveBeenCalled();
@@ -1337,7 +1338,7 @@ describe("messaging location target safety", () => {
       expect.objectContaining({
         messagingProfileId: "profile_123",
         registrationStatus: "failed",
-      })
+      }),
     );
   });
 
@@ -1352,7 +1353,7 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).provisionNumber(startNumberInput())
+      callerWithDb(db).provisionNumber(startNumberInput()),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
     expect(mocks.buyNumber).not.toHaveBeenCalled();
@@ -1361,7 +1362,7 @@ describe("messaging location target safety", () => {
       expect.objectContaining({
         messagingProfileId: "profile_123",
         registrationStatus: "failed",
-      })
+      }),
     );
   });
 
@@ -1369,7 +1370,7 @@ describe("messaging location target safety", () => {
     const { db, updateSet } = createDb({ selectResults: [[]] });
 
     await expect(
-      callerWithDb(db).setEnabled({ locationId: LOCATION_ID, enabled: true })
+      callerWithDb(db).setEnabled({ locationId: LOCATION_ID, enabled: true }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -1381,7 +1382,7 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).setEnabled({ locationId: LOCATION_ID, enabled: true })
+      callerWithDb(db).setEnabled({ locationId: LOCATION_ID, enabled: true }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message:
@@ -1398,7 +1399,7 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).setEnabled({ locationId: LOCATION_ID, enabled: true })
+      callerWithDb(db).setEnabled({ locationId: LOCATION_ID, enabled: true }),
     ).rejects.toMatchObject({
       code: "CONFLICT",
       message:
@@ -1411,7 +1412,7 @@ describe("messaging location target safety", () => {
     });
     const condition = updateWhere.mock.calls[0]?.[0];
     expect(
-      sqlIncludesColumnParamPair(condition, "registration_status", "active")
+      sqlIncludesColumnParamPair(condition, "registration_status", "active"),
     ).toBe(true);
   });
 
@@ -1422,7 +1423,7 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).setEnabled({ locationId: LOCATION_ID, enabled: false })
+      callerWithDb(db).setEnabled({ locationId: LOCATION_ID, enabled: false }),
     ).resolves.toEqual({ ok: true, enabled: false });
 
     expect(updateSet).toHaveBeenCalledWith({
@@ -1445,7 +1446,7 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).setEnabled({ locationId: LOCATION_ID, enabled: true })
+      callerWithDb(db).setEnabled({ locationId: LOCATION_ID, enabled: true }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message: expect.stringContaining("not enabled for this clinic pilot"),
@@ -1477,7 +1478,7 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).setEnabled({ locationId: LOCATION_ID, enabled: true })
+      callerWithDb(db).setEnabled({ locationId: LOCATION_ID, enabled: true }),
     ).resolves.toEqual({ ok: true, enabled: true });
     expect(updateSet).toHaveBeenCalledWith({
       enabled: true,
@@ -1494,7 +1495,8 @@ describe("messaging location target safety", () => {
       callerWithDb(db).testSend({
         locationId: LOCATION_ID,
         to: "+15555550100",
-      })
+        requestId: "00000000-0000-0000-0000-000000000099",
+      }),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
     expect(mocks.sendSms).not.toHaveBeenCalled();
@@ -1516,7 +1518,8 @@ describe("messaging location target safety", () => {
       callerWithDb(db).testSend({
         locationId: LOCATION_ID,
         to: "+15555550100",
-      })
+        requestId: "00000000-0000-0000-0000-000000000099",
+      }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message: expect.stringContaining("test sends are disabled"),
@@ -1535,7 +1538,8 @@ describe("messaging location target safety", () => {
       callerWithDb(db).testSend({
         locationId: LOCATION_ID,
         to: "(555) 555-0100",
-      })
+        requestId: "00000000-0000-0000-0000-000000000099",
+      }),
     ).resolves.toEqual({ ok: true, id: "sms_123" });
 
     expect(mocks.sendSms).toHaveBeenCalledWith({
@@ -1543,6 +1547,9 @@ describe("messaging location target safety", () => {
       body: "OpenVPM test message — your texting is set up correctly.",
       practiceId: PRACTICE_ID,
       locationId: LOCATION_ID,
+      source: "self_host_test",
+      sourceId: "00000000-0000-0000-0000-000000000099",
+      idempotencyKey: "sms:self-host-test:00000000-0000-0000-0000-000000000099",
     });
   });
 });
@@ -1557,13 +1564,13 @@ describe("messaging location sender join scoping", () => {
       new RegExp(
         `innerJoin\\(\\s*locations,\\s*and\\(\\s*eq\\(locations\\.id, locationMessaging\\.locationId\\),\\s*eq\\(locations\\.practiceId, ${practiceExpr.replace(
           ".",
-          "\\."
+          "\\.",
         )}\\),\\s*(?:activePracticePredicate\\(${practiceExpr.replace(
           ".",
-          "\\."
+          "\\.",
         )}\\),\\s*)?isNull\\(locations\\.deletedAt\\)\\s*,?\\s*\\)\\s*,?\\s*\\)`,
-        "s"
-      )
+        "s",
+      ),
     );
   }
 
@@ -1586,14 +1593,14 @@ describe("messaging location sender join scoping", () => {
     expect(source).not.toContain('practice?.tier ?? "free"');
 
     const statusJoins = source.match(
-      /leftJoin\(\s*locationMessaging,\s*and\([\s\S]+?isNull\(locationMessaging\.deletedAt\)[\s\S]+?\)\s*\)/g
+      /leftJoin\(\s*locationMessaging,\s*and\([\s\S]+?isNull\(locationMessaging\.deletedAt\)[\s\S]+?\)\s*\)/g,
     );
 
     expect(statusJoins).toHaveLength(2);
     for (const join of statusJoins ?? []) {
       expect(join).toContain("eq(locationMessaging.locationId, locations.id)");
       expect(join).toContain(
-        "eq(locationMessaging.practiceId, ctx.practiceId)"
+        "eq(locationMessaging.practiceId, ctx.practiceId)",
       );
       expect(join).toContain("activePracticePredicate(ctx.practiceId)");
       expect(join).toContain("isNull(locationMessaging.deletedAt)");
@@ -1615,10 +1622,10 @@ describe("messaging location sender join scoping", () => {
 
   it("requires active sender lookups to have a nonblank sender or messaging profile", () => {
     expect(readSource("lib/messaging/sender-query.ts")).toContain(
-      "nullif(trim(${locationMessaging.senderE164}), '') is not null"
+      "nullif(trim(${locationMessaging.senderE164}), '') is not null",
     );
     expect(readSource("lib/messaging/sender-query.ts")).toContain(
-      "nullif(trim(${locationMessaging.messagingProfileId}), '') is not null"
+      "nullif(trim(${locationMessaging.messagingProfileId}), '') is not null",
     );
 
     for (const path of [
@@ -1632,7 +1639,7 @@ describe("messaging location sender join scoping", () => {
       expect(source).toContain("hasNonBlankMessagingSender()");
       expect(source).not.toContain("isNotNull(locationMessaging.senderE164)");
       expect(source).not.toContain(
-        "isNotNull(locationMessaging.messagingProfileId)"
+        "isNotNull(locationMessaging.messagingProfileId)",
       );
     }
   });
@@ -1640,11 +1647,11 @@ describe("messaging location sender join scoping", () => {
   it("scopes cron and webhook sender lookups to active matching locations", () => {
     expectScopedLocationJoin(
       readSource("app/api/cron/reminders/route.ts"),
-      "practiceId"
+      "practiceId",
     );
     expectScopedLocationJoin(
       readSource("lib/messaging/inbound.ts"),
-      "locationMessaging.practiceId"
+      "locationMessaging.practiceId",
     );
   });
 
@@ -1655,19 +1662,19 @@ describe("messaging location sender join scoping", () => {
     expect(source).toContain("findMessagingLocationForWebhook");
     expect(source).toContain("locationMessaging.messagingProfileId");
     expect(readSource("app/api/webhooks/telnyx/route.ts")).toContain(
-      "findMessagingLocationForWebhook({"
+      "findMessagingLocationForWebhook({",
     );
     expect(readSource("app/api/webhooks/telnyx/route.ts")).toContain(
-      'provider: "telnyx"'
+      'provider: "telnyx"',
     );
     expect(readSource("app/api/webhooks/twilio/route.ts")).toContain(
-      "findMessagingLocationForWebhook({"
+      "findMessagingLocationForWebhook({",
     );
     expect(readSource("app/api/webhooks/twilio/route.ts")).toContain(
-      'provider: "twilio"'
+      'provider: "twilio"',
     );
     expect(readSource("app/api/webhooks/twilio/route.ts")).toContain(
-      "handleInboundSmsReply({"
+      "handleInboundSmsReply({",
     );
   });
 
@@ -1676,10 +1683,10 @@ describe("messaging location sender join scoping", () => {
 
     expect(source).toContain("if (!opts.practiceId) return undefined");
     expect(source).toMatch(
-      /innerJoin\(\s*locations,\s*and\(\s*eq\(locations\.id, locationMessaging\.locationId\),\s*eq\(locations\.practiceId, opts\.practiceId!\),\s*isNull\(locations\.deletedAt\)\s*,?\s*\)\s*,?\s*\)/s
+      /innerJoin\(\s*locations,\s*and\(\s*eq\(locations\.id, locationMessaging\.locationId\),\s*eq\(locations\.practiceId, opts\.practiceId!\),\s*isNull\(locations\.deletedAt\)\s*,?\s*\)\s*,?\s*\)/s,
     );
     expect(source).toContain(
-      "eq(locationMessaging.practiceId, opts.practiceId!)"
+      "eq(locationMessaging.practiceId, opts.practiceId!)",
     );
   });
 });

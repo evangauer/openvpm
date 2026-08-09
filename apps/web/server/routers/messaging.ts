@@ -1492,7 +1492,13 @@ export const messagingRouter = createRouter({
 
   /** Send a test SMS to a staff number from the location's sender. */
   testSend: adminOnly
-    .input(z.object({ locationId: z.string().uuid(), to: messagingPhoneInput }))
+    .input(
+      z.object({
+        locationId: z.string().uuid(),
+        to: messagingPhoneInput,
+        requestId: z.string().uuid(),
+      })
+    )
     .mutation(async ({ ctx, input }) => {
       if (billingEnforced()) {
         throw new TRPCError({
@@ -1560,6 +1566,9 @@ export const messagingRouter = createRouter({
         body: "OpenVPM test message — your texting is set up correctly.",
         practiceId: ctx.practiceId,
         locationId: input.locationId,
+        source: "self_host_test",
+        sourceId: input.requestId,
+        idempotencyKey: `sms:self-host-test:${input.requestId}`,
       });
       if (!result.success) {
         throw new TRPCError({

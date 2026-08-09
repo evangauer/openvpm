@@ -82,7 +82,8 @@ const sections: Section[] = [
       {
         name: "clients.search",
         method: "GET",
-        description: "Quick search clients by name, email, or phone. Returns up to 10 results.",
+        description:
+          "Quick search clients by name, email, or phone. Returns up to 10 results.",
         input: `{ query: string }`,
         response: `Client[]`,
       },
@@ -181,7 +182,8 @@ const sections: Section[] = [
       {
         name: "patients.getById",
         method: "GET",
-        description: "Get full patient details including weights, allergies, and owner info.",
+        description:
+          "Get full patient details including weights, allergies, and owner info.",
         input: `{ id: string }`,
         response: `{
   ...Patient,
@@ -564,7 +566,8 @@ const sections: Section[] = [
       {
         name: "billing.createCardPaymentCheckout",
         method: "POST",
-        description: "Create a Stripe Checkout link for the remaining adjusted invoice balance.",
+        description:
+          "Create a Stripe Checkout link for the remaining adjusted invoice balance.",
         input: `{ invoiceId: string }`,
         response: `{ url: string }`,
       },
@@ -723,7 +726,8 @@ const sections: Section[] = [
       {
         name: "portal.createMessage",
         method: "POST",
-        description: "Send a portal message from the client into the shared inbox.",
+        description:
+          "Send a portal message from the client into the shared inbox.",
         input: `{
   token: string,
   content: string
@@ -734,7 +738,8 @@ const sections: Section[] = [
       {
         name: "portal.markMessagesRead",
         method: "POST",
-        description: "Mark outbound clinic portal messages as read after the client opens the thread.",
+        description:
+          "Mark outbound clinic portal messages as read after the client opens the thread.",
         input: `{ token: string }`,
         response: `{ success: true, updated: number }`,
         auth: "Portal token",
@@ -762,7 +767,8 @@ const sections: Section[] = [
       {
         name: "portal.requestAppointment",
         method: "POST",
-        description: "Submit an appointment request from the portal using an exact requested time.",
+        description:
+          "Submit an appointment request from the portal using an exact requested time.",
         input: `{
   token: string,
   patientId: string,
@@ -1267,7 +1273,8 @@ const sections: Section[] = [
       {
         name: "communications.markClientRead",
         method: "POST",
-        description: "Mark unread inbound messages for a client thread as read.",
+        description:
+          "Mark unread inbound messages for a client thread as read.",
         input: `{ clientId: string }`,
         response: `{ ok: true, updated: number }`,
       },
@@ -1316,7 +1323,8 @@ const sections: Section[] = [
   direction: "inbound" | "outbound",
   subject?: string,
   content: string,
-  status?: "pending" | "sent" | "delivered" | "read" | "failed"
+  status?: "pending" | "sent" | "delivered" | "read" | "failed",
+  requestId?: string // Required UUID for outbound SMS; reuse for retries of the same send.
 }`,
         response: `Communication`,
       },
@@ -1604,9 +1612,7 @@ function verifySignature(
 
           {/* Footer */}
           <footer className="mt-16 border-t border-slate-200 pt-6 text-center text-sm text-slate-500 dark:border-slate-700">
-            <p>
-              OpenVPM &mdash; Open-source veterinary practice management.
-            </p>
+            <p>OpenVPM &mdash; Open-source veterinary practice management.</p>
             <p className="mt-1">
               API questions? Check the{" "}
               <a

@@ -55,7 +55,7 @@ DECLARE
     'capture_sessions','cases','clients','clinical_notes','clinical_record_corrections','communications','consent_forms','consent_requests','controlled_substance_log','dispense_charge_queue','email_suppressions',
     'files','insurance_claims','insurance_policies','invoices','lab_results','location_messaging','messaging_registrations','migration_runs',
     'locations','patient_merge_events','patients','practice_payment_accounts','prescription_events','prescriptions','problem_list','procedures','products','purchase_orders',
-    'recurring_series','rooms','services','sms_consent_events','sms_suppressions','soap_notes','staff_schedules','suppliers',
+    'recurring_series','rooms','services','sms_consent_events','sms_send_attempt_events','sms_send_attempts','sms_suppressions','soap_notes','staff_schedules','suppliers',
     'treatment_plans','treatment_templates','usage_records','users','vaccination_records',
     'visit_closeouts','visit_work_items','vital_signs','webhooks','wellness_enrollments','wellness_plans'
   ];
@@ -92,6 +92,11 @@ GRANT SELECT, INSERT ON patient_merge_events TO openpims_app;
 -- consent projection may change; its evidence history may only be appended.
 REVOKE ALL ON sms_consent_events FROM openpims_app;
 GRANT SELECT, INSERT ON sms_consent_events TO openpims_app;
+
+-- Outbound SMS reservations and outcomes form one append-only operational and
+-- compliance ledger. Reconciliation is a new event, never a row rewrite.
+REVOKE ALL ON sms_send_attempts, sms_send_attempt_events FROM openpims_app;
+GRANT SELECT, INSERT ON sms_send_attempts, sms_send_attempt_events TO openpims_app;
 
 -- Dispense charge snapshots are durable revenue work. The app may advance or
 -- reopen their attributed workflow status, while database triggers prevent
@@ -192,7 +197,7 @@ BEGIN
   FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format(
-        'REVOKE ALL ON auth_tokens, clinical_record_corrections, demo_accesses, dispense_charge_queue, funnel_events, patient_merge_events, practice_conversion_milestones, prescription_events, sessions, stripe_events, verification_tokens FROM %I', r
+        'REVOKE ALL ON auth_tokens, clinical_record_corrections, demo_accesses, dispense_charge_queue, funnel_events, patient_merge_events, practice_conversion_milestones, prescription_events, sessions, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
       );
     END IF;
   END LOOP;

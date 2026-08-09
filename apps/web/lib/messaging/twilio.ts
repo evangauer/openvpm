@@ -10,6 +10,24 @@ import { cleanSender, envValue } from "./env";
 // dev / CI), mirroring the prior lib/sms.ts behaviour.
 let twilioClient: Twilio.Twilio | null = null;
 
+function twilioFailure(err: unknown): SendMessageResult {
+  const status =
+    typeof err === "object" &&
+    err !== null &&
+    "status" in err &&
+    typeof err.status === "number"
+      ? err.status
+      : undefined;
+  const error = err instanceof Error ? err.message : "Unknown Twilio error";
+  return status !== undefined &&
+    status >= 400 &&
+    status < 500 &&
+    status !== 408 &&
+    status !== 429
+    ? { status: "definite_failure", error }
+    : { status: "outcome_unknown", error };
+}
+
 function getClient(): Twilio.Twilio | null {
   if (twilioClient) return twilioClient;
   const sid = envValue("TWILIO_ACCOUNT_SID");
@@ -27,19 +45,26 @@ export const twilioProvider: MessagingProvider = {
   name: "twilio",
 
   isConfigured(): boolean {
-    return Boolean(envValue("TWILIO_ACCOUNT_SID") && envValue("TWILIO_AUTH_TOKEN"));
+    return Boolean(
+      envValue("TWILIO_ACCOUNT_SID") && envValue("TWILIO_AUTH_TOKEN"),
+    );
   },
 
-  async send({ to, body, sender }: SendMessageInput): Promise<SendMessageResult> {
+  async send({
+    to,
+    body,
+    sender,
+  }: SendMessageInput): Promise<SendMessageResult> {
     const client = getClient();
     if (!client) {
-      return { success: false, error: "Twilio is not configured." };
+      return { status: "definite_failure", error: "Twilio is not configured." };
     }
     const configuredSender = cleanSender(sender);
     if (!configuredSender.messagingServiceId && !configuredSender.from) {
       return {
-        success: false,
-        error: "No Twilio sender (Messaging Service SID or from-number) configured.",
+        status: "definite_failure",
+        error:
+          "No Twilio sender (Messaging Service SID or from-number) configured.",
       };
     }
     try {
@@ -50,12 +75,16 @@ export const twilioProvider: MessagingProvider = {
           ? { messagingServiceSid: configuredSender.messagingServiceId }
           : { from: configuredSender.from }),
       });
-      return { success: true, id: message.sid };
+      const id = message.sid?.trim();
+      return id
+        ? { status: "accepted", id }
+        : {
+            status: "outcome_unknown",
+            error:
+              "Twilio accepted the request but returned no provider message id.",
+          };
     } catch (err) {
-      return {
-        success: false,
-        error: err instanceof Error ? err.message : "Unknown Twilio error",
-      };
+      return twilioFailure(err);
     }
   },
 };
