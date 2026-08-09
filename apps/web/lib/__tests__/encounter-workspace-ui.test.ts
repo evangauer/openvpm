@@ -178,6 +178,10 @@ describe("clinic encounter workspace", () => {
     expect(workspaceSource).toContain("Finalize clinical handoff");
     expect(workspaceSource).toContain("Billing and owner handoff");
     expect(workspaceSource).toContain("Download discharge");
+    expect(workspaceSource).toContain("defaultPayLaterDueDate");
+    expect(workspaceSource).toContain('type="date"');
+    expect(workspaceSource).toContain("Pay later — present with due date");
+    expect(workspaceSource).toContain("invoiceDueDate:");
     expect(workspaceSource).not.toContain(
       'return { label: "Check out", status: "checked_out" }',
     );

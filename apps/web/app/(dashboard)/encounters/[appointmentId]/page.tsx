@@ -34,6 +34,7 @@ import {
 } from "@/lib/billing/policy";
 import { centsToMoney, moneyToCents } from "@/lib/billing/invoice-balance";
 import { tryCalculateInvoiceTaxTotals } from "@/lib/billing/invoice-tax";
+import { formatDateInputForTimeZone } from "@/lib/date-input";
 import { ServicePicker } from "@/components/billing/service-picker";
 import { CapturePhotos } from "@/components/records/capture-photos";
 import { ConsentSign } from "@/components/records/consent-sign";
@@ -142,6 +143,24 @@ function formatAppointmentTime(
       minute: "2-digit",
     });
   }
+}
+
+function addDateInputDays(value: string, days: number): string {
+  const [year, month, day] = value.split("-").map(Number) as [
+    number,
+    number,
+    number,
+  ];
+  const date = new Date(Date.UTC(year, month - 1, day + days));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(
+    2,
+    "0",
+  )}-${String(date.getUTCDate()).padStart(2, "0")}`;
+}
+
+function defaultPayLaterDueDate(timeZone?: string | null): string {
+  const today = formatDateInputForTimeZone(new Date(), timeZone);
+  return addDateInputDays(today, 30);
 }
 
 function formatClinicDate(value: string): string {
@@ -562,7 +581,9 @@ function VisitCloseout({
   const utils = trpc.useUtils();
   const data = closeoutQuery.data;
   const closeout = data?.closeout ?? null;
+  const activeInvoice = data?.invoices[0] ?? null;
   const hydratedRevision = useRef<string | null>(null);
+  const hydratedInvoice = useRef<string | null>(null);
   const [diagnosisSummary, setDiagnosisSummary] = useState("");
   const [dischargeInstructions, setDischargeInstructions] = useState("");
   const [warningSigns, setWarningSigns] = useState("");
@@ -583,6 +604,7 @@ function VisitCloseout({
     "" | "paid" | "accounts_receivable" | "no_charge"
   >("");
   const [noChargeReason, setNoChargeReason] = useState("");
+  const [invoiceDueDate, setInvoiceDueDate] = useState("");
   const [handoffMethod, setHandoffMethod] = useState<
     "" | "print" | "verbal" | "declined"
   >("");
@@ -617,11 +639,28 @@ function VisitCloseout({
     hydratedRevision.current = key;
   }, [closeout, data]);
 
+  useEffect(() => {
+    if (!data) return;
+    const key = activeInvoice
+      ? `${activeInvoice.id}:${activeInvoice.dueDate ?? "unscheduled"}`
+      : "no-invoice";
+    if (hydratedInvoice.current === key) return;
+    setInvoiceDueDate(
+      activeInvoice?.dueDate ?? defaultPayLaterDueDate(data.practice.timezone),
+    );
+    hydratedInvoice.current = key;
+  }, [activeInvoice, data]);
+
   const refresh = async () => {
     await Promise.all([
       utils.encounters.getCloseout.invalidate({ appointmentId }),
       utils.appointments.getById.invalidate({ id: appointmentId }),
       utils.appointments.list.invalidate(),
+      utils.billing.listInvoices.invalidate({
+        appointmentId,
+        limit: 25,
+        offset: 0,
+      }),
       utils.whiteboard.getActive.invalidate(),
     ]);
   };
@@ -697,7 +736,6 @@ function VisitCloseout({
     followUpAssignedTo: followUpAssignedTo || null,
     documentationExceptionReason: documentationExceptionReason || null,
   } as const;
-  const activeInvoice = data?.invoices[0] ?? null;
   const clientName = [appointment.clientFirstName, appointment.clientLastName]
     .filter(Boolean)
     .join(" ");
@@ -1244,6 +1282,12 @@ function VisitCloseout({
             activeInvoice={activeInvoice}
             chargeDisposition={chargeDisposition}
             setChargeDisposition={setChargeDisposition}
+            invoiceDueDate={invoiceDueDate}
+            setInvoiceDueDate={setInvoiceDueDate}
+            minimumDueDate={formatDateInputForTimeZone(
+              new Date(),
+              data.practice.timezone,
+            )}
             noChargeReason={noChargeReason}
             setNoChargeReason={setNoChargeReason}
             handoffMethod={handoffMethod}
@@ -1259,6 +1303,10 @@ function VisitCloseout({
                 noChargeReason:
                   chargeDisposition === "no_charge"
                     ? noChargeReason || null
+                    : null,
+                invoiceDueDate:
+                  chargeDisposition === "accounts_receivable"
+                    ? invoiceDueDate
                     : null,
                 handoffMethod,
               });
@@ -1869,6 +1917,9 @@ function OperationalCloseoutForm({
   activeInvoice,
   chargeDisposition,
   setChargeDisposition,
+  invoiceDueDate,
+  setInvoiceDueDate,
+  minimumDueDate,
   noChargeReason,
   setNoChargeReason,
   handoffMethod,
@@ -1888,6 +1939,9 @@ function OperationalCloseoutForm({
   setChargeDisposition: (
     value: "" | "paid" | "accounts_receivable" | "no_charge",
   ) => void;
+  invoiceDueDate: string;
+  setInvoiceDueDate: (value: string) => void;
+  minimumDueDate: string;
   noChargeReason: string;
   setNoChargeReason: (value: string) => void;
   handoffMethod: "" | "print" | "verbal" | "declined";
@@ -1905,8 +1959,9 @@ function OperationalCloseoutForm({
   const accountsReceivableReady = Boolean(
     activeInvoice &&
     activeInvoice.itemCount > 0 &&
-    (activeInvoice.status === "sent" || activeInvoice.status === "overdue") &&
-    activeInvoice.dueDate &&
+    ["draft", "sent", "overdue"].includes(activeInvoice.status) &&
+    invoiceDueDate &&
+    invoiceDueDate >= minimumDueDate &&
     activeInvoice.balanceDueCents > 0,
   );
   const noChargeReady = !activeInvoice;
@@ -1954,7 +2009,7 @@ function OperationalCloseoutForm({
               value="accounts_receivable"
               disabled={!accountsReceivableReady}
             >
-              Pay later — sent with due date
+              Pay later — present with due date
             </option>
             <option value="no_charge" disabled={!noChargeReady}>
               No charge for this visit{noChargeReady ? "" : " — invoice exists"}
@@ -1993,6 +2048,26 @@ function OperationalCloseoutForm({
           />
         </div>
       ) : null}
+      {chargeDisposition === "accounts_receivable" ? (
+        <div className="rounded-md border border-blue-500/30 bg-blue-500/5 p-3">
+          <label className="text-sm font-medium" htmlFor="closeout-invoice-due-date">
+            Payment due date
+          </label>
+          <Input
+            id="closeout-invoice-due-date"
+            type="date"
+            min={minimumDueDate}
+            value={invoiceDueDate}
+            onChange={(event) => setInvoiceDueDate(event.target.value)}
+            className="mt-1 max-w-xs"
+          />
+          <p className="mt-2 text-xs text-muted-foreground">
+            Completing the visit will present this invoice, preserve its open
+            balance, and place it in accounts receivable. This does not charge a
+            card or send an email automatically.
+          </p>
+        </div>
+      ) : null}
       {activeInvoice ? (
         <div className="rounded-md border border-border bg-muted/20 p-3 text-sm">
           Invoice is <strong>{activeInvoice.status}</strong>, has{" "}
@@ -2003,7 +2078,7 @@ function OperationalCloseoutForm({
             ? "Ready for paid checkout. "
             : accountsReceivableReady
               ? "Ready for accounts-receivable checkout. "
-              : "Resolve the invoice status, balance, and due date before checkout. "}
+              : "Save charges and choose a valid due date before checkout. "}
           <Button variant="link" size="sm" asChild className="h-auto p-0">
             <Link href={`/billing?expand=${activeInvoice.id}`}>
               Open billing

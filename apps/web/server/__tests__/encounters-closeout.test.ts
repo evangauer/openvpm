@@ -97,6 +97,7 @@ const openAppointment = {
   patientId: PATIENT_ID,
   clientId: CLIENT_ID,
   requiresDoctor: 1,
+  practiceTimezone: "America/Denver",
 };
 
 const clinicalFinalized = {
@@ -425,30 +426,15 @@ describe("encounter closeout safety", () => {
     expect(updateSet).not.toHaveBeenCalled();
   });
 
-  it.each([
-    {
-      label: "paid",
-      chargeDisposition: "paid" as const,
-      invoice: {
-        id: INVOICE_ID,
-        status: "paid",
-        total: "100.00",
-        paidAmount: "100.00",
-        dueDate: null,
-      },
-    },
-    {
-      label: "accounts receivable",
-      chargeDisposition: "accounts_receivable" as const,
-      invoice: {
-        id: INVOICE_ID,
-        status: "sent",
-        total: "100.00",
-        paidAmount: "0.00",
-        dueDate: "2026-09-01",
-      },
-    },
-  ])("completes a verified $label visit", async ({ chargeDisposition, invoice }) => {
+  it("completes a verified paid visit", async () => {
+    const chargeDisposition = "paid" as const;
+    const invoice = {
+      id: INVOICE_ID,
+      status: "paid",
+      total: "100.00",
+      paidAmount: "100.00",
+      dueDate: null,
+    };
     const completed = {
       ...clinicalFinalized,
       status: "completed",
@@ -487,6 +473,151 @@ describe("encounter closeout safety", () => {
         invoiceId: INVOICE_ID,
       })
     );
+  });
+
+  it("presents a draft invoice with a due date while completing pay later", async () => {
+    const invoiceDueDate = "2099-09-01";
+    const completed = {
+      ...clinicalFinalized,
+      status: "completed",
+      revision: 3,
+      chargeDisposition: "accounts_receivable",
+      invoiceId: INVOICE_ID,
+      handoffMethod: "print",
+    };
+    const checkedOut = { ...openAppointment, status: "checked_out" };
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [openAppointment],
+        [{ id: PATIENT_ID }],
+        [clinicalFinalized],
+        [
+          {
+            id: INVOICE_ID,
+            status: "draft",
+            total: "100.00",
+            paidAmount: "0.00",
+            dueDate: null,
+          },
+        ],
+        [{ itemCount: 1 }],
+        [{ adjustedAmount: "0" }],
+      ],
+      updateResults: [[{ id: INVOICE_ID }], [completed], [checkedOut]],
+    });
+
+    await expect(
+      callerWithDb(db).completeVisit({
+        appointmentId: APPOINTMENT_ID,
+        expectedRevision: 2,
+        chargeDisposition: "accounts_receivable",
+        noChargeReason: null,
+        invoiceDueDate,
+        handoffMethod: "print",
+      }),
+    ).resolves.toEqual({ closeout: completed, appointment: checkedOut });
+    expect(updateSet).toHaveBeenNthCalledWith(1, {
+      status: "sent",
+      dueDate: invoiceDueDate,
+    });
+    expect(updateSet).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        status: "completed",
+        chargeDisposition: "accounts_receivable",
+        invoiceId: INVOICE_ID,
+      }),
+    );
+  });
+
+  it("requires a current or future due date for pay-later checkout", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [openAppointment],
+        [{ id: PATIENT_ID }],
+        [clinicalFinalized],
+        [
+          {
+            id: INVOICE_ID,
+            status: "draft",
+            total: "100.00",
+            paidAmount: "0.00",
+            dueDate: null,
+          },
+        ],
+        [{ itemCount: 1 }],
+        [{ adjustedAmount: "0" }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).completeVisit({
+        appointmentId: APPOINTMENT_ID,
+        expectedRevision: 2,
+        chargeDisposition: "accounts_receivable",
+        noChargeReason: null,
+        invoiceDueDate: "2000-01-01",
+        handoffMethod: "print",
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "Choose today or a future invoice due date.",
+    });
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("requires an explicit due date before reading pay-later visit state", async () => {
+    const { db, select, updateSet } = createDb({});
+
+    await expect(
+      callerWithDb(db).completeVisit({
+        appointmentId: APPOINTMENT_ID,
+        expectedRevision: 2,
+        chargeDisposition: "accounts_receivable",
+        noChargeReason: null,
+        handoffMethod: "print",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(select).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("does not complete when invoice presentation loses its race", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [openAppointment],
+        [{ id: PATIENT_ID }],
+        [clinicalFinalized],
+        [
+          {
+            id: INVOICE_ID,
+            status: "draft",
+            total: "100.00",
+            paidAmount: "0.00",
+            dueDate: null,
+          },
+        ],
+        [{ itemCount: 1 }],
+        [{ adjustedAmount: "0" }],
+      ],
+      updateResults: [[]],
+    });
+
+    await expect(
+      callerWithDb(db).completeVisit({
+        appointmentId: APPOINTMENT_ID,
+        expectedRevision: 2,
+        chargeDisposition: "accounts_receivable",
+        noChargeReason: null,
+        invoiceDueDate: "2099-09-01",
+        handoffMethod: "print",
+      }),
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message:
+        "Invoice changed while preparing pay later. Refresh and retry.",
+    });
+    expect(updateSet).toHaveBeenCalledTimes(1);
   });
 
   it("requires a linked SOAP note or an attributable exception", async () => {

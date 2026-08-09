@@ -190,6 +190,7 @@ const completeVisitInput = z
     expectedRevision: z.number().int().min(1),
     chargeDisposition: z.enum(["paid", "accounts_receivable", "no_charge"]),
     noChargeReason: optionalText("No-charge reason", CLOSEOUT_REASON_MAX_LENGTH),
+    invoiceDueDate: clinicalDateInput("Invoice due date").nullish(),
     handoffMethod: z.enum(["print", "verbal", "declined"]),
   })
   .superRefine((input, ctx) => {
@@ -205,6 +206,26 @@ const completeVisitInput = z
         code: z.ZodIssueCode.custom,
         path: ["noChargeReason"],
         message: "A no-charge reason is only used for no-charge visits.",
+      });
+    }
+    if (
+      input.chargeDisposition === "accounts_receivable" &&
+      !input.invoiceDueDate
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["invoiceDueDate"],
+        message: "Choose when the pay-later invoice is due.",
+      });
+    }
+    if (
+      input.chargeDisposition !== "accounts_receivable" &&
+      input.invoiceDueDate
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["invoiceDueDate"],
+        message: "An invoice due date is only used for pay-later visits.",
       });
     }
   });
@@ -2341,16 +2362,57 @@ export const encountersRouter = createRouter({
           }
           if (
             input.chargeDisposition === "accounts_receivable" &&
-            (!["sent", "overdue"].includes(invoice.status) ||
-              !invoice.dueDate ||
+            (!["draft", "sent", "overdue"].includes(invoice.status) ||
               invoice.balanceDueCents <= 0)
           ) {
             throw new TRPCError({
               code: "PRECONDITION_FAILED",
-              message: "Pay-later visits need a sent invoice, due date, and open balance.",
+              message: "Pay-later visits need an unpaid invoice with saved charges.",
             });
           }
-          invoiceId = invoice.id;
+          if (input.chargeDisposition === "accounts_receivable") {
+            const invoiceDueDate = input.invoiceDueDate!;
+            const practiceToday = formatDateInputForTimeZone(
+              new Date(),
+              appointment.practiceTimezone
+            );
+            if (invoiceDueDate < practiceToday) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: "Choose today or a future invoice due date.",
+              });
+            }
+
+            const [presentedInvoice] = await tx
+              .update(invoices)
+              .set({ status: "sent", dueDate: invoiceDueDate })
+              .where(
+                and(
+                  eq(invoices.id, invoice.id),
+                  eq(invoices.practiceId, ctx.practiceId),
+                  eq(invoices.appointmentId, input.appointmentId),
+                  eq(invoices.patientId, appointment.patientId),
+                  eq(invoices.clientId, appointment.clientId),
+                  eq(invoices.status, invoice.status),
+                  invoice.dueDate
+                    ? eq(invoices.dueDate, invoice.dueDate)
+                    : isNull(invoices.dueDate),
+                  eq(invoices.isEstimate, false),
+                  isNull(invoices.deletedAt)
+                )
+              )
+              .returning({ id: invoices.id });
+            if (!presentedInvoice) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message:
+                  "Invoice changed while preparing pay later. Refresh and retry.",
+              });
+            }
+            invoiceId = presentedInvoice.id;
+          } else {
+            invoiceId = invoice.id;
+          }
         }
 
         const now = new Date();
