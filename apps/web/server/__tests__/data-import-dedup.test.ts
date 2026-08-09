@@ -362,9 +362,9 @@ describe("data import duplicate handling", () => {
       db,
       expect.objectContaining({ importedCount: 0, reconciledCount: 0 }),
     );
-    // Tenant scoping plus SERIALIZABLE isolation both execute inside the same
-    // transaction before the ledger is completed.
-    expect(execute).toHaveBeenCalledTimes(2);
+    // Tenant scoping, SERIALIZABLE isolation, and the deferred-constraint
+    // flush all execute inside the same transaction before commit.
+    expect(execute).toHaveBeenCalledTimes(3);
     expect(insertValues).not.toHaveBeenCalled();
   });
 
@@ -1181,7 +1181,7 @@ describe("data import duplicate handling", () => {
       db,
       expect.objectContaining({ importedCount: 0, reconciledCount: 0 }),
     );
-    expect(execute).toHaveBeenCalledTimes(2);
+    expect(execute).toHaveBeenCalledTimes(3);
     expect(insertValues).not.toHaveBeenCalled();
   });
 

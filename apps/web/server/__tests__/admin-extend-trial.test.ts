@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => {
       return { where: vi.fn(async () => undefined) };
     }),
   }));
-  const db = { select, update };
+  const db = { select, update, execute: vi.fn(async () => undefined) };
 
   return {
     db,
@@ -48,6 +48,9 @@ vi.mock("@openpims/db/client", () => ({
 vi.mock("@/lib/tenant-db", () => ({
   withTenant: mocks.withTenant,
   withSystem: mocks.withSystem,
+}));
+vi.mock("@/lib/audit", () => ({
+  recordAuditLog: vi.fn(async () => undefined),
 }));
 
 const { adminRouter } = await import("../routers/admin");

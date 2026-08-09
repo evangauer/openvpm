@@ -1082,4 +1082,95 @@ describe("committed Drizzle migrations", () => {
       "REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_webhook_conflicts, auth_email_provider_identity_conflicts FROM openpims_app",
     );
   });
+
+  it("creates an immutable, tenant-safe SOAP draft/final/addendum ledger", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries?: Array<{ tag?: string }> };
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0063_modern_starbolt",
+    );
+
+    const sql = readRepoFile("packages/db/drizzle/0063_modern_starbolt.sql");
+    expect(sql).toContain('CREATE TYPE "public"."soap_note_status"');
+    expect(sql).toContain('CREATE TABLE "soap_note_addenda"');
+    expect(sql).toContain("soap_notes_active_appointment_draft_uq");
+    expect(sql).toContain("guard_soap_note_lifecycle");
+    expect(sql).toContain(
+      "Only a draft from an open, unsigned encounter may be discarded.",
+    );
+    expect(sql).toContain(
+      "CREATE CONSTRAINT TRIGGER soap_notes_appointment_invariant",
+    );
+    expect(sql).toContain("DEFERRABLE INITIALLY DEFERRED");
+    expect(sql).toContain("CONSTRAINT = 'soap_notes_appointment_invariant'");
+    expect(sql).toContain("source.status = 'finalized'");
+    expect(sql).toContain("SOAP addenda are immutable");
+    expect(sql).toContain("restore_soap_note_addendum");
+    const addendumGuard = sql.slice(
+      sql.indexOf("CREATE OR REPLACE FUNCTION guard_soap_note_addendum"),
+      sql.indexOf("CREATE TRIGGER soap_note_addenda_guard"),
+    );
+    expect(addendumGuard).toContain("NEW.created_at < source_finalized_at");
+    expect(addendumGuard).toContain("NEW.created_at > pg_catalog.now()");
+    expect(addendumGuard).toContain("pg_catalog.sha256");
+    expect(addendumGuard.indexOf("SOAP addendum payload hash is invalid.")).toBeLessThan(
+      addendumGuard.indexOf("app.ledger_maintenance"),
+    );
+    const restoreFunction = sql.slice(
+      sql.indexOf("CREATE OR REPLACE FUNCTION restore_soap_note_addendum"),
+      sql.indexOf("REVOKE ALL ON FUNCTION restore_soap_note_addendum"),
+    );
+    expect(restoreFunction).toContain(
+      "p_practice_id IS DISTINCT FROM nullif(current_setting('app.current_practice_id', true), '')::uuid",
+    );
+    expect(restoreFunction).not.toContain("app.rls_bypass");
+    expect(restoreFunction).toContain("p_created_at < source_finalized_at");
+    expect(restoreFunction).toContain("p_created_at > pg_catalog.now()");
+    expect(restoreFunction).toContain(
+      "p_created_at > correction_created_at",
+    );
+    expect(restoreFunction).toContain("pg_catalog.sha256");
+    expect(restoreFunction).toContain(
+      "SOAP addendum restore payload hash is invalid.",
+    );
+    expect(restoreFunction).toContain(
+      "RETURNS TABLE(result_id uuid, was_inserted boolean)",
+    );
+    expect(restoreFunction).toContain(
+      "existing_addendum.created_at IS DISTINCT FROM p_created_at",
+    );
+    expect(restoreFunction).toContain(
+      "existing_addendum.author_name IS DISTINCT FROM p_author_name",
+    );
+    expect(restoreFunction).toContain(
+      "existing_addendum.content IS DISTINCT FROM p_content",
+    );
+    expect(sql).toContain(
+      "GRANT SELECT, INSERT ON soap_note_addenda TO openpims_app",
+    );
+    expect(sql).toContain(
+      "Cannot enforce encounter SOAP lifecycle: historical appointments contain conflicting active documentation.",
+    );
+    expect(
+      sql.match(
+        /MESSAGE = 'Cannot enforce encounter SOAP lifecycle: historical appointments contain conflicting active documentation\.'/g,
+      ),
+    ).toHaveLength(1);
+    expect(sql).toContain("'{demoData,soapNoteIds}'");
+    expect(sql).toContain("'{demoData,appointmentIds}'");
+    expect(sql).toContain("'{demoData,patientIds}'");
+    expect(sql).toContain("note.patient_id::text IN");
+    expect(sql).toContain(
+      "WHEN pg_catalog.jsonb_typeof(practice.settings #> '{demoData,soapNoteIds}') = 'array'",
+    );
+    expect(
+      sql.match(
+        /CROSS JOIN LATERAL pg_catalog\.jsonb_array_elements_text\(/g,
+      ),
+    ).toHaveLength(1);
+    expect(sql).not.toContain(
+      "jsonb_array_elements_text(\n\t\tCROSS JOIN LATERAL",
+    );
+  });
 });

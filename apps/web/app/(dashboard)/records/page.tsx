@@ -25,6 +25,7 @@ import {
 import { trpc } from "@/lib/trpc";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
 import { formatClinicalDateTime } from "@/lib/records/clinical-dates";
+import { soapSectionText } from "@/lib/records/soap-content";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -734,6 +735,21 @@ function RecordsPageContent() {
     },
     onError: (error) => toast.error(error.message),
   });
+  const [addendumNoteId, setAddendumNoteId] = useState<string | null>(null);
+  const [addendumContent, setAddendumContent] = useState("");
+  const [addendumOperationId, setAddendumOperationId] = useState<string | null>(
+    null,
+  );
+  const addSoapAddendum = trpc.records.addSoapNoteAddendum.useMutation({
+    onSuccess: async () => {
+      setAddendumNoteId(null);
+      setAddendumContent("");
+      setAddendumOperationId(null);
+      toast.success("Addendum added to the finalized record");
+      await utils.records.listSoapNotes.invalidate({ patientId });
+    },
+    onError: (error) => toast.error(error.message),
+  });
   const {
     data: vaccinations,
     isLoading: isLoadingVaccinations,
@@ -1345,132 +1361,272 @@ function RecordsPageContent() {
                   <RecordsLoadingPanel label="Loading SOAP notes..." />
                 ) : soapNotes && soapNotes.length > 0 ? (
                   <div className="space-y-3">
-                    {soapNotes.map((note) => {
-                      const isExpanded = expandedNoteId === note.id;
-                      return (
-                        <div
-                          key={note.id}
-                          className={cn(
-                            "rounded-lg border border-border bg-card",
-                            note.correctionId &&
-                              "border-destructive/40 bg-destructive/5"
-                          )}
-                        >
-                          <button
-                            onClick={() =>
-                              setExpandedNoteId(isExpanded ? null : note.id)
-                            }
-                            className="flex w-full items-center justify-between px-4 py-3 text-left"
-                          >
-                            <div className="flex items-center gap-4">
-                              <FileText className="h-4 w-4 text-muted-foreground" />
-                              <div>
-                                <div className="flex items-center gap-2">
-                                  <p className="text-sm font-medium">
-                                    {note.createdAt
-                                      ? formatClinicalDate(
-                                          note.createdAt,
-                                          recordsTimeZone
-                                        )
-                                      : "No date"}
+                        {soapNotes.map((note) => {
+                          const isExpanded = expandedNoteId === note.id;
+                          return (
+                            <div
+                              key={note.id}
+                              className={cn(
+                                "rounded-lg border border-border bg-card",
+                                note.correctionId &&
+                                  "border-destructive/40 bg-destructive/5",
+                              )}
+                            >
+                              <button
+                                onClick={() =>
+                                  setExpandedNoteId(isExpanded ? null : note.id)
+                                }
+                                className="flex w-full items-center justify-between px-4 py-3 text-left"
+                              >
+                                <div className="flex items-center gap-4">
+                                  <FileText className="h-4 w-4 text-muted-foreground" />
+                                  <div>
+                                    <div className="flex items-center gap-2">
+                                      <p className="text-sm font-medium">
+                                        {note.createdAt
+                                          ? formatClinicalDate(
+                                              note.createdAt,
+                                              recordsTimeZone,
+                                            )
+                                          : "No date"}
+                                      </p>
+                                      {note.imported ? (
+                                        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+                                          Imported
+                                        </span>
+                                      ) : null}
+                                      <span
+                                        className={cn(
+                                          "rounded-full px-2 py-0.5 text-[11px] font-medium",
+                                          note.status === "draft"
+                                            ? "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300"
+                                            : "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300",
+                                        )}
+                                      >
+                                        {note.status === "draft"
+                                          ? "Draft"
+                                          : "Finalized"}
+                                      </span>
+                                      {note.correctionId ? (
+                                        <span className="rounded-full bg-destructive/10 px-2 py-0.5 text-[11px] font-medium text-destructive">
+                                          Entered in error
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                    <p className="text-xs text-muted-foreground">
+                                      {note.imported
+                                        ? note.authorName
+                                          ? `Imported by ${note.authorName}`
+                                          : "Imported record"
+                                        : (note.authorName ?? "Unknown author")}
+                                    </p>
+                                  </div>
+                                  <p className="text-sm text-muted-foreground line-clamp-1 max-w-md">
+                                    {soapSectionText(
+                                      note.assessment ||
+                                        note.subjective ||
+                                        note.objective ||
+                                        note.plan,
+                                    ) || "No note recorded"}
                                   </p>
-                                  {note.imported ? (
-                                    <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
-                                      Imported
-                                    </span>
+                                </div>
+                                {isExpanded ? (
+                                  <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                                ) : (
+                                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                                )}
+                              </button>
+                              {isExpanded && (
+                                <div className="border-t border-border px-4 py-4 space-y-4">
+                                  {note.status === "finalized" ? (
+                                    <p className="text-xs text-muted-foreground">
+                                      Finalized by{" "}
+                                      {note.finalizerName ??
+                                        "Unknown clinician"}
+                                      {note.finalizedAt
+                                        ? ` on ${formatClinicalDateTime(note.finalizedAt, recordsTimeZone)}`
+                                        : ""}
+                                    </p>
+                                  ) : note.appointmentId &&
+                                    canCorrectClinicalRecords ? (
+                                    <a
+                                      href={`/records/new-soap/${encodeURIComponent(patientId)}?appointmentId=${encodeURIComponent(note.appointmentId)}`}
+                                      className="inline-flex text-sm font-medium text-primary hover:underline"
+                                    >
+                                      Resume draft
+                                    </a>
                                   ) : null}
-                                  {note.correctionId ? (
-                                    <span className="rounded-full bg-destructive/10 px-2 py-0.5 text-[11px] font-medium text-destructive">
-                                      Entered in error
-                                    </span>
+                                  <div>
+                                    <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">
+                                      Subjective
+                                    </h4>
+                                    <p className="text-sm">
+                                      {soapSectionText(note.subjective) || "--"}
+                                    </p>
+                                  </div>
+                                  <div>
+                                    <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">
+                                      Objective
+                                    </h4>
+                                    <p className="text-sm">
+                                      {soapSectionText(note.objective) || "--"}
+                                    </p>
+                                  </div>
+                                  <div>
+                                    <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">
+                                      Assessment
+                                    </h4>
+                                    <p className="text-sm">
+                                      {soapSectionText(note.assessment) || "--"}
+                                    </p>
+                                  </div>
+                                  <div>
+                                    <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">
+                                      Plan
+                                    </h4>
+                                    <p className="text-sm">
+                                      {soapSectionText(note.plan) || "--"}
+                                    </p>
+                                  </div>
+                                  {note.addenda.length > 0 ? (
+                                    <div className="space-y-2 border-t border-border pt-3">
+                                      <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                        Addenda
+                                      </h4>
+                                      {note.addenda.map((addendum) => (
+                                        <div
+                                          key={addendum.id}
+                                          className="rounded-md bg-muted/40 p-3"
+                                        >
+                                          <p className="text-xs font-medium">
+                                            {addendum.authorName} -{" "}
+                                            {formatClinicalDateTime(
+                                              addendum.createdAt,
+                                              recordsTimeZone,
+                                            )}
+                                          </p>
+                                          <p className="mt-1 whitespace-pre-wrap text-sm">
+                                            {soapSectionText(addendum.content)}
+                                          </p>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : null}
+                                  {note.status === "finalized" &&
+                                  !note.correctionId &&
+                                  canCorrectClinicalRecords ? (
+                                    addendumNoteId === note.id ? (
+                                      <div className="rounded-md border border-border p-3">
+                                        <label
+                                          className="text-sm font-medium"
+                                          htmlFor={`records-addendum-${note.id}`}
+                                        >
+                                          Add attributed addendum
+                                        </label>
+                                        <p className="mt-1 text-xs text-muted-foreground">
+                                          Addenda cannot be edited or deleted
+                                          after saving.
+                                        </p>
+                                        <textarea
+                                          id={`records-addendum-${note.id}`}
+                                          value={addendumContent}
+                                          onChange={(event) =>
+                                            setAddendumContent(
+                                              event.target.value,
+                                            )
+                                          }
+                                          maxLength={10_000}
+                                          rows={3}
+                                          className="mt-2 w-full rounded-md border border-border bg-background p-2 text-sm"
+                                        />
+                                        <div className="mt-2 flex gap-2">
+                                          <Button
+                                            size="sm"
+                                            disabled={
+                                              !addendumContent.trim() ||
+                                              addSoapAddendum.isPending
+                                            }
+                                            onClick={() =>
+                                              addSoapAddendum.mutate({
+                                                patientId,
+                                                noteId: note.id,
+                                                operationId:
+                                                  addendumOperationId!,
+                                                content: addendumContent,
+                                              })
+                                            }
+                                          >
+                                            {addSoapAddendum.isPending
+                                              ? "Saving..."
+                                              : "Save addendum"}
+                                          </Button>
+                                          <Button
+                                            size="sm"
+                                            variant="outline"
+                                            disabled={addSoapAddendum.isPending}
+                                            onClick={() => {
+                                              setAddendumNoteId(null);
+                                              setAddendumContent("");
+                                              setAddendumOperationId(null);
+                                            }}
+                                          >
+                                            Cancel
+                                          </Button>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => {
+                                          setAddendumNoteId(note.id);
+                                          setAddendumContent("");
+                                          setAddendumOperationId(
+                                            crypto.randomUUID(),
+                                          );
+                                        }}
+                                      >
+                                        <Plus className="mr-2 h-4 w-4" />
+                                        Add addendum
+                                      </Button>
+                                    )
+                                  ) : null}
+                                  {note.status === "finalized" ? (
+                                    <ClinicalCorrectionControl
+                                      timeZone={recordsTimeZone}
+                                      correction={
+                                        note.correctionId &&
+                                        note.correctionReason &&
+                                        note.correctedAt
+                                          ? {
+                                              id: note.correctionId,
+                                              reason: note.correctionReason,
+                                              correctedAt: note.correctedAt,
+                                              correctedByName:
+                                                note.correctedByName,
+                                            }
+                                          : null
+                                      }
+                                      canCorrect={canCorrectClinicalRecords}
+                                      isPending={
+                                        correctSoap.isPending &&
+                                        correctSoap.variables?.recordId ===
+                                          note.id
+                                      }
+                                      onCorrect={(reason) =>
+                                        correctSoap.mutateAsync({
+                                          patientId,
+                                          recordId: note.id,
+                                          reason,
+                                        })
+                                      }
+                                    />
                                   ) : null}
                                 </div>
-                                <p className="text-xs text-muted-foreground">
-                                  {note.imported
-                                    ? note.authorName
-                                      ? `Imported by ${note.authorName}`
-                                      : "Imported record"
-                                    : (note.authorName ?? "Unknown author")}
-                                </p>
-                              </div>
-                              <p className="text-sm text-muted-foreground line-clamp-1 max-w-md">
-                                {note.assessment ||
-                                  note.subjective ||
-                                  note.objective ||
-                                  note.plan ||
-                                  "No note recorded"}
-                              </p>
+                              )}
                             </div>
-                            {isExpanded ? (
-                              <ChevronUp className="h-4 w-4 text-muted-foreground" />
-                            ) : (
-                              <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                            )}
-                          </button>
-                          {isExpanded && (
-                            <div className="border-t border-border px-4 py-4 space-y-4">
-                              <div>
-                                <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">
-                                  Subjective
-                                </h4>
-                                <p className="text-sm">
-                                  {note.subjective || "--"}
-                                </p>
-                              </div>
-                              <div>
-                                <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">
-                                  Objective
-                                </h4>
-                                <p className="text-sm">
-                                  {note.objective || "--"}
-                                </p>
-                              </div>
-                              <div>
-                                <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">
-                                  Assessment
-                                </h4>
-                                <p className="text-sm">
-                                  {note.assessment || "--"}
-                                </p>
-                              </div>
-                              <div>
-                                <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">
-                                  Plan
-                                </h4>
-                                <p className="text-sm">{note.plan || "--"}</p>
-                              </div>
-                              <ClinicalCorrectionControl
-                                timeZone={recordsTimeZone}
-                                correction={
-                                  note.correctionId &&
-                                  note.correctionReason &&
-                                  note.correctedAt
-                                    ? {
-                                        id: note.correctionId,
-                                        reason: note.correctionReason,
-                                        correctedAt: note.correctedAt,
-                                        correctedByName: note.correctedByName,
-                                      }
-                                    : null
-                                }
-                                canCorrect={canCorrectClinicalRecords}
-                                isPending={
-                                  correctSoap.isPending &&
-                                  correctSoap.variables?.recordId === note.id
-                                }
-                                onCorrect={(reason) =>
-                                  correctSoap.mutateAsync({
-                                    patientId,
-                                    recordId: note.id,
-                                    reason,
-                                  })
-                                }
-                              />
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                          );
+                        })}
                   </div>
                 ) : (
                   <EmptyState
@@ -1656,90 +1812,90 @@ function RecordsPageContent() {
                         </tr>
                       </thead>
                       <tbody>
-                        {vaccinations.map((vax) => {
-                          const dueStatus = getVaccineDueStatus(
-                            vax.nextDueDate,
-                            recordsTimeZone
-                          );
-                          return (
-                            <tr
-                              key={vax.id}
-                              className={cn(
-                                "border-b border-border last:border-0",
-                                vax.correctionId &&
-                                  "bg-destructive/5 text-muted-foreground"
-                              )}
-                            >
-                              <td className="px-4 py-3 font-medium">
-                                {vax.vaccineName}
-                              </td>
-                              <td className="px-4 py-3">
-                                {vax.administeredAt
-                                  ? formatClinicalDate(
-                                      vax.administeredAt,
-                                      recordsTimeZone
-                                    )
-                                  : "--"}
-                              </td>
-                              <td className="px-4 py-3">
-                                {vax.nextDueDate
-                                  ? formatClinicalDate(
-                                      vax.nextDueDate,
-                                      recordsTimeZone
-                                    )
-                                  : "--"}
-                              </td>
-                              <td className="px-4 py-3 text-muted-foreground">
-                                {vax.administeredByName ?? "--"}
-                              </td>
-                              <td className="px-4 py-3">
-                                {vax.correctionId ? (
-                                  <span className="inline-flex items-center rounded-full bg-destructive/10 px-2.5 py-0.5 text-xs font-medium text-destructive">
-                                    Entered in error
-                                  </span>
-                                ) : (
-                                  <span
-                                    className={cn(
-                                      "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
-                                      dueStatus.className
-                                    )}
-                                  >
-                                    {dueStatus.label}
-                                  </span>
-                                )}
-                                <ClinicalCorrectionControl
-                                  timeZone={recordsTimeZone}
-                                  correction={
+                            {vaccinations.map((vax) => {
+                              const dueStatus = getVaccineDueStatus(
+                                vax.nextDueDate,
+                                recordsTimeZone,
+                              );
+                              return (
+                                <tr
+                                  key={vax.id}
+                                  className={cn(
+                                    "border-b border-border last:border-0",
                                     vax.correctionId &&
-                                    vax.correctionReason &&
-                                    vax.correctedAt
-                                      ? {
-                                          id: vax.correctionId,
-                                          reason: vax.correctionReason,
-                                          correctedAt: vax.correctedAt,
-                                          correctedByName:
-                                            vax.correctedByName,
-                                        }
-                                      : null
-                                  }
-                                  canCorrect={canCorrectClinicalRecords}
-                                  isPending={
-                                    correctVaccination.isPending &&
-                                    correctVaccination.variables?.recordId ===
-                                      vax.id
-                                  }
-                                  onCorrect={(reason) =>
-                                    correctVaccination.mutateAsync({
-                                      patientId,
-                                      recordId: vax.id,
-                                      reason,
-                                    })
-                                  }
-                                />
-                              </td>
-                            </tr>
-                          );
-                        })}
+                                      "bg-destructive/5 text-muted-foreground",
+                                  )}
+                                >
+                                  <td className="px-4 py-3 font-medium">
+                                    {vax.vaccineName}
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    {vax.administeredAt
+                                      ? formatClinicalDate(
+                                          vax.administeredAt,
+                                          recordsTimeZone,
+                                        )
+                                      : "--"}
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    {vax.nextDueDate
+                                      ? formatClinicalDate(
+                                          vax.nextDueDate,
+                                          recordsTimeZone,
+                                        )
+                                      : "--"}
+                                  </td>
+                                  <td className="px-4 py-3 text-muted-foreground">
+                                    {vax.administeredByName ?? "--"}
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    {vax.correctionId ? (
+                                      <span className="inline-flex items-center rounded-full bg-destructive/10 px-2.5 py-0.5 text-xs font-medium text-destructive">
+                                        Entered in error
+                                      </span>
+                                    ) : (
+                                      <span
+                                        className={cn(
+                                          "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
+                                          dueStatus.className,
+                                        )}
+                                      >
+                                        {dueStatus.label}
+                                      </span>
+                                    )}
+                                    <ClinicalCorrectionControl
+                                      timeZone={recordsTimeZone}
+                                      correction={
+                                        vax.correctionId &&
+                                        vax.correctionReason &&
+                                        vax.correctedAt
+                                          ? {
+                                              id: vax.correctionId,
+                                              reason: vax.correctionReason,
+                                              correctedAt: vax.correctedAt,
+                                              correctedByName:
+                                                vax.correctedByName,
+                                            }
+                                          : null
+                                      }
+                                      canCorrect={canCorrectClinicalRecords}
+                                      isPending={
+                                        correctVaccination.isPending &&
+                                        correctVaccination.variables
+                                          ?.recordId === vax.id
+                                      }
+                                      onCorrect={(reason) =>
+                                        correctVaccination.mutateAsync({
+                                          patientId,
+                                          recordId: vax.id,
+                                          reason,
+                                        })
+                                      }
+                                    />
+                                  </td>
+                                </tr>
+                              );
+                            })}
                       </tbody>
                     </table>
                   </div>

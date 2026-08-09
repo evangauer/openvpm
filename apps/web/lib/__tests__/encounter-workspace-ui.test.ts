@@ -21,6 +21,10 @@ const patientChartSource = readFileSync(
   "app/(dashboard)/patients/[id]/page.tsx",
   "utf8",
 );
+const recordsSource = readFileSync(
+  "app/(dashboard)/records/page.tsx",
+  "utf8",
+);
 
 describe("clinic encounter workspace", () => {
   it("opens from an appointment and keeps visit and patient context together", () => {
@@ -45,8 +49,28 @@ describe("clinic encounter workspace", () => {
     expect(soapSource).toContain(
       "`/encounters/${encodeURIComponent(appointmentId)}`",
     );
-    expect(soapSource).toContain(
-      "This note will be linked to the current appointment.",
+    expect(soapSource).toContain("Draft will save after you begin typing");
+    expect(soapSource).toContain("Finalize SOAP note");
+  });
+
+  it("opens every SOAP editor entry as a separate document history entry", () => {
+    expect(workspaceSource).toMatch(
+      /<a\s+href=\{`\/records\/new-soap\/\$\{appointment\.patientId\}/,
+    );
+    expect(workspaceSource).toContain("<a href={props.soapDraftHref}>");
+    expect(recordsSource).toMatch(
+      /<a\s+href=\{`\/records\/new-soap\/\$\{encodeURIComponent\(patientId\)\}/,
+    );
+    expect(patientChartSource).toMatch(
+      /<a\s+href=\{`\/records\/new-soap\/\$\{encodeURIComponent\(patientId\)\}/,
+    );
+    for (const source of [workspaceSource, recordsSource, patientChartSource]) {
+      expect(source).not.toMatch(
+        /<Link\s+href=\{`\/records\/new-soap\//,
+      );
+    }
+    expect(workspaceSource).not.toContain(
+      "<Link href={props.soapDraftHref}>",
     );
   });
 

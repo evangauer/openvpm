@@ -72,7 +72,7 @@ describe("SOAP note editor UX", () => {
     expect(source).not.toContain("`<p>${placeholder}</p>`");
   });
 
-  it("disables SOAP note save until content exists and template prompts are resolved", () => {
+  it("autosaves drafts and disables finalization until content is ready", () => {
     const source = readFileSync(
       "app/(dashboard)/records/new-soap/[patientId]/page.tsx",
       "utf8"
@@ -82,12 +82,20 @@ describe("SOAP note editor UX", () => {
     expect(source).toContain(
       "const hasTemplatePrompts = hasUnresolvedSoapTemplatePrompts"
     );
-    expect(source).toContain("const canSubmit = canSave && !hasTemplatePrompts");
-    expect(source).toContain("disabled={createNote.isPending || !canSubmit}");
     expect(source).toContain(
-      "Replace or delete every draft prompt before saving"
+      "const saveDraftMutation = trpc.records.saveSoapDraft.useMutation()",
     );
-    expect(source).toContain("normalizeSoapSection(subjective)");
+    expect(source).toContain(
+      "const finalizeMutation = trpc.records.finalizeSoapNote.useMutation()",
+    );
+    expect(source).toContain(
+      "const timer = window.setTimeout(() => void persistDraft(), 1_200)",
+    );
+    expect(source).toContain("!canSubmit");
+    expect(source).toContain(
+      "Replace or delete every draft prompt before finalizing",
+    );
+    expect(source).toContain("normalizeSoapSection(sections.subjective)");
   });
 
   it("offers structured SOAP templates without clobbering drafts by default", () => {
@@ -163,10 +171,65 @@ describe("SOAP note editor UX", () => {
     expect(source).toContain('title="Unable to load patient"');
     expect(source).toContain('label: "Back to Records"');
     expect(source).toContain("!params.patientId || !patient");
-    expect(source).toContain("Load the patient before saving a SOAP note");
+    expect(source).toContain("Load the patient before finalizing a SOAP note");
     expect(source.indexOf("if (patientError || !patient)")).toBeLessThan(
       source.indexOf("<SoapNoteEditor")
     );
+  });
+
+  it("serializes dirty in-app link navigation through save-before-leave", () => {
+    const source = readFileSync(
+      "app/(dashboard)/records/new-soap/[patientId]/page.tsx",
+      "utf8",
+    );
+
+    expect(source).toContain("const navigationAttemptRef = useRef");
+    expect(source).toContain("guardedSoapNavigationDestination({");
+    expect(source).toContain('event.target.closest<HTMLAnchorElement>("a[href]")');
+    expect(source).toContain("event.preventDefault()");
+    expect(source).toContain("event.stopPropagation()");
+    expect(source).toContain(
+      'document.addEventListener("click", handleDocumentClick, true)',
+    );
+    expect(source).toContain("void leaveEditorSafely(destination)");
+    expect(source).toContain("void leaveEditorSafely(returnPath)");
+    const safeLeave = source.slice(
+      source.indexOf("const leaveEditorSafely"),
+      source.indexOf("const copyLocalSoapText"),
+    );
+    expect(safeLeave).toContain("runSoapSafeLeave({");
+    expect(safeLeave).toContain("persistDraft,");
+    expect(safeLeave).toContain(
+      "navigate: () => router.push(destination)",
+    );
+  });
+
+  it("preserves and exposes unsaved local text when another session finalizes", () => {
+    const source = readFileSync(
+      "app/(dashboard)/records/new-soap/[patientId]/page.tsx",
+      "utf8",
+    );
+
+    expect(source).toContain("localSoapTextForClipboard");
+    expect(source).toContain("copyTextToClipboard");
+    expect(source).toContain("SOAP note finalized in another session");
+    expect(source).toContain("was NOT included in the");
+    expect(source).toContain("Preserved local SOAP text");
+    expect(source).toContain("Copy local SOAP text");
+    expect(source).toContain("View signed patient chart");
+    expect(source).toContain("if (finalizedElsewhereRef.current) return;");
+    expect(source).toContain(
+      "finalizedElsewhere ||\n      !draftInitialized",
+    );
+    const alreadyFinalized = source.slice(
+      source.indexOf('if (result.outcome === "already_finalized")'),
+      source.indexOf('if (result.outcome === "conflict")'),
+    );
+    expect(alreadyFinalized).toContain("setFinalizedElsewhere(true)");
+    expect(alreadyFinalized).not.toContain("setSubjective");
+    expect(alreadyFinalized).not.toContain("setObjective");
+    expect(alreadyFinalized).not.toContain("setAssessment");
+    expect(alreadyFinalized).not.toContain("setPlan");
   });
 });
 
@@ -190,8 +253,8 @@ describe("records prescription form UX", () => {
     expect(isPrescriptionOptionalPositiveIntegerInputValid("")).toBe(true);
     expect(isPrescriptionNonnegativeIntegerInputValid("0")).toBe(true);
     expect(isPrescriptionNonnegativeIntegerInputValid("-1")).toBe(false);
-    expect(source).toContain(
-      "maxLength={PRESCRIPTION_MEDICATION_NAME_MAX_LENGTH}"
+    expect(source).toMatch(
+      /maxLength=\{\s*PRESCRIPTION_MEDICATION_NAME_MAX_LENGTH\s*\}/,
     );
     expect(source).toContain("maxLength={PRESCRIPTION_DOSAGE_MAX_LENGTH}");
     expect(source).toContain("maxLength={PRESCRIPTION_FREQUENCY_MAX_LENGTH}");
@@ -261,7 +324,7 @@ describe("records lab result form UX", () => {
     expect(source).toMatch(
       /canReviewLabResults\s*&&\s*lab\.status === "completed"/,
     );
-    expect(source).toContain('lab.followUpStatus !== "not_required"');
+    expect(source).toMatch(/lab\.followUpStatus\s*!==\s*"not_required"/);
     expect(source).toContain("isLabOptionalReferenceInputValid");
     expect(source).toContain("isLabReferenceRangeOrdered");
     expect(source).toContain("labForm.resultValue.trim() || undefined");
@@ -273,7 +336,9 @@ describe("records lab result form UX", () => {
     const source = readFileSync("app/(dashboard)/records/page.tsx", "utf8");
 
     expect(source).toContain("Manual lab entry only");
-    expect(source).toContain("Reference lab ordering is disabled until IDEXX, Antech,");
+    expect(source).toMatch(
+      /Reference lab ordering is disabled until IDEXX,\s+Antech,/,
+    );
     expect(source).toContain("Add Manual Lab Result");
     expect(source).not.toContain("Order Lab");
   });
@@ -417,21 +482,23 @@ describe("records page state handling", () => {
     expect(source).toMatch(
       /formatClinicalDate\(\s+note\.createdAt,\s+recordsTimeZone/
     );
-    expect(source).toContain(
-      "getVaccineDueStatus(\n                            vax.nextDueDate,\n                            recordsTimeZone"
+    expect(source).toMatch(
+      /getVaccineDueStatus\(\s*vax\.nextDueDate,\s*recordsTimeZone/,
     );
-    expect(source).toContain(
-      "formatClinicalDate(\n                                      vax.administeredAt,\n                                      recordsTimeZone"
+    expect(source).toMatch(
+      /formatClinicalDate\(\s*vax\.administeredAt,\s*recordsTimeZone/,
     );
-    expect(source).toContain(
-      "formatClinicalDate(\n                                      vax.nextDueDate,\n                                      recordsTimeZone"
+    expect(source).toMatch(
+      /formatClinicalDate\(\s*vax\.nextDueDate,\s*recordsTimeZone/,
     );
-    expect(source).toContain(
-      "formatClinicalDate(\n                                problem.onsetDate,\n                                recordsTimeZone"
+    expect(source).toMatch(
+      /formatClinicalDate\(\s*problem\.onsetDate,\s*recordsTimeZone/,
     );
-    expect(source).toMatch(/formatClinicalDate\(\s+lab\.createdAt,\s+recordsTimeZone/);
-    expect(source).toContain(
-      "formatClinicalDate(\n                                    proc.createdAt,\n                                    recordsTimeZone"
+    expect(source).toMatch(
+      /formatClinicalDate\(\s+lab\.createdAt,\s+recordsTimeZone/,
+    );
+    expect(source).toMatch(
+      /formatClinicalDate\(\s*proc\.createdAt,\s*recordsTimeZone/,
     );
     expect(source).toContain("practiceName: recordsPracticeName");
     expect(source).toContain("recordsPracticePhone ?? undefined");
@@ -508,7 +575,10 @@ describe("records page state handling", () => {
     const source = readFileSync("app/(dashboard)/records/page.tsx", "utf8");
 
     expect(source).not.toContain("const canCreateSoapNotes =");
-    expect(source).not.toContain("/records/new-soap/");
+    expect(source).toMatch(
+      /note\.appointmentId\s*&&\s*canCorrectClinicalRecords/,
+    );
+    expect(source).toContain("Resume draft");
     expect(source).toContain(
       "SOAP notes are created from an active visit so documentation stays attached to the correct encounter."
     );

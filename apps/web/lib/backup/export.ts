@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Database } from "@openpims/db/client";
 import { redactSecrets } from "@/lib/audit";
 import { normalizeE164 } from "@/lib/messaging/phone";
+import { rowsFromExecute } from "@/lib/db/execute-rows";
 import {
   appointmentTypes,
   appointmentWaitlist,
@@ -49,6 +50,7 @@ import {
   smsSendAttemptEvents,
   smsSendAttempts,
   smsSuppressions,
+  soapNoteAddenda,
   soapNotes,
   staffSchedules,
   suppliers,
@@ -162,6 +164,7 @@ export const PRACTICE_EXPORT_SECTIONS = [
   "invoiceAdjustments",
   "insuranceClaims",
   "soapNotes",
+  "soapNoteAddenda",
   "vaccinationRecords",
   "labResults",
   "labResultEvents",
@@ -202,6 +205,8 @@ const PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS = [
   "smsSendAttemptEvents",
   "visitCloseouts",
   "clinicalRecordCorrections",
+  // Backward compatibility for pre-v3 backups.
+  "soapNoteAddenda",
   // Backward compatibility for backups created before the lab result safety
   // ledger and clinic-wide review inbox were introduced.
   "labResultEvents",
@@ -215,7 +220,7 @@ export type PracticeExport = {
   counts: Record<PracticeExportSection, number>;
 } & Record<PracticeExportSection, unknown[]>;
 
-export const PRACTICE_EXPORT_FORMAT_VERSION = 2;
+export const PRACTICE_EXPORT_FORMAT_VERSION = 3;
 
 type Row = Record<string, unknown>;
 
@@ -376,6 +381,9 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
   requiredRef("soapNotes", "patientId", "patients"),
   optionalRef("soapNotes", "appointmentId", "appointments"),
   requiredRef("soapNotes", "authorId", "users"),
+  optionalRef("soapNotes", "finalizedBy", "users"),
+  requiredRef("soapNoteAddenda", "soapNoteId", "soapNotes"),
+  requiredRef("soapNoteAddenda", "authorId", "users"),
   requiredRef("vaccinationRecords", "patientId", "patients"),
   optionalRef("vaccinationRecords", "appointmentId", "appointments"),
   optionalRef("vaccinationRecords", "administeredBy", "users"),
@@ -523,6 +531,8 @@ const PATIENT_IDENTITY_SEX = new Set([
   "male_neutered",
   "female_spayed",
 ]);
+const CANONICAL_LOWER_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function isNullableBoundedString(value: unknown, maxLength: number): boolean {
   return (
@@ -580,6 +590,12 @@ function isRestoredTimestamp(value: unknown): boolean {
     value instanceof Date ||
     (typeof value === "string" && !Number.isNaN(new Date(value).getTime()))
   );
+}
+
+function restoredTimestampMillis(value: unknown): number | null {
+  if (!(value instanceof Date) && typeof value !== "string") return null;
+  const milliseconds = new Date(value).getTime();
+  return Number.isNaN(milliseconds) ? null : milliseconds;
 }
 
 function validateRestoreRows(
@@ -1132,6 +1148,114 @@ export function validatePracticeExportRestore(data: unknown): {
     }
   });
 
+  const soapCorrectionByNoteId = new Map(
+    rowsFor(data, "clinicalRecordCorrections")
+      .filter(
+        (row) =>
+          row.recordType === "soap_note" && typeof row.soapNoteId === "string",
+      )
+      .map((row) => [row.soapNoteId as string, row]),
+  );
+  const addendumOperationIds = new Set<string>();
+  const restoreValidationNow = Date.now();
+  rowsFor(data, "soapNoteAddenda").forEach((row, index) => {
+    const label = `soapNoteAddenda[${rowLabel(row, index)}]`;
+    for (const field of [
+      "id",
+      "soapNoteId",
+      "authorId",
+      "operationId",
+    ] as const) {
+      if (
+        typeof row[field] !== "string" ||
+        !CANONICAL_LOWER_UUID.test(row[field])
+      ) {
+        pushError(`${label}.${field} must be a canonical lowercase UUID.`);
+      }
+    }
+    if (
+      typeof row.authorName !== "string" ||
+      row.authorName.trim() !== row.authorName ||
+      row.authorName.length < 1 ||
+      row.authorName.length > 255
+    ) {
+      pushError(`${label}.authorName must be trimmed and 1-255 characters.`);
+    }
+    if (
+      typeof row.content !== "string" ||
+      row.content.trim() !== row.content ||
+      row.content.length < 1 ||
+      row.content.length > 10_000
+    ) {
+      pushError(`${label}.content must be trimmed and 1-10000 characters.`);
+    }
+    if (
+      typeof row.operationPayloadHash !== "string" ||
+      !/^[0-9a-f]{64}$/.test(row.operationPayloadHash)
+    ) {
+      pushError(`${label}.operationPayloadHash must be a SHA-256 hex digest.`);
+    }
+    const source =
+      typeof row.soapNoteId === "string"
+        ? soapRows.get(row.soapNoteId)
+        : undefined;
+    if (!source) return;
+
+    const createdAt = restoredTimestampMillis(row.createdAt);
+    const finalizedAt = restoredTimestampMillis(source.finalizedAt);
+    const deletedAt = restoredTimestampMillis(source.deletedAt);
+    const correction = soapCorrectionByNoteId.get(String(row.soapNoteId));
+    const correctedAt = restoredTimestampMillis(correction?.createdAt);
+    if (source.deletedAt != null && deletedAt === null) {
+      pushError(`${label} source deletedAt must be a valid timestamp.`);
+    }
+    if (correction && correctedAt === null) {
+      pushError(`${label} linked correction.createdAt must be a timestamp.`);
+    }
+    if (source.status !== "finalized" || finalizedAt === null) {
+      pushError(`${label} must reference a finalized SOAP note.`);
+    } else if (
+      createdAt === null ||
+      createdAt < finalizedAt ||
+      createdAt > restoreValidationNow ||
+      (deletedAt !== null && createdAt > deletedAt) ||
+      (correctedAt !== null && createdAt > correctedAt)
+    ) {
+      pushError(
+        `${label}.createdAt must be on or after finalization, not in the future, and no later than source deletion or correction.`,
+      );
+    }
+
+    if (typeof row.operationId === "string") {
+      const normalizedOperationId = row.operationId.toLowerCase();
+      if (addendumOperationIds.has(normalizedOperationId)) {
+        pushError(`${label}.operationId must be unique within its practice.`);
+      }
+      addendumOperationIds.add(normalizedOperationId);
+    }
+
+    if (
+      typeof row.soapNoteId === "string" &&
+      typeof row.authorId === "string" &&
+      typeof row.content === "string"
+    ) {
+      const expectedHash = createHash("sha256")
+        .update(
+          JSON.stringify({
+            noteId: row.soapNoteId.toLowerCase(),
+            authorId: row.authorId.toLowerCase(),
+            content: row.content,
+          }),
+        )
+        .digest("hex");
+      if (row.operationPayloadHash !== expectedHash) {
+        pushError(
+          `${label}.operationPayloadHash must match its exact note, author, and content payload.`,
+        );
+      }
+    }
+  });
+
   const correctionRows = rowsById("clinicalRecordCorrections");
   const replacementSources = new Set<string>();
   const replacements = new Set<string>();
@@ -1530,6 +1654,7 @@ export async function exportPracticeData(
     wellnessPlanRows,
     wellnessEnrollmentRows,
     allSoapNoteRows,
+    soapNoteAddendumRows,
     allVaccinationRows,
     labRows,
     labResultEventRows,
@@ -1581,6 +1706,7 @@ export async function exportPracticeData(
     activeRows(db, wellnessPlans, practiceId),
     activeRows(db, wellnessEnrollments, practiceId),
     allPracticeRows(db, soapNotes, practiceId),
+    allPracticeRows(db, soapNoteAddenda, practiceId),
     allPracticeRows(db, vaccinationRecords, practiceId),
     allPracticeRows(db, labResults, practiceId),
     allPracticeRows(db, labResultEvents, practiceId),
@@ -1627,9 +1753,10 @@ export async function exportPracticeData(
       referencedPrescriptionIds.has(prescription.id),
   );
   const referencedSoapNoteIds = new Set(
-    clinicalCorrectionRows
-      .map((correction) => correction.soapNoteId)
-      .filter((id): id is string => typeof id === "string"),
+    [
+      ...clinicalCorrectionRows.map((correction) => correction.soapNoteId),
+      ...soapNoteAddendumRows.map((addendum) => addendum.soapNoteId),
+    ].filter((id): id is string => typeof id === "string"),
   );
   const soapNoteRows = allSoapNoteRows.filter(
     (note) => note.deletedAt == null || referencedSoapNoteIds.has(note.id),
@@ -1706,6 +1833,8 @@ export async function exportPracticeData(
       ...clinicalCorrectionRows.map((correction) => correction.correctedBy),
       ...labReplacementRows.map((replacement) => replacement.actorId),
       ...soapNoteRows.map((note) => note.authorId),
+      ...soapNoteRows.map((note) => note.finalizedBy),
+      ...soapNoteAddendumRows.map((addendum) => addendum.authorId),
       ...vitalRows.map((vital) => vital.recordedBy),
       ...vaccinationRows.map((vaccination) => vaccination.administeredBy),
       ...labRows.flatMap((result) => [
@@ -1933,6 +2062,7 @@ export async function exportPracticeData(
     invoiceAdjustments: adjustmentRows,
     insuranceClaims: insuranceClaimRows,
     soapNotes: soapNoteRows,
+    soapNoteAddenda: soapNoteAddendumRows,
     vaccinationRecords: vaccinationRows,
     labResults: labRows,
     labResultEvents: labResultEventRows,
@@ -1998,6 +2128,44 @@ async function restorePracticeDataRows(
   );
   const dispenseChargeRestoreRows = rowsFor(data, "dispenseChargeQueue");
   const smsConsentRestore = prepareLegacySmsConsentRestore(data);
+  const soapNoteRestoreRows = rowsFor(data, "soapNotes").map((row) => {
+    const authorName =
+      typeof row.authorName === "string" && row.authorName.trim()
+        ? row.authorName.trim()
+        : row.imported === true
+          ? "Imported record"
+          : "Restored legacy record";
+    const revision =
+      typeof row.revision === "number" &&
+      Number.isInteger(row.revision) &&
+      row.revision > 0
+        ? row.revision
+        : 1;
+    if (row.status === "draft") {
+      return {
+        ...row,
+        authorName,
+        status: "draft",
+        revision,
+        imported: false,
+        finalizedAt: null,
+        finalizedBy: null,
+        finalizerName: null,
+      };
+    }
+    return {
+      ...row,
+      authorName,
+      status: "finalized",
+      revision,
+      finalizedAt: row.finalizedAt ?? row.createdAt ?? row.updatedAt,
+      finalizedBy: row.finalizedBy ?? row.authorId,
+      finalizerName:
+        typeof row.finalizerName === "string" && row.finalizerName.trim()
+          ? row.finalizerName.trim()
+          : authorName,
+    };
+  });
   const labResultRestoreRows = rowsFor(data, "labResults").map((row) => {
     const fallbackTime = row.updatedAt ?? row.createdAt;
     const hasResult =
@@ -2164,7 +2332,13 @@ async function restorePracticeDataRows(
   await restoreChildRows("invoiceAdjustments", invoiceAdjustments);
   await restorePracticeRows("insuranceClaims", insuranceClaims);
   await restorePracticeRows("problemList", problemList);
-  await restorePracticeRows("soapNotes", soapNotes);
+  restored.soapNotes = await restoreRows(
+    db,
+    soapNotes,
+    "soapNotes",
+    soapNoteRestoreRows,
+    { practiceId },
+  );
   await restorePracticeRows("vaccinationRecords", vaccinationRecords);
   restored.labResults = await restoreRows(
     db,
@@ -2181,6 +2355,45 @@ async function restorePracticeDataRows(
     "clinicalRecordCorrections",
     clinicalRecordCorrections,
   );
+  restored.soapNoteAddenda = 0;
+  for (const row of coerceRowDates(
+    soapNoteAddenda,
+    rowsFor(data, "soapNoteAddenda"),
+  )) {
+    if (
+      typeof row.id !== "string" ||
+      !(row.createdAt instanceof Date) ||
+      typeof row.soapNoteId !== "string" ||
+      typeof row.authorId !== "string" ||
+      typeof row.authorName !== "string" ||
+      typeof row.content !== "string" ||
+      typeof row.operationId !== "string" ||
+      typeof row.operationPayloadHash !== "string"
+    ) {
+      throw new Error("Backup contains an invalid SOAP addendum row.");
+    }
+    const restoreResult = await db.execute(sql`
+      select result_id, was_inserted
+      from public.restore_soap_note_addendum(
+      ${row.id}::uuid,
+      ${row.createdAt},
+      ${practiceId}::uuid,
+      ${row.soapNoteId}::uuid,
+      ${row.authorId}::uuid,
+      ${row.authorName},
+      ${row.content},
+      ${row.operationId}::uuid,
+      ${row.operationPayloadHash}
+    )`);
+    const [outcome] = rowsFromExecute<{
+      result_id: string;
+      was_inserted: boolean;
+    }>(restoreResult);
+    if (!outcome || outcome.result_id !== row.id) {
+      throw new Error("SOAP addendum restore returned invalid evidence.");
+    }
+    if (outcome.was_inserted) restored.soapNoteAddenda += 1;
+  }
   await restorePracticeRows("labResultReplacements", labResultReplacements);
   await restorePracticeRows("cases", cases);
   await restoreChildRows("caseEntries", caseEntries);

@@ -10,7 +10,8 @@ proves the whole path works.
 - **Where:** object storage, one file per practice per day:
   `backups/{practiceId}/{YYYY-MM-DD}.json` (date in the practice's timezone).
 - **What:** every practice-owned table, active rows only. That includes the
-  full clinical record (SOAP notes, clinical notes, vitals, vaccinations,
+  full clinical record (persisted SOAP drafts, immutable finalized SOAP notes
+  with attribution, SOAP corrections and addenda, clinical notes, vitals, vaccinations,
   labs plus their immutable completion/review/follow-up history, procedures,
   prescriptions, problem lists, cases, treatment plans,
   controlled-substance log), clients and patients, scheduling, billing

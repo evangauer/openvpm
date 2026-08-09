@@ -680,7 +680,6 @@ describe("records list query scoping", () => {
 
   it("keeps joined staff rows tenant scoped and active", () => {
     for (const foreignKey of [
-      "soapNotes.authorId",
       "vaccinationRecords.administeredBy",
       "prescriptions.prescribedBy",
       "procedures.performedBy",
@@ -695,6 +694,10 @@ describe("records list query scoping", () => {
         ),
       );
     }
+    expect(source).toContain("authorName: soapNotes.authorName");
+    expect(source).not.toMatch(
+      /leftJoin\(\s*users,\s*and\(\s*eq\(soapNotes\.authorId, users\.id\)/s,
+    );
     expect(source).toMatch(
       /leftJoin\(\s*orderedBy,\s*and\(\s*eq\(labResults\.orderedBy, orderedBy\.id\),\s*eq\(orderedBy\.practiceId, ctx\.practiceId\)\s*,?\s*\)\s*,?\s*\)/s,
     );
@@ -731,8 +734,8 @@ describe("records prescription retry UX", () => {
   );
 
   it("keeps one operation ID until prescription creation succeeds or is cancelled", () => {
-    expect(source).toContain(
-      "prescriptionOperationId.current ??= crypto.randomUUID()",
+    expect(source).toMatch(
+      /prescriptionOperationId\.current\s*\?\?=\s*crypto\.randomUUID\(\)/,
     );
     expect(source).toContain("operationId: prescriptionOperationId.current");
     expect(source).toContain("prescriptionOperationId.current = null");

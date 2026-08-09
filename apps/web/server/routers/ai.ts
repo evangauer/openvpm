@@ -42,6 +42,10 @@ import { optionalClinicalTextInput } from "@/lib/records/clinical-inputs";
 import { lockOpenVisitForClinicalAppend } from "@/lib/records/visit-integrity";
 import { hasUnresolvedSoapTemplatePrompts } from "@/lib/records/soap-templates";
 import { AI_SOURCE_MAX_LENGTH } from "@/lib/ai/soap";
+import {
+  createFinalizedAppointmentSoapNote,
+  SoapLifecycleError,
+} from "@/lib/records/soap-lifecycle";
 
 export { AI_SOURCE_MAX_LENGTH };
 
@@ -224,7 +228,7 @@ export const aiRouter = createRouter({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { source, ...noteData } = input;
+      const { source } = input;
       const normalizedNote = {
         subjective: normalizeSoapSection(input.subjective),
         objective: normalizeSoapSection(input.objective),
@@ -250,24 +254,30 @@ export const aiRouter = createRouter({
         input.appointmentId,
         input.patientId
       );
-      const [note] = await ctx.db
-        .insert(soapNotes)
-        .values({
-          patientId: noteData.patientId,
-          appointmentId: noteData.appointmentId,
-          ...normalizedNote,
-          authorId: ctx.user.id,
-          practiceId: ctx.practiceId,
-        })
-        .returning();
-      return { ...note!, source };
+      try {
+        const note = await ctx.db.transaction((tx) =>
+          createFinalizedAppointmentSoapNote(tx as unknown as Database, {
+            practiceId: ctx.practiceId,
+            patientId: input.patientId,
+            appointmentId: input.appointmentId,
+            actor: { id: ctx.user.id, name: ctx.user.name },
+            sections: normalizedNote,
+          }),
+        );
+        return { ...note, source };
+      } catch (error) {
+        if (error instanceof SoapLifecycleError) {
+          throw new TRPCError({ code: error.code, message: error.message });
+        }
+        throw error;
+      }
     }),
 
   /**
    * AI SOAP draft for the in-app editor ("Draft with AI").
    * Unlike createSoapFromAI above (external scribes POST finished notes),
-   * this generates a draft from chart context and returns it WITHOUT saving;
-   * the clinician reviews, edits, and saves through records.createSoapNote.
+   * this generates a draft from chart context and returns it to the persisted
+   * editor draft; the clinician reviews, edits, and explicitly finalizes it.
    * Gated like the agent: SOAP-writing roles + the hosted "agent" feature.
    */
   draftSoapNote: protectedProcedure
@@ -609,43 +619,44 @@ export const aiRouter = createRouter({
             lt(appointments.startTime, today.end)
           )
         )
-        .groupBy(appointments.status),
+          .groupBy(appointments.status),
 
-      // SOAP notes created today
-      ctx.db
-        .select({ count: sql<number>`count(*)` })
-        .from(soapNotes)
-        .where(
-          and(
-            eq(soapNotes.practiceId, ctx.practiceId),
-            activePracticePredicate(ctx.practiceId),
-            isNull(soapNotes.deletedAt),
-            sql`not exists (
+        // SOAP notes created today
+        ctx.db
+          .select({ count: sql<number>`count(*)` })
+          .from(soapNotes)
+          .where(
+            and(
+              eq(soapNotes.practiceId, ctx.practiceId),
+              eq(soapNotes.status, "finalized"),
+              activePracticePredicate(ctx.practiceId),
+              isNull(soapNotes.deletedAt),
+              sql`not exists (
               select 1
               from ${clinicalRecordCorrections}
               where ${clinicalRecordCorrections.practiceId} = ${ctx.practiceId}
                 and ${clinicalRecordCorrections.soapNoteId} = ${soapNotes.id}
             )`,
-            gte(soapNotes.createdAt, today.start),
-            lt(soapNotes.createdAt, today.end)
-          )
-        ),
+              gte(soapNotes.finalizedAt, today.start),
+              lt(soapNotes.finalizedAt, today.end),
+            ),
+          ),
 
-      // Invoices paid today
-      ctx.db
-        .select({ count: sql<number>`count(*)` })
-        .from(invoices)
-        .where(
-          and(
-            eq(invoices.practiceId, ctx.practiceId),
-            activePracticePredicate(ctx.practiceId),
-            isNull(invoices.deletedAt),
-            eq(invoices.status, "paid"),
-            gte(invoices.updatedAt, today.start),
-            lt(invoices.updatedAt, today.end)
-          )
-        ),
-    ]);
+        // Invoices paid today
+        ctx.db
+          .select({ count: sql<number>`count(*)` })
+          .from(invoices)
+          .where(
+            and(
+              eq(invoices.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(invoices.deletedAt),
+              eq(invoices.status, "paid"),
+              gte(invoices.updatedAt, today.start),
+              lt(invoices.updatedAt, today.end),
+            ),
+          ),
+      ]);
 
     const statusMap = Object.fromEntries(
       appointmentsByStatus.map((r) => [r.status, Number(r.count)])

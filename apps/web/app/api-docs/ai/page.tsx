@@ -66,12 +66,12 @@ export default function AIIntegrationDocs() {
         {/* SOAP Note Integration */}
         <Section id="soap-notes" title="SOAP Note Integration">
           <p className="mb-4 text-gray-700">
-            Connect an AI scribe &mdash; such as{" "}
-            <strong>Scribenote</strong>, <strong>VetRec</strong>, or{" "}
-            <strong>HappyDoc</strong> &mdash; to automatically populate SOAP
-            notes after each appointment. The AI listens to the consultation,
-            generates structured clinical notes, and posts them directly to
-            OpenVPM.
+            Connect an AI scribe &mdash; such as <strong>Scribenote</strong>,{" "}
+            <strong>VetRec</strong>, or <strong>HappyDoc</strong> &mdash; to
+            automatically populate SOAP notes during an active visit. This
+            endpoint creates an immediately finalized, immutable clinical
+            record; use it only after the clinician has reviewed the generated
+            content.
           </p>
 
           <h3 className="mb-2 mt-6 text-sm font-semibold uppercase tracking-wider text-gray-500">
@@ -101,8 +101,10 @@ Content-Type: application/json`}
           </CodeBlock>
           <p className="mt-3 text-sm text-gray-500">
             Create the key with the <strong>records:write</strong> scope.
-            OpenVPM validates the patient, optional appointment, and author
-            against the authenticated practice before inserting the note.
+            OpenVPM validates the patient, active in-exam appointment, and
+            author against the authenticated practice. A saved draft or
+            effective finalized SOAP note for the encounter returns a conflict
+            so an integration cannot silently replace clinical documentation.
           </p>
 
           <h3 className="mb-2 mt-6 text-sm font-semibold uppercase tracking-wider text-gray-500">

@@ -344,7 +344,8 @@ const sections: Section[] = [
       {
         name: "records.createSoapNote",
         method: "POST",
-        description: "Create a SOAP note for an active in-exam appointment.",
+        description:
+          "Create an immediately finalized, immutable SOAP note for an active in-exam appointment. Conflicts with an existing draft or effective finalized note.",
         input: `{
   patientId: string,
   appointmentId: string,
@@ -898,7 +899,7 @@ const sections: Section[] = [
         name: "POST /api/v1/soap-notes",
         method: "POST",
         description:
-          "Create a SOAP note for an external AI scribe during an active in-exam appointment and emit the soap_note.created webhook.",
+          "Create an immediately finalized, immutable SOAP note for an external AI scribe during an active in-exam appointment and emit the soap_note.created webhook. Returns a conflict when the encounter already has a draft or effective finalized note.",
         input: `{
   patient_id: string,
   appointment_id: string,

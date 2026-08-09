@@ -442,6 +442,13 @@
       "when": 1786289519527,
       "tag": "0062_ambitious_moon_knight",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1786296785895,
+      "tag": "0063_modern_starbolt",
+      "breakpoints": true
     }
   ]
 }

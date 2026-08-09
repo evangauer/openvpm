@@ -29,6 +29,7 @@ import {
   SOAP_SECTION_MAX_LENGTH,
   hasSoapContent,
 } from "@/lib/records/soap-content";
+import { finalizedSoapInsertValues } from "@/lib/records/soap-lifecycle";
 import {
   exportPracticeData,
   restorePracticeData,
@@ -76,10 +77,16 @@ type VaccinationImportRow = Omit<
 >;
 // authorId is stamped in the mutation (the importing admin); historical
 // imports have no OpenVPM author of their own.
-type SoapNoteImportRow = Omit<
-  typeof soapNotes.$inferInsert,
-  "practiceId" | "authorId"
->;
+type SoapNoteImportRow = {
+  patientId: string;
+  appointmentId: null;
+  subjective: string | null;
+  objective: string | null;
+  assessment: string | null;
+  plan: string | null;
+  createdAt: Date;
+  importFingerprint: string;
+};
 type DataContext = {
   db: Database;
   practiceId: string;
@@ -1966,6 +1973,7 @@ async function loadSoapNoteCsvPlan(
     .where(
       and(
         eq(soapNotes.practiceId, practiceId),
+        eq(soapNotes.status, "finalized"),
         activePracticePredicate(practiceId),
         isNull(soapNotes.deletedAt),
       ),
@@ -3181,10 +3189,12 @@ export const dataRouter = createRouter({
             plan.rows.map((n) => ({
               ...n,
               practiceId: ctx.practiceId,
-              authorId: ctx.user.id,
-              // Mark as migrated so the record shows "Imported" rather than
-              // implying the importing admin authored this historical note.
-              imported: true,
+              ...finalizedSoapInsertValues({
+                actor: { id: ctx.user.id, name: ctx.user.name },
+                sections: n,
+                finalizedAt: n.createdAt,
+                imported: true,
+              }),
             })),
           );
         }

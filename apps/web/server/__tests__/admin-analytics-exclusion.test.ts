@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => {
   const where = vi.fn(() => ({ returning }));
   const updateSet = vi.fn(() => ({ where }));
   const update = vi.fn(() => ({ set: updateSet }));
-  const db = { update };
+  const db = { update, execute: vi.fn(async () => undefined) };
   return {
     db,
     update,

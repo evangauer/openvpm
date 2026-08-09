@@ -24,14 +24,20 @@ const mocks = vi.hoisted(() => {
   };
   const insertReturning = vi.fn(async () => [insertRow]);
   const insertValues = vi.fn(() => ({ returning: insertReturning }));
+  const tenantRollback = vi.fn();
   const db = {
+    execute: vi.fn(async () => []),
     select: vi.fn(() => {
       const result = selectResults.shift() ?? [];
       const builder = {
         from: vi.fn(() => builder),
         where: vi.fn(() => builder),
         for: vi.fn(async () => result),
-        limit: vi.fn(async () => result),
+        limit: vi.fn(() => builder),
+        then: (
+          resolve: (rows: unknown[]) => unknown,
+          reject?: (error: unknown) => unknown,
+        ) => Promise.resolve(result).then(resolve, reject),
       };
       selectBuilders.push(builder);
       return builder;
@@ -52,8 +58,15 @@ const mocks = vi.hoisted(() => {
       async (
         _db: unknown,
         _practiceId: string,
-        fn: (tx: unknown) => Promise<unknown>
-      ) => fn(db)
+        fn: (tx: unknown) => Promise<unknown>,
+      ) => {
+        try {
+          return await fn(db);
+        } catch (error) {
+          tenantRollback(error);
+          throw error;
+        }
+      },
     ),
     dispatchWebhookEvent: vi.fn(async () => undefined),
     db,
@@ -61,6 +74,7 @@ const mocks = vi.hoisted(() => {
     insertValues,
     selectBuilders,
     selectResults,
+    tenantRollback,
   };
 });
 
@@ -347,7 +361,11 @@ describe("POST /api/v1/soap-notes", () => {
       [{ id: PATIENT_ID }],
       [{ id: APPOINTMENT_ID, doctorId: AUTHOR_ID, status: "in_exam" }],
       [],
-      [{ id: AUTHOR_ID }]
+      [{ id: AUTHOR_ID, name: "Dr. Rivera" }],
+      [{ id: APPOINTMENT_ID, doctorId: AUTHOR_ID, status: "in_exam" }],
+      [],
+      [],
+      [],
     );
 
     const response = await POST(request(soapBody()));
@@ -382,5 +400,41 @@ describe("POST /api/v1/soap-notes", () => {
         source: "scribenote",
       })
     );
+  });
+
+  it("rolls back a deferred SOAP invariant failure before returning 409", async () => {
+    mocks.selectResults.push(
+      ACTIVE_PRACTICE,
+      [{ id: PATIENT_ID }],
+      [{ id: APPOINTMENT_ID, doctorId: AUTHOR_ID, status: "in_exam" }],
+      [],
+      [{ id: AUTHOR_ID, name: "Dr. Rivera" }],
+      [{ id: APPOINTMENT_ID, doctorId: AUTHOR_ID, status: "in_exam" }],
+      [],
+      [],
+      [],
+    );
+    mocks.db.execute.mockRejectedValueOnce({
+      code: "23514",
+      constraint_name: "soap_notes_appointment_invariant",
+    });
+
+    const response = await POST(request(soapBody()));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        message:
+          "Clinical documentation changed in another session. Refresh and retry.",
+      },
+    });
+    expect(mocks.tenantRollback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "23514",
+        constraint_name: "soap_notes_appointment_invariant",
+      }),
+    );
+    expect(mocks.db.insert).toHaveBeenCalledTimes(1);
+    expect(mocks.dispatchWebhookEvent).not.toHaveBeenCalled();
   });
 });

@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => {
   const updateWhere = vi.fn(() => ({ returning: updateReturning }));
   const updateSet = vi.fn(() => ({ where: updateWhere }));
   const update = vi.fn(() => ({ set: updateSet }));
-  const db = { select, update };
+  const db = { select, update, execute: vi.fn(async () => undefined) };
   return {
     db,
     selectResults,
@@ -59,6 +59,9 @@ vi.mock("@openpims/db/client", () => ({ db: mocks.db }));
 vi.mock("@/lib/tenant-db", () => ({
   withTenant: mocks.withTenant,
   withSystem: mocks.withSystem,
+}));
+vi.mock("@/lib/audit", () => ({
+  recordAuditLog: vi.fn(async () => undefined),
 }));
 vi.mock("@/lib/messaging/telnyx-provisioning", () => ({
   createA2pBrand: mocks.createA2pBrand,

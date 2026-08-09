@@ -3,7 +3,7 @@ import type { Session } from "next-auth";
 import { getServerSession } from "next-auth";
 import superjson from "superjson";
 import { ZodError } from "zod";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { authOptions } from "@/lib/auth";
 import { hasBlankConfiguredNextAuthSecret } from "@/lib/auth-secret";
 import { recordAuditLog } from "@/lib/audit";
@@ -261,25 +261,47 @@ export const protectedProcedure = t.procedure.use(
         },
       });
 
-      // Audit every successful mutation: who changed what, when, from where.
-      // Runs in its own system-context tx so it's independent of this request's
-      // transaction lifecycle and never blocks or fails the request.
       if (type === "mutation" && result.ok) {
-        const rawInput = await getRawInput().catch(() => undefined);
-        void withSystem(db, (sysTx) =>
-          recordAuditLog(sysTx, {
-            practiceId: user.practiceId,
-            userId: user.id,
-            ip: ctx.ip,
-            path,
-            rawInput,
-            resultData: (result as { data?: unknown }).data,
-          }),
-        ).catch(() => {});
+        // Surface deferred clinical invariants while this transaction can
+        // still return a truthful procedure error. The audit is scheduled
+        // only after withTenant confirms the commit succeeded.
+        await tx.execute(sql`set constraints all immediate`);
       }
 
       return result;
+    }).catch((error: unknown) => {
+      if (
+        type === "mutation" &&
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "23514" &&
+        "constraint_name" in error &&
+        error.constraint_name === "soap_notes_appointment_invariant"
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message:
+            "Clinical documentation changed in another session. Refresh and retry.",
+        });
+      }
+      throw error;
     });
+    // Audit every successful mutation after the tenant transaction committed.
+    // Runs in its own system-context tx and never blocks or fails the request.
+    if (type === "mutation" && result.ok) {
+      const rawInput = await getRawInput().catch(() => undefined);
+      void withSystem(db, (sysTx) =>
+        recordAuditLog(sysTx, {
+          practiceId: user.practiceId,
+          userId: user.id,
+          ip: ctx.ip,
+          path,
+          rawInput,
+          resultData: (result as { data?: unknown }).data,
+        }),
+      ).catch(() => {});
+    }
     if (result.ok) {
       await runPostCommitEffects(ctx.db, effects, path);
     }

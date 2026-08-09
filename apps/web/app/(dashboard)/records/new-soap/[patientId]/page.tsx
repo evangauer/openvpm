@@ -1,11 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import {
   AlertCircle,
+  CheckCircle2,
+  Copy,
   ArrowLeft,
   ClipboardList,
   Loader2,
@@ -22,6 +24,7 @@ import { toast } from "sonner";
 import {
   hasSoapContent,
   normalizeSoapSection,
+  soapSectionText,
 } from "@/lib/records/soap-content";
 import {
   SOAP_NOTE_TEMPLATES,
@@ -29,6 +32,11 @@ import {
   getSoapTemplateById,
   hasUnresolvedSoapTemplatePrompts,
 } from "@/lib/records/soap-templates";
+import {
+  guardedSoapNavigationDestination,
+  runSoapSafeLeave,
+  soapEditorNeedsLeaveGuard,
+} from "@/lib/records/soap-navigation";
 
 const SoapNoteEditor = dynamic(
   () =>
@@ -59,6 +67,54 @@ function draftTextToHtml(text: string): string {
     .filter(Boolean)
     .map((paragraph) => `<p>${paragraph.replace(/\n/g, "<br>")}</p>`);
   return paragraphs.join("");
+}
+
+type SoapEditorSections = {
+  subjective: string;
+  objective: string;
+  assessment: string;
+  plan: string;
+};
+
+function soapDraftFingerprint(sections: SoapEditorSections): string {
+  return JSON.stringify({
+    subjective: normalizeSoapSection(sections.subjective),
+    objective: normalizeSoapSection(sections.objective),
+    assessment: normalizeSoapSection(sections.assessment),
+    plan: normalizeSoapSection(sections.plan),
+  });
+}
+
+function localSoapTextForClipboard(sections: SoapEditorSections): string {
+  return [
+    ["Subjective", soapSectionText(sections.subjective)],
+    ["Objective", soapSectionText(sections.objective)],
+    ["Assessment", soapSectionText(sections.assessment)],
+    ["Plan", soapSectionText(sections.plan)],
+  ]
+    .filter((entry) => Boolean(entry[1]))
+    .map(([label, content]) => `${label}\n${content}`)
+    .join("\n\n");
+}
+
+async function copyTextToClipboard(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch {
+    // Clipboard API can be unavailable or denied in some managed browsers.
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("Clipboard access was denied");
 }
 
 export default function NewSoapNotePage() {
@@ -102,15 +158,183 @@ export default function NewSoapNotePage() {
       { enabled: !!params.patientId && canCreateSoapNote && !!appointmentId }
     );
 
-  const createNote = trpc.records.createSoapNote.useMutation({
-    onSuccess: () => {
-      toast.success("SOAP note created");
-      router.push(returnPath);
+  const draftQuery = trpc.records.getSoapDraft.useQuery(
+    { patientId: params.patientId, appointmentId: appointmentId! },
+    {
+      enabled:
+        !!params.patientId && !!appointmentId && canCreateSoapNote && !!patient,
     },
-    onError: (err) => {
-      toast.error(err.message);
-    },
+  );
+  const saveDraftMutation = trpc.records.saveSoapDraft.useMutation();
+  const finalizeMutation = trpc.records.finalizeSoapNote.useMutation();
+  const discardMutation = trpc.records.discardSoapDraft.useMutation();
+  const [draftInitialized, setDraftInitialized] = useState(false);
+  const draftInitializedRef = useRef(false);
+  const [saveState, setSaveState] = useState<
+    "idle" | "unsaved" | "saving" | "saved" | "error" | "conflict"
+  >("idle");
+  const [finalizedElsewhere, setFinalizedElsewhere] = useState(false);
+  const [localTextCopied, setLocalTextCopied] = useState(false);
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  const [conflictDraft, setConflictDraft] = useState<NonNullable<
+    typeof draftQuery.data
+  > | null>(null);
+  const draftIdRef = useRef<string | null>(null);
+  const revisionRef = useRef(0);
+  const lastSavedFingerprintRef = useRef("");
+  const savePromiseRef = useRef<Promise<unknown> | null>(null);
+  const navigationAttemptRef = useRef<Promise<boolean> | null>(null);
+  const saveDraftRef = useRef(saveDraftMutation.mutateAsync);
+  saveDraftRef.current = saveDraftMutation.mutateAsync;
+  const conflictRef = useRef(false);
+  const finalizedElsewhereRef = useRef(false);
+  const localTextCopiedRef = useRef(false);
+  const sectionsRef = useRef<SoapEditorSections>({
+    subjective,
+    objective,
+    assessment,
+    plan,
   });
+  sectionsRef.current = { subjective, objective, assessment, plan };
+
+  const editorNeedsLeaveGuard = useCallback(
+    () =>
+      soapEditorNeedsLeaveGuard({
+        draftInitialized: draftInitializedRef.current,
+        finalizedElsewhere: finalizedElsewhereRef.current,
+        localTextCopied: localTextCopiedRef.current,
+        hasLocalText: Boolean(
+          localSoapTextForClipboard(sectionsRef.current),
+        ),
+        conflict: conflictRef.current,
+        savePending: savePromiseRef.current !== null,
+        dirty:
+          soapDraftFingerprint(sectionsRef.current) !==
+          lastSavedFingerprintRef.current,
+      }),
+    [],
+  );
+
+  useEffect(() => {
+    if (!draftQuery.isSuccess || draftInitialized) return;
+    const draft = draftQuery.data;
+    const sections = {
+      subjective: draft?.subjective ?? "",
+      objective: draft?.objective ?? "",
+      assessment: draft?.assessment ?? "",
+      plan: draft?.plan ?? "",
+    };
+    setSubjective(sections.subjective);
+    setObjective(sections.objective);
+    setAssessment(sections.assessment);
+    setPlan(sections.plan);
+    sectionsRef.current = sections;
+    draftIdRef.current = draft?.id ?? null;
+    revisionRef.current = draft?.revision ?? 0;
+    lastSavedFingerprintRef.current = soapDraftFingerprint(sections);
+    setLastSavedAt(draft?.updatedAt ?? null);
+    setSaveState(draft ? "saved" : "idle");
+    draftInitializedRef.current = true;
+    setDraftInitialized(true);
+  }, [draftInitialized, draftQuery.data, draftQuery.isSuccess]);
+
+  const persistDraft = useCallback(async () => {
+    if (
+      finalizedElsewhereRef.current ||
+      !appointmentId ||
+      !params.patientId ||
+      !draftInitialized
+    )
+      return null;
+
+    while (true) {
+      if (finalizedElsewhereRef.current) return null;
+      if (conflictRef.current) return null;
+      if (savePromiseRef.current) {
+        await savePromiseRef.current.catch(() => null);
+        continue;
+      }
+      const sections = { ...sectionsRef.current };
+      const fingerprint = soapDraftFingerprint(sections);
+      if (fingerprint === lastSavedFingerprintRef.current) {
+        return draftIdRef.current
+          ? { id: draftIdRef.current, revision: revisionRef.current }
+          : null;
+      }
+      setSaveState("saving");
+      const request = saveDraftRef.current({
+        patientId: params.patientId,
+        appointmentId,
+        noteId: draftIdRef.current ?? undefined,
+        expectedRevision: revisionRef.current,
+        ...sections,
+      });
+      savePromiseRef.current = request;
+      try {
+        const result = await request;
+        if (result.outcome === "already_finalized") {
+          finalizedElsewhereRef.current = true;
+          localTextCopiedRef.current = false;
+          setLocalTextCopied(false);
+          setFinalizedElsewhere(true);
+          return null;
+        }
+        if (result.outcome === "conflict") {
+          conflictRef.current = true;
+          setConflictDraft(result.draft);
+          setSaveState("conflict");
+          return null;
+        }
+        draftIdRef.current = result.draft.id;
+        revisionRef.current = result.draft.revision;
+        lastSavedFingerprintRef.current = fingerprint;
+        setLastSavedAt(result.draft.updatedAt);
+        setSaveState("saved");
+      } catch (error) {
+        setSaveState("error");
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "SOAP draft could not be saved",
+        );
+        return null;
+      } finally {
+        if (savePromiseRef.current === request) savePromiseRef.current = null;
+      }
+    }
+  }, [appointmentId, draftInitialized, params.patientId]);
+
+  useEffect(() => {
+    if (
+      finalizedElsewhere ||
+      !draftInitialized ||
+      conflictRef.current
+    )
+      return;
+    const fingerprint = soapDraftFingerprint(sectionsRef.current);
+    if (fingerprint === lastSavedFingerprintRef.current) return;
+    setSaveState("unsaved");
+    const timer = window.setTimeout(() => void persistDraft(), 1_200);
+    return () => window.clearTimeout(timer);
+  }, [
+    assessment,
+    draftInitialized,
+    finalizedElsewhere,
+    objective,
+    persistDraft,
+    plan,
+    subjective,
+  ]);
+
+  useEffect(() => {
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!editorNeedsLeaveGuard()) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [editorNeedsLeaveGuard]);
 
   // AI draft availability mirrors the OpenVPM Agent (same key + model config).
   const agentStatus = trpc.agent.status.useQuery(undefined, {
@@ -119,6 +343,7 @@ export default function NewSoapNotePage() {
   const aiConfigured = agentStatus.data?.configured ?? false;
   const draftWithAi = trpc.ai.draftSoapNote.useMutation({
     onSuccess: (draft) => {
+      if (finalizedElsewhereRef.current) return;
       setSubjective(draftTextToHtml(draft.subjective));
       setObjective(draftTextToHtml(draft.objective));
       setAssessment(draftTextToHtml(draft.assessment));
@@ -129,7 +354,12 @@ export default function NewSoapNotePage() {
   });
 
   function handleDraftWithAi() {
-    if (!params.patientId || draftWithAi.isPending) return;
+    if (
+      finalizedElsewhereRef.current ||
+      !params.patientId ||
+      draftWithAi.isPending
+    )
+      return;
     if (
       canSave &&
       !window.confirm("Replace what you typed with the AI draft?")
@@ -139,35 +369,154 @@ export default function NewSoapNotePage() {
     draftWithAi.mutate({ patientId: params.patientId });
   }
 
-  function handleSave() {
+  async function handleFinalize() {
+    if (finalizedElsewhereRef.current) return;
     if (!appointmentId) {
-      toast.error("Open an active visit before creating a SOAP note");
+      toast.error("Open an active visit before finalizing a SOAP note");
       return;
     }
     if (!params.patientId || !patient) {
-      toast.error("Load the patient before saving a SOAP note");
+      toast.error("Load the patient before finalizing a SOAP note");
       return;
     }
     if (!canSave) {
-      toast.error("Add at least one SOAP section before saving");
+      toast.error("Add at least one SOAP section before finalizing");
       return;
     }
     if (hasTemplatePrompts) {
-      toast.error("Replace or delete every draft prompt before saving");
+      toast.error("Replace or delete every draft prompt before finalizing");
       return;
     }
-    createNote.mutate({
-      patientId: params.patientId,
-      appointmentId,
-      subjective: normalizeSoapSection(subjective),
-      objective: normalizeSoapSection(objective),
-      assessment: normalizeSoapSection(assessment),
-      plan: normalizeSoapSection(plan),
+    const saved = await persistDraft();
+    if (!saved) return;
+    if (
+      !window.confirm(
+        "Finalize this SOAP note? The signed note cannot be edited; later clarification must be an attributed addendum.",
+      )
+    ) {
+      return;
+    }
+    try {
+      const result = await finalizeMutation.mutateAsync({
+        patientId: params.patientId,
+        appointmentId,
+        noteId: saved.id,
+        expectedRevision: saved.revision,
+      });
+      if (result.outcome === "conflict") {
+        if (result.note.status === "finalized") {
+          finalizedElsewhereRef.current = true;
+          localTextCopiedRef.current = false;
+          setLocalTextCopied(false);
+          setFinalizedElsewhere(true);
+          return;
+        }
+        conflictRef.current = true;
+        setConflictDraft(result.note);
+        setSaveState("conflict");
+        return;
+      }
+      toast.success("SOAP note finalized");
+      router.push(returnPath);
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "SOAP note could not be finalized",
+      );
+    }
+  }
+
+  function useServerDraft() {
+    if (finalizedElsewhereRef.current || !conflictDraft) return;
+    const sections = {
+      subjective: conflictDraft.subjective ?? "",
+      objective: conflictDraft.objective ?? "",
+      assessment: conflictDraft.assessment ?? "",
+      plan: conflictDraft.plan ?? "",
+    };
+    setSubjective(sections.subjective);
+    setObjective(sections.objective);
+    setAssessment(sections.assessment);
+    setPlan(sections.plan);
+    sectionsRef.current = sections;
+    draftIdRef.current = conflictDraft.id;
+    revisionRef.current = conflictDraft.revision;
+    lastSavedFingerprintRef.current = soapDraftFingerprint(sections);
+    setLastSavedAt(conflictDraft.updatedAt);
+    conflictRef.current = false;
+    setConflictDraft(null);
+    setSaveState("saved");
+  }
+
+  async function overwriteServerDraft() {
+    if (finalizedElsewhereRef.current || !conflictDraft) return;
+    if (
+      !window.confirm(
+        "Replace the newer server draft with the version in this editor?",
+      )
+    )
+      return;
+    draftIdRef.current = conflictDraft.id;
+    revisionRef.current = conflictDraft.revision;
+    lastSavedFingerprintRef.current = soapDraftFingerprint({
+      subjective: conflictDraft.subjective ?? "",
+      objective: conflictDraft.objective ?? "",
+      assessment: conflictDraft.assessment ?? "",
+      plan: conflictDraft.plan ?? "",
     });
+    conflictRef.current = false;
+    setConflictDraft(null);
+    setSaveState("unsaved");
+    await persistDraft();
+  }
+
+  async function handleDiscardDraft() {
+    if (
+      finalizedElsewhereRef.current ||
+      !appointmentId ||
+      !draftIdRef.current
+    )
+      return;
+    if (
+      !window.confirm(
+        "Discard this unfinished SOAP draft? This cannot be undone.",
+      )
+    )
+      return;
+    try {
+      const result = await discardMutation.mutateAsync({
+        patientId: params.patientId,
+        appointmentId,
+        noteId: draftIdRef.current,
+        expectedRevision: revisionRef.current,
+      });
+      if (result.outcome === "already_finalized") {
+        finalizedElsewhereRef.current = true;
+        localTextCopiedRef.current = false;
+        setLocalTextCopied(false);
+        setFinalizedElsewhere(true);
+        return;
+      }
+      if (result.outcome === "conflict") {
+        conflictRef.current = true;
+        setConflictDraft(result.draft);
+        setSaveState("conflict");
+        return;
+      }
+      toast.success("SOAP draft discarded");
+      router.push(returnPath);
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "SOAP draft could not be discarded",
+      );
+    }
   }
 
   function handleApplyTemplate() {
-    if (!selectedTemplate) return;
+    if (finalizedElsewhereRef.current || !selectedTemplate) return;
     const next = applySoapTemplateToSections(
       { subjective, objective, assessment, plan },
       selectedTemplate,
@@ -183,6 +532,100 @@ export default function NewSoapNotePage() {
         : `${selectedTemplate.name} draft prompts filled blank sections`
     );
   }
+
+  const leaveEditorSafely = useCallback(
+    (destination: string): Promise<boolean> => {
+      if (navigationAttemptRef.current) {
+        return navigationAttemptRef.current;
+      }
+
+      const attempt = runSoapSafeLeave({
+        readState: () => ({
+          finalizedElsewhere: finalizedElsewhereRef.current,
+          needsGuard: editorNeedsLeaveGuard(),
+          localTextCopied: localTextCopiedRef.current,
+          hasLocalText: Boolean(
+            localSoapTextForClipboard(sectionsRef.current),
+          ),
+        }),
+        persistDraft,
+        confirmFinalizedLocalTextLeave: () =>
+          window.confirm(
+            "Your local SOAP text was not included in the finalized note and has not been copied. Leave anyway?",
+          ),
+        confirmUnsavedLeave: () =>
+          window.confirm(
+            "The latest draft changes could not be saved. Leave the editor anyway?",
+          ),
+        navigate: () => router.push(destination),
+      });
+
+      navigationAttemptRef.current = attempt;
+      void attempt.finally(() => {
+        if (navigationAttemptRef.current === attempt) {
+          navigationAttemptRef.current = null;
+        }
+      });
+      return attempt;
+    },
+    [editorNeedsLeaveGuard, persistDraft, router],
+  );
+
+  const copyLocalSoapText = useCallback(async () => {
+    const text = localSoapTextForClipboard(sectionsRef.current);
+    if (!text) {
+      toast.error("There is no local SOAP text to copy");
+      return;
+    }
+    try {
+      await copyTextToClipboard(text);
+      localTextCopiedRef.current = true;
+      setLocalTextCopied(true);
+      toast.success("Local SOAP text copied");
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Local SOAP text could not be copied",
+      );
+    }
+  }, []);
+
+  useEffect(() => {
+    const handleDocumentClick = (event: MouseEvent) => {
+      if (
+        !editorNeedsLeaveGuard() &&
+        navigationAttemptRef.current === null
+      ) {
+        return;
+      }
+      if (!(event.target instanceof Element)) return;
+      const anchor = event.target.closest<HTMLAnchorElement>("a[href]");
+      if (!anchor) return;
+
+      const destination = guardedSoapNavigationDestination({
+        href: anchor.href,
+        currentHref: window.location.href,
+        button: event.button,
+        defaultPrevented: event.defaultPrevented,
+        metaKey: event.metaKey,
+        ctrlKey: event.ctrlKey,
+        shiftKey: event.shiftKey,
+        altKey: event.altKey,
+        target: anchor.getAttribute("target"),
+        download: anchor.hasAttribute("download"),
+      });
+      if (!destination) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      void leaveEditorSafely(destination);
+    };
+
+    document.addEventListener("click", handleDocumentClick, true);
+    return () =>
+      document.removeEventListener("click", handleDocumentClick, true);
+  }, [editorNeedsLeaveGuard, leaveEditorSafely]);
 
   if (accessDenied) {
     return (
@@ -254,12 +697,126 @@ export default function NewSoapNotePage() {
     );
   }
 
+  if (!draftQuery.error && (draftQuery.isLoading || !draftInitialized)) {
+    return (
+      <div className="flex items-center justify-center gap-2 rounded-lg border border-border bg-card p-8 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Loading saved SOAP draft...
+      </div>
+    );
+  }
+
+  if (draftQuery.error) {
+    return (
+      <EmptyState
+        icon={AlertCircle}
+        title="Unable to load the saved draft"
+        description={`${draftQuery.error.message} Editing is paused to prevent a duplicate clinical record.`}
+        action={{
+          label: "Back to visit",
+          onClick: () => router.push(returnPath),
+          icon: ArrowLeft,
+        }}
+      />
+    );
+  }
+
+  if (finalizedElsewhere) {
+    const localSections = [
+      ["Subjective", soapSectionText(subjective)],
+      ["Objective", soapSectionText(objective)],
+      ["Assessment", soapSectionText(assessment)],
+      ["Plan", soapSectionText(plan)],
+    ].filter((entry) => Boolean(entry[1]));
+    return (
+      <div className="space-y-5">
+        <div
+          role="alert"
+          className="rounded-lg border-2 border-destructive bg-destructive/10 p-5"
+        >
+          <div className="flex items-start gap-3">
+            <AlertCircle className="mt-0.5 h-6 w-6 shrink-0 text-destructive" />
+            <div>
+              <h2 className="font-heading text-xl font-semibold text-destructive">
+                SOAP note finalized in another session
+              </h2>
+              <p className="mt-2 font-medium">
+                Important: the local SOAP text below was NOT included in the
+                finalized note.
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Copy it before leaving, compare it with the signed chart, and
+                add any clinically relevant clarification as an attributed
+                addendum. Editing, autosave, AI drafting, templates,
+                finalization, and discard are now disabled.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-border bg-card p-5">
+          <h3 className="font-semibold">Preserved local SOAP text</h3>
+          <div className="mt-4 space-y-4">
+            {localSections.length > 0 ? (
+              localSections.map(([label, content]) => (
+                <div key={label}>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    {label}
+                  </p>
+                  <p className="mt-1 whitespace-pre-wrap text-sm">{content}</p>
+                </div>
+              ))
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No local SOAP text was present.
+              </p>
+            )}
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            onClick={() => void copyLocalSoapText()}
+            disabled={localSections.length === 0}
+          >
+            {localTextCopied ? (
+              <CheckCircle2 className="mr-2 h-4 w-4" />
+            ) : (
+              <Copy className="mr-2 h-4 w-4" />
+            )}
+            {localTextCopied ? "Local SOAP text copied" : "Copy local SOAP text"}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => void leaveEditorSafely(returnPath)}
+          >
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            Back to visit
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() =>
+              void leaveEditorSafely(
+                `/patients/${encodeURIComponent(params.patientId)}`,
+              )
+            }
+          >
+            View signed patient chart
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div>
       <Button
         variant="ghost"
         size="sm"
-        onClick={() => router.push(returnPath)}
+        onClick={() => void leaveEditorSafely(returnPath)}
         className="mb-4"
       >
         <ArrowLeft className="mr-2 h-4 w-4" />
@@ -268,7 +825,9 @@ export default function NewSoapNotePage() {
 
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="font-heading text-xl font-semibold">New SOAP Note</h2>
+          <h2 className="font-heading text-xl font-semibold">
+            SOAP Documentation
+          </h2>
           {patient && (
             <p className="text-sm text-muted-foreground">
               Patient: {patient.name}
@@ -279,7 +838,8 @@ export default function NewSoapNotePage() {
             </p>
           )}
           <p className="text-xs text-muted-foreground">
-            This note will be linked to the current appointment.
+            Draft changes save automatically. Finalization creates the signed
+            clinical record.
           </p>
         </div>
         <div className="flex flex-col items-end gap-1">
@@ -308,6 +868,88 @@ export default function NewSoapNotePage() {
       </div>
 
       <div className="mt-6 space-y-6">
+        <div
+          className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-card px-4 py-3"
+          aria-live="polite"
+        >
+          <div className="flex items-center gap-2 text-sm">
+            {saveState === "saving" ? (
+              <Loader2 className="h-4 w-4 animate-spin text-primary" />
+            ) : saveState === "saved" ? (
+              <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+            ) : saveState === "error" || saveState === "conflict" ? (
+              <AlertCircle className="h-4 w-4 text-destructive" />
+            ) : (
+              <Save className="h-4 w-4 text-muted-foreground" />
+            )}
+            <span>
+              {saveState === "saving"
+                ? "Saving draft..."
+                : saveState === "saved"
+                  ? `Draft saved${lastSavedAt ? ` at ${lastSavedAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : ""}`
+                  : saveState === "error"
+                    ? "Draft could not be saved"
+                    : saveState === "conflict"
+                      ? "A newer draft exists in another session"
+                      : saveState === "unsaved"
+                        ? "Changes not saved yet"
+                        : "Draft will save after you begin typing"}
+            </span>
+          </div>
+          <div className="flex gap-2">
+            {(saveState === "error" || saveState === "unsaved") && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void persistDraft()}
+              >
+                Retry save
+              </Button>
+            )}
+            {draftIdRef.current ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="text-destructive hover:text-destructive"
+                disabled={discardMutation.isPending || saveState === "saving"}
+                onClick={() => void handleDiscardDraft()}
+              >
+                {discardMutation.isPending ? "Discarding..." : "Discard draft"}
+              </Button>
+            ) : null}
+          </div>
+        </div>
+
+        {conflictDraft ? (
+          <div
+            role="alert"
+            className="rounded-lg border border-destructive/40 bg-destructive/5 p-4"
+          >
+            <h3 className="font-medium">
+              This draft changed in another session
+            </h3>
+            <p className="mt-1 text-sm text-muted-foreground">
+              The saved draft was updated in another session at{" "}
+              {conflictDraft.updatedAt.toLocaleString()}. Your editor content
+              has been kept unchanged.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button type="button" size="sm" onClick={useServerDraft}>
+                Use server version
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => void overwriteServerDraft()}
+              >
+                Overwrite with my version
+              </Button>
+            </div>
+          </div>
+        ) : null}
         <div className="rounded-lg border border-border bg-card p-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
             <div className="w-full lg:max-w-sm">
@@ -349,7 +991,7 @@ export default function NewSoapNotePage() {
           </div>
           <p className="mt-2 text-xs text-muted-foreground">
             Templates add drafting prompts, not assumed findings. Replace or
-            delete every prompt before saving the clinical record.
+            delete every prompt before finalizing the clinical record.
           </p>
         </div>
 
@@ -429,29 +1071,35 @@ export default function NewSoapNotePage() {
         {/* Actions */}
         <div className="flex items-center gap-3">
           <Button
-            onClick={handleSave}
-            disabled={createNote.isPending || !canSubmit}
+            onClick={() => void handleFinalize()}
+            disabled={
+              finalizeMutation.isPending ||
+              saveState === "saving" ||
+              saveState === "error" ||
+              saveState === "conflict" ||
+              !canSubmit
+            }
           >
             <Save className="mr-2 h-4 w-4" />
-            {createNote.isPending ? "Saving..." : "Save Note"}
+            {finalizeMutation.isPending
+              ? "Finalizing..."
+              : "Finalize SOAP note"}
           </Button>
           {!canSave ? (
             <p className="text-sm text-muted-foreground">
-              Add at least one section to save this note.
+              Add at least one section before finalizing.
             </p>
           ) : hasTemplatePrompts ? (
             <p className="text-sm text-amber-700 dark:text-amber-300">
-              Replace or delete every draft prompt before saving.
+              Replace or delete every draft prompt before finalizing.
             </p>
           ) : null}
-          <Button variant="outline" onClick={() => router.push(returnPath)}>
+          <Button
+            variant="outline"
+            onClick={() => void leaveEditorSafely(returnPath)}
+          >
             Cancel
           </Button>
-          {createNote.isError && (
-            <p className="text-sm text-destructive">
-              Failed to save: {createNote.error.message}
-            </p>
-          )}
         </div>
       </div>
     </div>

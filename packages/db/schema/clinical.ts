@@ -65,6 +65,11 @@ export const treatmentPlanItemStatusEnum = pgEnum(
   ["pending", "in_progress", "done", "skipped"],
 );
 
+export const soapNoteStatusEnum = pgEnum("soap_note_status", [
+  "draft",
+  "finalized",
+]);
+
 export const soapNotes = pgTable(
   "soap_notes",
   {
@@ -79,6 +84,12 @@ export const soapNotes = pgTable(
     authorId: uuid("author_id")
       .notNull()
       .references(() => users.id),
+    authorName: varchar("author_name", { length: 255 }).notNull(),
+    status: soapNoteStatusEnum("status").notNull().default("finalized"),
+    revision: integer("revision").notNull().default(1),
+    finalizedAt: timestamp("finalized_at", { withTimezone: true }),
+    finalizedBy: uuid("finalized_by"),
+    finalizerName: varchar("finalizer_name", { length: 255 }),
     subjective: text("subjective"),
     objective: text("objective"),
     assessment: text("assessment"),
@@ -115,6 +126,13 @@ export const soapNotes = pgTable(
       table.appointmentId,
       table.deletedAt,
     ),
+    activeAppointmentDraftUq: uniqueIndex(
+      "soap_notes_active_appointment_draft_uq",
+    )
+      .on(table.practiceId, table.appointmentId)
+      .where(
+        sql`${table.status} = 'draft' and ${table.appointmentId} is not null and ${table.deletedAt} is null`,
+      ),
     patientPracticeFk: foreignKey({
       columns: [table.practiceId, table.patientId],
       foreignColumns: [patients.practiceId, patients.id],
@@ -129,6 +147,95 @@ export const soapNotes = pgTable(
       ],
       name: "soap_notes_practice_appointment_fk",
     }),
+    authorPracticeFk: foreignKey({
+      columns: [table.practiceId, table.authorId],
+      foreignColumns: [users.practiceId, users.id],
+      name: "soap_notes_practice_author_fk",
+    }),
+    finalizerPracticeFk: foreignKey({
+      columns: [table.practiceId, table.finalizedBy],
+      foreignColumns: [users.practiceId, users.id],
+      name: "soap_notes_practice_finalizer_fk",
+    }),
+    revisionCheck: check(
+      "soap_notes_revision_check",
+      sql`${table.revision} >= 1`,
+    ),
+    authorNameCheck: check(
+      "soap_notes_author_name_check",
+      sql`length(btrim(${table.authorName})) between 1 and 255`,
+    ),
+    lifecycleCheck: check(
+      "soap_notes_lifecycle_check",
+      sql`(
+        ${table.status} = 'draft'
+        and ${table.finalizedAt} is null
+        and ${table.finalizedBy} is null
+        and ${table.finalizerName} is null
+        and ${table.imported} = false
+      ) or (
+        ${table.status} = 'finalized'
+        and ${table.finalizedAt} is not null
+        and ${table.finalizedBy} is not null
+        and length(btrim(${table.finalizerName})) between 1 and 255
+      )`,
+    ),
+  }),
+);
+
+/** Append-only clarifications to an immutable finalized SOAP note. */
+export const soapNoteAddenda = pgTable(
+  "soap_note_addenda",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    practiceId: uuid("practice_id")
+      .notNull()
+      .references(() => practices.id),
+    soapNoteId: uuid("soap_note_id").notNull(),
+    authorId: uuid("author_id").notNull(),
+    authorName: varchar("author_name", { length: 255 }).notNull(),
+    content: text("content").notNull(),
+    operationId: uuid("operation_id").notNull(),
+    operationPayloadHash: varchar("operation_payload_hash", {
+      length: 64,
+    }).notNull(),
+  },
+  (table) => ({
+    historyIdx: index("soap_note_addenda_history_idx").on(
+      table.practiceId,
+      table.soapNoteId,
+      table.createdAt,
+      table.id,
+    ),
+    operationUq: uniqueIndex("soap_note_addenda_operation_uq").on(
+      table.practiceId,
+      table.operationId,
+    ),
+    sourcePracticeFk: foreignKey({
+      columns: [table.practiceId, table.soapNoteId],
+      foreignColumns: [soapNotes.practiceId, soapNotes.id],
+      name: "soap_note_addenda_practice_source_fk",
+    }),
+    authorPracticeFk: foreignKey({
+      columns: [table.practiceId, table.authorId],
+      foreignColumns: [users.practiceId, users.id],
+      name: "soap_note_addenda_practice_author_fk",
+    }),
+    contentCheck: check(
+      "soap_note_addenda_content_check",
+      sql`length(btrim(${table.content})) between 1 and 10000`,
+    ),
+    authorNameCheck: check(
+      "soap_note_addenda_author_name_check",
+      sql`length(btrim(${table.authorName})) between 1 and 255`,
+    ),
+    payloadHashCheck: check(
+      "soap_note_addenda_payload_hash_check",
+      sql`${table.operationPayloadHash} ~ '^[0-9a-f]{64}$'`,
+    ),
   }),
 );
 
@@ -675,7 +782,29 @@ export const soapNotesRelations = relations(soapNotes, ({ one }) => ({
     fields: [soapNotes.authorId],
     references: [users.id],
   }),
+  finalizer: one(users, {
+    fields: [soapNotes.finalizedBy],
+    references: [users.id],
+  }),
 }));
+
+export const soapNoteAddendaRelations = relations(
+  soapNoteAddenda,
+  ({ one }) => ({
+    practice: one(practices, {
+      fields: [soapNoteAddenda.practiceId],
+      references: [practices.id],
+    }),
+    soapNote: one(soapNotes, {
+      fields: [soapNoteAddenda.soapNoteId],
+      references: [soapNotes.id],
+    }),
+    author: one(users, {
+      fields: [soapNoteAddenda.authorId],
+      references: [users.id],
+    }),
+  }),
+);
 
 export const vaccinationRecordsRelations = relations(
   vaccinationRecords,

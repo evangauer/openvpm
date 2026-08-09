@@ -37,6 +37,7 @@ import {
   rateLimitBuckets,
   rooms,
   services,
+  soapNoteAddenda,
   soapNotes,
   staffSchedules,
   smsSuppressions,
@@ -159,7 +160,16 @@ describe("hot table indexes", () => {
     [
       "soap_notes",
       soapNotes,
-      ["soap_notes_patient_idx", "soap_notes_practice_idx"],
+      [
+        "soap_notes_patient_idx",
+        "soap_notes_practice_idx",
+        "soap_notes_active_appointment_draft_uq",
+      ],
+    ],
+    [
+      "soap_note_addenda",
+      soapNoteAddenda,
+      ["soap_note_addenda_history_idx", "soap_note_addenda_operation_uq"],
     ],
     [
       "clinical_notes",

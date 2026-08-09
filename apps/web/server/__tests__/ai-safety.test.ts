@@ -137,6 +137,10 @@ describe("AI SOAP note safety", () => {
         [{ id: PATIENT_ID }],
         [{ id: APPOINTMENT_ID, doctorId: USER_ID, status: "in_exam" }],
         [],
+        [{ id: APPOINTMENT_ID, doctorId: USER_ID, status: "in_exam" }],
+        [],
+        [],
+        [],
       ],
       insertedRows: [{ id: NOTE_ID, patientId: PATIENT_ID }],
     });
@@ -293,9 +297,9 @@ describe("AI recommendation query safety", () => {
     return new RegExp(
       `${joinMethod}\\(\\s*${table},\\s*and\\(\\s*eq\\(${foreignKey.replace(
         ".",
-        "\\."
-      )}, ${table}\\.id\\),\\s*eq\\(${table}\\.practiceId, ctx\\.practiceId\\),\\s*activePracticePredicate\\(ctx\\.practiceId\\),\\s*isNull\\(${table}\\.deletedAt\\)\\s*\\)\\s*\\)`,
-      "gs"
+        "\\.",
+      )}, ${table}\\.id\\),\\s*eq\\(${table}\\.practiceId, ctx\\.practiceId\\),\\s*activePracticePredicate\\(ctx\\.practiceId\\),\\s*isNull\\(${table}\\.deletedAt\\),?\\s*\\),?\\s*\\)`,
+      "gs",
     );
   }
 
@@ -389,8 +393,8 @@ describe("AI recommendation query safety", () => {
     expect(summaryBlock).toContain("const today = await practiceDayRange(ctx)");
     expect(summaryBlock).toContain("gte(appointments.startTime, today.start)");
     expect(summaryBlock).toContain("lt(appointments.startTime, today.end)");
-    expect(summaryBlock).toContain("gte(soapNotes.createdAt, today.start)");
-    expect(summaryBlock).toContain("lt(soapNotes.createdAt, today.end)");
+    expect(summaryBlock).toContain("gte(soapNotes.finalizedAt, today.start)");
+    expect(summaryBlock).toContain("lt(soapNotes.finalizedAt, today.end)");
     expect(summaryBlock).toContain("gte(invoices.updatedAt, today.start)");
     expect(summaryBlock).toContain("lt(invoices.updatedAt, today.end)");
     expect(summaryBlock).toContain("date: today.date");
@@ -459,7 +463,7 @@ describe("AI recommendation query safety", () => {
     );
 
     expect(followUpBlock).toMatch(
-      /innerJoin\(\s*patients,\s*and\(\s*eq\(appointments\.patientId, patients\.id\),\s*eq\(patients\.clientId, appointments\.clientId\),\s*eq\(patients\.practiceId, ctx\.practiceId\),\s*activePracticePredicate\(ctx\.practiceId\),\s*isNull\(patients\.deletedAt\)\s*\)\s*\)/s
+      /innerJoin\(\s*patients,\s*and\(\s*eq\(appointments\.patientId, patients\.id\),\s*eq\(patients\.clientId, appointments\.clientId\),\s*eq\(patients\.practiceId, ctx\.practiceId\),\s*activePracticePredicate\(ctx\.practiceId\),\s*isNull\(patients\.deletedAt\),?\s*\),?\s*\)/s,
     );
   });
 

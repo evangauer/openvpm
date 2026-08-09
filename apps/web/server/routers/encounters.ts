@@ -655,79 +655,98 @@ export const encountersRouter = createRouter({
       const [
         closeout,
         linkedSoapRows,
+        soapDraftRows,
         medications,
         followUpAppointments,
         followUpAssignees,
       ] = await Promise.all([
-          getCloseoutRow(ctx, input.appointmentId),
-          ctx.db
-            .select({ id: soapNotes.id })
-            .from(soapNotes)
-            .where(
-              and(
-                eq(soapNotes.appointmentId, input.appointmentId),
-                eq(soapNotes.practiceId, ctx.practiceId),
-                isNull(soapNotes.deletedAt),
-                sql`not exists (
+        getCloseoutRow(ctx, input.appointmentId),
+        ctx.db
+          .select({ id: soapNotes.id })
+          .from(soapNotes)
+          .where(
+            and(
+              eq(soapNotes.appointmentId, input.appointmentId),
+              eq(soapNotes.practiceId, ctx.practiceId),
+              eq(soapNotes.status, "finalized"),
+              isNull(soapNotes.deletedAt),
+              sql`not exists (
                   select 1
                   from ${clinicalRecordCorrections}
                   where ${clinicalRecordCorrections.practiceId} = ${ctx.practiceId}
                     and ${clinicalRecordCorrections.soapNoteId} = ${soapNotes.id}
-                )`
-              )
+                )`,
             ),
-          ctx.db
-            .select({
-              id: prescriptions.id,
-              medicationName: prescriptions.medicationName,
-              dosage: prescriptions.dosage,
-              frequency: prescriptions.frequency,
-              instructions: prescriptions.instructions,
-              quantity: prescriptions.quantity,
-              productId: prescriptions.productId,
-              productName: products.name,
-              productTaxable: products.taxable,
-              productUnitPrice: dispenseChargeQueue.unitPriceSnapshot,
-              dispenseChargeId: dispenseChargeQueue.id,
-              dispenseChargeStatus: dispenseChargeQueue.status,
-              dispenseChargeDescription: dispenseChargeQueue.descriptionSnapshot,
-              status: prescriptions.status,
-              endDate: prescriptions.endDate,
-            })
-            .from(prescriptions)
-            .leftJoin(
-              products,
-              and(
-                eq(prescriptions.productId, products.id),
-                eq(products.practiceId, ctx.practiceId)
-              )
-            )
-            .leftJoin(
-              prescriptionEvents,
-              and(
-                eq(prescriptionEvents.prescriptionId, prescriptions.id),
-                eq(prescriptionEvents.practiceId, ctx.practiceId),
-                eq(prescriptionEvents.eventType, "created")
-              )
-            )
-            .leftJoin(
-              dispenseChargeQueue,
-              and(
-                eq(
-                  dispenseChargeQueue.prescriptionEventId,
-                  prescriptionEvents.id
-                ),
-                eq(dispenseChargeQueue.practiceId, ctx.practiceId)
-              )
-            )
-            .where(
-              and(
-                eq(prescriptions.appointmentId, input.appointmentId),
-                eq(prescriptions.practiceId, ctx.practiceId),
-                isNull(prescriptions.deletedAt)
-              )
-            )
-            .orderBy(desc(prescriptions.createdAt)),
+          ),
+        ctx.db
+          .select({
+            id: soapNotes.id,
+            revision: soapNotes.revision,
+            authorName: soapNotes.authorName,
+            updatedAt: soapNotes.updatedAt,
+          })
+          .from(soapNotes)
+          .where(
+            and(
+              eq(soapNotes.appointmentId, input.appointmentId),
+              eq(soapNotes.practiceId, ctx.practiceId),
+              eq(soapNotes.status, "draft"),
+              isNull(soapNotes.deletedAt),
+            ),
+          )
+          .limit(1),
+        ctx.db
+          .select({
+            id: prescriptions.id,
+            medicationName: prescriptions.medicationName,
+            dosage: prescriptions.dosage,
+            frequency: prescriptions.frequency,
+            instructions: prescriptions.instructions,
+            quantity: prescriptions.quantity,
+            productId: prescriptions.productId,
+            productName: products.name,
+            productTaxable: products.taxable,
+            productUnitPrice: dispenseChargeQueue.unitPriceSnapshot,
+            dispenseChargeId: dispenseChargeQueue.id,
+            dispenseChargeStatus: dispenseChargeQueue.status,
+            dispenseChargeDescription: dispenseChargeQueue.descriptionSnapshot,
+            status: prescriptions.status,
+            endDate: prescriptions.endDate,
+          })
+          .from(prescriptions)
+          .leftJoin(
+            products,
+            and(
+              eq(prescriptions.productId, products.id),
+              eq(products.practiceId, ctx.practiceId),
+            ),
+          )
+          .leftJoin(
+            prescriptionEvents,
+            and(
+              eq(prescriptionEvents.prescriptionId, prescriptions.id),
+              eq(prescriptionEvents.practiceId, ctx.practiceId),
+              eq(prescriptionEvents.eventType, "created"),
+            ),
+          )
+          .leftJoin(
+            dispenseChargeQueue,
+            and(
+              eq(
+                dispenseChargeQueue.prescriptionEventId,
+                prescriptionEvents.id,
+              ),
+              eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+            ),
+          )
+          .where(
+            and(
+              eq(prescriptions.appointmentId, input.appointmentId),
+              eq(prescriptions.practiceId, ctx.practiceId),
+              isNull(prescriptions.deletedAt),
+            ),
+          )
+          .orderBy(desc(prescriptions.createdAt)),
           appointment.patientId && appointment.clientId
             ? ctx.db
                 .select({
@@ -807,6 +826,7 @@ export const encountersRouter = createRouter({
           timezone: appointment.practiceTimezone,
         },
         linkedSoapCount: linkedSoapRows.length,
+        soapDraft: soapDraftRows[0] ?? null,
         medications: medicationHistory,
         activeMedications: medicationHistory.filter(
           (medication) => medication.effectiveStatus === "active",
@@ -1637,6 +1657,7 @@ export const encountersRouter = createRouter({
             and(
               eq(soapNotes.appointmentId, input.appointmentId),
               eq(soapNotes.practiceId, ctx.practiceId),
+              eq(soapNotes.status, "finalized"),
               isNull(soapNotes.deletedAt),
               sql`not exists (
                 select 1
@@ -1647,10 +1668,30 @@ export const encountersRouter = createRouter({
             )
           )
           .limit(1);
+        const [soapDraft] = await tx
+          .select({ id: soapNotes.id })
+          .from(soapNotes)
+          .where(
+            and(
+              eq(soapNotes.appointmentId, input.appointmentId),
+              eq(soapNotes.practiceId, ctx.practiceId),
+              eq(soapNotes.status, "draft"),
+              isNull(soapNotes.deletedAt),
+            ),
+          )
+          .limit(1);
+        if (soapDraft) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Finalize the SOAP draft before signing clinical closeout. A documentation exception cannot strand an unfinished draft.",
+          });
+        }
         if (!soap && !input.documentationExceptionReason) {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
-            message: "Link a SOAP note or document why one is not required.",
+            message:
+              "Finalize the SOAP draft or document why SOAP is not required.",
           });
         }
 

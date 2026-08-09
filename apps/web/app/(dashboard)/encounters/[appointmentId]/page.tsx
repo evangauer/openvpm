@@ -383,16 +383,19 @@ export default function EncounterWorkspacePage() {
                   <div className="flex flex-wrap gap-2">
                     {canCreateSoap(role) &&
                     appointment.status === "in_exam" &&
+                    closeoutQuery.data?.linkedSoapCount === 0 &&
                     closeoutQuery.data?.closeout?.status !==
                       "clinical_finalized" &&
                     closeoutQuery.data?.closeout?.status !== "completed" ? (
                       <Button size="sm" asChild>
-                        <Link
+                        <a
                           href={`/records/new-soap/${appointment.patientId}?appointmentId=${appointmentId}`}
                         >
                           <FileText className="mr-2 h-4 w-4" />
-                          Write SOAP note
-                        </Link>
+                          {closeoutQuery.data?.soapDraft
+                            ? "Resume SOAP draft"
+                            : "Write SOAP note"}
+                        </a>
                       </Button>
                     ) : null}
                     {canCreateSoap(role) &&
@@ -528,6 +531,7 @@ function VisitCloseout({
 }: {
   appointment: {
     status: string;
+    patientId: string | null;
     patientName: string | null;
     patientSpecies: string | null;
     clientFirstName: string | null;
@@ -848,11 +852,13 @@ function VisitCloseout({
           <ReadinessTile
             label="Clinical note"
             value={
-              data.linkedSoapCount > 0
-                ? `${data.linkedSoapCount} linked SOAP note${data.linkedSoapCount === 1 ? "" : "s"}`
-                : closeout?.documentationExceptionReason
-                  ? "Documented exception"
-                  : "Missing"
+              data.soapDraft
+                ? `Draft in progress · revision ${data.soapDraft.revision}`
+                : data.linkedSoapCount > 0
+                  ? `${data.linkedSoapCount} linked SOAP note${data.linkedSoapCount === 1 ? "" : "s"}`
+                  : closeout?.documentationExceptionReason
+                    ? "Documented exception"
+                    : "Missing"
             }
           />
           <ReadinessTile
@@ -904,6 +910,8 @@ function VisitCloseout({
               documentationExceptionReason={documentationExceptionReason}
               setDocumentationExceptionReason={setDocumentationExceptionReason}
               linkedSoapCount={data.linkedSoapCount}
+              soapDraft={data.soapDraft}
+              soapDraftHref={`/records/new-soap/${appointment.patientId}?appointmentId=${appointmentId}`}
               linkedMedicationCount={data.activeMedications.length}
               followUpAppointments={data.followUpAppointments}
               followUpAssignees={data.followUpAssignees}
@@ -1287,6 +1295,12 @@ type ClinicalCloseoutFormProps = {
   documentationExceptionReason: string;
   setDocumentationExceptionReason: (value: string) => void;
   linkedSoapCount: number;
+  soapDraft: {
+    revision: number;
+    authorName: string;
+    updatedAt: Date | string;
+  } | null;
+  soapDraftHref: string;
   linkedMedicationCount: number;
   followUpAppointments: Array<{ id: string; startTime: Date | string }>;
   followUpAssignees: Array<{
@@ -1306,6 +1320,9 @@ type ClinicalCloseoutFormProps = {
 
 function ClinicalCloseoutForm(props: ClinicalCloseoutFormProps) {
   const finalizationIssues = [
+    props.soapDraft
+      ? "Finalize or discard the SOAP draft before signing clinical closeout."
+      : null,
     !props.dischargeInstructions.trim() && !props.noInstructionsReason.trim()
       ? "Enter home-care instructions or a clinical reason why none are needed."
       : null,
@@ -1558,7 +1575,22 @@ function ClinicalCloseoutForm(props: ClinicalCloseoutFormProps) {
           />
         </div>
       ) : null}
-      {props.linkedSoapCount === 0 ? (
+      {props.soapDraft ? (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
+          <p className="text-sm font-medium">SOAP draft in progress</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Revision {props.soapDraft.revision} is not part of the signed chart.
+            Finalize or discard it before clinical closeout; a documentation
+            exception cannot leave an unfinished draft behind.
+          </p>
+          <Button className="mt-3" size="sm" variant="outline" asChild>
+            <a href={props.soapDraftHref}>
+              <FileText className="mr-2 h-4 w-4" />
+              Resume SOAP draft
+            </a>
+          </Button>
+        </div>
+      ) : props.linkedSoapCount === 0 ? (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
           <p className="text-sm font-medium">No SOAP note is linked</p>
           <p className="mt-1 text-xs text-muted-foreground">

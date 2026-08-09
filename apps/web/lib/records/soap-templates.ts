@@ -167,9 +167,9 @@ export function applySoapTemplateToSections(
   };
 }
 
-export function hasUnresolvedSoapTemplatePrompts(
-  sections: Partial<SoapSections>
-): boolean {
+export function hasUnresolvedSoapTemplatePrompts(sections: {
+  [K in keyof SoapSections]?: string | null;
+}): boolean {
   return Object.values(sections).some((section) => {
     const text = soapSectionText(section ?? "");
     return (

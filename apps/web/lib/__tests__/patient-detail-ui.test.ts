@@ -42,7 +42,9 @@ describe("patient detail UI states", () => {
     expect(source).toContain("patient.mergeMetadata.performedByName");
     expect(source).toContain("patient.mergeMetadata.reason");
     expect(source).toContain("{ patientId: canonicalPatientId }");
-    expect(source).toContain("{ id: canonicalPatientId, photoUrl: data.url }");
+    expect(source).toMatch(
+      /\{\s*id: canonicalPatientId,\s*photoUrl: data\.url,?\s*\}/,
+    );
     expect(source).toContain(
       "Array.from(new Set([params.id, canonicalPatientId]))"
     );
@@ -144,7 +146,9 @@ describe("patient detail UI states", () => {
     expect(source).toContain("Unable to load clinical settings. Please retry.");
     expect(source).toContain('label: "Back to Patients"');
     expect(source).toContain("router.push(\"/patients\")");
-    expect(source).toContain("const { data: vitals, isLoading, error }");
+    expect(source).toMatch(
+      /const \{\s*data: vitals,\s*isLoading,\s*error,?\s*\}/,
+    );
     expect(source).toContain("const vitalsMissing =");
     expect(source).toContain("{error ? (");
     expect(source).toContain("Unable to load vitals. ${error.message}");
@@ -174,7 +178,7 @@ describe("patient detail UI states", () => {
     expect(source).toContain(
       "Unable to load complete medical summary data. Please retry."
     );
-    expect(source).toContain("err instanceof Error ? err.message");
+    expect(source).toMatch(/err instanceof Error\s*\?\s*err\.message/);
     expect(source).toContain("const problems = problemsResult.data;");
     expect(source).toContain("const vaccinations = vaccinationsResult.data;");
     expect(source).toContain("const soapNotes = soapNotesResult.data;");

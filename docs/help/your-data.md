@@ -9,8 +9,9 @@ Everything on this page lives in one place: **Settings → Data**.
 - **CSV exports.** Download your clients, patients, appointments, or
   invoices as simple spreadsheet files.
 - **Full backup.** Download your whole practice as one file: every client,
-  pet, note, shot, lab, bill, and payment. Click **Export Full Backup** and
-  keep the file somewhere safe.
+  pet, saved SOAP draft, signed note with its attribution, correction,
+  addendum, shot, lab, bill, and payment. Click **Export Full Backup** and keep
+  the file somewhere safe.
 
 On OpenVPM Cloud we also take a full backup of your practice every night and
 store it encrypted, separate from the live database.

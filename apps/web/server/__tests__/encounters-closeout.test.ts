@@ -487,7 +487,28 @@ describe("encounter closeout safety", () => {
       })
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
-      message: "Link a SOAP note or document why one is not required.",
+      message: "Finalize the SOAP draft or document why SOAP is not required.",
+    });
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("does not let an exception strand an unfinished SOAP draft", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [
+        [openAppointment],
+        [{ id: PATIENT_ID }],
+        [],
+        [],
+        [{ id: "soap-draft" }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db, "veterinarian").finalizeClinical(clinicalInput),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Finalize the SOAP draft before signing clinical closeout. A documentation exception cannot strand an unfinished draft.",
     });
     expect(insertValues).not.toHaveBeenCalled();
   });
@@ -539,6 +560,7 @@ describe("encounter closeout safety", () => {
         [{ id: PATIENT_ID }],
         [],
         [{ id: "soap" }],
+        [],
         [medication],
       ],
       insertResults: [[finalized]],
@@ -562,6 +584,7 @@ describe("encounter closeout safety", () => {
         [{ id: PATIENT_ID }],
         [],
         [{ id: "soap" }],
+        [],
         [
           {
             prescriptionId: "00000000-0000-0000-0000-000000000077",
@@ -830,6 +853,7 @@ describe("encounter closeout safety", () => {
         [completedWithDraft],
         [],
         [],
+        [],
         [{ name: "Alex Coordinator", email: "alex@example.com" }],
       ],
       updateResults: [[finalized]],
@@ -877,6 +901,7 @@ describe("encounter closeout safety", () => {
       selectResults: [
         [openAppointment],
         [{ id: PATIENT_ID }],
+        [],
         [],
         [],
         [],

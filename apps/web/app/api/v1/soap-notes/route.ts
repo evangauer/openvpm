@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@openpims/db/client";
 import type { Database } from "@openpims/db/client";
-import { patients, soapNotes, users } from "@openpims/db";
+import { patients, users } from "@openpims/db";
 import { authenticateApiKey } from "@/lib/api-auth";
 import { withTenant } from "@/lib/tenant-db";
 import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
@@ -24,6 +24,10 @@ import {
 import { assertActivePractice } from "@/lib/compat/shared/active-practice";
 import { lockOpenVisitForClinicalAppend } from "@/lib/records/visit-integrity";
 import { hasUnresolvedSoapTemplatePrompts } from "@/lib/records/soap-templates";
+import {
+  createFinalizedAppointmentSoapNote,
+  SoapLifecycleError,
+} from "@/lib/records/soap-lifecycle";
 
 export const dynamic = "force-dynamic";
 
@@ -31,7 +35,7 @@ const AUTHOR_REQUIRED_MESSAGE =
   "author_id is required when the appointment has no assigned doctor.";
 
 type TargetValidationResult =
-  | { ok: true; authorId: string }
+  | { ok: true; author: { id: string; name: string } }
   | { ok: false; response: NextResponse };
 
 async function validateSoapTargets(
@@ -79,7 +83,7 @@ async function validateSoapTargets(
   }
 
   const [author] = await tx
-    .select({ id: users.id })
+    .select({ id: users.id, name: users.name })
     .from(users)
     .where(
       and(
@@ -95,7 +99,7 @@ async function validateSoapTargets(
     return { ok: false, response: apiError("Author not found", 404) };
   }
 
-  return { ok: true, authorId };
+  return { ok: true, author };
 }
 
 // POST /api/v1/soap-notes - create a SOAP note for an external AI scribe.
@@ -130,34 +134,70 @@ export async function POST(req: Request) {
         400
       );
     }
-    const result = await withTenant(db, auth.ctx.practiceId, async (tx) => {
-      const activePractice = await assertActivePractice(tx, auth.ctx.practiceId);
-      if (!activePractice.ok) {
-        return { ok: false as const, response: activePractice.response };
+    let result;
+    try {
+      result = await withTenant(db, auth.ctx.practiceId, async (tx) => {
+        const activePractice = await assertActivePractice(
+          tx,
+          auth.ctx.practiceId,
+        );
+        if (!activePractice.ok) {
+          return { ok: false as const, response: activePractice.response };
+        }
+
+        const targets = await validateSoapTargets(
+          tx,
+          auth.ctx.practiceId,
+          parsed.data,
+        );
+        if (!targets.ok) {
+          return { ok: false as const, response: targets.response };
+        }
+
+        try {
+          const row = await createFinalizedAppointmentSoapNote(tx, {
+            patientId: parsed.data.patient_id,
+            appointmentId: parsed.data.appointment_id,
+            actor: targets.author,
+            sections: normalizedNote,
+            practiceId: auth.ctx.practiceId,
+          });
+          await tx.execute(sql`set constraints all immediate`);
+          return { ok: true as const, row };
+        } catch (error) {
+          if (error instanceof SoapLifecycleError) {
+            const status =
+              error.code === "NOT_FOUND"
+                ? 404
+                : error.code === "BAD_REQUEST"
+                  ? 400
+                  : 409;
+            return {
+              ok: false as const,
+              response: apiError(error.message, status),
+            };
+          }
+          // Database errors must leave the tenant callback so withTenant can
+          // roll the transaction back before this route translates them.
+          throw error;
+        }
+      });
+    } catch (error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "23514" &&
+        "constraint_name" in error &&
+        error.constraint_name === "soap_notes_appointment_invariant"
+      ) {
+        return apiError(
+          "Clinical documentation changed in another session. Refresh and retry.",
+          409,
+        );
       }
-
-      const targets = await validateSoapTargets(
-        tx,
-        auth.ctx.practiceId,
-        parsed.data
-      );
-      if (!targets.ok) {
-        return { ok: false as const, response: targets.response };
-      }
-
-      const [row] = await tx
-        .insert(soapNotes)
-        .values({
-          patientId: parsed.data.patient_id,
-          appointmentId: parsed.data.appointment_id,
-          authorId: targets.authorId,
-          ...normalizedNote,
-          practiceId: auth.ctx.practiceId,
-        })
-        .returning();
-
-      return { ok: true as const, row: row! };
-    });
+      throw error;
+    }
     if (!result.ok) return result.response;
 
     const apiSoapNote = toApiSoapNote(result.row, parsed.data.source);

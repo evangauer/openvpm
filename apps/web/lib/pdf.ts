@@ -1,4 +1,5 @@
 import jsPDF from "jspdf";
+import { soapSectionText } from "@/lib/records/soap-content";
 
 // ---------------------------------------------------------------------------
 // Shared constants
@@ -436,6 +437,16 @@ export interface MedicalSummaryData {
     assessment?: string;
     plan?: string;
     imported?: boolean;
+    authorName?: string;
+    finalizerName?: string;
+    finalizedAt?: string;
+    addenda?: Array<{ content: string; authorName: string; createdAt: string }>;
+  }>;
+  recordCorrections?: Array<{
+    recordLabel: string;
+    reason: string;
+    correctedByName: string;
+    correctedAt: string;
   }>;
   prescriptions: Array<{
     medication: string;
@@ -449,6 +460,20 @@ export interface MedicalSummaryData {
 export function generateMedicalSummaryPdf(data: MedicalSummaryData): jsPDF {
   const doc = new jsPDF();
   let y = PAGE_MARGIN;
+
+  function writeWrappedText(
+    value: string,
+    x: number,
+    width: number,
+    lineHeight = 4,
+  ) {
+    const lines = doc.splitTextToSize(value, width) as string[];
+    for (const line of lines) {
+      y = ensureSpace(doc, y, lineHeight + 1);
+      doc.text(line, x, y);
+      y += lineHeight;
+    }
+  }
 
   // ---- Helper: section heading ---------------------------------------------
   function sectionHeading(title: string) {
@@ -660,18 +685,29 @@ export function generateMedicalSummaryPdf(data: MedicalSummaryData): jsPDF {
       doc.setFontSize(10);
       setColor(doc, COLOR_DARK);
       doc.text(
-        note.imported ? `${note.date}  (Imported record)` : note.date,
+        note.imported
+          ? `${note.date}  (Finalized imported record)`
+          : `${note.date}  (Finalized)`,
         PAGE_MARGIN,
         y
       );
       y += 6;
 
+      doc.setFont(FONT, "normal");
+      doc.setFontSize(8);
+      setColor(doc, COLOR_GRAY);
+      const attribution = note.imported
+        ? `Imported by ${note.authorName ?? "Unknown clinician"}`
+        : `Authored by ${note.authorName ?? "Unknown clinician"}; finalized by ${note.finalizerName ?? "Unknown clinician"}${note.finalizedAt ? ` on ${note.finalizedAt}` : ""}`;
+      writeWrappedText(attribution, PAGE_MARGIN, CONTENT_WIDTH);
+      y += 2;
+
       doc.setFontSize(9);
       const soapSections: [string, string | undefined][] = [
-        ["S: ", note.subjective],
-        ["O: ", note.objective],
-        ["A: ", note.assessment],
-        ["P: ", note.plan],
+        ["S: ", soapSectionText(note.subjective)],
+        ["O: ", soapSectionText(note.objective)],
+        ["A: ", soapSectionText(note.assessment)],
+        ["P: ", soapSectionText(note.plan)],
       ];
 
       for (const [prefix, content] of soapSections) {
@@ -682,14 +718,64 @@ export function generateMedicalSummaryPdf(data: MedicalSummaryData): jsPDF {
         doc.text(prefix, PAGE_MARGIN + 4, y);
         doc.setFont(FONT, "normal");
         setColor(doc, COLOR_DARK);
-        const lines = doc.splitTextToSize(content, CONTENT_WIDTH - 14);
-        doc.text(lines, PAGE_MARGIN + 14, y);
-        y += lines.length * 4 + 2;
+        writeWrappedText(content, PAGE_MARGIN + 14, CONTENT_WIDTH - 14);
+        y += 2;
+      }
+
+      for (const addendum of note.addenda ?? []) {
+        y = ensureSpace(doc, y, 14);
+        doc.setFont(FONT, "bold");
+        setColor(doc, COLOR_TEAL);
+        writeWrappedText(
+          `Addendum - ${addendum.authorName}, ${addendum.createdAt}`,
+          PAGE_MARGIN + 4,
+          CONTENT_WIDTH - 8,
+          5,
+        );
+        doc.setFont(FONT, "normal");
+        setColor(doc, COLOR_DARK);
+        writeWrappedText(
+          soapSectionText(addendum.content),
+          PAGE_MARGIN + 4,
+          CONTENT_WIDTH - 8,
+        );
+        y += 2;
       }
 
       y += 4;
       drawLine(doc, y);
       y += 4;
+    }
+  }
+
+  // Invalidated clinical content stays excluded, while its durable correction
+  // evidence remains visible to a downstream clinician reviewing the summary.
+  if ((data.recordCorrections?.length ?? 0) > 0) {
+    sectionHeading("Record Corrections");
+    for (const correction of data.recordCorrections ?? []) {
+      y = ensureSpace(doc, y, 18);
+      doc.setFont(FONT, "bold");
+      doc.setFontSize(9);
+      setColor(doc, COLOR_DARK);
+      writeWrappedText(
+        correction.recordLabel,
+        PAGE_MARGIN + 4,
+        CONTENT_WIDTH - 8,
+      );
+      doc.setFont(FONT, "normal");
+      setColor(doc, COLOR_GRAY);
+      writeWrappedText(
+        `Entered in error by ${correction.correctedByName} on ${correction.correctedAt}`,
+        PAGE_MARGIN + 4,
+        CONTENT_WIDTH - 8,
+      );
+      setColor(doc, COLOR_DARK);
+      writeWrappedText(
+        `Reason: ${soapSectionText(correction.reason)}`,
+        PAGE_MARGIN + 4,
+        CONTENT_WIDTH - 8,
+      );
+      y += 3;
     }
   }
 

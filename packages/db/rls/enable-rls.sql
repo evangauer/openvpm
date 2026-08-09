@@ -55,7 +55,7 @@ DECLARE
     'capture_sessions','cases','clients','clinical_notes','clinical_record_corrections','communications','consent_forms','consent_requests','controlled_substance_log','dispense_charge_queue','email_suppressions',
     'files','insurance_claims','insurance_policies','invoices','lab_result_events','lab_result_replacements','lab_results','location_messaging','messaging_registrations','migration_runs',
     'locations','patient_merge_events','patients','practice_payment_accounts','prescription_events','prescriptions','problem_list','procedures','products','purchase_orders',
-    'recurring_series','rooms','services','sms_consent_events','sms_send_attempt_events','sms_send_attempts','sms_suppressions','soap_notes','staff_schedules','suppliers',
+    'recurring_series','rooms','services','sms_consent_events','sms_send_attempt_events','sms_send_attempts','sms_suppressions','soap_note_addenda','soap_notes','staff_schedules','suppliers',
     'treatment_plans','treatment_templates','usage_records','users','vaccination_records',
     'visit_closeouts','visit_work_items','vital_signs','webhooks','wellness_enrollments','wellness_plans'
   ];
@@ -76,6 +76,12 @@ END$$;
 -- append and read them, but even a future generic repository path must not
 -- gain UPDATE or DELETE through the broad table grant above.
 REVOKE UPDATE, DELETE ON clinical_record_corrections FROM openpims_app;
+
+-- SOAP addenda are immutable, attributed extensions to a finalized note.
+REVOKE ALL ON soap_note_addenda FROM openpims_app;
+GRANT SELECT, INSERT ON soap_note_addenda TO openpims_app;
+REVOKE ALL ON FUNCTION restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,uuid,text,text,uuid,text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,uuid,text,text,uuid,text) TO openpims_app;
 
 -- Prescription lifecycle events are an append-only clinical ledger. Tenant
 -- users may read and append attributed events through the transactional app

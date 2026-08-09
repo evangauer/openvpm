@@ -430,9 +430,9 @@ describe("records target safety", () => {
     expect(insertValues).not.toHaveBeenCalled();
   });
 
-  it("creates a SOAP note after validating patient and appointment ownership", async () => {
+  it("creates a finalized SOAP note after locking the owned open appointment", async () => {
     const { db, insertValues } = createDb({
-      selectResults: [patientRow, appointmentRow, []],
+      selectResults: [appointmentRow, [], []],
       insertedRows: [
         {
           id: RECORD_ID,
@@ -457,7 +457,11 @@ describe("records target safety", () => {
         appointmentId: APPOINTMENT_ID,
         practiceId: PRACTICE_ID,
         authorId: USER_ID,
-      })
+        authorName: "Doctor",
+        status: "finalized",
+        finalizedBy: USER_ID,
+        finalizerName: "Doctor",
+      }),
     );
     expect(mocks.dispatchWebhookEvent).toHaveBeenCalledWith(
       PRACTICE_ID,
@@ -501,7 +505,8 @@ describe("records target safety", () => {
       })
     ).rejects.toMatchObject({
       code: "BAD_REQUEST",
-      message: "Replace or delete every SOAP template prompt before saving.",
+      message:
+        "Replace or delete every SOAP template prompt before finalization.",
     });
 
     expect(select).not.toHaveBeenCalled();

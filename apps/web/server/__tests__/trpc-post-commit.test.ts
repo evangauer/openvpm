@@ -4,8 +4,10 @@ const mocks = vi.hoisted(() => {
   let systemDepth = 0;
   let tenantDepth = 0;
   const events: string[] = [];
+  const executeErrors: unknown[] = [];
   return {
     events,
+    executeErrors,
     get systemDepth() {
       return systemDepth;
     },
@@ -33,7 +35,16 @@ const mocks = vi.hoisted(() => {
         tenantDepth += 1;
         events.push("tenant:begin");
         try {
-          return await fn({ scope: "tenant", root: database });
+          return await fn({
+            scope: "tenant",
+            root: database,
+            execute: vi.fn(async () => {
+              events.push("tenant:constraints");
+              const error = executeErrors.shift();
+              if (error) throw error;
+              return [];
+            }),
+          });
         } finally {
           events.push("tenant:commit");
           tenantDepth -= 1;
@@ -91,6 +102,7 @@ const router = createRouter({
 
 afterEach(() => {
   mocks.events.length = 0;
+  mocks.executeErrors.length = 0;
   vi.clearAllMocks();
 });
 
@@ -130,5 +142,67 @@ describe("tRPC post-commit effects", () => {
     const effectIndex = mocks.events.indexOf("protected:effect");
     expect(commitIndex).toBeGreaterThan(-1);
     expect(effectIndex).toBeGreaterThan(commitIndex);
+    expect(mocks.events.indexOf("tenant:constraints")).toBeLessThan(
+      commitIndex,
+    );
+  });
+
+  it("maps only the named deferred SOAP invariant and runs no audit or effect", async () => {
+    mocks.executeErrors.push({
+      code: "23514",
+      constraint_name: "soap_notes_appointment_invariant",
+    });
+    const caller = router.createCaller({
+      db: { kind: "root-tenant" },
+      session: {
+        user: {
+          id: "user-1",
+          email: "owner@example.com",
+          name: "Owner",
+          role: "admin",
+          practiceId: "practice-1",
+        },
+      },
+    } as never);
+
+    await expect(caller.protectedEffect()).rejects.toMatchObject({
+      code: "CONFLICT",
+      message:
+        "Clinical documentation changed in another session. Refresh and retry.",
+    });
+    expect(mocks.events).not.toContain("protected:effect");
+    expect(mocks.recordAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("does not mislabel unrelated check violations", async () => {
+    const unrelated = {
+      code: "23514",
+      constraint_name: "some_other_check",
+    };
+    mocks.executeErrors.push(unrelated);
+    const caller = router.createCaller({
+      db: { kind: "root-tenant" },
+      session: {
+        user: {
+          id: "user-1",
+          email: "owner@example.com",
+          name: "Owner",
+          role: "admin",
+          practiceId: "practice-1",
+        },
+      },
+    } as never);
+
+    const attempt = caller.protectedEffect();
+    await expect(attempt).rejects.toMatchObject({
+      code: "INTERNAL_SERVER_ERROR",
+    });
+    await expect(attempt).rejects.not.toMatchObject({
+      code: "CONFLICT",
+      message:
+        "Clinical documentation changed in another session. Refresh and retry.",
+    });
+    expect(mocks.events).not.toContain("protected:effect");
+    expect(mocks.recordAuditLog).not.toHaveBeenCalled();
   });
 });

@@ -51,6 +51,7 @@ import {
   formatClinicalDate,
   formatClinicalDateTime,
 } from "@/lib/records/clinical-dates";
+import { soapSectionText } from "@/lib/records/soap-content";
 import {
   patientFileKind,
   patientFileLabel,
@@ -552,17 +553,46 @@ export default function PatientDetailPage() {
             : undefined,
         })),
         recentNotes: soapNotes
-          .filter((note) => !note.correctionId)
+          .filter((note) => note.status === "finalized" && !note.correctionId)
           .slice(0, 5)
           .map((n) => ({
-          date: n.createdAt
-            ? formatClinicalDate(n.createdAt, recordsTimeZone, "Unknown")
-            : "Unknown",
-          subjective: n.subjective ?? undefined,
-          objective: n.objective ?? undefined,
-          assessment: n.assessment ?? undefined,
-          plan: n.plan ?? undefined,
-          imported: n.imported,
+            date: n.createdAt
+              ? formatClinicalDate(n.createdAt, recordsTimeZone, "Unknown")
+              : "Unknown",
+            subjective: n.subjective ?? undefined,
+            objective: n.objective ?? undefined,
+            assessment: n.assessment ?? undefined,
+            plan: n.plan ?? undefined,
+            imported: n.imported,
+            authorName: n.authorName,
+            finalizerName: n.finalizerName ?? undefined,
+            finalizedAt: n.finalizedAt
+              ? formatClinicalDateTime(n.finalizedAt, recordsTimeZone)
+              : undefined,
+            addenda: n.addenda.map((addendum) => ({
+              content: soapSectionText(addendum.content),
+              authorName: addendum.authorName,
+              createdAt: formatClinicalDateTime(
+                addendum.createdAt,
+                recordsTimeZone,
+              ),
+            })),
+          })),
+        recordCorrections: soapNotes
+          .filter(
+            (note) => note.status === "finalized" && Boolean(note.correctionId),
+          )
+          .map((note) => ({
+            recordLabel: `SOAP note dated ${formatClinicalDate(
+              note.createdAt,
+              recordsTimeZone,
+              "Unknown date",
+            )}`,
+            reason: note.correctionReason ?? "Reason unavailable",
+            correctedByName: note.correctedByName ?? "Unknown clinician",
+            correctedAt: note.correctedAt
+              ? formatClinicalDateTime(note.correctedAt, recordsTimeZone)
+              : "Unknown time",
           })),
         prescriptions: prescriptions.map((rx) => ({
           medication: rx.medicationName,
@@ -1582,6 +1612,16 @@ function MedicalRecordsTab({
                   Imported
                 </span>
               ) : null}
+              <span
+                className={cn(
+                  "rounded-full px-2 py-0.5 text-[11px] font-medium",
+                  note.status === "draft"
+                    ? "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300"
+                    : "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300",
+                )}
+              >
+                {note.status === "draft" ? "Draft" : "Finalized"}
+              </span>
             </div>
             <p className="text-xs text-muted-foreground">
               {note.imported
@@ -1591,6 +1631,21 @@ function MedicalRecordsTab({
                 : (note.authorName ?? "Unknown author")}
             </p>
           </div>
+          {note.status === "finalized" ? (
+            <p className="mb-3 text-xs text-muted-foreground">
+              Finalized by {note.finalizerName ?? "Unknown clinician"}
+              {note.finalizedAt
+                ? ` on ${formatClinicalDateTime(note.finalizedAt, timeZone)}`
+                : ""}
+            </p>
+          ) : note.appointmentId && canCorrectClinicalRecords ? (
+            <a
+              href={`/records/new-soap/${encodeURIComponent(patientId)}?appointmentId=${encodeURIComponent(note.appointmentId)}`}
+              className="mb-3 inline-flex text-xs font-medium text-primary hover:underline"
+            >
+              Resume draft
+            </a>
+          ) : null}
           <dl className="grid gap-3 sm:grid-cols-2">
             {(
               [
@@ -1605,39 +1660,157 @@ function MedicalRecordsTab({
                   <dt className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                     {label}
                   </dt>
-                  <dd className="mt-1 whitespace-pre-wrap text-sm">{value}</dd>
+                  <dd className="mt-1 whitespace-pre-wrap text-sm">
+                    {soapSectionText(value)}
+                  </dd>
                 </div>
               ) : null
             )}
           </dl>
-          <ClinicalCorrectionControl
-            correction={
-              note.correctionId &&
-              note.correctionReason &&
-              note.correctedAt
-                ? {
-                    id: note.correctionId,
-                    reason: note.correctionReason,
-                    correctedAt: note.correctedAt,
-                    correctedByName: note.correctedByName,
-                  }
-                : null
-            }
-            canCorrect={canCorrectClinicalRecords}
-            isPending={
-              correctSoap.isPending &&
-              correctSoap.variables?.recordId === note.id
-            }
-            onCorrect={(reason) =>
-              correctSoap.mutateAsync({
-                patientId,
-                recordId: note.id,
-                reason,
-              })
-            }
-          />
+          {note.addenda.length > 0 ? (
+            <div className="mt-4 space-y-2 border-t border-border pt-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Addenda
+              </p>
+              {note.addenda.map((addendum) => (
+                <div key={addendum.id} className="rounded-md bg-muted/40 p-3">
+                  <p className="text-xs font-medium">
+                    {addendum.authorName} -{" "}
+                    {formatClinicalDateTime(addendum.createdAt, timeZone)}
+                  </p>
+                  <p className="mt-1 whitespace-pre-wrap text-sm">
+                    {soapSectionText(addendum.content)}
+                  </p>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {note.status === "finalized" && !note.correctionId ? (
+            <SoapAddendumControl
+              patientId={patientId}
+              noteId={note.id}
+              enabled={canCorrectClinicalRecords}
+            />
+          ) : null}
+          {note.status === "finalized" ? (
+            <ClinicalCorrectionControl
+              correction={
+                note.correctionId && note.correctionReason && note.correctedAt
+                  ? {
+                      id: note.correctionId,
+                      reason: note.correctionReason,
+                      correctedAt: note.correctedAt,
+                      correctedByName: note.correctedByName,
+                    }
+                  : null
+              }
+              canCorrect={canCorrectClinicalRecords}
+              isPending={
+                correctSoap.isPending &&
+                correctSoap.variables?.recordId === note.id
+              }
+              onCorrect={(reason) =>
+                correctSoap.mutateAsync({
+                  patientId,
+                  recordId: note.id,
+                  reason,
+                })
+              }
+            />
+          ) : null}
         </div>
       ))}
+    </div>
+  );
+}
+
+function SoapAddendumControl({
+  patientId,
+  noteId,
+  enabled,
+}: {
+  patientId: string;
+  noteId: string;
+  enabled: boolean;
+}) {
+  const utils = trpc.useUtils();
+  const [open, setOpen] = useState(false);
+  const [content, setContent] = useState("");
+  const [operationId, setOperationId] = useState(() => crypto.randomUUID());
+  const addendum = trpc.records.addSoapNoteAddendum.useMutation({
+    onSuccess: async () => {
+      setContent("");
+      setOpen(false);
+      setOperationId(crypto.randomUUID());
+      toast.success("Addendum added to the finalized record");
+      await utils.records.listSoapNotes.invalidate({ patientId });
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  if (!enabled) return null;
+  if (!open) {
+    return (
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="mt-4"
+        onClick={() => {
+          setOperationId(crypto.randomUUID());
+          setOpen(true);
+        }}
+      >
+        <Plus className="mr-2 h-4 w-4" />
+        Add addendum
+      </Button>
+    );
+  }
+  return (
+    <div className="mt-4 rounded-md border border-border p-3">
+      <label className="text-sm font-medium" htmlFor={`addendum-${noteId}`}>
+        Add attributed addendum
+      </label>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Addenda cannot be edited or deleted after saving.
+      </p>
+      <textarea
+        id={`addendum-${noteId}`}
+        value={content}
+        onChange={(event) => setContent(event.target.value)}
+        maxLength={10_000}
+        rows={3}
+        className="mt-2 w-full rounded-md border border-border bg-background p-2 text-sm"
+      />
+      <div className="mt-2 flex gap-2">
+        <Button
+          type="button"
+          size="sm"
+          disabled={!content.trim() || addendum.isPending}
+          onClick={() =>
+            addendum.mutate({
+              patientId,
+              noteId,
+              operationId,
+              content,
+            })
+          }
+        >
+          {addendum.isPending ? "Saving..." : "Save addendum"}
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={addendum.isPending}
+          onClick={() => {
+            setOpen(false);
+            setContent("");
+            setOperationId(crypto.randomUUID());
+          }}
+        >
+          Cancel
+        </Button>
+      </div>
     </div>
   );
 }

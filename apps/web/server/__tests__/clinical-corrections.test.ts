@@ -180,6 +180,14 @@ describe("append-only clinical corrections", () => {
             appointmentId: APPOINTMENT_ID,
           },
         ],
+        [{ id: APPOINTMENT_ID }],
+        [
+          {
+            id: RECORD_ID,
+            patientId: PATIENT_ID,
+            appointmentId: APPOINTMENT_ID,
+          },
+        ],
       ],
       insertResults: [[correction]],
     });
@@ -246,6 +254,7 @@ describe("append-only clinical corrections", () => {
     const { db, select } = createDb({
       selectResults: [
         [{ id: RECORD_ID, patientId: PATIENT_ID, appointmentId: null }],
+        [{ id: RECORD_ID, patientId: PATIENT_ID, appointmentId: null }],
         [existing],
       ],
       insertResults: [[]],
@@ -258,7 +267,7 @@ describe("append-only clinical corrections", () => {
         reason: "Duplicate request after a network retry.",
       }),
     ).resolves.toEqual(existing);
-    expect(select).toHaveBeenCalledTimes(2);
+    expect(select).toHaveBeenCalledTimes(3);
   });
 
   it("restricts vaccination correction to an administrator or veterinarian", async () => {

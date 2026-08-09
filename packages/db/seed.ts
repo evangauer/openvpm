@@ -533,11 +533,19 @@ async function seed() {
   await db.insert(soapNotes).values(
     soapNotesToCreate.map((appt) => {
       const template = pickRandom(soapTemplates);
+      const author = insertedUsers.find((user) => user.id === appt.doctorId)!;
+      const finalizedAt = new Date();
       return {
         practiceId,
         patientId: appt.patientId!,
         appointmentId: appt.id,
-        authorId: appt.doctorId!,
+        authorId: author.id,
+        authorName: author.name,
+        status: "finalized" as const,
+        revision: 1,
+        finalizedAt,
+        finalizedBy: author.id,
+        finalizerName: author.name,
         subjective: template.subjective,
         objective: template.objective,
         assessment: template.assessment,

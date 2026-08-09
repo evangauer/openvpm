@@ -81,8 +81,8 @@ describe("API reference docs", () => {
   it("keeps the standalone REST API README aligned with current v1 writes", () => {
     const source = readFileSync("../../docs/api/README.md", "utf8");
 
-    expect(source).toContain(
-      "| `appointments:read` | List/read appointments |",
+    expect(source).toMatch(
+      /\| `appointments:read`\s+\| List\/read appointments\s+\|/,
     );
     expect(source).toContain("### `GET /api/v1/appointments`");
     expect(source).toContain("Scope `appointments:read`");

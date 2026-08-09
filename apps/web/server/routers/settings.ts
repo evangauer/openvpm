@@ -5,6 +5,7 @@ import {
   desc,
   eq,
   and,
+  or,
   isNull,
   inArray,
   ne,
@@ -1309,6 +1310,35 @@ export const settingsRouter = createRouter({
     const demo = settings.demoData;
     if (demo) {
       const now = new Date();
+      let demoSoapNoteIds = demo.soapNoteIds ?? [];
+      if (
+        demoSoapNoteIds.length === 0 &&
+        (demo.appointmentIds.length > 0 || demo.patientIds.length > 0)
+      ) {
+        const legacyDemoSoapNotes = await ctx.db
+          .select({ id: soapNotes.id })
+          .from(soapNotes)
+          .where(
+            and(
+              eq(soapNotes.practiceId, ctx.practiceId),
+              or(
+                inArray(soapNotes.appointmentId, demo.appointmentIds),
+                inArray(soapNotes.patientId, demo.patientIds),
+              ),
+            ),
+          );
+        demoSoapNoteIds = legacyDemoSoapNotes.map((note) => note.id);
+        if (demoSoapNoteIds.length > 0) {
+          await ctx.db
+            .update(practices)
+            .set({
+              settings: settingsMergePatch({
+                demoData: { ...demo, soapNoteIds: demoSoapNoteIds },
+              }),
+            })
+            .where(activePracticeWhere(ctx.practiceId));
+        }
+      }
       // Soft-delete the clinical and billing records first, then the
       // appointments/patients/clients they hang off of.
       if (demo.productIds?.length) {
@@ -1382,14 +1412,14 @@ export const settingsRouter = createRouter({
             ),
           );
       }
-      if (demo.soapNoteIds?.length) {
+      if (demoSoapNoteIds.length) {
         await ctx.db
           .update(soapNotes)
           .set({ deletedAt: now })
           .where(
             and(
               eq(soapNotes.practiceId, ctx.practiceId),
-              inArray(soapNotes.id, demo.soapNoteIds),
+              inArray(soapNotes.id, demoSoapNoteIds),
             ),
           );
       }

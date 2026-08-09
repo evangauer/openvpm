@@ -172,7 +172,10 @@ subscribed endpoints with camelCase appointment fields (see the
 [Webhooks](../../README.md#webhooks) section).
 
 ### `POST /api/v1/soap-notes`
-Scope `records:write`. Create a SOAP note from an external AI scribe. Body:
+
+Scope `records:write`. Create an immediately finalized, immutable SOAP note
+from an external AI scribe. The clinician should review the content before the
+integration submits it. Body:
 
 ```json
 {
@@ -193,7 +196,9 @@ clinical closeout has not been finalized. `author_id` is optional when the
 appointment has an assigned doctor; otherwise it must identify an active admin
 or veterinarian in the authenticated practice. At least one SOAP section must
 contain clinical text. Returns `201` with `{ data: <soap_note> }` and fires the
-`soap_note.created` webhook.
+`soap_note.created` webhook. Returns `409` if the encounter already has a saved
+SOAP draft or an effective finalized SOAP note; integrations must not treat
+this endpoint as an editable draft workflow.
 
 ### `POST /api/v1/agent`
 Scope `agent:run`. Run the OpenVPM Agent over the API, scoped to the key's

@@ -18,6 +18,7 @@ import {
 } from "@openpims/db";
 import { centsToMoney, moneyToCents } from "@/lib/billing/invoice-balance";
 import { calculateInvoiceTaxTotals } from "@/lib/billing/invoice-tax";
+import { finalizedSoapInsertValues } from "@/lib/records/soap-lifecycle";
 
 /**
  * Sensible defaults seeded for a brand-new practice so it's usable immediately
@@ -177,7 +178,7 @@ export async function seedDemoData(
     .where(eq(services.practiceId, opts.practiceId));
   // The owner is the admin user for this practice.
   const [owner] = await db
-    .select({ id: users.id })
+    .select({ id: users.id, name: users.name })
     .from(users)
     .where(
       and(
@@ -324,7 +325,7 @@ export async function seedDemoData(
   // Clinical records so the Records page tabs are not empty. authorId is required
   // on soap_notes, so only add them when we found the owner.
   let soapNoteIds: string[] = [];
-  if (doctorId) {
+  if (owner) {
     const insertedSoap = await db
       .insert(soapNotes)
       .values([
@@ -332,21 +333,32 @@ export async function seedDemoData(
           practiceId: opts.practiceId,
           patientId: insertedPatients[0]!.id,
           appointmentId: insertedAppts[0]?.id ?? null,
-          authorId: doctorId,
-          subjective: "Owner reports Biscuit is bright and eating well. Here for a yearly wellness check.",
-          objective: "Weight 31 kg. Temp normal. Heart and lungs sound clear. Coat looks healthy.",
-          assessment: "Healthy adult dog. No problems found today.",
-          plan: "Keep up the current diet. Give the Rabies booster. Recheck in one year.",
+          ...finalizedSoapInsertValues({
+            actor: owner,
+            sections: {
+              subjective:
+                "Owner reports Biscuit is bright and eating well. Here for a yearly wellness check.",
+              objective:
+                "Weight 31 kg. Temp normal. Heart and lungs sound clear. Coat looks healthy.",
+              assessment: "Healthy adult dog. No problems found today.",
+              plan: "Keep up the current diet. Give the Rabies booster. Recheck in one year.",
+            },
+          }),
         },
         {
           practiceId: opts.practiceId,
           patientId: insertedPatients[1]!.id,
           appointmentId: null,
-          authorId: doctorId,
-          subjective: "Luna is a bit less active this week per owner.",
-          objective: "Weight 4.2 kg. Mild tartar on back teeth. Rest of exam is normal.",
-          assessment: "Early dental tartar. Otherwise healthy cat.",
-          plan: "Start at-home dental care. Plan a dental cleaning in the next few months.",
+          ...finalizedSoapInsertValues({
+            actor: owner,
+            sections: {
+              subjective: "Luna is a bit less active this week per owner.",
+              objective:
+                "Weight 4.2 kg. Mild tartar on back teeth. Rest of exam is normal.",
+              assessment: "Early dental tartar. Otherwise healthy cat.",
+              plan: "Start at-home dental care. Plan a dental cleaning in the next few months.",
+            },
+          }),
         },
       ])
       .returning({ id: soapNotes.id });

@@ -39,6 +39,51 @@ describe("medical summary header", () => {
     expect(doc.getNumberOfPages()).toBeGreaterThanOrEqual(1);
     expect(doc.output("arraybuffer").byteLength).toBeGreaterThan(1000);
   });
+
+  it("paginates long SOAP sections and addenda while retaining correction evidence", () => {
+    const longClinicalText = Array.from(
+      { length: 900 },
+      (_, index) => `observation-${index}`,
+    ).join(" ");
+    const doc = generateMedicalSummaryPdf({
+      practiceName: "OpenVPM Test Clinic",
+      patientName: "Biscuit",
+      species: "Canine",
+      clientName: "Jordan Avery",
+      allergies: [],
+      problems: [],
+      vaccinations: [],
+      recentNotes: [
+        {
+          date: "August 9, 2026",
+          subjective: longClinicalText,
+          authorName: "Dr. Rivera",
+          finalizerName: "Dr. Rivera",
+          finalizedAt: "August 9, 2026 at 10:30 AM",
+          addenda: [
+            {
+              content: longClinicalText,
+              authorName: "Dr. Rivera",
+              createdAt: "August 9, 2026 at 11:00 AM",
+            },
+          ],
+        },
+      ],
+      recordCorrections: [
+        {
+          recordLabel: "SOAP note dated August 8, 2026",
+          reason: "Documented on the wrong visit.",
+          correctedByName: "Dr. Rivera",
+          correctedAt: "August 9, 2026 at 11:30 AM",
+        },
+      ],
+      prescriptions: [],
+      generatedDate: "8/9/2026",
+    });
+
+    expect(doc.getNumberOfPages()).toBeGreaterThan(2);
+    expect(doc.output("arraybuffer").byteLength).toBeGreaterThan(10_000);
+  });
 });
 
 describe("pdf generation date labels", () => {

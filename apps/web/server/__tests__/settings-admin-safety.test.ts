@@ -687,6 +687,27 @@ describe("settings demo data cleanup scoping", () => {
       "${invoices.practiceId} = ${ctx.practiceId}"
     );
   });
+
+  it("derives and records legacy demo SOAP ids before immutable cleanup", () => {
+    const clearDemoBlock = SETTINGS_SOURCE.match(
+      /clearDemoData:[\s\S]+?reseedDemoData:/,
+    )?.[0];
+
+    expect(clearDemoBlock).toContain("let demoSoapNoteIds");
+    expect(clearDemoBlock).toContain(
+      "inArray(soapNotes.appointmentId, demo.appointmentIds)",
+    );
+    expect(clearDemoBlock).toContain(
+      "inArray(soapNotes.patientId, demo.patientIds)",
+    );
+    expect(clearDemoBlock).toContain(
+      "demoData: { ...demo, soapNoteIds: demoSoapNoteIds }",
+    );
+    expect(clearDemoBlock?.indexOf("settingsMergePatch({")).toBeLessThan(
+      clearDemoBlock?.indexOf(".update(soapNotes)") ?? -1,
+    );
+    expect(clearDemoBlock).toContain("inArray(soapNotes.id, demoSoapNoteIds)");
+  });
 });
 
 describe("settings scheduling metadata delete safety", () => {

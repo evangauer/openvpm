@@ -340,7 +340,9 @@ describe("clinical correction consumers", () => {
     expect(ai).toContain(
       "and ${clinicalRecordCorrections.soapNoteId} = ${soapNotes.id}",
     );
-    expect(patient).toContain(".filter((note) => !note.correctionId)");
+    expect(patient).toContain(
+      '(note) => note.status === "finalized" && !note.correctionId',
+    );
     expect(recordsPage).toContain("<ClinicalCorrectionControl");
     expect(recordsPage).toContain("Entered in error");
   });
@@ -409,8 +411,8 @@ describe("clinical correction consumers", () => {
     expect(records).toContain("isNull(visitWorkItems.invoiceId)");
     expect(records).toContain("isNull(visitWorkItems.invoiceItemId)");
     expect(recordsPage).toContain("correctVaccination.mutateAsync");
-    expect(patient).toContain(
-      "vaccinations.filter((v) => !v.correctionId).map",
+    expect(patient).toMatch(
+      /vaccinations\s*\.filter\(\(v\) => !v\.correctionId\)\s*\.map/,
     );
     for (const source of [portal, recalls, notifications, ai, agent]) {
       expect(source).toContain("vaccination_record_id");
