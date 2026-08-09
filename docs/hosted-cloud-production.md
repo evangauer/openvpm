@@ -121,15 +121,44 @@ expanding beyond a design-partner pilot.
 
 Outbound sending has a separate, default-off launch interlock. Keep
 `MESSAGING_SENDING_ENABLED=false` and both sending allowlists empty until one
-Telnyx location has carrier-active registration, its database sender is enabled,
-and the clinic has passed pilot review. A hosted send requires the practice UUID
-in `MESSAGING_SENDING_PRACTICE_IDS` and the exact location UUID in
-`MESSAGING_SENDING_LOCATION_IDS`; the hosted pilot permits only one enabled
-location per practice. Missing, ambiguous, Twilio, inactive, or partially
-configured state makes no provider call. These three variables are hosted-only
-and do not gate intentional self-host messaging configuration. Arbitrary hosted
-test destinations remain disabled; validate through a current, consented client
-workflow after approval.
+Telnyx location has carrier-active registration, an explicitly activated and
+read-back provider profile, and the clinic has passed pilot review. A hosted
+send requires the practice UUID in `MESSAGING_SENDING_PRACTICE_IDS` and the
+exact location UUID in `MESSAGING_SENDING_LOCATION_IDS`; the hosted pilot
+permits only one enabled location per practice. Missing, ambiguous, Twilio,
+inactive, or partially configured state makes no provider call. These
+three variables are hosted-only and do not gate intentional self-host messaging
+configuration. Arbitrary hosted test destinations remain disabled; validate
+through a current, consented client workflow after approval.
+
+### Controlled texting pilot activation
+
+Provider profiles are created disabled. Never enable one during number
+purchase or carrier submission. Use the platform admin queue in this order:
+
+1. Reconcile the brand as `VERIFIED` or `VETTED_VERIFIED`, the campaign as
+   `ACTIVE` or `MNO_PROVISIONED`, and the exact number assignment as `ASSIGNED`.
+2. Select **Inspect profile**. OpenVPM reads the exact profile, owned number,
+   brand, campaign, and assignment. The profile must have the canonical v2
+   webhook, a US-only destination allowlist, smart encoding, and the enforced
+   `$10.00` daily cap.
+3. Select **Enable provider profile** and confirm the provider mutation. OpenVPM
+   reads the provider state back after the update and deliberately leaves the
+   clinic database sender off.
+4. Add exactly one practice and location to the sending allowlists and set
+   `MESSAGING_SENDING_ENABLED=true`.
+5. Within 15 minutes of the provider readback, have the clinic admin enable the
+   location sender. An expired or failed attestation blocks the database switch;
+   inspect the profile again instead of bypassing the gate.
+6. Validate only with a current, consented client workflow. Confirm outbound
+   accepted-to-delivered evidence, an ordinary inbound reply, HELP, STOP plus a
+   blocked resend, START plus restored consent, one reminder, usage metering,
+   and empty reconciliation queues.
+
+The kill sequence is global sending off first, then clear both sending
+allowlists, disable the clinic database sender, and finally select **Disable
+provider profile**. Provider deactivation always closes the database gate before
+contacting Telnyx, so an uncertain carrier response cannot leave OpenVPM sending.
 
 For a Twilio fallback deployment, set `MESSAGING_PROVIDER=twilio` and provide
 `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_PHONE_NUMBER` instead of

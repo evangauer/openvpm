@@ -275,6 +275,8 @@ describe("Telnyx webhook", () => {
       expect.objectContaining({
         registrationStatus: "action_required",
         enabled: false,
+        providerProfileReady: false,
+        providerProfileSyncedAt: null,
       }),
     );
     expect(mocks.withTenant).not.toHaveBeenCalled();

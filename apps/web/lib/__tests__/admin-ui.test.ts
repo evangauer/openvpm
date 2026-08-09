@@ -108,6 +108,22 @@ describe("admin UI", () => {
     expect(source).toContain('!p.adminEmailVerifiedAt ? " · unverified" : ""');
   });
 
+  it("gives operators an explicit provider-profile inspection and switch", () => {
+    expect(source).toContain("trpc.admin.inspectMessagingProfile.useMutation");
+    expect(source).toContain(
+      "trpc.admin.setMessagingProfileEnabled.useMutation",
+    );
+    expect(source).toContain("provider not verified");
+    expect(source).toContain("Inspect profile");
+    expect(source).toContain("Enable provider profile");
+    expect(source).toContain("Disable provider profile");
+    expect(source).toContain("Clinic sending will remain off");
+    expect(source).toContain("US-only destination list");
+    expect(source).toContain("$10 daily cap");
+    expect(source).toContain('result.blockers.join("; ")');
+    expect(source).toContain("sender.registrationDetail");
+  });
+
   it("renders practice dates in each practice timezone", () => {
     expect(source).toContain(
       "function formatDate(d: Date | string | null, timeZone?: string | null)"

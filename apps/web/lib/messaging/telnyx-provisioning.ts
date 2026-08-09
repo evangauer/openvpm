@@ -199,6 +199,114 @@ export interface TelnyxMessagingProfile {
   enabled: boolean | null;
 }
 
+export interface TelnyxMessagingProfileDetail
+  extends TelnyxMessagingProfile {
+  webhookApiVersion: string | null;
+  whitelistedDestinations: string[] | null;
+  dailySpendLimitEnabled: boolean | null;
+  dailySpendLimit: string | null;
+  smartEncoding: boolean | null;
+}
+
+export const OPENVPM_MESSAGING_PROFILE_DAILY_SPEND_LIMIT = "10.00";
+
+export function openVpmMessagingProfileName(locationId: string): string {
+  return `OpenVPM provision ${locationId}`;
+}
+
+function parseMessagingProfileDetail(
+  payload:
+    | {
+        id?: string;
+        name?: string;
+        webhook_url?: string | null;
+        enabled?: boolean;
+        webhook_api_version?: string;
+        whitelisted_destinations?: unknown;
+        daily_spend_limit_enabled?: boolean;
+        daily_spend_limit?: string;
+        smart_encoding?: boolean;
+      }
+    | undefined,
+  expectedId: string,
+): TelnyxMessagingProfileDetail {
+  if (!payload?.id || !payload.name || payload.id !== expectedId) {
+    throw new TelnyxError(
+      "The provider returned an incomplete or mismatched messaging profile.",
+      502,
+    );
+  }
+  const destinations = payload.whitelisted_destinations;
+  return {
+    id: payload.id,
+    name: payload.name,
+    webhookUrl: payload.webhook_url ?? null,
+    enabled: payload.enabled ?? null,
+    webhookApiVersion: payload.webhook_api_version ?? null,
+    whitelistedDestinations:
+      Array.isArray(destinations) &&
+      destinations.every(
+        (destination): destination is string =>
+          typeof destination === "string",
+      )
+      ? destinations
+      : null,
+    dailySpendLimitEnabled: payload.daily_spend_limit_enabled ?? null,
+    dailySpendLimit: payload.daily_spend_limit ?? null,
+    smartEncoding: payload.smart_encoding ?? null,
+  };
+}
+
+export function messagingProfileSafetyIssues(
+  profile: TelnyxMessagingProfileDetail,
+  expected: {
+    id: string;
+    name: string;
+    webhookUrl: string;
+  },
+): string[] {
+  const issues: string[] = [];
+  if (profile.id !== expected.id) issues.push("profile identity mismatch");
+  if (profile.name !== expected.name) issues.push("profile name mismatch");
+  if (profile.webhookUrl !== expected.webhookUrl) {
+    issues.push("webhook URL mismatch");
+  }
+  if (profile.webhookApiVersion !== "2") {
+    issues.push("webhook API version is not v2");
+  }
+  if (
+    !profile.whitelistedDestinations ||
+    profile.whitelistedDestinations.length !== 1 ||
+    profile.whitelistedDestinations[0] !== "US"
+  ) {
+    issues.push("destination allowlist is not US-only");
+  }
+  if (profile.dailySpendLimitEnabled !== true) {
+    issues.push("daily spend limit is not enabled");
+  }
+  if (
+    profile.dailySpendLimit === null ||
+    Number(profile.dailySpendLimit) !==
+      Number(OPENVPM_MESSAGING_PROFILE_DAILY_SPEND_LIMIT)
+  ) {
+    issues.push("daily spend limit is not $10.00");
+  }
+  if (profile.smartEncoding !== true) {
+    issues.push("smart encoding is not enabled");
+  }
+  return issues;
+}
+
+/** Retrieve one exact provider profile for launch-readiness checks. Read-only. */
+export async function getMessagingProfile(
+  profileId: string,
+): Promise<TelnyxMessagingProfileDetail> {
+  const json = await telnyxRequest<{
+    data?: Parameters<typeof parseMessagingProfileDetail>[0];
+  }>("GET", `/messaging_profiles/${encodeURIComponent(profileId)}`);
+  return parseMessagingProfileDetail(json.data, profileId);
+}
+
 /** Find profiles by an exact, durable operation name. Read-only. */
 export async function findMessagingProfilesByName(
   name: string
@@ -415,7 +523,7 @@ export async function createMessagingProfile(opts: {
       // Bound pilot blast radius at the provider as well as in OpenVPM. Smart
       // encoding keeps common punctuation from unexpectedly multiplying parts.
       daily_spend_limit_enabled: true,
-      daily_spend_limit: "10.00",
+      daily_spend_limit: OPENVPM_MESSAGING_PROFILE_DAILY_SPEND_LIMIT,
       smart_encoding: true,
     });
   } catch (error) {
@@ -439,6 +547,44 @@ export async function createMessagingProfile(opts: {
     );
   }
   return { id };
+}
+
+/** Explicitly change provider sending state; callers must perform readback. */
+export async function updateMessagingProfileEnabled(opts: {
+  profileId: string;
+  enabled: boolean;
+}): Promise<TelnyxMessagingProfileDetail> {
+  let json: {
+    data?: Parameters<typeof parseMessagingProfileDetail>[0];
+  };
+  try {
+    json = await telnyxRequest(
+      "PATCH",
+      `/messaging_profiles/${encodeURIComponent(opts.profileId)}`,
+      { enabled: opts.enabled },
+    );
+  } catch (error) {
+    if (
+      !(error instanceof TelnyxError) ||
+      error.status === 408 ||
+      error.status === 429 ||
+      error.status >= 500
+    ) {
+      throw new TelnyxMutationUncertainError(
+        "The messaging-profile activation outcome is uncertain and must be reconciled before retrying.",
+        error,
+      );
+    }
+    throw error;
+  }
+  try {
+    return parseMessagingProfileDetail(json.data, opts.profileId);
+  } catch (error) {
+    throw new TelnyxMutationUncertainError(
+      "The provider accepted the messaging-profile activation request without returning verifiable state.",
+      error,
+    );
+  }
 }
 
 /** Delete an unused messaging profile created by an incomplete attempt. */

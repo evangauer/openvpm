@@ -118,6 +118,7 @@ export async function resolveMessagingTransport(opts: {
                   isNull(locations.deletedAt),
                   eq(locationMessaging.enabled, true),
                   eq(locationMessaging.registrationStatus, "active"),
+                  eq(locationMessaging.providerProfileReady, true),
                   hasNonBlankMessagingSender(),
                 )
               : and(

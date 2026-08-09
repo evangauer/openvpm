@@ -34,17 +34,22 @@ import {
   onboardingIntentLabel,
   type OnboardingIntent,
 } from "@/lib/onboarding/intent";
-import { normalizeAppBaseUrl } from "@/lib/app-url";
+import { publicTelnyxWebhookUrl } from "@/lib/messaging/public-webhook";
 import {
   createA2pBrand,
   createA2pCampaign,
   ensureA2pNumberAssignment,
   findA2pCampaignByReference,
+  findOwnedPhoneNumbers,
   getA2pBrand,
   getA2pCampaign,
   getA2pNumberAssignment,
+  getMessagingProfile,
+  messagingProfileSafetyIssues,
+  openVpmMessagingProfileName,
   TelnyxError,
   type TelnyxNumberAssignment,
+  updateMessagingProfileEnabled,
 } from "@/lib/messaging/telnyx-provisioning";
 import {
   decryptRegistrationTaxId,
@@ -73,6 +78,7 @@ const platformAdminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
 });
 
 const MESSAGING_SUBMISSION_LOCK_STALE_MS = 15 * 60 * 1000;
+const MESSAGING_PROVIDER_PROFILE_ATTESTATION_MAX_AGE_MS = 15 * 60 * 1000;
 
 function redactedOperatorIdentity(value: string | null): string | null {
   if (!value) return null;
@@ -95,21 +101,14 @@ function assertMessagingProviderMutationsEnabled() {
 function telnyxRegistrationWebhookUrl(): string {
   const raw =
     process.env.NEXT_PUBLIC_APP_URL?.trim() || process.env.NEXTAUTH_URL?.trim();
-  const normalized = normalizeAppBaseUrl(raw ?? "");
-  if (!normalized) {
+  const webhookUrl = publicTelnyxWebhookUrl(raw);
+  if (!webhookUrl) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message: "A public HTTPS app URL is required for Telnyx registration.",
     });
   }
-  const base = new URL(normalized);
-  if (base.protocol !== "https:" || base.hostname === "localhost") {
-    throw new TRPCError({
-      code: "PRECONDITION_FAILED",
-      message: "A public HTTPS app URL is required for Telnyx registration.",
-    });
-  }
-  return new URL("/api/webhooks/telnyx", base).toString();
+  return webhookUrl;
 }
 
 function providerFailure(error: unknown): TRPCError {
@@ -127,6 +126,307 @@ function providerFailure(error: unknown): TRPCError {
         ? "CONFLICT"
         : "BAD_GATEWAY",
     message,
+  });
+}
+
+async function messagingSenderForOperator(
+  practiceId: string,
+  locationId: string,
+) {
+  return withSystem(db, async (tx) => {
+    const [sender] = await tx
+      .select({
+        practiceId: locationMessaging.practiceId,
+        locationId: locationMessaging.locationId,
+        provider: locationMessaging.provider,
+        messagingProfileId: locationMessaging.messagingProfileId,
+        senderE164: locationMessaging.senderE164,
+        registrationStatus: locationMessaging.registrationStatus,
+        registrationDetail: locationMessaging.registrationDetail,
+        providerProfileReady: locationMessaging.providerProfileReady,
+        providerProfileSyncedAt: locationMessaging.providerProfileSyncedAt,
+        enabled: locationMessaging.enabled,
+      })
+      .from(locationMessaging)
+      .where(
+        and(
+          eq(locationMessaging.practiceId, practiceId),
+          eq(locationMessaging.locationId, locationId),
+          isNull(locationMessaging.deletedAt),
+          sql`exists (
+            select 1
+            from ${locations}
+            where ${locations.id} = ${locationId}
+              and ${locations.practiceId} = ${practiceId}
+              and ${locations.deletedAt} is null
+          )`,
+          sql`exists (
+            select 1
+            from ${practices}
+            where ${practices.id} = ${practiceId}
+              and ${practices.deletedAt} is null
+          )`,
+        ),
+      )
+      .limit(1);
+    if (
+      !sender ||
+      sender.provider !== "telnyx" ||
+      !sender.messagingProfileId ||
+      !sender.senderE164
+    ) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message:
+          "This clinic location does not have a complete Telnyx sender identity.",
+      });
+    }
+    return {
+      ...sender,
+      messagingProfileId: sender.messagingProfileId,
+      senderE164: sender.senderE164,
+    };
+  });
+}
+
+async function inspectMessagingProviderReadiness(input: {
+  practiceId: string;
+  locationId: string;
+}) {
+  const registration = await registrationForOperator(input.practiceId);
+  const sender = await messagingSenderForOperator(
+    input.practiceId,
+    input.locationId,
+  );
+  const providerBrandId = registration.providerBrandId;
+  const providerCampaignId = registration.providerCampaignId;
+  if (!providerBrandId || !providerCampaignId) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "The clinic brand and campaign must be submitted first.",
+    });
+  }
+
+  const webhookUrl = telnyxRegistrationWebhookUrl();
+  const [profile, ownedNumbers, brand, campaign, assignment] =
+    await Promise.all([
+      getMessagingProfile(sender.messagingProfileId),
+      findOwnedPhoneNumbers(sender.senderE164),
+      getA2pBrand(providerBrandId),
+      getA2pCampaign(providerCampaignId),
+      getA2pNumberAssignment(sender.senderE164),
+    ]);
+
+  const blockers = messagingProfileSafetyIssues(profile, {
+    id: sender.messagingProfileId,
+    name: openVpmMessagingProfileName(sender.locationId),
+    webhookUrl,
+  });
+  const ownedNumber =
+    ownedNumbers.length === 1 ? ownedNumbers[0] : undefined;
+  if (
+    !ownedNumber ||
+    ownedNumber.messagingProfileId !== sender.messagingProfileId ||
+    ownedNumber.status?.toLowerCase() !== "active"
+  ) {
+    blockers.push(
+      "phone number is not active on the exact messaging profile",
+    );
+  }
+  if (
+    !new Set(["VERIFIED", "VETTED_VERIFIED"]).has(
+      (brand.identityStatus ?? "").toUpperCase(),
+    )
+  ) {
+    blockers.push("carrier brand is not verified");
+  }
+  if (
+    campaign.status?.toUpperCase() !== "ACTIVE" &&
+    campaign.campaignStatus?.toUpperCase() !== "MNO_PROVISIONED"
+  ) {
+    blockers.push("carrier campaign is not active");
+  }
+  if (
+    !assignment ||
+    assignment.phoneNumber !== sender.senderE164 ||
+    assignment.campaignId !== providerCampaignId ||
+    assignment.assignmentStatus?.toUpperCase() !== "ASSIGNED"
+  ) {
+    blockers.push("phone number is not assigned to the active campaign");
+  }
+  if (
+    registration.status !== "active" ||
+    sender.registrationStatus !== "active"
+  ) {
+    blockers.push("OpenVPM carrier reconciliation is not active");
+  }
+
+  return {
+    profile,
+    sender,
+    blockers,
+    registration: {
+      id: registration.id,
+      practiceId: registration.practiceId,
+      providerBrandId,
+      providerCampaignId,
+      status: registration.status,
+    },
+  };
+}
+
+function expectedMessagingProfileState(
+  inspection: Awaited<ReturnType<typeof inspectMessagingProviderReadiness>>,
+) {
+  return {
+    registrationId: inspection.registration.id,
+    providerBrandId: inspection.registration.providerBrandId,
+    providerCampaignId: inspection.registration.providerCampaignId,
+    messagingProfileId: inspection.sender.messagingProfileId,
+    senderE164: inspection.sender.senderE164,
+    clinicEnabled: inspection.sender.enabled,
+    providerProfileReady: inspection.sender.providerProfileReady,
+    providerProfileSyncedAt: inspection.sender.providerProfileSyncedAt,
+  };
+}
+
+async function updateMessagingSenderDisabled(input: {
+  practiceId: string;
+  locationId: string;
+  detail: string;
+  syncedAt: Date | null;
+}) {
+  await withSystem(db, async (tx) => {
+    await tx
+      .update(locationMessaging)
+      .set({
+        enabled: false,
+        registrationDetail: input.detail,
+        providerProfileReady: false,
+        providerProfileSyncedAt: input.syncedAt,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(locationMessaging.practiceId, input.practiceId),
+          eq(locationMessaging.locationId, input.locationId),
+          eq(locationMessaging.provider, "telnyx"),
+          isNull(locationMessaging.deletedAt),
+        ),
+      );
+  });
+}
+
+async function recordMessagingProfileReady(input: {
+  practiceId: string;
+  locationId: string;
+  detail: string;
+  expected: {
+    registrationId: string;
+    providerBrandId: string;
+    providerCampaignId: string;
+    messagingProfileId: string;
+    senderE164: string;
+    clinicEnabled: boolean;
+    providerProfileReady: boolean;
+    providerProfileSyncedAt: Date | null;
+  };
+}) {
+  await withSystem(db, async (tx) => {
+    const [updated] = await tx
+      .update(locationMessaging)
+      .set({
+        registrationDetail: input.detail,
+        providerProfileReady: true,
+        providerProfileSyncedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(locationMessaging.practiceId, input.practiceId),
+          eq(locationMessaging.locationId, input.locationId),
+          eq(locationMessaging.provider, "telnyx"),
+          eq(
+            locationMessaging.messagingProfileId,
+            input.expected.messagingProfileId,
+          ),
+          eq(locationMessaging.senderE164, input.expected.senderE164),
+          eq(locationMessaging.registrationStatus, "active"),
+          eq(locationMessaging.enabled, input.expected.clinicEnabled),
+          eq(
+            locationMessaging.providerProfileReady,
+            input.expected.providerProfileReady,
+          ),
+          input.expected.providerProfileSyncedAt === null
+            ? isNull(locationMessaging.providerProfileSyncedAt)
+            : eq(
+                locationMessaging.providerProfileSyncedAt,
+                input.expected.providerProfileSyncedAt,
+              ),
+          isNull(locationMessaging.deletedAt),
+          sql`exists (
+            select 1
+            from ${messagingRegistrations}
+            where ${messagingRegistrations.id} = ${input.expected.registrationId}
+              and ${messagingRegistrations.practiceId} = ${input.practiceId}
+              and ${messagingRegistrations.providerBrandId} = ${input.expected.providerBrandId}
+              and ${messagingRegistrations.providerCampaignId} = ${input.expected.providerCampaignId}
+              and ${messagingRegistrations.status} = 'active'
+              and ${messagingRegistrations.deletedAt} is null
+          )`,
+        ),
+      )
+      .returning({ id: locationMessaging.id });
+    if (!updated) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message:
+          "Messaging lifecycle state changed during provider verification. Refresh and inspect again.",
+      });
+    }
+  });
+}
+
+async function recordMessagingProfileDisabled(input: {
+  practiceId: string;
+  locationId: string;
+  detail: string;
+  expected: {
+    messagingProfileId: string;
+    senderE164: string;
+  };
+}) {
+  await withSystem(db, async (tx) => {
+    const [updated] = await tx
+      .update(locationMessaging)
+      .set({
+        enabled: false,
+        registrationDetail: input.detail,
+        providerProfileReady: false,
+        providerProfileSyncedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(locationMessaging.practiceId, input.practiceId),
+          eq(locationMessaging.locationId, input.locationId),
+          eq(locationMessaging.provider, "telnyx"),
+          eq(
+            locationMessaging.messagingProfileId,
+            input.expected.messagingProfileId,
+          ),
+          eq(locationMessaging.senderE164, input.expected.senderE164),
+          isNull(locationMessaging.deletedAt),
+        ),
+      )
+      .returning({ id: locationMessaging.id });
+    if (!updated) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message:
+          "Messaging sender identity changed during provider deactivation. Refresh and disable the current profile.",
+      });
+    }
   });
 }
 
@@ -276,6 +576,8 @@ async function failRegistrationOperation(opts: {
       .set({
         enabled: false,
         registrationStatus: "action_required",
+        providerProfileReady: false,
+        providerProfileSyncedAt: null,
         updatedAt: new Date(),
       })
       .where(
@@ -632,20 +934,217 @@ export const adminRouter = createRouter({
       const senders = await tx
         .select({
           practiceId: locationMessaging.practiceId,
+          locationId: locationMessaging.locationId,
+          provider: locationMessaging.provider,
+          messagingProfileId: locationMessaging.messagingProfileId,
           senderE164: locationMessaging.senderE164,
           registrationStatus: locationMessaging.registrationStatus,
+          registrationDetail: locationMessaging.registrationDetail,
+          providerProfileReady: locationMessaging.providerProfileReady,
+          providerProfileSyncedAt: locationMessaging.providerProfileSyncedAt,
           enabled: locationMessaging.enabled,
         })
         .from(locationMessaging)
         .where(isNull(locationMessaging.deletedAt));
       return rows.map((row) => ({
         ...row,
-        senders: senders.filter(
-          (sender) => sender.practiceId === row.practiceId,
-        ),
+        senders: senders
+          .filter((sender) => sender.practiceId === row.practiceId)
+          .map((sender) => ({
+            ...sender,
+            providerProfileReady:
+              sender.providerProfileReady &&
+              sender.providerProfileSyncedAt !== null &&
+              sender.providerProfileSyncedAt.getTime() >=
+                Date.now() -
+                  MESSAGING_PROVIDER_PROFILE_ATTESTATION_MAX_AGE_MS,
+          })),
       }));
     }),
   ),
+
+  /** Read the exact provider profile and every prerequisite without mutating it. */
+  inspectMessagingProfile: platformAdminProcedure
+    .input(
+      z.object({
+        practiceId: z.string().uuid(),
+        locationId: z.string().uuid(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      try {
+        const inspection = await inspectMessagingProviderReadiness(input);
+        const { profile, blockers } = inspection;
+        const ready = blockers.length === 0 && profile.enabled === true;
+        if (ready) {
+          await recordMessagingProfileReady({
+            ...input,
+            detail:
+              "Provider profile is active and verified. A clinic admin may now enable this approved pilot sender.",
+            expected: expectedMessagingProfileState(inspection),
+          });
+        } else {
+          await updateMessagingSenderDisabled({
+            ...input,
+            detail:
+              blockers.length > 0
+                ? `Provider profile is not ready: ${blockers.join("; ")}.`
+                : "Provider profile is verified but remains disabled. Clinic sending stays off.",
+            syncedAt: new Date(),
+          });
+        }
+        return {
+          locationId: input.locationId,
+          enabled: profile.enabled === true,
+          activationReady: blockers.length === 0,
+          clinicEnableReady: ready,
+          blockers,
+        };
+      } catch (error) {
+        if (error instanceof TRPCError) throw error;
+        throw providerFailure(error);
+      }
+    }),
+
+  /**
+   * Explicit provider-side profile switch. Clinic sending remains disabled
+   * until its own admin performs the final, separately allowlisted enable.
+   */
+  setMessagingProfileEnabled: platformAdminProcedure
+    .input(
+      z.object({
+        practiceId: z.string().uuid(),
+        locationId: z.string().uuid(),
+        enabled: z.boolean(),
+        confirmProviderMutation: z.literal(true),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      assertMessagingProviderMutationsEnabled();
+      const sender = await messagingSenderForOperator(
+        input.practiceId,
+        input.locationId,
+      );
+
+      if (!input.enabled) {
+        await updateMessagingSenderDisabled({
+          ...input,
+          detail:
+            "OpenVPM disabled the provider profile. Clinic sending remains off.",
+          syncedAt: null,
+        });
+        try {
+          const targetSender = await messagingSenderForOperator(
+            input.practiceId,
+            input.locationId,
+          );
+          let profile = await getMessagingProfile(
+            targetSender.messagingProfileId,
+          );
+          const reused = profile.enabled === false;
+          if (!reused) {
+            await updateMessagingProfileEnabled({
+              profileId: targetSender.messagingProfileId,
+              enabled: false,
+            });
+            profile = await getMessagingProfile(
+              targetSender.messagingProfileId,
+            );
+          }
+          if (profile.enabled !== false) {
+            throw new TRPCError({
+              code: "BAD_GATEWAY",
+              message:
+                "Telnyx did not confirm that the messaging profile is disabled.",
+            });
+          }
+          await recordMessagingProfileDisabled({
+            ...input,
+            detail:
+              "OpenVPM disabled the provider profile. Clinic sending remains off.",
+            expected: {
+              messagingProfileId: targetSender.messagingProfileId,
+              senderE164: targetSender.senderE164,
+            },
+          });
+          return {
+            locationId: input.locationId,
+            enabled: false,
+            clinicEnabled: false,
+            reused,
+          };
+        } catch (error) {
+          if (error instanceof TRPCError) throw error;
+          throw providerFailure(error);
+        }
+      }
+
+      if (sender.enabled) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Turn off clinic sending before changing its provider profile.",
+        });
+      }
+
+      await updateMessagingSenderDisabled({
+        ...input,
+        detail:
+          "OpenVPM is verifying the provider profile. Clinic sending remains off.",
+        syncedAt: null,
+      });
+
+      try {
+        const inspection = await inspectMessagingProviderReadiness(input);
+        if (inspection.blockers.length > 0) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: `Provider profile is not safe to enable: ${inspection.blockers.join(
+              "; ",
+            )}.`,
+          });
+        }
+        let profile = inspection.profile;
+        const inspectedSender = inspection.sender;
+        const reused = profile.enabled === true;
+        if (!reused) {
+          await updateMessagingProfileEnabled({
+            profileId: inspectedSender.messagingProfileId,
+            enabled: true,
+          });
+          profile = await getMessagingProfile(
+            inspectedSender.messagingProfileId,
+          );
+        }
+        const readbackIssues = messagingProfileSafetyIssues(profile, {
+          id: inspectedSender.messagingProfileId,
+          name: openVpmMessagingProfileName(inspectedSender.locationId),
+          webhookUrl: telnyxRegistrationWebhookUrl(),
+        });
+        if (profile.enabled !== true || readbackIssues.length > 0) {
+          throw new TRPCError({
+            code: "BAD_GATEWAY",
+            message:
+              "Telnyx did not confirm the exact safe messaging-profile state.",
+          });
+        }
+        await recordMessagingProfileReady({
+          ...input,
+          detail:
+            "Provider profile is active and verified. A clinic admin may now enable this approved pilot sender.",
+          expected: expectedMessagingProfileState(inspection),
+        });
+        return {
+          locationId: input.locationId,
+          enabled: true,
+          clinicEnabled: false,
+          reused,
+        };
+      } catch (error) {
+        if (error instanceof TRPCError) throw error;
+        throw providerFailure(error);
+      }
+    }),
 
   /** Fee-bearing TCR brand creation; platform operator only and explicitly confirmed. */
   submitMessagingBrand: platformAdminProcedure
@@ -959,6 +1458,8 @@ export const adminRouter = createRouter({
               next === "active"
                 ? "Carrier registration active. An admin may now enable sending."
                 : "Carrier number assignment is pending.",
+            providerProfileReady: false,
+            providerProfileSyncedAt: null,
             enabled: false,
             updatedAt: new Date(),
           })
@@ -1697,15 +2198,16 @@ export const adminRouter = createRouter({
           .update(messagingRegistrations)
           .set({
             providerBrandId: input.providerBrandId,
-            ...(input.providerCampaignId
-              ? { providerCampaignId: input.providerCampaignId }
-              : {}),
+            providerBrandStatus: null,
+            providerCampaignId: input.providerCampaignId ?? null,
+            providerCampaignStatus: null,
             status: "pending",
             statusDetail:
               "Provider IDs recovered by an OpenVPM operator; refresh status next.",
             submissionLockId: null,
             submissionLockAt: null,
             lastError: null,
+            lastSyncedAt: null,
             updatedAt: new Date(),
           })
           .where(
@@ -1721,6 +2223,24 @@ export const adminRouter = createRouter({
             message: "Registration not found.",
           });
         }
+        await tx
+          .update(locationMessaging)
+          .set({
+            enabled: false,
+            registrationStatus: "pending",
+            registrationDetail:
+              "Provider IDs changed. OpenVPM must reconcile carrier and provider-profile state again.",
+            providerProfileReady: false,
+            providerProfileSyncedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(locationMessaging.practiceId, input.practiceId),
+              eq(locationMessaging.provider, "telnyx"),
+              isNull(locationMessaging.deletedAt),
+            ),
+          );
         return { ok: true };
       }),
     ),
@@ -1821,6 +2341,8 @@ export const adminRouter = createRouter({
             enabled: false,
             registrationStatus: "action_required",
             registrationDetail: "Carrier registration needs OpenVPM review.",
+            providerProfileReady: false,
+            providerProfileSyncedAt: null,
             updatedAt: new Date(),
           })
           .where(
@@ -1923,7 +2445,13 @@ export const adminRouter = createRouter({
                       next === "suspended"
                     ? "Carrier registration needs OpenVPM review."
                     : "Carrier registration is pending.",
-              ...(next === "active" ? {} : { enabled: false }),
+              ...(next === "active"
+                ? {}
+                : {
+                    enabled: false,
+                    providerProfileReady: false,
+                    providerProfileSyncedAt: null,
+                  }),
               updatedAt: new Date(),
             })
             .where(

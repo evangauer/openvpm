@@ -402,6 +402,9 @@ describe("resolveMessagingTransport", () => {
     expect(
       sqlIncludesColumnParamPair(condition, "registration_status", "active")
     ).toBe(true);
+    expect(
+      sqlIncludesColumnParamPair(condition, "provider_profile_ready", true)
+    ).toBe(true);
     expect(mocks.selectLimit).toHaveBeenLastCalledWith(2);
   });
 

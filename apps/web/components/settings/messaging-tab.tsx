@@ -292,7 +292,13 @@ function ConfiguredLocation({
   const canEnableSending =
     m.registrationStatus === "active" &&
     hasConfiguredSender(m) &&
-    m.launchEligible !== false;
+    m.launchEligible !== false &&
+    m.providerProfileAttestationFresh !== false;
+  const waitingForProviderVerification =
+    m.registrationStatus === "active" &&
+    hasConfiguredSender(m) &&
+    m.launchEligible !== false &&
+    m.providerProfileAttestationFresh === false;
   const canSendTest =
     testSendAllowed &&
     m.enabled &&
@@ -338,6 +344,18 @@ function ConfiguredLocation({
           {m.registrationDetail}
         </p>
       )}
+
+      {waitingForProviderVerification ? (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950">
+          <p className="font-medium">Provider safety check required</p>
+          <p className="mt-1">
+            OpenVPM must verify the exact texting profile immediately before
+            sending can be enabled. Your clinic does not need to repeat carrier
+            registration; this operational check keeps the webhook, US-only
+            destinations, and spend cap in the approved state.
+          </p>
+        </div>
+      ) : null}
 
       {m.registrationStatus === "failed" && !m.enabled ? (
         <Button

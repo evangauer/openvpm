@@ -121,6 +121,8 @@ const HOSTED_READ_ONLY_MUTATION_ALLOWLIST = new Set([
   "admin.submitMessagingBrand",
   "admin.submitMessagingCampaign",
   "admin.assignMessagingNumbers",
+  "admin.inspectMessagingProfile",
+  "admin.setMessagingProfileEnabled",
   "admin.attachMessagingProviderIds",
   "admin.clearStaleMessagingSubmissionLock",
   "admin.reconcileMessagingRegistration",

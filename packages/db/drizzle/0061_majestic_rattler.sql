@@ -1,0 +1,2 @@
+ALTER TABLE "location_messaging" ADD COLUMN "provider_profile_ready" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "location_messaging" ADD COLUMN "provider_profile_synced_at" timestamp with time zone;

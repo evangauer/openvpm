@@ -169,11 +169,17 @@ async function handleA2pLifecycleWebhook(opts: {
           : {}),
         status: next,
         statusDetail:
-          next === "action_required" || next === "suspended"
+          next === "action_required" ||
+          next === "failed" ||
+          next === "suspended"
             ? "Carrier registration needs OpenVPM operator review."
             : "Carrier update received; OpenVPM will confirm full registration status.",
         lastError:
-          next === "action_required" || next === "suspended" ? detail : null,
+          next === "action_required" ||
+          next === "failed" ||
+          next === "suspended"
+            ? detail
+            : null,
         lastSyncedAt: new Date(),
         updatedAt: new Date(),
       })
@@ -184,11 +190,17 @@ async function handleA2pLifecycleWebhook(opts: {
       .set({
         registrationStatus: next,
         registrationDetail:
-          next === "action_required" || next === "suspended"
+          next === "action_required" ||
+          next === "failed" ||
+          next === "suspended"
             ? "Carrier registration needs OpenVPM review."
             : "Carrier registration update received; confirmation is pending.",
-        ...(next === "action_required" || next === "suspended"
-          ? { enabled: false }
+        ...(next !== "active"
+          ? {
+              enabled: false,
+              providerProfileReady: false,
+              providerProfileSyncedAt: null,
+            }
           : {}),
         updatedAt: new Date(),
       })

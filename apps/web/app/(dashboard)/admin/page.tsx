@@ -122,6 +122,26 @@ export default function AdminPage() {
     },
     onError: (err) => setMessagingError(err.message),
   });
+  const inspectMessagingProfile =
+    trpc.admin.inspectMessagingProfile.useMutation({
+      onSuccess: (result) => {
+        setMessagingError(
+          result.blockers.length > 0
+            ? `Provider profile is not ready: ${result.blockers.join("; ")}.`
+            : null,
+        );
+        refreshMessagingQueue();
+      },
+      onError: (err) => setMessagingError(err.message),
+    });
+  const setMessagingProfileEnabled =
+    trpc.admin.setMessagingProfileEnabled.useMutation({
+      onSuccess: () => {
+        setMessagingError(null);
+        refreshMessagingQueue();
+      },
+      onError: (err) => setMessagingError(err.message),
+    });
   const attachMessagingProviderIds =
     trpc.admin.attachMessagingProviderIds.useMutation({
       onSuccess: () => {
@@ -375,6 +395,8 @@ export default function AdminPage() {
                     submitMessagingBrand.isPending ||
                     submitMessagingCampaign.isPending ||
                     assignMessagingNumbers.isPending ||
+                    inspectMessagingProfile.isPending ||
+                    setMessagingProfileEnabled.isPending ||
                     attachMessagingProviderIds.isPending ||
                     clearStaleMessagingSubmissionLock.isPending ||
                     reconcileMessagingRegistration.isPending;
@@ -409,7 +431,15 @@ export default function AdminPage() {
                           : registration.senders
                               .map(
                                 (sender) =>
-                                  `${sender.senderE164 ?? "—"} (${sender.registrationStatus})`
+                                  `${sender.senderE164 ?? "—"} (${sender.registrationStatus}; ${
+                                    sender.providerProfileReady
+                                      ? "provider ready"
+                                      : "provider not verified"
+                                  })${
+                                    sender.registrationDetail
+                                      ? ` — ${sender.registrationDetail}`
+                                      : ""
+                                  }`
                               )
                               .join(", ")}
                       </td>
@@ -493,6 +523,75 @@ export default function AdminPage() {
                               Assign numbers
                             </button>
                           ) : null}
+                          {registration.senders.map((sender) =>
+                            sender.messagingProfileId ? (
+                              <span
+                                key={sender.locationId}
+                                className="contents"
+                              >
+                                <button
+                                  type="button"
+                                  disabled={anyMutationPending}
+                                  className="rounded border border-border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                                  onClick={() =>
+                                    inspectMessagingProfile.mutate({
+                                      practiceId: registration.practiceId,
+                                      locationId: sender.locationId,
+                                    })
+                                  }
+                                >
+                                  Inspect profile
+                                </button>
+                                {!sender.providerProfileReady &&
+                                registration.status === "active" &&
+                                sender.registrationStatus === "active" ? (
+                                  <button
+                                    type="button"
+                                    disabled={anyMutationPending}
+                                    className="rounded border border-green-300 bg-green-50 px-2 py-1 text-xs font-medium text-green-900 hover:bg-green-100 disabled:opacity-50"
+                                    onClick={() => {
+                                      if (
+                                        window.confirm(
+                                          `Enable ${registration.practiceName}'s Telnyx profile only after OpenVPM verifies its exact webhook, US-only destination list, $10 daily cap, active campaign, and assigned number? Clinic sending will remain off.`,
+                                        )
+                                      ) {
+                                        setMessagingProfileEnabled.mutate({
+                                          practiceId:
+                                            registration.practiceId,
+                                          locationId: sender.locationId,
+                                          enabled: true,
+                                          confirmProviderMutation: true,
+                                        });
+                                      }
+                                    }}
+                                  >
+                                    Enable provider profile
+                                  </button>
+                                ) : null}
+                                <button
+                                  type="button"
+                                  disabled={anyMutationPending}
+                                  className="rounded border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/5 disabled:opacity-50"
+                                  onClick={() => {
+                                    if (
+                                      window.confirm(
+                                        `Disable ${registration.practiceName}'s Telnyx profile and keep clinic sending off?`,
+                                      )
+                                    ) {
+                                      setMessagingProfileEnabled.mutate({
+                                        practiceId: registration.practiceId,
+                                        locationId: sender.locationId,
+                                        enabled: false,
+                                        confirmProviderMutation: true,
+                                      });
+                                    }
+                                  }}
+                                >
+                                  Disable provider profile
+                                </button>
+                              </span>
+                            ) : null,
+                          )}
                           {registration.providerBrandId ? (
                             <button
                               type="button"

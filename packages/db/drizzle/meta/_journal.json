@@ -428,6 +428,13 @@
       "when": 1786274928585,
       "tag": "0060_warm_rawhide_kid",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1786282239386,
+      "tag": "0061_majestic_rattler",
+      "breakpoints": true
     }
   ]
 }

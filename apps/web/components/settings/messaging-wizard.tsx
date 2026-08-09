@@ -45,6 +45,9 @@ export type MessagingSetupLocation = {
       | "failed"
       | "suspended";
     registrationDetail: string | null;
+    providerProfileReady?: boolean;
+    providerProfileSyncedAt?: Date | string | null;
+    providerProfileAttestationFresh?: boolean;
     enabled: boolean;
     launchEligible?: boolean;
   } | null;

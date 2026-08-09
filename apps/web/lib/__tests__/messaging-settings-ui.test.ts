@@ -50,6 +50,20 @@ describe("messaging settings UI", () => {
     expect(tabSource).toContain('m.registrationStatus === "active"');
     expect(tabSource).toContain("hasConfiguredSender(m)");
     expect(tabSource).toContain("m.launchEligible !== false");
+    expect(tabSource).toContain(
+      "m.providerProfileAttestationFresh !== false",
+    );
+    expect(tabSource).toContain("waitingForProviderVerification");
+    expect(tabSource).toContain("Provider safety check required");
+    expect(tabSource).toContain("does not need to repeat carrier");
+    expect(tabSource).toContain("registration; this operational check");
+    expect(routerSource).toContain(
+      "providerProfileReady: locationMessaging.providerProfileReady",
+    );
+    expect(routerSource).toContain("providerProfileAttestationFresh:");
+    expect(routerSource).toContain(
+      "HOSTED_PROVIDER_PROFILE_ATTESTATION_MAX_AGE_MS",
+    );
     expect(tabSource).toContain("testSendAllowed &&");
     expect(tabSource).toContain("isMessagingPhoneInputValid(testTo)");
     expect(tabSource).toContain("maxLength={MESSAGING_PHONE_MAX_LENGTH}");

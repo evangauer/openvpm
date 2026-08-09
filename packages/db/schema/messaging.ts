@@ -161,6 +161,15 @@ export const locationMessaging = pgTable(
       .notNull()
       .default("not_started"),
     registrationDetail: text("registration_detail"),
+    // Short-lived operator attestation that the provider profile, number,
+    // webhook, campaign, destination allowlist, and spend cap all read back in
+    // the safe launch state. Clinic enablement requires a fresh attestation.
+    providerProfileReady: boolean("provider_profile_ready")
+      .notNull()
+      .default(false),
+    providerProfileSyncedAt: timestamp("provider_profile_synced_at", {
+      withTimezone: true,
+    }),
     // Master switch — sending is allowed only when enabled AND registration is active.
     enabled: boolean("enabled").notNull().default(false),
   },

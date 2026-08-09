@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, gte, isNull, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import {
@@ -36,7 +36,8 @@ import {
   TelnyxMutationUncertainError,
   TelnyxNotConfiguredError,
 } from "@/lib/messaging/telnyx-provisioning";
-import { appBaseUrl, normalizeAppBaseUrl } from "@/lib/app-url";
+import { appBaseUrl } from "@/lib/app-url";
+import { publicTelnyxWebhookUrl } from "@/lib/messaging/public-webhook";
 import {
   encryptRegistrationTaxId,
   MessagingRegistrationEncryptionError,
@@ -62,6 +63,7 @@ const EXISTING_NUMBER_UNAVAILABLE_DETAIL =
   "Texting from your clinic's existing phone number is not supported yet. OpenVPM has not ported or changed that number. Choose a new local texting number instead.";
 const INCONCLUSIVE_ORDER_DETAIL =
   "OpenVPM could not conclusively reconcile the earlier number order. No additional purchase was attempted. Contact OpenVPM support before trying another number.";
+const HOSTED_PROVIDER_PROFILE_ATTESTATION_MAX_AGE_MS = 15 * 60 * 1000;
 
 const providerPriceInput = z
   .string()
@@ -329,37 +331,15 @@ function telnyxWebhookUrl(): string {
     });
   }
 
-  const normalized = normalizeAppBaseUrl(rawBase);
-  if (!normalized) {
-    throw new TRPCError({
-      code: "PRECONDITION_FAILED",
-      message:
-        "Set NEXT_PUBLIC_APP_URL or NEXTAUTH_URL to a valid public HTTPS app URL before provisioning texting.",
-    });
-  }
-
-  const baseUrl = new URL(normalized);
-  const hostname = baseUrl.hostname.toLowerCase();
-  const localHostnames = new Set([
-    "localhost",
-    "127.0.0.1",
-    "0.0.0.0",
-    "::1",
-    "[::1]",
-  ]);
-  if (
-    baseUrl.protocol !== "https:" ||
-    localHostnames.has(hostname) ||
-    hostname.endsWith(".local")
-  ) {
+  const webhookUrl = publicTelnyxWebhookUrl(rawBase);
+  if (!webhookUrl) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message:
         "Set NEXT_PUBLIC_APP_URL or NEXTAUTH_URL to your public HTTPS app URL before provisioning texting.",
     });
   }
-
-  return new URL("/api/webhooks/telnyx", baseUrl).toString();
+  return webhookUrl;
 }
 
 function configuredWebhookBaseUrl(): string {
@@ -674,6 +654,8 @@ export const messagingRouter = createRouter({
         numberSource: locationMessaging.numberSource,
         registrationStatus: locationMessaging.registrationStatus,
         registrationDetail: locationMessaging.registrationDetail,
+        providerProfileReady: locationMessaging.providerProfileReady,
+        providerProfileSyncedAt: locationMessaging.providerProfileSyncedAt,
         enabled: locationMessaging.enabled,
       })
       .from(locations)
@@ -747,6 +729,15 @@ export const messagingRouter = createRouter({
               numberSource: l.numberSource,
               registrationStatus: l.registrationStatus,
               registrationDetail: l.registrationDetail,
+              providerProfileReady: l.providerProfileReady,
+              providerProfileSyncedAt: l.providerProfileSyncedAt,
+              providerProfileAttestationFresh:
+                !billingEnforced() ||
+                (l.providerProfileReady === true &&
+                  l.providerProfileSyncedAt !== null &&
+                  l.providerProfileSyncedAt.getTime() >=
+                    Date.now() -
+                      HOSTED_PROVIDER_PROFILE_ATTESTATION_MAX_AGE_MS),
               enabled: l.enabled,
               launchEligible:
                 launchEligibleLocationIds.has(l.locationId) &&
@@ -1214,6 +1205,8 @@ export const messagingRouter = createRouter({
               numberSource: "purchased",
               registrationStatus: "not_started",
               registrationDetail: MESSAGING_NUMBER_ORDERED_DETAIL,
+              providerProfileReady: false,
+              providerProfileSyncedAt: null,
               enabled: false,
             })
             .onConflictDoUpdate({
@@ -1225,6 +1218,8 @@ export const messagingRouter = createRouter({
                 numberSource: "purchased",
                 registrationStatus: "not_started",
                 registrationDetail: MESSAGING_NUMBER_ORDERED_DETAIL,
+                providerProfileReady: false,
+                providerProfileSyncedAt: null,
                 enabled: false,
                 deletedAt: null,
                 updatedAt: new Date(),
@@ -1335,6 +1330,8 @@ export const messagingRouter = createRouter({
                   numberSource: "purchased",
                   registrationStatus: "failed",
                   registrationDetail: MESSAGING_PROVISIONING_FAILED_DETAIL,
+                  providerProfileReady: false,
+                  providerProfileSyncedAt: null,
                   enabled: false,
                 })
                 .onConflictDoUpdate({
@@ -1346,6 +1343,8 @@ export const messagingRouter = createRouter({
                     numberSource: "purchased",
                     registrationStatus: "failed",
                     registrationDetail: MESSAGING_PROVISIONING_FAILED_DETAIL,
+                    providerProfileReady: false,
+                    providerProfileSyncedAt: null,
                     enabled: false,
                     deletedAt: null,
                     updatedAt: new Date(),
@@ -1392,29 +1391,42 @@ export const messagingRouter = createRouter({
             sql`select pg_advisory_xact_lock(hashtextextended(${`hosted-sms:${ctx.practiceId}`}, 0))`
           );
         }
+        const readySenderConditions = [
+          eq(locationMessaging.locationId, input.locationId),
+          eq(locationMessaging.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
+          isNull(locationMessaging.deletedAt),
+          eq(locationMessaging.registrationStatus, "active"),
+          hasNonBlankMessagingSender(),
+        ];
+        if (billingEnforced()) {
+          readySenderConditions.push(
+            eq(locationMessaging.provider, "telnyx"),
+            eq(locationMessaging.providerProfileReady, true),
+            gte(
+              locationMessaging.providerProfileSyncedAt,
+              new Date(
+                Date.now() - HOSTED_PROVIDER_PROFILE_ATTESTATION_MAX_AGE_MS,
+              ),
+            ),
+          );
+        }
         const [readySender] = await ctx.db
           .select({
             locationId: locationMessaging.locationId,
             provider: locationMessaging.provider,
           })
           .from(locationMessaging)
-          .where(
-            and(
-              eq(locationMessaging.locationId, input.locationId),
-              eq(locationMessaging.practiceId, ctx.practiceId),
-              activePracticePredicate(ctx.practiceId),
-              isNull(locationMessaging.deletedAt),
-              eq(locationMessaging.registrationStatus, "active"),
-              hasNonBlankMessagingSender()
-            )
-          )
+          .where(and(...readySenderConditions))
           .limit(1);
 
         if (!readySender) {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
             message:
-              "Carrier registration must be active before enabling SMS sending.",
+              billingEnforced()
+                ? "OpenVPM must freshly verify the active provider profile before enabling hosted SMS sending."
+                : "Carrier registration must be active before enabling SMS sending.",
           });
         }
         if (billingEnforced() && readySender.provider !== "telnyx") {
@@ -1465,7 +1477,16 @@ export const messagingRouter = createRouter({
           hasNonBlankMessagingSender()
         );
         if (billingEnforced()) {
-          updateConditions.push(eq(locationMessaging.provider, "telnyx"));
+          updateConditions.push(
+            eq(locationMessaging.provider, "telnyx"),
+            eq(locationMessaging.providerProfileReady, true),
+            gte(
+              locationMessaging.providerProfileSyncedAt,
+              new Date(
+                Date.now() - HOSTED_PROVIDER_PROFILE_ATTESTATION_MAX_AGE_MS,
+              ),
+            ),
+          );
         }
       }
 

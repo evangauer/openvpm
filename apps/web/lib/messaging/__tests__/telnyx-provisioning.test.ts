@@ -6,6 +6,10 @@ import {
   TelnyxNotConfiguredError,
   TelnyxMutationUncertainError,
   createMessagingProfile,
+  getMessagingProfile,
+  messagingProfileSafetyIssues,
+  openVpmMessagingProfileName,
+  updateMessagingProfileEnabled,
   buyNumber,
   deleteMessagingProfile,
   deleteOwnedPhoneNumber,
@@ -194,6 +198,131 @@ describe("Telnyx provisioning requests", () => {
       smart_encoding: true,
     });
   });
+
+  it("reads and validates the exact safe messaging-profile launch state", async () => {
+    vi.stubEnv("TELNYX_API_KEY", "KEY123");
+    const profileId = "3fa85f64-5717-4562-b3fc-2c963f66afa6";
+    const locationId = "00000000-0000-0000-0000-000000000002";
+    const webhookUrl = "https://app.openvpm.com/api/webhooks/telnyx";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            data: {
+              id: profileId,
+              name: openVpmMessagingProfileName(locationId),
+              webhook_url: webhookUrl,
+              webhook_api_version: "2",
+              enabled: true,
+              whitelisted_destinations: ["US"],
+              daily_spend_limit_enabled: true,
+              daily_spend_limit: "10.00",
+              smart_encoding: true,
+            },
+          }),
+        ),
+      ),
+    );
+
+    const profile = await getMessagingProfile(profileId);
+    expect(profile).toMatchObject({
+      id: profileId,
+      enabled: true,
+      whitelistedDestinations: ["US"],
+      dailySpendLimitEnabled: true,
+      dailySpendLimit: "10.00",
+      smartEncoding: true,
+    });
+    expect(
+      messagingProfileSafetyIssues(profile, {
+        id: profileId,
+        name: openVpmMessagingProfileName(locationId),
+        webhookUrl,
+      }),
+    ).toEqual([]);
+  });
+
+  it("fails the profile safety check on broadened or incomplete provider state", () => {
+    expect(
+      messagingProfileSafetyIssues(
+        {
+          id: "profile-1",
+          name: "Unexpected profile",
+          webhookUrl: "https://wrong.example/webhook",
+          webhookApiVersion: "1",
+          enabled: false,
+          whitelistedDestinations: ["US", "CA"],
+          dailySpendLimitEnabled: false,
+          dailySpendLimit: "100.00",
+          smartEncoding: false,
+        },
+        {
+          id: "profile-1",
+          name: "OpenVPM provision location-1",
+          webhookUrl: "https://app.example.com/api/webhooks/telnyx",
+        },
+      ),
+    ).toEqual([
+      "profile name mismatch",
+      "webhook URL mismatch",
+      "webhook API version is not v2",
+      "destination allowlist is not US-only",
+      "daily spend limit is not enabled",
+      "daily spend limit is not $10.00",
+      "smart encoding is not enabled",
+    ]);
+  });
+
+  it("uses an explicit PATCH for profile activation and verifies its response", async () => {
+    vi.stubEnv("TELNYX_API_KEY", "KEY123");
+    const profileId = "3fa85f64-5717-4562-b3fc-2c963f66afa6";
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          data: {
+            id: profileId,
+            name: "OpenVPM provision location-1",
+            enabled: true,
+          },
+        }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      updateMessagingProfileEnabled({ profileId, enabled: true }),
+    ).resolves.toMatchObject({ id: profileId, enabled: true });
+    expect(fetchMock).toHaveBeenCalledWith(
+      `https://api.telnyx.com/v2/messaging_profiles/${profileId}`,
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ enabled: true }),
+      }),
+    );
+  });
+
+  it.each([408, 429, 500, 503])(
+    "classifies a profile-activation HTTP %s as uncertain",
+    async (status) => {
+      vi.stubEnv("TELNYX_API_KEY", "KEY123");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          new Response(JSON.stringify({ errors: [{ detail: "temporary" }] }), {
+            status,
+          }),
+        ),
+      );
+
+      await expect(
+        updateMessagingProfileEnabled({
+          profileId: "profile-123",
+          enabled: true,
+        }),
+      ).rejects.toBeInstanceOf(TelnyxMutationUncertainError);
+    },
+  );
 
   it.each([408, 429, 500, 503])(
     "classifies a messaging-profile HTTP %s as uncertain",

@@ -1377,7 +1377,7 @@ describe("messaging location target safety", () => {
   });
 
   it("rejects enabling SMS before carrier registration is active", async () => {
-    const { db, updateSet } = createDb({
+    const { db, updateSet, updateWhere } = createDb({
       selectResults: [[{ id: LOCATION_ID }], []],
     });
 
@@ -1455,7 +1455,7 @@ describe("messaging location target safety", () => {
     expect(mocks.sendSms).not.toHaveBeenCalled();
   });
 
-  it("allows one explicitly allowlisted active Telnyx hosted location to be enabled", async () => {
+  it("requires a fresh provider-profile attestation for hosted enablement", async () => {
     vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
     vi.stubEnv("MESSAGING_SENDING_ENABLED", "true");
     vi.stubEnv("MESSAGING_SENDING_PRACTICE_IDS", PRACTICE_ID);
@@ -1468,10 +1468,42 @@ describe("messaging location target safety", () => {
           trialEndsAt: null,
         },
       ],
+      selectResults: [[{ id: PRACTICE_ID }], [{ id: LOCATION_ID }], []],
+    });
+
+    await expect(
+      callerWithDb(db).setEnabled({ locationId: LOCATION_ID, enabled: true }),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("freshly verify"),
+    });
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("allows one explicitly allowlisted active Telnyx hosted location to be enabled", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    vi.stubEnv("MESSAGING_SENDING_ENABLED", "true");
+    vi.stubEnv("MESSAGING_SENDING_PRACTICE_IDS", PRACTICE_ID);
+    vi.stubEnv("MESSAGING_SENDING_LOCATION_IDS", LOCATION_ID);
+    const { db, updateSet, updateWhere } = createDb({
+      practiceRows: [
+        {
+          tier: "cloud",
+          billingStatus: "active",
+          trialEndsAt: null,
+        },
+      ],
       selectResults: [
         [{ id: PRACTICE_ID }],
         [{ id: LOCATION_ID }],
-        [{ locationId: LOCATION_ID, provider: "telnyx" }],
+        [
+          {
+            locationId: LOCATION_ID,
+            provider: "telnyx",
+            providerProfileReady: true,
+            providerProfileSyncedAt: new Date(),
+          },
+        ],
         [],
       ],
       updateRows: [{ enabled: true }],
@@ -1484,6 +1516,10 @@ describe("messaging location target safety", () => {
       enabled: true,
       updatedAt: expect.any(Date),
     });
+    const condition = updateWhere.mock.calls[0]?.[0];
+    expect(
+      sqlIncludesColumnParamPair(condition, "provider_profile_ready", true),
+    ).toBe(true);
   });
 
   it("rejects test sends when no active registered sender exists", async () => {
@@ -1684,6 +1720,31 @@ describe("messaging location sender join scoping", () => {
     );
     expect(source).toContain(
       "eq(locationMessaging.practiceId, opts.practiceId!)",
+    );
+  });
+
+  it("requires a fresh verified provider profile at both hosted enablement writes", () => {
+    const source = readSource("server/routers/messaging.ts");
+
+    expect(source).toContain(
+      "HOSTED_PROVIDER_PROFILE_ATTESTATION_MAX_AGE_MS",
+    );
+    expect(source.match(/eq\(locationMessaging\.providerProfileReady, true\)/g)).toHaveLength(
+      2,
+    );
+    expect(
+      source.match(
+        /gte\(\s*locationMessaging\.providerProfileSyncedAt/g,
+      ),
+    ).toHaveLength(2);
+    expect(source).toContain("OpenVPM must freshly verify");
+  });
+
+  it("fails closed for migrated hosted senders until provider readiness is verified", () => {
+    const source = readSource("lib/messaging/index.ts");
+
+    expect(source).toContain(
+      "eq(locationMessaging.providerProfileReady, true)",
     );
   });
 });
