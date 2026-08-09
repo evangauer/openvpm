@@ -1708,11 +1708,11 @@ function RecordsPageContent() {
                                         note.appointmentId ? (
                                         <div className="mt-3 flex justify-end">
                                           <Button asChild size="sm" variant="outline">
-                                            <Link
+                                            <a
                                               href={`/records/new-soap/${encodeURIComponent(patientId)}?appointmentId=${encodeURIComponent(note.appointmentId)}`}
                                             >
                                               Review encounter SOAP draft
-                                            </Link>
+                                            </a>
                                           </Button>
                                         </div>
                                       ) : note.correctionId &&
