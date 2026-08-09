@@ -1457,10 +1457,9 @@ describe("appointments display join scoping", () => {
     "utf8"
   );
 
-  it("keeps joined patient, client, staff, type, and room rows tenant scoped", () => {
+  it("keeps joined patient, client, type, and room rows tenant scoped and active", () => {
     for (const [table, foreignKey] of [
       ["clients", "appointments.clientId"],
-      ["users", "appointments.doctorId"],
       ["appointmentTypes", "appointments.typeId"],
       ["rooms", "appointments.roomId"],
     ]) {
@@ -1474,6 +1473,15 @@ describe("appointments display join scoping", () => {
         )
       );
     }
+  });
+
+  it("keeps historical doctor attribution tenant scoped after deactivation", () => {
+    expect(source).toMatch(
+      /leftJoin\(\s*users,\s*and\(\s*eq\(appointments\.doctorId, users\.id\),\s*eq\(users\.practiceId, ctx\.practiceId\)\s*\)\s*\)/s
+    );
+    expect(source).not.toMatch(
+      /eq\(appointments\.doctorId, users\.id\)[\s\S]{0,120}?isNull\(users\.deletedAt\)/s
+    );
   });
 
   it("keeps displayed patients tied to the appointment client", () => {

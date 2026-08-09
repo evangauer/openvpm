@@ -1503,8 +1503,7 @@ export const recordsRouter = createRouter({
           users,
           and(
             eq(vaccinationRecords.administeredBy, users.id),
-            eq(users.practiceId, ctx.practiceId),
-            isNull(users.deletedAt)
+            eq(users.practiceId, ctx.practiceId)
           )
         )
         .leftJoin(
@@ -1781,8 +1780,7 @@ export const recordsRouter = createRouter({
           users,
           and(
             eq(prescriptions.prescribedBy, users.id),
-            eq(users.practiceId, ctx.practiceId),
-            isNull(users.deletedAt)
+            eq(users.practiceId, ctx.practiceId)
           )
         )
         .leftJoin(
@@ -3511,8 +3509,7 @@ export const recordsRouter = createRouter({
           users,
           and(
             eq(procedures.performedBy, users.id),
-            eq(users.practiceId, ctx.practiceId),
-            isNull(users.deletedAt)
+            eq(users.practiceId, ctx.practiceId)
           )
         )
         .where(

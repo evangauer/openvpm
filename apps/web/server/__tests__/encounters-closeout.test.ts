@@ -181,6 +181,20 @@ describe("encounter closeout database locking", () => {
 
     expect(source).toContain('.for("update", { of: appointments })');
   });
+
+  it("preserves visit-work resolver attribution after staff deactivation", () => {
+    const source = readFileSync(
+      new URL("../routers/encounters.ts", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toMatch(
+      /leftJoin\(\s*users,\s*and\(\s*eq\(visitWorkItems\.resolvedBy, users\.id\),\s*eq\(users\.practiceId, ctx\.practiceId\)\s*,?\s*\)\s*,?\s*\)/s
+    );
+    expect(source).not.toMatch(
+      /eq\(visitWorkItems\.resolvedBy, users\.id\)[\s\S]{0,120}?isNull\(users\.deletedAt\)/s
+    );
+  });
 });
 
 describe("encounter prescription lifecycle semantics", () => {

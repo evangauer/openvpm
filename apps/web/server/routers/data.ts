@@ -2156,7 +2156,6 @@ export const dataRouter = createRouter({
           eq(appointments.doctorId, users.id),
           eq(users.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(users.deletedAt),
         ),
       )
       .leftJoin(

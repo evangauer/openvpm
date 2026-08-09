@@ -531,8 +531,7 @@ export const appointmentsRouter = createRouter({
           users,
           and(
             eq(appointments.doctorId, users.id),
-            eq(users.practiceId, ctx.practiceId),
-            isNull(users.deletedAt)
+            eq(users.practiceId, ctx.practiceId)
           )
         )
         .leftJoin(
@@ -580,8 +579,7 @@ export const appointmentsRouter = createRouter({
           users,
           and(
             eq(appointments.doctorId, users.id),
-            eq(users.practiceId, ctx.practiceId),
-            isNull(users.deletedAt)
+            eq(users.practiceId, ctx.practiceId)
           )
         )
         .leftJoin(
@@ -650,8 +648,7 @@ export const appointmentsRouter = createRouter({
           users,
           and(
             eq(appointments.doctorId, users.id),
-            eq(users.practiceId, ctx.practiceId),
-            isNull(users.deletedAt)
+            eq(users.practiceId, ctx.practiceId)
           )
         )
         .leftJoin(

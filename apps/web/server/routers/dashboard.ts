@@ -321,8 +321,7 @@ export const dashboardRouter = createRouter({
         and(
           eq(appointments.doctorId, users.id),
           eq(users.practiceId, ctx.practiceId),
-          activePracticePredicate(ctx.practiceId),
-          isNull(users.deletedAt)
+          activePracticePredicate(ctx.practiceId)
         )
       )
       .where(

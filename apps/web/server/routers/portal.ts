@@ -646,8 +646,7 @@ export const portalRouter = createRouter({
           users,
           and(
             eq(appointments.doctorId, users.id),
-            eq(users.practiceId, client.practiceId),
-            isNull(users.deletedAt)
+            eq(users.practiceId, client.practiceId)
           )
         )
         .leftJoin(

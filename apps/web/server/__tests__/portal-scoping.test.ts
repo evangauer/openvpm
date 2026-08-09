@@ -228,9 +228,12 @@ describe("portal public read scoping", () => {
     expect(activePatientFilters?.length).toBeGreaterThanOrEqual(3);
   });
 
-  it("keeps portal appointment doctor display rows scoped to active practice users", () => {
+  it("keeps portal doctor history tenant scoped after staff deactivation", () => {
     expect(src).toMatch(
-      /leftJoin\(\s*users,\s*and\(\s*eq\(appointments\.doctorId, users\.id\),\s*eq\(users\.practiceId, client\.practiceId\),\s*isNull\(users\.deletedAt\)\s*\)\s*\)/s
+      /leftJoin\(\s*users,\s*and\(\s*eq\(appointments\.doctorId, users\.id\),\s*eq\(users\.practiceId, client\.practiceId\)\s*\)\s*\)/s
+    );
+    expect(src).not.toMatch(
+      /eq\(appointments\.doctorId, users\.id\)[\s\S]{0,120}?isNull\(users\.deletedAt\)/s
     );
   });
 

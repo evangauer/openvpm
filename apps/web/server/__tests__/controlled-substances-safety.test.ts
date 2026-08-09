@@ -656,15 +656,21 @@ describe("controlled substance list scoping", () => {
     "utf8"
   );
 
-  it("keeps displayed patient and staff joins tenant scoped and active", () => {
+  it("keeps patients active while preserving former-staff ledger attribution", () => {
     expect(source).toMatch(
       /leftJoin\(\s*patients,\s*and\(\s*eq\(controlledSubstanceLog\.patientId, patients\.id\),\s*eq\(patients\.practiceId, ctx\.practiceId\),\s*activePracticePredicate\(ctx\.practiceId\),\s*isNull\(patients\.deletedAt\)\s*\)\s*\)/s
     );
     expect(source).toMatch(
-      /leftJoin\(\s*performer,\s*and\(\s*eq\(controlledSubstanceLog\.performedBy, performer\.id\),\s*eq\(performer\.practiceId, ctx\.practiceId\),\s*activePracticePredicate\(ctx\.practiceId\),\s*isNull\(performer\.deletedAt\)\s*\)\s*\)/s
+      /leftJoin\(\s*performer,\s*and\(\s*eq\(controlledSubstanceLog\.performedBy, performer\.id\),\s*eq\(performer\.practiceId, ctx\.practiceId\),\s*activePracticePredicate\(ctx\.practiceId\)\s*,?\s*\)\s*\)/s
     );
     expect(source).toMatch(
-      /leftJoin\(\s*witness,\s*and\(\s*eq\(controlledSubstanceLog\.witnessedBy, witness\.id\),\s*eq\(witness\.practiceId, ctx\.practiceId\),\s*activePracticePredicate\(ctx\.practiceId\),\s*isNull\(witness\.deletedAt\)\s*\)\s*\)/s
+      /leftJoin\(\s*witness,\s*and\(\s*eq\(controlledSubstanceLog\.witnessedBy, witness\.id\),\s*eq\(witness\.practiceId, ctx\.practiceId\),\s*activePracticePredicate\(ctx\.practiceId\)\s*,?\s*\)\s*\)/s
+    );
+    expect(source).not.toMatch(
+      /eq\(controlledSubstanceLog\.performedBy, performer\.id\)[\s\S]{0,180}?isNull\(performer\.deletedAt\)/s
+    );
+    expect(source).not.toMatch(
+      /eq\(controlledSubstanceLog\.witnessedBy, witness\.id\)[\s\S]{0,180}?isNull\(witness\.deletedAt\)/s
     );
   });
 

@@ -331,17 +331,25 @@ describe("data CSV export safety", () => {
     );
   });
 
-  it("scopes appointment export display joins to active tenant rows", () => {
+  it("scopes appointment export entity joins to active tenant rows", () => {
     for (const [table, foreignKey] of [
       ["patients", "appointments.patientId"],
       ["clients", "appointments.clientId"],
-      ["users", "appointments.doctorId"],
       ["appointmentTypes", "appointments.typeId"],
     ]) {
       expect(source).toMatch(
         scopedJoinPattern("leftJoin", table, foreignKey)
       );
     }
+  });
+
+  it("preserves exported doctor attribution after staff deactivation", () => {
+    expect(source).toMatch(
+      /leftJoin\(\s*users,\s*and\(\s*eq\(appointments\.doctorId, users\.id\),[\s\S]*?eq\(users\.practiceId, ctx\.practiceId\),?[\s\S]*?\)\s*\)/s
+    );
+    expect(source).not.toMatch(
+      /eq\(appointments\.doctorId, users\.id\)[\s\S]{0,180}?isNull\(users\.deletedAt\)/s
+    );
   });
 
   it("keeps appointment export patient names scoped to the appointment client", () => {

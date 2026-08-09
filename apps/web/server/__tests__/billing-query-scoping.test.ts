@@ -50,12 +50,18 @@ describe("billing query scoping", () => {
     expect(createInvoiceBlock).toContain("throw practiceNotFound()");
   });
 
-  it("keeps billing staff display joins tenant scoped and active", () => {
+  it("keeps billing actor display joins tenant scoped after deactivation", () => {
     expect(source).toMatch(
-      /leftJoin\(\s*users,\s*and\(\s*eq\(payments\.receivedBy, users\.id\),\s*eq\(users\.practiceId, ctx\.practiceId\),\s*isNull\(users\.deletedAt\)\s*,?\s*\)\s*,?\s*\)/s
+      /leftJoin\(\s*users,\s*and\(\s*eq\(payments\.receivedBy, users\.id\),\s*eq\(users\.practiceId, ctx\.practiceId\)\s*,?\s*\)\s*,?\s*\)/s
     );
     expect(source).toMatch(
-      /leftJoin\(\s*users,\s*and\(\s*eq\(invoiceAdjustments\.createdBy, users\.id\),\s*eq\(users\.practiceId, ctx\.practiceId\),\s*isNull\(users\.deletedAt\)\s*,?\s*\)\s*,?\s*\)/s
+      /leftJoin\(\s*users,\s*and\(\s*eq\(invoiceAdjustments\.createdBy, users\.id\),\s*eq\(users\.practiceId, ctx\.practiceId\)\s*,?\s*\)\s*,?\s*\)/s
+    );
+    expect(source).not.toMatch(
+      /eq\(payments\.receivedBy, users\.id\)[\s\S]{0,120}?isNull\(users\.deletedAt\)/s
+    );
+    expect(source).not.toMatch(
+      /eq\(invoiceAdjustments\.createdBy, users\.id\)[\s\S]{0,120}?isNull\(users\.deletedAt\)/s
     );
   });
 

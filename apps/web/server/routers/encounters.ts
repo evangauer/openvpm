@@ -969,8 +969,7 @@ export const encountersRouter = createRouter({
             users,
             and(
               eq(visitWorkItems.resolvedBy, users.id),
-              eq(users.practiceId, ctx.practiceId),
-              isNull(users.deletedAt)
+              eq(users.practiceId, ctx.practiceId)
             )
           )
           .where(

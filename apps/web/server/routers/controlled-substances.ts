@@ -403,8 +403,7 @@ export const controlledSubstancesRouter = createRouter({
             and(
               eq(controlledSubstanceLog.performedBy, performer.id),
               eq(performer.practiceId, ctx.practiceId),
-              activePracticePredicate(ctx.practiceId),
-              isNull(performer.deletedAt)
+              activePracticePredicate(ctx.practiceId)
             )
           )
           .leftJoin(
@@ -412,8 +411,7 @@ export const controlledSubstancesRouter = createRouter({
             and(
               eq(controlledSubstanceLog.witnessedBy, witness.id),
               eq(witness.practiceId, ctx.practiceId),
-              activePracticePredicate(ctx.practiceId),
-              isNull(witness.deletedAt)
+              activePracticePredicate(ctx.practiceId)
             )
           )
           .where(and(...conditions))

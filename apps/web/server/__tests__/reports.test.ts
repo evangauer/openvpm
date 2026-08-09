@@ -271,7 +271,9 @@ describe("reports", () => {
       source.match(/activePracticePredicate\(ctx\.practiceId\)/g)?.length ?? 0
     ).toBeGreaterThanOrEqual(6);
     expect(source).toContain("eq(users.practiceId, ctx.practiceId)");
-    expect(source).toContain("isNull(users.deletedAt)");
+    expect(source).not.toMatch(
+      /eq\(appointments\.doctorId, users\.id\)[\s\S]{0,180}?isNull\(users\.deletedAt\)/s
+    );
     expect(source).toContain("isNull(invoiceItems.deletedAt)");
     expect(source).toContain("name: invoiceItems.description");
     expect(source).toContain(".groupBy(invoiceItems.description)");

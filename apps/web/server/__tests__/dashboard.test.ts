@@ -151,6 +151,9 @@ describe("dashboard router", () => {
     expect(source).toContain("eq(invoices.appointmentId, appointments.id)");
     expect(source).toContain("eq(appointments.practiceId, ctx.practiceId)");
     expect(source).toContain("eq(users.practiceId, ctx.practiceId)");
+    expect(source).not.toMatch(
+      /eq\(appointments\.doctorId, users\.id\)[\s\S]{0,180}?isNull\(users\.deletedAt\)/s
+    );
     expect(
       source.match(/activePracticePredicate\(ctx\.practiceId\)/g)?.length ?? 0
     ).toBeGreaterThanOrEqual(10);
@@ -164,7 +167,7 @@ describe("dashboard router", () => {
       /eq\(patients\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(patients\.deletedAt\)/
     );
     expect(source).toMatch(
-      /eq\(users\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(users\.deletedAt\)/
+      /eq\(appointments\.doctorId, users\.id\),\s+eq\(users\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\)/
     );
     expect(source).not.toContain(
       "date_trunc('day', ${appointments.startTime})"

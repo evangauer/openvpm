@@ -3314,8 +3314,7 @@ export const billingRouter = createRouter({
           users,
           and(
             eq(payments.receivedBy, users.id),
-            eq(users.practiceId, ctx.practiceId),
-            isNull(users.deletedAt)
+            eq(users.practiceId, ctx.practiceId)
           )
         )
         .where(
@@ -3847,8 +3846,7 @@ export const billingRouter = createRouter({
           users,
           and(
             eq(invoiceAdjustments.createdBy, users.id),
-            eq(users.practiceId, ctx.practiceId),
-            isNull(users.deletedAt)
+            eq(users.practiceId, ctx.practiceId)
           )
         )
         .where(

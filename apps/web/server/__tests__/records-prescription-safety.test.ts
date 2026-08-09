@@ -678,7 +678,7 @@ describe("records list query scoping", () => {
     "utf8",
   );
 
-  it("keeps joined staff rows tenant scoped and active", () => {
+  it("keeps historical clinical actors tenant scoped after deactivation", () => {
     for (const foreignKey of [
       "vaccinationRecords.administeredBy",
       "prescriptions.prescribedBy",
@@ -689,7 +689,16 @@ describe("records list query scoping", () => {
           `leftJoin\\(\\s*users,\\s*and\\(\\s*eq\\(${foreignKey.replace(
             ".",
             "\\.",
-          )}, users\\.id\\),\\s*eq\\(users\\.practiceId, ctx\\.practiceId\\),\\s*isNull\\(users\\.deletedAt\\)\\s*,?\\s*\\)\\s*,?\\s*\\)`,
+          )}, users\\.id\\),\\s*eq\\(users\\.practiceId, ctx\\.practiceId\\)\\s*,?\\s*\\)\\s*,?\\s*\\)`,
+          "s",
+        ),
+      );
+      expect(source).not.toMatch(
+        new RegExp(
+          `eq\\(${foreignKey.replace(
+            ".",
+            "\\.",
+          )}, users\\.id\\)[\\s\\S]{0,120}?isNull\\(users\\.deletedAt\\)`,
           "s",
         ),
       );
