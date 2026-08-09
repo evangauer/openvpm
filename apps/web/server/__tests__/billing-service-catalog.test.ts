@@ -18,6 +18,7 @@ const UPDATED_AT = new Date("2026-08-07T15:00:00.000Z");
 const EXPECTED_SERVICE = {
   name: "Exam",
   defaultPrice: "65.00",
+  taxable: true,
 };
 
 function callerWithDb(db: Record<string, unknown>, role = "admin") {
@@ -142,6 +143,7 @@ describe("billing service catalog", () => {
       code: null,
       category: null,
       defaultPrice: "65.00",
+      taxable: true,
       updatedAt: UPDATED_AT,
     };
     const { db, insertValues } = createDb({
@@ -164,6 +166,7 @@ describe("billing service catalog", () => {
       code: null,
       category: null,
       defaultPrice: "65.00",
+      taxable: true,
     });
   });
 
@@ -238,6 +241,7 @@ describe("billing service catalog", () => {
         code: "PREG",
         category: "Herd",
         defaultPrice: "18",
+        taxable: false,
       })
     ).resolves.toEqual(updated);
 
@@ -246,6 +250,7 @@ describe("billing service catalog", () => {
       code: "PREG",
       category: "Herd",
       defaultPrice: "18.00",
+      taxable: false,
     });
   });
 
@@ -339,6 +344,7 @@ describe("billing service catalog", () => {
     );
     expect(catalogBlock).toContain("lockServiceCatalog");
     expect(catalogBlock).toContain("assertServiceIdentityAvailable");
-    expect(catalogBlock).not.toContain("taxable: input.taxable");
+    expect(catalogBlock).toContain("taxable: input.taxable");
+    expect(source).toContain("eq(services.taxable, expected.taxable)");
   });
 });

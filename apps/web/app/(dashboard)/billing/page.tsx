@@ -1241,7 +1241,7 @@ function InvoiceRow({
                         >
                           <td className="py-2">{item.description}</td>
                           <td className="py-2 capitalize text-muted-foreground">
-                            {item.itemType}
+                            {item.itemType} · {item.taxable ? "taxable" : "not taxable"}
                           </td>
                           <td className="py-2 text-right tabular-nums">
                             {item.quantity}

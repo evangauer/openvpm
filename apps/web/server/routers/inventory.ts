@@ -99,6 +99,7 @@ const productCreateInput = z.object({
     INVENTORY_PRODUCT_CATEGORY_MAX_LENGTH
   ),
   unitPrice: moneyInput,
+  taxable: z.boolean().default(true),
   costPrice: moneyInput.optional(),
   stockQuantity: nonnegativeIntegerColumnInput.default(0),
   reorderPoint: nonnegativeIntegerColumnInput.default(10),
@@ -122,6 +123,7 @@ const productUpdateInput = z
       INVENTORY_PRODUCT_CATEGORY_MAX_LENGTH
     ),
     unitPrice: moneyInput.optional(),
+    taxable: z.boolean().optional(),
     costPrice: moneyInput.optional(),
     reorderPoint: nonnegativeIntegerColumnInput.optional(),
     lotNumber: optionalTrimmedString(
@@ -297,6 +299,7 @@ export const inventoryRouter = createRouter({
           sku: input.sku ?? null,
           category: input.category ?? null,
           unitPrice: input.unitPrice,
+          taxable: input.taxable,
           costPrice: input.costPrice ?? null,
           stockQuantity: input.stockQuantity,
           reorderPoint: input.reorderPoint,

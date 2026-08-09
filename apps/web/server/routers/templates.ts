@@ -17,6 +17,10 @@ import {
   optionalClinicalTextInput,
 } from "@/lib/records/clinical-inputs";
 import { centsToMoney, moneyToCents } from "@/lib/billing/invoice-balance";
+import {
+  calculateInvoiceTaxTotals,
+  InvoiceTaxCalculationError,
+} from "@/lib/billing/invoice-tax";
 import { computeStockDeductions } from "@/lib/inventory/dispense";
 import {
   TREATMENT_TEMPLATE_CATEGORY_MAX_LENGTH,
@@ -190,7 +194,7 @@ async function lockActiveTemplateCatalogItems(
     serviceIds.length === 0
       ? []
       : await ctx.db
-          .select({ id: services.id })
+          .select({ id: services.id, taxable: services.taxable })
           .from(services)
           .where(
             and(
@@ -211,7 +215,7 @@ async function lockActiveTemplateCatalogItems(
     productIds.length === 0
       ? []
       : await ctx.db
-          .select({ id: products.id })
+          .select({ id: products.id, taxable: products.taxable })
           .from(products)
           .where(
             and(
@@ -226,6 +230,60 @@ async function lockActiveTemplateCatalogItems(
 
   if (lockedProducts.length !== productIds.length) {
     throw new TRPCError({ code: "NOT_FOUND", message: "Product not found" });
+  }
+
+  return new Map<string, boolean>([
+    ...lockedServices.map(
+      (row) => [`service:${row.id}`, row.taxable ?? true] as const,
+    ),
+    ...lockedProducts.map(
+      (row) => [`product:${row.id}`, row.taxable ?? true] as const,
+    ),
+  ]);
+}
+
+function templateItemTaxable(
+  item: Pick<TemplateInvoiceItem, "itemType" | "itemId">,
+  taxabilityByReference: ReadonlyMap<string, boolean>,
+): boolean {
+  if (!item.itemId) return true;
+  const taxable = taxabilityByReference.get(`${item.itemType}:${item.itemId}`);
+  if (taxable === undefined) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "Template catalog item not found",
+    });
+  }
+  return taxable;
+}
+
+function templateInvoiceTaxTotals(
+  items: readonly {
+    quantity: number;
+    unitPrice: string;
+    taxable: boolean;
+  }[],
+  taxRatePercent: string,
+) {
+  try {
+    return calculateInvoiceTaxTotals(
+      items.map((row) => ({
+        lineTotalCents: row.quantity * moneyToCents(row.unitPrice),
+        taxable: row.taxable,
+      })),
+      taxRatePercent,
+    );
+  } catch (error) {
+    if (error instanceof InvoiceTaxCalculationError) {
+      throw new TRPCError({
+        code:
+          error.reason === "invalid_tax_rate"
+            ? "PRECONDITION_FAILED"
+            : "BAD_REQUEST",
+        message: error.message,
+      });
+    }
+    throw error;
   }
 }
 
@@ -686,7 +744,7 @@ export const templatesRouter = createRouter({
         // references still need to be valid when the template is used. This
         // prevents archived services or products from silently being charged
         // on new invoices.
-        await lockActiveTemplateCatalogItems(
+        const taxabilityByReference = await lockActiveTemplateCatalogItems(
           { db: tx, practiceId: ctx.practiceId },
           items.map((item) => ({
             itemType: item.itemType,
@@ -712,6 +770,7 @@ export const templatesRouter = createRouter({
             total: centsToMoney(totalCents),
             itemType: item.itemType,
             itemId: item.itemId,
+            taxable: templateItemTaxable(item, taxabilityByReference),
           };
         });
 
@@ -730,6 +789,7 @@ export const templatesRouter = createRouter({
           .select({
             quantity: invoiceItems.quantity,
             unitPrice: invoiceItems.unitPrice,
+            taxable: invoiceItems.taxable,
           })
           .from(invoiceItems)
           .where(
@@ -739,9 +799,6 @@ export const templatesRouter = createRouter({
             )
           );
 
-        const subtotalCents = allItems.reduce((sum, row) => {
-          return sum + row.quantity * moneyToCents(row.unitPrice);
-        }, 0);
         // Tax rate is configured per practice (region-aware), not hardcoded.
         const [practice] = await tx
           .select({ taxRatePercent: practices.taxRatePercent })
@@ -751,14 +808,15 @@ export const templatesRouter = createRouter({
         if (!practice) {
           throw practiceNotFound();
         }
-        const taxRate = parseFloat(practice.taxRatePercent ?? "8.00") / 100;
-        const taxCents = Math.round(subtotalCents * taxRate);
-        const totalCents = subtotalCents + taxCents;
+        const totals = templateInvoiceTaxTotals(
+          allItems.map((row) => ({ ...row, taxable: row.taxable ?? true })),
+          practice.taxRatePercent ?? "8.00",
+        );
 
         if (
-          subtotalCents > TREATMENT_TEMPLATE_MAX_MONEY_CENTS ||
-          taxCents > TREATMENT_TEMPLATE_MAX_MONEY_CENTS ||
-          totalCents > TREATMENT_TEMPLATE_MAX_MONEY_CENTS
+          totals.subtotalCents > TREATMENT_TEMPLATE_MAX_MONEY_CENTS ||
+          totals.taxCents > TREATMENT_TEMPLATE_MAX_MONEY_CENTS ||
+          totals.totalCents > TREATMENT_TEMPLATE_MAX_MONEY_CENTS
         ) {
           throw new TRPCError({
             code: "BAD_REQUEST",
@@ -769,9 +827,9 @@ export const templatesRouter = createRouter({
         const [updatedInvoice] = await tx
           .update(invoices)
           .set({
-            subtotal: centsToMoney(subtotalCents),
-            tax: centsToMoney(taxCents),
-            total: centsToMoney(totalCents),
+            subtotal: centsToMoney(totals.subtotalCents),
+            tax: centsToMoney(totals.taxCents),
+            total: centsToMoney(totals.totalCents),
           })
           .where(
             and(

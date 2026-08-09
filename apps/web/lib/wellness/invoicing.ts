@@ -11,6 +11,10 @@ import {
   wellnessPlans,
 } from "@openpims/db";
 import { centsToMoney, moneyToCents } from "@/lib/billing/invoice-balance";
+import {
+  calculateInvoiceTaxTotals,
+  InvoiceTaxCalculationError,
+} from "@/lib/billing/invoice-tax";
 import { computeNextBillingDate } from "@/lib/wellness/billing";
 
 export interface GeneratedWellnessInvoice {
@@ -23,6 +27,29 @@ export interface GeneratedWellnessInvoice {
 export interface GenerateDueWellnessInvoicesResult {
   generated: number;
   invoices: GeneratedWellnessInvoice[];
+}
+
+function wellnessInvoiceTaxTotals(
+  subtotalCents: number,
+  taxRatePercent: string,
+) {
+  try {
+    return calculateInvoiceTaxTotals(
+      [{ lineTotalCents: subtotalCents, taxable: true }],
+      taxRatePercent,
+    );
+  } catch (error) {
+    if (error instanceof InvoiceTaxCalculationError) {
+      throw new TRPCError({
+        code:
+          error.reason === "invalid_tax_rate"
+            ? "PRECONDITION_FAILED"
+            : "BAD_REQUEST",
+        message: error.message,
+      });
+    }
+    throw error;
+  }
 }
 
 export async function generateDueWellnessInvoices(opts: {
@@ -44,8 +71,6 @@ export async function generateDueWellnessInvoices(opts: {
     if (!practice) {
       return { generated: 0, invoices: [] };
     }
-
-    const taxRate = Number.parseFloat(practice.taxRatePercent ?? "8.00") / 100;
 
     const conditions: SQL[] = [
       eq(wellnessEnrollments.practiceId, opts.practiceId),
@@ -106,11 +131,15 @@ export async function generateDueWellnessInvoices(opts: {
     const generated: GeneratedWellnessInvoice[] = [];
     for (const row of dueRows) {
       const subtotalCents = moneyToCents(row.price);
-      const taxCents = Math.round(subtotalCents * taxRate);
-      const totalCents = subtotalCents + taxCents;
-      const subtotal = centsToMoney(subtotalCents);
-      const tax = centsToMoney(taxCents);
-      const total = centsToMoney(totalCents);
+      // Wellness plans do not expose a separate tax category, so preserve the
+      // historical all-taxable behavior and persist it on the invoice line.
+      const totals = wellnessInvoiceTaxTotals(
+        subtotalCents,
+        practice.taxRatePercent ?? "8.00",
+      );
+      const subtotal = centsToMoney(totals.subtotalCents);
+      const tax = centsToMoney(totals.taxCents);
+      const total = centsToMoney(totals.totalCents);
       const nextBillingDate = computeNextBillingDate(
         row.nextBillingDate,
         row.billingInterval
@@ -138,6 +167,7 @@ export async function generateDueWellnessInvoices(opts: {
         quantity: 1,
         unitPrice: subtotal,
         total: subtotal,
+        taxable: true,
         itemType: "service",
         itemId: null,
       });

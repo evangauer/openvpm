@@ -56,12 +56,12 @@ import {
   SETTINGS_ADDRESS_MAX_LENGTH,
   SETTINGS_EMAIL_MAX_LENGTH,
   SETTINGS_PHONE_MAX_LENGTH,
-  SETTINGS_TAX_RATE_PATTERN,
   SETTINGS_TIMEZONE_MAX_LENGTH,
   SETTINGS_VAT_NUMBER_MAX_LENGTH,
   SETTINGS_WEBSITE_MAX_LENGTH,
   STAFF_LICENSE_NUMBER_MAX_LENGTH,
   STAFF_NAME_MAX_LENGTH,
+  isValidSettingsTaxRate,
   isSupportedPracticeTimezone,
 } from "@/lib/settings-policy";
 import { sendStaffInviteEmail } from "@/lib/email";
@@ -349,9 +349,9 @@ export const settingsRouter = createRouter({
         taxRatePercent: z
           .string()
           .trim()
-          .regex(
-            SETTINGS_TAX_RATE_PATTERN,
-            "Tax rate must be a number like 20 or 20.00",
+          .refine(
+            isValidSettingsTaxRate,
+            "Tax rate must be between 0 and 100 with at most two decimals",
           )
           .optional(),
         vatNumber: optionalTrimmedString(

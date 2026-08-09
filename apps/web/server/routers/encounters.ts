@@ -683,6 +683,7 @@ export const encountersRouter = createRouter({
               quantity: prescriptions.quantity,
               productId: prescriptions.productId,
               productName: products.name,
+              productTaxable: products.taxable,
               productUnitPrice: dispenseChargeQueue.unitPriceSnapshot,
               dispenseChargeId: dispenseChargeQueue.id,
               dispenseChargeStatus: dispenseChargeQueue.status,
@@ -695,8 +696,7 @@ export const encountersRouter = createRouter({
               products,
               and(
                 eq(prescriptions.productId, products.id),
-                eq(products.practiceId, ctx.practiceId),
-                isNull(products.deletedAt)
+                eq(products.practiceId, ctx.practiceId)
               )
             )
             .leftJoin(

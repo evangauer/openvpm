@@ -198,6 +198,9 @@ export const invoiceItems = pgTable(
     quantity: integer("quantity").notNull().default(1),
     unitPrice: numeric("unit_price", { precision: 10, scale: 2 }).notNull(),
     total: numeric("total", { precision: 10, scale: 2 }).notNull(),
+    // Immutable tax treatment captured when the invoice line is written.
+    // Catalog changes must never rewrite historical invoice totals.
+    taxable: boolean("taxable").notNull().default(true),
     itemType: invoiceItemTypeEnum("item_type").notNull(),
     itemId: uuid("item_id"),
     // A visit-linked prescription already owns the inventory deduction. This
@@ -290,6 +293,7 @@ export const products = pgTable(
     sku: varchar("sku", { length: 64 }),
     category: varchar("category", { length: 128 }),
     unitPrice: numeric("unit_price", { precision: 10, scale: 2 }).notNull(),
+    taxable: boolean("taxable").notNull().default(true),
     costPrice: numeric("cost_price", { precision: 10, scale: 2 }),
     stockQuantity: integer("stock_quantity").notNull().default(0),
     reorderPoint: integer("reorder_point").default(10),

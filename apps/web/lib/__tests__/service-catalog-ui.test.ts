@@ -81,11 +81,11 @@ describe("service catalog settings UX", () => {
     expect(source).toContain("onClick={resetEditState}");
   });
 
-  it("does not promise unsupported per-service tax behavior", () => {
-    expect(source).toContain(
-      "Taxes use the practice-wide rate when an invoice is"
-    );
-    expect(source).not.toContain("taxable");
-    expect(source).not.toContain("Taxable");
+  it("lets clinics configure taxability while preserving invoice snapshots", () => {
+    expect(source).toContain("Mark each service taxable");
+    expect(source).toContain("historical snapshot");
+    expect(source).toContain("taxable: form.taxable");
+    expect(source).toContain('type="checkbox"');
+    expect(source).toContain("Taxable");
   });
 });

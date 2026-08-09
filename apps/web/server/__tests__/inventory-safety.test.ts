@@ -166,6 +166,30 @@ describe("inventory mutation safety", () => {
     expect(source).not.toContain("const todayYmd = ymdFromDate(today)");
   });
 
+  it("persists explicit product taxability inside the tenant-scoped catalog", async () => {
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [[{ id: PRACTICE_ID }]],
+      insertedRows: [{ id: PRODUCT_ID, taxable: false }],
+      updatedRows: [{ id: PRODUCT_ID, taxable: true }],
+    });
+    const caller = callerWithDb(db);
+
+    await caller.create({
+      name: "Tax-exempt medication",
+      unitPrice: "12.50",
+      taxable: false,
+    });
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: PRACTICE_ID,
+        taxable: false,
+      }),
+    );
+
+    await caller.update({ id: PRODUCT_ID, taxable: true });
+    expect(updateSet).toHaveBeenCalledWith({ taxable: true });
+  });
+
   it("requires an active practice for inventory product and supplier access", () => {
     const source = readFileSync("server/routers/inventory.ts", "utf8");
 

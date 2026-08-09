@@ -454,6 +454,38 @@ describe("billing invoice integrity", () => {
     expect(update).toHaveBeenCalledTimes(1);
   });
 
+  it("snapshots authoritative product taxability instead of taxing every line", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [
+        [{ id: CLIENT_ID }],
+        [{ taxRatePercent: "10.00" }],
+        [{ id: PRODUCT_ID, deletedAt: null, taxable: false }],
+      ],
+      invoiceInsert: { id: INVOICE_ID, isEstimate: false },
+      updateReturns: [[{ id: PRODUCT_ID, stockQuantity: 8 }]],
+    });
+
+    await callerWithDb(db).createInvoice({
+      clientId: CLIENT_ID,
+      items: [productLine],
+      isEstimate: false,
+    });
+
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subtotal: "30.00",
+        tax: "0.00",
+        total: "30.00",
+      }),
+    );
+    expect(insertValues).toHaveBeenCalledWith([
+      expect.objectContaining({
+        itemId: PRODUCT_ID,
+        taxable: false,
+      }),
+    ]);
+  });
+
   it("locks referenced catalog rows inside the invoice transaction before writes", async () => {
     const { db, lockCalls } = createDb({
       selectResults: [
@@ -1024,6 +1056,7 @@ describe("billing invoice integrity", () => {
         [{ id: APPOINTMENT_ID }],
         [source],
         [{ taxRatePercent: "0.00" }],
+        [{ id: PRODUCT_ID, taxable: true }],
         [],
       ],
       updateReturns: [
@@ -1084,6 +1117,7 @@ describe("billing invoice integrity", () => {
         [{ id: APPOINTMENT_ID }],
         [source],
         [{ taxRatePercent: "10.00" }],
+        [{ id: PRODUCT_ID, taxable: true }],
         [
           {
             id: INVOICE_ID,
@@ -1092,6 +1126,15 @@ describe("billing invoice integrity", () => {
             status: "draft",
             subtotal: "50.00",
             paidAmount: "0.00",
+          },
+        ],
+        [
+          {
+            itemType: "service",
+            itemId: null,
+            quantity: 1,
+            unitPrice: "50.00",
+            taxable: true,
           },
         ],
       ],

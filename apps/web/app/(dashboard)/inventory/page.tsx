@@ -127,6 +127,7 @@ function AddProductForm({ onClose }: { onClose: () => void }) {
     sku: "",
     category: "",
     unitPrice: "",
+    taxable: true,
     costPrice: "",
     stockQuantity: 0,
     reorderPoint: 10,
@@ -165,6 +166,7 @@ function AddProductForm({ onClose }: { onClose: () => void }) {
       sku: trimmedOrUndefined(form.sku),
       category: trimmedOrUndefined(form.category),
       unitPrice: form.unitPrice.trim(),
+      taxable: form.taxable,
       costPrice: trimmedOrUndefined(form.costPrice),
       stockQuantity: form.stockQuantity,
       reorderPoint: form.reorderPoint,
@@ -215,6 +217,16 @@ function AddProductForm({ onClose }: { onClose: () => void }) {
           onChange={(e) => setForm({ ...form, unitPrice: e.target.value })}
           required
         />
+        <label className="flex h-10 items-center gap-2 rounded-md border border-input px-3 text-sm">
+          <input
+            type="checkbox"
+            checked={form.taxable}
+            onChange={(event) =>
+              setForm({ ...form, taxable: event.target.checked })
+            }
+          />
+          Taxable
+        </label>
         <Input
           type="number"
           min={INVENTORY_MONEY_AMOUNT_MIN}
@@ -298,6 +310,7 @@ function EditProductRow({
     sku: string | null;
     category: string | null;
     unitPrice: string;
+    taxable: boolean;
     costPrice: string | null;
     stockQuantity: number;
     reorderPoint: number | null;
@@ -323,6 +336,7 @@ function EditProductRow({
     sku: product.sku ?? "",
     category: product.category ?? "",
     unitPrice: product.unitPrice,
+    taxable: product.taxable,
     costPrice: product.costPrice ?? "",
     reorderPoint: product.reorderPoint ?? 10,
     lotNumber: product.lotNumber ?? "",
@@ -359,6 +373,7 @@ function EditProductRow({
       sku: trimmedOrUndefined(form.sku),
       category: trimmedOrUndefined(form.category),
       unitPrice: form.unitPrice.trim(),
+      taxable: form.taxable,
       costPrice: trimmedOrUndefined(form.costPrice),
       reorderPoint: form.reorderPoint,
       lotNumber: trimmedOrUndefined(form.lotNumber),
@@ -408,6 +423,18 @@ function EditProductRow({
           onChange={(e) => setForm({ ...form, unitPrice: e.target.value })}
           className="h-8 text-sm text-right"
         />
+      </td>
+      <td className="px-4 py-2">
+        <label className="flex items-center justify-center gap-2 text-xs">
+          <input
+            type="checkbox"
+            checked={form.taxable}
+            onChange={(event) =>
+              setForm({ ...form, taxable: event.target.checked })
+            }
+          />
+          Taxable
+        </label>
       </td>
       <td className="px-4 py-2">
         <Input
@@ -1099,6 +1126,9 @@ export default function InventoryPage() {
                     <th className="px-4 py-3 text-right font-medium text-muted-foreground">
                       Unit Price
                     </th>
+                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                      Tax
+                    </th>
                     <th className="px-4 py-3 text-right font-medium text-muted-foreground">
                       Cost
                     </th>
@@ -1152,6 +1182,9 @@ export default function InventoryPage() {
                         </td>
                         <td className="px-4 py-3 text-right tabular-nums">
                           {formatCurrency(product.unitPrice)}
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {product.taxable ? "Taxable" : "Not taxable"}
                         </td>
                         <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
                           {product.costPrice

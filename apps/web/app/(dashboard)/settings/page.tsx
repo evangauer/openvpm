@@ -109,11 +109,11 @@ import {
   SETTINGS_ADDRESS_MAX_LENGTH,
   SETTINGS_EMAIL_MAX_LENGTH,
   SETTINGS_PHONE_MAX_LENGTH,
-  SETTINGS_TAX_RATE_PATTERN,
   SETTINGS_VAT_NUMBER_MAX_LENGTH,
   SETTINGS_WEBSITE_MAX_LENGTH,
   STAFF_LICENSE_NUMBER_MAX_LENGTH,
   STAFF_NAME_MAX_LENGTH,
+  isValidSettingsTaxRate,
   isSupportedPracticeTimezone,
 } from "@/lib/settings-policy";
 
@@ -481,7 +481,7 @@ function PracticeInfoTab() {
     isOptionalSettingsEmailValid(practiceForm.email) &&
     practiceForm.website.trim().length <= SETTINGS_WEBSITE_MAX_LENGTH &&
     isSupportedPracticeTimezone(practiceForm.timezone) &&
-    SETTINGS_TAX_RATE_PATTERN.test(practiceForm.taxRatePercent.trim()) &&
+    isValidSettingsTaxRate(practiceForm.taxRatePercent) &&
     practiceForm.vatNumber.trim().length <= SETTINGS_VAT_NUMBER_MAX_LENGTH;
 
   if (isLoading) {
@@ -659,7 +659,7 @@ function PracticeInfoTab() {
                   type="number"
                   step="0.01"
                   min="0"
-                  max="999.99"
+                  max="100"
                   value={current.taxRatePercent}
                   onChange={(e) =>
                     handleChange("taxRatePercent", e.target.value)

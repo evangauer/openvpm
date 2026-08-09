@@ -115,6 +115,7 @@ describe("generateDueWellnessInvoices", () => {
       quantity: 1,
       unitPrice: "100.00",
       total: "100.00",
+      taxable: true,
       itemType: "service",
       itemId: null,
     });
@@ -194,9 +195,9 @@ describe("generateDueWellnessInvoices", () => {
       /select\(\{ taxRatePercent: practices\.taxRatePercent \}\)[\s\S]+?where\(and\(eq\(practices\.id, opts\.practiceId\), isNull\(practices\.deletedAt\)\)\)/s
     );
     expect(source).toContain("if (!practice) {");
-    expect(source).toContain(
-      'Number.parseFloat(practice.taxRatePercent ?? "8.00")'
-    );
+    expect(source).toContain("calculateInvoiceTaxTotals(");
+    expect(source).toContain('practice.taxRatePercent ?? "8.00"');
+    expect(source).toContain("taxable: true");
     expect(source).not.toContain("practice?.taxRatePercent");
     expect(source).toContain("patientId: patients.id");
     expect(source).toMatch(

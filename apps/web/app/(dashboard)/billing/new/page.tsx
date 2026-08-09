@@ -27,6 +27,8 @@ import {
   isBillingInvoiceLineTotalValid,
   isBillingInvoiceSubtotalValid,
 } from "@/lib/billing/policy";
+import { centsToMoney, moneyToCents } from "@/lib/billing/invoice-balance";
+import { tryCalculateInvoiceTaxTotals } from "@/lib/billing/invoice-tax";
 
 interface LineItem {
   id: string;
@@ -35,6 +37,7 @@ interface LineItem {
   unitPrice: string;
   itemType: "service" | "product";
   itemId?: string;
+  taxable: boolean;
 }
 
 function canManageBillingRole(role?: string | null): boolean {
@@ -218,23 +221,24 @@ function NewInvoiceForm() {
   // from the practice's configured (region-aware) rate.
   const taxPercent =
     taxConfigReady && taxConfig ? taxConfig.taxRatePercent : "0.00";
-  const taxRate = parseFloat(taxPercent) / 100;
   const currency = taxConfigReady && taxConfig ? taxConfig.currency : "usd";
   const country = taxConfigReady && taxConfig ? taxConfig.country : "US";
   const fmt = (v: number | string | null | undefined) =>
     formatCurrency(v, currency, country);
-  const { subtotal, tax, total } = useMemo(() => {
-    const sub = items.reduce(
-      (sum, item) => sum + item.quantity * parseFloat(item.unitPrice || "0"),
-      0
-    );
-    const t = Math.round(sub * taxRate * 100) / 100;
-    return {
-      subtotal: sub,
-      tax: t,
-      total: Math.round((sub + t) * 100) / 100,
-    };
-  }, [items, taxRate]);
+  const previewTotals = useMemo(
+    () =>
+      tryCalculateInvoiceTaxTotals(
+      items.map((item) => ({
+        lineTotalCents: item.quantity * moneyToCents(item.unitPrice || "0"),
+        taxable: item.taxable,
+      })),
+      taxPercent,
+      ),
+    [items, taxPercent],
+  );
+  const subtotal = centsToMoney(previewTotals?.subtotalCents ?? 0);
+  const tax = centsToMoney(previewTotals?.taxCents ?? 0);
+  const total = centsToMoney(previewTotals?.totalCents ?? 0);
   const trimmedItemDescription = itemDescription.trim();
   const isDraftLineItemValid =
     trimmedItemDescription.length > 0 &&
@@ -255,6 +259,7 @@ function NewInvoiceForm() {
     items.length > 0 &&
     items.length <= BILLING_INVOICE_MAX_ITEMS &&
     isBillingInvoiceSubtotalValid(items) &&
+    Boolean(previewTotals) &&
     !createInvoice.isPending;
 
   function handleServiceSelect(serviceId: string) {
@@ -278,6 +283,7 @@ function NewInvoiceForm() {
         unitPrice: itemUnitPrice.trim(),
         itemType: "service",
         itemId: service?.id,
+        taxable: service?.taxable ?? true,
       },
     ]);
     setSelectedServiceId("");
@@ -557,7 +563,12 @@ function NewInvoiceForm() {
                         key={item.id}
                         className="border-b border-border/50 last:border-0"
                       >
-                        <td className="py-2">{item.description}</td>
+                        <td className="py-2">
+                          {item.description}
+                          <span className="ml-2 text-xs text-muted-foreground">
+                            {item.taxable ? "Taxable" : "Not taxable"}
+                          </span>
+                        </td>
                         <td className="py-2 text-right tabular-nums">
                           {item.quantity}
                         </td>
@@ -588,7 +599,15 @@ function NewInvoiceForm() {
         {/* Totals */}
         {items.length > 0 && (
           <div className="rounded-lg border border-border p-4 space-y-1 text-sm">
-            {taxConfigQuery.error || taxConfigMissing ? (
+            {!previewTotals && taxConfigReady ? (
+              <div className="mb-3">
+                <InlineQueryMessage kind="error">
+                  Set the practice tax rate between 0 and 100% and keep the
+                  invoice total within the supported currency range before
+                  creating this invoice.
+                </InlineQueryMessage>
+              </div>
+            ) : taxConfigQuery.error || taxConfigMissing ? (
               <div className="mb-3">
                 <InlineQueryMessage kind="error">
                   Unable to load practice tax settings. Preview totals omit tax

@@ -2221,6 +2221,7 @@ export const dataRouter = createRouter({
         quantity: number;
         unitPrice: string;
         total: string;
+        taxable: boolean;
       }[]
     > = {};
 
@@ -2232,6 +2233,7 @@ export const dataRouter = createRouter({
           quantity: invoiceItems.quantity,
           unitPrice: invoiceItems.unitPrice,
           total: invoiceItems.total,
+          taxable: invoiceItems.taxable,
         })
         .from(invoiceItems)
         .where(
@@ -2259,6 +2261,7 @@ export const dataRouter = createRouter({
             quantity: item.quantity,
             unitPrice: item.unitPrice,
             total: item.total,
+            taxable: item.taxable,
           });
         }
       }

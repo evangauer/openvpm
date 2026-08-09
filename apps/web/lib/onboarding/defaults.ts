@@ -16,6 +16,8 @@ import {
   communications,
   products,
 } from "@openpims/db";
+import { centsToMoney, moneyToCents } from "@/lib/billing/invoice-balance";
+import { calculateInvoiceTaxTotals } from "@/lib/billing/invoice-tax";
 
 /**
  * Sensible defaults seeded for a brand-new practice so it's usable immediately
@@ -395,6 +397,7 @@ export async function seedDemoData(
         sku: "SAMPLE-CARP-75",
         category: "Medication",
         unitPrice: "1.25",
+        taxable: true,
         costPrice: "0.52",
         stockQuantity: 100,
         reorderPoint: 20,
@@ -405,6 +408,7 @@ export async function seedDemoData(
         sku: "SAMPLE-AMOX-250",
         category: "Medication",
         unitPrice: "0.85",
+        taxable: true,
         costPrice: "0.31",
         stockQuantity: 60,
         reorderPoint: 15,
@@ -429,9 +433,6 @@ export async function seedDemoData(
   // Two invoices with line items from the seeded services: one paid, one sent.
   const serviceByName = (name: string) =>
     seededServices.find((s) => s.name === name) ?? null;
-  const taxRate = 0.07;
-  const money = (n: number) => n.toFixed(2);
-
   const invoiceIds: string[] = [];
   const invoiceItemIds: string[] = [];
 
@@ -451,14 +452,13 @@ export async function seedDemoData(
         ? lines
         : [{ id: null, name: "Office Visit", defaultPrice: "65.00", taxable: false }];
 
-    let subtotal = 0;
-    let tax = 0;
-    for (const line of safeLines) {
-      const price = Number(line.defaultPrice) || 0;
-      subtotal += price;
-      if (line.taxable) tax += price * taxRate;
-    }
-    const total = subtotal + tax;
+    const totals = calculateInvoiceTaxTotals(
+      safeLines.map((line) => ({
+        lineTotalCents: moneyToCents(line.defaultPrice),
+        taxable: line.taxable,
+      })),
+      "7.00",
+    );
 
     const [inv] = await db
       .insert(invoices)
@@ -467,10 +467,11 @@ export async function seedDemoData(
         clientId: insertedClients[cfg.clientIdx]!.id,
         patientId: insertedPatients[cfg.patientIdx]!.id,
         status: cfg.status,
-        subtotal: money(subtotal),
-        tax: money(tax),
-        total: money(total),
-        paidAmount: cfg.status === "paid" ? money(total) : "0",
+        subtotal: centsToMoney(totals.subtotalCents),
+        tax: centsToMoney(totals.taxCents),
+        total: centsToMoney(totals.totalCents),
+        paidAmount:
+          cfg.status === "paid" ? centsToMoney(totals.totalCents) : "0",
         dueDate: ymd(daysFromNow(cfg.status === "paid" ? -3 : 14)),
       })
       .returning({ id: invoices.id });
@@ -480,8 +481,9 @@ export async function seedDemoData(
       invoiceId: inv!.id,
       description: line.name,
       quantity: 1,
-      unitPrice: money(Number(line.defaultPrice) || 0),
-      total: money(Number(line.defaultPrice) || 0),
+      unitPrice: line.defaultPrice,
+      total: line.defaultPrice,
+      taxable: line.taxable,
       itemType: "service" as const,
       itemId: line.id,
     }));

@@ -123,6 +123,10 @@ describe("settings admin stale target safety", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
+      callerWithDb(db).updatePractice({ taxRatePercent: "100.01" })
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    await expect(
       callerWithDb(db).updateUser({ id: STAFF_ID, name: "A".repeat(256) })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 

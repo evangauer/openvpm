@@ -37,6 +37,10 @@ import {
   moneyToCents,
 } from "@/lib/billing/invoice-balance";
 import {
+  calculateInvoiceTaxTotals,
+  InvoiceTaxCalculationError,
+} from "@/lib/billing/invoice-tax";
+import {
   STRIPE_CONNECT_PROVIDER,
   stripeConnectAccountState,
   stripeConnectApplicationFeeAmount,
@@ -195,6 +199,7 @@ const serviceInput = z.object({
     BILLING_SERVICE_CATEGORY_MAX_LENGTH
   ),
   defaultPrice: servicePriceInput,
+  taxable: z.boolean().default(true),
 });
 
 type ServiceSnapshot = z.infer<typeof serviceInput>;
@@ -209,6 +214,7 @@ function serviceSnapshotConditions(expected: ServiceSnapshot) {
       ? isNull(services.category)
       : eq(services.category, expected.category),
     eq(services.defaultPrice, expected.defaultPrice),
+    eq(services.taxable, expected.taxable),
   ];
 }
 
@@ -954,7 +960,11 @@ async function assertLineItemReferences(
     serviceIds.length === 0
       ? []
       : await ctx.db
-          .select({ id: services.id, deletedAt: services.deletedAt })
+          .select({
+            id: services.id,
+            deletedAt: services.deletedAt,
+            taxable: services.taxable,
+          })
           .from(services)
           .where(
             and(
@@ -965,10 +975,18 @@ async function assertLineItemReferences(
           .orderBy(services.id)
           .for("share");
 
-  let productRows: Array<{ id: string; deletedAt: Date | null }> = [];
+  let productRows: Array<{
+    id: string;
+    deletedAt: Date | null;
+    taxable: boolean;
+  }> = [];
   if (productIds.length > 0) {
     const productQuery = ctx.db
-      .select({ id: products.id, deletedAt: products.deletedAt })
+      .select({
+        id: products.id,
+        deletedAt: products.deletedAt,
+        taxable: products.taxable,
+      })
       .from(products)
       .where(
         and(
@@ -1013,6 +1031,66 @@ async function assertLineItemReferences(
       code: "NOT_FOUND",
       message: "One or more products were not found",
     });
+  }
+
+  return new Map<string, boolean>([
+    ...serviceRows.map(
+      (row) => [`service:${row.id}`, row.taxable ?? true] as const,
+    ),
+    ...productRows.map(
+      (row) => [`product:${row.id}`, row.taxable ?? true] as const,
+    ),
+  ]);
+}
+
+function invoiceLineTaxable(
+  item: Pick<InvoiceLineInput, "itemType" | "itemId">,
+  taxabilityByReference: ReadonlyMap<string, boolean>,
+): boolean {
+  // Ad-hoc lines have no catalog source. Defaulting them to taxable preserves
+  // the historical behavior and prevents clients from choosing tax treatment.
+  if (!item.itemId) return true;
+  const taxable = taxabilityByReference.get(`${item.itemType}:${item.itemId}`);
+  if (taxable === undefined) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "One or more invoice catalog references were not found",
+    });
+  }
+  return taxable;
+}
+
+function invoiceLineTaxTotals(
+  items: readonly (Pick<
+    InvoiceLineInput,
+    "itemType" | "itemId" | "quantity" | "unitPrice"
+  > & {
+    taxable?: boolean;
+  })[],
+  taxRatePercent: string,
+  taxabilityByReference?: ReadonlyMap<string, boolean>,
+) {
+  try {
+    return calculateInvoiceTaxTotals(
+      items.map((item) => ({
+        lineTotalCents: moneyToCents(item.unitPrice) * item.quantity,
+        taxable:
+          item.taxable ??
+          invoiceLineTaxable(item, taxabilityByReference ?? new Map()),
+      })),
+      taxRatePercent,
+    );
+  } catch (error) {
+    if (error instanceof InvoiceTaxCalculationError) {
+      throw new TRPCError({
+        code:
+          error.reason === "invalid_tax_rate"
+            ? "PRECONDITION_FAILED"
+            : "BAD_REQUEST",
+        message: error.message,
+      });
+    }
+    throw error;
   }
 }
 
@@ -1831,6 +1909,30 @@ export const billingRouter = createRouter({
         if (!practice) throw practiceNotFound();
         const subtotalCents =
           moneyToCents(source.unitPriceSnapshot) * source.quantity;
+        const [sourceProduct] = await tx
+          .select({ id: products.id, taxable: products.taxable })
+          .from(products)
+          .where(
+            and(
+              eq(products.id, source.productId),
+              eq(products.practiceId, ctx.practiceId),
+            ),
+          )
+          .limit(1)
+          .for("share");
+        if (!sourceProduct) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "The dispensed product is no longer available for billing.",
+          });
+        }
+        const newLine = {
+          itemType: "product" as const,
+          itemId: source.productId,
+          quantity: source.quantity,
+          unitPrice: source.unitPriceSnapshot,
+          taxable: sourceProduct.taxable ?? true,
+        };
         let invoiceId: string;
         const [existingVisitInvoice] = source.appointmentId
           ? await tx
@@ -1876,19 +1978,32 @@ export const billingRouter = createRouter({
                 "This visit already has a finalized invoice. Correct that invoice or waive this pending dispense with a reason.",
             });
           }
-          const combinedSubtotalCents =
-            moneyToCents(existingVisitInvoice.subtotal) + subtotalCents;
-          const combinedTaxCents = Math.round(
-            (combinedSubtotalCents *
-              Number(practice.taxRatePercent ?? "8.00")) /
-              100,
+          const currentItems = await tx
+            .select({
+              itemType: invoiceItems.itemType,
+              itemId: invoiceItems.itemId,
+              quantity: invoiceItems.quantity,
+              unitPrice: invoiceItems.unitPrice,
+              taxable: invoiceItems.taxable,
+            })
+            .from(invoiceItems)
+            .where(
+              and(
+                eq(invoiceItems.invoiceId, existingVisitInvoice.id),
+                invoiceItemPracticeScope(txCtx),
+                isNull(invoiceItems.deletedAt),
+              ),
+            );
+          const totals = invoiceLineTaxTotals(
+            [...currentItems, newLine],
+            practice.taxRatePercent ?? "8.00",
           );
           const [updatedInvoice] = await tx
             .update(invoices)
             .set({
-              subtotal: centsToMoney(combinedSubtotalCents),
-              tax: centsToMoney(combinedTaxCents),
-              total: centsToMoney(combinedSubtotalCents + combinedTaxCents),
+              subtotal: centsToMoney(totals.subtotalCents),
+              tax: centsToMoney(totals.taxCents),
+              total: centsToMoney(totals.totalCents),
               updatedAt: new Date(),
             })
             .where(
@@ -1909,8 +2024,9 @@ export const billingRouter = createRouter({
           }
           invoiceId = updatedInvoice.id;
         } else {
-          const taxCents = Math.round(
-            (subtotalCents * Number(practice.taxRatePercent ?? "8.00")) / 100,
+          const totals = invoiceLineTaxTotals(
+            [newLine],
+            practice.taxRatePercent ?? "8.00",
           );
           const [invoice] = await tx
             .insert(invoices)
@@ -1920,9 +2036,9 @@ export const billingRouter = createRouter({
               patientId: source.patientId,
               appointmentId: source.appointmentId,
               status: "draft",
-              subtotal: centsToMoney(subtotalCents),
-              tax: centsToMoney(taxCents),
-              total: centsToMoney(subtotalCents + taxCents),
+              subtotal: centsToMoney(totals.subtotalCents),
+              tax: centsToMoney(totals.taxCents),
+              total: centsToMoney(totals.totalCents),
               paidAmount: "0.00",
               dueDate: null,
               isEstimate: false,
@@ -1938,6 +2054,7 @@ export const billingRouter = createRouter({
           quantity: source.quantity,
           unitPrice: source.unitPriceSnapshot,
           total: centsToMoney(subtotalCents),
+          taxable: sourceProduct.taxable ?? true,
           itemType: "product",
           itemId: source.productId,
           sourceDispenseChargeId: source.id,
@@ -2485,6 +2602,7 @@ export const billingRouter = createRouter({
             code: input.code ?? null,
             category: input.category ?? null,
             defaultPrice: input.defaultPrice,
+            taxable: input.taxable,
           })
           .returning();
         return created;
@@ -2522,6 +2640,7 @@ export const billingRouter = createRouter({
             code: input.code ?? null,
             category: input.category ?? null,
             defaultPrice: input.defaultPrice,
+            taxable: input.taxable,
           })
           .where(
             and(
@@ -2640,9 +2759,6 @@ export const billingRouter = createRouter({
           input.patientId
         );
       }
-      const subtotal = input.items.reduce((sum, item) => {
-        return sum + item.quantity * parseFloat(item.unitPrice);
-      }, 0);
       // Tax rate is configured per practice (region-aware), not hardcoded.
       const [practice] = await ctx.db
         .select({ taxRatePercent: practices.taxRatePercent })
@@ -2652,10 +2768,6 @@ export const billingRouter = createRouter({
       if (!practice) {
         throw practiceNotFound();
       }
-
-      const taxRate = parseFloat(practice.taxRatePercent ?? "8.00") / 100;
-      const tax = Math.round(subtotal * taxRate * 100) / 100;
-      const total = Math.round((subtotal + tax) * 100) / 100;
 
       return ctx.db.transaction(async (tx) => {
         const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
@@ -2693,9 +2805,11 @@ export const billingRouter = createRouter({
             });
           }
         }
-        await assertLineItemReferences(txCtx, input.items, {
-          lockProductsForStock: !(input.isEstimate ?? false),
-        });
+        const taxabilityByReference = await assertLineItemReferences(
+          txCtx,
+          input.items,
+          { lockProductsForStock: !(input.isEstimate ?? false) },
+        );
         await assertPrescriptionChargeSources(txCtx, input.items, {
           appointmentId: input.appointmentId,
           patientId: input.patientId,
@@ -2710,6 +2824,12 @@ export const billingRouter = createRouter({
           await deductProductStock(txCtx, stockOwnedItems(input.items));
         }
 
+        const totals = invoiceLineTaxTotals(
+          input.items,
+          practice.taxRatePercent ?? "8.00",
+          taxabilityByReference,
+        );
+
         const [invoice] = await tx
           .insert(invoices)
           .values({
@@ -2718,9 +2838,9 @@ export const billingRouter = createRouter({
             patientId: input.patientId ?? null,
             appointmentId: input.appointmentId ?? null,
             status: "draft",
-            subtotal: subtotal.toFixed(2),
-            tax: tax.toFixed(2),
-            total: total.toFixed(2),
+            subtotal: centsToMoney(totals.subtotalCents),
+            tax: centsToMoney(totals.taxCents),
+            total: centsToMoney(totals.totalCents),
             paidAmount: "0.00",
             dueDate: input.dueDate ?? null,
             isEstimate: input.isEstimate ?? false,
@@ -2739,7 +2859,10 @@ export const billingRouter = createRouter({
               description: item.description,
               quantity: item.quantity,
               unitPrice: item.unitPrice,
-              total: (item.quantity * parseFloat(item.unitPrice)).toFixed(2),
+              total: centsToMoney(
+                item.quantity * moneyToCents(item.unitPrice),
+              ),
+              taxable: invoiceLineTaxable(item, taxabilityByReference),
               itemType: item.itemType as "service" | "product",
               itemId: item.itemId ?? null,
               sourcePrescriptionId: item.sourcePrescriptionId ?? null,
@@ -2767,10 +2890,6 @@ export const billingRouter = createRouter({
     .use(requireRole("admin", "front_desk"))
     .input(updateInvoiceItemsInput)
     .mutation(async ({ ctx, input }) => {
-      const subtotalCents = input.items.reduce(
-        (sum, item) => sum + moneyToCents(item.unitPrice) * item.quantity,
-        0
-      );
       const [practice] = await ctx.db
         .select({ taxRatePercent: practices.taxRatePercent })
         .from(practices)
@@ -2779,10 +2898,6 @@ export const billingRouter = createRouter({
       if (!practice) {
         throw practiceNotFound();
       }
-
-      const taxRatePercent = Number(practice.taxRatePercent ?? "8.00");
-      const taxCents = Math.round((subtotalCents * taxRatePercent) / 100);
-      const totalCents = subtotalCents + taxCents;
 
       return ctx.db.transaction(async (tx) => {
         const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
@@ -2866,10 +2981,11 @@ export const billingRouter = createRouter({
           );
         }
         const previousItems = await invoiceProductItemsForStock(txCtx, input.id);
-        await assertLineItemReferences(txCtx, input.items, {
-          previousItems,
-          lockProductsForStock: true,
-        });
+        const taxabilityByReference = await assertLineItemReferences(
+          txCtx,
+          input.items,
+          { previousItems, lockProductsForStock: true },
+        );
         await assertPrescriptionChargeSources(txCtx, input.items, {
           appointmentId: existing.appointmentId,
           patientId: existing.patientId,
@@ -2885,12 +3001,18 @@ export const billingRouter = createRouter({
         await restoreProductStock(txCtx, previousItems);
         await deductProductStock(txCtx, stockOwnedItems(input.items));
 
+        const totals = invoiceLineTaxTotals(
+          input.items,
+          practice.taxRatePercent ?? "8.00",
+          taxabilityByReference,
+        );
+
         const [invoice] = await tx
           .update(invoices)
           .set({
-            subtotal: centsToMoney(subtotalCents),
-            tax: centsToMoney(taxCents),
-            total: centsToMoney(totalCents),
+            subtotal: centsToMoney(totals.subtotalCents),
+            tax: centsToMoney(totals.taxCents),
+            total: centsToMoney(totals.totalCents),
             updatedAt: new Date(),
           })
           .where(
@@ -2942,6 +3064,7 @@ export const billingRouter = createRouter({
             quantity: item.quantity,
             unitPrice: item.unitPrice,
             total: centsToMoney(moneyToCents(item.unitPrice) * item.quantity),
+            taxable: invoiceLineTaxable(item, taxabilityByReference),
             itemType: item.itemType,
             itemId: item.itemId ?? null,
             sourcePrescriptionId: item.sourcePrescriptionId ?? null,

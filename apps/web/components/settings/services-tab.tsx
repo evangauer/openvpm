@@ -32,6 +32,7 @@ type ServiceForm = {
   code: string;
   category: string;
   defaultPrice: string;
+  taxable: boolean;
 };
 
 type ServiceRow = {
@@ -40,6 +41,7 @@ type ServiceRow = {
   code: string | null;
   category: string | null;
   defaultPrice: string;
+  taxable: boolean;
 };
 
 const EMPTY_FORM: ServiceForm = {
@@ -47,6 +49,7 @@ const EMPTY_FORM: ServiceForm = {
   code: "",
   category: "",
   defaultPrice: "",
+  taxable: true,
 };
 
 function formIsValid(form: ServiceForm): boolean {
@@ -65,6 +68,7 @@ function mutationInput(form: ServiceForm) {
     code: form.code.trim() || undefined,
     category: form.category.trim() || undefined,
     defaultPrice: form.defaultPrice.trim(),
+    taxable: form.taxable,
   };
 }
 
@@ -74,6 +78,7 @@ function formFromService(service: ServiceRow): ServiceForm {
     code: service.code ?? "",
     category: service.category ?? "",
     defaultPrice: service.defaultPrice,
+    taxable: service.taxable,
   };
 }
 
@@ -222,8 +227,8 @@ export function ServicesTab() {
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
             Manage the services available in encounter and invoice charge
-            pickers. Taxes use the practice-wide rate when an invoice is
-            calculated.
+            pickers. Mark each service taxable according to your local rules;
+            invoices preserve that choice as a historical snapshot.
           </p>
         </div>
         <Button
@@ -285,6 +290,7 @@ export function ServicesTab() {
               <th className="px-4 py-3 text-left font-medium">Code</th>
               <th className="px-4 py-3 text-left font-medium">Category</th>
               <th className="px-4 py-3 text-right font-medium">Price</th>
+              <th className="px-4 py-3 text-left font-medium">Tax</th>
               <th className="px-4 py-3 text-right font-medium">Actions</th>
             </tr>
           </thead>
@@ -297,7 +303,7 @@ export function ServicesTab() {
                     key={service.id}
                     className="border-b border-border last:border-0"
                   >
-                    <td colSpan={5} className="space-y-3 p-4">
+                    <td colSpan={6} className="space-y-3 p-4">
                       <ServiceFields form={editForm} onChange={setEditForm} />
                       <div className="flex gap-2">
                         <Button
@@ -352,6 +358,9 @@ export function ServicesTab() {
                   <td className="px-4 py-3 text-right tabular-nums">
                     {formatCurrency(service.defaultPrice)}
                   </td>
+                  <td className="px-4 py-3 text-muted-foreground">
+                    {service.taxable ? "Taxable" : "Not taxable"}
+                  </td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-1">
                       <Button
@@ -392,7 +401,7 @@ export function ServicesTab() {
             })}
             {availableServices.length === 0 && (
               <tr>
-                <td colSpan={5} className="p-0">
+                <td colSpan={6} className="p-0">
                   <EmptyState
                     className="border-0 bg-transparent p-8"
                     icon={ReceiptText}
@@ -405,7 +414,7 @@ export function ServicesTab() {
             {availableServices.length > 0 && filteredServices.length === 0 && (
               <tr>
                 <td
-                  colSpan={5}
+                  colSpan={6}
                   className="px-4 py-8 text-center text-muted-foreground"
                 >
                   No services match your search.
@@ -476,7 +485,7 @@ function ServiceFields({
   onChange: (form: ServiceForm) => void;
 }) {
   return (
-    <div className="grid gap-3 md:grid-cols-[minmax(12rem,2fr)_minmax(8rem,1fr)_minmax(10rem,1fr)_9rem]">
+    <div className="grid gap-3 md:grid-cols-[minmax(12rem,2fr)_minmax(8rem,1fr)_minmax(10rem,1fr)_9rem_auto] md:items-center">
       <Input
         aria-label="Service name"
         maxLength={BILLING_SERVICE_NAME_MAX_LENGTH}
@@ -512,6 +521,16 @@ function ServiceFields({
           onChange({ ...form, defaultPrice: event.target.value })
         }
       />
+      <label className="flex min-h-10 items-center gap-2 rounded-md border border-input px-3 text-sm">
+        <input
+          type="checkbox"
+          checked={form.taxable}
+          onChange={(event) =>
+            onChange({ ...form, taxable: event.target.checked })
+          }
+        />
+        Taxable
+      </label>
     </div>
   );
 }

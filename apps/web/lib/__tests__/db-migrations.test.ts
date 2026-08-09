@@ -753,4 +753,30 @@ describe("committed Drizzle migrations", () => {
     expect(sql).toContain("jsonb_array_length(legacy.active_type_ids) = 0");
     expect(sql).toContain("THEN false");
   });
+
+  it("backfills immutable invoice-line and product taxability", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries?: Array<{ tag?: string }> };
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0053_invoice_line_taxability",
+    );
+
+    const sql = readRepoFile(
+      "packages/db/drizzle/0053_invoice_line_taxability.sql",
+    );
+    expect(sql).toContain(
+      'ALTER TABLE "products" ADD COLUMN "taxable" boolean',
+    );
+    expect(sql).toContain(
+      'UPDATE "products" SET "taxable" = true WHERE "taxable" IS NULL',
+    );
+    expect(sql).toContain(
+      'ALTER TABLE "invoice_items" ADD COLUMN "taxable" boolean',
+    );
+    expect(sql).toContain(
+      'UPDATE "invoice_items" SET "taxable" = true WHERE "taxable" IS NULL',
+    );
+    expect(sql.match(/ALTER COLUMN "taxable" SET NOT NULL/g)).toHaveLength(2);
+  });
 });

@@ -891,6 +891,7 @@ async function seed() {
     quantity: number;
     unitPrice: string;
     total: string;
+    taxable: boolean;
     itemType: "service" | "product";
   }[] = [];
 
@@ -911,6 +912,7 @@ async function seed() {
         quantity: qty,
         unitPrice,
         total: itemTotal,
+        taxable: svc.taxable,
         itemType: "service",
       });
     }
@@ -990,6 +992,7 @@ async function seed() {
         sku: p.sku,
         category: p.category,
         unitPrice: p.unitPrice,
+        taxable: true,
         costPrice: p.costPrice,
         stockQuantity: p.stockQuantity,
         reorderPoint: p.reorderPoint,

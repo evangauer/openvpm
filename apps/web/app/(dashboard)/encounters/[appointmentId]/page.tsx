@@ -32,6 +32,8 @@ import {
   isBillingInvoiceLineTotalValid,
   isBillingInvoiceSubtotalValid,
 } from "@/lib/billing/policy";
+import { centsToMoney, moneyToCents } from "@/lib/billing/invoice-balance";
+import { tryCalculateInvoiceTaxTotals } from "@/lib/billing/invoice-tax";
 import { ServicePicker } from "@/components/billing/service-picker";
 import { CapturePhotos } from "@/components/records/capture-photos";
 import { ConsentSign } from "@/components/records/consent-sign";
@@ -69,6 +71,7 @@ type ChargeItem = {
   unitPrice: string;
   itemType: "service" | "product";
   itemId?: string;
+  taxable: boolean;
   sourcePrescriptionId?: string;
   sourceDispenseChargeId?: string;
 };
@@ -2385,6 +2388,7 @@ function ChargeCapture({
     productId: string | null;
     productName: string | null;
     productUnitPrice: string | null;
+    productTaxable: boolean | null;
     dispenseChargeId: string | null;
     dispenseChargeStatus: "pending" | "invoiced" | "waived" | null;
     dispenseChargeDescription: string | null;
@@ -2448,6 +2452,7 @@ function ChargeCapture({
           unitPrice: item.unitPrice,
           itemType: item.itemType,
           itemId: item.itemId ?? undefined,
+          taxable: item.taxable,
           sourcePrescriptionId: item.sourcePrescriptionId ?? undefined,
           sourceDispenseChargeId: item.sourceDispenseChargeId ?? undefined,
         })),
@@ -2470,6 +2475,7 @@ function ChargeCapture({
       code: service.code,
       category: ["Service", service.category].filter(Boolean).join(" · "),
       defaultPrice: service.defaultPrice,
+      taxable: service.taxable,
       stockQuantity: null as number | null,
       quantity: null as number | null,
       sourcePrescriptionId: undefined as string | undefined,
@@ -2497,6 +2503,7 @@ function ChargeCapture({
         name: prescription.dispenseChargeDescription!,
         category: "Visit prescription · inventory already dispensed",
         defaultPrice: prescription.productUnitPrice!,
+        taxable: prescription.productTaxable ?? true,
         stockQuantity: null as number | null,
         quantity: prescription.quantity!,
         sourcePrescriptionId: undefined as string | undefined,
@@ -2511,6 +2518,7 @@ function ChargeCapture({
         name: product.name,
         category: `Product · ${product.stockQuantity} in stock`,
         defaultPrice: product.unitPrice,
+        taxable: product.taxable,
         stockQuantity: product.stockQuantity,
         quantity: null as number | null,
         sourcePrescriptionId: undefined as string | undefined,
@@ -2523,13 +2531,16 @@ function ChargeCapture({
   useEffect(() => {
     setQuantity(selected?.quantity ?? 1);
   }, [selected?.id, selected?.quantity]);
-  const subtotal = items.reduce(
-    (sum, item) => sum + item.quantity * Number(item.unitPrice),
-    0,
+  const previewTotals = tryCalculateInvoiceTaxTotals(
+    items.map((item) => ({
+      lineTotalCents: item.quantity * moneyToCents(item.unitPrice || "0"),
+      taxable: item.taxable,
+    })),
+    configQuery.data?.taxRatePercent ?? "0.00",
   );
-  const taxRate = Number(configQuery.data?.taxRatePercent ?? 0) / 100;
-  const tax = Math.round(subtotal * taxRate * 100) / 100;
-  const total = subtotal + tax;
+  const subtotal = centsToMoney(previewTotals?.subtotalCents ?? 0);
+  const tax = centsToMoney(previewTotals?.taxCents ?? 0);
+  const total = centsToMoney(previewTotals?.totalCents ?? 0);
   const fmt = (value: number | string | null | undefined) =>
     formatCurrency(
       value,
@@ -2554,6 +2565,7 @@ function ChargeCapture({
       isBillingInvoiceLineTotalValid(item.unitPrice, item.quantity),
     ) &&
     isBillingInvoiceSubtotalValid(items) &&
+    Boolean(previewTotals) &&
     configReady &&
     invoiceStateReady &&
     invoiceDetailReady &&
@@ -2602,6 +2614,7 @@ function ChargeCapture({
         unitPrice: selected.defaultPrice,
         itemType: selected.itemType,
         itemId: selected.itemId,
+        taxable: selected.taxable,
         sourcePrescriptionId: selected.sourcePrescriptionId,
         sourceDispenseChargeId: selected.sourceDispenseChargeId,
       },
@@ -2702,6 +2715,11 @@ function ChargeCapture({
             Charge capture is locked because tax and currency settings could not
             be confirmed. Refresh before creating charges.
           </div>
+        ) : !previewTotals ? (
+          <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
+            Set the practice tax rate between 0 and 100% and keep the invoice
+            total within the supported currency range before saving charges.
+          </div>
         ) : !clientId || !patientId ? (
           <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
             Add both a client and patient to the appointment before capturing
@@ -2778,7 +2796,7 @@ function ChargeCapture({
                         {item.description}
                       </p>
                       <p className="text-xs capitalize text-muted-foreground">
-                        {item.itemType}
+                        {item.itemType} · {item.taxable ? "Taxable" : "Not taxable"}
                       </p>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">

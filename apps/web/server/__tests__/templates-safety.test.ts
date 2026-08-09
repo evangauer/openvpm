@@ -1134,7 +1134,8 @@ describe("treatment template safety", () => {
     const source = readFileSync("server/routers/templates.ts", "utf8");
 
     expect(source).toContain("throw practiceNotFound()");
-    expect(source).toContain('parseFloat(practice.taxRatePercent ?? "8.00")');
+    expect(source).toContain("calculateInvoiceTaxTotals(");
+    expect(source).toContain('practice.taxRatePercent ?? "8.00"');
     expect(source).not.toContain("practice?.taxRatePercent");
   });
 });

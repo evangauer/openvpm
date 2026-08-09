@@ -20,12 +20,12 @@ import {
   SETTINGS_ADDRESS_MAX_LENGTH,
   SETTINGS_EMAIL_MAX_LENGTH,
   SETTINGS_PHONE_MAX_LENGTH,
-  SETTINGS_TAX_RATE_PATTERN,
   SETTINGS_TIMEZONE_MAX_LENGTH,
   SETTINGS_VAT_NUMBER_MAX_LENGTH,
   SETTINGS_WEBSITE_MAX_LENGTH,
   STAFF_LICENSE_NUMBER_MAX_LENGTH,
   STAFF_NAME_MAX_LENGTH,
+  isValidSettingsTaxRate,
   isSupportedPracticeTimezone,
 } from "../settings-policy";
 
@@ -554,8 +554,11 @@ describe("settings UI states", () => {
     expect(isSupportedPracticeTimezone("America/New_York")).toBe(true);
     expect(isSupportedPracticeTimezone("Mars/Olympus_Mons")).toBe(false);
     expect(SETTINGS_VAT_NUMBER_MAX_LENGTH).toBe(32);
-    expect(SETTINGS_TAX_RATE_PATTERN.test("20.00")).toBe(true);
-    expect(SETTINGS_TAX_RATE_PATTERN.test("1000.00")).toBe(false);
+    expect(isValidSettingsTaxRate("20.00")).toBe(true);
+    expect(isValidSettingsTaxRate("100")).toBe(true);
+    expect(isValidSettingsTaxRate("100.00")).toBe(true);
+    expect(isValidSettingsTaxRate("100.01")).toBe(false);
+    expect(isValidSettingsTaxRate("999.99")).toBe(false);
     expect(source).toContain("type PracticeInfoForm = {");
     expect(source).toContain("maxLength={PRACTICE_NAME_MAX_LENGTH}");
     expect(source).toContain("maxLength={SETTINGS_ADDRESS_MAX_LENGTH}");
@@ -581,7 +584,8 @@ describe("settings UI states", () => {
     expect(source).toContain(
       "isSupportedPracticeTimezone(practiceForm.timezone)",
     );
-    expect(source).toContain("SETTINGS_TAX_RATE_PATTERN.test");
+    expect(source).toContain("isValidSettingsTaxRate");
+    expect(source).toContain('max="100"');
     expect(source).toContain(
       "practiceForm.vatNumber.trim().length <= SETTINGS_VAT_NUMBER_MAX_LENGTH",
     );
