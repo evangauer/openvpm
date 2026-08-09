@@ -8,6 +8,11 @@ const sharedQueues = readFileSync(
 );
 
 describe("SMS operator recovery queue", () => {
+  it("masks phone-like provider identifiers before any recovery DTO leaves tRPC", () => {
+    expect(source).toContain("function safeOperationalProviderId");
+    expect(source).toContain("WITHHELD_PHONE_LIKE_OPERATIONAL_ID");
+    expect(source).toContain("/^\\+?\\d[\\d ().-]{6,18}$/");
+  });
   const queue = sharedQueues.slice(
     sharedQueues.indexOf("loadSmsSendAttemptQueue"),
   );
@@ -46,8 +51,12 @@ describe("SMS delivery reconciliation queue", () => {
     sharedQueues.indexOf("loadSmsSendAttemptQueue"),
   );
   const deliveryDetail = source.slice(
-    source.indexOf("smsDeliveryEventQueue:"),
+    source.indexOf("smsDeliveryEventDetail:"),
     source.indexOf("smsSendAttemptQueue:"),
+  );
+  const sendDetail = source.slice(
+    source.indexOf("smsSendAttempt:", source.indexOf("smsSendAttemptQueue:")),
+    source.indexOf("reconcileSmsSendAttempt:"),
   );
 
   it("uses later exact attribution/projection to resolve historical queue rows", () => {
@@ -145,13 +154,13 @@ describe("SMS delivery reconciliation queue", () => {
     expect(deliveryQueue).toContain("providerMessageHint: null");
   });
 
-  it("provides a bounded redacted evidence/history detail workflow", () => {
+  it("provides a bounded allowlisted delivery evidence/history DTO", () => {
     expect(deliveryDetail).toContain("smsDeliveryEventDetail:");
     expect(deliveryDetail).toContain("providerMessageId:");
-    expect(deliveryDetail).toContain("reviewedHistoryId:");
     expect(deliveryDetail).toContain(
-      "redactedOperatorIdentity(row.actorIdentity)",
+      "providerMessageId: safeOperationalProviderId(",
     );
+    expect(deliveryDetail).toContain("reviewedHistoryId:");
     expect(deliveryDetail).toContain(
       "historyLimit: z.number().int().min(1).max(200).default(100)",
     );
@@ -170,5 +179,34 @@ describe("SMS delivery reconciliation queue", () => {
     expect(deliveryDetail).toContain("truncated");
     expect(deliveryDetail).not.toContain("destinationE164");
     expect(deliveryDetail).not.toContain("content:");
+    expect(deliveryDetail).not.toContain("detail:");
+    expect(deliveryDetail).not.toContain("actorIdentity:");
+    expect(deliveryDetail).not.toContain("actorName:");
+    expect(deliveryDetail).not.toContain("operatorReasonCode:");
+    expect(deliveryDetail).not.toContain("communicationId:");
+    expect(deliveryDetail).not.toContain("occurredAt:");
+    expect(deliveryDetail).not.toContain("rawBody:");
+  });
+
+  it("provides an allowlisted send-attempt evidence DTO", () => {
+    expect(sendDetail).toContain("smsSendAttempt:");
+    expect(sendDetail).toContain("communicationId:");
+    expect(sendDetail).toContain("providerMessageId:");
+    expect(sendDetail).toContain("events: events.map((event) => ({");
+    expect(sendDetail).toContain(
+      "providerMessageId: safeOperationalProviderId(",
+    );
+    expect(sendDetail).toContain("eventKey:");
+    expect(sendDetail).not.toContain("destinationE164:");
+    expect(sendDetail).not.toContain("senderE164:");
+    expect(sendDetail).not.toContain("clientId:");
+    expect(sendDetail).not.toContain("sourceId:");
+    expect(sendDetail).not.toContain("idempotencyKey:");
+    expect(sendDetail).not.toContain("registeredDisplayName:");
+    expect(sendDetail).not.toContain("senderMessagingServiceId:");
+    expect(sendDetail).not.toContain("requestedBy");
+    expect(sendDetail).not.toContain("detail:");
+    expect(sendDetail).not.toContain("actorIdentity:");
+    expect(sendDetail).not.toContain("actorName:");
   });
 });

@@ -90,6 +90,7 @@ const mocks = vi.hoisted(() => {
     updateReturning,
     updateSet,
     updateWhere,
+    alertOps: vi.fn(async () => undefined),
     recordSmsDeliveryCallback: vi.fn(async () => ({
       eventId: "00000000-0000-0000-0000-0000000000dd",
       duplicate: false,
@@ -121,6 +122,10 @@ vi.mock("@/lib/messaging/telnyx-signature", () => ({
 
 vi.mock("@/lib/messaging/sms-delivery-ledger", () => ({
   recordSmsDeliveryCallback: mocks.recordSmsDeliveryCallback,
+}));
+
+vi.mock("@/lib/alerts", () => ({
+  alertOps: mocks.alertOps,
 }));
 
 const { POST } = await import("./route");
@@ -224,19 +229,19 @@ afterEach(() => {
   vi.clearAllMocks();
   mocks.selectResults.length = 0;
   mocks.updateResults.length = 0;
+  mocks.insertResults.length = 0;
   delete process.env.TELNYX_PUBLIC_KEY;
 });
 
 describe("Telnyx webhook", () => {
   it("persists signed 10DLC failures and disables clinic senders", async () => {
     process.env.TELNYX_PUBLIC_KEY = "pub";
-    mocks.selectResults.push([
-      {
-        id: "00000000-0000-0000-0000-000000000008",
-        practiceId: "00000000-0000-0000-0000-0000000000aa",
-        status: "pending",
-      },
-    ]);
+    const registration = {
+      id: "00000000-0000-0000-0000-000000000008",
+      practiceId: "00000000-0000-0000-0000-0000000000aa",
+      status: "pending",
+    };
+    mocks.selectResults.push([registration], [registration], []);
     const body = JSON.stringify({
       data: {
         event_type: "10dlc.campaign.update",
@@ -279,7 +284,129 @@ describe("Telnyx webhook", () => {
         providerProfileSyncedAt: null,
       }),
     );
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "provider_state_observed",
+        operation: "registration_reconciliation",
+        reasonCode: "carrier_webhook_observed",
+        actorType: "system",
+      }),
+    );
     expect(mocks.withTenant).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges a retried 10DLC event without rewriting its projection", async () => {
+    process.env.TELNYX_PUBLIC_KEY = "pub";
+    const registration = {
+      id: "00000000-0000-0000-0000-000000000008",
+      practiceId: "00000000-0000-0000-0000-0000000000aa",
+      status: "pending",
+    };
+    mocks.selectResults.push(
+      [registration],
+      [registration],
+      [],
+      [registration],
+      [registration],
+      [{ id: "00000000-0000-0000-0000-0000000000ee" }],
+    );
+    const body = JSON.stringify({
+      data: {
+        event_type: "10dlc.campaign.update",
+        id: "evt-a2p-retry",
+        payload: {
+          brandId: "brand-1",
+          campaignId: "campaign-1",
+          status: "PENDING",
+        },
+      },
+    });
+    const request = () =>
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body,
+      });
+
+    await expect(POST(request())).resolves.toMatchObject({ status: 200 });
+    await expect(POST(request())).resolves.toMatchObject({ status: 200 });
+
+    expect(mocks.db.execute).toHaveBeenCalledTimes(2);
+    expect(mocks.updateSet).toHaveBeenCalledTimes(2);
+    expect(mocks.insertValues).toHaveBeenCalledTimes(1);
+    expect(mocks.alertOps).not.toHaveBeenCalled();
+  });
+
+  it("quarantines every matched sender when signed A2P identities cross tenants", async () => {
+    process.env.TELNYX_PUBLIC_KEY = "pub";
+    const practiceA = "00000000-0000-0000-0000-0000000000aa";
+    const practiceB = "00000000-0000-0000-0000-0000000000bb";
+    const registrationA = {
+      id: "00000000-0000-0000-0000-000000000008",
+      practiceId: practiceA,
+      status: "active",
+    };
+    const registrationB = {
+      id: "00000000-0000-0000-0000-000000000009",
+      practiceId: practiceB,
+      status: "active",
+    };
+    mocks.selectResults.push(
+      [registrationB],
+      [registrationB],
+      [
+        {
+          practiceId: practiceA,
+          locationId: "00000000-0000-0000-0000-000000000002",
+        },
+      ],
+      [registrationA],
+    );
+    const body = JSON.stringify({
+      data: {
+        event_type: "10dlc.phone_number.update",
+        id: "evt-cross-tenant",
+        payload: {
+          brandId: "brand-b",
+          campaignId: "campaign-b",
+          phoneNumber: "+15555550100",
+          status: "FAILED",
+        },
+      },
+    });
+
+    const response = await POST(
+      new Request("https://openvpm.test/api/webhooks/telnyx", {
+        method: "POST",
+        headers: {
+          "telnyx-signature-ed25519": "sig",
+          "telnyx-timestamp": "123",
+        },
+        body,
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.updateSet).toHaveBeenCalledTimes(1);
+    expect(mocks.updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        enabled: false,
+        registrationStatus: "action_required",
+        providerProfileReady: false,
+        providerProfileSyncedAt: null,
+      }),
+    );
+    const quarantineWhere = mocks.updateWhere.mock.calls[0]?.[0];
+    expect(sqlIncludesValue(quarantineWhere, practiceA)).toBe(true);
+    expect(sqlIncludesValue(quarantineWhere, practiceB)).toBe(true);
+    expect(mocks.insertValues).not.toHaveBeenCalled();
+    expect(mocks.alertOps).toHaveBeenCalledWith(
+      "Telnyx A2P identity conflict",
+      expect.stringContaining("Matching senders were disabled"),
+    );
   });
 
   it("rejects oversized payloads before signature verification or tenant work", async () => {

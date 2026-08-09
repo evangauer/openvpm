@@ -103,6 +103,27 @@ function preparedMessagingGate() {
   };
 }
 
+function registrationInput() {
+  return {
+    entityType: "PRIVATE_PROFIT" as const,
+    displayName: "Healthy Pets",
+    legalName: "Healthy Pets LLC",
+    taxId: "12-3456789",
+    contactFirstName: "Alex",
+    contactLastName: "Vet",
+    contactEmail: "alex@example.com",
+    businessPhone: "+15555550100",
+    street: "1 Main St",
+    city: "Denver",
+    state: "CO",
+    postalCode: "80202",
+    website: "https://example.com",
+    privacyPolicyUrl: "https://example.com/privacy",
+    termsUrl: "https://example.com/terms",
+    certifyAccuracyAndConsent: true as const,
+  };
+}
+
 function callerWithDb(db: Record<string, unknown>) {
   const session = {
     user: {
@@ -187,7 +208,21 @@ function createDb(opts?: {
   const updateSet = vi.fn(() => ({ where: updateWhere }));
   const update = vi.fn(() => ({ set: updateSet }));
 
-  const insertUpdate = vi.fn(async (_config: unknown) => undefined);
+  const insertReturning = vi.fn(async () => [
+    {
+      id: "00000000-0000-0000-0000-000000000008",
+      practiceId: PRACTICE_ID,
+      provider: "telnyx",
+      status: "not_started",
+      providerBrandId: null,
+      providerCampaignId: null,
+      providerBrandStatus: null,
+      providerCampaignStatus: null,
+    },
+  ]);
+  const insertUpdate = vi.fn((_config: unknown): unknown => ({
+    returning: insertReturning,
+  }));
   const insertValues = vi.fn((_values: unknown) => ({
     onConflictDoUpdate: insertUpdate,
   }));
@@ -385,26 +420,14 @@ describe("messaging location target safety", () => {
       "MESSAGING_REGISTRATION_ENCRYPTION_KEY",
       Buffer.alloc(32, 9).toString("base64"),
     );
-    const { db, insertValues } = createDb({ selectResults: [[]] });
+    const { db, insertValues, insertUpdate } = createDb({
+      selectResults: [[]],
+    });
 
     await expect(
       callerWithDb(db).saveRegistration({
-        entityType: "PRIVATE_PROFIT",
-        displayName: "Healthy Pets",
-        legalName: "Healthy Pets LLC",
-        taxId: "12-3456789",
-        contactFirstName: "Alex",
-        contactLastName: "Vet",
-        contactEmail: "alex@example.com",
-        businessPhone: "+15555550100",
-        street: "1 Main St",
-        city: "Denver",
+        ...registrationInput(),
         state: "co",
-        postalCode: "80202",
-        website: "https://example.com",
-        privacyPolicyUrl: "https://example.com/privacy",
-        termsUrl: "https://example.com/terms",
-        certifyAccuracyAndConsent: true,
       }),
     ).resolves.toEqual({ ok: true, taxIdLast4: "6789" });
 
@@ -419,6 +442,34 @@ describe("messaging location target safety", () => {
     });
     expect(values.taxIdEncrypted).toMatch(/^v1:/);
     expect(JSON.stringify(values)).not.toContain("123456789");
+    expect(insertUpdate.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ setWhere: expect.anything() }),
+    );
+  });
+
+  it("refuses clinic registration edits while a provider operation is locked", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [
+        [
+          {
+            taxIdEncrypted: "v1:stored",
+            taxIdLast4: "6789",
+            providerBrandId: null,
+            providerCampaignId: null,
+            submissionLockId: "00000000-0000-0000-0000-000000000007",
+            status: "pending",
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).saveRegistration(registrationInput()),
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: expect.stringContaining("being processed"),
+    });
+    expect(insertValues).not.toHaveBeenCalled();
   });
 
   it("uses the hosted clinic SMS policies when custom links are omitted", async () => {
@@ -1726,16 +1777,12 @@ describe("messaging location sender join scoping", () => {
   it("requires a fresh verified provider profile at both hosted enablement writes", () => {
     const source = readSource("server/routers/messaging.ts");
 
-    expect(source).toContain(
-      "HOSTED_PROVIDER_PROFILE_ATTESTATION_MAX_AGE_MS",
-    );
-    expect(source.match(/eq\(locationMessaging\.providerProfileReady, true\)/g)).toHaveLength(
-      2,
-    );
+    expect(source).toContain("HOSTED_PROVIDER_PROFILE_ATTESTATION_MAX_AGE_MS");
     expect(
-      source.match(
-        /gte\(\s*locationMessaging\.providerProfileSyncedAt/g,
-      ),
+      source.match(/eq\(locationMessaging\.providerProfileReady, true\)/g),
+    ).toHaveLength(2);
+    expect(
+      source.match(/gte\(\s*locationMessaging\.providerProfileSyncedAt/g),
     ).toHaveLength(2);
     expect(source).toContain("OpenVPM must freshly verify");
   });

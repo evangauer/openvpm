@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { randomUUID } from "node:crypto";
 import { and, eq, gte, isNull, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
@@ -51,6 +52,10 @@ import {
   hostedMessagingLaunchBlockMessage,
   hostedMessagingLaunchDecision,
 } from "@/lib/messaging/launch-gate";
+import {
+  clinicMessagingRegistrationActor,
+  recordMessagingRegistrationEvent,
+} from "@/lib/messaging/registration-events";
 
 const adminOnly = protectedProcedure.use(requireRole("admin"));
 const MESSAGING_NUMBER_ORDERED_DETAIL =
@@ -87,11 +92,11 @@ const messagingPhoneInput = z
   .trim()
   .min(
     MESSAGING_PHONE_MIN_LENGTH,
-    `Phone number must be at least ${MESSAGING_PHONE_MIN_LENGTH} characters.`
+    `Phone number must be at least ${MESSAGING_PHONE_MIN_LENGTH} characters.`,
   )
   .max(
     MESSAGING_PHONE_MAX_LENGTH,
-    `Phone number must be at most ${MESSAGING_PHONE_MAX_LENGTH} characters.`
+    `Phone number must be at most ${MESSAGING_PHONE_MAX_LENGTH} characters.`,
   )
   .transform((value, ctx) => {
     const e164 = normalizeE164(value);
@@ -135,7 +140,7 @@ const registrationWebsiteInput = httpsUrlInput.refine(
   (value) => value.length <= 100,
   {
     message: "Website URL must be 100 characters or fewer.",
-  }
+  },
 );
 
 const a2pRegistrationInput = z.object({
@@ -191,7 +196,7 @@ function provisioningError(e: unknown): TRPCError {
 
 function quotesMatch(
   selected: z.infer<typeof selectedQuoteInput>,
-  current: z.infer<typeof selectedQuoteInput>
+  current: z.infer<typeof selectedQuoteInput>,
 ): boolean {
   return (
     selected.currency === current.currency &&
@@ -202,7 +207,7 @@ function quotesMatch(
 
 function isFailedOrderStatus(status: string): boolean {
   return ["failure", "failed", "cancelled", "canceled", "deleted"].includes(
-    status.toLowerCase()
+    status.toLowerCase(),
   );
 }
 
@@ -270,7 +275,7 @@ function assertProvisioningPracticeAllowed(practiceId: string): void {
     (process.env.MESSAGING_PROVISIONING_PRACTICE_IDS ?? "")
       .split(",")
       .map((value) => value.trim())
-      .filter(Boolean)
+      .filter(Boolean),
   );
   if (!allowed.has(practiceId)) {
     throw new TRPCError({
@@ -294,12 +299,12 @@ function assertHostedSendingAllowed(practiceId: string, locationId: string) {
 
 function hostedLaunchEligibleLocationIds(
   practiceId: string,
-  locationIds: string[]
+  locationIds: string[],
 ): ReadonlySet<string> {
   if (!billingEnforced()) return new Set(locationIds);
   const eligible = locationIds.filter(
     (locationId) =>
-      hostedMessagingLaunchDecision({ practiceId, locationId }).allowed
+      hostedMessagingLaunchDecision({ practiceId, locationId }).allowed,
   );
   // A hosted pilot is intentionally one location per practice. An operator
   // allowlisting multiple clinic locations is ambiguous and fails closed.
@@ -308,7 +313,7 @@ function hostedLaunchEligibleLocationIds(
 
 function provisioningOperationReference(
   practiceId: string,
-  locationId: string
+  locationId: string,
 ): string {
   return `openvpm:${practiceId}:${locationId}`;
 }
@@ -360,7 +365,7 @@ function splitContactName(name: string) {
 
 function stringDefault(
   schema: z.ZodType<string>,
-  value: string | null | undefined
+  value: string | null | undefined,
 ): string {
   const parsed = schema.safeParse(value ?? "");
   return parsed.success ? parsed.data : "";
@@ -399,8 +404,8 @@ export const messagingRouter = createRouter({
         and(
           eq(messagingRegistrations.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(messagingRegistrations.deletedAt)
-        )
+          isNull(messagingRegistrations.deletedAt),
+        ),
       )
       .limit(1);
     return registration ?? null;
@@ -423,8 +428,8 @@ export const messagingRouter = createRouter({
         and(
           eq(locations.practiceId, practices.id),
           eq(locations.isPrimary, true),
-          isNull(locations.deletedAt)
-        )
+          isNull(locations.deletedAt),
+        ),
       )
       .where(activePracticeWhere(ctx.practiceId))
       .limit(1);
@@ -437,18 +442,18 @@ export const messagingRouter = createRouter({
       displayName: stringDefault(registrationDisplayNameInput, practice.name),
       contactFirstName: stringDefault(
         registrationContactNameInput,
-        contactName.contactFirstName
+        contactName.contactFirstName,
       ),
       contactLastName: stringDefault(
         registrationContactNameInput,
-        contactName.contactLastName
+        contactName.contactLastName,
       ),
       contactEmail:
         stringDefault(registrationContactEmailInput, practice.email) ||
         stringDefault(registrationContactEmailInput, ctx.user.email),
       businessPhone: stringDefault(
         messagingPhoneInput,
-        practice.phone || practice.primaryLocationPhone
+        practice.phone || practice.primaryLocationPhone,
       ),
       website: stringDefault(registrationWebsiteInput, practice.website),
       ...policyUrls,
@@ -469,14 +474,16 @@ export const messagingRouter = createRouter({
           taxIdLast4: messagingRegistrations.taxIdLast4,
           providerBrandId: messagingRegistrations.providerBrandId,
           providerCampaignId: messagingRegistrations.providerCampaignId,
+          submissionLockId: messagingRegistrations.submissionLockId,
+          status: messagingRegistrations.status,
         })
         .from(messagingRegistrations)
         .where(
           and(
             eq(messagingRegistrations.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(messagingRegistrations.deletedAt)
-          )
+            isNull(messagingRegistrations.deletedAt),
+          ),
         )
         .limit(1);
 
@@ -485,6 +492,13 @@ export const messagingRouter = createRouter({
           code: "PRECONDITION_FAILED",
           message:
             "Carrier registration has been submitted. Contact OpenVPM support before changing legal details.",
+        });
+      }
+      if (existing?.submissionLockId) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message:
+            "Carrier registration is being processed. Wait for the current provider operation to finish before changing legal details.",
         });
       }
       if (!existing && !input.taxId) {
@@ -532,35 +546,62 @@ export const messagingRouter = createRouter({
           input.privacyPolicyUrl || hostedPolicyUrls!.privacyPolicyUrl,
         termsUrl: input.termsUrl || hostedPolicyUrls!.termsUrl,
       };
-      await ctx.db
-        .insert(messagingRegistrations)
-        .values({
-          practiceId: ctx.practiceId,
-          ...completedRegistrationFields,
-          taxIdEncrypted,
-          taxIdLast4,
-          complianceAttestedAt: new Date(),
-          complianceAttestedBy: ctx.user.id,
-          provider: "telnyx",
-          campaignUsecase: "MIXED",
-          status: "not_started",
-          statusDetail: "Ready for OpenVPM carrier review.",
-        })
-        .onConflictDoUpdate({
-          target: messagingRegistrations.practiceId,
-          set: {
+      await ctx.db.transaction(async (tx) => {
+        const [registration] = await tx
+          .insert(messagingRegistrations)
+          .values({
+            practiceId: ctx.practiceId,
             ...completedRegistrationFields,
             taxIdEncrypted,
             taxIdLast4,
             complianceAttestedAt: new Date(),
             complianceAttestedBy: ctx.user.id,
+            provider: "telnyx",
+            campaignUsecase: "MIXED",
             status: "not_started",
             statusDetail: "Ready for OpenVPM carrier review.",
-            lastError: null,
-            deletedAt: null,
-            updatedAt: new Date(),
-          },
+          })
+          .onConflictDoUpdate({
+            target: messagingRegistrations.practiceId,
+            set: {
+              ...completedRegistrationFields,
+              taxIdEncrypted,
+              taxIdLast4,
+              complianceAttestedAt: new Date(),
+              complianceAttestedBy: ctx.user.id,
+              status: "not_started",
+              statusDetail: "Ready for OpenVPM carrier review.",
+              lastError: null,
+              deletedAt: null,
+              updatedAt: new Date(),
+            },
+            setWhere: and(
+              eq(
+                messagingRegistrations.status,
+                existing?.status ?? "not_started",
+              ),
+              isNull(messagingRegistrations.providerBrandId),
+              isNull(messagingRegistrations.providerCampaignId),
+              isNull(messagingRegistrations.submissionLockId),
+            ),
+          })
+          .returning();
+        if (!registration) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Carrier registration changed while saving.",
+          });
+        }
+        await recordMessagingRegistrationEvent(tx as unknown as Database, {
+          registration,
+          eventType: "details_saved",
+          operation: "registration_details",
+          statusBefore: existing?.status ?? null,
+          operationId: randomUUID(),
+          reasonCode: "clinic_registration_saved",
+          actor: clinicMessagingRegistrationActor(ctx.user),
         });
+      });
 
       return { ok: true, taxIdLast4 };
     }),
@@ -589,15 +630,15 @@ export const messagingRouter = createRouter({
           eq(locationMessaging.locationId, locations.id),
           eq(locationMessaging.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(locationMessaging.deletedAt)
-        )
+          isNull(locationMessaging.deletedAt),
+        ),
       )
       .where(
         and(
           eq(locations.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(locations.deletedAt)
-        )
+          isNull(locations.deletedAt),
+        ),
       );
 
     const locationsForSummary = locs.map((l) => ({
@@ -615,7 +656,7 @@ export const messagingRouter = createRouter({
     }));
     const launchEligibleLocationIds = hostedLaunchEligibleLocationIds(
       ctx.practiceId,
-      locs.map((location) => location.locationId)
+      locs.map((location) => location.locationId),
     );
     const locationsWithLaunchState = locationsForSummary.map((location) => ({
       ...location,
@@ -665,15 +706,15 @@ export const messagingRouter = createRouter({
           eq(locationMessaging.locationId, locations.id),
           eq(locationMessaging.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(locationMessaging.deletedAt)
-        )
+          isNull(locationMessaging.deletedAt),
+        ),
       )
       .where(
         and(
           eq(locations.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(locations.deletedAt)
-        )
+          isNull(locations.deletedAt),
+        ),
       );
 
     const period = currentPeriodMonth();
@@ -691,7 +732,7 @@ export const messagingRouter = createRouter({
       getPlan(practice.tier ?? "free")?.includedSmsPerMonth ?? null;
     const launchEligibleLocationIds = hostedLaunchEligibleLocationIds(
       ctx.practiceId,
-      locs.map((location) => location.locationId)
+      locs.map((location) => location.locationId),
     );
 
     const [consentRow] = await ctx.db
@@ -702,8 +743,8 @@ export const messagingRouter = createRouter({
           eq(clients.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
           eq(clients.smsConsent, true),
-          isNull(clients.deletedAt)
-        )
+          isNull(clients.deletedAt),
+        ),
       );
     const [suppressedRow] = await ctx.db
       .select({ n: sql<number>`count(*)::int` })
@@ -711,8 +752,8 @@ export const messagingRouter = createRouter({
       .where(
         and(
           eq(smsSuppressions.practiceId, ctx.practiceId),
-          activePracticePredicate(ctx.practiceId)
-        )
+          activePracticePredicate(ctx.practiceId),
+        ),
       );
 
     return {
@@ -778,23 +819,23 @@ export const messagingRouter = createRouter({
         and(
           eq(locationMessaging.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(locationMessaging.deletedAt)
-        )
+          isNull(locationMessaging.deletedAt),
+        ),
       );
     const launchEligibleLocationIds = hostedLaunchEligibleLocationIds(
       ctx.practiceId,
-      rows.map((row) => row.locationId)
+      rows.map((row) => row.locationId),
     );
     return {
       hasAnyNumber: rows.some(
-        (r) => !!r.senderE164 && r.registrationStatus !== "failed"
+        (r) => !!r.senderE164 && r.registrationStatus !== "failed",
       ),
       hasActiveNumber: rows.some(
         (r) =>
           r.registrationStatus === "active" &&
           r.enabled &&
           launchEligibleLocationIds.has(r.locationId) &&
-          (!billingEnforced() || r.provider === "telnyx")
+          (!billingEnforced() || r.provider === "telnyx"),
       ),
     };
   }),
@@ -807,7 +848,7 @@ export const messagingRouter = createRouter({
           .string()
           .regex(
             new RegExp(`^\\d{${MESSAGING_AREA_CODE_LENGTH}}$`),
-            `Area code must be ${MESSAGING_AREA_CODE_LENGTH} digits`
+            `Area code must be ${MESSAGING_AREA_CODE_LENGTH} digits`,
           )
           .optional(),
         limit: z
@@ -816,7 +857,7 @@ export const messagingRouter = createRouter({
           .min(1)
           .max(MESSAGING_SEARCH_LIMIT_MAX)
           .optional(),
-      })
+      }),
     )
     .query(async ({ ctx, input }) => {
       assertProvisioningEnabled();
@@ -841,8 +882,8 @@ export const messagingRouter = createRouter({
             eq(locations.id, input.locationId),
             eq(locations.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(locations.deletedAt)
-          )
+            isNull(locations.deletedAt),
+          ),
         )
         .limit(1);
       if (!loc) {
@@ -883,7 +924,7 @@ export const messagingRouter = createRouter({
           mode: z.literal("buy"),
           action: z.literal("resume"),
         }),
-      ])
+      ]),
     )
     .mutation(async ({ ctx, input }) => {
       if (input.mode === "host") {
@@ -900,7 +941,7 @@ export const messagingRouter = createRouter({
       const profileName = provisioningProfileName(input.locationId);
       const customerReference = provisioningOperationReference(
         ctx.practiceId,
-        input.locationId
+        input.locationId,
       );
       let profileId: string | null = null;
       let profileCreated = false;
@@ -937,7 +978,7 @@ export const messagingRouter = createRouter({
 
         return await ctx.db.transaction(async (tx) => {
           await tx.execute(
-            sql`select pg_advisory_xact_lock(hashtextextended(${customerReference}, 0))`
+            sql`select pg_advisory_xact_lock(hashtextextended(${customerReference}, 0))`,
           );
           // A request may have waited on the lock. Re-check immediately before
           // every possible provider mutation, not only at request entry.
@@ -951,8 +992,8 @@ export const messagingRouter = createRouter({
                 eq(locations.id, input.locationId),
                 eq(locations.practiceId, ctx.practiceId),
                 activePracticePredicate(ctx.practiceId),
-                isNull(locations.deletedAt)
-              )
+                isNull(locations.deletedAt),
+              ),
             )
             .limit(1);
           if (!loc) {
@@ -975,14 +1016,14 @@ export const messagingRouter = createRouter({
               and(
                 eq(locationMessaging.locationId, input.locationId),
                 eq(locationMessaging.practiceId, ctx.practiceId),
-                isNull(locationMessaging.deletedAt)
-              )
+                isNull(locationMessaging.deletedAt),
+              ),
             )
             .limit(1);
 
           if (input.action === "start" && !existing && !preparedThisRequest) {
             throw provisioningConflict(
-              "OpenVPM could not reserve a durable texting setup attempt. No provider profile or number was created; refresh and try again."
+              "OpenVPM could not reserve a durable texting setup attempt. No provider profile or number was created; refresh and try again.",
             );
           }
 
@@ -995,7 +1036,7 @@ export const messagingRouter = createRouter({
               !existing.senderE164
             ) {
               throw provisioningConflict(
-                "There is no failed number setup to reconcile for this location. Start a new setup or contact OpenVPM support."
+                "There is no failed number setup to reconcile for this location. Start a new setup or contact OpenVPM support.",
               );
             }
             e164 = existing.senderE164;
@@ -1010,7 +1051,7 @@ export const messagingRouter = createRouter({
           let isThisRequestPreparedGate = false;
           if (existing) {
             isThisRequestPreparedGate = Boolean(
-              input.action === "start" && preparedThisRequest
+              input.action === "start" && preparedThisRequest,
             );
             if (
               existing.provider !== "telnyx" ||
@@ -1019,7 +1060,7 @@ export const messagingRouter = createRouter({
               (existing.senderE164 && existing.senderE164 !== e164)
             ) {
               throw provisioningConflict(
-                "This location already has a different texting setup. Contact OpenVPM support before changing numbers."
+                "This location already has a different texting setup. Contact OpenVPM support before changing numbers.",
               );
             }
             if (
@@ -1036,7 +1077,7 @@ export const messagingRouter = createRouter({
             }
             if (input.action === "start" && !isThisRequestPreparedGate) {
               throw provisioningConflict(
-                "This location has an incomplete number setup. Use Reconcile provider setup; OpenVPM will not purchase another number automatically."
+                "This location has an incomplete number setup. Use Reconcile provider setup; OpenVPM will not purchase another number automatically.",
               );
             }
             profileId = existing.messagingProfileId;
@@ -1046,7 +1087,7 @@ export const messagingRouter = createRouter({
           const profiles = await findMessagingProfilesByName(profileName);
           if (profiles.length > 1) {
             throw provisioningConflict(
-              "OpenVPM found more than one incomplete provider setup for this location. No number was purchased; contact support to reconcile it."
+              "OpenVPM found more than one incomplete provider setup for this location. No number was purchased; contact support to reconcile it.",
             );
           }
           const recoveredProfile = profiles[0];
@@ -1056,7 +1097,7 @@ export const messagingRouter = createRouter({
               recoveredProfile.enabled !== false)
           ) {
             throw provisioningConflict(
-              "OpenVPM found an incomplete provider profile with unsafe settings. No number was purchased; contact support to reconcile it."
+              "OpenVPM found an incomplete provider profile with unsafe settings. No number was purchased; contact support to reconcile it.",
             );
           }
           if (
@@ -1064,7 +1105,7 @@ export const messagingRouter = createRouter({
             (!recoveredProfile || recoveredProfile.id !== profileId)
           ) {
             throw provisioningConflict(
-              "The saved provider identity does not match the recoverable setup. No number was purchased; contact support to reconcile it."
+              "The saved provider identity does not match the recoverable setup. No number was purchased; contact support to reconcile it.",
             );
           }
           profileId = recoveredProfile?.id ?? profileId;
@@ -1074,7 +1115,7 @@ export const messagingRouter = createRouter({
             await findNumberOrdersByCustomerReference(customerReference);
           if (orders.length > 1) {
             throw provisioningConflict(
-              "OpenVPM found duplicate provider orders for this location. No additional purchase was attempted; contact support to reconcile them."
+              "OpenVPM found duplicate provider orders for this location. No additional purchase was attempted; contact support to reconcile them.",
             );
           }
           const recoveredOrder = orders[0];
@@ -1090,7 +1131,7 @@ export const messagingRouter = createRouter({
             }
             if (isFailedOrderStatus(recoveredOrder.status)) {
               throw provisioningConflict(
-                "The earlier provider order is in a failed or cancelled state. No additional purchase was attempted; contact OpenVPM support."
+                "The earlier provider order is in a failed or cancelled state. No additional purchase was attempted; contact OpenVPM support.",
               );
             }
             if (!isRecoverableOrderStatus(recoveredOrder.status)) {
@@ -1106,7 +1147,7 @@ export const messagingRouter = createRouter({
             // state. Until the profile POST begins, failures such as a changed
             // quote are definitively mutation-free and may release the gate.
             conclusiveEmptyProfileState = Boolean(
-              preparedThisRequest && !recoveredProfile && !recoveredOrder
+              preparedThisRequest && !recoveredProfile && !recoveredOrder,
             );
             const currentQuotes = await findAvailableNumberQuotes(e164);
             if (
@@ -1114,7 +1155,7 @@ export const messagingRouter = createRouter({
               !quotesMatch(input.quote, currentQuotes[0]!)
             ) {
               throw provisioningConflict(
-                "The selected number or its price changed before purchase. No charge was made. Search again and review the current price."
+                "The selected number or its price changed before purchase. No charge was made. Search again and review the current price.",
               );
             }
             assertProvisioningEnabled();
@@ -1130,25 +1171,25 @@ export const messagingRouter = createRouter({
           const activeProfileId = profileId;
           if (!activeProfileId) {
             throw new Error(
-              "The provider setup did not return a durable profile identity. Retry setup or contact OpenVPM support."
+              "The provider setup did not return a durable profile identity. Retry setup or contact OpenVPM support.",
             );
           }
 
           const ownedNumbers = await findOwnedPhoneNumbers(e164);
           if (ownedNumbers.length > 1) {
             throw provisioningConflict(
-              "The provider returned duplicate ownership records for this number. No new purchase was made; contact support to reconcile it."
+              "The provider returned duplicate ownership records for this number. No new purchase was made; contact support to reconcile it.",
             );
           }
           const ownedNumber = ownedNumbers[0];
           if (
             ownedNumber &&
             ["deleted", "failed", "cancelled", "canceled"].some((status) =>
-              ownedNumber.status?.toLowerCase().includes(status)
+              ownedNumber.status?.toLowerCase().includes(status),
             )
           ) {
             throw provisioningConflict(
-              "The provider reports this number in a failed or released state. No new purchase was made; search again or contact support."
+              "The provider reports this number in a failed or released state. No new purchase was made; search again or contact support.",
             );
           }
           if (
@@ -1156,7 +1197,7 @@ export const messagingRouter = createRouter({
             ownedNumber.messagingProfileId !== activeProfileId
           ) {
             throw provisioningConflict(
-              "This number is already owned under a different provider setup. No new purchase was made; contact support before reassigning it."
+              "This number is already owned under a different provider setup. No new purchase was made; contact support before reassigning it.",
             );
           }
 
@@ -1189,7 +1230,7 @@ export const messagingRouter = createRouter({
             ) {
               purchaseOutcomeUncertain = true;
               throw new TelnyxMutationUncertainError(
-                "The provider returned an inconclusive order status. No second purchase will be attempted automatically."
+                "The provider returned an inconclusive order status. No second purchase will be attempted automatically.",
               );
             }
           }
@@ -1254,7 +1295,7 @@ export const messagingRouter = createRouter({
             // confirmed. Never mask the original setup error.
             console.error(
               "Unable to release untouched messaging profile attempt",
-              releaseError
+              releaseError,
             );
           }
         }
@@ -1265,7 +1306,7 @@ export const messagingRouter = createRouter({
               // and completed first, its durable sender owns the resources and
               // must never be deleted or overwritten by this older attempt.
               await tx.execute(
-                sql`select pg_advisory_xact_lock(hashtextextended(${customerReference}, 0))`
+                sql`select pg_advisory_xact_lock(hashtextextended(${customerReference}, 0))`,
               );
               const [current] = await tx
                 .select({
@@ -1280,8 +1321,8 @@ export const messagingRouter = createRouter({
                   and(
                     eq(locationMessaging.locationId, input.locationId),
                     eq(locationMessaging.practiceId, ctx.practiceId),
-                    isNull(locationMessaging.deletedAt)
-                  )
+                    isNull(locationMessaging.deletedAt),
+                  ),
                 )
                 .limit(1);
               const newerAttemptCompleted = Boolean(
@@ -1289,14 +1330,14 @@ export const messagingRouter = createRouter({
                 current.messagingProfileId &&
                 current.senderE164 === e164 &&
                 current.numberSource === "purchased" &&
-                current.registrationStatus !== "failed"
+                current.registrationStatus !== "failed",
               );
               const differentSetupExists = Boolean(
                 current &&
                 (current.provider !== "telnyx" ||
                   (current.senderE164 && current.senderE164 !== e164) ||
                   (current.numberSource &&
-                    current.numberSource !== "purchased"))
+                    current.numberSource !== "purchased")),
               );
               if (newerAttemptCompleted || differentSetupExists) return;
 
@@ -1373,8 +1414,8 @@ export const messagingRouter = createRouter({
             eq(locations.id, input.locationId),
             eq(locations.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(locations.deletedAt)
-          )
+            isNull(locations.deletedAt),
+          ),
         )
         .limit(1);
       if (!loc) {
@@ -1388,7 +1429,7 @@ export const messagingRouter = createRouter({
         assertHostedSendingAllowed(ctx.practiceId, input.locationId);
         if (billingEnforced()) {
           await ctx.db.execute(
-            sql`select pg_advisory_xact_lock(hashtextextended(${`hosted-sms:${ctx.practiceId}`}, 0))`
+            sql`select pg_advisory_xact_lock(hashtextextended(${`hosted-sms:${ctx.practiceId}`}, 0))`,
           );
         }
         const readySenderConditions = [
@@ -1423,10 +1464,9 @@ export const messagingRouter = createRouter({
         if (!readySender) {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
-            message:
-              billingEnforced()
-                ? "OpenVPM must freshly verify the active provider profile before enabling hosted SMS sending."
-                : "Carrier registration must be active before enabling SMS sending.",
+            message: billingEnforced()
+              ? "OpenVPM must freshly verify the active provider profile before enabling hosted SMS sending."
+              : "Carrier registration must be active before enabling SMS sending.",
           });
         }
         if (billingEnforced() && readySender.provider !== "telnyx") {
@@ -1447,14 +1487,14 @@ export const messagingRouter = createRouter({
               isNull(locationMessaging.deletedAt),
               eq(locationMessaging.enabled, true),
               eq(locationMessaging.registrationStatus, "active"),
-              hasNonBlankMessagingSender()
-            )
+              hasNonBlankMessagingSender(),
+            ),
           )
           .limit(2);
         if (
           billingEnforced() &&
           enabledSenders.some(
-            (sender) => sender.locationId !== input.locationId
+            (sender) => sender.locationId !== input.locationId,
           )
         ) {
           throw new TRPCError({
@@ -1474,7 +1514,7 @@ export const messagingRouter = createRouter({
       if (input.enabled) {
         updateConditions.push(
           eq(locationMessaging.registrationStatus, "active"),
-          hasNonBlankMessagingSender()
+          hasNonBlankMessagingSender(),
         );
         if (billingEnforced()) {
           updateConditions.push(
@@ -1518,7 +1558,7 @@ export const messagingRouter = createRouter({
         locationId: z.string().uuid(),
         to: messagingPhoneInput,
         requestId: z.string().uuid(),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       if (billingEnforced()) {
@@ -1537,8 +1577,8 @@ export const messagingRouter = createRouter({
             eq(locations.id, input.locationId),
             eq(locations.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(locations.deletedAt)
-          )
+            isNull(locations.deletedAt),
+          ),
         )
         .limit(1);
       if (!loc) {
@@ -1557,8 +1597,8 @@ export const messagingRouter = createRouter({
             eq(locations.id, locationMessaging.locationId),
             eq(locations.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(locations.deletedAt)
-          )
+            isNull(locations.deletedAt),
+          ),
         )
         .where(
           and(
@@ -1571,8 +1611,8 @@ export const messagingRouter = createRouter({
             isNull(locations.deletedAt),
             eq(locationMessaging.enabled, true),
             eq(locationMessaging.registrationStatus, "active"),
-            hasNonBlankMessagingSender()
-          )
+            hasNonBlankMessagingSender(),
+          ),
         )
         .limit(1);
       if (!sender) {

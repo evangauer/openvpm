@@ -10,7 +10,6 @@ import {
   STRIPE_PRICE_CLOUD_LOCATION_ENV,
   billingEnforced,
 } from "@/lib/billing/plans";
-import { requiredMessagingEnvNames } from "@/lib/messaging";
 import {
   hostedRlsRoleViolations,
   inspectHostedRlsRole,
@@ -21,6 +20,8 @@ import { envFlagEnabled } from "@/lib/env-bool";
 import { checkObjectStorageHealth } from "@/lib/s3";
 import { normalizeAppBaseUrl } from "@/lib/app-url";
 import { platformAdminEmails } from "@/lib/platform-admin";
+import { rowsFromExecute } from "@/lib/db/execute-rows";
+import { withSystem } from "@/lib/tenant-db";
 
 export const dynamic = "force-dynamic";
 
@@ -69,6 +70,10 @@ const HOSTED_EMAIL_ENV_NAMES = [
   "EMAIL_SUPPORT_ADDRESS",
   "EMAIL_COMPANY_ADDRESS",
 ];
+const HOSTED_SMS_PROVISIONING_PRACTICE_IDS_ENV =
+  "MESSAGING_PROVISIONING_PRACTICE_IDS";
+const HOSTED_SMS_SENDING_PRACTICE_IDS_ENV = "MESSAGING_SENDING_PRACTICE_IDS";
+const HOSTED_SMS_SENDING_LOCATION_IDS_ENV = "MESSAGING_SENDING_LOCATION_IDS";
 const HOSTED_GOOGLE_AI_ENV_NAMES = [
   "GOOGLE_API_KEY",
   "GOOGLE_GENERATIVE_AI_API_KEY",
@@ -99,7 +104,7 @@ function hostedAiCheck(): { ok: boolean; detail: string } {
 
   return hostedEnvCheck(
     HOSTED_ANTHROPIC_AI_ENV_NAMES,
-    "Hosted AI envs present"
+    "Hosted AI envs present",
   );
 }
 
@@ -110,7 +115,7 @@ const HOSTED_OPS_ALERTING_ENV_NAMES = ["OPS_ALERT_WEBHOOK_URL"];
 
 function hostedEnvCheck(
   names: string[],
-  presentDetail: string
+  presentDetail: string,
 ): { ok: boolean; detail: string } {
   const missing = names.filter((name) => !configured(name));
   return {
@@ -172,6 +177,197 @@ function hostedSubscriptionTaxCheck(): { ok: boolean; detail: string } {
     detail: ok
       ? "Hosted subscription tax is enabled"
       : "Hosted subscription tax is not enabled",
+  };
+}
+
+function commaSeparatedValues(name: string): string[] {
+  return (process.env[name] ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value,
+  );
+}
+
+function isExactPilotScope(values: string[]): boolean {
+  return values.length === 1 && isUuid(values[0]!);
+}
+
+function isBase64EncodedBytes(
+  value: string | undefined,
+  bytes: number,
+): boolean {
+  if (!value || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return false;
+  try {
+    return Buffer.from(value, "base64").length === bytes;
+  } catch {
+    return false;
+  }
+}
+
+function hostedTelnyxCredentialIssueCount(): number {
+  let issues = 0;
+  const apiKey = envValue("TELNYX_API_KEY");
+  if (!apiKey?.startsWith("KEY_") || apiKey.length < 20) issues += 1;
+  if (!isBase64EncodedBytes(envValue("TELNYX_PUBLIC_KEY"), 32)) issues += 1;
+  if (
+    !isBase64EncodedBytes(envValue("MESSAGING_REGISTRATION_ENCRYPTION_KEY"), 32)
+  ) {
+    issues += 1;
+  }
+  return issues;
+}
+
+function hostedTelnyxCredentialCheck(): { ok: boolean; detail: string } {
+  const issueCount = hostedTelnyxCredentialIssueCount();
+  return issueCount > 0
+    ? {
+        ok: false,
+        detail: `${issueCount} required hosted SMS configuration ${
+          issueCount === 1 ? "issue" : "issues"
+        } detected`,
+      }
+    : {
+        ok: true,
+        detail: "Hosted Telnyx credentials are structurally valid",
+      };
+}
+
+function hostedSmsRolloutIntended(): boolean {
+  return (
+    envFlagEnabled("MESSAGING_PROVISIONING_ENABLED") ||
+    envFlagEnabled("MESSAGING_SENDING_ENABLED") ||
+    commaSeparatedValues(HOSTED_SMS_PROVISIONING_PRACTICE_IDS_ENV).length > 0 ||
+    commaSeparatedValues(HOSTED_SMS_SENDING_PRACTICE_IDS_ENV).length > 0 ||
+    commaSeparatedValues(HOSTED_SMS_SENDING_LOCATION_IDS_ENV).length > 0
+  );
+}
+
+async function hostedSmsRolloutCheck(): Promise<{
+  ok: boolean;
+  detail: string;
+}> {
+  const credentialIssues = hostedTelnyxCredentialIssueCount();
+  const provisioningEnabled = envFlagEnabled("MESSAGING_PROVISIONING_ENABLED");
+  const sendingEnabled = envFlagEnabled("MESSAGING_SENDING_ENABLED");
+  const provisioningPracticeIds = commaSeparatedValues(
+    HOSTED_SMS_PROVISIONING_PRACTICE_IDS_ENV,
+  );
+  const sendingPracticeIds = commaSeparatedValues(
+    HOSTED_SMS_SENDING_PRACTICE_IDS_ENV,
+  );
+  const sendingLocationIds = commaSeparatedValues(
+    HOSTED_SMS_SENDING_LOCATION_IDS_ENV,
+  );
+  const provisioningScopePrepared = provisioningPracticeIds.length > 0;
+  const sendingScopePrepared =
+    sendingPracticeIds.length > 0 || sendingLocationIds.length > 0;
+
+  let configurationIssues = 0;
+  if (envValue("MESSAGING_PROVIDER")?.toLowerCase() !== "telnyx") {
+    configurationIssues += 1;
+  }
+  if (
+    (provisioningEnabled || provisioningScopePrepared) &&
+    !isExactPilotScope(provisioningPracticeIds)
+  ) {
+    configurationIssues += 1;
+  }
+  if (
+    (sendingEnabled || sendingScopePrepared) &&
+    (!isExactPilotScope(sendingPracticeIds) ||
+      !isExactPilotScope(sendingLocationIds))
+  ) {
+    configurationIssues += 1;
+  }
+  if (
+    provisioningScopePrepared &&
+    sendingScopePrepared &&
+    provisioningPracticeIds[0] !== sendingPracticeIds[0]
+  ) {
+    configurationIssues += 1;
+  }
+
+  const issueCount = credentialIssues + configurationIssues;
+  if (issueCount > 0) {
+    return {
+      ok: false,
+      detail: `${issueCount} required hosted SMS configuration ${
+        issueCount === 1 ? "issue" : "issues"
+      } detected`,
+    };
+  }
+
+  const pilotPracticeId = sendingPracticeIds[0] ?? provisioningPracticeIds[0]!;
+  const sendingLocationId = sendingLocationIds[0] ?? null;
+  try {
+    // Health has no tenant identity. Verify the explicitly configured rollout
+    // scope in system context so hosted RLS does not hide a valid pilot clinic.
+    const result = await withSystem(db, (tx) =>
+      tx.execute(sql`
+        select (
+          exists (
+            select 1
+            from practices as practice
+            where practice.id = ${pilotPracticeId}::uuid
+              and practice.deleted_at is null
+          )
+          and ${
+            sendingLocationId
+              ? sql`exists (
+                  select 1
+                  from locations as location
+                  join location_messaging as sender
+                    on sender.practice_id = location.practice_id
+                    and sender.location_id = location.id
+                    and sender.deleted_at is null
+                  join messaging_registrations as registration
+                    on registration.practice_id = location.practice_id
+                    and registration.deleted_at is null
+                  where location.id = ${sendingLocationId}::uuid
+                    and location.practice_id = ${pilotPracticeId}::uuid
+                    and location.deleted_at is null
+                    and sender.provider = 'telnyx'
+                    and sender.registration_status = 'active'
+                    and nullif(btrim(sender.sender_e164), '') is not null
+                    and nullif(btrim(sender.messaging_profile_id), '') is not null
+                    and sender.provider_profile_ready = true
+                    and sender.provider_profile_synced_at is not null
+                    and registration.provider = 'telnyx'
+                    and registration.status = 'active'
+                    and sender.a2p_brand_id = registration.provider_brand_id
+                    and sender.a2p_campaign_id = registration.provider_campaign_id
+                )`
+              : sql`true`
+          }
+        ) as "scopeValid"
+      `),
+    );
+    const scopeValid =
+      rowsFromExecute<{ scopeValid: boolean }>(result)[0]?.scopeValid === true;
+    if (!scopeValid) {
+      return {
+        ok: false,
+        detail:
+          "Hosted SMS pilot scope does not match an active, carrier-ready clinic location",
+      };
+    }
+  } catch {
+    return {
+      ok: false,
+      detail: "Hosted SMS pilot scope verification failed",
+    };
+  }
+
+  return {
+    ok: true,
+    detail: sendingEnabled
+      ? "Hosted SMS pilot configuration active"
+      : "Hosted SMS pilot configuration prepared and sending gated off",
   };
 }
 
@@ -241,38 +437,43 @@ export async function GET() {
 
     checks.hostedCore = hostedEnvCheck(
       HOSTED_CORE_ENV_NAMES,
-      "Hosted core envs present"
+      "Hosted core envs present",
     );
     checks.hostedAppUrls = hostedAppUrlCheck();
     checks.hostedBilling = hostedEnvCheck(
       HOSTED_BILLING_ENV_NAMES,
-      "Hosted billing envs present"
+      "Hosted billing envs present",
     );
     checks.hostedSubscriptionTax = hostedSubscriptionTaxCheck();
     const hostedStorageEnv = hostedEnvCheck(
       HOSTED_STORAGE_ENV_NAMES,
-      "Hosted storage envs present"
+      "Hosted storage envs present",
     );
     checks.hostedStorage = hostedStorageEnv.ok
       ? await checkObjectStorageHealth()
       : hostedStorageEnv;
     checks.hostedEmail = hostedEnvCheck(
       HOSTED_EMAIL_ENV_NAMES,
-      "Hosted email envs present"
+      "Hosted email envs present",
     );
     checks.hostedAi = hostedAiCheck();
     checks.hostedOps = hostedOpsCheck();
 
-    // SMS is deferred until the active provider is provisioned; everything else
-    // in hosted ops must be wired before the deployment reports ready.
-    checks.hostedSms = {
-      ...hostedEnvCheck(requiredMessagingEnvNames(), "Hosted SMS envs present"),
-      advisory: true,
-    };
+    // SMS may remain safely deferred, but the first rollout signal makes its
+    // configuration release-blocking. This prevents a production health 200
+    // while provisioning or sending is nominally enabled without credentials,
+    // webhook verification, encrypted registration storage, or exact pilot
+    // scope. Missing/partial launch state still fails closed at every send.
+    checks.hostedSms = hostedSmsRolloutIntended()
+      ? await hostedSmsRolloutCheck()
+      : {
+          ...hostedTelnyxCredentialCheck(),
+          advisory: true,
+        };
     checks.hostedOpsAlerting = {
       ...hostedEnvCheck(
         HOSTED_OPS_ALERTING_ENV_NAMES,
-        "Ops alerting configured"
+        "Ops alerting configured",
       ),
     };
     checks.hostedCronHeartbeat = cronHeartbeatConfigured();
@@ -294,6 +495,6 @@ export async function GET() {
       checks,
       latencyMs: Date.now() - startedAt,
     },
-    { status: ok ? 200 : 503 }
+    { status: ok ? 200 : 503 },
   );
 }

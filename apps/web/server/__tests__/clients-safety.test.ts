@@ -17,6 +17,7 @@ vi.mock("@/lib/webhook-dispatcher", () => ({
 const { clientsRouter } = await import("../routers/clients");
 const { LIST_OFFSET_MAX } = await import("../routers/pagination");
 const { SMS_CONSENT_DISCLOSURE } = await import("@/lib/messaging/consent");
+const { pickReminderChannel } = await import("@/lib/messaging/reminders");
 const CLIENTS_SOURCE = readFileSync(
   new URL("../routers/clients.ts", import.meta.url),
   "utf8",
@@ -385,11 +386,20 @@ describe("clients mutation safety", () => {
       firstName: "Ada",
       lastName: "Lovelace",
       phone: "(555) 555-0123",
+      preferredContactMethod: "sms",
       smsConsent: true,
     });
 
-    expect(insertValues).toHaveBeenCalledWith(
+    const clientInsert = (
+      insertValues.mock.calls as unknown as Array<
+        [values: Record<string, unknown>]
+      >
+    )
+      .map(([values]) => values)
+      .find((values) => values.firstName === "Ada");
+    expect(clientInsert).toEqual(
       expect.objectContaining({
+        preferredContactMethod: "sms",
         smsConsent: true,
         smsConsentAt: expect.any(Date),
         smsConsentSource: SMS_CONSENT_DISCLOSURE.source,
@@ -412,6 +422,36 @@ describe("clients mutation safety", () => {
     expect(SMS_CONSENT_DISCLOSURE.source).toContain(
       SMS_CONSENT_DISCLOSURE.version,
     );
+    expect(
+      pickReminderChannel({
+        preferredContactMethod: String(
+          clientInsert?.preferredContactMethod ?? "phone",
+        ),
+        phone: "+15555550123",
+        smsConsent: clientInsert?.smsConsent === true,
+        hasEmail: true,
+        quietHours: false,
+      }),
+    ).toBe("sms");
+  });
+
+  it("rejects an SMS reminder preference without explicit creation consent", async () => {
+    const { db, select, insertValues } = createDb();
+
+    await expect(
+      callerWithDb(db).create({
+        firstName: "Ada",
+        lastName: "Lovelace",
+        phone: "+15555550123",
+        preferredContactMethod: "sms",
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringContaining("complete SMS consent"),
+    });
+
+    expect(select).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
   });
 
   it("rejects explicit creation consent without a valid SMS destination", async () => {
@@ -469,6 +509,66 @@ describe("clients mutation safety", () => {
       address: undefined,
       notes: "Prefers morning appointments.",
     });
+  });
+
+  it("updates the reminder preference to SMS only from complete stored consent", async () => {
+    const completeConsent = {
+      id: CLIENT_ID,
+      phone: "+15555550123",
+      smsConsent: true,
+      smsConsentAt: new Date("2026-08-09T12:00:00.000Z"),
+      smsConsentSource: SMS_CONSENT_DISCLOSURE.source,
+      smsConsentDisclosure: SMS_CONSENT_DISCLOSURE.snapshot,
+      preferredContactMethod: "phone",
+    };
+    const { db, updateSet, lockEvents } = createDb({
+      selectResults: [[completeConsent], [completeConsent]],
+      updatedRows: [
+        {
+          ...completeConsent,
+          preferredContactMethod: "sms",
+        },
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).update({
+        id: CLIENT_ID,
+        preferredContactMethod: "sms",
+      }),
+    ).resolves.toMatchObject({ preferredContactMethod: "sms" });
+
+    expect(updateSet).toHaveBeenCalledWith({
+      preferredContactMethod: "sms",
+    });
+    expect(lockEvents).toEqual(["advisory", "row:update"]);
+  });
+
+  it("rejects an SMS reminder preference with incomplete stored consent evidence", async () => {
+    const incompleteConsent = {
+      id: CLIENT_ID,
+      phone: "+15555550123",
+      smsConsent: true,
+      smsConsentAt: new Date("2026-08-09T12:00:00.000Z"),
+      smsConsentSource: SMS_CONSENT_DISCLOSURE.source,
+      smsConsentDisclosure: null,
+      preferredContactMethod: "phone",
+    };
+    const { db, updateSet } = createDb({
+      selectResults: [[incompleteConsent], [incompleteConsent]],
+    });
+
+    await expect(
+      callerWithDb(db).update({
+        id: CLIENT_ID,
+        preferredContactMethod: "sms",
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringContaining("complete SMS consent"),
+    });
+
+    expect(updateSet).not.toHaveBeenCalled();
   });
 
   it("preserves consent evidence across formatting-only phone edits", async () => {

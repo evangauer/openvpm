@@ -18,6 +18,7 @@ import {
   CLIENT_PHONE_MAX_LENGTH,
   CLIENT_STATE_MAX_LENGTH,
   CLIENT_ZIP_MAX_LENGTH,
+  type ClientContactMethod,
   isOptionalClientTextValid,
   isRequiredClientTextValid,
 } from "@/lib/clients/policy";
@@ -102,6 +103,9 @@ function EditClientForm() {
   });
   const [smsConsent, setSmsConsent] = useState(false);
   const [smsConsentTouched, setSmsConsentTouched] = useState(false);
+  const [preferredContactMethod, setPreferredContactMethod] =
+    useState<ClientContactMethod>("phone");
+  const [preferredContactTouched, setPreferredContactTouched] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const {
@@ -128,6 +132,8 @@ function EditClientForm() {
       });
       setSmsConsent(client.smsConsent ?? false);
       setSmsConsentTouched(false);
+      setPreferredContactMethod(client.preferredContactMethod ?? "phone");
+      setPreferredContactTouched(false);
     }
   }, [client]);
 
@@ -161,6 +167,20 @@ function EditClientForm() {
   const phoneChanged = client
     ? !phoneNumbersMatchForConsent(client.phone, form.phone)
     : false;
+  const persistedConsentEvidenceComplete = Boolean(
+    client?.smsConsent &&
+    client.smsConsentAt &&
+    client.smsConsentSource?.trim() &&
+    client.smsConsentDisclosure?.trim(),
+  );
+  const smsPreferenceReady = Boolean(
+    smsConsent &&
+    smsPhoneValid &&
+    (smsConsentTouched || (!phoneChanged && persistedConsentEvidenceComplete)),
+  );
+  const smsPreferenceNeedsValidation =
+    preferredContactMethod === "sms" &&
+    (preferredContactTouched || phoneChanged || smsConsentTouched);
   const canSubmit =
     isRequiredClientTextValid(form.firstName, CLIENT_NAME_MAX_LENGTH) &&
     isRequiredClientTextValid(form.lastName, CLIENT_NAME_MAX_LENGTH) &&
@@ -170,7 +190,8 @@ function EditClientForm() {
     isOptionalClientTextValid(form.city, CLIENT_CITY_MAX_LENGTH) &&
     isOptionalClientTextValid(form.state, CLIENT_STATE_MAX_LENGTH) &&
     isOptionalClientTextValid(form.zip, CLIENT_ZIP_MAX_LENGTH) &&
-    (!smsConsentTouched || !smsConsent || smsPhoneValid);
+    (!smsConsentTouched || !smsConsent || smsPhoneValid) &&
+    (!smsPreferenceNeedsValidation || smsPreferenceReady);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -183,6 +204,12 @@ function EditClientForm() {
     if (smsConsentTouched && smsConsent && !smsPhoneValid) {
       setError(
         "Enter a valid mobile phone number before recording SMS consent.",
+      );
+      return;
+    }
+    if (smsPreferenceNeedsValidation && !smsPreferenceReady) {
+      setError(
+        "Confirm current SMS consent before using text messages for reminders.",
       );
       return;
     }
@@ -201,6 +228,7 @@ function EditClientForm() {
       city: form.city.trim() || undefined,
       state: form.state.trim() || undefined,
       zip: form.zip.trim() || undefined,
+      ...(preferredContactTouched ? { preferredContactMethod } : {}),
       ...(smsConsentTouched ? { smsConsent } : {}),
     });
   };
@@ -216,6 +244,12 @@ function EditClientForm() {
           : false,
       );
       setSmsConsentTouched(false);
+      if (!phoneNumbersMatchForConsent(client.phone, value)) {
+        if (preferredContactMethod === "sms") {
+          setPreferredContactMethod("phone");
+          setPreferredContactTouched(true);
+        }
+      }
     }
   };
 
@@ -326,12 +360,53 @@ function EditClientForm() {
           </div>
         </div>
 
+        <div className="rounded-md border border-border p-3">
+          <label
+            className="text-sm font-medium"
+            htmlFor="preferredContactMethod"
+          >
+            Preferred contact for reminders
+          </label>
+          <select
+            id="preferredContactMethod"
+            value={preferredContactMethod}
+            onChange={(event) => {
+              setPreferredContactMethod(
+                event.target.value as ClientContactMethod,
+              );
+              setPreferredContactTouched(true);
+            }}
+            className="mt-2 flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+          >
+            <option value="phone">Phone call</option>
+            <option value="email">Email</option>
+            <option value="sms">Text message</option>
+            <option value="portal">Client portal</option>
+          </select>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Text message uses SMS for appointment and vaccination reminders when
+            clinic texting is active. Current permission and a valid mobile
+            number are required.
+          </p>
+          {preferredContactMethod === "sms" && !smsPreferenceReady ? (
+            <p className="mt-2 text-xs font-medium text-amber-700">
+              {smsPreferenceNeedsValidation
+                ? "Reconfirm the disclosure below before saving text reminders as the preference."
+                : "Text reminders are paused until the client has current SMS consent."}
+            </p>
+          ) : null}
+        </div>
+
         <label className="flex items-start gap-2 rounded-md border border-border p-3 text-sm">
           <Checkbox
             checked={smsConsent}
             onChange={(e) => {
               setSmsConsent(e.target.checked);
               setSmsConsentTouched(true);
+              if (!e.target.checked && preferredContactMethod === "sms") {
+                setPreferredContactMethod("phone");
+                setPreferredContactTouched(true);
+              }
             }}
             disabled={!smsPhoneValid && !smsConsent}
             className="mt-0.5"

@@ -19,6 +19,7 @@ import { listOffsetInput } from "./pagination";
 import {
   CLIENT_ADDRESS_MAX_LENGTH,
   CLIENT_CITY_MAX_LENGTH,
+  CLIENT_CONTACT_METHODS,
   CLIENT_EMAIL_MAX_LENGTH,
   CLIENT_NAME_MAX_LENGTH,
   CLIENT_PHONE_MAX_LENGTH,
@@ -67,6 +68,7 @@ const optionalClientString = (maxLength: number) =>
     .transform((value) => value || undefined);
 const clientAddressInput = optionalClientString(CLIENT_ADDRESS_MAX_LENGTH);
 const clientNotesInput = optionalClientString(2000);
+const clientPreferredContactInput = z.enum(CLIENT_CONTACT_METHODS);
 const normalizedClientPhoneInput = z
   .string()
   .trim()
@@ -149,6 +151,28 @@ function smsSuppressionConsentError(reason: string): TRPCError {
     code: "PRECONDITION_FAILED",
     message:
       "This number is blocked from texting after a delivery or complaint event. Review the suppression before recording consent.",
+  });
+}
+
+function hasCompleteSmsConsentEvidence(state: {
+  smsConsent: boolean;
+  smsConsentAt?: Date | null;
+  smsConsentSource?: string | null;
+  smsConsentDisclosure?: string | null;
+}): boolean {
+  return Boolean(
+    state.smsConsent &&
+    state.smsConsentAt &&
+    state.smsConsentSource?.trim() &&
+    state.smsConsentDisclosure?.trim(),
+  );
+}
+
+function smsPreferredContactError(): TRPCError {
+  return new TRPCError({
+    code: "BAD_REQUEST",
+    message:
+      "Text message can be the preferred contact only after a valid mobile phone number and complete SMS consent are saved.",
   });
 }
 
@@ -340,20 +364,27 @@ export const clientsRouter = createRouter({
         state: optionalClientString(CLIENT_STATE_MAX_LENGTH),
         zip: optionalClientString(CLIENT_ZIP_MAX_LENGTH),
         notes: clientNotesInput,
+        preferredContactMethod: clientPreferredContactInput.optional(),
         smsConsent: z.boolean().optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const { smsConsent, ...rest } = input;
-      if (smsConsent && !normalizeE164(rest.phone)) {
+      const { smsConsent, preferredContactMethod, ...rest } = input;
+      const normalizedPhone = normalizeE164(rest.phone);
+      if (smsConsent && !normalizedPhone) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "A valid mobile phone number is required for SMS consent",
         });
       }
+      if (
+        preferredContactMethod === "sms" &&
+        (!smsConsent || !normalizedPhone)
+      ) {
+        throw smsPreferredContactError();
+      }
 
       await assertActivePractice(ctx);
-      const normalizedPhone = normalizeE164(rest.phone);
       const consent = smsConsent
         ? {
             smsConsent: true,
@@ -388,6 +419,7 @@ export const clientsRouter = createRouter({
           .insert(clients)
           .values({
             ...rest,
+            ...(preferredContactMethod ? { preferredContactMethod } : {}),
             ...consent,
             practiceId: ctx.practiceId,
             accessToken: generatePortalAccessToken(),
@@ -449,6 +481,7 @@ export const clientsRouter = createRouter({
         state: optionalClientString(CLIENT_STATE_MAX_LENGTH),
         zip: optionalClientString(CLIENT_ZIP_MAX_LENGTH),
         notes: clientNotesInput,
+        preferredContactMethod: clientPreferredContactInput.optional(),
         smsConsent: z.boolean().optional(),
       }),
     )
@@ -458,8 +491,12 @@ export const clientsRouter = createRouter({
           input,
           "phone",
         );
-        const { id, smsConsent, phone, ...rest } = input;
-        const data: Record<string, unknown> = { ...rest };
+        const { id, smsConsent, phone, preferredContactMethod, ...rest } =
+          input;
+        const data: Record<string, unknown> = {
+          ...rest,
+          ...(preferredContactMethod ? { preferredContactMethod } : {}),
+        };
 
         if (phoneWasProvided) {
           // Drizzle ignores undefined values. Use null so an explicitly cleared
@@ -467,7 +504,11 @@ export const clientsRouter = createRouter({
           data.phone = phone ?? null;
         }
 
-        if (phoneWasProvided || smsConsent !== undefined) {
+        if (
+          phoneWasProvided ||
+          smsConsent !== undefined ||
+          preferredContactMethod === "sms"
+        ) {
           // Read without a row lock only to derive recipient advisory keys.
           // Hosted sends use advisory -> client row, so consent transitions use
           // the same order and then revalidate the row after acquiring locks.
@@ -475,6 +516,10 @@ export const clientsRouter = createRouter({
             .select({
               phone: clients.phone,
               smsConsent: clients.smsConsent,
+              smsConsentAt: clients.smsConsentAt,
+              smsConsentSource: clients.smsConsentSource,
+              smsConsentDisclosure: clients.smsConsentDisclosure,
+              preferredContactMethod: clients.preferredContactMethod,
             })
             .from(clients)
             .where(
@@ -513,6 +558,9 @@ export const clientsRouter = createRouter({
           if (smsConsent === true && newDestination) {
             lockDestinations.add(newDestination);
           }
+          if (preferredContactMethod === "sms" && newDestination) {
+            lockDestinations.add(newDestination);
+          }
           for (const destination of [...lockDestinations].sort()) {
             await acquireSmsRecipientLockInTransaction(
               tx,
@@ -526,6 +574,10 @@ export const clientsRouter = createRouter({
               id: clients.id,
               phone: clients.phone,
               smsConsent: clients.smsConsent,
+              smsConsentAt: clients.smsConsentAt,
+              smsConsentSource: clients.smsConsentSource,
+              smsConsentDisclosure: clients.smsConsentDisclosure,
+              preferredContactMethod: clients.preferredContactMethod,
             })
             .from(clients)
             .where(
@@ -565,6 +617,12 @@ export const clientsRouter = createRouter({
             existingClient.phone,
             nextPhone,
           );
+          let nextConsentState = {
+            smsConsent: existingClient.smsConsent,
+            smsConsentAt: existingClient.smsConsentAt,
+            smsConsentSource: existingClient.smsConsentSource,
+            smsConsentDisclosure: existingClient.smsConsentDisclosure,
+          };
 
           if (smsConsent === true) {
             const normalizedNextPhone = normalizeE164(nextPhone);
@@ -628,6 +686,12 @@ export const clientsRouter = createRouter({
             data.smsConsentAt = new Date();
             data.smsConsentSource = SMS_CONSENT_DISCLOSURE.source;
             data.smsConsentDisclosure = SMS_CONSENT_DISCLOSURE.snapshot;
+            nextConsentState = {
+              smsConsent: true,
+              smsConsentAt: data.smsConsentAt as Date,
+              smsConsentSource: SMS_CONSENT_DISCLOSURE.source,
+              smsConsentDisclosure: SMS_CONSENT_DISCLOSURE.snapshot,
+            };
           } else if (phoneChanged || smsConsent === false) {
             if (smsConsent === false) {
               if (oldDestination) {
@@ -668,6 +732,24 @@ export const clientsRouter = createRouter({
             data.smsConsentAt = null;
             data.smsConsentSource = null;
             data.smsConsentDisclosure = null;
+            nextConsentState = {
+              smsConsent: false,
+              smsConsentAt: null,
+              smsConsentSource: null,
+              smsConsentDisclosure: null,
+            };
+          }
+
+          const nextPreferredContactMethod =
+            preferredContactMethod ??
+            existingClient.preferredContactMethod ??
+            "phone";
+          if (
+            nextPreferredContactMethod === "sms" &&
+            (!normalizeE164(nextPhone) ||
+              !hasCompleteSmsConsentEvidence(nextConsentState))
+          ) {
+            throw smsPreferredContactError();
           }
         }
 

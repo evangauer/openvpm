@@ -22,6 +22,7 @@ import {
   invoiceItems,
   labResults,
   locationMessaging,
+  messagingRegistrationEvents,
   messagingRegistrations,
   locations,
   patientAllergies,
@@ -210,6 +211,15 @@ describe("hot table indexes", () => {
         "messaging_registrations_practice_idx",
         "messaging_registrations_status_idx",
         "messaging_registrations_attested_by_idx",
+      ],
+    ],
+    [
+      "messaging_registration_events",
+      messagingRegistrationEvents,
+      [
+        "messaging_registration_events_registration_history_idx",
+        "messaging_registration_events_practice_time_idx",
+        "messaging_registration_events_operation_event_uq",
       ],
     ],
     [

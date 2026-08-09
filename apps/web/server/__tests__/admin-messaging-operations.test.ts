@@ -4,14 +4,18 @@ const mocks = vi.hoisted(() => {
   class MockTelnyxError extends Error {
     constructor(
       message: string,
-      readonly status: number
+      readonly status: number,
     ) {
       super(message);
     }
   }
   const selectResults: unknown[][] = [];
   const selectLimit = vi.fn(async () => selectResults.shift() ?? []);
-  const selectWhere = vi.fn(() => ({ limit: selectLimit }));
+  const selectOrderBy = vi.fn(() => ({ limit: selectLimit }));
+  const selectWhere = vi.fn(() => ({
+    limit: selectLimit,
+    orderBy: selectOrderBy,
+  }));
   const selectFrom = vi.fn(() => ({ where: selectWhere }));
   const select = vi.fn(() => ({ from: selectFrom }));
   const updateReturning = vi.fn(async () => [
@@ -20,13 +24,23 @@ const mocks = vi.hoisted(() => {
   const updateWhere = vi.fn(() => ({ returning: updateReturning }));
   const updateSet = vi.fn(() => ({ where: updateWhere }));
   const update = vi.fn(() => ({ set: updateSet }));
-  const db = { select, update, execute: vi.fn(async () => undefined) };
+  const insertValues = vi.fn(async (_values: unknown) => undefined);
+  const insert = vi.fn(() => ({ values: insertValues }));
+  const db = {
+    select,
+    update,
+    insert,
+    execute: vi.fn(async () => undefined),
+  };
   return {
     db,
     selectResults,
+    selectLimit,
     update,
     updateReturning,
     updateSet,
+    insertValues,
+    noStore: vi.fn(),
     createA2pBrand: vi.fn(),
     createA2pCampaign: vi.fn(),
     ensureA2pNumberAssignment: vi.fn(),
@@ -46,16 +60,17 @@ const mocks = vi.hoisted(() => {
       async (
         database: unknown,
         _practiceId: string,
-        fn: (tx: unknown) => unknown
-      ) => fn(database)
+        fn: (tx: unknown) => unknown,
+      ) => fn(database),
     ),
     withSystem: vi.fn(async (database: unknown, fn: (tx: unknown) => unknown) =>
-      fn(database)
+      fn(database),
     ),
   };
 });
 
 vi.mock("@openpims/db/client", () => ({ db: mocks.db }));
+vi.mock("next/cache", () => ({ unstable_noStore: mocks.noStore }));
 vi.mock("@/lib/tenant-db", () => ({
   withTenant: mocks.withTenant,
   withSystem: mocks.withSystem,
@@ -150,6 +165,85 @@ afterEach(() => {
 });
 
 describe("platform messaging operations", () => {
+  it("returns bounded newest-first PHI-free registration history", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+    const newest = {
+      id: "00000000-0000-0000-0000-000000000011",
+      createdAt: new Date("2026-08-09T12:01:00.000Z"),
+      practiceId: PRACTICE_ID,
+      registrationId: REGISTRATION_ID,
+      locationId: LOCATION_ID,
+      eventType: "provider_operation_succeeded",
+      operation: "campaign_submission",
+      statusBefore: "pending",
+      statusAfter: "pending",
+      provider: "telnyx",
+      providerBrandId: "brand-123",
+      providerCampaignId: "campaign-123",
+      messagingProfileId: null,
+      providerBrandStatus: "VERIFIED",
+      providerCampaignStatus: "PENDING",
+      actorType: "platform_operator",
+      actorUserId: null,
+      actorIdentity: "o***@example.com",
+      actorName: "Ops",
+      operationId: "00000000-0000-0000-0000-000000000012",
+      reasonCode: "carrier_campaign_submitted",
+      legalName: "Must not escape",
+      taxIdLast4: "6789",
+      statusDetail: "Must not escape",
+      lastError: "Must not escape",
+    };
+    mocks.selectResults.push([
+      newest,
+      {
+        ...newest,
+        id: "00000000-0000-0000-0000-000000000010",
+        createdAt: new Date("2026-08-09T12:00:00.000Z"),
+      },
+    ]);
+
+    const result = await caller().messagingRegistrationHistory({
+      practiceId: PRACTICE_ID,
+      limit: 1,
+    });
+    expect(result).toEqual({
+      cacheControl: "no-store",
+      events: [
+        expect.objectContaining({
+          id: newest.id,
+          actorLabel: "o***@example.com",
+          reasonCode: "carrier_campaign_submitted",
+        }),
+      ],
+      truncated: true,
+    });
+
+    expect(result.events[0]).not.toHaveProperty("legalName");
+    expect(result.events[0]).not.toHaveProperty("taxIdLast4");
+    expect(result.events[0]).not.toHaveProperty("statusDetail");
+    expect(result.events[0]).not.toHaveProperty("lastError");
+    expect(result.events[0]).not.toHaveProperty("actorUserId");
+    expect(result.events[0]).not.toHaveProperty("actorIdentity");
+    expect(result.events[0]).not.toHaveProperty("actorName");
+    expect(mocks.selectLimit).toHaveBeenCalledWith(2);
+    expect(mocks.noStore).toHaveBeenCalled();
+  });
+
+  it("rejects unbounded registration history reads before database access", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+
+    await expect(
+      caller().messagingRegistrationHistory({
+        practiceId: PRACTICE_ID,
+        limit: 201,
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    expect(mocks.withSystem).not.toHaveBeenCalled();
+    expect(mocks.noStore).not.toHaveBeenCalled();
+  });
+
   it("describes the actual clinic-recorded opt-in flow and required disclosures", () => {
     const copy = messagingCampaignCopy({
       displayName: "Healthy Pets",
@@ -167,7 +261,9 @@ describe("platform messaging operations", () => {
 
     expect(copy.messageFlow).toContain("phone or in-person intake");
     expect(copy.messageFlow).toContain("optional and unchecked by default");
-    expect(copy.messageFlow).toContain("Consent is not a condition of purchase");
+    expect(copy.messageFlow).toContain(
+      "Consent is not a condition of purchase",
+    );
     expect(copy.messageFlow).toContain("/opt-in");
     expect(copy.messageFlow).toContain("/privacy");
     expect(copy.messageFlow).toContain("/terms");
@@ -212,7 +308,7 @@ describe("platform messaging operations", () => {
         practiceId: PRACTICE_ID,
         confirmProviderCharges: true,
         retryAfterProviderReview: false,
-      })
+      }),
     ).resolves.toMatchObject({
       ok: true,
       providerCampaignId: "campaign-123",
@@ -226,20 +322,40 @@ describe("platform messaging operations", () => {
         privacyPolicyUrl: "https://healthypets.example/sms-privacy",
         termsUrl: "https://healthypets.example/sms-terms",
         sample3: expect.stringContaining(
-          `https://app.openvpm.com/sms/${PRACTICE_ID}`
+          `https://app.openvpm.com/sms/${PRACTICE_ID}`,
         ),
         messageFlow: expect.stringContaining(
-          `https://app.openvpm.com/sms/${PRACTICE_ID}/opt-in`
+          `https://app.openvpm.com/sms/${PRACTICE_ID}/opt-in`,
         ),
         webhookUrl: "https://app.openvpm.com/api/webhooks/telnyx",
-      })
+      }),
     );
     const payload = mocks.createA2pCampaign.mock.calls[0]?.[0];
     expect(payload.messageFlow).toContain(
-      "https://healthypets.example/sms-privacy"
+      "https://healthypets.example/sms-privacy",
     );
     expect(payload.messageFlow).toContain(
-      "https://healthypets.example/sms-terms"
+      "https://healthypets.example/sms-terms",
+    );
+    const ledgerRows = mocks.insertValues.mock.calls.map(
+      (call) => call[0] as Record<string, unknown>,
+    );
+    expect(ledgerRows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          eventType: "provider_operation_started",
+          operation: "campaign_submission",
+          reasonCode: "carrier_campaign_submission_started",
+        }),
+        expect.objectContaining({
+          eventType: "provider_operation_succeeded",
+          operation: "campaign_submission",
+          reasonCode: "carrier_campaign_submitted",
+        }),
+      ]),
+    );
+    expect(JSON.stringify(ledgerRows)).not.toMatch(
+      /taxId|patientId|clientId|payload|lastError|statusDetail/,
     );
   });
 
@@ -252,7 +368,7 @@ describe("platform messaging operations", () => {
         practiceId: PRACTICE_ID,
         confirmProviderCharges: true,
         retryAfterProviderReview: false,
-      })
+      }),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     expect(mocks.withSystem).not.toHaveBeenCalled();
     expect(mocks.createA2pBrand).not.toHaveBeenCalled();
@@ -266,7 +382,7 @@ describe("platform messaging operations", () => {
       caller().submitMessagingBrand({
         practiceId: PRACTICE_ID,
         retryAfterProviderReview: false,
-      } as never)
+      } as never),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(mocks.withSystem).not.toHaveBeenCalled();
   });
@@ -280,7 +396,7 @@ describe("platform messaging operations", () => {
         practiceId: PRACTICE_ID,
         confirmProviderCharges: true,
         retryAfterProviderReview: false,
-      })
+      }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(mocks.createA2pBrand).not.toHaveBeenCalled();
   });
@@ -348,6 +464,14 @@ describe("platform messaging operations", () => {
     );
     expect(mocks.updateSet).not.toHaveBeenCalledWith(
       expect.objectContaining({ enabled: true }),
+    );
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "provider_profile_enabled",
+        operation: "profile_activation",
+        locationId: LOCATION_ID,
+        messagingProfileId: "profile-123",
+      }),
     );
   });
 
@@ -601,7 +725,11 @@ describe("platform messaging operations", () => {
   it("turns off the clinic gate before disabling the provider profile", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
     vi.stubEnv("MESSAGING_PROVISIONING_ENABLED", "true");
-    mocks.selectResults.push([activeSender()], [activeSender()]);
+    mocks.selectResults.push(
+      [activeSender()],
+      [activeSender()],
+      [activeRegistration()],
+    );
     mocks.getMessagingProfile
       .mockResolvedValueOnce(providerProfile(true))
       .mockResolvedValueOnce(providerProfile(false));
@@ -627,6 +755,14 @@ describe("platform messaging operations", () => {
         providerProfileReady: false,
       }),
     );
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "provider_profile_disabled",
+        operation: "profile_deactivation",
+        locationId: LOCATION_ID,
+        messagingProfileId: "profile-123",
+      }),
+    );
   });
 
   it("targets the freshly read sender identity during provider deactivation", async () => {
@@ -641,6 +777,7 @@ describe("platform messaging operations", () => {
           senderE164: "+15555550101",
         },
       ],
+      [activeRegistration()],
     );
     mocks.getMessagingProfile
       .mockResolvedValueOnce({
@@ -677,6 +814,7 @@ describe("platform messaging operations", () => {
 
   it("invalidates every sender when recovered provider IDs change", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+    mocks.selectResults.push([activeRegistration()]);
 
     await expect(
       caller().attachMessagingProviderIds({
@@ -705,6 +843,38 @@ describe("platform messaging operations", () => {
         providerProfileSyncedAt: null,
       }),
     );
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "provider_ids_attached",
+        operation: "provider_id_recovery",
+        reasonCode: "provider_ids_attached_after_portal_review",
+      }),
+    );
+  });
+
+  it("refuses provider ID recovery while a provider operation lock is fresh", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+    mocks.selectResults.push([
+      {
+        ...activeRegistration(),
+        submissionLockId: "00000000-0000-0000-0000-000000000007",
+        submissionLockAt: new Date(Date.now() - 5 * 60 * 1000),
+      },
+    ]);
+
+    await expect(
+      caller().attachMessagingProviderIds({
+        practiceId: PRACTICE_ID,
+        providerBrandId: "brand-recovered",
+        providerCampaignId: "campaign-recovered",
+        confirmProviderPortalReviewed: true,
+      }),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("15-minute safety window"),
+    });
+    expect(mocks.update).not.toHaveBeenCalled();
+    expect(mocks.insertValues).not.toHaveBeenCalled();
   });
 
   it("clears only a portal-reviewed stale lock and keeps every sender disabled", async () => {
@@ -725,7 +895,7 @@ describe("platform messaging operations", () => {
         providerObject: "brand",
         confirmProviderPortalReviewed: true,
         confirmNoProviderObjectExists: "NO_PROVIDER_OBJECT",
-      })
+      }),
     ).resolves.toEqual({ ok: true, providerObject: "brand" });
 
     expect(mocks.updateSet).toHaveBeenCalledWith(
@@ -733,13 +903,21 @@ describe("platform messaging operations", () => {
         submissionLockId: null,
         submissionLockAt: null,
         status: "action_required",
-      })
+      }),
     );
     expect(mocks.updateSet).toHaveBeenCalledWith(
       expect.objectContaining({
         enabled: false,
         registrationStatus: "action_required",
-      })
+      }),
+    );
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "stale_lock_cleared",
+        operation: "submission_lock_recovery",
+        operationId: "00000000-0000-0000-0000-000000000007",
+        reasonCode: "stale_brand_lock_cleared",
+      }),
     );
   });
 
@@ -761,7 +939,7 @@ describe("platform messaging operations", () => {
         providerObject: "brand",
         confirmProviderPortalReviewed: true,
         confirmNoProviderObjectExists: "NO_PROVIDER_OBJECT",
-      })
+      }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message: expect.stringContaining("15-minute safety window"),

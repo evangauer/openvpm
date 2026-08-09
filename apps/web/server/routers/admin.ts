@@ -12,6 +12,7 @@ import {
   patients,
   locations,
   messagingRegistrations,
+  messagingRegistrationEvents,
   locationMessaging,
   smsDeliveryEventHistory,
   smsDeliveryEvents,
@@ -67,6 +68,12 @@ import { messagingProgramUrls } from "@/lib/messaging/public-program";
 import { reconcileSmsSendAttempt, resendSmsAttempt } from "@/lib/sms-dispatch";
 import { reconcileSmsDeliveryEvent } from "@/lib/messaging/sms-delivery-ledger";
 import { rowsFromExecute } from "@/lib/db/execute-rows";
+import {
+  platformMessagingRegistrationActor,
+  recordMessagingRegistrationEvent,
+  type MessagingRegistrationEventActor,
+  type MessagingRegistrationReasonCode,
+} from "@/lib/messaging/registration-events";
 
 /**
  * Platform-operator only. Crosses tenant boundaries deliberately, so it is
@@ -84,12 +91,13 @@ const platformAdminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
 
 const MESSAGING_SUBMISSION_LOCK_STALE_MS = 15 * 60 * 1000;
 const MESSAGING_PROVIDER_PROFILE_ATTESTATION_MAX_AGE_MS = 15 * 60 * 1000;
+const WITHHELD_PHONE_LIKE_OPERATIONAL_ID = "[withheld: phone-like identifier]";
 
-function redactedOperatorIdentity(value: string | null): string | null {
+function safeOperationalProviderId(value: string | null): string | null {
   if (!value) return null;
-  const [local, domain] = value.split("@");
-  if (!local || !domain) return "reviewer-recorded";
-  return `${local.slice(0, 1)}***@${domain}`;
+  return /^\+?\d[\d ().-]{6,18}$/.test(value.trim())
+    ? WITHHELD_PHONE_LIKE_OPERATIONAL_ID
+    : value;
 }
 
 function assertMessagingProviderMutationsEnabled() {
@@ -229,11 +237,9 @@ async function inspectMessagingProviderReadiness(input: {
     sender,
     blockers,
     registration: {
-      id: registration.id,
-      practiceId: registration.practiceId,
+      ...registration,
       providerBrandId,
       providerCampaignId,
-      status: registration.status,
     },
   };
 }
@@ -250,6 +256,7 @@ function expectedMessagingProfileState(
     clinicEnabled: inspection.sender.enabled,
     providerProfileReady: inspection.sender.providerProfileReady,
     providerProfileSyncedAt: inspection.sender.providerProfileSyncedAt,
+    registration: inspection.registration,
   };
 }
 
@@ -293,7 +300,10 @@ async function recordMessagingProfileReady(input: {
     clinicEnabled: boolean;
     providerProfileReady: boolean;
     providerProfileSyncedAt: Date | null;
+    registration: typeof messagingRegistrations.$inferSelect;
   };
+  eventType: "provider_profile_enabled" | "provider_profile_verified";
+  actor: MessagingRegistrationEventActor;
 }) {
   await withSystem(db, async (tx) => {
     const [updated] = await tx
@@ -347,6 +357,23 @@ async function recordMessagingProfileReady(input: {
           "Messaging lifecycle state changed during provider verification. Refresh and inspect again.",
       });
     }
+    await recordMessagingRegistrationEvent(tx, {
+      registration: input.expected.registration,
+      eventType: input.eventType,
+      operation:
+        input.eventType === "provider_profile_enabled"
+          ? "profile_activation"
+          : "profile_verification",
+      statusBefore: input.expected.registration.status,
+      operationId: randomUUID(),
+      reasonCode:
+        input.eventType === "provider_profile_enabled"
+          ? "provider_profile_enabled"
+          : "provider_profile_verified",
+      actor: input.actor,
+      locationId: input.locationId,
+      messagingProfileId: input.expected.messagingProfileId,
+    });
   });
 }
 
@@ -358,6 +385,8 @@ async function recordMessagingProfileDisabled(input: {
     messagingProfileId: string;
     senderE164: string;
   };
+  registration: typeof messagingRegistrations.$inferSelect;
+  actor: MessagingRegistrationEventActor;
 }) {
   await withSystem(db, async (tx) => {
     const [updated] = await tx
@@ -390,6 +419,17 @@ async function recordMessagingProfileDisabled(input: {
           "Messaging sender identity changed during provider deactivation. Refresh and disable the current profile.",
       });
     }
+    await recordMessagingRegistrationEvent(tx, {
+      registration: input.registration,
+      eventType: "provider_profile_disabled",
+      operation: "profile_deactivation",
+      statusBefore: input.registration.status,
+      operationId: randomUUID(),
+      reasonCode: "provider_profile_disabled",
+      actor: input.actor,
+      locationId: input.locationId,
+      messagingProfileId: input.expected.messagingProfileId,
+    });
   });
 }
 
@@ -442,9 +482,10 @@ async function registrationForOperator(practiceId: string) {
 }
 
 async function claimRegistrationOperation(opts: {
-  registrationId: string;
+  registration: typeof messagingRegistrations.$inferSelect;
   operation: "brand" | "campaign" | "assignment";
   allowReviewedRetry: boolean;
+  actor: MessagingRegistrationEventActor;
 }) {
   return withSystem(db, async (tx) => {
     const lockId = randomUUID();
@@ -462,7 +503,8 @@ async function claimRegistrationOperation(opts: {
       })
       .where(
         and(
-          eq(messagingRegistrations.id, opts.registrationId),
+          eq(messagingRegistrations.id, opts.registration.id),
+          eq(messagingRegistrations.status, opts.registration.status),
           isNull(messagingRegistrations.deletedAt),
           isNull(messagingRegistrations.submissionLockId),
           opts.allowReviewedRetry
@@ -470,7 +512,7 @@ async function claimRegistrationOperation(opts: {
             : sql`${messagingRegistrations.lastError} is null`,
         ),
       )
-      .returning({ id: messagingRegistrations.id });
+      .returning();
     if (!claimed) {
       throw new TRPCError({
         code: "CONFLICT",
@@ -478,6 +520,27 @@ async function claimRegistrationOperation(opts: {
           "A provider operation is already running or a previous ambiguous failure needs operator review.",
       });
     }
+    const operation =
+      opts.operation === "brand"
+        ? ("brand_submission" as const)
+        : opts.operation === "campaign"
+          ? ("campaign_submission" as const)
+          : ("number_assignment" as const);
+    const reasonCode =
+      opts.operation === "brand"
+        ? ("carrier_brand_submission_started" as const)
+        : opts.operation === "campaign"
+          ? ("carrier_campaign_submission_started" as const)
+          : ("carrier_number_assignment_started" as const);
+    await recordMessagingRegistrationEvent(tx, {
+      registration: claimed,
+      eventType: "provider_operation_started",
+      operation,
+      statusBefore: opts.registration.status,
+      operationId: lockId,
+      reasonCode,
+      actor: opts.actor,
+    });
     return lockId;
   });
 }
@@ -486,6 +549,10 @@ async function finishRegistrationOperation(opts: {
   registrationId: string;
   lockId: string;
   values: Partial<typeof messagingRegistrations.$inferInsert>;
+  operation: "brand_submission" | "campaign_submission" | "number_assignment";
+  eventType: "provider_operation_succeeded" | "provider_operation_failed";
+  reasonCode: MessagingRegistrationReasonCode;
+  actor: MessagingRegistrationEventActor;
 }) {
   return withSystem(db, async (tx) => {
     const [updated] = await tx
@@ -503,7 +570,7 @@ async function finishRegistrationOperation(opts: {
           isNull(messagingRegistrations.deletedAt),
         ),
       )
-      .returning({ id: messagingRegistrations.id });
+      .returning();
     if (!updated) {
       throw new TRPCError({
         code: "CONFLICT",
@@ -511,6 +578,15 @@ async function finishRegistrationOperation(opts: {
           "Registration changed while the provider operation was running.",
       });
     }
+    await recordMessagingRegistrationEvent(tx, {
+      registration: updated,
+      eventType: opts.eventType,
+      operation: opts.operation,
+      statusBefore: "pending",
+      operationId: opts.lockId,
+      reasonCode: opts.reasonCode,
+      actor: opts.actor,
+    });
   });
 }
 
@@ -519,6 +595,8 @@ async function failRegistrationOperation(opts: {
   practiceId: string;
   lockId: string;
   error: unknown;
+  operation: "brand_submission" | "campaign_submission" | "number_assignment";
+  actor: MessagingRegistrationEventActor;
 }) {
   const detail =
     opts.error instanceof Error
@@ -532,6 +610,10 @@ async function failRegistrationOperation(opts: {
       statusDetail: "Carrier registration needs OpenVPM operator review.",
       lastError: detail,
     },
+    operation: opts.operation,
+    eventType: "provider_operation_failed",
+    reasonCode: "carrier_provider_operation_failed",
+    actor: opts.actor,
   });
   await withSystem(db, async (tx) => {
     await tx
@@ -1111,6 +1193,84 @@ export const adminRouter = createRouter({
     return getSmsOperationsHealth(db);
   }),
 
+  /** Newest-first, PHI-free carrier lifecycle evidence for one exact clinic. */
+  messagingRegistrationHistory: platformAdminProcedure
+    .input(
+      z
+        .object({
+          practiceId: z.string().uuid(),
+          limit: z.number().int().min(1).max(200).default(100),
+        })
+        .strict(),
+    )
+    .query(({ input }) => {
+      noStore();
+      return withSystem(db, async (tx) => {
+        const rows = await tx
+          .select({
+            id: messagingRegistrationEvents.id,
+            createdAt: messagingRegistrationEvents.createdAt,
+            practiceId: messagingRegistrationEvents.practiceId,
+            registrationId: messagingRegistrationEvents.registrationId,
+            locationId: messagingRegistrationEvents.locationId,
+            eventType: messagingRegistrationEvents.eventType,
+            operation: messagingRegistrationEvents.operation,
+            statusBefore: messagingRegistrationEvents.statusBefore,
+            statusAfter: messagingRegistrationEvents.statusAfter,
+            provider: messagingRegistrationEvents.provider,
+            providerBrandId: messagingRegistrationEvents.providerBrandId,
+            providerCampaignId: messagingRegistrationEvents.providerCampaignId,
+            messagingProfileId: messagingRegistrationEvents.messagingProfileId,
+            providerBrandStatus:
+              messagingRegistrationEvents.providerBrandStatus,
+            providerCampaignStatus:
+              messagingRegistrationEvents.providerCampaignStatus,
+            actorType: messagingRegistrationEvents.actorType,
+            actorIdentity: messagingRegistrationEvents.actorIdentity,
+            operationId: messagingRegistrationEvents.operationId,
+            reasonCode: messagingRegistrationEvents.reasonCode,
+          })
+          .from(messagingRegistrationEvents)
+          .where(eq(messagingRegistrationEvents.practiceId, input.practiceId))
+          .orderBy(
+            desc(messagingRegistrationEvents.createdAt),
+            desc(messagingRegistrationEvents.id),
+          )
+          .limit(input.limit + 1);
+        const truncated = rows.length > input.limit;
+        return {
+          cacheControl: "no-store" as const,
+          events: rows.slice(0, input.limit).map((row) => ({
+            id: row.id,
+            createdAt: row.createdAt,
+            practiceId: row.practiceId,
+            registrationId: row.registrationId,
+            locationId: row.locationId,
+            eventType: row.eventType,
+            operation: row.operation,
+            statusBefore: row.statusBefore,
+            statusAfter: row.statusAfter,
+            provider: row.provider,
+            providerBrandId: row.providerBrandId,
+            providerCampaignId: row.providerCampaignId,
+            messagingProfileId: row.messagingProfileId,
+            providerBrandStatus: row.providerBrandStatus,
+            providerCampaignStatus: row.providerCampaignStatus,
+            actorType: row.actorType,
+            actorLabel:
+              row.actorType === "clinic_user"
+                ? "Clinic admin"
+                : row.actorType === "platform_operator"
+                  ? row.actorIdentity || "OpenVPM operator"
+                  : "OpenVPM system",
+            operationId: row.operationId,
+            reasonCode: row.reasonCode,
+          })),
+          truncated,
+        };
+      });
+    }),
+
   /** Redacted A2P work queue. Legal tax IDs are never exposed here. */
   messagingRegistrationQueue: platformAdminProcedure.query(async () =>
     withSystem(db, async (tx) => {
@@ -1153,7 +1313,9 @@ export const adminRouter = createRouter({
           locationId: locationMessaging.locationId,
           provider: locationMessaging.provider,
           messagingProfileId: locationMessaging.messagingProfileId,
-          senderE164: locationMessaging.senderE164,
+          senderLast4: sql<
+            string | null
+          >`nullif(right(regexp_replace(coalesce(${locationMessaging.senderE164}, ''), '[^0-9]', '', 'g'), 4), '')`,
           registrationStatus: locationMessaging.registrationStatus,
           registrationDetail: locationMessaging.registrationDetail,
           providerProfileReady: locationMessaging.providerProfileReady,
@@ -1186,7 +1348,8 @@ export const adminRouter = createRouter({
         locationId: z.string().uuid(),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      const actor = platformMessagingRegistrationActor(ctx.session!.user);
       try {
         const inspection = await inspectMessagingProviderReadiness(input);
         const { profile, blockers } = inspection;
@@ -1197,6 +1360,8 @@ export const adminRouter = createRouter({
             detail:
               "Provider profile is active and verified. A clinic admin may now enable this approved pilot sender.",
             expected: expectedMessagingProfileState(inspection),
+            eventType: "provider_profile_verified",
+            actor,
           });
         } else {
           await updateMessagingSenderDisabled({
@@ -1234,8 +1399,9 @@ export const adminRouter = createRouter({
         confirmProviderMutation: z.literal(true),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       assertMessagingProviderMutationsEnabled();
+      const actor = platformMessagingRegistrationActor(ctx.session!.user);
       const sender = await messagingSenderForOperator(
         input.practiceId,
         input.locationId,
@@ -1253,6 +1419,7 @@ export const adminRouter = createRouter({
             input.practiceId,
             input.locationId,
           );
+          const registration = await registrationForOperator(input.practiceId);
           let profile = await getMessagingProfile(
             targetSender.messagingProfileId,
           );
@@ -1281,6 +1448,8 @@ export const adminRouter = createRouter({
               messagingProfileId: targetSender.messagingProfileId,
               senderE164: targetSender.senderE164,
             },
+            registration,
+            actor,
           });
           return {
             locationId: input.locationId,
@@ -1348,6 +1517,8 @@ export const adminRouter = createRouter({
           detail:
             "Provider profile is active and verified. A clinic admin may now enable this approved pilot sender.",
           expected: expectedMessagingProfileState(inspection),
+          eventType: "provider_profile_enabled",
+          actor,
         });
         return {
           locationId: input.locationId,
@@ -1370,8 +1541,9 @@ export const adminRouter = createRouter({
         retryAfterProviderReview: z.boolean().default(false),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       assertMessagingProviderMutationsEnabled();
+      const actor = platformMessagingRegistrationActor(ctx.session!.user);
       const registration = await registrationForOperator(input.practiceId);
       if (registration.providerBrandId) {
         return {
@@ -1381,9 +1553,10 @@ export const adminRouter = createRouter({
         };
       }
       const lockId = await claimRegistrationOperation({
-        registrationId: registration.id,
+        registration,
         operation: "brand",
         allowReviewedRetry: input.retryAfterProviderReview,
+        actor,
       });
       try {
         const brand = await createA2pBrand({
@@ -1419,6 +1592,10 @@ export const adminRouter = createRouter({
             lastError: brand.failureReasons,
             lastSyncedAt: new Date(),
           },
+          operation: "brand_submission",
+          eventType: "provider_operation_succeeded",
+          reasonCode: "carrier_brand_submitted",
+          actor,
         });
         return { ok: true, providerBrandId: brand.brandId, reused: false };
       } catch (error) {
@@ -1427,6 +1604,8 @@ export const adminRouter = createRouter({
           practiceId: registration.practiceId,
           lockId,
           error,
+          operation: "brand_submission",
+          actor,
         });
         throw providerFailure(error);
       }
@@ -1441,8 +1620,9 @@ export const adminRouter = createRouter({
         retryAfterProviderReview: z.boolean().default(false),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       assertMessagingProviderMutationsEnabled();
+      const actor = platformMessagingRegistrationActor(ctx.session!.user);
       const registration = await registrationForOperator(input.practiceId);
       if (!registration.providerBrandId) {
         throw new TRPCError({
@@ -1450,6 +1630,7 @@ export const adminRouter = createRouter({
           message: "Submit the clinic brand before its campaign.",
         });
       }
+      const providerBrandId = registration.providerBrandId;
       if (registration.providerCampaignId) {
         return {
           ok: true,
@@ -1458,14 +1639,14 @@ export const adminRouter = createRouter({
         };
       }
 
-      const brand = await getA2pBrand(registration.providerBrandId);
+      const brand = await getA2pBrand(providerBrandId);
       if (
         !new Set(["VERIFIED", "VETTED_VERIFIED"]).has(
           brand.identityStatus ?? "",
         )
       ) {
         await withSystem(db, async (tx) => {
-          await tx
+          const [updated] = await tx
             .update(messagingRegistrations)
             .set({
               providerBrandStatus: brand.identityStatus ?? brand.status,
@@ -1479,7 +1660,33 @@ export const adminRouter = createRouter({
               lastSyncedAt: new Date(),
               updatedAt: new Date(),
             })
-            .where(eq(messagingRegistrations.id, registration.id));
+            .where(
+              and(
+                eq(messagingRegistrations.id, registration.id),
+                eq(messagingRegistrations.status, registration.status),
+                eq(messagingRegistrations.providerBrandId, providerBrandId),
+                isNull(messagingRegistrations.providerCampaignId),
+                isNull(messagingRegistrations.submissionLockId),
+                isNull(messagingRegistrations.deletedAt),
+              ),
+            )
+            .returning();
+          if (!updated) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "Registration changed during carrier brand inspection. Refresh and retry.",
+            });
+          }
+          await recordMessagingRegistrationEvent(tx, {
+            registration: updated,
+            eventType: "provider_state_observed",
+            operation: "brand_submission",
+            statusBefore: registration.status,
+            operationId: randomUUID(),
+            reasonCode: "carrier_brand_not_verified",
+            actor,
+          });
         });
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
@@ -1489,12 +1696,12 @@ export const adminRouter = createRouter({
 
       const referenceId = campaignReferenceId(input.practiceId);
       const recovered = await findA2pCampaignByReference({
-        brandId: registration.providerBrandId,
+        brandId: providerBrandId,
         referenceId,
       });
       if (recovered) {
         await withSystem(db, async (tx) => {
-          await tx
+          const [updated] = await tx
             .update(messagingRegistrations)
             .set({
               providerCampaignId: recovered.campaignId,
@@ -1509,7 +1716,32 @@ export const adminRouter = createRouter({
               lastSyncedAt: new Date(),
               updatedAt: new Date(),
             })
-            .where(eq(messagingRegistrations.id, registration.id));
+            .where(
+              and(
+                eq(messagingRegistrations.id, registration.id),
+                eq(messagingRegistrations.status, registration.status),
+                eq(messagingRegistrations.providerBrandId, providerBrandId),
+                isNull(messagingRegistrations.providerCampaignId),
+                isNull(messagingRegistrations.submissionLockId),
+                isNull(messagingRegistrations.deletedAt),
+              ),
+            )
+            .returning();
+          if (!updated) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "Registration changed during campaign recovery.",
+            });
+          }
+          await recordMessagingRegistrationEvent(tx, {
+            registration: updated,
+            eventType: "provider_operation_succeeded",
+            operation: "campaign_submission",
+            statusBefore: registration.status,
+            operationId: randomUUID(),
+            reasonCode: "carrier_campaign_recovered",
+            actor,
+          });
         });
         return {
           ok: true,
@@ -1519,9 +1751,10 @@ export const adminRouter = createRouter({
       }
 
       const lockId = await claimRegistrationOperation({
-        registrationId: registration.id,
+        registration,
         operation: "campaign",
         allowReviewedRetry: input.retryAfterProviderReview,
+        actor,
       });
       try {
         const programUrls = messagingProgramUrls(registration.practiceId);
@@ -1535,7 +1768,7 @@ export const adminRouter = createRouter({
           optInUrl: programUrls.optInUrl,
         });
         const campaign = await createA2pCampaign({
-          brandId: registration.providerBrandId,
+          brandId: providerBrandId,
           referenceId,
           displayName: registration.displayName,
           ...copy,
@@ -1559,6 +1792,10 @@ export const adminRouter = createRouter({
             lastError: campaign.failureReasons,
             lastSyncedAt: new Date(),
           },
+          operation: "campaign_submission",
+          eventType: "provider_operation_succeeded",
+          reasonCode: "carrier_campaign_submitted",
+          actor,
         });
         return {
           ok: true,
@@ -1571,6 +1808,8 @@ export const adminRouter = createRouter({
           practiceId: registration.practiceId,
           lockId,
           error,
+          operation: "campaign_submission",
+          actor,
         });
         throw providerFailure(error);
       }
@@ -1584,8 +1823,9 @@ export const adminRouter = createRouter({
         confirmProviderMutation: z.literal(true),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       assertMessagingProviderMutationsEnabled();
+      const actor = platformMessagingRegistrationActor(ctx.session!.user);
       const registration = await registrationForOperator(input.practiceId);
       if (!registration.providerCampaignId || !registration.providerBrandId) {
         throw new TRPCError({
@@ -1624,69 +1864,111 @@ export const adminRouter = createRouter({
         });
       }
 
-      const assignments: TelnyxNumberAssignment[] = [];
-      for (const sender of senders) {
-        if (!sender.phoneNumber) continue;
-        assignments.push(
-          await ensureA2pNumberAssignment({
-            phoneNumber: sender.phoneNumber,
-            campaignId: registration.providerCampaignId,
-          }),
-        );
-      }
-      const observed = observedRegistrationStatus({
-        brandIdentityStatus: registration.providerBrandStatus,
-        campaignStatus: campaign.campaignStatus ?? campaign.status,
-        campaignSubmissionStatus: campaign.submissionStatus,
-        assignmentStatuses: assignments.map((row) => row.assignmentStatus),
+      const lockId = await claimRegistrationOperation({
+        registration,
+        operation: "assignment",
+        allowReviewedRetry: false,
+        actor,
       });
-      const next = mergeRegistrationStatus(registration.status, observed);
-      await withSystem(db, async (tx) => {
-        await tx
-          .update(messagingRegistrations)
-          .set({
-            providerCampaignStatus:
-              campaign.campaignStatus ??
-              campaign.status ??
-              campaign.submissionStatus,
-            status: next,
-            statusDetail:
-              next === "active"
-                ? "Carrier registration and all clinic number assignments are active."
-                : "Clinic numbers were submitted for carrier assignment.",
-            lastError:
-              assignments
-                .map((row) => row.failureReasons)
-                .filter(Boolean)
-                .join("; ") || null,
-            lastSyncedAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(eq(messagingRegistrations.id, registration.id));
-        await tx
-          .update(locationMessaging)
-          .set({
-            a2pBrandId: registration.providerBrandId,
-            a2pCampaignId: registration.providerCampaignId,
-            registrationStatus: next,
-            registrationDetail:
-              next === "active"
-                ? "Carrier registration active. An admin may now enable sending."
-                : "Carrier number assignment is pending.",
-            providerProfileReady: false,
-            providerProfileSyncedAt: null,
-            enabled: false,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(locationMessaging.practiceId, input.practiceId),
-              eq(locationMessaging.provider, "telnyx"),
-              isNull(locationMessaging.deletedAt),
-            ),
+      try {
+        const assignments: TelnyxNumberAssignment[] = [];
+        for (const sender of senders) {
+          if (!sender.phoneNumber) continue;
+          assignments.push(
+            await ensureA2pNumberAssignment({
+              phoneNumber: sender.phoneNumber,
+              campaignId: registration.providerCampaignId,
+            }),
           );
-      });
-      return { ok: true, status: next, assigned: assignments.length };
+        }
+        const observed = observedRegistrationStatus({
+          brandIdentityStatus: registration.providerBrandStatus,
+          campaignStatus: campaign.campaignStatus ?? campaign.status,
+          campaignSubmissionStatus: campaign.submissionStatus,
+          assignmentStatuses: assignments.map((row) => row.assignmentStatus),
+        });
+        const next = mergeRegistrationStatus("pending", observed);
+        await withSystem(db, async (tx) => {
+          const [updated] = await tx
+            .update(messagingRegistrations)
+            .set({
+              providerCampaignStatus:
+                campaign.campaignStatus ??
+                campaign.status ??
+                campaign.submissionStatus,
+              status: next,
+              statusDetail:
+                next === "active"
+                  ? "Carrier registration and all clinic number assignments are active."
+                  : "Clinic numbers were submitted for carrier assignment.",
+              lastError:
+                assignments
+                  .map((row) => row.failureReasons)
+                  .filter(Boolean)
+                  .join("; ") || null,
+              lastSyncedAt: new Date(),
+              submissionLockId: null,
+              submissionLockAt: null,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(messagingRegistrations.id, registration.id),
+                eq(messagingRegistrations.submissionLockId, lockId),
+                isNull(messagingRegistrations.deletedAt),
+              ),
+            )
+            .returning();
+          if (!updated) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "Registration changed while assigning carrier numbers.",
+            });
+          }
+          await recordMessagingRegistrationEvent(tx, {
+            registration: updated,
+            eventType: "provider_operation_succeeded",
+            operation: "number_assignment",
+            statusBefore: "pending",
+            operationId: lockId,
+            reasonCode: "carrier_numbers_assigned",
+            actor,
+          });
+          await tx
+            .update(locationMessaging)
+            .set({
+              a2pBrandId: registration.providerBrandId,
+              a2pCampaignId: registration.providerCampaignId,
+              registrationStatus: next,
+              registrationDetail:
+                next === "active"
+                  ? "Carrier registration active. An admin may now enable sending."
+                  : "Carrier number assignment is pending.",
+              providerProfileReady: false,
+              providerProfileSyncedAt: null,
+              enabled: false,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(locationMessaging.practiceId, input.practiceId),
+                eq(locationMessaging.provider, "telnyx"),
+                isNull(locationMessaging.deletedAt),
+              ),
+            );
+        });
+        return { ok: true, status: next, assigned: assignments.length };
+      } catch (error) {
+        await failRegistrationOperation({
+          registrationId: registration.id,
+          practiceId: registration.practiceId,
+          lockId,
+          error,
+          operation: "number_assignment",
+          actor,
+        });
+        throw providerFailure(error);
+      }
     }),
 
   smsDeliveryEventQueue: platformAdminProcedure
@@ -1761,7 +2043,6 @@ export const adminRouter = createRouter({
             providerStatus: smsDeliveryEvents.providerStatus,
             providerErrorCode: smsDeliveryEvents.providerErrorCode,
             classification: smsDeliveryEvents.classification,
-            occurredAt: smsDeliveryEvents.occurredAt,
             payloadFingerprintSha256:
               smsDeliveryEvents.payloadFingerprintSha256,
           })
@@ -1808,14 +2089,9 @@ export const adminRouter = createRouter({
             reviewedHistoryId: smsDeliveryEventHistory.reviewedHistoryId,
             practiceId: smsDeliveryEventHistory.practiceId,
             attemptId: smsDeliveryEventHistory.attemptId,
-            communicationId: smsDeliveryEventHistory.communicationId,
             kind: smsDeliveryEventHistory.kind,
             result: smsDeliveryEventHistory.result,
             classification: smsDeliveryEventHistory.classification,
-            detail: smsDeliveryEventHistory.detail,
-            operatorReasonCode: smsDeliveryEventHistory.operatorReasonCode,
-            actorName: smsDeliveryEventHistory.actorName,
-            actorIdentity: smsDeliveryEventHistory.actorIdentity,
             eventKey: smsDeliveryEventHistory.eventKey,
           })
           .from(smsDeliveryEventHistory)
@@ -1831,13 +2107,15 @@ export const adminRouter = createRouter({
         const visibleHistory = history.slice(0, input.historyLimit).reverse();
         return {
           cacheControl: "no-store" as const,
-          event,
+          event: {
+            ...event,
+            providerMessageId: safeOperationalProviderId(
+              event.providerMessageId,
+            ),
+          },
           candidateAttempts: candidateAttempts.slice(0, 100),
           candidateAttemptsTruncated: candidateAttempts.length > 100,
-          history: visibleHistory.map((row) => ({
-            ...row,
-            actorIdentity: redactedOperatorIdentity(row.actorIdentity),
-          })),
+          history: visibleHistory,
           truncated,
         };
       });
@@ -1876,21 +2154,10 @@ export const adminRouter = createRouter({
             id: smsSendAttempts.id,
             createdAt: smsSendAttempts.createdAt,
             practiceId: smsSendAttempts.practiceId,
-            clientId: smsSendAttempts.clientId,
             locationId: smsSendAttempts.locationId,
             communicationId: smsSendAttempts.communicationId,
-            resendOfAttemptId: smsSendAttempts.resendOfAttemptId,
             source: smsSendAttempts.source,
-            sourceId: smsSendAttempts.sourceId,
-            idempotencyKey: smsSendAttempts.idempotencyKey,
-            registeredDisplayName: smsSendAttempts.registeredDisplayName,
             provider: smsSendAttempts.provider,
-            senderMessagingServiceId: smsSendAttempts.senderMessagingServiceId,
-            senderE164: smsSendAttempts.senderE164,
-            requestedByActorType: smsSendAttempts.requestedByActorType,
-            requestedByUserId: smsSendAttempts.requestedByUserId,
-            requestedByIdentity: smsSendAttempts.requestedByIdentity,
-            requestedByName: smsSendAttempts.requestedByName,
           })
           .from(smsSendAttempts)
           .where(
@@ -1913,11 +2180,6 @@ export const adminRouter = createRouter({
             kind: smsSendAttemptEvents.kind,
             outcome: smsSendAttemptEvents.outcome,
             providerMessageId: smsSendAttemptEvents.providerMessageId,
-            detail: smsSendAttemptEvents.detail,
-            actorType: smsSendAttemptEvents.actorType,
-            actorUserId: smsSendAttemptEvents.actorUserId,
-            actorIdentity: smsSendAttemptEvents.actorIdentity,
-            actorName: smsSendAttemptEvents.actorName,
             eventKey: smsSendAttemptEvents.eventKey,
           })
           .from(smsSendAttemptEvents)
@@ -1931,7 +2193,16 @@ export const adminRouter = createRouter({
             desc(smsSendAttemptEvents.createdAt),
             desc(smsSendAttemptEvents.id),
           );
-        return { cacheControl: "no-store" as const, attempt, events };
+        return {
+          cacheControl: "no-store" as const,
+          attempt,
+          events: events.map((event) => ({
+            ...event,
+            providerMessageId: safeOperationalProviderId(
+              event.providerMessageId,
+            ),
+          })),
+        };
       });
     }),
 
@@ -1995,8 +2266,22 @@ export const adminRouter = createRouter({
         confirmProviderPortalReviewed: z.literal(true),
       }),
     )
-    .mutation(async ({ input }) =>
-      withSystem(db, async (tx) => {
+    .mutation(async ({ ctx, input }) => {
+      const actor = platformMessagingRegistrationActor(ctx.session!.user);
+      const registration = await registrationForOperator(input.practiceId);
+      if (
+        registration.submissionLockId &&
+        (!registration.submissionLockAt ||
+          registration.submissionLockAt.getTime() >
+            Date.now() - MESSAGING_SUBMISSION_LOCK_STALE_MS)
+      ) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "The provider operation is still within its 15-minute safety window.",
+        });
+      }
+      return withSystem(db, async (tx) => {
         const [updated] = await tx
           .update(messagingRegistrations)
           .set({
@@ -2015,17 +2300,46 @@ export const adminRouter = createRouter({
           })
           .where(
             and(
-              eq(messagingRegistrations.practiceId, input.practiceId),
+              eq(messagingRegistrations.id, registration.id),
+              eq(messagingRegistrations.status, registration.status),
+              registration.providerBrandId
+                ? eq(
+                    messagingRegistrations.providerBrandId,
+                    registration.providerBrandId,
+                  )
+                : isNull(messagingRegistrations.providerBrandId),
+              registration.providerCampaignId
+                ? eq(
+                    messagingRegistrations.providerCampaignId,
+                    registration.providerCampaignId,
+                  )
+                : isNull(messagingRegistrations.providerCampaignId),
+              registration.submissionLockId
+                ? eq(
+                    messagingRegistrations.submissionLockId,
+                    registration.submissionLockId,
+                  )
+                : isNull(messagingRegistrations.submissionLockId),
               isNull(messagingRegistrations.deletedAt),
             ),
           )
-          .returning({ id: messagingRegistrations.id });
+          .returning();
         if (!updated) {
           throw new TRPCError({
-            code: "NOT_FOUND",
-            message: "Registration not found.",
+            code: "CONFLICT",
+            message:
+              "Registration changed during provider ID recovery. Refresh and review again.",
           });
         }
+        await recordMessagingRegistrationEvent(tx, {
+          registration: updated,
+          eventType: "provider_ids_attached",
+          operation: "provider_id_recovery",
+          statusBefore: registration.status,
+          operationId: randomUUID(),
+          reasonCode: "provider_ids_attached_after_portal_review",
+          actor,
+        });
         await tx
           .update(locationMessaging)
           .set({
@@ -2045,8 +2359,8 @@ export const adminRouter = createRouter({
             ),
           );
         return { ok: true };
-      }),
-    ),
+      });
+    }),
 
   /**
    * Clear a crash-stale submission lock only after an operator verifies in the
@@ -2062,16 +2376,11 @@ export const adminRouter = createRouter({
         confirmNoProviderObjectExists: z.literal("NO_PROVIDER_OBJECT"),
       }),
     )
-    .mutation(async ({ input }) =>
-      withSystem(db, async (tx) => {
+    .mutation(async ({ ctx, input }) => {
+      const actor = platformMessagingRegistrationActor(ctx.session!.user);
+      return withSystem(db, async (tx) => {
         const [registration] = await tx
-          .select({
-            id: messagingRegistrations.id,
-            submissionLockId: messagingRegistrations.submissionLockId,
-            submissionLockAt: messagingRegistrations.submissionLockAt,
-            providerBrandId: messagingRegistrations.providerBrandId,
-            providerCampaignId: messagingRegistrations.providerCampaignId,
-          })
+          .select()
           .from(messagingRegistrations)
           .where(
             and(
@@ -2130,7 +2439,7 @@ export const adminRouter = createRouter({
               isNull(messagingRegistrations.deletedAt),
             ),
           )
-          .returning({ id: messagingRegistrations.id });
+          .returning();
         if (!updated) {
           throw new TRPCError({
             code: "CONFLICT",
@@ -2138,6 +2447,18 @@ export const adminRouter = createRouter({
               "The provider operation changed during recovery. Refresh and review again.",
           });
         }
+        await recordMessagingRegistrationEvent(tx, {
+          registration: updated,
+          eventType: "stale_lock_cleared",
+          operation: "submission_lock_recovery",
+          statusBefore: registration.status,
+          operationId: registration.submissionLockId,
+          reasonCode:
+            input.providerObject === "brand"
+              ? "stale_brand_lock_cleared"
+              : "stale_campaign_lock_cleared",
+          actor,
+        });
         await tx
           .update(locationMessaging)
           .set({
@@ -2156,13 +2477,14 @@ export const adminRouter = createRouter({
             ),
           );
         return { ok: true, providerObject: input.providerObject };
-      }),
-    ),
+      });
+    }),
 
   /** Read-only provider reconciliation. Safe to retry and never enables sending. */
   reconcileMessagingRegistration: platformAdminProcedure
     .input(z.object({ practiceId: z.string().uuid() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      const actor = platformMessagingRegistrationActor(ctx.session!.user);
       const registration = await registrationForOperator(input.practiceId);
       if (!registration.providerBrandId) {
         throw new TRPCError({
@@ -2212,7 +2534,7 @@ export const adminRouter = createRouter({
           .join("; ")
           .slice(0, 1000);
         await withSystem(db, async (tx) => {
-          await tx
+          const [updated] = await tx
             .update(messagingRegistrations)
             .set({
               providerBrandStatus: brand.identityStatus ?? brand.status,
@@ -2233,7 +2555,30 @@ export const adminRouter = createRouter({
               lastSyncedAt: new Date(),
               updatedAt: new Date(),
             })
-            .where(eq(messagingRegistrations.id, registration.id));
+            .where(
+              and(
+                eq(messagingRegistrations.id, registration.id),
+                eq(messagingRegistrations.status, registration.status),
+                isNull(messagingRegistrations.deletedAt),
+              ),
+            )
+            .returning();
+          if (!updated) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "Registration changed during provider reconciliation. Refresh and retry.",
+            });
+          }
+          await recordMessagingRegistrationEvent(tx, {
+            registration: updated,
+            eventType: "provider_state_observed",
+            operation: "registration_reconciliation",
+            statusBefore: registration.status,
+            operationId: randomUUID(),
+            reasonCode: "carrier_registration_reconciled",
+            actor,
+          });
           await tx
             .update(locationMessaging)
             .set({

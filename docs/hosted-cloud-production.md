@@ -131,6 +131,24 @@ three variables are hosted-only and do not gate intentional self-host messaging
 configuration. Arbitrary hosted test destinations remain disabled; validate
 through a current, consented client workflow after approval.
 
+While provisioning, sending, and all SMS allowlists remain off/empty, the
+hosted SMS entry in `/api/health` is advisory. The first rollout signal —
+enabling provisioning or sending, or staging any pilot allowlist — makes the
+Telnyx provider selection, API key, webhook verification key, registration
+encryption key, and exact single-clinic pilot scope release-blocking. A partial,
+malformed, or multi-clinic pilot scope therefore returns `503` before a deploy
+can appear healthy. Provisioning and sending scopes must name the same active
+clinic. A sending location must belong to that clinic and have an active Telnyx
+registration, sender identity, campaign assignment, and verified provider
+profile in the production database. This health check complements the runtime
+send gates; it does not enable provisioning or sending. Rollout health also rejects placeholder
+credentials: the Telnyx v2 API key must use the provider's `KEY_` format, and
+both the Ed25519 webhook public key and registration encryption key must decode
+to 32 bytes. The same structural check remains visible as advisory health while
+the rollout is deferred. A healthy shape is still not proof of account access;
+verify the key with a read-only provider request and complete the live drill
+below.
+
 ### Controlled texting pilot activation
 
 Provider profiles are created disabled. Never enable one during number

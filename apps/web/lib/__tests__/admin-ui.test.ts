@@ -3,19 +3,26 @@ import { describe, expect, it } from "vitest";
 
 describe("admin UI", () => {
   const source = readFileSync("app/(dashboard)/admin/page.tsx", "utf8");
+  const compactSource = source.replace(/\s+/g, " ");
+  const carrierHistory = source.slice(
+    source.indexOf("{/* Messaging carrier history */}"),
+    source.indexOf("{/* Trial funnel */}"),
+  );
 
   it("separates admin forbidden, load error, loading, and missing-data states", () => {
     expect(source).toContain(
-      'import { EmptyState } from "@/components/common/empty-state"'
+      'import { EmptyState } from "@/components/common/empty-state"',
     );
     expect(source).toContain(
-      'import { PageLoading } from "@/components/common/loading"'
+      'import { PageLoading } from "@/components/common/loading"',
     );
     expect(source).toContain("error, refetch");
     expect(source).toContain('error?.data?.code === "FORBIDDEN"');
     expect(source).toContain("Access Denied");
     expect(source).toContain('title="Unable to load platform admin"');
-    expect(source).toContain("action={{ label: \"Retry\", onClick: () => refetch() }}");
+    expect(source).toContain(
+      'action={{ label: "Retry", onClick: () => refetch() }}',
+    );
     expect(source).toContain("if (isLoading) return <PageLoading");
     expect(source).toContain("if (!data)");
     expect(source).not.toContain("if (isLoading || !data)");
@@ -23,7 +30,7 @@ describe("admin UI", () => {
 
   it("shows the trial funnel tile with counts, rates, and the plain hint", () => {
     expect(source).toContain(
-      "trpc.admin.activationFunnel.useQuery({ days: 30 }, { retry: false })"
+      "trpc.admin.activationFunnel.useQuery({ days: 30 }, { retry: false })",
     );
     expect(source).toContain("Trial funnel (30 days)");
     expect(source).toContain("{funnel.totals.signups}");
@@ -37,17 +44,17 @@ describe("admin UI", () => {
     expect(source).toContain("{funnel.totals.currentlyActive}");
     expect(source).toContain("formatPct(funnel.totals.activationRate)");
     expect(source).toContain(
-      "formatPct(funnel.totals.firstVisitCompletionRate)"
+      "formatPct(funnel.totals.firstVisitCompletionRate)",
     );
     expect(source).toContain("formatPct(funnel.totals.paymentMethodRate)");
     expect(source).toContain("formatPct(funnel.totals.setupStartRate)");
     expect(source).toContain("formatPct(funnel.totals.setupCompletionRate)");
     expect(source).toContain("formatPct(funnel.totals.positivePaymentRate)");
-    expect(source).toContain("Activated = added a");
-    expect(source).toContain("completed clinical and billing closeout");
-    expect(source).toContain("rate is measured from");
-    expect(source).toContain("signed subscription Checkout");
-    expect(source).toContain("Legacy business-stage rows are excluded");
+    expect(compactSource).toContain("Activated = added a");
+    expect(compactSource).toContain("completed clinical and billing closeout");
+    expect(compactSource).toContain("rate is measured from");
+    expect(compactSource).toContain("signed subscription Checkout");
+    expect(compactSource).toContain("Legacy business-stage rows are excluded");
     expect(source).toContain("Could not load the funnel.");
   });
 
@@ -55,8 +62,10 @@ describe("admin UI", () => {
     expect(source).toContain("trpc.admin.activationRecovery.useQuery");
     expect(source).toContain("Clinic activation recovery");
     expect(source).toContain("clinic.queueRank");
-    expect(source).toContain("clinic.verifiedAdminEmail && clinic.verifiedAdminEmailAt");
-    expect(source).toContain('href={`mailto:${clinic.verifiedAdminEmail}`}');
+    expect(source).toMatch(
+      /clinic\.verifiedAdminEmail\s*&&\s*clinic\.verifiedAdminEmailAt/,
+    );
+    expect(source).toContain("href={`mailto:${clinic.verifiedAdminEmail}`}");
     expect(source).toContain("No verified admin contact");
     expect(source).toContain("clinic.setupStage");
     expect(source).toContain("clinic.setupHelpRequestedAt");
@@ -77,7 +86,7 @@ describe("admin UI", () => {
 
   it("shows production journey cohorts and abandonment counts", () => {
     expect(source).toContain(
-      "trpc.admin.journeyFunnel.useQuery({ days: 30 }, { retry: false })"
+      "trpc.admin.journeyFunnel.useQuery({ days: 30 }, { retry: false })",
     );
     expect(source).toContain("Production journey cohorts (30 days)");
     expect(source).toContain("journey.totals.leftBeforeTrying");
@@ -86,11 +95,13 @@ describe("admin UI", () => {
     expect(source).toContain("journey.totals.activationAbandoned");
     expect(source).toContain("journey.totals.paymentAbandoned");
     expect(source).toContain("journey.totals.clientErrors");
-    expect(source).toContain("journey.totals.historicalUnattributedRegistrations");
+    expect(source).toContain(
+      "journey.totals.historicalUnattributedRegistrations",
+    );
     expect(source).toContain("journey.totals.repairableAttributionGaps");
     expect(source).toContain("journey.weeks.map");
-    expect(source).toContain("Stalls require seven full days");
-    expect(source).toContain("active trial with a collected");
+    expect(compactSource).toContain("Stalls require seven full days");
+    expect(compactSource).toContain("active trial with a collected");
   });
 
   it("shows trial source and setup stage for diagnosing individual drop-off", () => {
@@ -104,7 +115,7 @@ describe("admin UI", () => {
     expect(source).toContain(">Metrics</th>");
     expect(source).toContain("setAnalyticsExcluded.mutate({");
     expect(source).toContain('{p.analyticsExcluded ? "Excluded" : "Exclude"}');
-    expect(source).toContain('href={`mailto:${p.adminEmail}`}');
+    expect(source).toContain("href={`mailto:${p.adminEmail}`}");
     expect(source).toContain('!p.adminEmailVerifiedAt ? " · unverified" : ""');
   });
 
@@ -122,6 +133,32 @@ describe("admin UI", () => {
     expect(source).toContain("$10 daily cap");
     expect(source).toContain('result.blockers.join("; ")');
     expect(source).toContain("sender.registrationDetail");
+    expect(source).toContain("sender.senderLast4");
+    expect(source).toContain("Number ••••${sender.senderLast4}");
+    expect(source).not.toContain("sender.senderE164");
+  });
+
+  it("shows bounded read-only redacted carrier lifecycle history", () => {
+    expect(source).toContain(
+      "trpc.admin.messagingRegistrationHistory.useQuery",
+    );
+    expect(source).toContain("const MESSAGING_HISTORY_LIMIT = 50");
+    expect(source).toContain("setMessagingHistorySelection({");
+    expect(source).toMatch(/>\s*History\s*<\/button>/);
+    expect(carrierHistory).toContain("messagingHistory.events.map");
+    expect(carrierHistory).toContain("messagingHistory.truncated");
+    expect(carrierHistory).toContain("redacted operational events");
+    expect(carrierHistory).toContain("Operational evidence");
+    expect(carrierHistory).toContain("event.actorLabel");
+    expect(carrierHistory).not.toContain("useMutation");
+    expect(carrierHistory).not.toContain("sender");
+    expect(carrierHistory).not.toContain("legalName");
+    expect(carrierHistory).not.toContain("taxId");
+    expect(carrierHistory).not.toContain("contact");
+    expect(carrierHistory).not.toContain("detail");
+    expect(carrierHistory).not.toContain("lastError");
+    expect(carrierHistory).not.toContain("actorIdentity");
+    expect(carrierHistory).not.toContain("actorName");
   });
 
   it("shows a bounded read-only SMS operations queue with operator actions", () => {
@@ -149,7 +186,7 @@ describe("admin UI", () => {
 
   it("renders practice dates in each practice timezone", () => {
     expect(source).toContain(
-      "function formatDate(d: Date | string | null, timeZone?: string | null)"
+      "function formatDate(d: Date | string | null, timeZone?: string | null)",
     );
     expect(source).toContain("if (Number.isNaN(date.getTime())) return");
     expect(source).toContain('timeZone: timeZone?.trim() || "UTC"');

@@ -18,6 +18,7 @@ import {
   CLIENT_PHONE_MAX_LENGTH,
   CLIENT_STATE_MAX_LENGTH,
   CLIENT_ZIP_MAX_LENGTH,
+  type ClientContactMethod,
   isOptionalClientTextValid,
   isRequiredClientTextValid,
 } from "@/lib/clients/policy";
@@ -88,6 +89,8 @@ function NewClientForm() {
     zip: "",
   });
   const [smsConsent, setSmsConsent] = useState(false);
+  const [preferredContactMethod, setPreferredContactMethod] =
+    useState<ClientContactMethod>("phone");
   const [error, setError] = useState<string | null>(null);
 
   const createClient = trpc.clients.create.useMutation({
@@ -112,14 +115,23 @@ function NewClientForm() {
     isOptionalClientTextValid(form.city, CLIENT_CITY_MAX_LENGTH) &&
     isOptionalClientTextValid(form.state, CLIENT_STATE_MAX_LENGTH) &&
     isOptionalClientTextValid(form.zip, CLIENT_ZIP_MAX_LENGTH) &&
-    (!smsConsent || smsPhoneValid);
+    (!smsConsent || smsPhoneValid) &&
+    (preferredContactMethod !== "sms" || (smsConsent && smsPhoneValid));
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
     if (smsConsent && !smsPhoneValid) {
-      setError("Enter a valid mobile phone number before recording SMS consent.");
+      setError(
+        "Enter a valid mobile phone number before recording SMS consent.",
+      );
+      return;
+    }
+    if (preferredContactMethod === "sms" && !smsConsent) {
+      setError(
+        "Confirm the client's SMS consent before using text messages for reminders.",
+      );
       return;
     }
     if (!canSubmit) {
@@ -136,6 +148,7 @@ function NewClientForm() {
       city: form.city.trim() || undefined,
       state: form.state.trim() || undefined,
       zip: form.zip.trim() || undefined,
+      preferredContactMethod,
       smsConsent,
     });
   };
@@ -144,6 +157,9 @@ function NewClientForm() {
     setForm((prev) => ({ ...prev, [field]: value }));
     if (field === "phone" && !normalizeE164(value)) {
       setSmsConsent(false);
+      setPreferredContactMethod((current) =>
+        current === "sms" ? "phone" : current,
+      );
     }
   };
 
@@ -232,10 +248,52 @@ function NewClientForm() {
           </div>
         </div>
 
+        <div className="rounded-md border border-border p-3">
+          <label
+            className="text-sm font-medium"
+            htmlFor="preferredContactMethod"
+          >
+            Preferred contact for reminders
+          </label>
+          <select
+            id="preferredContactMethod"
+            value={preferredContactMethod}
+            onChange={(event) =>
+              setPreferredContactMethod(
+                event.target.value as ClientContactMethod,
+              )
+            }
+            className="mt-2 flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+          >
+            <option value="phone">Phone call</option>
+            <option value="email">Email</option>
+            <option value="sms">Text message</option>
+            <option value="portal">Client portal</option>
+          </select>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Text message uses SMS for appointment and vaccination reminders when
+            clinic texting is active. The client&apos;s permission below is
+            still required.
+          </p>
+          {preferredContactMethod === "sms" && !smsConsent ? (
+            <p className="mt-2 text-xs font-medium text-amber-700">
+              Read the disclosure below and confirm consent before saving text
+              reminders as the preference.
+            </p>
+          ) : null}
+        </div>
+
         <label className="flex items-start gap-2 rounded-md border border-border p-3 text-sm">
           <Checkbox
             checked={smsConsent}
-            onChange={(e) => setSmsConsent(e.target.checked)}
+            onChange={(e) => {
+              setSmsConsent(e.target.checked);
+              if (!e.target.checked) {
+                setPreferredContactMethod((current) =>
+                  current === "sms" ? "phone" : current,
+                );
+              }
+            }}
             disabled={!smsPhoneValid}
             className="mt-0.5"
           />

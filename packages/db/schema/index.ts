@@ -25,6 +25,7 @@ export * from "./usage";
 export * from "./auth-tokens";
 export * from "./auth-email-observability";
 export * from "./messaging";
+export * from "./messaging-registration-events";
 export * from "./sms-consent-events";
 export * from "./sms-send-attempts";
 export * from "./demo-access";

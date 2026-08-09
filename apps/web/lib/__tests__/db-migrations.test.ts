@@ -1311,4 +1311,55 @@ describe("committed Drizzle migrations", () => {
       "GRANT EXECUTE ON FUNCTION restore_soap_note_replacement(uuid,timestamptz,uuid,uuid,uuid,uuid,uuid,text,uuid,text) TO openpims_app",
     );
   });
+
+  it("creates a PHI-free append-only carrier-registration lifecycle ledger", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries?: Array<{ tag?: string }> };
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0065_sudden_kabuki",
+    );
+
+    const sql = readRepoFile("packages/db/drizzle/0065_sudden_kabuki.sql");
+    const tableDefinition = sql.match(
+      /CREATE TABLE "messaging_registration_events" \([\s\S]*?\n\);/,
+    )?.[0];
+    expect(tableDefinition).toBeDefined();
+    expect(tableDefinition).not.toMatch(
+      /"(tax_id|patient_id|client_id|provider_payload|error|detail)"|\bjsonb\b/,
+    );
+    expect(sql).toContain(
+      "messaging_registration_events_registration_tenant_fk",
+    );
+    expect(sql).toContain("messaging_registration_events_location_tenant_fk");
+    expect(sql).toContain("messaging_registration_events_actor_tenant_fk");
+    expect(sql).toContain("messaging_registration_events_shape_check");
+    expect(sql).toContain("pg_catalog.pg_advisory_xact_lock");
+    expect(sql).toContain(
+      "Messaging registration event must match the exact active carrier projection.",
+    );
+    expect(sql).toContain(
+      "Messaging registration event must continue the durable carrier status chain.",
+    );
+    expect(sql).toContain("messaging_registration_events_immutable");
+    expect(sql).toContain("app.ledger_maintenance");
+    expect(sql).toContain(
+      "ALTER TABLE messaging_registration_events ENABLE ROW LEVEL SECURITY",
+    );
+    expect(sql).toContain(
+      "GRANT SELECT, INSERT ON messaging_registration_events TO openpims_app",
+    );
+    expect(sql).toContain(
+      "REVOKE ALL ON messaging_registration_events FROM authenticated",
+    );
+
+    const reset = readRepoFile("packages/db/reset.ts");
+    expect(reset).toContain('"messaging_registration_events"');
+
+    const rls = readRepoFile("packages/db/rls/enable-rls.sql");
+    expect(rls).toContain("'messaging_registration_events'");
+    expect(rls).toContain(
+      "GRANT SELECT, INSERT ON messaging_registration_events TO openpims_app",
+    );
+  });
 });

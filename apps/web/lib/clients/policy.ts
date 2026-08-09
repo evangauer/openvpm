@@ -7,9 +7,17 @@ export const CLIENT_STATE_MAX_LENGTH = 64;
 export const CLIENT_ZIP_MAX_LENGTH = 16;
 export const CLIENT_SEARCH_MAX_LENGTH = 100;
 
+export const CLIENT_CONTACT_METHODS = [
+  "phone",
+  "email",
+  "sms",
+  "portal",
+] as const;
+export type ClientContactMethod = (typeof CLIENT_CONTACT_METHODS)[number];
+
 export function isRequiredClientTextValid(
   value: string,
-  maxLength: number
+  maxLength: number,
 ): boolean {
   const trimmed = value.trim();
   return trimmed.length > 0 && trimmed.length <= maxLength;
@@ -17,7 +25,7 @@ export function isRequiredClientTextValid(
 
 export function isOptionalClientTextValid(
   value: string,
-  maxLength: number
+  maxLength: number,
 ): boolean {
   return value.trim().length <= maxLength;
 }

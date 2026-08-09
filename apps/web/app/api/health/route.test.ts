@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  dbExecute: vi.fn(async () => [{ ok: 1 }]),
+  dbExecute: vi.fn(async () => [{ ok: 1, scopeValid: true }]),
+  withSystem: vi.fn(
+    async (
+      database: { execute: typeof mocks.dbExecute },
+      fn: (tx: { execute: typeof mocks.dbExecute }) => Promise<unknown>,
+    ) => fn(database),
+  ),
   billingEnforced: vi.fn(() => false),
   requiredMessagingEnvNames: vi.fn(() => [
     "TELNYX_API_KEY",
@@ -35,6 +41,8 @@ vi.mock("@openpims/db/client", () => ({
     execute: mocks.dbExecute,
   },
 }));
+
+vi.mock("@/lib/tenant-db", () => ({ withSystem: mocks.withSystem }));
 
 vi.mock("@openpims/db/schema-drift", async () => {
   const actual = await vi.importActual<
@@ -100,10 +108,21 @@ function stubHostedRequiredEnvs() {
   });
 }
 
+function stubValidTelnyxEnvs() {
+  vi.stubEnv("MESSAGING_PROVIDER", "telnyx");
+  vi.stubEnv("TELNYX_API_KEY", "KEY_abcdefghijklmnopqrstuvwxyz");
+  vi.stubEnv("TELNYX_PUBLIC_KEY", Buffer.alloc(32, 1).toString("base64"));
+  vi.stubEnv(
+    "MESSAGING_REGISTRATION_ENCRYPTION_KEY",
+    Buffer.alloc(32, 2).toString("base64"),
+  );
+}
+
 afterEach(() => {
   vi.clearAllMocks();
   vi.unstubAllEnvs();
-  mocks.dbExecute.mockResolvedValue([{ ok: 1 }]);
+  mocks.dbExecute.mockResolvedValue([{ ok: 1, scopeValid: true }]);
+  mocks.withSystem.mockImplementation(async (database, fn) => fn(database));
   mocks.billingEnforced.mockReturnValue(false);
   mocks.requiredMessagingEnvNames.mockReturnValue([
     "TELNYX_API_KEY",
@@ -185,7 +204,7 @@ describe("health route schema drift", () => {
 
   it("does not leak connection details when the drift check itself fails", async () => {
     mocks.findSchemaDrift.mockRejectedValueOnce(
-      new Error("password=secret host=prod-db")
+      new Error("password=secret host=prod-db"),
     );
 
     const response = await GET();
@@ -202,7 +221,7 @@ describe("health route schema drift", () => {
 describe("health route", () => {
   it("does not expose raw database errors in unauthenticated health checks", async () => {
     mocks.dbExecute.mockRejectedValueOnce(
-      new Error("password=secret host=prod-db connection refused")
+      new Error("password=secret host=prod-db connection refused"),
     );
 
     const response = await GET();
@@ -226,23 +245,23 @@ describe("health route", () => {
 
     expect(response.status).toBe(503);
     expect(json.checks.hostedCore.detail).toBe(
-      "4 required hosted configuration values are missing"
+      "4 required hosted configuration values are missing",
     );
     expect(json.checks.hostedAppUrls.detail).toBe(
-      "2 required hosted app URL values are missing"
+      "2 required hosted app URL values are missing",
     );
     expect(json.checks.hostedBilling.detail).toBe(
-      "5 required hosted configuration values are missing"
+      "5 required hosted configuration values are missing",
     );
     expect(json.checks.hostedSubscriptionTax).toEqual({
       ok: false,
       detail: "Hosted subscription tax is not enabled",
     });
     expect(json.checks.hostedAi.detail).toBe(
-      "1 required hosted configuration value is missing"
+      "1 required hosted configuration value is missing",
     );
     expect(json.checks.hostedEmail.detail).toBe(
-      "4 required hosted configuration values are missing"
+      "4 required hosted configuration values are missing",
     );
     const body = JSON.stringify(json);
     expect(body).not.toContain("NEXTAUTH_SECRET");
@@ -263,7 +282,7 @@ describe("health route", () => {
     expect(body).not.toContain("MESSAGING_REGISTRATION_ENCRYPTION_KEY");
     expect(json.checks.hostedSms).toEqual({
       ok: false,
-      detail: "3 required hosted configuration values are missing",
+      detail: "3 required hosted SMS configuration issues detected",
       advisory: true,
     });
     expect(json.checks.hostedOpsAlerting).toEqual({
@@ -275,6 +294,238 @@ describe("health route", () => {
       detail: "Heartbeat URL missing",
     });
     expect(mocks.checkObjectStorageHealth).not.toHaveBeenCalled();
+  });
+
+  it("makes hosted SMS release-blocking as soon as provisioning is enabled", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    vi.stubEnv("MESSAGING_PROVIDER", "telnyx");
+    vi.stubEnv("MESSAGING_PROVISIONING_ENABLED", "true");
+    vi.stubEnv(
+      "MESSAGING_PROVISIONING_PRACTICE_IDS",
+      "00000000-0000-4000-8000-0000000000aa",
+    );
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedSms).toEqual({
+      ok: false,
+      detail: "3 required hosted SMS configuration issues detected",
+    });
+    expect(JSON.stringify(json)).not.toContain("TELNYX_API_KEY");
+    expect(JSON.stringify(json)).not.toContain(
+      "MESSAGING_PROVISIONING_PRACTICE_IDS",
+    );
+  });
+
+  it("reports credential shape while a valid hosted SMS rollout stays deferred", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    stubValidTelnyxEnvs();
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.checks.hostedSms).toEqual({
+      ok: true,
+      detail: "Hosted Telnyx credentials are structurally valid",
+      advisory: true,
+    });
+  });
+
+  it("rejects an incomplete live hosted SMS pilot scope", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    stubValidTelnyxEnvs();
+    vi.stubEnv("MESSAGING_SENDING_ENABLED", "true");
+    vi.stubEnv(
+      "MESSAGING_SENDING_PRACTICE_IDS",
+      "00000000-0000-4000-8000-0000000000aa",
+    );
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedSms).toEqual({
+      ok: false,
+      detail: "1 required hosted SMS configuration issue detected",
+    });
+  });
+
+  it("accepts one exact live Telnyx pilot scope", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    stubValidTelnyxEnvs();
+    vi.stubEnv("MESSAGING_SENDING_ENABLED", "true");
+    vi.stubEnv(
+      "MESSAGING_SENDING_PRACTICE_IDS",
+      "00000000-0000-4000-8000-0000000000aa",
+    );
+    vi.stubEnv(
+      "MESSAGING_SENDING_LOCATION_IDS",
+      "00000000-0000-4000-8000-000000000002",
+    );
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.checks.hostedSms).toEqual({
+      ok: true,
+      detail: "Hosted SMS pilot configuration active",
+    });
+    expect(mocks.withSystem).toHaveBeenCalledOnce();
+  });
+
+  it("rejects different provisioning and sending clinic scopes", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    stubValidTelnyxEnvs();
+    vi.stubEnv(
+      "MESSAGING_PROVISIONING_PRACTICE_IDS",
+      "00000000-0000-4000-8000-0000000000aa",
+    );
+    vi.stubEnv(
+      "MESSAGING_SENDING_PRACTICE_IDS",
+      "00000000-0000-4000-8000-0000000000bb",
+    );
+    vi.stubEnv(
+      "MESSAGING_SENDING_LOCATION_IDS",
+      "00000000-0000-4000-8000-000000000002",
+    );
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedSms).toEqual({
+      ok: false,
+      detail: "1 required hosted SMS configuration issue detected",
+    });
+  });
+
+  it("rejects a sending scope that is not carrier-ready in the database", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    stubValidTelnyxEnvs();
+    vi.stubEnv("MESSAGING_SENDING_ENABLED", "true");
+    vi.stubEnv(
+      "MESSAGING_SENDING_PRACTICE_IDS",
+      "00000000-0000-4000-8000-0000000000aa",
+    );
+    vi.stubEnv(
+      "MESSAGING_SENDING_LOCATION_IDS",
+      "00000000-0000-4000-8000-000000000002",
+    );
+    mocks.dbExecute
+      .mockResolvedValueOnce([{ ok: 1, scopeValid: true }])
+      .mockResolvedValueOnce([{ ok: 1, scopeValid: false }]);
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedSms).toEqual({
+      ok: false,
+      detail:
+        "Hosted SMS pilot scope does not match an active, carrier-ready clinic location",
+    });
+  });
+
+  it("requires Telnyx explicitly when a pilot allowlist is staged", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    stubValidTelnyxEnvs();
+    vi.stubEnv("MESSAGING_PROVIDER", "twilio");
+    vi.stubEnv(
+      "MESSAGING_SENDING_PRACTICE_IDS",
+      "00000000-0000-4000-8000-0000000000aa",
+    );
+    vi.stubEnv(
+      "MESSAGING_SENDING_LOCATION_IDS",
+      "00000000-0000-4000-8000-000000000002",
+    );
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedSms).toEqual({
+      ok: false,
+      detail: "1 required hosted SMS configuration issue detected",
+    });
+  });
+
+  it("rejects malformed staged hosted SMS scope", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    stubValidTelnyxEnvs();
+    vi.stubEnv("MESSAGING_SENDING_PRACTICE_IDS", "not-a-practice-id");
+    vi.stubEnv(
+      "MESSAGING_SENDING_LOCATION_IDS",
+      "00000000-0000-4000-8000-000000000002",
+    );
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedSms).toEqual({
+      ok: false,
+      detail: "1 required hosted SMS configuration issue detected",
+    });
+  });
+
+  it("rejects placeholder UUIDs in staged hosted SMS scope", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    stubValidTelnyxEnvs();
+    vi.stubEnv(
+      "MESSAGING_SENDING_PRACTICE_IDS",
+      "00000000-0000-0000-0000-0000000000aa",
+    );
+    vi.stubEnv(
+      "MESSAGING_SENDING_LOCATION_IDS",
+      "00000000-0000-4000-8000-000000000002",
+    );
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedSms).toEqual({
+      ok: false,
+      detail: "1 required hosted SMS configuration issue detected",
+    });
+  });
+
+  it("rejects placeholder-shaped Telnyx credentials during rollout", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    vi.stubEnv("MESSAGING_PROVIDER", "telnyx");
+    vi.stubEnv("TELNYX_API_KEY", "test-api-key");
+    vi.stubEnv("TELNYX_PUBLIC_KEY", "test-public-key");
+    vi.stubEnv("MESSAGING_REGISTRATION_ENCRYPTION_KEY", "test-encryption-key");
+    vi.stubEnv("MESSAGING_PROVISIONING_ENABLED", "true");
+    vi.stubEnv(
+      "MESSAGING_PROVISIONING_PRACTICE_IDS",
+      "00000000-0000-4000-8000-0000000000aa",
+    );
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedSms).toEqual({
+      ok: false,
+      detail: "3 required hosted SMS configuration issues detected",
+    });
+    expect(JSON.stringify(json)).not.toContain("test-api-key");
+    expect(JSON.stringify(json)).not.toContain("test-public-key");
   });
 
   it("does not require the legacy Cloud seat price for hosted readiness", async () => {

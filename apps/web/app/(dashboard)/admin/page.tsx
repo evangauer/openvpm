@@ -15,6 +15,10 @@ import {
 import { trpc } from "@/lib/trpc";
 import { EmptyState } from "@/components/common/empty-state";
 import { PageLoading } from "@/components/common/loading";
+import { SmsRecoveryConsole } from "@/components/admin/sms-recovery-console";
+
+const EMPTY_UUID = "00000000-0000-4000-8000-000000000000";
+const MESSAGING_HISTORY_LIMIT = 50;
 
 function formatUsd(n: number) {
   return new Intl.NumberFormat("en-US", {
@@ -53,6 +57,12 @@ function formatAgeMinutes(minutes: number | null) {
   return `${Math.round(minutes / (24 * 60))}d`;
 }
 
+function formatDateTime(value: Date | string | null) {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
+}
+
 const statusStyles: Record<string, string> = {
   active: "bg-green-100 text-green-700",
   trialing: "bg-blue-100 text-blue-700",
@@ -74,10 +84,16 @@ function recoveryLabel(value: string) {
 
 export default function AdminPage() {
   const utils = trpc.useUtils();
-  const { data, isLoading, error, refetch } =
-    trpc.admin.overview.useQuery(undefined, {
+  const [messagingHistorySelection, setMessagingHistorySelection] = useState<{
+    practiceId: string;
+    practiceName: string;
+  } | null>(null);
+  const { data, isLoading, error, refetch } = trpc.admin.overview.useQuery(
+    undefined,
+    {
       retry: false,
-    });
+    },
+  );
   const { data: funnel, error: funnelError } =
     trpc.admin.activationFunnel.useQuery({ days: 30 }, { retry: false });
   const { data: recoveryQueue, error: recoveryError } =
@@ -86,6 +102,17 @@ export default function AdminPage() {
     trpc.admin.journeyFunnel.useQuery({ days: 30 }, { retry: false });
   const { data: messagingQueue, error: messagingQueueError } =
     trpc.admin.messagingRegistrationQueue.useQuery(undefined, { retry: false });
+  const {
+    data: messagingHistory,
+    error: messagingHistoryError,
+    isFetching: messagingHistoryFetching,
+  } = trpc.admin.messagingRegistrationHistory.useQuery(
+    {
+      practiceId: messagingHistorySelection?.practiceId ?? EMPTY_UUID,
+      limit: MESSAGING_HISTORY_LIMIT,
+    },
+    { enabled: Boolean(messagingHistorySelection), retry: false },
+  );
   const { data: smsOperations, error: smsOperationsError } =
     trpc.admin.smsOperationsHealth.useQuery(undefined, { retry: false });
   const [extendTrialError, setExtendTrialError] = useState<string | null>(null);
@@ -215,11 +242,27 @@ export default function AdminPage() {
   }
 
   const kpis = [
-    { label: "Practices", value: String(data.totals.practices), icon: Building2 },
-    { label: "Est. MRR", value: formatUsd(data.totals.estimatedMrr), icon: DollarSign },
-    { label: "Active trials", value: String(data.totals.activeTrials), icon: Clock },
+    {
+      label: "Practices",
+      value: String(data.totals.practices),
+      icon: Building2,
+    },
+    {
+      label: "Est. MRR",
+      value: formatUsd(data.totals.estimatedMrr),
+      icon: DollarSign,
+    },
+    {
+      label: "Active trials",
+      value: String(data.totals.activeTrials),
+      icon: Clock,
+    },
     { label: "Active", value: String(data.totals.active), icon: CheckCircle },
-    { label: "Past due", value: String(data.totals.pastDue), icon: AlertTriangle },
+    {
+      label: "Past due",
+      value: String(data.totals.pastDue),
+      icon: AlertTriangle,
+    },
   ];
 
   return (
@@ -236,7 +279,10 @@ export default function AdminPage() {
         {kpis.map((k) => {
           const Icon = k.icon;
           return (
-            <div key={k.label} className="rounded-lg border border-border bg-card p-5">
+            <div
+              key={k.label}
+              className="rounded-lg border border-border bg-card p-5"
+            >
               <div className="flex items-center gap-2 text-muted-foreground">
                 <Icon className="h-4 w-4" />
                 <span className="text-sm">{k.label}</span>
@@ -281,7 +327,11 @@ export default function AdminPage() {
               {[
                 ["Critical", smsOperations.counts.critical, "text-red-700"],
                 ["Attention", smsOperations.counts.attention, "text-amber-700"],
-                ["Send exceptions", smsOperations.counts.sendAttempts, "text-foreground"],
+                [
+                  "Send exceptions",
+                  smsOperations.counts.sendAttempts,
+                  "text-foreground",
+                ],
                 [
                   "Delivery exceptions",
                   smsOperations.counts.deliveryEvents +
@@ -289,9 +339,14 @@ export default function AdminPage() {
                   "text-foreground",
                 ],
               ].map(([label, value, tone]) => (
-                <div key={String(label)} className="rounded-md border border-border p-3">
+                <div
+                  key={String(label)}
+                  className="rounded-md border border-border p-3"
+                >
                   <p className="text-xs text-muted-foreground">{label}</p>
-                  <p className={`mt-1 text-xl font-semibold tabular-nums ${tone}`}>
+                  <p
+                    className={`mt-1 text-xl font-semibold tabular-nums ${tone}`}
+                  >
                     {value}
                   </p>
                 </div>
@@ -309,7 +364,9 @@ export default function AdminPage() {
                   <thead>
                     <tr className="border-b border-border bg-muted/30 text-left text-muted-foreground">
                       <th className="px-3 py-2 font-medium">Priority</th>
-                      <th className="px-3 py-2 font-medium">Clinic / location</th>
+                      <th className="px-3 py-2 font-medium">
+                        Clinic / location
+                      </th>
                       <th className="px-3 py-2 font-medium">Category</th>
                       <th className="px-3 py-2 font-medium">Age</th>
                       <th className="px-3 py-2 font-medium">Reason</th>
@@ -346,7 +403,9 @@ export default function AdminPage() {
                           {formatAgeMinutes(item.ageMinutes)}
                         </td>
                         <td className="px-3 py-2">{item.reason}</td>
-                        <td className="px-3 py-2 font-medium">{item.nextAction}</td>
+                        <td className="px-3 py-2 font-medium">
+                          {item.nextAction}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -372,6 +431,8 @@ export default function AdminPage() {
           </p>
         )}
       </div>
+
+      <SmsRecoveryConsole />
 
       {/* Activation recovery queue */}
       <div className="mt-6 rounded-lg border border-border bg-card p-5">
@@ -399,13 +460,17 @@ export default function AdminPage() {
               </thead>
               <tbody className="divide-y divide-border">
                 {recoveryQueue.map((clinic) => (
-                  <tr key={clinic.practiceId} className="align-top hover:bg-muted/20">
+                  <tr
+                    key={clinic.practiceId}
+                    className="align-top hover:bg-muted/20"
+                  >
                     <td className="px-3 py-2 font-medium tabular-nums">
                       {clinic.queueRank}
                     </td>
                     <td className="px-3 py-2">
                       <p className="font-medium">{clinic.practiceName}</p>
-                      {clinic.verifiedAdminEmail && clinic.verifiedAdminEmailAt ? (
+                      {clinic.verifiedAdminEmail &&
+                      clinic.verifiedAdminEmailAt ? (
                         <a
                           href={`mailto:${clinic.verifiedAdminEmail}`}
                           className="mt-0.5 block text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
@@ -440,9 +505,10 @@ export default function AdminPage() {
                       <p>{clinic.setupStage}</p>
                       {clinic.setupHelpRequestedAt ? (
                         <p className="mt-0.5 text-xs font-medium text-emerald-700">
-                          Help requested {formatDate(
+                          Help requested{" "}
+                          {formatDate(
                             clinic.setupHelpRequestedAt,
-                            clinic.timezone
+                            clinic.timezone,
                           )}
                         </p>
                       ) : null}
@@ -453,10 +519,12 @@ export default function AdminPage() {
                         {clinic.realAppointmentCount} visits
                       </p>
                       <p className="mt-0.5 text-xs text-muted-foreground">
-                        Last {formatDate(
+                        Last{" "}
+                        {formatDate(
                           clinic.lastMeaningfulActivityAt,
-                          clinic.timezone
-                        )} · stalled {clinic.stallAgeDays}d
+                          clinic.timezone,
+                        )}{" "}
+                        · stalled {clinic.stallAgeDays}d
                       </p>
                     </td>
                     <td className="px-3 py-2 capitalize text-muted-foreground">
@@ -472,7 +540,10 @@ export default function AdminPage() {
                 ))}
                 {recoveryQueue.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">
+                    <td
+                      colSpan={7}
+                      className="px-3 py-6 text-center text-muted-foreground"
+                    >
                       No clinic workspaces need activation recovery.
                     </td>
                   </tr>
@@ -566,7 +637,11 @@ export default function AdminPage() {
                           : registration.senders
                               .map(
                                 (sender) =>
-                                  `${sender.senderE164 ?? "—"} (${sender.registrationStatus}; ${
+                                  `${
+                                    sender.senderLast4
+                                      ? `Number ••••${sender.senderLast4}`
+                                      : "Number not assigned"
+                                  } (${sender.registrationStatus}; ${
                                     sender.providerProfileReady
                                       ? "provider ready"
                                       : "provider not verified"
@@ -574,12 +649,24 @@ export default function AdminPage() {
                                     sender.registrationDetail
                                       ? ` — ${sender.registrationDetail}`
                                       : ""
-                                  }`
+                                  }`,
                               )
                               .join(", ")}
                       </td>
                       <td className="px-3 py-2">
                         <div className="flex flex-wrap gap-1.5">
+                          <button
+                            type="button"
+                            className="rounded border border-border px-2 py-1 text-xs font-medium hover:bg-muted"
+                            onClick={() =>
+                              setMessagingHistorySelection({
+                                practiceId: registration.practiceId,
+                                practiceName: registration.practiceName,
+                              })
+                            }
+                          >
+                            History
+                          </button>
                           {!registration.providerBrandId ? (
                             <button
                               type="button"
@@ -590,14 +677,14 @@ export default function AdminPage() {
                                   window.confirm(
                                     registration.lastError
                                       ? `Retry ${registration.practiceName}'s brand only after confirming in the Telnyx portal that no brand was created. This can incur another non-refundable charge. Continue?`
-                                      : `Submit ${registration.practiceName}'s legal brand to Telnyx? This incurs a non-refundable provider charge.`
+                                      : `Submit ${registration.practiceName}'s legal brand to Telnyx? This incurs a non-refundable provider charge.`,
                                   )
                                 ) {
                                   submitMessagingBrand.mutate({
                                     practiceId: registration.practiceId,
                                     confirmProviderCharges: true,
                                     retryAfterProviderReview: Boolean(
-                                      registration.lastError
+                                      registration.lastError,
                                     ),
                                   });
                                 }
@@ -619,14 +706,14 @@ export default function AdminPage() {
                                   window.confirm(
                                     registration.lastError
                                       ? `Retry ${registration.practiceName}'s campaign only after confirming in the Telnyx portal that no matching campaign exists. This can incur another non-refundable charge. Continue?`
-                                      : `Submit ${registration.practiceName}'s campaign to Telnyx? This incurs non-refundable provider charges.`
+                                      : `Submit ${registration.practiceName}'s campaign to Telnyx? This incurs non-refundable provider charges.`,
                                   )
                                 ) {
                                   submitMessagingCampaign.mutate({
                                     practiceId: registration.practiceId,
                                     confirmProviderCharges: true,
                                     retryAfterProviderReview: Boolean(
-                                      registration.lastError
+                                      registration.lastError,
                                     ),
                                   });
                                 }
@@ -645,7 +732,7 @@ export default function AdminPage() {
                               onClick={() => {
                                 if (
                                   window.confirm(
-                                    `Assign ${registration.practiceName}'s texting numbers to its approved campaign? Sending will remain disabled.`
+                                    `Assign ${registration.practiceName}'s texting numbers to its approved campaign? Sending will remain disabled.`,
                                   )
                                 ) {
                                   assignMessagingNumbers.mutate({
@@ -691,8 +778,7 @@ export default function AdminPage() {
                                         )
                                       ) {
                                         setMessagingProfileEnabled.mutate({
-                                          practiceId:
-                                            registration.practiceId,
+                                          practiceId: registration.practiceId,
                                           locationId: sender.locationId,
                                           enabled: true,
                                           confirmProviderMutation: true,
@@ -750,11 +836,11 @@ export default function AdminPage() {
                                 className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50"
                                 onClick={() => {
                                   const brandId = window.prompt(
-                                    "After reviewing the Telnyx portal, enter the existing brand ID. Cancel if no provider object exists."
+                                    "After reviewing the Telnyx portal, enter the existing brand ID. Cancel if no provider object exists.",
                                   );
                                   if (!brandId) return;
                                   const campaignId = window.prompt(
-                                    "Optional: enter the existing campaign ID, or leave blank."
+                                    "Optional: enter the existing campaign ID, or leave blank.",
                                   );
                                   attachMessagingProviderIds.mutate({
                                     practiceId: registration.practiceId,
@@ -783,7 +869,7 @@ export default function AdminPage() {
                                       : "brand";
                                   if (
                                     window.confirm(
-                                      `I reviewed the Telnyx portal and confirmed NO matching ${providerObject} exists. Clear the stale lock and keep all sending disabled?`
+                                      `I reviewed the Telnyx portal and confirmed NO matching ${providerObject} exists. Clear the stale lock and keep all sending disabled?`,
                                     )
                                   ) {
                                     clearStaleMessagingSubmissionLock.mutate({
@@ -827,6 +913,117 @@ export default function AdminPage() {
         )}
       </div>
 
+      {/* Messaging carrier history */}
+      {messagingHistorySelection ? (
+        <div className="mt-4 rounded-lg border border-border bg-card p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold">Carrier lifecycle history</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {messagingHistorySelection.practiceName} · newest first · at
+                most {MESSAGING_HISTORY_LIMIT} redacted operational events
+              </p>
+            </div>
+            <button
+              type="button"
+              className="rounded border border-border px-2 py-1 text-xs font-medium hover:bg-muted"
+              onClick={() => setMessagingHistorySelection(null)}
+            >
+              Close history
+            </button>
+          </div>
+          {messagingHistoryError ? (
+            <p className="mt-3 text-sm text-destructive">
+              Could not load carrier lifecycle history.
+            </p>
+          ) : messagingHistory ? (
+            <>
+              <div className="mt-4 overflow-x-auto rounded-md border border-border">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-border bg-muted/30 text-left text-muted-foreground">
+                      <th className="px-3 py-2 font-medium">Recorded</th>
+                      <th className="px-3 py-2 font-medium">Lifecycle event</th>
+                      <th className="px-3 py-2 font-medium">Status</th>
+                      <th className="px-3 py-2 font-medium">
+                        Operational evidence
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {messagingHistory.events.map((event) => (
+                      <tr key={event.id} className="align-top">
+                        <td className="px-3 py-2">
+                          {formatDateTime(event.createdAt)}
+                        </td>
+                        <td className="px-3 py-2 capitalize">
+                          <p>{recoveryLabel(event.eventType)}</p>
+                          <p className="mt-1 text-muted-foreground">
+                            {recoveryLabel(event.operation)} · {event.provider}
+                          </p>
+                        </td>
+                        <td className="px-3 py-2 capitalize">
+                          <p>
+                            {recoveryLabel(
+                              event.statusBefore ?? "not recorded",
+                            )}{" "}
+                            →{" "}
+                            {recoveryLabel(event.statusAfter ?? "not recorded")}
+                          </p>
+                          <p className="mt-1 text-muted-foreground">
+                            Brand {event.providerBrandStatus ?? "—"} · campaign{" "}
+                            {event.providerCampaignStatus ?? "—"}
+                          </p>
+                        </td>
+                        <td className="px-3 py-2 font-mono text-[11px]">
+                          <p className="break-all">event {event.id}</p>
+                          <p className="mt-1 break-all text-muted-foreground">
+                            operation {event.operationId}
+                          </p>
+                          <p className="mt-1 break-all text-muted-foreground">
+                            registration {event.registrationId} · location{" "}
+                            {event.locationId ?? "—"}
+                          </p>
+                          <p className="mt-1 capitalize text-muted-foreground">
+                            reason {recoveryLabel(event.reasonCode)}
+                          </p>
+                          <p className="mt-1 text-muted-foreground">
+                            actor {event.actorLabel}
+                          </p>
+                        </td>
+                      </tr>
+                    ))}
+                    {messagingHistory.events.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={4}
+                          className="px-3 py-6 text-center text-muted-foreground"
+                        >
+                          No carrier lifecycle evidence has been recorded.
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+              {messagingHistory.truncated ? (
+                <p className="mt-2 text-xs font-medium text-amber-700">
+                  History is truncated at {MESSAGING_HISTORY_LIMIT} events.
+                  Review the newest evidence before taking any separate operator
+                  action.
+                </p>
+              ) : null}
+            </>
+          ) : (
+            <p className="mt-3 text-sm text-muted-foreground">
+              {messagingHistoryFetching
+                ? "Loading redacted carrier history…"
+                : "Select History again to load carrier evidence."}
+            </p>
+          )}
+        </div>
+      ) : null}
+
       {/* Trial funnel */}
       <div className="mt-6 rounded-lg border border-border bg-card p-5">
         <div className="flex items-center gap-2 text-muted-foreground">
@@ -839,8 +1036,16 @@ export default function AdminPage() {
               {[
                 ["Visit", journey.totals.visitors, null],
                 ["Demo", journey.totals.demos, journey.totals.demoRate],
-                ["Registered", journey.totals.registrations, journey.totals.registrationRate],
-                ["Activated", journey.totals.activated, journey.totals.activationRate],
+                [
+                  "Registered",
+                  journey.totals.registrations,
+                  journey.totals.registrationRate,
+                ],
+                [
+                  "Activated",
+                  journey.totals.activated,
+                  journey.totals.activationRate,
+                ],
                 [
                   "Payment method",
                   journey.totals.paymentMethodCollected,
@@ -869,8 +1074,12 @@ export default function AdminPage() {
             <div className="mt-5 grid gap-2 text-sm text-muted-foreground sm:grid-cols-2 xl:grid-cols-6">
               <p>Left before trying (7d+): {journey.totals.leftBeforeTrying}</p>
               <p>Demo without signup (7d+): {journey.totals.demoAbandoned}</p>
-              <p>Signup stalled (7d+): {journey.totals.registrationAbandoned}</p>
-              <p>Activation stalled (7d+): {journey.totals.activationAbandoned}</p>
+              <p>
+                Signup stalled (7d+): {journey.totals.registrationAbandoned}
+              </p>
+              <p>
+                Activation stalled (7d+): {journey.totals.activationAbandoned}
+              </p>
               <p>
                 Payment method without positive payment after trial (7d+):{" "}
                 {journey.totals.paymentAbandoned}
@@ -894,11 +1103,19 @@ export default function AdminPage() {
                 <tbody className="divide-y divide-border">
                   {journey.weeks.map((week) => (
                     <tr key={week.weekStart}>
-                      <td className="px-3 py-2 font-medium">{week.weekStart}</td>
-                      <td className="px-3 py-2 tabular-nums">{week.visitors}</td>
+                      <td className="px-3 py-2 font-medium">
+                        {week.weekStart}
+                      </td>
+                      <td className="px-3 py-2 tabular-nums">
+                        {week.visitors}
+                      </td>
                       <td className="px-3 py-2 tabular-nums">{week.demos}</td>
-                      <td className="px-3 py-2 tabular-nums">{week.registrations}</td>
-                      <td className="px-3 py-2 tabular-nums">{week.activated}</td>
+                      <td className="px-3 py-2 tabular-nums">
+                        {week.registrations}
+                      </td>
+                      <td className="px-3 py-2 tabular-nums">
+                        {week.activated}
+                      </td>
                       <td className="px-3 py-2 tabular-nums">
                         {week.paymentMethodCollected}
                       </td>
@@ -909,7 +1126,10 @@ export default function AdminPage() {
                   ))}
                   {journey.weeks.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">
+                      <td
+                        colSpan={7}
+                        className="px-3 py-6 text-center text-muted-foreground"
+                      >
                         No first-party journey cohorts recorded yet.
                       </td>
                     </tr>
@@ -918,10 +1138,10 @@ export default function AdminPage() {
               </table>
             </div>
             <p className="mt-3 text-xs text-muted-foreground">
-              Anonymous first touch is carried across openvpm.com, demo, and signup.
-              Rates are visit-to-step for demo and registration, then step-to-step.{" "}
-              Stalls require seven full days; an active trial with a collected
-              payment method is not treated as payment-abandoned.
+              Anonymous first touch is carried across openvpm.com, demo, and
+              signup. Rates are visit-to-step for demo and registration, then
+              step-to-step. Stalls require seven full days; an active trial with
+              a collected payment method is not treated as payment-abandoned.
               {journey.totals.historicalUnattributedRegistrations > 0
                 ? ` ${journey.totals.historicalUnattributedRegistrations} historical registration(s) have no captured journey ID and remain explicitly unknown.`
                 : ""}
@@ -932,7 +1152,9 @@ export default function AdminPage() {
           </>
         ) : (
           <p className="mt-3 text-sm text-muted-foreground">
-            {journeyError ? "Could not load journey cohorts." : "Loading journey cohorts..."}
+            {journeyError
+              ? "Could not load journey cohorts."
+              : "Loading journey cohorts..."}
           </p>
         )}
       </div>
@@ -979,7 +1201,9 @@ export default function AdminPage() {
                 </p>
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">First visit done</p>
+                <p className="text-sm text-muted-foreground">
+                  First visit done
+                </p>
                 <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
                   {funnel.totals.firstVisitCompleted}
                   <span className="ml-2 text-sm font-normal text-muted-foreground">
@@ -997,7 +1221,9 @@ export default function AdminPage() {
                 </p>
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">First positive payment</p>
+                <p className="text-sm text-muted-foreground">
+                  First positive payment
+                </p>
                 <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
                   {funnel.totals.firstPositivePayment}
                   <span className="ml-2 text-sm font-normal text-muted-foreground">
@@ -1006,7 +1232,9 @@ export default function AdminPage() {
                 </p>
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Currently active</p>
+                <p className="text-sm text-muted-foreground">
+                  Currently active
+                </p>
                 <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
                   {funnel.totals.currentlyActive}
                   <span className="ml-2 text-sm font-normal text-muted-foreground">
@@ -1016,28 +1244,37 @@ export default function AdminPage() {
               </div>
             </div>
             <p className="mt-3 text-xs text-muted-foreground">
-              Setup progress comes from the guided clinic setup. Activated = added a
-              real client and booked a real visit. First visit done requires a
-              completed clinical and billing closeout; its rate is measured from
-              activated clinics. Payment method = a signed subscription Checkout
-              completed with collection required. First positive payment = a signed,
-              positive subscription invoice payment. Currently active is current
-              billing state, not a historical conversion milestone.
+              Setup progress comes from the guided clinic setup. Activated =
+              added a real client and booked a real visit. First visit done
+              requires a completed clinical and billing closeout; its rate is
+              measured from activated clinics. Payment method = a signed
+              subscription Checkout completed with collection required. First
+              positive payment = a signed, positive subscription invoice
+              payment. Currently active is current billing state, not a
+              historical conversion milestone.
             </p>
             <div className="mt-4 rounded-md border border-amber-300/60 bg-amber-50/50 p-3 text-xs text-muted-foreground dark:bg-amber-950/10">
-              <p className="font-medium text-foreground">Conversion evidence quality</p>
+              <p className="font-medium text-foreground">
+                Conversion evidence quality
+              </p>
               <p className="mt-1">
-                Legacy business-stage rows are excluded; unknown evidence is never
-                counted as zero or assigned a synthetic date.
+                Legacy business-stage rows are excluded; unknown evidence is
+                never counted as zero or assigned a synthetic date.
               </p>
               <p className="mt-2">
-                Legacy rows: {funnel.dataQuality.legacyBusinessStageRows} · Unknown
-                payment method: {funnel.dataQuality.unknownPaymentMethodPractices} ·{" "}
-                Unknown positive payment: {funnel.dataQuality.unknownPositivePaymentPractices}
-                {" · "}Missing registrations: {funnel.dataQuality.missingRegistrationMilestones}
-                {" · "}Missing activations: {funnel.dataQuality.missingActivationMilestones}
-                {" · "}Unprojected Stripe evidence: {funnel.dataQuality.unprojectedStripeEvidence}
-                {" · "}Unmapped Stripe evidence: {funnel.dataQuality.unmappedStripeEvidence}
+                Legacy rows: {funnel.dataQuality.legacyBusinessStageRows} ·
+                Unknown payment method:{" "}
+                {funnel.dataQuality.unknownPaymentMethodPractices} · Unknown
+                positive payment:{" "}
+                {funnel.dataQuality.unknownPositivePaymentPractices}
+                {" · "}Missing registrations:{" "}
+                {funnel.dataQuality.missingRegistrationMilestones}
+                {" · "}Missing activations:{" "}
+                {funnel.dataQuality.missingActivationMilestones}
+                {" · "}Unprojected Stripe evidence:{" "}
+                {funnel.dataQuality.unprojectedStripeEvidence}
+                {" · "}Unmapped Stripe evidence:{" "}
+                {funnel.dataQuality.unmappedStripeEvidence}
               </p>
             </div>
           </>
@@ -1104,7 +1341,8 @@ export default function AdminPage() {
                 <td className="px-4 py-2.5">
                   <span
                     className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${
-                      statusStyles[p.billingStatus] || "bg-gray-100 text-gray-500"
+                      statusStyles[p.billingStatus] ||
+                      "bg-gray-100 text-gray-500"
                     }`}
                   >
                     {p.billingStatus.replace("_", " ")}
@@ -1120,7 +1358,8 @@ export default function AdminPage() {
                   <p>{p.setupStage}</p>
                   {p.setupHelpRequestedAt ? (
                     <p className="mt-0.5 text-xs font-medium text-emerald-700">
-                      Help requested {formatDate(p.setupHelpRequestedAt, p.timezone)}
+                      Help requested{" "}
+                      {formatDate(p.setupHelpRequestedAt, p.timezone)}
                     </p>
                   ) : null}
                 </td>
@@ -1167,12 +1406,24 @@ export default function AdminPage() {
                     )}
                   </span>
                 </td>
-                <td className="px-4 py-2.5 text-right tabular-nums">{p.locationCount}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums">{p.userCount}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums">{formatUsd(p.estimatedMrr)}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums">{p.clientCount}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums">{p.patientCount}</td>
-                <td className="px-4 py-2.5 text-muted-foreground">{p.country}</td>
+                <td className="px-4 py-2.5 text-right tabular-nums">
+                  {p.locationCount}
+                </td>
+                <td className="px-4 py-2.5 text-right tabular-nums">
+                  {p.userCount}
+                </td>
+                <td className="px-4 py-2.5 text-right tabular-nums">
+                  {formatUsd(p.estimatedMrr)}
+                </td>
+                <td className="px-4 py-2.5 text-right tabular-nums">
+                  {p.clientCount}
+                </td>
+                <td className="px-4 py-2.5 text-right tabular-nums">
+                  {p.patientCount}
+                </td>
+                <td className="px-4 py-2.5 text-muted-foreground">
+                  {p.country}
+                </td>
                 <td className="px-4 py-2.5 text-muted-foreground">
                   {formatDate(p.createdAt, p.timezone)}
                 </td>
@@ -1180,7 +1431,10 @@ export default function AdminPage() {
             ))}
             {data.practices.length === 0 && (
               <tr>
-                <td colSpan={15} className="px-4 py-8 text-center text-muted-foreground">
+                <td
+                  colSpan={15}
+                  className="px-4 py-8 text-center text-muted-foreground"
+                >
                   No practices yet.
                 </td>
               </tr>

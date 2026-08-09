@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
-import { and, eq, isNull } from "drizzle-orm";
+import { createHash, randomUUID } from "node:crypto";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { db } from "@openpims/db/client";
-import { locationMessaging, messagingRegistrations } from "@openpims/db";
+import {
+  locationMessaging,
+  messagingRegistrationEvents,
+  messagingRegistrations,
+} from "@openpims/db";
 import { withSystem } from "@/lib/tenant-db";
 import { readRequestTextWithLimit } from "@/lib/request-json";
 import {
@@ -19,10 +24,15 @@ import {
 } from "@/lib/messaging/telnyx-events";
 import { recordSmsDeliveryCallback } from "@/lib/messaging/sms-delivery-ledger";
 import { verifyTelnyxSignature } from "@/lib/messaging/telnyx-signature";
+import { alertOps } from "@/lib/alerts";
 import {
   mergeRegistrationStatus,
   type RegistrationLifecycleStatus,
 } from "@/lib/messaging/a2p-lifecycle";
+import {
+  recordMessagingRegistrationEvent,
+  systemMessagingRegistrationActor,
+} from "@/lib/messaging/registration-events";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -37,6 +47,19 @@ function payloadTooLargeResponse() {
 function payloadString(value: unknown): string | null {
   const trimmed = typeof value === "string" ? value.trim() : "";
   return trimmed || null;
+}
+
+function providerEventOperationId(value: unknown): string {
+  const providerEventId = payloadString(value);
+  if (!providerEventId) return randomUUID();
+  const bytes = createHash("sha256")
+    .update(`telnyx-a2p-event:${providerEventId}`)
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function payloadMessagingProfileId(payload: {
@@ -79,6 +102,7 @@ function a2pWebhookStatus(payload: {
 
 async function handleA2pLifecycleWebhook(opts: {
   eventType: string;
+  providerEventId?: unknown;
   payload: {
     brandId?: unknown;
     campaignId?: unknown;
@@ -95,60 +119,147 @@ async function handleA2pLifecycleWebhook(opts: {
   const providerStatus =
     payloadString(opts.payload.status) ?? payloadString(opts.payload.type);
   const observed = a2pWebhookStatus(opts.payload);
+  const operationId = providerEventOperationId(opts.providerEventId);
 
-  await withSystem(db, async (tx) => {
-    let [registration] = await tx
-      .select({
-        id: messagingRegistrations.id,
-        practiceId: messagingRegistrations.practiceId,
-        status: messagingRegistrations.status,
-      })
-      .from(messagingRegistrations)
-      .where(
-        and(
-          isNull(messagingRegistrations.deletedAt),
-          opts.eventType === "10dlc.brand.update" && brandId
-            ? eq(messagingRegistrations.providerBrandId, brandId)
-            : campaignId
-              ? eq(messagingRegistrations.providerCampaignId, campaignId)
-              : eq(
-                  messagingRegistrations.id,
-                  "00000000-0000-0000-0000-000000000000",
-                ),
-        ),
-      )
-      .limit(1);
-
-    if (!registration && phoneNumber) {
-      const [sender] = await tx
-        .select({ practiceId: locationMessaging.practiceId })
-        .from(locationMessaging)
-        .where(
-          and(
-            eq(locationMessaging.provider, "telnyx"),
-            eq(locationMessaging.senderE164, phoneNumber),
-            isNull(locationMessaging.deletedAt),
-          ),
-        )
-        .limit(1);
-      if (sender) {
-        [registration] = await tx
-          .select({
-            id: messagingRegistrations.id,
-            practiceId: messagingRegistrations.practiceId,
-            status: messagingRegistrations.status,
-          })
+  const outcome = await withSystem(db, async (tx) => {
+    // Telnyx retries signed webhooks. Serialize the provider event before any
+    // projection write, then use a one-way deterministic UUID so concurrent
+    // deliveries acknowledge cleanly instead of duplicating lifecycle evidence.
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`telnyx-a2p-event:${operationId}`}, 0))`,
+    );
+    const brandMatches = brandId
+      ? await tx
+          .select()
           .from(messagingRegistrations)
           .where(
             and(
-              eq(messagingRegistrations.practiceId, sender.practiceId),
+              eq(messagingRegistrations.providerBrandId, brandId),
               isNull(messagingRegistrations.deletedAt),
             ),
           )
-          .limit(1);
-      }
+          .limit(2)
+      : [];
+    const campaignMatches = campaignId
+      ? await tx
+          .select()
+          .from(messagingRegistrations)
+          .where(
+            and(
+              eq(messagingRegistrations.providerCampaignId, campaignId),
+              isNull(messagingRegistrations.deletedAt),
+            ),
+          )
+          .limit(2)
+      : [];
+    const senderMatches = phoneNumber
+      ? await tx
+          .select({
+            practiceId: locationMessaging.practiceId,
+            locationId: locationMessaging.locationId,
+          })
+          .from(locationMessaging)
+          .where(
+            and(
+              eq(locationMessaging.provider, "telnyx"),
+              eq(locationMessaging.senderE164, phoneNumber),
+              isNull(locationMessaging.deletedAt),
+            ),
+          )
+          .limit(2)
+      : [];
+    const phoneRegistrationMatches =
+      senderMatches.length === 1
+        ? await tx
+            .select()
+            .from(messagingRegistrations)
+            .where(
+              and(
+                eq(
+                  messagingRegistrations.practiceId,
+                  senderMatches[0]!.practiceId,
+                ),
+                isNull(messagingRegistrations.deletedAt),
+              ),
+            )
+            .limit(2)
+        : [];
+
+    const resolvedRegistrations = [
+      ...brandMatches,
+      ...campaignMatches,
+      ...phoneRegistrationMatches,
+    ];
+    const affectedPracticeIds = [
+      ...new Set([
+        ...resolvedRegistrations.map((row) => row.practiceId),
+        ...senderMatches.map((row) => row.practiceId),
+      ]),
+    ];
+    const affectedLocationIds = [
+      ...new Set(senderMatches.map((row) => row.locationId)),
+    ];
+    const resolutionCounts = [
+      ...(brandId ? [brandMatches.length] : []),
+      ...(campaignId ? [campaignMatches.length] : []),
+      ...(phoneNumber
+        ? [senderMatches.length, phoneRegistrationMatches.length]
+        : []),
+    ];
+    const identityConflict =
+      resolutionCounts.some((count) => count !== 1) ||
+      affectedPracticeIds.length > 1;
+
+    if (identityConflict && affectedPracticeIds.length > 0) {
+      const quarantineScope =
+        affectedPracticeIds.length > 0 && affectedLocationIds.length > 0
+          ? or(
+              inArray(locationMessaging.practiceId, affectedPracticeIds),
+              inArray(locationMessaging.locationId, affectedLocationIds),
+            )
+          : affectedPracticeIds.length > 0
+            ? inArray(locationMessaging.practiceId, affectedPracticeIds)
+            : inArray(locationMessaging.locationId, affectedLocationIds);
+      await tx
+        .update(locationMessaging)
+        .set({
+          enabled: false,
+          registrationStatus: "action_required",
+          registrationDetail:
+            "Carrier webhook identities conflict. OpenVPM must reconcile the exact brand, campaign, and number before sending can resume.",
+          providerProfileReady: false,
+          providerProfileSyncedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(locationMessaging.provider, "telnyx"),
+            quarantineScope,
+            isNull(locationMessaging.deletedAt),
+          ),
+        );
+      return "identity_conflict" as const;
     }
-    if (!registration) return;
+
+    const registration =
+      brandMatches[0] ??
+      campaignMatches[0] ??
+      phoneRegistrationMatches[0] ??
+      null;
+    if (!registration) return "ignored" as const;
+
+    const [existingEvent] = await tx
+      .select({ id: messagingRegistrationEvents.id })
+      .from(messagingRegistrationEvents)
+      .where(
+        and(
+          eq(messagingRegistrationEvents.practiceId, registration.practiceId),
+          eq(messagingRegistrationEvents.operationId, operationId),
+          eq(messagingRegistrationEvents.eventType, "provider_state_observed"),
+        ),
+      )
+      .limit(1);
+    if (existingEvent) return "duplicate" as const;
 
     const next = mergeRegistrationStatus(registration.status, observed);
     const reasons = Array.isArray(opts.payload.reasons)
@@ -158,7 +269,7 @@ async function handleA2pLifecycleWebhook(opts: {
       : [];
     const detail =
       payloadString(opts.payload.description) ?? (reasons.join("; ") || null);
-    await tx
+    const [updated] = await tx
       .update(messagingRegistrations)
       .set({
         ...(opts.eventType === "10dlc.brand.update"
@@ -183,7 +294,41 @@ async function handleA2pLifecycleWebhook(opts: {
         lastSyncedAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(eq(messagingRegistrations.id, registration.id));
+      .where(
+        and(
+          eq(messagingRegistrations.id, registration.id),
+          eq(messagingRegistrations.status, registration.status),
+          brandId
+            ? eq(messagingRegistrations.providerBrandId, brandId)
+            : sql`true`,
+          campaignId
+            ? eq(messagingRegistrations.providerCampaignId, campaignId)
+            : sql`true`,
+          phoneNumber
+            ? sql`exists (
+                select 1
+                from ${locationMessaging} as sender
+                where sender.practice_id = ${registration.practiceId}
+                  and sender.provider = 'telnyx'
+                  and sender.sender_e164 = ${phoneNumber}
+                  and sender.deleted_at is null
+              )`
+            : sql`true`,
+          isNull(messagingRegistrations.deletedAt),
+        ),
+      )
+      .returning();
+    if (!updated) return "stale" as const;
+
+    await recordMessagingRegistrationEvent(tx, {
+      registration: updated,
+      eventType: "provider_state_observed",
+      operation: "registration_reconciliation",
+      statusBefore: registration.status,
+      operationId,
+      reasonCode: "carrier_webhook_observed",
+      actor: systemMessagingRegistrationActor(),
+    });
 
     await tx
       .update(locationMessaging)
@@ -211,7 +356,14 @@ async function handleA2pLifecycleWebhook(opts: {
           isNull(locationMessaging.deletedAt),
         ),
       );
+    return "applied" as const;
   });
+  if (outcome === "identity_conflict") {
+    await alertOps(
+      "Telnyx A2P identity conflict",
+      "A signed carrier lifecycle event supplied contradictory brand, campaign, or phone identities. Matching senders were disabled; reconcile the carrier portal before re-enabling texting.",
+    );
+  }
 }
 
 export async function POST(request: Request) {
@@ -285,7 +437,11 @@ export async function POST(request: Request) {
   }
 
   if (eventType && A2P_EVENT_TYPES.has(eventType)) {
-    await handleA2pLifecycleWebhook({ eventType, payload });
+    await handleA2pLifecycleWebhook({
+      eventType,
+      providerEventId: data?.id,
+      payload,
+    });
     return NextResponse.json({ ok: true });
   }
 

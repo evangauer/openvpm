@@ -102,6 +102,10 @@ export const messagingRegistrations = pgTable(
     practiceIdx: uniqueIndex("messaging_registrations_practice_idx").on(
       t.practiceId,
     ),
+    practiceIdUq: uniqueIndex("messaging_registrations_practice_id_uq").on(
+      t.practiceId,
+      t.id,
+    ),
     statusIdx: index("messaging_registrations_status_idx").on(
       t.status,
       t.updatedAt,
