@@ -1591,11 +1591,13 @@ async function restoreProductStock(
 }
 
 export const billingRouter = createRouter({
-  // Region-aware billing config for the practice (tax rate + currency).
-  // Available to any authenticated user so invoice forms can preview totals.
+  // Region-aware billing config and display identity for the practice.
+  // Available to any authenticated user so billing screens and client-facing
+  // documents use the authenticated tenant's settings.
   getTaxConfig: protectedProcedure.query(async ({ ctx }) => {
     const [practice] = await ctx.db
       .select({
+        practiceName: practices.name,
         taxRatePercent: practices.taxRatePercent,
         currency: practices.currency,
         country: practices.country,
@@ -1608,6 +1610,7 @@ export const billingRouter = createRouter({
       throw practiceNotFound();
     }
     return {
+      practiceName: practice.practiceName,
       taxRatePercent: practice.taxRatePercent ?? "8.00",
       currency: practice.currency ?? "usd",
       country: practice.country ?? "US",

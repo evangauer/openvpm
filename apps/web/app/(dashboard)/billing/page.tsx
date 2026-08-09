@@ -377,7 +377,7 @@ export default function BillingPage() {
         </div>
       ) : isListLoading ? (
         <TableSkeleton rows={8} cols={7} />
-      ) : data && data.items.length > 0 ? (
+      ) : data && verifiedBillingConfig && data.items.length > 0 ? (
         <>
           <TableScroll className="mt-6 rounded-lg border border-border">
             <table className="w-full text-sm">
@@ -424,6 +424,7 @@ export default function BillingPage() {
                     onStatusChange={handleStatusChange}
                     onConvertEstimate={handleConvertEstimate}
                     onVoidInvoice={handleVoidInvoice}
+                    practiceName={verifiedBillingConfig.practiceName}
                     billingTimeZone={billingTimeZone}
                     canManageBilling={canManageBilling}
                     isMutating={
@@ -968,6 +969,7 @@ function InvoiceRow({
   onStatusChange,
   onConvertEstimate,
   onVoidInvoice,
+  practiceName,
   billingTimeZone,
   canManageBilling,
   isMutating,
@@ -996,6 +998,7 @@ function InvoiceRow({
   ) => void;
   onConvertEstimate: (e: React.MouseEvent, id: string) => void;
   onVoidInvoice: (e: React.MouseEvent, id: string) => void;
+  practiceName: string;
   billingTimeZone?: string | null;
   canManageBilling: boolean;
   isMutating: boolean;
@@ -1146,7 +1149,7 @@ function InvoiceRow({
                             .join(" ");
                           const { generateInvoicePdf } = await import("@/lib/pdf");
                           generateInvoicePdf({
-                            practiceName: "Your Practice",
+                            practiceName,
                             clientName,
                             clientEmail: d.clientEmail ?? undefined,
                             patientName: d.patientName ?? undefined,
@@ -1332,7 +1335,7 @@ function InvoiceRow({
                             .join(" ");
                           const { generateInvoicePdf } = await import("@/lib/pdf");
                           generateInvoicePdf({
-                            practiceName: "Your Practice",
+                            practiceName,
                             clientName,
                             clientEmail: d.clientEmail ?? undefined,
                             patientName: d.patientName ?? undefined,

@@ -43,9 +43,10 @@ afterEach(() => {
 });
 
 describe("billing list input validation", () => {
-  it("returns the practice timezone with billing tax config", async () => {
+  it("returns the authenticated practice identity with billing config", async () => {
     const result = [
       {
+        practiceName: "Harbor Veterinary Clinic",
         taxRatePercent: "8.75",
         currency: "cad",
         country: "CA",
@@ -61,6 +62,7 @@ describe("billing list input validation", () => {
     db.select = vi.fn(() => builder);
 
     await expect(callerWithDb(db).getTaxConfig()).resolves.toEqual({
+      practiceName: "Harbor Veterinary Clinic",
       taxRatePercent: "8.75",
       currency: "cad",
       country: "CA",

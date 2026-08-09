@@ -347,6 +347,27 @@ describe("billing invoice payment actions", () => {
     );
     expect(source).not.toContain("billingConfig.data?.timezone");
   });
+
+  it("uses the loaded clinic name in both estimate and invoice PDFs", () => {
+    const estimatePdfBlock = source.slice(
+      source.indexOf("{/* Estimate Approval Card */}"),
+      source.indexOf('<div className="flex items-center gap-6 text-sm">')
+    );
+    const invoicePdfBlock = source.slice(
+      source.indexOf("{/* Balance Summary */}"),
+      source.indexOf("{/* Payment History & Record Payment */}")
+    );
+
+    expect(source).toContain(
+      "data && verifiedBillingConfig && data.items.length > 0"
+    );
+    expect(source).toContain(
+      "practiceName={verifiedBillingConfig.practiceName}"
+    );
+    expect(estimatePdfBlock).toContain("practiceName,");
+    expect(invoicePdfBlock).toContain("practiceName,");
+    expect(source).not.toContain('practiceName: "Your Practice"');
+  });
 });
 
 describe("medication dispense billing queue", () => {
