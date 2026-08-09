@@ -5,6 +5,8 @@ import {
   appointmentTypes,
   appointmentWaitlist,
   appointments,
+  authEmailAttempts,
+  authEmailDeliveryEvents,
   authTokens,
   cases,
   caseEntries,
@@ -50,14 +52,14 @@ import {
 } from "@openpims/db";
 
 function indexNames(table: PgTable): string[] {
-  return getTableConfig(table).indexes
-    .map((idx) => idx.config.name)
+  return getTableConfig(table)
+    .indexes.map((idx) => idx.config.name)
     .filter((name): name is string => typeof name === "string");
 }
 
 function indexColumnNames(table: PgTable, name: string): string[] {
   const index = getTableConfig(table).indexes.find(
-    (idx) => idx.config.name === name
+    (idx) => idx.config.name === name,
   );
 
   expect(index, `${name} should be registered`).toBeDefined();
@@ -88,11 +90,7 @@ describe("hot table indexes", () => {
       controlledSubstanceLog,
       ["cs_log_practice_drug_date_idx", "cs_log_practice_date_idx"],
     ],
-    [
-      "webhooks",
-      webhooks,
-      ["webhooks_practice_active_idx"],
-    ],
+    ["webhooks", webhooks, ["webhooks_practice_active_idx"]],
     [
       "email_suppressions",
       emailSuppressions,
@@ -145,11 +143,7 @@ describe("hot table indexes", () => {
         "vital_signs_appointment_idx",
       ],
     ],
-    [
-      "patient_allergies",
-      patientAllergies,
-      ["patient_allergies_patient_idx"],
-    ],
+    ["patient_allergies", patientAllergies, ["patient_allergies_patient_idx"]],
     [
       "procedures",
       procedures,
@@ -175,16 +169,8 @@ describe("hot table indexes", () => {
       problemList,
       ["problem_list_patient_status_idx", "problem_list_practice_status_idx"],
     ],
-    [
-      "cases",
-      cases,
-      ["cases_patient_status_idx", "cases_practice_status_idx"],
-    ],
-    [
-      "case_entries",
-      caseEntries,
-      ["case_entries_case_idx"],
-    ],
+    ["cases", cases, ["cases_patient_status_idx", "cases_practice_status_idx"]],
+    ["case_entries", caseEntries, ["case_entries_case_idx"]],
     [
       "treatment_plan_items",
       treatmentPlanItems,
@@ -241,11 +227,7 @@ describe("hot table indexes", () => {
         "waitlist_patient_status_idx",
       ],
     ],
-    [
-      "rooms",
-      rooms,
-      ["rooms_practice_name_idx", "rooms_location_idx"],
-    ],
+    ["rooms", rooms, ["rooms_practice_name_idx", "rooms_location_idx"]],
     [
       "staff_schedules",
       staffSchedules,
@@ -263,16 +245,8 @@ describe("hot table indexes", () => {
         "products_stock_alert_idx",
       ],
     ],
-    [
-      "services",
-      services,
-      ["services_practice_name_idx"],
-    ],
-    [
-      "suppliers",
-      suppliers,
-      ["suppliers_practice_name_idx"],
-    ],
+    ["services", services, ["services_practice_name_idx"]],
+    ["suppliers", suppliers, ["suppliers_practice_name_idx"]],
     [
       "invoices",
       invoices,
@@ -304,11 +278,7 @@ describe("hot table indexes", () => {
         "invoice_adjustments_operation_key_uq",
       ],
     ],
-    [
-      "payments",
-      payments,
-      ["payments_invoice_idx", "payments_external_id_uq"],
-    ],
+    ["payments", payments, ["payments_invoice_idx", "payments_external_id_uq"]],
     [
       "prescriptions",
       prescriptions,
@@ -366,15 +336,31 @@ describe("hot table indexes", () => {
         "wellness_enrollments_target_idx",
       ],
     ],
-    [
-      "wellness_plans",
-      wellnessPlans,
-      ["wellness_plans_practice_created_idx"],
-    ],
+    ["wellness_plans", wellnessPlans, ["wellness_plans_practice_created_idx"]],
     [
       "auth_tokens",
       authTokens,
       ["auth_tokens_hash_idx", "auth_tokens_expires_idx"],
+    ],
+    [
+      "auth_email_attempts",
+      authEmailAttempts,
+      [
+        "auth_email_attempts_idempotency_uq",
+        "auth_email_attempts_provider_message_uq",
+        "auth_email_attempts_recovery_idx",
+        "auth_email_attempts_practice_created_idx",
+      ],
+    ],
+    [
+      "auth_email_delivery_events",
+      authEmailDeliveryEvents,
+      [
+        "auth_email_delivery_events_webhook_uq",
+        "auth_email_delivery_events_attempt_timeline_idx",
+        "auth_email_delivery_events_provider_timeline_idx",
+        "auth_email_delivery_events_attribution_queue_idx",
+      ],
     ],
     ["sessions", sessions, ["sessions_expires_idx"]],
     [
@@ -411,60 +397,55 @@ describe("hot table indexes", () => {
 
   it("matches communications indexes to active inbox query shapes", () => {
     expect(
-      indexColumnNames(communications, "communications_practice_list_idx")
+      indexColumnNames(communications, "communications_practice_list_idx"),
     ).toEqual(["practice_id", "deleted_at", "created_at"]);
     expect(
-      indexColumnNames(communications, "communications_client_timeline_idx")
+      indexColumnNames(communications, "communications_client_timeline_idx"),
     ).toEqual(["practice_id", "client_id", "deleted_at", "created_at"]);
     expect(
-      indexColumnNames(communications, "communications_inbox_status_idx")
+      indexColumnNames(communications, "communications_inbox_status_idx"),
     ).toEqual(["practice_id", "direction", "status", "deleted_at"]);
     expect(
-      indexColumnNames(communications, "communications_assigned_idx")
+      indexColumnNames(communications, "communications_assigned_idx"),
     ).toEqual(["practice_id", "assigned_to", "deleted_at"]);
     expect(
-      indexColumnNames(communications, "communications_provider_message_idx")
+      indexColumnNames(communications, "communications_provider_message_idx"),
     ).toEqual(["practice_id", "provider_message_id", "channel", "direction"]);
   });
 
   it("matches controlled-substance ledger indexes to list and summary query shapes", () => {
     expect(
-      indexColumnNames(
-        controlledSubstanceLog,
-        "cs_log_practice_drug_date_idx"
-      )
+      indexColumnNames(controlledSubstanceLog, "cs_log_practice_drug_date_idx"),
     ).toEqual(["practice_id", "drug_name", "performed_at"]);
     expect(
-      indexColumnNames(controlledSubstanceLog, "cs_log_practice_date_idx")
+      indexColumnNames(controlledSubstanceLog, "cs_log_practice_date_idx"),
     ).toEqual(["practice_id", "deleted_at", "performed_at"]);
   });
 
   it("matches email suppression indexes to send-gate and restore query shapes", () => {
     expect(
-      indexColumnNames(emailSuppressions, "email_suppressions_practice_email_uq")
+      indexColumnNames(
+        emailSuppressions,
+        "email_suppressions_practice_email_uq",
+      ),
     ).toEqual(["practice_id", "email"]);
     expect(
-      indexColumnNames(emailSuppressions, "email_suppressions_practice_idx")
+      indexColumnNames(emailSuppressions, "email_suppressions_practice_idx"),
     ).toEqual(["practice_id", "deleted_at"]);
   });
 
   it("matches SMS suppression indexes to send-gate and export query shapes", () => {
     expect(
-      indexColumnNames(smsSuppressions, "sms_suppressions_practice_phone_uq")
+      indexColumnNames(smsSuppressions, "sms_suppressions_practice_phone_uq"),
     ).toEqual(["practice_id", "phone"]);
     expect(
-      indexColumnNames(smsSuppressions, "sms_suppressions_practice_idx")
+      indexColumnNames(smsSuppressions, "sms_suppressions_practice_idx"),
     ).toEqual(["practice_id", "deleted_at"]);
   });
 
   it("matches visit-vitals indexing to the tenant appointment timeline query", () => {
-    expect(
-      indexColumnNames(vitalSigns, "vital_signs_appointment_idx")
-    ).toEqual([
-      "practice_id",
-      "appointment_id",
-      "deleted_at",
-      "recorded_at",
-    ]);
+    expect(indexColumnNames(vitalSigns, "vital_signs_appointment_idx")).toEqual(
+      ["practice_id", "appointment_id", "deleted_at", "recorded_at"],
+    );
   });
 });

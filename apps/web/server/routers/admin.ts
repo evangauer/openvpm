@@ -66,6 +66,7 @@ import {
 import { messagingProgramUrls } from "@/lib/messaging/public-program";
 import { reconcileSmsSendAttempt, resendSmsAttempt } from "@/lib/sms-dispatch";
 import { reconcileSmsDeliveryEvent } from "@/lib/messaging/sms-delivery-ledger";
+import { rowsFromExecute } from "@/lib/db/execute-rows";
 
 /**
  * Platform-operator only. Crosses tenant boundaries deliberately, so it is
@@ -621,6 +622,139 @@ export const adminRouter = createRouter({
   isPlatformAdmin: protectedProcedure.query(({ ctx }) => {
     return isPlatformAdmin(ctx.session?.user?.email);
   }),
+
+  /** Bounded, recipient-free verification-email recovery queue. */
+  authEmailRecoveryQueue: platformAdminProcedure
+    .input(
+      z
+        .object({ limit: z.number().int().min(1).max(100).default(50) })
+        .default({}),
+    )
+    .query(({ input }) => {
+      noStore();
+      return withSystem(db, async (tx) => {
+        const result = await tx.execute(sql`
+          with attempt_issues as (
+            select
+              attempt.created_at as "occurredAt",
+              practice.name as "practiceName",
+              attempt.source::text as source,
+              attempt.outcome::text as outcome,
+              case
+                when attempt.outcome = 'reserved'
+                  then 'provider_outcome_missing'
+                when attempt.outcome = 'outcome_unknown'
+                  then 'provider_outcome_unknown'
+                when attempt.outcome = 'definite_failure'
+                  then 'provider_definite_failure'
+                else 'delivery_confirmation_missing'
+              end as reason
+            from auth_email_attempts attempt
+            join practices practice
+              on practice.id = attempt.practice_id
+             and practice.deleted_at is null
+            join users account
+              on account.id = attempt.user_id
+             and account.practice_id = attempt.practice_id
+             and account.deleted_at is null
+             and account.email_verified_at is null
+            where (
+              attempt.outcome = 'reserved'
+              and attempt.created_at <= now() - interval '15 minutes'
+            ) or attempt.outcome in ('outcome_unknown', 'definite_failure')
+              or (
+                attempt.outcome = 'accepted'
+                and attempt.resolved_at <= now() - interval '60 minutes'
+                and not exists (
+                  select 1
+                  from auth_email_delivery_events delivery
+                  where (
+                    delivery.attempt_id = attempt.id
+                    or (
+                      delivery.attempt_id is null
+                      and delivery.provider = attempt.provider
+                      and delivery.provider_message_id = attempt.provider_message_id
+                    )
+                  )
+                  and delivery.classification in (
+                    'delivered', 'failed', 'complained', 'opened', 'clicked'
+                  )
+                )
+              )
+          ), attribution_issues as (
+            select
+              delivery.received_at as "occurredAt",
+              coalesce(practice.name, 'Unattributed auth email') as "practiceName",
+              null::text as source,
+              null::text as outcome,
+              case
+                when delivery.attribution = 'identity_conflict'
+                  then 'delivery_identity_conflict'
+                else 'delivery_attribution_unmatched'
+              end as reason
+            from auth_email_delivery_events delivery
+            left join auth_email_attempts attempt
+              on attempt.id = delivery.attempt_id
+              or (
+                delivery.attempt_id is null
+                and attempt.provider = delivery.provider
+                and attempt.provider_message_id = delivery.provider_message_id
+              )
+            left join practices practice
+              on practice.id = attempt.practice_id
+             and practice.deleted_at is null
+            where delivery.attribution = 'identity_conflict'
+              or (
+                delivery.attribution = 'unmatched'
+                and attempt.id is null
+              )
+          ), queue as (
+            select * from attempt_issues
+            union all
+            select * from attribution_issues
+          )
+          select
+            "occurredAt",
+            "practiceName",
+            source,
+            outcome,
+            reason,
+            greatest(
+              0,
+              floor(extract(epoch from (now() - "occurredAt")) / 60)
+            )::int as "ageMinutes"
+          from queue
+          order by "occurredAt" asc, reason asc
+          limit ${input.limit}
+        `);
+
+        return {
+          cacheControl: "no-store" as const,
+          items: rowsFromExecute<{
+            occurredAt: Date;
+            practiceName: string;
+            source: "registration" | "authenticated_resend" | null;
+            outcome:
+              | "reserved"
+              | "accepted"
+              | "definite_failure"
+              | "outcome_unknown"
+              | null;
+            reason:
+              | "provider_outcome_missing"
+              | "provider_outcome_unknown"
+              | "provider_definite_failure"
+              | "delivery_confirmation_missing"
+              | "delivery_identity_conflict"
+              | "delivery_attribution_unmatched";
+            ageMinutes: number;
+          }>(result).map((row) => ({
+            ...row,
+            providerMessageHint: null,
+          })),
+        };
+      });
+    }),
 
   /** Cross-tenant operations overview: practices, plans, status, usage, MRR. */
   overview: platformAdminProcedure.query(async () =>

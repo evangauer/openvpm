@@ -84,6 +84,8 @@ const aLabResultEvent = randomUUID();
 const bLabResultEvent = randomUUID();
 const aAppSmsSendAttempt = randomUUID();
 const aAppSmsSendAttemptEvent = randomUUID();
+const aAuthEmailAttempt = randomUUID();
+const aAuthEmailDeliveryEvent = randomUUID();
 const aSmsDeliveryEvent = randomUUID();
 const bSmsDeliveryEvent = randomUUID();
 const unmatchedSmsDeliveryEvent = randomUUID();
@@ -118,6 +120,20 @@ try {
   await owner`insert into users (id, email, password_hash, name, role, practice_id) values
     (${aUser}, ${`rls-${aUser}@example.com`}, 'not-a-real-hash', 'RLS Admin A', 'admin', ${aId}),
     (${bUser}, ${`rls-${bUser}@example.com`}, 'not-a-real-hash', 'RLS Admin B', 'admin', ${bId})`;
+  await owner`insert into auth_email_attempts
+    (id, resolved_at, practice_id, user_id, source, idempotency_key,
+     provider_message_id, outcome)
+    values
+    (${aAuthEmailAttempt}, now(), ${aId}, ${aUser}, 'registration',
+      ${`rls-auth:${aAuthEmailAttempt}`}, ${`resend-${aAuthEmailAttempt}`},
+      'accepted')`;
+  await owner`insert into auth_email_delivery_events
+    (id, webhook_id, provider_message_id, attempt_id, event_type,
+     classification, attribution, occurred_at)
+    values
+    (${aAuthEmailDeliveryEvent}, ${`svix-${aAuthEmailDeliveryEvent}`},
+      ${`resend-${aAuthEmailAttempt}`}, ${aAuthEmailAttempt},
+      'email.delivered', 'delivered', 'attempt_tag', now())`;
   await owner`insert into sms_consent_events
     (id, practice_id, client_id, destination_e164, action, source, detail, actor_type, event_key)
     values
@@ -284,6 +300,39 @@ try {
     "tenant A sees only A's SMS consent events",
     aSmsConsentEvents.length === 1 &&
       aSmsConsentEvents[0]!.id === aSmsConsentEvent,
+  );
+
+  const hiddenAuthEmailAttempts = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id from auth_email_attempts where id = ${aAuthEmailAttempt}`;
+  });
+  check(
+    "tenant context cannot read system-only auth email attempts",
+    hiddenAuthEmailAttempts.length === 0,
+  );
+  const hiddenAuthEmailDelivery = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id from auth_email_delivery_events where id = ${aAuthEmailDeliveryEvent}`;
+  });
+  check(
+    "tenant context cannot read system-only auth email delivery evidence",
+    hiddenAuthEmailDelivery.length === 0,
+  );
+
+  let tenantAuthEmailInsertBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into auth_email_attempts
+        (practice_id, user_id, source, idempotency_key)
+        values (${aId}, ${aUser}, 'authenticated_resend', ${`forged:${randomUUID()}`})`;
+    });
+  } catch {
+    tenantAuthEmailInsertBlocked = true;
+  }
+  check(
+    "tenant context cannot forge auth email attempts",
+    tenantAuthEmailInsertBlocked,
   );
 
   let smsConsentUpdateBlocked = false;
@@ -805,7 +854,10 @@ try {
   } catch {
     crossTenantLabActorBlocked = true;
   }
-  check("cross-tenant lab evidence actor is blocked", crossTenantLabActorBlocked);
+  check(
+    "cross-tenant lab evidence actor is blocked",
+    crossTenantLabActorBlocked,
+  );
 
   let crossTenantLabAssigneeBlocked = false;
   try {
@@ -1182,6 +1234,40 @@ try {
     "system bypass can read conversion milestones",
     systemConversionRows.length === 1,
   );
+  const systemAuthEmailRows = await appTransaction(async (tx) => {
+    await tx`select set_config('app.rls_bypass', 'on', true)`;
+    return tx`select id from auth_email_attempts where id = ${aAuthEmailAttempt}`;
+  });
+  check(
+    "system bypass can read auth email attempts",
+    systemAuthEmailRows.length === 1,
+  );
+
+  let appCannotRewriteAuthEmailDelivery = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`update auth_email_delivery_events
+        set occurred_at = occurred_at where id = ${aAuthEmailDeliveryEvent}`;
+    });
+  } catch {
+    appCannotRewriteAuthEmailDelivery = true;
+  }
+  check(
+    "application role cannot rewrite auth email delivery evidence",
+    appCannotRewriteAuthEmailDelivery,
+  );
+  let ownerCannotRewriteAuthEmailDelivery = false;
+  try {
+    await owner`update auth_email_delivery_events
+      set occurred_at = occurred_at where id = ${aAuthEmailDeliveryEvent}`;
+  } catch {
+    ownerCannotRewriteAuthEmailDelivery = true;
+  }
+  check(
+    "database trigger keeps auth email delivery evidence immutable for the owner",
+    ownerCannotRewriteAuthEmailDelivery,
+  );
 
   let bypassCannotDeletePrescriptionHistory = false;
   try {
@@ -1263,6 +1349,8 @@ try {
   await owner.begin(async (tx) => {
     const cleanup = tx as unknown as typeof owner;
     await cleanup`select set_config('app.ledger_maintenance', 'on', true)`;
+    await cleanup`delete from auth_email_delivery_events where id = ${aAuthEmailDeliveryEvent}`;
+    await cleanup`delete from auth_email_attempts where id = ${aAuthEmailAttempt}`;
     await cleanup`delete from sms_delivery_event_history where id in (${aSmsDeliveryHistory}, ${bSmsDeliveryHistory}, ${bSmsDeliveryConflictHistory})`;
     await cleanup`delete from sms_delivery_events where id in (${aSmsDeliveryEvent}, ${bSmsDeliveryEvent}, ${unmatchedSmsDeliveryEvent})`;
     await cleanup`delete from lab_result_events where id in (${aLabResultEvent}, ${bLabResultEvent})`;

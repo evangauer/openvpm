@@ -17,11 +17,8 @@ import {
 import { createAuthToken, consumeAuthToken } from "@/lib/auth-tokens";
 import { PASSWORD_HASH_COST } from "@/lib/auth-hashing";
 import { authPasswordInput } from "@/lib/auth-password";
-import {
-  sendVerificationEmail,
-  sendPasswordResetEmail,
-  sendWelcomeEmail,
-} from "@/lib/email";
+import { sendPasswordResetEmail, sendWelcomeEmail } from "@/lib/email";
+import { sendTrackedVerificationEmail } from "@/lib/auth-email-delivery";
 import { appBaseUrl, exposeAuthLinksForPreview } from "@/lib/app-url";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
 import { createSubscriptionCheckoutSession } from "@/lib/stripe";
@@ -398,10 +395,14 @@ export const authRouter = createRouter({
             db: ctx.db,
           });
           verificationUrl = `${appBaseUrl()}/verify-email?token=${token}`;
-          const result = await sendVerificationEmail({
+          const result = await sendTrackedVerificationEmail({
+            practiceId: practice.id,
+            userId: user.id,
+            source: "registration",
             to: user.email,
             name: user.name,
             verifyUrl: verificationUrl,
+            db: ctx.db,
           });
           verificationEmailSent = result.success;
         } catch (err) {
@@ -509,10 +510,14 @@ export const authRouter = createRouter({
         type: "email_verify",
         db: ctx.db,
       });
-      const result = await sendVerificationEmail({
+      const result = await sendTrackedVerificationEmail({
+        practiceId: ctx.practiceId,
+        userId: user.id,
+        source: "authenticated_resend",
         to: user.email,
         name: user.name,
         verifyUrl: `${appBaseUrl()}/verify-email?token=${token}`,
+        db: ctx.db,
       });
       if (!result.success) {
         throw new Error(

@@ -36,6 +36,24 @@ type ResendEmailSendOptions = NonNullable<
   signal?: AbortSignal;
 };
 
+export type EmailProviderOutcome =
+  | "accepted"
+  | "definite_failure"
+  | "outcome_unknown";
+
+export interface EmailProviderEvidence {
+  success: boolean;
+  id?: string;
+  error?: string;
+  outcome: EmailProviderOutcome;
+  failureCode?:
+    | "provider_not_configured"
+    | "provider_rejected"
+    | "send_timeout"
+    | "provider_exception"
+    | "missing_provider_id";
+}
+
 function emailSendTimeoutMessage(): string {
   return `Email send timed out after ${EMAIL_SEND_TIMEOUT_MS}ms`;
 }
@@ -105,14 +123,21 @@ function ctaButton(label: string, url: string): string {
 // Core send function
 // ---------------------------------------------------------------------------
 
-export async function sendEmail(options: {
+interface EmailDispatchOptions {
   to: string;
   subject: string;
   html: string;
   from?: string;
   replyTo?: string;
   headers?: Record<string, string>;
-}): Promise<{ success: boolean; id?: string; error?: string }> {
+  tags?: Array<{ name: string; value: string }>;
+  idempotencyKey?: string;
+  redactRecipientInLogs?: boolean;
+}
+
+async function dispatchEmail(
+  options: EmailDispatchOptions,
+): Promise<EmailProviderEvidence> {
   const client = getResend();
   const from = defaultEmailFrom(options.from);
   const replyTo = nonBlankEmailValue(options.replyTo);
@@ -122,18 +147,30 @@ export async function sendEmail(options: {
       return {
         success: false,
         error: "Email provider is not configured for hosted sending.",
+        outcome: "definite_failure",
+        failureCode: "provider_not_configured",
       };
     }
 
     // Development fallback – log to console instead of sending
     console.log("──────────────────────────────────────────");
-    console.log("[Email] No RESEND_API_KEY configured – logging email to console");
-    console.log(`  To:      ${options.to}`);
+    console.log(
+      "[Email] No RESEND_API_KEY configured – logging email to console",
+    );
+    console.log(
+      `  To:      ${options.redactRecipientInLogs ? "[redacted auth recipient]" : options.to}`,
+    );
     console.log(`  From:    ${from}`);
     console.log(`  Subject: ${options.subject}`);
     console.log("  HTML:    (omitted – check server logs for full content)");
     console.log("──────────────────────────────────────────");
-    return { success: true, id: "dev-console" };
+    return {
+      success: true,
+      id: options.idempotencyKey
+        ? `dev-console:${options.idempotencyKey}`.slice(0, 128)
+        : "dev-console",
+      outcome: "accepted",
+    };
   }
 
   const controller = new AbortController();
@@ -143,37 +180,84 @@ export async function sendEmail(options: {
     const sendOptions: ResendEmailSendOptions = {
       signal: controller.signal,
     };
-    const { data, error } = await client.emails.send({
-      from,
-      to: options.to,
-      subject: options.subject,
-      html: options.html,
-      ...(replyTo ? { replyTo } : {}),
-      ...(options.headers ? { headers: options.headers } : {}),
-    }, sendOptions);
+    const { data, error } = await client.emails.send(
+      {
+        from,
+        to: options.to,
+        subject: options.subject,
+        html: options.html,
+        ...(replyTo ? { replyTo } : {}),
+        ...(options.headers ? { headers: options.headers } : {}),
+        ...(options.tags ? { tags: options.tags } : {}),
+      },
+      {
+        ...sendOptions,
+        ...(options.idempotencyKey
+          ? { idempotencyKey: options.idempotencyKey }
+          : {}),
+      },
+    );
 
     if (error) {
-      console.error("[Email] Resend error:", error);
+      console.error(
+        "[Email] Resend error:",
+        options.redactRecipientInLogs
+          ? "auth verification provider rejection"
+          : error,
+      );
+      const timedOut = controller.signal.aborted;
       return {
         success: false,
-        error: controller.signal.aborted
-          ? emailSendTimeoutMessage()
-          : error.message,
+        error: timedOut ? emailSendTimeoutMessage() : error.message,
+        outcome: timedOut ? "outcome_unknown" : "definite_failure",
+        failureCode: timedOut ? "send_timeout" : "provider_rejected",
       };
     }
 
-    return { success: true, id: data?.id };
+    if (!data?.id) {
+      return {
+        success: false,
+        error: "Email provider response did not include a message id.",
+        outcome: "outcome_unknown",
+        failureCode: "missing_provider_id",
+      };
+    }
+
+    return { success: true, id: data.id, outcome: "accepted" };
   } catch (err) {
     const message = controller.signal.aborted
       ? emailSendTimeoutMessage()
       : err instanceof Error
         ? err.message
         : "Unknown email error";
-    console.error("[Email] Exception:", message);
-    return { success: false, error: message };
+    console.error(
+      "[Email] Exception:",
+      options.redactRecipientInLogs
+        ? "auth verification provider exception"
+        : message,
+    );
+    return {
+      success: false,
+      error: message,
+      outcome: "outcome_unknown",
+      failureCode: controller.signal.aborted
+        ? "send_timeout"
+        : "provider_exception",
+    };
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export async function sendEmail(
+  options: EmailDispatchOptions,
+): Promise<{ success: boolean; id?: string; error?: string }> {
+  const { success, id, error } = await dispatchEmail(options);
+  return {
+    success,
+    ...(id ? { id } : {}),
+    ...(error ? { error } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -383,11 +467,13 @@ export async function sendClientPaymentReceiptEmail(data: {
 // Account: email verification + password reset (hosted auth)
 // ---------------------------------------------------------------------------
 
-export async function sendVerificationEmail(data: {
+interface VerificationEmailData {
   to: string;
   name: string;
   verifyUrl: string;
-}): Promise<{ success: boolean; id?: string; error?: string }> {
+}
+
+function verificationEmailContent(data: VerificationEmailData) {
   const body = `
     <p style="margin:0 0 16px;color:#111827;font-size:15px;line-height:1.6;">Hi ${data.name},</p>
     <p style="margin:0 0 8px;color:#111827;font-size:15px;line-height:1.6;">Welcome to OpenVPM! Your trial is already active. Please confirm your email address to secure your workspace and keep important account messages deliverable.</p>
@@ -395,12 +481,37 @@ export async function sendVerificationEmail(data: {
     <p style="margin:0;color:#6b7280;font-size:13px;line-height:1.5;">This link expires in 24 hours. If you didn't create an OpenVPM account, you can ignore this email.</p>
   `;
   const html = emailLayout("OpenVPM", body);
-  const result = await sendEmail({
+  return { subject: "Verify your OpenVPM email", html };
+}
+
+export async function sendVerificationEmail(
+  data: VerificationEmailData,
+): Promise<{ success: boolean; id?: string; error?: string }> {
+  const content = verificationEmailContent(data);
+  return sendEmail({
     to: data.to,
-    subject: "Verify your OpenVPM email",
-    html,
+    ...content,
   });
-  return result;
+}
+
+/** Provider-evidence variant used only by the durable auth-email dispatcher. */
+export async function sendVerificationEmailWithProviderEvidence(
+  data: VerificationEmailData & {
+    attemptId: string;
+    idempotencyKey: string;
+  },
+): Promise<EmailProviderEvidence> {
+  const content = verificationEmailContent(data);
+  return dispatchEmail({
+    to: data.to,
+    ...content,
+    idempotencyKey: data.idempotencyKey,
+    redactRecipientInLogs: true,
+    tags: [
+      { name: "openvpm_attempt_id", value: data.attemptId },
+      { name: "openvpm_email_kind", value: "auth_verification" },
+    ],
+  });
 }
 
 export async function sendPasswordResetEmail(data: {

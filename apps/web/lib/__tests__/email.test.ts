@@ -43,7 +43,9 @@ afterEach(() => {
 
 describe("sendEmail", () => {
   it("logs to console in self-hosted/dev mode without Resend", async () => {
-    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const consoleLog = vi
+      .spyOn(console, "log")
+      .mockImplementation(() => undefined);
     const { sendEmail } = await loadEmail();
 
     await expect(
@@ -51,11 +53,11 @@ describe("sendEmail", () => {
         to: "client@example.com",
         subject: "Reminder",
         html: "<p>Hello</p>",
-      })
+      }),
     ).resolves.toEqual({ success: true, id: "dev-console" });
 
     expect(consoleLog).toHaveBeenCalledWith(
-      "[Email] No RESEND_API_KEY configured – logging email to console"
+      "[Email] No RESEND_API_KEY configured – logging email to console",
     );
     expect(mocks.Resend).not.toHaveBeenCalled();
     consoleLog.mockRestore();
@@ -63,7 +65,9 @@ describe("sendEmail", () => {
 
   it("fails closed in hosted mode without Resend", async () => {
     mocks.billingEnforced.mockReturnValue(true);
-    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const consoleLog = vi
+      .spyOn(console, "log")
+      .mockImplementation(() => undefined);
     const { sendEmail } = await loadEmail();
 
     await expect(
@@ -71,7 +75,7 @@ describe("sendEmail", () => {
         to: "client@example.com",
         subject: "Reminder",
         html: "<p>Hello</p>",
-      })
+      }),
     ).resolves.toEqual({
       success: false,
       error: "Email provider is not configured for hosted sending.",
@@ -85,7 +89,9 @@ describe("sendEmail", () => {
   it("treats a blank Resend API key as missing in hosted mode", async () => {
     vi.stubEnv("RESEND_API_KEY", "   ");
     mocks.billingEnforced.mockReturnValue(true);
-    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const consoleLog = vi
+      .spyOn(console, "log")
+      .mockImplementation(() => undefined);
     const { sendEmail } = await loadEmail();
 
     await expect(
@@ -93,7 +99,7 @@ describe("sendEmail", () => {
         to: "client@example.com",
         subject: "Reminder",
         html: "<p>Hello</p>",
-      })
+      }),
     ).resolves.toEqual({
       success: false,
       error: "Email provider is not configured for hosted sending.",
@@ -107,7 +113,9 @@ describe("sendEmail", () => {
   it("keeps the console fallback available in demo mode", async () => {
     vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", " true ");
     mocks.billingEnforced.mockReturnValue(true);
-    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const consoleLog = vi
+      .spyOn(console, "log")
+      .mockImplementation(() => undefined);
     const { sendEmail } = await loadEmail();
 
     await expect(
@@ -115,7 +123,7 @@ describe("sendEmail", () => {
         to: "client@example.com",
         subject: "Reminder",
         html: "<p>Hello</p>",
-      })
+      }),
     ).resolves.toEqual({ success: true, id: "dev-console" });
 
     expect(consoleLog).toHaveBeenCalled();
@@ -134,7 +142,7 @@ describe("sendEmail", () => {
         to: "client@example.com",
         subject: "Reminder",
         html: "<p>Hello</p>",
-      })
+      }),
     ).resolves.toEqual({ success: true, id: "email-1" });
 
     expect(mocks.Resend).toHaveBeenCalledWith("re_test");
@@ -146,7 +154,7 @@ describe("sendEmail", () => {
       }),
       expect.objectContaining({
         signal: expect.any(AbortSignal),
-      })
+      }),
     );
     expect(EMAIL_SEND_TIMEOUT_MS).toBe(10_000);
   });
@@ -164,7 +172,7 @@ describe("sendEmail", () => {
         replyTo: " ",
         subject: "Reminder",
         html: "<p>Hello</p>",
-      })
+      }),
     ).resolves.toEqual({ success: true, id: "email-1" });
 
     const [payload] = mocks.resendSend.mock.calls[0] ?? [];
@@ -196,7 +204,7 @@ describe("sendEmail", () => {
         appointmentDate: "July 2",
         appointmentTime: "9:00 AM",
         practiceName: "Neighborhood Veterinary",
-      })
+      }),
     ).resolves.toMatchObject({ success: true, id: "email-appt-1" });
 
     await expect(
@@ -207,7 +215,7 @@ describe("sendEmail", () => {
         vaccineName: "Rabies",
         dueDate: "July 2",
         practiceName: "Neighborhood Veterinary",
-      })
+      }),
     ).resolves.toMatchObject({ success: true, id: "email-vax-1" });
 
     await expect(
@@ -216,7 +224,7 @@ describe("sendEmail", () => {
         clientName: "Ada Lovelace",
         invoiceTotal: "$123.45",
         practiceName: "Neighborhood Veterinary",
-      })
+      }),
     ).resolves.toMatchObject({ success: true, id: "email-invoice-1" });
   });
 
@@ -230,7 +238,7 @@ describe("sendEmail", () => {
         to: "admin@example.com",
         name: "Dr Admin",
         verifyUrl: "https://app.openvpm.com/verify-email?token=safe-token",
-      })
+      }),
     ).resolves.toEqual({ success: true, id: "email-verify-1" });
 
     const [payload] = mocks.resendSend.mock.calls[0] ?? [];
@@ -240,7 +248,128 @@ describe("sendEmail", () => {
     });
     expect(payload.html).toContain("Your trial is already active.");
     expect(payload.html).toContain("Confirm email");
-    expect(payload.html).not.toMatch(/activate your account|start your free trial/i);
+    expect(payload.html).not.toMatch(
+      /activate your account|start your free trial/i,
+    );
+  });
+
+  it("attaches a durable attempt tag and Resend idempotency key to tracked verification", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-verify-1" } });
+    const { sendVerificationEmailWithProviderEvidence } = await loadEmail();
+    const attemptId = "00000000-0000-4000-8000-000000000001";
+
+    await expect(
+      sendVerificationEmailWithProviderEvidence({
+        to: "admin@example.com",
+        name: "Dr Admin",
+        verifyUrl: "https://app.openvpm.com/verify-email?token=safe-token",
+        attemptId,
+        idempotencyKey: `auth-email:${attemptId}`,
+      }),
+    ).resolves.toEqual({
+      success: true,
+      id: "email-verify-1",
+      outcome: "accepted",
+    });
+
+    expect(mocks.resendSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tags: [
+          { name: "openvpm_attempt_id", value: attemptId },
+          { name: "openvpm_email_kind", value: "auth_verification" },
+        ],
+      }),
+      expect.objectContaining({ idempotencyKey: `auth-email:${attemptId}` }),
+    );
+  });
+
+  it("redacts the auth recipient from development fallback logs", async () => {
+    const consoleLog = vi
+      .spyOn(console, "log")
+      .mockImplementation(() => undefined);
+    const { sendVerificationEmailWithProviderEvidence } = await loadEmail();
+
+    await expect(
+      sendVerificationEmailWithProviderEvidence({
+        to: "private-owner@example.com",
+        name: "Dr Admin",
+        verifyUrl: "https://app.openvpm.com/verify-email?token=safe-token",
+        attemptId: "00000000-0000-4000-8000-000000000001",
+        idempotencyKey: "auth-email:00000000-0000-4000-8000-000000000001",
+      }),
+    ).resolves.toMatchObject({
+      success: true,
+      id: "dev-console:auth-email:00000000-0000-4000-8000-000000000001",
+      outcome: "accepted",
+    });
+
+    expect(consoleLog).toHaveBeenCalledWith(
+      "  To:      [redacted auth recipient]",
+    );
+    expect(JSON.stringify(consoleLog.mock.calls)).not.toContain(
+      "private-owner@example.com",
+    );
+    consoleLog.mockRestore();
+  });
+
+  it("redacts auth verification provider rejection detail from logs", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    mocks.resendSend.mockResolvedValue({
+      data: null,
+      error: {
+        message: "Rejected private-owner@example.com",
+        name: "validation_error",
+        statusCode: 422,
+      },
+    });
+    const { sendVerificationEmailWithProviderEvidence } = await loadEmail();
+
+    await expect(
+      sendVerificationEmailWithProviderEvidence({
+        to: "private-owner@example.com",
+        name: "Dr Admin",
+        verifyUrl: "https://app.openvpm.com/verify-email?token=safe-token",
+        attemptId: "00000000-0000-4000-8000-000000000001",
+        idempotencyKey: "auth-email:00000000-0000-4000-8000-000000000001",
+      }),
+    ).resolves.toMatchObject({
+      success: false,
+      outcome: "definite_failure",
+      failureCode: "provider_rejected",
+    });
+
+    expect(consoleError).toHaveBeenCalledWith(
+      "[Email] Resend error:",
+      "auth verification provider rejection",
+    );
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain(
+      "private-owner@example.com",
+    );
+    consoleError.mockRestore();
+  });
+
+  it("classifies a missing provider id as an unknown outcome", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    mocks.resendSend.mockResolvedValue({ data: null, error: null });
+    const { sendVerificationEmailWithProviderEvidence } = await loadEmail();
+
+    await expect(
+      sendVerificationEmailWithProviderEvidence({
+        to: "admin@example.com",
+        name: "Dr Admin",
+        verifyUrl: "https://app.openvpm.com/verify-email?token=safe-token",
+        attemptId: "00000000-0000-4000-8000-000000000001",
+        idempotencyKey: "auth-email:00000000-0000-4000-8000-000000000001",
+      }),
+    ).resolves.toMatchObject({
+      success: false,
+      outcome: "outcome_unknown",
+      failureCode: "missing_provider_id",
+    });
   });
 
   it("aborts hung Resend sends and returns a timeout error", async () => {
@@ -251,22 +380,20 @@ describe("sendEmail", () => {
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
     mocks.resendSend.mockImplementation(
-      (
-        _payload: unknown,
-        options?: { signal?: AbortSignal }
-      ) =>
+      (_payload: unknown, options?: { signal?: AbortSignal }) =>
         new Promise((resolve) => {
           options?.signal?.addEventListener("abort", () => {
             resolve({
               data: null,
               error: {
-                message: "Unable to fetch data. The request could not be resolved.",
+                message:
+                  "Unable to fetch data. The request could not be resolved.",
                 statusCode: null,
                 name: "application_error",
               },
             });
           });
-        })
+        }),
     );
     const { EMAIL_SEND_TIMEOUT_MS, sendEmail } = await loadEmail();
 
@@ -283,7 +410,7 @@ describe("sendEmail", () => {
     });
     expect(consoleError).toHaveBeenCalledWith(
       "[Email] Resend error:",
-      expect.objectContaining({ name: "application_error" })
+      expect.objectContaining({ name: "application_error" }),
     );
   });
 });
@@ -337,7 +464,7 @@ describe("lifecycle email branding", () => {
         to: "owner@example.com",
         practiceName: "Neighborhood Veterinary",
         trialDays: 14,
-      })
+      }),
     ).resolves.toEqual({ success: true, id: "email-1" });
 
     const [payload] = mocks.resendSend.mock.calls[0] ?? [];
@@ -345,7 +472,7 @@ describe("lifecycle email branding", () => {
       expect.objectContaining({
         replyTo: "support@example.com",
         to: "owner@example.com",
-      })
+      }),
     );
   });
 
@@ -361,7 +488,7 @@ describe("lifecycle email branding", () => {
         practiceName: "Neighborhood Veterinary",
         amount: "$79.00",
         periodLabel: "July 2026",
-      })
+      }),
     ).resolves.toEqual({ success: true, id: "email-1" });
 
     const [payload] = mocks.resendSend.mock.calls[0] ?? [];
@@ -369,7 +496,7 @@ describe("lifecycle email branding", () => {
       expect.objectContaining({
         replyTo: "support@openvpm.com",
         to: "owner@example.com",
-      })
+      }),
     );
   });
 });

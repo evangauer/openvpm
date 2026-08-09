@@ -281,6 +281,8 @@ describe("summarizePracticeExport", () => {
     expect(sections).not.toContain("practiceConversionMilestones");
     expect(sections).not.toContain("rateLimitBuckets");
     expect(sections).not.toContain("messagingRegistrations");
+    expect(sections).not.toContain("authEmailAttempts");
+    expect(sections).not.toContain("authEmailDeliveryEvents");
     expect(PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.usageRecords).toContain("billing");
     expect(
       PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.practiceConversionMilestones,
@@ -293,6 +295,12 @@ describe("summarizePracticeExport", () => {
     );
     expect(PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.messagingRegistrations).toContain(
       "operational database disaster recovery",
+    );
+    expect(PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.authEmailAttempts).toContain(
+      "provider identity",
+    );
+    expect(PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.authEmailDeliveryEvents).toContain(
+      "immutable",
     );
   });
 
@@ -1761,9 +1769,14 @@ describe("restorePracticeData", () => {
       referenceRangeHigh: "18.000",
       actorName: "Clinician",
     });
-    expect(rows.filter((candidate) =>
-      typeof candidate.id === "string" && candidate.id.startsWith("lab-") && candidate.id.endsWith("event"),
-    )).toHaveLength(5);
+    expect(
+      rows.filter(
+        (candidate) =>
+          typeof candidate.id === "string" &&
+          candidate.id.startsWith("lab-") &&
+          candidate.id.endsWith("event"),
+      ),
+    ).toHaveLength(5);
     expect(row("lab-created-event")).toMatchObject({
       statusAfter: "pending",
       resultValue: null,

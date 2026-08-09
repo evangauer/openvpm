@@ -11,6 +11,8 @@ const TABLES = [
   "rate_limit_buckets",
   "stripe_events",
   "practice_conversion_milestones",
+  "auth_email_delivery_events",
+  "auth_email_attempts",
   "usage_records",
   "controlled_substance_log",
   "payments",

@@ -22,6 +22,7 @@ export * from "./insurance";
 export * from "./wellness";
 export * from "./usage";
 export * from "./auth-tokens";
+export * from "./auth-email-observability";
 export * from "./messaging";
 export * from "./sms-consent-events";
 export * from "./sms-send-attempts";
