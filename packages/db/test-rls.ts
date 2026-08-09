@@ -806,7 +806,11 @@ try {
     await appTransaction(async (tx) => {
       await tx`select set_config('app.current_practice_id', ${aId}, true)`;
       await tx`select public.restore_soap_note_addendum(
-        ${randomUUID()}, now() - interval '30 minutes', ${aId}, ${aSoapSource}, ${aUser},
+        ${randomUUID()}, (
+          select created_at + interval '1 millisecond'
+          from clinical_record_corrections
+          where id = ${aSoapCorrection}
+        ), ${aId}, ${aSoapSource}, ${aUser},
         'RLS Admin A', ${postCorrectionContent}, ${randomUUID()},
         ${soapAddendumPayloadHash(aSoapSource, aUser, postCorrectionContent)})`;
     });
@@ -2444,7 +2448,7 @@ try {
     await cleanup`delete from lab_result_events where id in (${aLabResultEvent}, ${bLabResultEvent})`;
     await cleanup`delete from lab_result_replacements where id in (${aLabReplacement}, ${bLabReplacement})`;
     await cleanup`delete from soap_note_replacements where id in (${aSoapReplacementEvidence}, ${bSoapReplacementEvidence}, ${aHistoricalSoapReplacementEvidence})`;
-    await cleanup`delete from soap_note_addenda where id in (${aSoapAddendum}, ${aSoapRestoreAddendum}, ${aSoapDeletedRestoreAddendum})`;
+    await cleanup`delete from soap_note_addenda where practice_id in (${aId}, ${bId})`;
     await cleanup`delete from clinical_record_corrections where id in (${aLabCorrection}, ${bLabCorrection}, ${aSoapCorrection}, ${bSoapCorrection}, ${aHistoricalSoapSourceCorrection}, ${aHistoricalSoapReplacementCorrection})`;
     await cleanup`delete from soap_notes where id in (${aSoapSource}, ${aSoapReplacement}, ${bSoapSource}, ${bSoapReplacement}, ${aSoapDeletedSource}, ${aSoapDraft}, ${aHistoricalSoapSource}, ${aHistoricalSoapReplacement})`;
     await cleanup`delete from lab_results where id in (${aLabResult}, ${bLabResult}, ${aReplacementLabResult}, ${bReplacementLabResult})`;
