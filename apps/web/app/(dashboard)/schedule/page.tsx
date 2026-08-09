@@ -1694,9 +1694,15 @@ function BookingForm({
     roomsQuery.isLoading || Boolean(roomsQuery.error) || roomsMissing;
 
   const createAppointment = trpc.appointments.create.useMutation({
-    onSuccess: () => {
-      toast.success("Appointment created");
-      utils.appointments.list.invalidate();
+    onSuccess: (appointment) => {
+      toast.success("Appointment created", {
+        action: {
+          label: "Open visit",
+          onClick: () =>
+            window.location.assign(`/encounters/${appointment.id}`),
+        },
+      });
+      void utils.appointments.list.invalidate();
       onClose();
     },
     onError: (err) => {

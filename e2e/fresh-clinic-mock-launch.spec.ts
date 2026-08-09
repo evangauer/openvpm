@@ -571,6 +571,11 @@ test.describe.serial("Fresh clinic mock launch", () => {
       .selectOption({ index: 1 }, { timeout: 5_000 })
       .catch(() => undefined);
     await page.getByRole("button", { name: /^Save$/ }).click();
+    await page.getByRole("button", { name: "Open visit" }).click();
+    await page.waitForURL("**/encounters/**", { timeout: 20_000 });
+    await expect(
+      page.getByRole("button", { name: "Check in" })
+    ).toBeVisible();
     // Hosted signup seeds demo appointments, so assert on OUR patient's row.
     const appointmentRow = await waitUntil(
       async () => {

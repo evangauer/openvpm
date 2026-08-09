@@ -19,6 +19,17 @@ import {
 } from "../scheduling/appointment-policy";
 
 describe("schedule appointment form UX", () => {
+  it("offers a direct handoff from a saved appointment into the visit workflow", () => {
+    const source = readFileSync("app/(dashboard)/schedule/page.tsx", "utf8");
+
+    expect(source).toContain("onSuccess: (appointment) => {");
+    expect(source).toContain('toast.success("Appointment created", {');
+    expect(source).toContain('label: "Open visit"');
+    expect(source).toContain(
+      "window.location.assign(`/encounters/${appointment.id}`)",
+    );
+  });
+
   it("bounds New Appointment inputs before creating appointments", () => {
     const source = readFileSync("app/(dashboard)/schedule/page.tsx", "utf8");
 
