@@ -8,6 +8,7 @@ export * from "./clinical";
 export * from "./lab-result-events";
 export * from "./clinical-corrections";
 export * from "./lab-result-replacements";
+export * from "./soap-note-replacements";
 export * from "./prescriptions";
 export * from "./prescription-events";
 export * from "./billing";

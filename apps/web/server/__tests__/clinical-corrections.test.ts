@@ -23,6 +23,7 @@ const PATIENT_ID = "00000000-0000-0000-0000-000000000002";
 const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000003";
 const RECORD_ID = "00000000-0000-0000-0000-000000000004";
 const CORRECTION_ID = "00000000-0000-0000-0000-000000000005";
+const OPERATION_ID = "00000000-0000-4000-8000-000000000006";
 
 function context(db: Record<string, unknown>, role = "veterinarian") {
   return {
@@ -109,6 +110,15 @@ describe("append-only clinical corrections", () => {
           }),
       ).rejects.toMatchObject({ code: "FORBIDDEN" });
       await expect(
+        recordsRouter.createCaller(context(db, role)).replaceSoapNote({
+          patientId: PATIENT_ID,
+          sourceNoteId: RECORD_ID,
+          operationId: OPERATION_ID,
+          reason: "Signed on the wrong encounter.",
+          subjective: "Corrected history.",
+        }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(
         vitalsRouter.createCaller(context(db, role)).markEnteredInError({
           patientId: PATIENT_ID,
           recordId: RECORD_ID,
@@ -117,6 +127,20 @@ describe("append-only clinical corrections", () => {
       ).rejects.toMatchObject({ code: "FORBIDDEN" });
     }
 
+    expect(select).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("rejects an empty replacement SOAP before touching the database", async () => {
+    const { db, select, insertValues } = createDb({});
+    await expect(
+      recordsRouter.createCaller(context(db)).replaceSoapNote({
+        patientId: PATIENT_ID,
+        sourceNoteId: RECORD_ID,
+        operationId: OPERATION_ID,
+        reason: "Signed on the wrong encounter.",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(select).not.toHaveBeenCalled();
     expect(insertValues).not.toHaveBeenCalled();
   });
@@ -250,6 +274,7 @@ describe("append-only clinical corrections", () => {
       id: CORRECTION_ID,
       practiceId: PRACTICE_ID,
       soapNoteId: RECORD_ID,
+      reason: "Duplicate request after a network retry.",
     };
     const { db, select } = createDb({
       selectResults: [
@@ -268,6 +293,31 @@ describe("append-only clinical corrections", () => {
       }),
     ).resolves.toEqual(existing);
     expect(select).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not silently replace a permanent SOAP correction reason", async () => {
+    const { db } = createDb({
+      selectResults: [
+        [{ id: RECORD_ID, patientId: PATIENT_ID, appointmentId: null }],
+        [{ id: RECORD_ID, patientId: PATIENT_ID, appointmentId: null }],
+        [
+          {
+            id: CORRECTION_ID,
+            practiceId: PRACTICE_ID,
+            soapNoteId: RECORD_ID,
+            reason: "Original permanent reason.",
+          },
+        ],
+      ],
+      insertResults: [[]],
+    });
+    await expect(
+      recordsRouter.createCaller(context(db)).markSoapNoteEnteredInError({
+        patientId: PATIENT_ID,
+        recordId: RECORD_ID,
+        reason: "A different retry reason.",
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
   });
 
   it("restricts vaccination correction to an administrator or veterinarian", async () => {

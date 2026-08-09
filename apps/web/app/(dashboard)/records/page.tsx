@@ -602,6 +602,7 @@ function RecordsPageContent() {
     searchParams.get("new") === "1";
   const requestedAmendLabResultId = searchParams.get("amendLabResultId");
   const appliedVisitLink = useRef(false);
+  const appliedSoapHash = useRef<string | null>(null);
   const appliedLabAmendLink = useRef<string | null>(null);
   const prescriptionOperationId = useRef<string | null>(null);
   const labResultCreationOperationId = useRef<string | null>(null);
@@ -728,6 +729,26 @@ function RecordsPageContent() {
   );
   const soapNotesMissing =
     Boolean(patientId) && !isLoadingSoapNotes && !soapNotesError && !soapNotes;
+  useEffect(() => {
+    if (!soapNotes || typeof window === "undefined") return;
+    const match = window.location.hash.match(/^#soap-note-(.+)$/);
+    const noteId = match?.[1];
+    if (
+      !noteId ||
+      appliedSoapHash.current === noteId ||
+      !soapNotes.some((note) => note.id === noteId)
+    ) {
+      return;
+    }
+    appliedSoapHash.current = noteId;
+    setActiveTab("soap");
+    setExpandedNoteId(noteId);
+    window.requestAnimationFrame(() =>
+      document
+        .getElementById(`soap-note-${noteId}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" }),
+    );
+  }, [soapNotes]);
   const correctSoap = trpc.records.markSoapNoteEnteredInError.useMutation({
     onSuccess: async () => {
       toast.success("SOAP note retained and marked entered in error");
@@ -1363,9 +1384,31 @@ function RecordsPageContent() {
                   <div className="space-y-3">
                         {soapNotes.map((note) => {
                           const isExpanded = expandedNoteId === note.id;
+                          const hasOtherCurrentAppointmentSoap = Boolean(
+                            note.appointmentId &&
+                            soapNotes.some(
+                              (candidate) =>
+                                candidate.id !== note.id &&
+                                candidate.appointmentId ===
+                                  note.appointmentId &&
+                                candidate.status === "finalized" &&
+                                !candidate.correctionId,
+                            ),
+                          );
+                          const hasAppointmentSoapDraft = Boolean(
+                            note.appointmentId &&
+                              soapNotes.some(
+                                (candidate) =>
+                                  candidate.id !== note.id &&
+                                  candidate.appointmentId ===
+                                    note.appointmentId &&
+                                  candidate.status === "draft",
+                              ),
+                          );
                           return (
                             <div
                               key={note.id}
+                              id={`soap-note-${note.id}`}
                               className={cn(
                                 "rounded-lg border border-border bg-card",
                                 note.correctionId &&
@@ -1455,6 +1498,19 @@ function RecordsPageContent() {
                                     >
                                       Resume draft
                                     </a>
+                                  ) : null}
+                                  {note.replacesSoapNoteId ? (
+                                    <div className="rounded-md border border-primary/30 bg-primary/5 p-3 text-sm">
+                                      <p className="font-medium text-primary">
+                                        Current replacement SOAP
+                                      </p>
+                                      <a
+                                        href={`#soap-note-${note.replacesSoapNoteId}`}
+                                        className="mt-1 inline-flex text-xs font-medium text-primary hover:underline"
+                                      >
+                                        View retained original
+                                      </a>
+                                    </div>
                                   ) : null}
                                   <div>
                                     <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">
@@ -1592,35 +1648,81 @@ function RecordsPageContent() {
                                     )
                                   ) : null}
                                   {note.status === "finalized" ? (
-                                    <ClinicalCorrectionControl
-                                      timeZone={recordsTimeZone}
-                                      correction={
-                                        note.correctionId &&
-                                        note.correctionReason &&
-                                        note.correctedAt
-                                          ? {
-                                              id: note.correctionId,
-                                              reason: note.correctionReason,
-                                              correctedAt: note.correctedAt,
-                                              correctedByName:
-                                                note.correctedByName,
-                                            }
-                                          : null
-                                      }
-                                      canCorrect={canCorrectClinicalRecords}
-                                      isPending={
-                                        correctSoap.isPending &&
-                                        correctSoap.variables?.recordId ===
-                                          note.id
-                                      }
-                                      onCorrect={(reason) =>
-                                        correctSoap.mutateAsync({
-                                          patientId,
-                                          recordId: note.id,
-                                          reason,
-                                        })
-                                      }
-                                    />
+                                    <>
+                                      <ClinicalCorrectionControl
+                                        timeZone={recordsTimeZone}
+                                        correction={
+                                          note.correctionId &&
+                                          note.correctionReason &&
+                                          note.correctedAt
+                                            ? {
+                                                id: note.correctionId,
+                                                reason: note.correctionReason,
+                                                correctedAt: note.correctedAt,
+                                                correctedByName:
+                                                  note.correctedByName,
+                                              }
+                                            : null
+                                        }
+                                        triggerLabel="Void without replacement"
+                                        description="The original stays in permanent chart history but leaves current clinical summaries immediately. If its content needs correction, cancel and use Replace finalized SOAP. Use void alone only when no replacement belongs on this encounter; closeout will require a documented reason."
+                                        canCorrect={canCorrectClinicalRecords}
+                                        isPending={
+                                          correctSoap.isPending &&
+                                          correctSoap.variables?.recordId ===
+                                            note.id
+                                        }
+                                        onCorrect={(reason) =>
+                                          correctSoap.mutateAsync({
+                                            patientId,
+                                            recordId: note.id,
+                                            reason,
+                                          })
+                                        }
+                                      />
+                                      {note.replacementSoapNoteId ? (
+                                        <div className="mt-3 flex justify-end">
+                                          <a
+                                            href={`#soap-note-${note.replacementSoapNoteId}`}
+                                            className="text-sm font-medium text-primary hover:underline"
+                                          >
+                                            View signed replacement
+                                          </a>
+                                        </div>
+                                      ) : canCorrectClinicalRecords &&
+                                        (!note.correctionId ||
+                                          (!hasOtherCurrentAppointmentSoap &&
+                                            !hasAppointmentSoapDraft)) ? (
+                                        <div className="mt-3 flex justify-end">
+                                          <Button asChild size="sm">
+                                            <Link
+                                              href={`/records/replace-soap/${encodeURIComponent(patientId)}?sourceNoteId=${encodeURIComponent(note.id)}&return=records`}
+                                            >
+                                              {note.correctionId
+                                                ? "Create missing replacement"
+                                                : "Replace finalized SOAP"}
+                                            </Link>
+                                          </Button>
+                                        </div>
+                                      ) : hasAppointmentSoapDraft &&
+                                        note.appointmentId ? (
+                                        <div className="mt-3 flex justify-end">
+                                          <Button asChild size="sm" variant="outline">
+                                            <Link
+                                              href={`/records/new-soap/${encodeURIComponent(patientId)}?appointmentId=${encodeURIComponent(note.appointmentId)}`}
+                                            >
+                                              Review encounter SOAP draft
+                                            </Link>
+                                          </Button>
+                                        </div>
+                                      ) : note.correctionId &&
+                                        hasOtherCurrentAppointmentSoap ? (
+                                        <p className="mt-3 text-right text-xs text-muted-foreground">
+                                          This encounter already has a current
+                                          finalized SOAP.
+                                        </p>
+                                      ) : null}
+                                    </>
                                   ) : null}
                                 </div>
                               )}

@@ -1114,9 +1114,9 @@ describe("committed Drizzle migrations", () => {
     expect(addendumGuard).toContain("NEW.created_at < source_finalized_at");
     expect(addendumGuard).toContain("NEW.created_at > pg_catalog.now()");
     expect(addendumGuard).toContain("pg_catalog.sha256");
-    expect(addendumGuard.indexOf("SOAP addendum payload hash is invalid.")).toBeLessThan(
-      addendumGuard.indexOf("app.ledger_maintenance"),
-    );
+    expect(
+      addendumGuard.indexOf("SOAP addendum payload hash is invalid."),
+    ).toBeLessThan(addendumGuard.indexOf("app.ledger_maintenance"));
     const restoreFunction = sql.slice(
       sql.indexOf("CREATE OR REPLACE FUNCTION restore_soap_note_addendum"),
       sql.indexOf("REVOKE ALL ON FUNCTION restore_soap_note_addendum"),
@@ -1127,9 +1127,7 @@ describe("committed Drizzle migrations", () => {
     expect(restoreFunction).not.toContain("app.rls_bypass");
     expect(restoreFunction).toContain("p_created_at < source_finalized_at");
     expect(restoreFunction).toContain("p_created_at > pg_catalog.now()");
-    expect(restoreFunction).toContain(
-      "p_created_at > correction_created_at",
-    );
+    expect(restoreFunction).toContain("p_created_at > correction_created_at");
     expect(restoreFunction).toContain("pg_catalog.sha256");
     expect(restoreFunction).toContain(
       "SOAP addendum restore payload hash is invalid.",
@@ -1165,12 +1163,152 @@ describe("committed Drizzle migrations", () => {
       "WHEN pg_catalog.jsonb_typeof(practice.settings #> '{demoData,soapNoteIds}') = 'array'",
     );
     expect(
-      sql.match(
-        /CROSS JOIN LATERAL pg_catalog\.jsonb_array_elements_text\(/g,
-      ),
+      sql.match(/CROSS JOIN LATERAL pg_catalog\.jsonb_array_elements_text\(/g),
     ).toHaveLength(1);
     expect(sql).not.toContain(
       "jsonb_array_elements_text(\n\t\tCROSS JOIN LATERAL",
+    );
+  });
+
+  it("creates exact, immutable SOAP replacement lineage", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries?: Array<{ tag?: string }> };
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0064_rainy_spacker_dave",
+    );
+
+    const sql = readRepoFile("packages/db/drizzle/0064_rainy_spacker_dave.sql");
+    const correctionSourceUniqueAt = sql.indexOf(
+      'CREATE UNIQUE INDEX "clinical_record_corrections_practice_record_soap_source_uq"',
+    );
+    const exactCorrectionFkAt = sql.indexOf(
+      'ADD CONSTRAINT "soap_note_replacements_correction_source_tenant_fk"',
+    );
+    expect(correctionSourceUniqueAt).toBeGreaterThan(0);
+    expect(exactCorrectionFkAt).toBeGreaterThan(0);
+    expect(exactCorrectionFkAt).toBeGreaterThan(correctionSourceUniqueAt);
+    expect(sql).toContain('CREATE TABLE "soap_note_replacements"');
+    expect(sql).toContain(
+      'CREATE UNIQUE INDEX "soap_note_replacements_source_uq"',
+    );
+    expect(sql).toContain(
+      'CREATE UNIQUE INDEX "soap_note_replacements_replacement_uq"',
+    );
+    expect(sql).toContain(
+      'CREATE UNIQUE INDEX "soap_note_replacements_operation_uq"',
+    );
+    expect(sql).toContain(
+      '"soap_note_replacements"."actor_name" = btrim("soap_note_replacements"."actor_name")',
+    );
+    expect(sql).toContain(
+      "pg_catalog.hashtextextended('soap-note-replacement-graph:' || NEW.practice_id::text, 0)",
+    );
+    expect(sql).toContain("WITH RECURSIVE descendants(id) AS");
+    expect(sql).toContain(
+      "SOAP note replacement lineage cannot contain a cycle.",
+    );
+    expect(sql).toContain("source.status = 'finalized'");
+    expect(sql).toContain("replacement.status = 'finalized'");
+    expect(sql).toContain(
+      "replacement.appointment_id IS NOT DISTINCT FROM source.appointment_id",
+    );
+    expect(sql).toContain("replacement.patient_id = source.patient_id");
+    expect(sql).toContain("replacement.finalized_by = NEW.actor_id");
+    expect(sql).toContain("source.finalized_at <= correction.created_at");
+    expect(sql).toContain("correction.created_at <= replacement.finalized_at");
+    expect(sql).toContain("replacement_correction.created_at < NEW.created_at");
+    const validationTrigger = sql.slice(
+      sql.indexOf(
+        "CREATE OR REPLACE FUNCTION validate_soap_note_replacement_insert",
+      ),
+      sql.indexOf("CREATE TRIGGER soap_note_replacements_validate"),
+    );
+    expect(validationTrigger).toContain("pg_catalog.sha256");
+    expect(validationTrigger).toContain("'{\"patientId\":'");
+    expect(validationTrigger).toContain("',\"sourceNoteId\":'");
+    expect(validationTrigger).toContain("',\"actorId\":'");
+    expect(validationTrigger).toContain("',\"reason\":'");
+    expect(validationTrigger).toContain("',\"subjective\":'");
+    expect(validationTrigger).toContain("',\"objective\":'");
+    expect(validationTrigger).toContain("',\"assessment\":'");
+    expect(validationTrigger).toContain("',\"plan\":'");
+    expect(validationTrigger).toContain(
+      "SOAP replacement payload hash is invalid.",
+    );
+    expect(validationTrigger).toContain(
+      "coalesce(current_setting('app.soap_replacement_restore', true), '') = 'on'",
+    );
+    expect(validationTrigger).toContain("current_user = (");
+    expect(validationTrigger).toContain("NEW.created_at <= source.deleted_at");
+    expect(validationTrigger).toContain(
+      "NEW.created_at <= replacement.deleted_at",
+    );
+    const restoreFunction = sql.slice(
+      sql.indexOf("CREATE OR REPLACE FUNCTION restore_soap_note_replacement"),
+      sql.indexOf("REVOKE ALL ON FUNCTION restore_soap_note_replacement"),
+    );
+    expect(restoreFunction).toContain("SECURITY DEFINER");
+    expect(restoreFunction).toContain("SET search_path = ''");
+    expect(restoreFunction).toContain(
+      "p_practice_id IS DISTINCT FROM nullif(current_setting('app.current_practice_id', true), '')::uuid",
+    );
+    expect(restoreFunction).not.toContain("app.rls_bypass");
+    expect(restoreFunction).toContain(
+      "pg_catalog.set_config('app.soap_replacement_restore', 'on', true)",
+    );
+    expect(restoreFunction).toContain(
+      "ON CONFLICT (practice_id, operation_id) DO NOTHING",
+    );
+    for (const replayField of [
+      "id",
+      "created_at",
+      "correction_id",
+      "source_soap_note_id",
+      "replacement_soap_note_id",
+      "actor_id",
+      "actor_name",
+      "operation_payload_hash",
+    ]) {
+      expect(restoreFunction).toContain(
+        `existing_replacement.${replayField} IS DISTINCT FROM`,
+      );
+    }
+    expect(sql).toContain(
+      "REVOKE ALL ON FUNCTION restore_soap_note_replacement(uuid,timestamptz,uuid,uuid,uuid,uuid,uuid,text,uuid,text) FROM PUBLIC",
+    );
+    expect(sql).toContain(
+      "GRANT EXECUTE ON FUNCTION restore_soap_note_replacement(uuid,timestamptz,uuid,uuid,uuid,uuid,uuid,text,uuid,text) TO openpims_app",
+    );
+    expect(sql).toContain("SOAP note replacement evidence is append-only");
+    expect(sql).toContain("current_setting('app.ledger_maintenance', true)");
+    expect(sql).toContain("current_user = (");
+    expect(sql).toContain(
+      "ALTER TABLE soap_note_replacements ENABLE ROW LEVEL SECURITY",
+    );
+    expect(sql).toContain(
+      "GRANT SELECT, INSERT ON soap_note_replacements TO openpims_app",
+    );
+    expect(sql).toContain(
+      "REVOKE ALL ON soap_note_replacements FROM authenticated",
+    );
+
+    const reset = readRepoFile("packages/db/reset.ts");
+    expect(reset).toContain('"soap_note_replacements"');
+    expect(reset.indexOf('"soap_note_replacements"')).toBeLessThan(
+      reset.indexOf('"clinical_record_corrections"'),
+    );
+
+    const rls = readRepoFile("packages/db/rls/enable-rls.sql");
+    expect(rls).toContain("'soap_note_replacements'");
+    expect(rls).toContain(
+      "GRANT SELECT, INSERT ON soap_note_replacements TO openpims_app",
+    );
+    expect(rls).toContain(
+      "REVOKE ALL ON FUNCTION restore_soap_note_replacement(uuid,timestamptz,uuid,uuid,uuid,uuid,uuid,text,uuid,text) FROM PUBLIC",
+    );
+    expect(rls).toContain(
+      "GRANT EXECUTE ON FUNCTION restore_soap_note_replacement(uuid,timestamptz,uuid,uuid,uuid,uuid,uuid,text,uuid,text) TO openpims_app",
     );
   });
 });

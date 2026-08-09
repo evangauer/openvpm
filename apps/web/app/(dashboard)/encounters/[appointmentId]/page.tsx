@@ -382,8 +382,22 @@ export default function EncounterWorkspacePage() {
 
                   <div className="flex flex-wrap gap-2">
                     {canCreateSoap(role) &&
+                    closeoutQuery.data?.linkedSoapCount === 0 &&
+                    !closeoutQuery.data?.soapDraft &&
+                    closeoutQuery.data?.missingSoapReplacement ? (
+                      <Button size="sm" asChild>
+                        <Link
+                          href={`/records/replace-soap/${appointment.patientId}?sourceNoteId=${closeoutQuery.data.missingSoapReplacement.sourceNoteId}&return=patient`}
+                        >
+                          <FileText className="mr-2 h-4 w-4" />
+                          Create missing SOAP replacement
+                        </Link>
+                      </Button>
+                    ) : null}
+                    {canCreateSoap(role) &&
                     appointment.status === "in_exam" &&
                     closeoutQuery.data?.linkedSoapCount === 0 &&
+                    !closeoutQuery.data?.missingSoapReplacement &&
                     closeoutQuery.data?.closeout?.status !==
                       "clinical_finalized" &&
                     closeoutQuery.data?.closeout?.status !== "completed" ? (
@@ -858,7 +872,9 @@ function VisitCloseout({
                   ? `${data.linkedSoapCount} linked SOAP note${data.linkedSoapCount === 1 ? "" : "s"}`
                   : closeout?.documentationExceptionReason
                     ? "Documented exception"
-                    : "Missing"
+                    : data.missingSoapReplacement
+                      ? "Replacement or exception needed"
+                      : "Missing"
             }
           />
           <ReadinessTile
@@ -910,6 +926,12 @@ function VisitCloseout({
               documentationExceptionReason={documentationExceptionReason}
               setDocumentationExceptionReason={setDocumentationExceptionReason}
               linkedSoapCount={data.linkedSoapCount}
+              missingSoapReplacement={data.missingSoapReplacement}
+              soapReplacementHref={
+                data.missingSoapReplacement
+                  ? `/records/replace-soap/${appointment.patientId}?sourceNoteId=${data.missingSoapReplacement.sourceNoteId}&return=patient`
+                  : null
+              }
               soapDraft={data.soapDraft}
               soapDraftHref={`/records/new-soap/${appointment.patientId}?appointmentId=${appointmentId}`}
               linkedMedicationCount={data.activeMedications.length}
@@ -1295,6 +1317,8 @@ type ClinicalCloseoutFormProps = {
   documentationExceptionReason: string;
   setDocumentationExceptionReason: (value: string) => void;
   linkedSoapCount: number;
+  missingSoapReplacement: { sourceNoteId: string } | null;
+  soapReplacementHref: string | null;
   soapDraft: {
     revision: number;
     authorName: string;
@@ -1589,6 +1613,31 @@ function ClinicalCloseoutForm(props: ClinicalCloseoutFormProps) {
               Resume SOAP draft
             </a>
           </Button>
+        </div>
+      ) : props.missingSoapReplacement ? (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
+          <p className="text-sm font-medium">The signed SOAP was voided</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Create an attributed replacement to keep current clinical
+            documentation linked to this visit. If a replacement is not
+            clinically appropriate—for example, the note belonged to another
+            encounter—document the reason below.
+          </p>
+          <Button className="mt-3" size="sm" asChild>
+            <Link href={props.soapReplacementHref ?? props.soapDraftHref}>
+              <FileText className="mr-2 h-4 w-4" />
+              Create signed replacement
+            </Link>
+          </Button>
+          <Input
+            aria-label="SOAP documentation exception"
+            value={props.documentationExceptionReason}
+            onChange={(event) =>
+              props.setDocumentationExceptionReason(event.target.value)
+            }
+            className="mt-3"
+            placeholder="Why a replacement SOAP is not required"
+          />
         </div>
       ) : props.linkedSoapCount === 0 ? (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
@@ -2828,7 +2877,8 @@ function ChargeCapture({
                         {item.description}
                       </p>
                       <p className="text-xs capitalize text-muted-foreground">
-                        {item.itemType} · {item.taxable ? "Taxable" : "Not taxable"}
+                        {item.itemType} ·{" "}
+                        {item.taxable ? "Taxable" : "Not taxable"}
                       </p>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">

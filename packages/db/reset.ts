@@ -32,6 +32,7 @@ const TABLES = [
   "dispense_charge_queue",
   "invoice_items",
   "invoices",
+  "soap_note_replacements",
   "lab_result_replacements",
   "clinical_record_corrections",
   "lab_result_events",

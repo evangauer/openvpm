@@ -1,8 +1,11 @@
 import { createHash } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import {
+  appointments,
   clinicalRecordCorrections,
+  practices,
   soapNoteAddenda,
+  soapNoteReplacements,
   soapNotes,
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
@@ -93,15 +96,14 @@ async function getScopedFinalizedSoapNote(
     eq(soapNotes.appointmentId, input.appointmentId),
     eq(soapNotes.status, "finalized"),
     isNull(soapNotes.deletedAt),
-  ];
-  if (input.noteId) {
-    predicates.push(eq(soapNotes.id, input.noteId));
-  } else {
-    predicates.push(sql`not exists (
+    sql`not exists (
       select 1 from ${clinicalRecordCorrections}
       where ${clinicalRecordCorrections.practiceId} = ${input.practiceId}
         and ${clinicalRecordCorrections.soapNoteId} = ${soapNotes.id}
-    )`);
+    )`,
+  ];
+  if (input.noteId) {
+    predicates.push(eq(soapNotes.id, input.noteId));
   }
   const [note] = await db
     .select()
@@ -192,8 +194,10 @@ export async function saveAppointmentSoapDraft(
     sections: SoapSections;
   },
 ): Promise<SaveSoapDraftResult> {
-  const finalizedAfterClose =
-    await assertOpenSoapVisitWithFinalizedRecovery(db, input);
+  const finalizedAfterClose = await assertOpenSoapVisitWithFinalizedRecovery(
+    db,
+    input,
+  );
   if (finalizedAfterClose) {
     if (!input.noteId || finalizedAfterClose.id === input.noteId) {
       return { outcome: "already_finalized", note: finalizedAfterClose };
@@ -366,8 +370,10 @@ export async function finalizeAppointmentSoapDraft(
     actor: SoapActor;
   },
 ): Promise<FinalizeSoapResult> {
-  const finalizedAfterClose =
-    await assertOpenSoapVisitWithFinalizedRecovery(db, input);
+  const finalizedAfterClose = await assertOpenSoapVisitWithFinalizedRecovery(
+    db,
+    input,
+  );
   if (finalizedAfterClose) {
     return finalizedAfterClose.revision === input.expectedRevision
       ? {
@@ -477,8 +483,10 @@ export async function discardAppointmentSoapDraft(
     expectedRevision: number;
   },
 ): Promise<DiscardSoapDraftResult> {
-  const finalizedAfterClose =
-    await assertOpenSoapVisitWithFinalizedRecovery(db, input);
+  const finalizedAfterClose = await assertOpenSoapVisitWithFinalizedRecovery(
+    db,
+    input,
+  );
   if (finalizedAfterClose) {
     return { outcome: "already_finalized", note: finalizedAfterClose };
   }
@@ -622,6 +630,298 @@ export async function createFinalizedAppointmentSoapNote(
     })
     .returning();
   return note!;
+}
+
+export async function replaceFinalizedSoapNote(
+  db: Database,
+  input: {
+    practiceId: string;
+    patientId: string;
+    sourceNoteId: string;
+    operationId: string;
+    reason: string;
+    actor: SoapActor;
+    sections: SoapSections;
+  },
+) {
+  const practiceId = input.practiceId.toLowerCase();
+  const patientId = input.patientId.toLowerCase();
+  const sourceNoteId = input.sourceNoteId.toLowerCase();
+  const actorId = input.actor.id.toLowerCase();
+  const operationId = input.operationId.toLowerCase();
+  const sections = normalizeSoapSections(input.sections);
+  const reason = input.reason.trim();
+  if (!hasSoapContent(sections)) {
+    throw new SoapLifecycleError(
+      "BAD_REQUEST",
+      "Replacement SOAP note must include at least one section.",
+    );
+  }
+  if (hasUnresolvedSoapTemplatePrompts(sections)) {
+    throw new SoapLifecycleError(
+      "BAD_REQUEST",
+      "Replace or delete every SOAP template prompt before finalization.",
+    );
+  }
+
+  const payloadHash = createHash("sha256")
+    .update(
+      JSON.stringify({
+        patientId,
+        sourceNoteId,
+        actorId,
+        reason,
+        ...sections,
+      }),
+    )
+    .digest("hex");
+
+  await db.execute(
+    sql`select pg_advisory_xact_lock(
+      hashtextextended(${`soap-replacement:${practiceId}:${operationId}`}, 0)
+    )`,
+  );
+
+  const replay = async () => {
+    const [existing] = await db
+      .select({
+        sourceNoteId: soapNoteReplacements.sourceSoapNoteId,
+        replacementNote: soapNotes,
+        operationPayloadHash: soapNoteReplacements.operationPayloadHash,
+        correctionReason: clinicalRecordCorrections.reason,
+        correctionSoapNoteId: clinicalRecordCorrections.soapNoteId,
+      })
+      .from(soapNoteReplacements)
+      .innerJoin(
+        soapNotes,
+        and(
+          eq(soapNotes.id, soapNoteReplacements.replacementSoapNoteId),
+          eq(soapNotes.practiceId, practiceId),
+        ),
+      )
+      .innerJoin(
+        clinicalRecordCorrections,
+        and(
+          eq(clinicalRecordCorrections.id, soapNoteReplacements.correctionId),
+          eq(clinicalRecordCorrections.practiceId, practiceId),
+        ),
+      )
+      .where(
+        and(
+          eq(soapNoteReplacements.practiceId, practiceId),
+          eq(soapNoteReplacements.operationId, operationId),
+        ),
+      )
+      .limit(1);
+    if (!existing) return null;
+    if (
+      existing.sourceNoteId !== sourceNoteId ||
+      existing.replacementNote.patientId !== patientId ||
+      existing.operationPayloadHash !== payloadHash ||
+      existing.correctionSoapNoteId !== sourceNoteId ||
+      existing.correctionReason !== reason
+    ) {
+      throw new SoapLifecycleError(
+        "CONFLICT",
+        "This replacement operation was already used for different SOAP details.",
+      );
+    }
+    return { note: existing.replacementNote, replayed: true as const };
+  };
+
+  const existingReplay = await replay();
+  if (existingReplay) return existingReplay;
+
+  const sourcePredicate = and(
+    eq(soapNotes.id, sourceNoteId),
+    eq(soapNotes.practiceId, practiceId),
+    eq(soapNotes.patientId, patientId),
+    eq(soapNotes.status, "finalized"),
+    isNull(soapNotes.deletedAt),
+    sql`exists (
+      select 1 from ${practices}
+      where ${practices.id} = ${practiceId}
+        and ${practices.deletedAt} is null
+    )`,
+  );
+  const [sourceIdentity] = await db
+    .select({ appointmentId: soapNotes.appointmentId })
+    .from(soapNotes)
+    .where(sourcePredicate)
+    .limit(1);
+  if (!sourceIdentity) {
+    throw new SoapLifecycleError("NOT_FOUND", "Finalized SOAP note not found.");
+  }
+
+  // Closeout and correction both lock appointment first. Preserve that order
+  // so a late replacement cannot race a closeout against different SOAP state.
+  if (sourceIdentity.appointmentId) {
+    const [appointment] = await db
+      .select({ id: appointments.id })
+      .from(appointments)
+      .where(
+        and(
+          eq(appointments.id, sourceIdentity.appointmentId),
+          eq(appointments.practiceId, practiceId),
+          isNull(appointments.deletedAt),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (!appointment) {
+      throw new SoapLifecycleError(
+        "PRECONDITION_FAILED",
+        "The source appointment is no longer available for a signed SOAP replacement.",
+      );
+    }
+  }
+
+  const [source] = await db
+    .select()
+    .from(soapNotes)
+    .where(sourcePredicate)
+    .limit(1)
+    .for("update");
+  if (!source) {
+    throw new SoapLifecycleError(
+      "CONFLICT",
+      "The source SOAP note changed. Refresh the chart and try again.",
+    );
+  }
+
+  const [existingReplacement] = await db
+    .select({ id: soapNoteReplacements.id })
+    .from(soapNoteReplacements)
+    .where(
+      and(
+        eq(soapNoteReplacements.practiceId, practiceId),
+        eq(soapNoteReplacements.sourceSoapNoteId, source.id),
+      ),
+    )
+    .limit(1);
+  if (existingReplacement) {
+    throw new SoapLifecycleError(
+      "CONFLICT",
+      "This SOAP note already has a replacement. Refresh the chart.",
+    );
+  }
+
+  if (source.appointmentId) {
+    const [competingDraft] = await db
+      .select({ id: soapNotes.id })
+      .from(soapNotes)
+      .where(
+        and(
+          eq(soapNotes.practiceId, practiceId),
+          eq(soapNotes.appointmentId, source.appointmentId),
+          eq(soapNotes.status, "draft"),
+          isNull(soapNotes.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (competingDraft) {
+      throw new SoapLifecycleError(
+        "CONFLICT",
+        "This encounter has a SOAP draft. Review or discard it before creating a signed replacement.",
+      );
+    }
+    const [competingFinal] = await db
+      .select({ id: soapNotes.id })
+      .from(soapNotes)
+      .where(
+        and(
+          eq(soapNotes.practiceId, practiceId),
+          eq(soapNotes.appointmentId, source.appointmentId),
+          eq(soapNotes.status, "finalized"),
+          isNull(soapNotes.deletedAt),
+          sql`${soapNotes.id} <> ${source.id}`,
+          sql`not exists (
+            select 1 from ${clinicalRecordCorrections}
+            where ${clinicalRecordCorrections.practiceId} = ${practiceId}
+              and ${clinicalRecordCorrections.soapNoteId} = ${soapNotes.id}
+          )`,
+        ),
+      )
+      .limit(1);
+    if (competingFinal) {
+      throw new SoapLifecycleError(
+        "CONFLICT",
+        "This encounter already has current finalized SOAP documentation.",
+      );
+    }
+  }
+
+  let [correction] = await db
+    .select()
+    .from(clinicalRecordCorrections)
+    .where(
+      and(
+        eq(clinicalRecordCorrections.practiceId, practiceId),
+        eq(clinicalRecordCorrections.soapNoteId, source.id),
+      ),
+    )
+    .limit(1);
+  if (correction && correction.reason !== reason) {
+    throw new SoapLifecycleError(
+      "CONFLICT",
+      "Use the existing permanent correction reason when replacing this SOAP note.",
+    );
+  }
+  if (!correction) {
+    [correction] = await db
+      .insert(clinicalRecordCorrections)
+      .values({
+        practiceId,
+        recordType: "soap_note",
+        action: "entered_in_error",
+        soapNoteId: source.id,
+        patientId: source.patientId,
+        appointmentId: source.appointmentId,
+        reason,
+        correctedBy: actorId,
+        correctedByName: input.actor.name,
+      })
+      .returning();
+  }
+  if (!correction) {
+    throw new SoapLifecycleError(
+      "CONFLICT",
+      "The SOAP correction could not be recorded. Refresh and try again.",
+    );
+  }
+
+  const [replacement] = await db
+    .insert(soapNotes)
+    .values({
+      practiceId,
+      patientId: source.patientId,
+      appointmentId: source.appointmentId,
+      ...finalizedSoapInsertValues({ actor: input.actor, sections }),
+      // Keep finalization, correction, and evidence timestamps on the same
+      // PostgreSQL transaction clock. Application wall time can be later than
+      // transaction_timestamp() (or skewed across hosts), which would make an
+      // otherwise valid atomic replacement fail its chronology trigger.
+      finalizedAt: sql`transaction_timestamp()`,
+    })
+    .returning();
+  if (!replacement) {
+    throw new SoapLifecycleError(
+      "CONFLICT",
+      "The replacement SOAP note could not be finalized.",
+    );
+  }
+
+  await db.insert(soapNoteReplacements).values({
+    practiceId,
+    correctionId: correction.id,
+    sourceSoapNoteId: source.id,
+    replacementSoapNoteId: replacement.id,
+    actorId,
+    actorName: input.actor.name,
+    operationId,
+    operationPayloadHash: payloadHash,
+  });
+  return { note: replacement, replayed: false as const };
 }
 
 export async function addFinalizedSoapAddendum(

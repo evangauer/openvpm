@@ -527,6 +527,31 @@ describe("encounter closeout safety", () => {
     expect(insertValues).not.toHaveBeenCalled();
   });
 
+  it("allows a bounded exception when a voided SOAP should not be replaced", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [
+        [openAppointment],
+        [{ id: PATIENT_ID }],
+        [],
+        [
+          {
+            id: "soap-source",
+            correctionId: "soap-correction",
+          },
+        ],
+        [],
+      ],
+    });
+    await expect(
+      callerWithDb(db, "veterinarian").finalizeClinical(clinicalInput),
+    ).resolves.toBeUndefined();
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        documentationExceptionReason: "Brief technician recheck",
+      }),
+    );
+  });
+
   it("finalizes a validated clinical handoff and increments its revision", async () => {
     const finalized = {
       ...clinicalFinalized,

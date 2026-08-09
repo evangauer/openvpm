@@ -33,6 +33,111 @@ const SOAP_REPLACEMENT_ID = "00000000-0000-4000-8000-000000000043";
 const SOAP_RETIRED_ID = "00000000-0000-4000-8000-000000000044";
 const SOAP_ADDENDUM_SOURCE_ID = "00000000-0000-4000-8000-000000000045";
 const SOAP_ADDENDUM_RETIRED_ID = "00000000-0000-4000-8000-000000000046";
+const SOAP_REPLACEMENT_LINK_ID = "00000000-0000-4000-8000-000000000047";
+const SOAP_CORRECTION_ID = "00000000-0000-4000-8000-000000000048";
+const SOAP_REPLACEMENT_OPERATION_ID = "00000000-0000-4000-8000-000000000049";
+
+function validSoapReplacementBackup() {
+  const practiceId = "00000000-0000-4000-8000-000000000040";
+  const clientId = "00000000-0000-4000-8000-000000000051";
+  const patientId = "00000000-0000-4000-8000-000000000050";
+  const reason = "Assessment was signed on the wrong encounter.";
+  const replacementSections = {
+    subjective: "Corrected history",
+    objective: null,
+    assessment: "Corrected assessment",
+    plan: null,
+  };
+  const operationPayloadHash = createHash("sha256")
+    .update(
+      JSON.stringify({
+        patientId,
+        sourceNoteId: SOAP_SOURCE_ID,
+        actorId: SOAP_BACKUP_USER_ID,
+        reason,
+        ...replacementSections,
+      }),
+    )
+    .digest("hex");
+  return {
+    practiceId,
+    ...emptyBackup(),
+    users: [
+      {
+        id: SOAP_BACKUP_USER_ID,
+        practiceId,
+        name: "Dr. Rivera",
+      },
+    ],
+    clients: [{ id: clientId, practiceId }],
+    patients: [{ id: patientId, practiceId, clientId }],
+    soapNotes: [
+      {
+        id: SOAP_SOURCE_ID,
+        practiceId,
+        patientId,
+        appointmentId: null,
+        authorId: SOAP_BACKUP_USER_ID,
+        authorName: "Dr. Rivera",
+        status: "finalized",
+        deletedAt: null,
+        finalizedAt: "2026-08-09T16:00:00.000Z",
+        finalizedBy: SOAP_BACKUP_USER_ID,
+        finalizerName: "Dr. Rivera",
+        subjective: "Wrong history",
+        objective: null,
+        assessment: "Wrong assessment",
+        plan: null,
+      },
+      {
+        id: SOAP_REPLACEMENT_ID,
+        practiceId,
+        patientId,
+        appointmentId: null,
+        authorId: SOAP_BACKUP_USER_ID,
+        authorName: "Dr. Rivera",
+        status: "finalized",
+        deletedAt: null,
+        finalizedAt: "2026-08-09T16:10:00.000Z",
+        finalizedBy: SOAP_BACKUP_USER_ID,
+        finalizerName: "Dr. Rivera",
+        ...replacementSections,
+      },
+    ],
+    clinicalRecordCorrections: [
+      {
+        id: SOAP_CORRECTION_ID,
+        createdAt: "2026-08-09T16:05:00.000Z",
+        practiceId,
+        recordType: "soap_note",
+        soapNoteId: SOAP_SOURCE_ID,
+        vitalSignId: null,
+        vaccinationRecordId: null,
+        labResultId: null,
+        patientId,
+        appointmentId: null,
+        reason,
+        correctedBy: SOAP_BACKUP_USER_ID,
+        operationId: null,
+        operationPayloadHash: null,
+      },
+    ],
+    soapNoteReplacements: [
+      {
+        id: SOAP_REPLACEMENT_LINK_ID,
+        createdAt: "2026-08-09T16:15:00.000Z",
+        practiceId,
+        correctionId: SOAP_CORRECTION_ID,
+        sourceSoapNoteId: SOAP_SOURCE_ID,
+        replacementSoapNoteId: SOAP_REPLACEMENT_ID,
+        actorId: SOAP_BACKUP_USER_ID,
+        actorName: "Dr. Rivera",
+        operationId: SOAP_REPLACEMENT_OPERATION_ID,
+        operationPayloadHash,
+      },
+    ],
+  };
+}
 
 describe("backup restore policy", () => {
   it("bounds direct backup JSON restore payloads by UTF-8 bytes", () => {
@@ -90,9 +195,7 @@ function restoreDb(executeResults: unknown[][] = []) {
         onConflictDoNothing: vi.fn(() => ({
           returning: vi.fn(async () => {
             inserted.push({ rows: values });
-            timeline.push(
-              ...values.map((row) => `insert:${String(row.id)}`),
-            );
+            timeline.push(...values.map((row) => `insert:${String(row.id)}`));
             return values.map((row) => ({ id: row.id }));
           }),
         })),
@@ -280,19 +383,31 @@ describe("summarizePracticeExport", () => {
 
   it("requires replacement lineage in current backups but accepts its legacy absence", () => {
     const currentMissing: Record<string, unknown> = {
-      formatVersion: 3,
+      formatVersion: 4,
       ...emptyBackup(),
     };
     delete currentMissing["labResultReplacements"];
     expect(summarizePracticeExport(currentMissing).missingSections).toContain(
       "labResultReplacements",
     );
+    const currentSoapMissing: Record<string, unknown> = {
+      formatVersion: 4,
+      ...emptyBackup(),
+    };
+    delete currentSoapMissing["soapNoteReplacements"];
+    expect(
+      summarizePracticeExport(currentSoapMissing).missingSections,
+    ).toContain("soapNoteReplacements");
 
     const legacyMissing: Record<string, unknown> = { ...emptyBackup() };
     delete legacyMissing["labResultReplacements"];
+    delete legacyMissing["soapNoteReplacements"];
     expect(
       summarizePracticeExport(legacyMissing).missingSections,
     ).not.toContain("labResultReplacements");
+    expect(
+      summarizePracticeExport(legacyMissing).missingSections,
+    ).not.toContain("soapNoteReplacements");
   });
 
   it("exports SMS provider ledgers for audit but marks them owner-restore only", () => {
@@ -532,6 +647,15 @@ describe("summarizePracticeExport", () => {
 describe("exportPracticeData query scoping", () => {
   const source = readFileSync(new URL("../export.ts", import.meta.url), "utf8");
 
+  it("retains both endpoints of immutable SOAP replacement history", () => {
+    expect(source).toContain(
+      "...soapNoteReplacementRows.flatMap((replacement) => [",
+    );
+    expect(source).toContain("replacement.sourceSoapNoteId");
+    expect(source).toContain("replacement.replacementSoapNoteId");
+    expect(source).toContain("public.restore_soap_note_replacement(");
+  });
+
   it("exports parent-scoped children through active tenant parents", () => {
     const helper = source.match(
       /async function tenantParentChildRows[\s\S]+?async function restoreRows/,
@@ -754,6 +878,41 @@ describe("practice backup secret handling", () => {
 });
 
 describe("restorePracticeData", () => {
+  it("restores immutable SOAP replacement history after later soft deletion", async () => {
+    const activeBackup = validSoapReplacementBackup();
+    const backup = {
+      ...activeBackup,
+      soapNotes: activeBackup.soapNotes.map((note, index) => ({
+        ...note,
+        deletedAt:
+          index === 0 ? "2026-08-09T16:20:00.000Z" : "2026-08-09T16:21:00.000Z",
+      })),
+    };
+    expect(validatePracticeExportRestore(backup)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const { db, executed } = restoreDb([
+      [
+        {
+          result_id: SOAP_REPLACEMENT_LINK_ID,
+          was_inserted: true,
+        },
+      ],
+    ]);
+    await expect(
+      restorePracticeData(db as never, backup.practiceId, backup),
+    ).resolves.toMatchObject({
+      restored: {
+        soapNotes: 2,
+        clinicalRecordCorrections: 1,
+        soapNoteReplacements: 1,
+      },
+    });
+    expect(executed).toHaveLength(1);
+  });
+
   it("does not restore any provider-authority SMS ledger through clinic restore", async () => {
     const backup = {
       ...emptyBackup(),
@@ -1015,17 +1174,13 @@ describe("restorePracticeData", () => {
           ...extra,
         ],
       }).errors;
-    expect(
-      addendumError({ createdAt: "2026-08-09T14:59:59.000Z" }),
-    ).toContain(
+    expect(addendumError({ createdAt: "2026-08-09T14:59:59.000Z" })).toContain(
       `soapNoteAddenda[${SOAP_ADDENDUM_SOURCE_ID}].createdAt must be on or after finalization, not in the future, and no later than source deletion or correction.`,
     );
     expect(addendumError({ createdAt: "2099-08-09T16:00:00.000Z" })).toContain(
       `soapNoteAddenda[${SOAP_ADDENDUM_SOURCE_ID}].createdAt must be on or after finalization, not in the future, and no later than source deletion or correction.`,
     );
-    expect(
-      addendumError({ createdAt: "2026-08-09T16:31:00.000Z" }),
-    ).toContain(
+    expect(addendumError({ createdAt: "2026-08-09T16:31:00.000Z" })).toContain(
       `soapNoteAddenda[${SOAP_ADDENDUM_SOURCE_ID}].createdAt must be on or after finalization, not in the future, and no later than source deletion or correction.`,
     );
     expect(addendumError({ operationPayloadHash: "0".repeat(64) })).toContain(
@@ -1038,7 +1193,9 @@ describe("restorePracticeData", () => {
     ).toContain(
       `soapNoteAddenda[${SOAP_ADDENDUM_SOURCE_ID}].soapNoteId must be a canonical lowercase UUID.`,
     );
-    expect(addendumError({ authorId: SOAP_BACKUP_USER_ID.replaceAll("-", "") })).toContain(
+    expect(
+      addendumError({ authorId: SOAP_BACKUP_USER_ID.replaceAll("-", "") }),
+    ).toContain(
       `soapNoteAddenda[${SOAP_ADDENDUM_SOURCE_ID}].authorId must be a canonical lowercase UUID.`,
     );
     expect(addendumError({ id: "not-a-uuid" })).toContain(
@@ -1068,20 +1225,20 @@ describe("restorePracticeData", () => {
     );
     const duplicateContent = "Second copy with a reused operation.";
     const duplicateOperationErrors = addendumError({}, [
-        {
-          ...backup.soapNoteAddenda[0],
-          id: "00000000-0000-4000-8000-000000000047",
-          content: duplicateContent,
-          operationId: String(
-            backup.soapNoteAddenda[0].operationId,
-          ).toUpperCase(),
-          operationPayloadHash: soapAddendumHash(
-            SOAP_SOURCE_ID,
-            SOAP_BACKUP_USER_ID,
-            duplicateContent,
-          ),
-        },
-      ]);
+      {
+        ...backup.soapNoteAddenda[0],
+        id: "00000000-0000-4000-8000-000000000047",
+        content: duplicateContent,
+        operationId: String(
+          backup.soapNoteAddenda[0].operationId,
+        ).toUpperCase(),
+        operationPayloadHash: soapAddendumHash(
+          SOAP_SOURCE_ID,
+          SOAP_BACKUP_USER_ID,
+          duplicateContent,
+        ),
+      },
+    ]);
     expect(duplicateOperationErrors).toContain(
       "soapNoteAddenda[00000000-0000-4000-8000-000000000047].operationId must be unique within its practice.",
     );
@@ -1490,6 +1647,79 @@ describe("restorePracticeData", () => {
       }).errors,
     ).toContain(
       "labResultReplacements[replacement-link-2].practiceId must match all linked evidence.",
+    );
+  });
+
+  it("validates exact immutable SOAP replacement evidence", () => {
+    const backup = validSoapReplacementBackup();
+    expect(validatePracticeExportRestore(backup)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const missingCorrectionErrors = validatePracticeExportRestore({
+      ...backup,
+      soapNoteReplacements: [
+        {
+          ...backup.soapNoteReplacements[0],
+          correctionId: "00000000-0000-4000-8000-000000000099",
+        },
+      ],
+    }).errors;
+    expect(missingCorrectionErrors.length).toBeGreaterThan(0);
+
+    expect(
+      validatePracticeExportRestore({
+        ...backup,
+        soapNoteReplacements: [
+          {
+            ...backup.soapNoteReplacements[0],
+            operationPayloadHash: "b".repeat(64),
+          },
+        ],
+      }).errors,
+    ).toContain(
+      `soapNoteReplacements[${SOAP_REPLACEMENT_LINK_ID}].operationPayloadHash must match its exact correction and replacement payload.`,
+    );
+
+    const deletedHistory = {
+      ...backup,
+      soapNotes: backup.soapNotes.map((note, index) => ({
+        ...note,
+        deletedAt:
+          index === 0 ? "2026-08-09T16:20:00.000Z" : "2026-08-09T16:21:00.000Z",
+      })),
+    };
+    expect(validatePracticeExportRestore(deletedHistory)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    expect(
+      validatePracticeExportRestore({
+        ...deletedHistory,
+        soapNotes: deletedHistory.soapNotes.map((note, index) =>
+          index === 1
+            ? { ...note, deletedAt: "2026-08-09T16:14:59.000Z" }
+            : note,
+        ),
+      }).errors,
+    ).toContain(
+      `soapNoteReplacements[${SOAP_REPLACEMENT_LINK_ID}] chronology must run from source finalization through correction, replacement finalization, link creation, and any later replacement correction.`,
+    );
+
+    expect(
+      validatePracticeExportRestore({
+        ...backup,
+        clinicalRecordCorrections: backup.clinicalRecordCorrections.map(
+          (correction) => ({
+            ...correction,
+            createdAt: "2026-08-09T16:11:00.000Z",
+          }),
+        ),
+      }).errors,
+    ).toContain(
+      `soapNoteReplacements[${SOAP_REPLACEMENT_LINK_ID}] chronology must run from source finalization through correction, replacement finalization, link creation, and any later replacement correction.`,
     );
   });
 

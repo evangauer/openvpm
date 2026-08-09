@@ -688,12 +688,16 @@ describe("settings demo data cleanup scoping", () => {
     );
   });
 
-  it("derives and records legacy demo SOAP ids before immutable cleanup", () => {
+  it("unions stored and user-created demo SOAP ids before immutable cleanup", () => {
     const clearDemoBlock = SETTINGS_SOURCE.match(
       /clearDemoData:[\s\S]+?reseedDemoData:/,
     )?.[0];
 
     expect(clearDemoBlock).toContain("let demoSoapNoteIds");
+    expect(clearDemoBlock).toContain("const storedDemoSoapNoteIds");
+    expect(clearDemoBlock).toContain("const discoveredDemoSoapNotes");
+    expect(clearDemoBlock).toContain("...storedDemoSoapNoteIds");
+    expect(clearDemoBlock).toContain("...discoveredDemoSoapNotes.map");
     expect(clearDemoBlock).toContain(
       "inArray(soapNotes.appointmentId, demo.appointmentIds)",
     );

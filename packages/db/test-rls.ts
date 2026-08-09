@@ -20,6 +20,32 @@ function soapAddendumPayloadHash(
     .digest("hex");
 }
 
+function soapReplacementPayloadHash(input: {
+  patientId: string;
+  sourceNoteId: string;
+  actorId: string;
+  reason: string;
+  subjective?: string | null;
+  objective?: string | null;
+  assessment?: string | null;
+  plan?: string | null;
+}) {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        patientId: input.patientId,
+        sourceNoteId: input.sourceNoteId,
+        actorId: input.actorId,
+        reason: input.reason,
+        subjective: input.subjective ?? null,
+        objective: input.objective ?? null,
+        assessment: input.assessment ?? null,
+        plan: input.plan ?? null,
+      }),
+    )
+    .digest("hex");
+}
+
 function nonBlankEnv(name: string): string | undefined {
   const value = process.env[name]?.trim();
   return value ? value : undefined;
@@ -60,6 +86,7 @@ const bAppointment = randomUUID();
 const aCloseout = randomUUID();
 const bCloseout = randomUUID();
 const aSoapLegalAppointment = randomUUID();
+const bSoapLegalAppointment = randomUUID();
 const aSoapDraftFinalAppointment = randomUUID();
 const aSoapDoubleFinalAppointment = randomUUID();
 const aSoapDiscardAppointment = randomUUID();
@@ -67,6 +94,17 @@ const aSoapSource = randomUUID();
 const aSoapReplacement = randomUUID();
 const aSoapDeletedSource = randomUUID();
 const aSoapCorrection = randomUUID();
+const bSoapSource = randomUUID();
+const bSoapReplacement = randomUUID();
+const bSoapCorrection = randomUUID();
+const aSoapReplacementEvidence = randomUUID();
+const bSoapReplacementEvidence = randomUUID();
+const aHistoricalSoapSource = randomUUID();
+const aHistoricalSoapReplacement = randomUUID();
+const aHistoricalSoapSourceCorrection = randomUUID();
+const aHistoricalSoapReplacementCorrection = randomUUID();
+const aHistoricalSoapReplacementEvidence = randomUUID();
+const aHistoricalSoapReplacementOperation = randomUUID();
 const aSoapAddendum = randomUUID();
 const aSoapRestoreAddendum = randomUUID();
 const aSoapDeletedRestoreAddendum = randomUUID();
@@ -121,6 +159,18 @@ const bSmsDeliveryHistory = randomUUID();
 const bSmsDeliveryConflictHistory = randomUUID();
 const funnelEventId = randomUUID();
 const conversionEvidenceKey = `practice:${aId}`;
+const aSoapCorrectionReason =
+  "Original note was documented on the wrong encounter.";
+const bSoapCorrectionReason =
+  "Original note B requires a legally retained replacement.";
+const historicalSoapSourceReason =
+  'Historical source correction: owner reported "wrong chart".\nRetain lineage.';
+const historicalSoapReplacementReason =
+  "Historical replacement later entered in error.";
+const historicalSoapReplacementSubjective =
+  'Restored replacement quote: "improved".\nDose remains ½ tablet 🐾';
+const historicalSoapOccurredAt = new Date(Date.now() - 3 * 60 * 60 * 1000);
+const historicalSoapDeletedAt = new Date(Date.now() - 2 * 60 * 60 * 1000);
 let failures = 0;
 
 async function appTransaction<T>(
@@ -339,6 +389,7 @@ try {
     (id, practice_id, client_id, patient_id, start_time, end_time, status)
     values
     (${aSoapLegalAppointment}, ${aId}, ${aClient}, ${aPatient}, now(), now() + interval '30 minutes', 'in_exam'),
+    (${bSoapLegalAppointment}, ${bId}, ${bClient}, ${bPatient}, now(), now() + interval '30 minutes', 'in_exam'),
     (${aSoapDraftFinalAppointment}, ${aId}, ${aClient}, ${aPatient}, now(), now() + interval '30 minutes', 'in_exam'),
     (${aSoapDoubleFinalAppointment}, ${aId}, ${aClient}, ${aPatient}, now(), now() + interval '30 minutes', 'in_exam'),
     (${aSoapDiscardAppointment}, ${aId}, ${aClient}, ${aPatient}, now(), now() + interval '30 minutes', 'in_exam')`;
@@ -356,24 +407,94 @@ try {
           ${aUser}, 'RLS Admin A', 'finalized', 1, now() - interval '2 hours', ${aUser},
           'RLS Admin A', 'Original SOAP', false),
         (${aSoapReplacement}, ${aId}, ${aPatient}, ${aSoapLegalAppointment},
-          ${aUser}, 'RLS Admin A', 'finalized', 1, now() - interval '2 hours', ${aUser},
+          ${aUser}, 'RLS Admin A', 'finalized', 1, now(), ${aUser},
           'RLS Admin A', 'Replacement SOAP', false)`;
       await tx`insert into clinical_record_corrections
         (id, created_at, practice_id, record_type, action, soap_note_id, patient_id,
          appointment_id, reason, corrected_by, corrected_by_name)
-        values (${aSoapCorrection}, now() - interval '1 hour', ${aId}, 'soap_note', 'entered_in_error',
+        values (${aSoapCorrection}, now(), ${aId}, 'soap_note', 'entered_in_error',
           ${aSoapSource}, ${aPatient}, ${aSoapLegalAppointment},
-          'Original note was documented on the wrong encounter.', ${aUser},
+          ${aSoapCorrectionReason}, ${aUser},
           'RLS Admin A')`;
+      await tx`insert into soap_note_replacements
+        (id, practice_id, correction_id, source_soap_note_id,
+         replacement_soap_note_id, actor_id, actor_name, operation_id,
+         operation_payload_hash)
+        values (${aSoapReplacementEvidence}, ${aId}, ${aSoapCorrection},
+          ${aSoapSource}, ${aSoapReplacement}, ${aUser}, 'RLS Admin A',
+          ${randomUUID()}, ${soapReplacementPayloadHash({
+              patientId: aPatient,
+              sourceNoteId: aSoapSource,
+              actorId: aUser,
+              reason: aSoapCorrectionReason,
+              subjective: "Replacement SOAP",
+            })})`;
     });
     correctedReplacementTransactionAllowed = true;
   } catch {
     correctedReplacementTransactionAllowed = false;
   }
   check(
-    "corrected source and replacement SOAP can commit atomically",
+    "corrected source, replacement SOAP, and lineage can commit atomically",
     correctedReplacementTransactionAllowed,
   );
+
+  let ordinarySoapReplacementHashMismatchBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into soap_note_replacements
+        (practice_id, correction_id, source_soap_note_id,
+         replacement_soap_note_id, actor_id, actor_name, operation_id,
+         operation_payload_hash)
+        values (${aId}, ${aSoapCorrection}, ${aSoapSource},
+          ${aSoapReplacement}, ${aUser}, 'RLS Admin A', ${randomUUID()},
+          ${"0".repeat(64)})`;
+    });
+  } catch (error) {
+    ordinarySoapReplacementHashMismatchBlocked = String(error).includes(
+      "SOAP replacement payload hash is invalid.",
+    );
+  }
+  check(
+    "ordinary SOAP replacement INSERT rejects a mismatched exact payload hash",
+    ordinarySoapReplacementHashMismatchBlocked,
+  );
+
+  await owner.begin(async (tx) => {
+    const setup = tx as unknown as typeof owner;
+    await setup`insert into soap_notes
+      (id, practice_id, patient_id, appointment_id, author_id, author_name,
+       status, revision, finalized_at, finalized_by, finalizer_name,
+       subjective, imported)
+      values
+      (${bSoapSource}, ${bId}, ${bPatient}, ${bSoapLegalAppointment}, ${bUser},
+        'RLS Admin B', 'finalized', 1, now() - interval '2 hours', ${bUser},
+        'RLS Admin B', 'Original SOAP B', false),
+      (${bSoapReplacement}, ${bId}, ${bPatient}, ${bSoapLegalAppointment}, ${bUser},
+        'RLS Admin B', 'finalized', 1, now(), ${bUser}, 'RLS Admin B',
+        'Replacement SOAP B', false)`;
+    await setup`insert into clinical_record_corrections
+      (id, practice_id, record_type, action, soap_note_id, patient_id,
+       appointment_id, reason, corrected_by, corrected_by_name)
+      values (${bSoapCorrection}, ${bId}, 'soap_note', 'entered_in_error',
+        ${bSoapSource}, ${bPatient}, ${bSoapLegalAppointment},
+        ${bSoapCorrectionReason}, ${bUser},
+        'RLS Admin B')`;
+    await setup`insert into soap_note_replacements
+      (id, practice_id, correction_id, source_soap_note_id,
+       replacement_soap_note_id, actor_id, actor_name, operation_id,
+       operation_payload_hash)
+      values (${bSoapReplacementEvidence}, ${bId}, ${bSoapCorrection},
+        ${bSoapSource}, ${bSoapReplacement}, ${bUser}, 'RLS Admin B',
+        ${randomUUID()}, ${soapReplacementPayloadHash({
+            patientId: bPatient,
+            sourceNoteId: bSoapSource,
+            actorId: bUser,
+            reason: bSoapCorrectionReason,
+            subjective: "Replacement SOAP B",
+          })})`;
+  });
 
   await owner`insert into soap_notes
     (id, created_at, updated_at, deleted_at, practice_id, patient_id,
@@ -384,6 +505,32 @@ try {
       ${aPatient}, null, ${aUser}, 'RLS Admin A', 'finalized', 1,
       now() - interval '2 hours', ${aUser}, 'RLS Admin A',
       'Retired finalized SOAP', false)`;
+
+  await owner`insert into soap_notes
+    (id, created_at, updated_at, deleted_at, practice_id, patient_id,
+     appointment_id, author_id, author_name, status, revision, finalized_at,
+     finalized_by, finalizer_name, subjective, imported)
+    values
+    (${aHistoricalSoapSource}, ${historicalSoapOccurredAt},
+      ${historicalSoapDeletedAt}, ${historicalSoapDeletedAt}, ${aId},
+      ${aPatient}, null, ${aUser}, 'RLS Admin A', 'finalized', 1,
+      ${historicalSoapOccurredAt}, ${aUser}, 'RLS Admin A',
+      'Historical source SOAP', false),
+    (${aHistoricalSoapReplacement}, ${historicalSoapOccurredAt},
+      ${historicalSoapDeletedAt}, ${historicalSoapDeletedAt}, ${aId},
+      ${aPatient}, null, ${aUser}, 'RLS Admin A', 'finalized', 1,
+      ${historicalSoapOccurredAt}, ${aUser}, 'RLS Admin A',
+      ${historicalSoapReplacementSubjective}, false)`;
+  await owner`insert into clinical_record_corrections
+    (id, created_at, practice_id, record_type, action, soap_note_id, patient_id,
+     appointment_id, reason, corrected_by, corrected_by_name)
+    values
+    (${aHistoricalSoapSourceCorrection}, ${historicalSoapOccurredAt}, ${aId},
+      'soap_note', 'entered_in_error', ${aHistoricalSoapSource}, ${aPatient},
+      null, ${historicalSoapSourceReason}, ${aUser}, 'RLS Admin A'),
+    (${aHistoricalSoapReplacementCorrection}, ${historicalSoapOccurredAt}, ${aId},
+      'soap_note', 'entered_in_error', ${aHistoricalSoapReplacement}, ${aPatient},
+      null, ${historicalSoapReplacementReason}, ${aUser}, 'RLS Admin A')`;
 
   let draftAndFinalBlocked = false;
   try {
@@ -719,6 +866,180 @@ try {
   check(
     "SOAP addendum restore cannot spoof tenant bypass GUCs",
     spoofedRestoreBypassBlocked,
+  );
+
+  const historicalSoapHash = soapReplacementPayloadHash({
+    patientId: aPatient,
+    sourceNoteId: aHistoricalSoapSource,
+    actorId: aUser,
+    reason: historicalSoapSourceReason,
+    subjective: historicalSoapReplacementSubjective,
+  });
+  let ordinaryHistoricalReplacementBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`select set_config('app.soap_replacement_restore', 'on', true)`;
+      await tx`insert into soap_note_replacements
+        (id, created_at, practice_id, correction_id, source_soap_note_id,
+         replacement_soap_note_id, actor_id, actor_name, operation_id,
+         operation_payload_hash)
+        values (${aHistoricalSoapReplacementEvidence}, ${historicalSoapOccurredAt},
+          ${aId}, ${aHistoricalSoapSourceCorrection}, ${aHistoricalSoapSource},
+          ${aHistoricalSoapReplacement}, ${aUser}, 'RLS Admin A',
+          ${aHistoricalSoapReplacementOperation}, ${historicalSoapHash})`;
+    });
+  } catch {
+    ordinaryHistoricalReplacementBlocked = true;
+  }
+  check(
+    "ordinary app INSERT cannot spoof restore mode for deleted SOAP endpoints",
+    ordinaryHistoricalReplacementBlocked,
+  );
+
+  let historicalReplacementRestoreAllowed = false;
+  try {
+    const restored = await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      return tx`select result_id, was_inserted
+        from public.restore_soap_note_replacement(
+          ${aHistoricalSoapReplacementEvidence}, ${historicalSoapOccurredAt},
+          ${aId}, ${aHistoricalSoapSourceCorrection}, ${aHistoricalSoapSource},
+          ${aHistoricalSoapReplacement}, ${aUser}, 'RLS Admin A',
+          ${aHistoricalSoapReplacementOperation}, ${historicalSoapHash})`;
+    });
+    historicalReplacementRestoreAllowed =
+      restored.length === 1 &&
+      restored[0]!.result_id === aHistoricalSoapReplacementEvidence &&
+      restored[0]!.was_inserted === true;
+  } catch {
+    historicalReplacementRestoreAllowed = false;
+  }
+  check(
+    "tenant-bound restore accepts exact lineage before both SOAP deletions",
+    historicalReplacementRestoreAllowed,
+  );
+
+  let exactHistoricalReplacementReplayAllowed = false;
+  try {
+    const replayed = await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      return tx`select result_id, was_inserted
+        from public.restore_soap_note_replacement(
+          ${aHistoricalSoapReplacementEvidence}, ${historicalSoapOccurredAt},
+          ${aId}, ${aHistoricalSoapSourceCorrection}, ${aHistoricalSoapSource},
+          ${aHistoricalSoapReplacement}, ${aUser}, 'RLS Admin A',
+          ${aHistoricalSoapReplacementOperation}, ${historicalSoapHash})`;
+    });
+    exactHistoricalReplacementReplayAllowed =
+      replayed.length === 1 &&
+      replayed[0]!.result_id === aHistoricalSoapReplacementEvidence &&
+      replayed[0]!.was_inserted === false;
+  } catch {
+    exactHistoricalReplacementReplayAllowed = false;
+  }
+  check(
+    "SOAP replacement restore is idempotent only for exact replay evidence",
+    exactHistoricalReplacementReplayAllowed,
+  );
+
+  let conflictingHistoricalReplacementReplayBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`select public.restore_soap_note_replacement(
+        ${randomUUID()}, ${historicalSoapOccurredAt}, ${aId},
+        ${aHistoricalSoapSourceCorrection}, ${aHistoricalSoapSource},
+        ${aHistoricalSoapReplacement}, ${aUser}, 'RLS Admin A',
+        ${aHistoricalSoapReplacementOperation}, ${historicalSoapHash})`;
+    });
+  } catch {
+    conflictingHistoricalReplacementReplayBlocked = true;
+  }
+  check(
+    "SOAP replacement restore rejects conflicting operation replay",
+    conflictingHistoricalReplacementReplayBlocked,
+  );
+
+  let historicalReplacementHashMismatchBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`select public.restore_soap_note_replacement(
+        ${randomUUID()}, ${historicalSoapOccurredAt}, ${aId},
+        ${aHistoricalSoapSourceCorrection}, ${aHistoricalSoapSource},
+        ${aHistoricalSoapReplacement}, ${aUser}, 'RLS Admin A', ${randomUUID()},
+        ${"0".repeat(64)})`;
+    });
+  } catch {
+    historicalReplacementHashMismatchBlocked = true;
+  }
+  check(
+    "SOAP replacement restore rejects a mismatched exact payload hash",
+    historicalReplacementHashMismatchBlocked,
+  );
+
+  let postDeletionHistoricalReplacementBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`select public.restore_soap_note_replacement(
+        ${randomUUID()},
+        ${new Date(historicalSoapDeletedAt.getTime() + 60_000)}, ${aId},
+        ${aHistoricalSoapSourceCorrection}, ${aHistoricalSoapSource},
+        ${aHistoricalSoapReplacement}, ${aUser}, 'RLS Admin A', ${randomUUID()},
+        ${historicalSoapHash})`;
+    });
+  } catch {
+    postDeletionHistoricalReplacementBlocked = true;
+  }
+  check(
+    "SOAP replacement restore rejects links created after endpoint deletion",
+    postDeletionHistoricalReplacementBlocked,
+  );
+
+  let crossTenantHistoricalReplacementRestoreBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${bId}, true)`;
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`select public.restore_soap_note_replacement(
+        ${randomUUID()}, ${historicalSoapOccurredAt}, ${aId},
+        ${aHistoricalSoapSourceCorrection}, ${aHistoricalSoapSource},
+        ${aHistoricalSoapReplacement}, ${aUser}, 'RLS Admin A', ${randomUUID()},
+        ${historicalSoapHash})`;
+    });
+  } catch {
+    crossTenantHistoricalReplacementRestoreBlocked = true;
+  }
+  check(
+    "SOAP replacement restore cannot spoof another tenant with bypass GUCs",
+    crossTenantHistoricalReplacementRestoreBlocked,
+  );
+
+  const reverseHistoricalSoapHash = soapReplacementPayloadHash({
+    patientId: aPatient,
+    sourceNoteId: aHistoricalSoapReplacement,
+    actorId: aUser,
+    reason: historicalSoapReplacementReason,
+    subjective: "Historical source SOAP",
+  });
+  let historicalReplacementCycleBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`select public.restore_soap_note_replacement(
+        ${randomUUID()}, ${historicalSoapOccurredAt}, ${aId},
+        ${aHistoricalSoapReplacementCorrection}, ${aHistoricalSoapReplacement},
+        ${aHistoricalSoapSource}, ${aUser}, 'RLS Admin A', ${randomUUID()},
+        ${reverseHistoricalSoapHash})`;
+    });
+  } catch {
+    historicalReplacementCycleBlocked = true;
+  }
+  check(
+    "historical SOAP replacement restore remains cycle-safe",
+    historicalReplacementCycleBlocked,
   );
 
   // Tenant A context sees only A's rows.
@@ -1147,6 +1468,17 @@ try {
       aLabReplacementRows[0]!.id === aLabReplacement &&
       aLabReplacementRows[0]!.practice_id === aId,
   );
+  const aSoapReplacementRows = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id, practice_id from soap_note_replacements
+      where id in (${aSoapReplacementEvidence}, ${bSoapReplacementEvidence})`;
+  });
+  check(
+    "tenant A sees only A's SOAP replacement evidence",
+    aSoapReplacementRows.length === 1 &&
+      aSoapReplacementRows[0]!.id === aSoapReplacementEvidence &&
+      aSoapReplacementRows[0]!.practice_id === aId,
+  );
   const aLabCorrectionRows = await appTransaction(async (tx) => {
     await tx`select set_config('app.current_practice_id', ${aId}, true)`;
     return tx`select id, practice_id from clinical_record_corrections where id in (${aLabCorrection}, ${bLabCorrection})`;
@@ -1172,6 +1504,54 @@ try {
       labReplacementPrivileges[0]!.can_insert === true &&
       labReplacementPrivileges[0]!.can_update === false &&
       labReplacementPrivileges[0]!.can_delete === false,
+  );
+
+  const soapReplacementPrivileges = await owner`
+    select
+      has_table_privilege('openpims_app', 'soap_note_replacements', 'SELECT') as can_select,
+      has_table_privilege('openpims_app', 'soap_note_replacements', 'INSERT') as can_insert,
+      has_table_privilege('openpims_app', 'soap_note_replacements', 'UPDATE') as can_update,
+      has_table_privilege('openpims_app', 'soap_note_replacements', 'DELETE') as can_delete
+  `;
+  check(
+    "app role can append/read but cannot mutate SOAP replacement evidence",
+    soapReplacementPrivileges.length === 1 &&
+      soapReplacementPrivileges[0]!.can_select === true &&
+      soapReplacementPrivileges[0]!.can_insert === true &&
+      soapReplacementPrivileges[0]!.can_update === false &&
+      soapReplacementPrivileges[0]!.can_delete === false,
+  );
+
+  const soapReplacementRestorePrivileges = await owner`
+    select
+      has_function_privilege(
+        'openpims_app',
+        to_regprocedure('public.restore_soap_note_replacement(uuid,timestamptz,uuid,uuid,uuid,uuid,uuid,text,uuid,text)'),
+        'EXECUTE'
+      ) as app_can_execute,
+      coalesce((
+        select has_function_privilege(
+          role.oid,
+          to_regprocedure('public.restore_soap_note_replacement(uuid,timestamptz,uuid,uuid,uuid,uuid,uuid,text,uuid,text)'),
+          'EXECUTE'
+        )
+        from pg_roles as role where role.rolname = 'anon'
+      ), false) as anon_can_execute,
+      coalesce((
+        select has_function_privilege(
+          role.oid,
+          to_regprocedure('public.restore_soap_note_replacement(uuid,timestamptz,uuid,uuid,uuid,uuid,uuid,text,uuid,text)'),
+          'EXECUTE'
+        )
+        from pg_roles as role where role.rolname = 'authenticated'
+      ), false) as authenticated_can_execute
+  `;
+  check(
+    "only the app role can execute SOAP replacement restore",
+    soapReplacementRestorePrivileges.length === 1 &&
+      soapReplacementRestorePrivileges[0]!.app_can_execute === true &&
+      soapReplacementRestorePrivileges[0]!.anon_can_execute === false &&
+      soapReplacementRestorePrivileges[0]!.authenticated_can_execute === false,
   );
 
   let crossTenantLabReplacementInsertBlocked = false;
@@ -1213,6 +1593,46 @@ try {
     mixedTenantLabReplacementInsertBlocked,
   );
 
+  let crossTenantSoapReplacementInsertBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into soap_note_replacements
+        (practice_id, correction_id, source_soap_note_id,
+         replacement_soap_note_id, actor_id, actor_name, operation_id,
+         operation_payload_hash)
+        values (${bId}, ${bSoapCorrection}, ${bSoapSource},
+          ${bSoapReplacement}, ${bUser}, 'RLS Admin B', ${randomUUID()},
+          ${"9".repeat(64)})`;
+    });
+  } catch {
+    crossTenantSoapReplacementInsertBlocked = true;
+  }
+  check(
+    "cross-tenant SOAP replacement INSERT is blocked",
+    crossTenantSoapReplacementInsertBlocked,
+  );
+
+  let mixedTenantSoapReplacementInsertBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into soap_note_replacements
+        (practice_id, correction_id, source_soap_note_id,
+         replacement_soap_note_id, actor_id, actor_name, operation_id,
+         operation_payload_hash)
+        values (${aId}, ${bSoapCorrection}, ${bSoapSource},
+          ${bSoapReplacement}, ${bUser}, 'Mixed tenant actor', ${randomUUID()},
+          ${"a".repeat(64)})`;
+    });
+  } catch {
+    mixedTenantSoapReplacementInsertBlocked = true;
+  }
+  check(
+    "tenant-safe SOAP replacement FKs reject mixed-practice evidence",
+    mixedTenantSoapReplacementInsertBlocked,
+  );
+
   let ownerReplacementMutationBlockedWithoutMaintenance = false;
   try {
     await owner`update lab_result_replacements set actor_name = actor_name where id = ${aLabReplacement}`;
@@ -1227,6 +1647,24 @@ try {
     const maintenance = tx as unknown as typeof owner;
     await maintenance`select set_config('app.ledger_maintenance', 'on', true)`;
     await maintenance`update lab_result_replacements set actor_name = actor_name where id = ${aLabReplacement}`;
+  });
+
+  let ownerSoapReplacementMutationBlockedWithoutMaintenance = false;
+  try {
+    await owner`update soap_note_replacements set actor_name = actor_name
+      where id = ${aSoapReplacementEvidence}`;
+  } catch {
+    ownerSoapReplacementMutationBlockedWithoutMaintenance = true;
+  }
+  check(
+    "SOAP replacement owner mutation requires the maintenance GUC",
+    ownerSoapReplacementMutationBlockedWithoutMaintenance,
+  );
+  await owner.begin(async (tx) => {
+    const maintenance = tx as unknown as typeof owner;
+    await maintenance`select set_config('app.ledger_maintenance', 'on', true)`;
+    await maintenance`update soap_note_replacements set actor_name = actor_name
+      where id = ${aSoapReplacementEvidence}`;
   });
 
   let ownerCorrectionMutationBlockedWithoutMaintenance = false;
@@ -1960,6 +2398,21 @@ try {
     "application role cannot delete lab replacement evidence even with bypass GUCs",
     bypassCannotDeleteLabReplacement,
   );
+  let bypassCannotDeleteSoapReplacement = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`select set_config('app.ledger_maintenance', 'on', true)`;
+      await tx`delete from soap_note_replacements
+        where id = ${aSoapReplacementEvidence}`;
+    });
+  } catch {
+    bypassCannotDeleteSoapReplacement = true;
+  }
+  check(
+    "application role cannot delete SOAP replacement evidence even with bypass GUCs",
+    bypassCannotDeleteSoapReplacement,
+  );
   let bypassCannotDeleteClinicalCorrection = false;
   try {
     await appTransaction(async (tx) => {
@@ -1990,9 +2443,10 @@ try {
     await cleanup`delete from sms_delivery_events where id in (${aSmsDeliveryEvent}, ${bSmsDeliveryEvent}, ${unmatchedSmsDeliveryEvent})`;
     await cleanup`delete from lab_result_events where id in (${aLabResultEvent}, ${bLabResultEvent})`;
     await cleanup`delete from lab_result_replacements where id in (${aLabReplacement}, ${bLabReplacement})`;
+    await cleanup`delete from soap_note_replacements where id in (${aSoapReplacementEvidence}, ${bSoapReplacementEvidence}, ${aHistoricalSoapReplacementEvidence})`;
     await cleanup`delete from soap_note_addenda where id in (${aSoapAddendum}, ${aSoapRestoreAddendum}, ${aSoapDeletedRestoreAddendum})`;
-    await cleanup`delete from clinical_record_corrections where id in (${aLabCorrection}, ${bLabCorrection}, ${aSoapCorrection})`;
-    await cleanup`delete from soap_notes where id in (${aSoapSource}, ${aSoapReplacement}, ${aSoapDeletedSource}, ${aSoapDraft})`;
+    await cleanup`delete from clinical_record_corrections where id in (${aLabCorrection}, ${bLabCorrection}, ${aSoapCorrection}, ${bSoapCorrection}, ${aHistoricalSoapSourceCorrection}, ${aHistoricalSoapReplacementCorrection})`;
+    await cleanup`delete from soap_notes where id in (${aSoapSource}, ${aSoapReplacement}, ${bSoapSource}, ${bSoapReplacement}, ${aSoapDeletedSource}, ${aSoapDraft}, ${aHistoricalSoapSource}, ${aHistoricalSoapReplacement})`;
     await cleanup`delete from lab_results where id in (${aLabResult}, ${bLabResult}, ${aReplacementLabResult}, ${bReplacementLabResult})`;
     await cleanup`delete from sms_send_attempt_events where id in (${aSmsSendAttemptEvent}, ${bSmsSendAttemptEvent}, ${aAppSmsSendAttemptEvent})`;
     await cleanup`delete from sms_send_attempts where id in (${aSmsSendAttempt}, ${bSmsSendAttempt}, ${aAppSmsSendAttempt})`;
@@ -2007,7 +2461,7 @@ try {
     await cleanup`delete from practice_conversion_milestones where practice_id = ${aId}`;
     await cleanup`delete from invoices where id in (${aInvoice}, ${bInvoice})`;
     await cleanup`delete from migration_runs where id in (${aMigrationRun}, ${bMigrationRun})`;
-    await cleanup`delete from appointments where id in (${aAppointment}, ${bAppointment}, ${aSoapLegalAppointment}, ${aSoapDraftFinalAppointment}, ${aSoapDoubleFinalAppointment}, ${aSoapDiscardAppointment})`;
+    await cleanup`delete from appointments where id in (${aAppointment}, ${bAppointment}, ${aSoapLegalAppointment}, ${bSoapLegalAppointment}, ${aSoapDraftFinalAppointment}, ${aSoapDoubleFinalAppointment}, ${aSoapDiscardAppointment})`;
     await cleanup`delete from prescriptions where id in (${aPrescription}, ${bPrescription})`;
     await cleanup`delete from products where id in (${aProduct}, ${bProduct})`;
     await cleanup`delete from patients where id in (${aPatient}, ${bPatient}, ${aMergeTargetPatient}, ${bMergeTargetPatient}, ${aLineageCandidatePatient})`;

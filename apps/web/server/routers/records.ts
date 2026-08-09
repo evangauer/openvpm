@@ -42,6 +42,7 @@ import {
   visitWorkItems,
   clinicalRecordCorrections,
   soapNoteAddenda,
+  soapNoteReplacements,
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
@@ -115,6 +116,7 @@ import {
   discardAppointmentSoapDraft,
   finalizeAppointmentSoapDraft,
   getAppointmentSoapDraft,
+  replaceFinalizedSoapNote,
   saveAppointmentSoapDraft,
   SoapLifecycleError,
 } from "@/lib/records/soap-lifecycle";
@@ -1121,6 +1123,14 @@ export const recordsRouter = createRouter({
   listSoapNotes: protectedProcedure
     .input(z.object({ patientId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
+      const replacementFromSource = alias(
+        soapNoteReplacements,
+        "soap_replacement_from_source",
+      );
+      const sourceFromReplacement = alias(
+        soapNoteReplacements,
+        "soap_source_from_replacement",
+      );
       const notes = await ctx.db
         .select({
           id: soapNotes.id,
@@ -1145,6 +1155,11 @@ export const recordsRouter = createRouter({
           correctedAt: clinicalRecordCorrections.createdAt,
           correctedBy: clinicalRecordCorrections.correctedBy,
           correctedByName: clinicalRecordCorrections.correctedByName,
+          replacementSoapNoteId:
+            replacementFromSource.replacementSoapNoteId,
+          replacementCreatedAt: replacementFromSource.createdAt,
+          replacementActorName: replacementFromSource.actorName,
+          replacesSoapNoteId: sourceFromReplacement.sourceSoapNoteId,
         })
         .from(soapNotes)
         .leftJoin(
@@ -1153,6 +1168,20 @@ export const recordsRouter = createRouter({
             eq(clinicalRecordCorrections.soapNoteId, soapNotes.id),
             eq(clinicalRecordCorrections.practiceId, ctx.practiceId)
           )
+        )
+        .leftJoin(
+          replacementFromSource,
+          and(
+            eq(replacementFromSource.sourceSoapNoteId, soapNotes.id),
+            eq(replacementFromSource.practiceId, ctx.practiceId),
+          ),
+        )
+        .leftJoin(
+          sourceFromReplacement,
+          and(
+            eq(sourceFromReplacement.replacementSoapNoteId, soapNotes.id),
+            eq(sourceFromReplacement.practiceId, ctx.practiceId),
+          ),
         )
         .where(
           and(
@@ -1299,7 +1328,16 @@ export const recordsRouter = createRouter({
             )
           )
           .limit(1);
-        if (existing) return existing;
+        if (existing) {
+          if (existing.reason !== input.reason) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "This SOAP note already has a different permanent correction reason. Refresh the chart.",
+            });
+          }
+          return existing;
+        }
 
         throw new TRPCError({
           code: "CONFLICT",
@@ -1307,6 +1345,57 @@ export const recordsRouter = createRouter({
         });
       })
     ),
+
+  replaceSoapNote: protectedProcedure
+    .use(requireRole("admin", "veterinarian"))
+    .input(
+      z.object({
+        patientId: z.string().uuid(),
+        sourceNoteId: z.string().uuid(),
+        operationId: z.string().uuid(),
+        reason: z
+          .string()
+          .trim()
+          .min(CLINICAL_CORRECTION_REASON_MIN_LENGTH)
+          .max(CLINICAL_CORRECTION_REASON_MAX_LENGTH),
+        ...soapSectionsInput,
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      let result;
+      try {
+        result = await ctx.db.transaction((tx) =>
+          replaceFinalizedSoapNote(tx as unknown as Database, {
+            practiceId: ctx.practiceId,
+            patientId: input.patientId,
+            sourceNoteId: input.sourceNoteId,
+            operationId: input.operationId,
+            reason: input.reason,
+            actor: { id: ctx.user.id, name: ctx.user.name },
+            sections: input,
+          }),
+        );
+      } catch (error) {
+        rethrowSoapLifecycleError(error);
+      }
+      if (!result.replayed) {
+        const dispatch = () =>
+          dispatchWebhookEvent(ctx.practiceId, "soap_note.created", {
+            id: result.note.id,
+            patientId: result.note.patientId,
+            appointmentId: result.note.appointmentId,
+            authorId: result.note.authorId,
+            replacesSoapNoteId: input.sourceNoteId.toLowerCase(),
+            source: "dashboard",
+          });
+        if (ctx.postCommitEffect) {
+          ctx.postCommitEffect(async () => dispatch());
+        } else {
+          await dispatch();
+        }
+      }
+      return result.note;
+    }),
 
   createSoapNote: protectedProcedure
     .use(requireRole("admin", "veterinarian"))

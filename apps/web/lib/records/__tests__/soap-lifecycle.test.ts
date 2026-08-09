@@ -6,6 +6,7 @@ import {
   createFinalizedAppointmentSoapNote,
   discardAppointmentSoapDraft,
   finalizeAppointmentSoapDraft,
+  replaceFinalizedSoapNote,
   saveAppointmentSoapDraft,
 } from "../soap-lifecycle";
 
@@ -59,6 +60,7 @@ function lifecycleDb(opts: {
     const rows = selectResults.shift() ?? [];
     const builder: Record<string, any> = {};
     builder.from = vi.fn(() => builder);
+    builder.innerJoin = vi.fn(() => builder);
     builder.where = vi.fn(() => builder);
     builder.limit = vi.fn(() => builder);
     builder.for = vi.fn(async () => rows);
@@ -93,6 +95,7 @@ function lifecycleDb(opts: {
     insert: vi.fn(() => ({ values: insertValues })),
     update: vi.fn(() => ({ set: updateSet })),
     delete: vi.fn(() => ({ where: deleteWhere })),
+    execute: vi.fn(async () => undefined),
   };
   return {
     db: db as unknown as Database,
@@ -107,6 +110,160 @@ function visitPrefix() {
 }
 
 describe("SOAP lifecycle service", () => {
+  it("atomically finalizes a replacement after checkout and records immutable lineage", async () => {
+    const source = note({
+      status: "finalized",
+      finalizedAt: new Date("2026-08-09T16:10:00.000Z"),
+      finalizedBy: USER_ID,
+      finalizerName: actor.name,
+    });
+    const correction = {
+      id: "00000000-0000-4000-8000-000000000007",
+      reason: "Assessment was signed on the wrong encounter.",
+    };
+    const replacement = note({
+      id: "00000000-0000-4000-8000-000000000008",
+      status: "finalized",
+      subjective: "Corrected history",
+      finalizedAt: new Date("2026-08-09T17:00:00.000Z"),
+      finalizedBy: USER_ID,
+      finalizerName: actor.name,
+    });
+    const { db, insertValues } = lifecycleDb({
+      selectResults: [
+        [],
+        [{ appointmentId: APPOINTMENT_ID }],
+        [{ id: APPOINTMENT_ID }],
+        [source],
+        [],
+        [],
+        [],
+        [],
+      ],
+      insertResults: [[correction], [replacement]],
+    });
+
+    await expect(
+      replaceFinalizedSoapNote(db, {
+        practiceId: PRACTICE_ID,
+        patientId: PATIENT_ID,
+        sourceNoteId: NOTE_ID,
+        operationId: OPERATION_ID,
+        reason: correction.reason,
+        actor,
+        sections: { subjective: " Corrected history " },
+      }),
+    ).resolves.toEqual({ note: replacement, replayed: false });
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recordType: "soap_note",
+        soapNoteId: NOTE_ID,
+        reason: correction.reason,
+      }),
+    );
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceSoapNoteId: NOTE_ID,
+        replacementSoapNoteId: replacement.id,
+        correctionId: correction.id,
+        operationId: OPERATION_ID,
+      }),
+    );
+    const finalizedReplacementValues = insertValues.mock.calls
+      .map(([values]) => values as Record<string, unknown>)
+      .find((values) => values.status === "finalized");
+    expect(finalizedReplacementValues?.finalizedAt).not.toBeInstanceOf(Date);
+  });
+
+  it("requires the existing permanent reason when recovering an already-corrected SOAP", async () => {
+    const source = note({
+      status: "finalized",
+      finalizedAt: new Date(),
+      finalizedBy: USER_ID,
+      finalizerName: actor.name,
+    });
+    const { db, insertValues } = lifecycleDb({
+      selectResults: [
+        [],
+        [{ appointmentId: APPOINTMENT_ID }],
+        [{ id: APPOINTMENT_ID }],
+        [source],
+        [],
+        [],
+        [],
+        [
+          {
+            id: "00000000-0000-4000-8000-000000000007",
+            reason: "Permanent reason",
+          },
+        ],
+      ],
+    });
+    await expect(
+      replaceFinalizedSoapNote(db, {
+        practiceId: PRACTICE_ID,
+        patientId: PATIENT_ID,
+        sourceNoteId: NOTE_ID,
+        operationId: OPERATION_ID,
+        reason: "Different reason",
+        actor,
+        sections: { plan: "Corrected plan" },
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("replays the exact SOAP replacement operation without creating another note", async () => {
+    const replacement = note({
+      id: "00000000-0000-4000-8000-000000000008",
+      status: "finalized",
+      subjective: "Corrected history",
+      finalizedAt: new Date(),
+      finalizedBy: USER_ID,
+      finalizerName: actor.name,
+    });
+    const reason = "Assessment was signed on the wrong encounter.";
+    const payloadHash = createHash("sha256")
+      .update(
+        JSON.stringify({
+          patientId: PATIENT_ID,
+          sourceNoteId: NOTE_ID,
+          actorId: USER_ID,
+          reason,
+          subjective: "Corrected history",
+          objective: null,
+          assessment: null,
+          plan: null,
+        }),
+      )
+      .digest("hex");
+    const { db, insertValues } = lifecycleDb({
+      selectResults: [
+        [
+          {
+            sourceNoteId: NOTE_ID,
+            replacementNote: replacement,
+            operationPayloadHash: payloadHash,
+            correctionReason: reason,
+            correctionSoapNoteId: NOTE_ID,
+          },
+        ],
+      ],
+    });
+    await expect(
+      replaceFinalizedSoapNote(db, {
+        practiceId: PRACTICE_ID,
+        patientId: PATIENT_ID,
+        sourceNoteId: NOTE_ID,
+        operationId: OPERATION_ID,
+        reason,
+        actor,
+        sections: { subjective: "Corrected history" },
+      }),
+    ).resolves.toEqual({ note: replacement, replayed: true });
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("creates one persisted draft with server attribution and explicit null sections", async () => {
     const created = note();
     const { db, insertValues } = lifecycleDb({
@@ -286,6 +443,21 @@ describe("SOAP lifecycle service", () => {
         actor,
       }),
     ).resolves.toEqual({ outcome: "conflict", note: finalized });
+  });
+
+  it("does not misreport an entered-in-error finalized note as a successful stale retry", async () => {
+    const closedVisit = { ...openVisit, status: "checked_out" };
+    const corrected = lifecycleDb({ selectResults: [[closedVisit], []] });
+    await expect(
+      finalizeAppointmentSoapDraft(corrected.db, {
+        practiceId: PRACTICE_ID,
+        patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
+        noteId: NOTE_ID,
+        expectedRevision: 1,
+        actor,
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
   });
 
   it("reports remote finalization to save and discard after visit close", async () => {

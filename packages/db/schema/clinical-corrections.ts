@@ -97,6 +97,9 @@ export const clinicalRecordCorrections = pgTable(
     practiceRecordLabSourceUq: uniqueIndex(
       "clinical_record_corrections_practice_record_lab_source_uq",
     ).on(table.practiceId, table.id, table.labResultId),
+    practiceRecordSoapSourceUq: uniqueIndex(
+      "clinical_record_corrections_practice_record_soap_source_uq",
+    ).on(table.practiceId, table.id, table.soapNoteId),
     appointmentPracticeFk: foreignKey({
       columns: [table.practiceId, table.appointmentId, table.patientId],
       foreignColumns: [

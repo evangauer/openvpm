@@ -34,6 +34,7 @@ import {
   labResults,
   vaccinationRecords,
   services,
+  soapNoteReplacements,
   soapNotes,
   visitCloseouts,
   visitWorkItems,
@@ -656,6 +657,7 @@ export const encountersRouter = createRouter({
         closeout,
         linkedSoapRows,
         soapDraftRows,
+        missingSoapReplacementRows,
         medications,
         followUpAppointments,
         followUpAssignees,
@@ -694,6 +696,34 @@ export const encountersRouter = createRouter({
               isNull(soapNotes.deletedAt),
             ),
           )
+          .limit(1),
+        ctx.db
+          .select({
+            sourceNoteId: soapNotes.id,
+            correctionReason: clinicalRecordCorrections.reason,
+          })
+          .from(soapNotes)
+          .innerJoin(
+            clinicalRecordCorrections,
+            and(
+              eq(clinicalRecordCorrections.practiceId, ctx.practiceId),
+              eq(clinicalRecordCorrections.soapNoteId, soapNotes.id),
+            ),
+          )
+          .where(
+            and(
+              eq(soapNotes.appointmentId, input.appointmentId),
+              eq(soapNotes.practiceId, ctx.practiceId),
+              eq(soapNotes.status, "finalized"),
+              isNull(soapNotes.deletedAt),
+              sql`not exists (
+                select 1 from ${soapNoteReplacements}
+                where ${soapNoteReplacements.practiceId} = ${ctx.practiceId}
+                  and ${soapNoteReplacements.sourceSoapNoteId} = ${soapNotes.id}
+              )`,
+            ),
+          )
+          .orderBy(desc(clinicalRecordCorrections.createdAt))
           .limit(1),
         ctx.db
           .select({
@@ -827,6 +857,14 @@ export const encountersRouter = createRouter({
         },
         linkedSoapCount: linkedSoapRows.length,
         soapDraft: soapDraftRows[0] ?? null,
+        // A legacy or independently authored current SOAP satisfies the
+        // encounter even when an older corrected note has no explicit
+        // replacement edge. Only surface recovery when no effective final
+        // SOAP exists.
+        missingSoapReplacement:
+          linkedSoapRows.length === 0
+            ? (missingSoapReplacementRows[0] ?? null)
+            : null,
         medications: medicationHistory,
         activeMedications: medicationHistory.filter(
           (medication) => medication.effectiveStatus === "active",
@@ -1649,24 +1687,28 @@ export const encountersRouter = createRouter({
           });
         }
 
-        const [soap] = await tx
-          .select({ id: soapNotes.id })
+        const soapRows = await tx
+          .select({
+            id: soapNotes.id,
+            correctionId: clinicalRecordCorrections.id,
+          })
           .from(soapNotes)
+          .leftJoin(
+            clinicalRecordCorrections,
+            and(
+              eq(clinicalRecordCorrections.practiceId, ctx.practiceId),
+              eq(clinicalRecordCorrections.soapNoteId, soapNotes.id),
+            ),
+          )
           .where(
             and(
               eq(soapNotes.appointmentId, input.appointmentId),
               eq(soapNotes.practiceId, ctx.practiceId),
               eq(soapNotes.status, "finalized"),
               isNull(soapNotes.deletedAt),
-              sql`not exists (
-                select 1
-                from ${clinicalRecordCorrections}
-                where ${clinicalRecordCorrections.practiceId} = ${ctx.practiceId}
-                  and ${clinicalRecordCorrections.soapNoteId} = ${soapNotes.id}
-              )`
-            )
-          )
-          .limit(1);
+            ),
+          );
+        const soap = soapRows.find((row) => !row.correctionId);
         const [soapDraft] = await tx
           .select({ id: soapNotes.id })
           .from(soapNotes)

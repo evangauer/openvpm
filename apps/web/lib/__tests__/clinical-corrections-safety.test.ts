@@ -6,6 +6,7 @@ import {
   clinicalRecordCorrections,
   labResultReplacements,
   patients,
+  soapNoteReplacements,
   soapNotes,
   users,
   vaccinationRecords,
@@ -315,6 +316,75 @@ describe("clinical correction schema and migration", () => {
     });
     expect(replacementConfig.checks.map((check) => check.name)).toContain(
       "lab_result_replacements_shape_check",
+    );
+  });
+
+  it("models SOAP replacement lineage as a separate exact append-only ledger", () => {
+    const correctionConfig = getTableConfig(clinicalRecordCorrections);
+    const replacementConfig = getTableConfig(soapNoteReplacements);
+    const correctionIndexes = correctionConfig.indexes.map(
+      (index) => index.config.name,
+    );
+    const replacementColumns = replacementConfig.columns.map(
+      (column) => column.name,
+    );
+    const replacementIndexes = replacementConfig.indexes.map(
+      (index) => index.config.name,
+    );
+    const replacementForeignKeys = replacementConfig.foreignKeys.map(
+      (foreignKey) => foreignKey.reference().name,
+    );
+
+    expect(correctionIndexes).toContain(
+      "clinical_record_corrections_practice_record_soap_source_uq",
+    );
+    expect(replacementColumns).toEqual(
+      expect.arrayContaining([
+        "practice_id",
+        "correction_id",
+        "source_soap_note_id",
+        "replacement_soap_note_id",
+        "actor_id",
+        "actor_name",
+        "operation_id",
+        "operation_payload_hash",
+      ]),
+    );
+    expect(replacementColumns).not.toContain("updated_at");
+    expect(replacementColumns).not.toContain("deleted_at");
+    expect(replacementIndexes).toEqual(
+      expect.arrayContaining([
+        "soap_note_replacements_source_uq",
+        "soap_note_replacements_replacement_uq",
+        "soap_note_replacements_operation_uq",
+      ]),
+    );
+    expect(replacementForeignKeys).toEqual(
+      expect.arrayContaining([
+        "soap_note_replacements_source_tenant_fk",
+        "soap_note_replacements_replacement_tenant_fk",
+        "soap_note_replacements_correction_source_tenant_fk",
+        "soap_note_replacements_actor_tenant_fk",
+      ]),
+    );
+    const exactCorrectionReference = replacementConfig.foreignKeys
+      .find(
+        (foreignKey) =>
+          foreignKey.reference().name ===
+          "soap_note_replacements_correction_source_tenant_fk",
+      )
+      ?.reference();
+    expect({
+      columns: exactCorrectionReference?.columns.map((column) => column.name),
+      foreignColumns: exactCorrectionReference?.foreignColumns.map(
+        (column) => column.name,
+      ),
+    }).toEqual({
+      columns: ["practice_id", "correction_id", "source_soap_note_id"],
+      foreignColumns: ["practice_id", "id", "soap_note_id"],
+    });
+    expect(replacementConfig.checks.map((check) => check.name)).toContain(
+      "soap_note_replacements_shape_check",
     );
   });
 });

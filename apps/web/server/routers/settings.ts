@@ -1310,12 +1310,12 @@ export const settingsRouter = createRouter({
     const demo = settings.demoData;
     if (demo) {
       const now = new Date();
-      let demoSoapNoteIds = demo.soapNoteIds ?? [];
-      if (
-        demoSoapNoteIds.length === 0 &&
-        (demo.appointmentIds.length > 0 || demo.patientIds.length > 0)
-      ) {
-        const legacyDemoSoapNotes = await ctx.db
+      const storedDemoSoapNoteIds = demo.soapNoteIds ?? [];
+      let demoSoapNoteIds = [...storedDemoSoapNoteIds];
+      if (demo.appointmentIds.length > 0 || demo.patientIds.length > 0) {
+        // Always discover every descendant note. Replacement SOAPs can be
+        // created after seeding and therefore are not present in saved IDs.
+        const discoveredDemoSoapNotes = await ctx.db
           .select({ id: soapNotes.id })
           .from(soapNotes)
           .where(
@@ -1327,8 +1327,13 @@ export const settingsRouter = createRouter({
               ),
             ),
           );
-        demoSoapNoteIds = legacyDemoSoapNotes.map((note) => note.id);
-        if (demoSoapNoteIds.length > 0) {
+        demoSoapNoteIds = [
+          ...new Set([
+            ...storedDemoSoapNoteIds,
+            ...discoveredDemoSoapNotes.map((note) => note.id),
+          ]),
+        ];
+        if (demoSoapNoteIds.length !== storedDemoSoapNoteIds.length) {
           await ctx.db
             .update(practices)
             .set({

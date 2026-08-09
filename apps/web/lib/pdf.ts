@@ -440,6 +440,7 @@ export interface MedicalSummaryData {
     authorName?: string;
     finalizerName?: string;
     finalizedAt?: string;
+    replacementForLabel?: string;
     addenda?: Array<{ content: string; authorName: string; createdAt: string }>;
   }>;
   recordCorrections?: Array<{
@@ -447,6 +448,7 @@ export interface MedicalSummaryData {
     reason: string;
     correctedByName: string;
     correctedAt: string;
+    replacementLabel?: string;
   }>;
   prescriptions: Array<{
     medication: string;
@@ -701,6 +703,16 @@ export function generateMedicalSummaryPdf(data: MedicalSummaryData): jsPDF {
         : `Authored by ${note.authorName ?? "Unknown clinician"}; finalized by ${note.finalizerName ?? "Unknown clinician"}${note.finalizedAt ? ` on ${note.finalizedAt}` : ""}`;
       writeWrappedText(attribution, PAGE_MARGIN, CONTENT_WIDTH);
       y += 2;
+      if (note.replacementForLabel) {
+        doc.setFont(FONT, "bold");
+        setColor(doc, COLOR_TEAL);
+        writeWrappedText(
+          `Signed replacement for retained ${note.replacementForLabel}`,
+          PAGE_MARGIN,
+          CONTENT_WIDTH,
+        );
+        y += 2;
+      }
 
       doc.setFontSize(9);
       const soapSections: [string, string | undefined][] = [
@@ -775,6 +787,15 @@ export function generateMedicalSummaryPdf(data: MedicalSummaryData): jsPDF {
         PAGE_MARGIN + 4,
         CONTENT_WIDTH - 8,
       );
+      if (correction.replacementLabel) {
+        doc.setFont(FONT, "bold");
+        setColor(doc, COLOR_TEAL);
+        writeWrappedText(
+          `Signed replacement: ${correction.replacementLabel}`,
+          PAGE_MARGIN + 4,
+          CONTENT_WIDTH - 8,
+        );
+      }
       y += 3;
     }
   }

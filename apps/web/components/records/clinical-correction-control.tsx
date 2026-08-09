@@ -24,6 +24,7 @@ export function ClinicalCorrectionControl({
   isPending,
   onCorrect,
   description,
+  triggerLabel,
   timeZone,
 }: {
   correction?: ExistingCorrection | null;
@@ -31,6 +32,7 @@ export function ClinicalCorrectionControl({
   isPending: boolean;
   onCorrect: (reason: string) => Promise<unknown>;
   description?: string;
+  triggerLabel?: string;
   timeZone?: string | null;
 }) {
   const [editing, setEditing] = useState(false);
@@ -82,7 +84,7 @@ export function ClinicalCorrectionControl({
             variant="outline"
             className="text-destructive"
           >
-            Mark entered in error
+            {triggerLabel ?? "Mark entered in error"}
           </Button>
         </DialogPrimitive.Trigger>
       </div>
