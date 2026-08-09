@@ -1331,6 +1331,15 @@ describe("committed Drizzle migrations", () => {
     expect(sql).toContain(
       "messaging_registration_events_registration_tenant_fk",
     );
+    expect(
+      sql.indexOf(
+        'CREATE UNIQUE INDEX "messaging_registrations_practice_id_uq"',
+      ),
+    ).toBeLessThan(
+      sql.indexOf(
+        'ADD CONSTRAINT "messaging_registration_events_registration_tenant_fk"',
+      ),
+    );
     expect(sql).toContain("messaging_registration_events_location_tenant_fk");
     expect(sql).toContain("messaging_registration_events_actor_tenant_fk");
     expect(sql).toContain("messaging_registration_events_shape_check");

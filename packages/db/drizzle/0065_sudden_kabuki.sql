@@ -92,13 +92,13 @@ ALTER TABLE "messaging_registration_events" ADD CONSTRAINT "messaging_registrati
 ALTER TABLE "messaging_registration_events" ADD CONSTRAINT "messaging_registration_events_registration_id_messaging_registrations_id_fk" FOREIGN KEY ("registration_id") REFERENCES "public"."messaging_registrations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "messaging_registration_events" ADD CONSTRAINT "messaging_registration_events_location_id_locations_id_fk" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "messaging_registration_events" ADD CONSTRAINT "messaging_registration_events_actor_user_id_users_id_fk" FOREIGN KEY ("actor_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+CREATE UNIQUE INDEX "messaging_registrations_practice_id_uq" ON "messaging_registrations" USING btree ("practice_id","id");--> statement-breakpoint
 ALTER TABLE "messaging_registration_events" ADD CONSTRAINT "messaging_registration_events_registration_tenant_fk" FOREIGN KEY ("practice_id","registration_id") REFERENCES "public"."messaging_registrations"("practice_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "messaging_registration_events" ADD CONSTRAINT "messaging_registration_events_location_tenant_fk" FOREIGN KEY ("practice_id","location_id") REFERENCES "public"."locations"("practice_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "messaging_registration_events" ADD CONSTRAINT "messaging_registration_events_actor_tenant_fk" FOREIGN KEY ("practice_id","actor_user_id") REFERENCES "public"."users"("practice_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "messaging_registration_events_registration_history_idx" ON "messaging_registration_events" USING btree ("practice_id","registration_id","created_at","id");--> statement-breakpoint
 CREATE INDEX "messaging_registration_events_practice_time_idx" ON "messaging_registration_events" USING btree ("practice_id","created_at","id");--> statement-breakpoint
 CREATE UNIQUE INDEX "messaging_registration_events_operation_event_uq" ON "messaging_registration_events" USING btree ("practice_id","operation_id","event_type");--> statement-breakpoint
-CREATE UNIQUE INDEX "messaging_registrations_practice_id_uq" ON "messaging_registrations" USING btree ("practice_id","id");--> statement-breakpoint
 CREATE OR REPLACE FUNCTION validate_messaging_registration_event_insert()
 RETURNS trigger
 LANGUAGE plpgsql
