@@ -13004,6 +13004,130 @@
       },
       "isRLSEnabled": false
     },
+    "public.auth_email_webhook_conflicts": {
+      "name": "auth_email_webhook_conflicts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "received_at": {
+          "name": "received_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "original_webhook_id": {
+          "name": "original_webhook_id",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "incoming_raw_body_fingerprint": {
+          "name": "incoming_raw_body_fingerprint",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider": {
+          "name": "provider",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'resend'"
+        },
+        "incoming_provider_message_id": {
+          "name": "incoming_provider_message_id",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "incoming_event_type": {
+          "name": "incoming_event_type",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "auth_email_webhook_conflicts_identity_uq": {
+          "name": "auth_email_webhook_conflicts_identity_uq",
+          "columns": [
+            {
+              "expression": "original_webhook_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "incoming_raw_body_fingerprint",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "auth_email_webhook_conflicts_recovery_idx": {
+          "name": "auth_email_webhook_conflicts_recovery_idx",
+          "columns": [
+            {
+              "expression": "received_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "auth_email_webhook_conflicts_webhook_fk": {
+          "name": "auth_email_webhook_conflicts_webhook_fk",
+          "tableFrom": "auth_email_webhook_conflicts",
+          "tableTo": "auth_email_delivery_events",
+          "columnsFrom": ["original_webhook_id"],
+          "columnsTo": ["webhook_id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "auth_email_webhook_conflicts_provider_check": {
+          "name": "auth_email_webhook_conflicts_provider_check",
+          "value": "\"auth_email_webhook_conflicts\".\"provider\" = 'resend'"
+        },
+        "auth_email_webhook_conflicts_event_type_check": {
+          "name": "auth_email_webhook_conflicts_event_type_check",
+          "value": "\"auth_email_webhook_conflicts\".\"incoming_event_type\" ~ '^email\\.'"
+        },
+        "auth_email_webhook_conflicts_raw_body_fingerprint_check": {
+          "name": "auth_email_webhook_conflicts_raw_body_fingerprint_check",
+          "value": "\"auth_email_webhook_conflicts\".\"incoming_raw_body_fingerprint\" ~ '^[0-9a-f]{64}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.email_suppressions": {
       "name": "email_suppressions",
       "schema": "",

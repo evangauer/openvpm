@@ -86,7 +86,9 @@ const aAppSmsSendAttempt = randomUUID();
 const aAppSmsSendAttemptEvent = randomUUID();
 const aAuthEmailAttempt = randomUUID();
 const aTransitionAuthEmailAttempt = randomUUID();
+const aRepairAuthEmailAttempt = randomUUID();
 const aAuthEmailDeliveryEvent = randomUUID();
+const aAuthEmailWebhookConflict = randomUUID();
 const aSmsDeliveryEvent = randomUUID();
 const bSmsDeliveryEvent = randomUUID();
 const unmatchedSmsDeliveryEvent = randomUUID();
@@ -136,11 +138,25 @@ try {
       ${"a".repeat(64)},
       ${`resend-${aAuthEmailAttempt}`}, ${aAuthEmailAttempt},
       'email.delivered', 'delivered', 'attempt_tag', now())`;
+  await owner`insert into auth_email_webhook_conflicts
+    (id, original_webhook_id, incoming_raw_body_fingerprint,
+     incoming_provider_message_id, incoming_event_type)
+    values
+    (${aAuthEmailWebhookConflict}, ${`svix-${aAuthEmailDeliveryEvent}`},
+      ${"b".repeat(64)}, ${`resend-conflict-${aAuthEmailAttempt}`},
+      'email.failed')`;
   await owner`insert into auth_email_attempts
     (id, practice_id, user_id, source, provider, idempotency_key)
     values
     (${aTransitionAuthEmailAttempt}, ${aId}, ${aUser}, 'authenticated_resend',
       'console', ${`rls-auth:${aTransitionAuthEmailAttempt}`})`;
+  await owner`insert into auth_email_attempts
+    (id, practice_id, user_id, source, provider, idempotency_key,
+     outcome, resolved_at, failure_code)
+    values
+    (${aRepairAuthEmailAttempt}, ${aId}, ${aUser}, 'authenticated_resend',
+      'resend', ${`rls-auth:${aRepairAuthEmailAttempt}`},
+      'outcome_unknown', now(), 'send_timeout')`;
   await owner`insert into sms_consent_events
     (id, practice_id, client_id, destination_e164, action, source, detail, actor_type, event_key)
     values
@@ -324,6 +340,14 @@ try {
   check(
     "tenant context cannot read system-only auth email delivery evidence",
     hiddenAuthEmailDelivery.length === 0,
+  );
+  const hiddenAuthEmailConflict = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id from auth_email_webhook_conflicts where id = ${aAuthEmailWebhookConflict}`;
+  });
+  check(
+    "tenant context cannot read system-only auth email conflict evidence",
+    hiddenAuthEmailConflict.length === 0,
   );
 
   let tenantAuthEmailInsertBlocked = false;
@@ -1249,6 +1273,14 @@ try {
     "system bypass can read auth email attempts",
     systemAuthEmailRows.length === 1,
   );
+  const systemAuthEmailConflictRows = await appTransaction(async (tx) => {
+    await tx`select set_config('app.rls_bypass', 'on', true)`;
+    return tx`select id from auth_email_webhook_conflicts where id = ${aAuthEmailWebhookConflict}`;
+  });
+  check(
+    "system bypass can read auth email conflict evidence",
+    systemAuthEmailConflictRows.length === 1,
+  );
 
   const transitionedAuthEmailAttempt = await appTransaction(async (tx) => {
     await tx`select set_config('app.rls_bypass', 'on', true)`;
@@ -1262,6 +1294,21 @@ try {
     "system bypass can resolve a reserved auth email attempt exactly once",
     transitionedAuthEmailAttempt.length === 1 &&
       transitionedAuthEmailAttempt[0]!.outcome === "accepted",
+  );
+
+  const repairedUnknownAuthEmailAttempt = await appTransaction(async (tx) => {
+    await tx`select set_config('app.rls_bypass', 'on', true)`;
+    return tx`update auth_email_attempts
+      set outcome = 'accepted', resolved_at = now(),
+          provider_message_id = ${`resend-repaired-${aRepairAuthEmailAttempt}`},
+          failure_code = null
+      where id = ${aRepairAuthEmailAttempt} and outcome = 'outcome_unknown'
+      returning outcome`;
+  });
+  check(
+    "system bypass can repair an unknown Resend outcome to accepted",
+    repairedUnknownAuthEmailAttempt.length === 1 &&
+      repairedUnknownAuthEmailAttempt[0]!.outcome === "accepted",
   );
 
   let appCannotReresolveAuthEmailAttempt = false;
@@ -1327,6 +1374,17 @@ try {
   check(
     "database trigger keeps auth email delivery evidence immutable for the owner",
     ownerCannotRewriteAuthEmailDelivery,
+  );
+  let ownerCannotRewriteAuthEmailConflict = false;
+  try {
+    await owner`update auth_email_webhook_conflicts
+      set received_at = received_at where id = ${aAuthEmailWebhookConflict}`;
+  } catch {
+    ownerCannotRewriteAuthEmailConflict = true;
+  }
+  check(
+    "database trigger keeps auth email conflict evidence immutable for the owner",
+    ownerCannotRewriteAuthEmailConflict,
   );
 
   let bypassCannotDeletePrescriptionHistory = false;
@@ -1409,8 +1467,9 @@ try {
   await owner.begin(async (tx) => {
     const cleanup = tx as unknown as typeof owner;
     await cleanup`select set_config('app.ledger_maintenance', 'on', true)`;
+    await cleanup`delete from auth_email_webhook_conflicts where id = ${aAuthEmailWebhookConflict}`;
     await cleanup`delete from auth_email_delivery_events where id = ${aAuthEmailDeliveryEvent}`;
-    await cleanup`delete from auth_email_attempts where id in (${aAuthEmailAttempt}, ${aTransitionAuthEmailAttempt})`;
+    await cleanup`delete from auth_email_attempts where id in (${aAuthEmailAttempt}, ${aTransitionAuthEmailAttempt}, ${aRepairAuthEmailAttempt})`;
     await cleanup`delete from sms_delivery_event_history where id in (${aSmsDeliveryHistory}, ${bSmsDeliveryHistory}, ${bSmsDeliveryConflictHistory})`;
     await cleanup`delete from sms_delivery_events where id in (${aSmsDeliveryEvent}, ${bSmsDeliveryEvent}, ${unmatchedSmsDeliveryEvent})`;
     await cleanup`delete from lab_result_events where id in (${aLabResultEvent}, ${bLabResultEvent})`;

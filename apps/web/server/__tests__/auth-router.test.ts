@@ -600,6 +600,8 @@ describe("auth router input validation", () => {
       verificationRequired: true,
       verificationEmailSent: true,
       verificationEmailPossiblySent: false,
+      verificationEmailPreviewed: false,
+      verificationEmailProvider: "resend",
       onboardingRequired: true,
       checkoutUrl: undefined,
     });
@@ -624,6 +626,33 @@ describe("auth router input validation", () => {
       name: "Dr Owner",
       verifyUrl: "http://localhost:3000/verify-email?token=token-123",
       db,
+    });
+  });
+
+  it("reports a console verification preview without claiming registration email delivery", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    mocks.noCardTrialEnabled.mockReturnValue(true);
+    const { db } = createRegistrationDb();
+    mocks.sendTrackedVerificationEmail.mockResolvedValueOnce({
+      success: true,
+      provider: "console",
+      outcome: "accepted",
+      possiblySent: false,
+      evidencePersisted: true,
+    });
+
+    await expect(
+      callerWithDb(db).register({
+        email: "owner@example.com",
+        password: "password123",
+        practiceName: "Neighborhood Veterinary",
+      }),
+    ).resolves.toMatchObject({
+      verificationRequired: true,
+      verificationEmailSent: false,
+      verificationEmailPossiblySent: false,
+      verificationEmailPreviewed: true,
+      verificationEmailProvider: "console",
     });
   });
 
@@ -751,6 +780,8 @@ describe("authenticated verification resend", () => {
       alreadyVerified: false,
       verificationEmailSent: true,
       possiblySent: false,
+      verificationEmailPreviewed: false,
+      verificationEmailProvider: "resend",
       message: "Verification email sent. Check your inbox and spam folder.",
     });
 
@@ -795,6 +826,8 @@ describe("authenticated verification resend", () => {
       alreadyVerified: true,
       verificationEmailSent: false,
       possiblySent: false,
+      verificationEmailPreviewed: false,
+      verificationEmailProvider: null,
       message: "Your email is already verified.",
     });
     expect(mocks.rateLimit).not.toHaveBeenCalled();
@@ -817,6 +850,8 @@ describe("authenticated verification resend", () => {
       alreadyVerified: false,
       verificationEmailSent: false,
       possiblySent: false,
+      verificationEmailPreviewed: false,
+      verificationEmailProvider: "resend",
       message:
         "The email provider did not accept the verification email. Please try again later.",
     });
@@ -837,9 +872,32 @@ describe("authenticated verification resend", () => {
     expect(result).toMatchObject({
       verificationEmailSent: false,
       possiblySent: true,
+      verificationEmailProvider: "resend",
     });
     expect(result.message).toMatch(/may have been sent/i);
     expect(result.message).not.toMatch(/try again|retry/i);
+  });
+
+  it("reports console preview semantics without claiming an email was sent", async () => {
+    const { db } = createSelectDb([[unverifiedUser]]);
+    mocks.sendTrackedVerificationEmail.mockResolvedValueOnce({
+      success: true,
+      provider: "console",
+      outcome: "accepted",
+      possiblySent: false,
+      evidencePersisted: true,
+    });
+
+    await expect(callerWithSession(db).resendVerification()).resolves.toEqual({
+      ok: true,
+      alreadyVerified: false,
+      verificationEmailSent: false,
+      possiblySent: false,
+      verificationEmailPreviewed: true,
+      verificationEmailProvider: "console",
+      message:
+        "Verification email preview generated in the server console. No email was sent.",
+    });
   });
 
   it("fails closed when the resend limiter is unavailable", async () => {

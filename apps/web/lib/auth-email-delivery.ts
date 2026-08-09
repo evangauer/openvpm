@@ -1,8 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq, isNull, lte, ne } from "drizzle-orm";
+import { and, eq, isNull, ne, or } from "drizzle-orm";
 import type { WebhookEventPayload } from "resend";
 import type { Database } from "@openpims/db/client";
-import { authEmailAttempts, authEmailDeliveryEvents } from "@openpims/db";
+import {
+  authEmailAttempts,
+  authEmailDeliveryEvents,
+  authEmailWebhookConflicts,
+} from "@openpims/db";
 import { alertOps } from "@/lib/alerts";
 import { withSystem } from "@/lib/tenant-db";
 import {
@@ -168,6 +172,35 @@ async function hasDeliveryIdentityMismatch(input: {
   }
 }
 
+async function hasSignedTaggedAcceptance(input: {
+  database: Database;
+  attemptId: string;
+  providerMessageId: string;
+}): Promise<boolean> {
+  try {
+    const [evidence] = await withSystem(input.database, (tx) =>
+      tx
+        .select({ id: authEmailDeliveryEvents.id })
+        .from(authEmailDeliveryEvents)
+        .where(
+          and(
+            eq(authEmailDeliveryEvents.attemptId, input.attemptId),
+            eq(authEmailDeliveryEvents.provider, "resend"),
+            eq(
+              authEmailDeliveryEvents.providerMessageId,
+              input.providerMessageId,
+            ),
+            eq(authEmailDeliveryEvents.attribution, "attempt_tag"),
+          ),
+        )
+        .limit(1),
+    );
+    return Boolean(evidence);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Reserve, dispatch, and record one verification email. Callers must invoke
  * this from a tRPC post-commit effect with the root pool. Reservation and
@@ -246,12 +279,27 @@ export async function sendTrackedVerificationEmail(input: {
     providerMessageId,
     failureCode,
   });
-  const consistentState = stateMatchesOutcome(resolution.state, {
+  let consistentState = stateMatchesOutcome(resolution.state, {
     provider,
     outcome: recordedOutcome,
     providerMessageId,
     failureCode,
   });
+
+  // A signed tagged callback can win the race after a provider timeout but
+  // before this resolver observes the ledger. Treat that stronger durable
+  // evidence as acceptance instead of telling the user the result is unknown.
+  const signedAcceptedState =
+    provider === "resend" &&
+    recordedOutcome === "outcome_unknown" &&
+    resolution.state?.outcome === "accepted" &&
+    Boolean(resolution.state.providerMessageId) &&
+    (await hasSignedTaggedAcceptance({
+      database: input.db,
+      attemptId,
+      providerMessageId: resolution.state?.providerMessageId ?? "",
+    }));
+  consistentState = consistentState || signedAcceptedState;
 
   let identityConflict = providerIdentityConflict;
   if (
@@ -280,6 +328,18 @@ export async function sendTrackedVerificationEmail(input: {
         ? "Provider acceptance disagrees with durable signed verification evidence. Review the recovery queue."
         : "A verification provider outcome could not be confirmed in the durable ledger. Review the recovery queue.",
     );
+  }
+
+  if (signedAcceptedState && resolution.state?.providerMessageId) {
+    return {
+      success: true,
+      attemptId,
+      provider,
+      outcome: "accepted",
+      possiblySent: false,
+      evidencePersisted: true,
+      providerMessageId: resolution.state.providerMessageId,
+    };
   }
 
   // Once the provider is known to have accepted a message, persistence trouble
@@ -371,7 +431,6 @@ export function authEmailDeliveryClassification(
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
-export const AUTH_EMAIL_WEBHOOK_REPAIR_MIN_AGE_MS = 15_000;
 
 export function authEmailWebhookFingerprint(rawBody: string): string {
   return createHash("sha256").update(rawBody, "utf8").digest("hex");
@@ -407,6 +466,7 @@ type ExistingWebhookIdentity = {
   provider: string;
   providerMessageId: string;
   eventType: string;
+  attemptId: string | null;
   attribution:
     | "attempt_tag"
     | "provider_message_id"
@@ -438,10 +498,10 @@ function duplicateResult(
 /**
  * Claim a signed Resend delivery event without retaining its recipient,
  * subject, tags, or payload. The SHA-256 fingerprint proves whether a repeated
- * Svix id carried the exact same verified raw body. Early tagged callbacks are
- * linked immediately but repair a reserved attempt only after the API timeout
- * window, preventing an out-of-order callback from racing a different provider
- * result. Opens/clicks are redacted evidence only and never verify a user.
+ * Svix id carried the exact same verified raw body. Signed callbacks carrying
+ * both OpenVPM verification tags may repair a reserved or unknown Resend
+ * attempt immediately; a conflicting provider identity is quarantined instead.
+ * Opens/clicks are redacted evidence only and never verify a user.
  */
 export async function recordAuthEmailDeliveryEvent(input: {
   event: AuthEmailWebhookEvent;
@@ -473,8 +533,21 @@ export async function recordAuthEmailDeliveryEvent(input: {
   const hasAuthTag =
     tags.openvpm_email_kind === "auth_verification" ||
     Boolean(taggedAttemptValue);
+  const hasExactAuthAttemptTag =
+    tags.openvpm_email_kind === "auth_verification" &&
+    Boolean(taggedAttemptValue && UUID_PATTERN.test(taggedAttemptValue));
 
   const result = await withSystem(input.db, async (tx) => {
+    type TaggedAttempt = {
+      id: string;
+      outcome: AttemptState["outcome"];
+      provider: EmailProvider;
+      providerMessageId: string | null;
+    };
+    type InternalResult = AuthEmailDeliveryRecordResult & {
+      alertConflict: boolean;
+    };
+
     const selectExistingWebhook = async () => {
       const [existing] = await tx
         .select({
@@ -482,6 +555,7 @@ export async function recordAuthEmailDeliveryEvent(input: {
           provider: authEmailDeliveryEvents.provider,
           providerMessageId: authEmailDeliveryEvents.providerMessageId,
           eventType: authEmailDeliveryEvents.eventType,
+          attemptId: authEmailDeliveryEvents.attemptId,
           attribution: authEmailDeliveryEvents.attribution,
         })
         .from(authEmailDeliveryEvents)
@@ -490,29 +564,118 @@ export async function recordAuthEmailDeliveryEvent(input: {
       return existing as ExistingWebhookIdentity | undefined;
     };
 
-    const existing = await selectExistingWebhook();
-    if (existing) {
-      return duplicateResult(existing, {
+    const selectTaggedAttempt = async (): Promise<
+      TaggedAttempt | undefined
+    > => {
+      if (!taggedAttemptValue || !UUID_PATTERN.test(taggedAttemptValue)) {
+        return undefined;
+      }
+      const [attempt] = await tx
+        .select({
+          id: authEmailAttempts.id,
+          outcome: authEmailAttempts.outcome,
+          provider: authEmailAttempts.provider,
+          providerMessageId: authEmailAttempts.providerMessageId,
+        })
+        .from(authEmailAttempts)
+        .where(eq(authEmailAttempts.id, taggedAttemptValue))
+        .limit(1);
+      return attempt as TaggedAttempt | undefined;
+    };
+
+    const repairSignedTaggedAttempt = async (
+      attempt: TaggedAttempt | undefined,
+      expectedAttemptId?: string | null,
+    ) => {
+      if (
+        !hasExactAuthAttemptTag ||
+        !isOutboundAuthEmailEvent(input.event.type) ||
+        !attempt ||
+        (expectedAttemptId !== undefined &&
+          expectedAttemptId !== taggedAttemptValue) ||
+        attempt.provider !== "resend" ||
+        (attempt.providerMessageId !== null &&
+          attempt.providerMessageId !== providerMessageId)
+      ) {
+        return;
+      }
+      if (
+        attempt.outcome !== "reserved" &&
+        attempt.outcome !== "outcome_unknown"
+      ) {
+        return;
+      }
+      await tx
+        .update(authEmailAttempts)
+        .set({
+          outcome: "accepted",
+          resolvedAt: new Date(),
+          providerMessageId,
+          failureCode: null,
+        })
+        .where(
+          and(
+            eq(authEmailAttempts.id, attempt.id),
+            eq(authEmailAttempts.provider, "resend"),
+            isNull(authEmailAttempts.providerMessageId),
+            or(
+              eq(authEmailAttempts.outcome, "reserved"),
+              eq(authEmailAttempts.outcome, "outcome_unknown"),
+            ),
+          ),
+        );
+    };
+
+    const quarantineChangedWebhook = async (
+      existing: ExistingWebhookIdentity,
+    ): Promise<InternalResult> => {
+      const conflict = duplicateResult(existing, {
         rawBodyFingerprint,
         providerMessageId,
         eventType: input.event.type,
       });
+      const [inserted] = await tx
+        .insert(authEmailWebhookConflicts)
+        .values({
+          originalWebhookId: webhookId,
+          incomingRawBodyFingerprint: rawBodyFingerprint,
+          provider: "resend",
+          incomingProviderMessageId: providerMessageId,
+          incomingEventType: input.event.type,
+        })
+        .onConflictDoNothing({
+          target: [
+            authEmailWebhookConflicts.originalWebhookId,
+            authEmailWebhookConflicts.incomingRawBodyFingerprint,
+          ],
+        })
+        .returning({ id: authEmailWebhookConflicts.id });
+      return { ...conflict, alertConflict: Boolean(inserted) };
+    };
+
+    const existing = await selectExistingWebhook();
+    if (existing) {
+      const duplicate = duplicateResult(existing, {
+        rawBodyFingerprint,
+        providerMessageId,
+        eventType: input.event.type,
+      });
+      if (duplicate.duplicate) {
+        if (
+          existing.attribution === "attempt_tag" &&
+          existing.attemptId === taggedAttemptValue
+        ) {
+          await repairSignedTaggedAttempt(
+            await selectTaggedAttempt(),
+            existing.attemptId,
+          );
+        }
+        return { ...duplicate, alertConflict: false };
+      }
+      return quarantineChangedWebhook(existing);
     }
 
-    const [taggedAttempt] =
-      taggedAttemptValue && UUID_PATTERN.test(taggedAttemptValue)
-        ? await tx
-            .select({
-              id: authEmailAttempts.id,
-              createdAt: authEmailAttempts.createdAt,
-              outcome: authEmailAttempts.outcome,
-              provider: authEmailAttempts.provider,
-              providerMessageId: authEmailAttempts.providerMessageId,
-            })
-            .from(authEmailAttempts)
-            .where(eq(authEmailAttempts.id, taggedAttemptValue))
-            .limit(1)
-        : [];
+    const taggedAttempt = await selectTaggedAttempt();
     const [providerAttempt] = await tx
       .select({ id: authEmailAttempts.id })
       .from(authEmailAttempts)
@@ -530,7 +693,8 @@ export async function recordAuthEmailDeliveryEvent(input: {
         duplicate: false,
         conflict: false,
         attribution: null,
-      } satisfies AuthEmailDeliveryRecordResult;
+        alertConflict: false,
+      } satisfies InternalResult;
     }
 
     let attemptId: string | null = null;
@@ -576,48 +740,35 @@ export async function recordAuthEmailDeliveryEvent(input: {
 
     if (!inserted) {
       const racedExisting = await selectExistingWebhook();
-      return racedExisting
-        ? duplicateResult(racedExisting, {
-            rawBodyFingerprint,
-            providerMessageId,
-            eventType: input.event.type,
-          })
-        : {
-            tracked: true,
-            duplicate: false,
-            conflict: true,
-            attribution: "identity_conflict" as const,
-          };
+      if (!racedExisting) {
+        throw new Error("Webhook identity winner could not be read.");
+      }
+      const racedDuplicate = duplicateResult(racedExisting, {
+        rawBodyFingerprint,
+        providerMessageId,
+        eventType: input.event.type,
+      });
+      if (racedDuplicate.duplicate) {
+        if (
+          racedExisting.attribution === "attempt_tag" &&
+          racedExisting.attemptId === taggedAttemptValue
+        ) {
+          await repairSignedTaggedAttempt(
+            taggedAttempt,
+            racedExisting.attemptId,
+          );
+        }
+        return { ...racedDuplicate, alertConflict: false };
+      }
+      return quarantineChangedWebhook(racedExisting);
     }
 
     if (
       taggedAttempt &&
       attribution === "attempt_tag" &&
-      taggedAttempt.outcome === "reserved" &&
-      taggedAttempt.createdAt.getTime() <=
-        Date.now() - AUTH_EMAIL_WEBHOOK_REPAIR_MIN_AGE_MS &&
-      isOutboundAuthEmailEvent(input.event.type)
+      hasExactAuthAttemptTag
     ) {
-      await tx
-        .update(authEmailAttempts)
-        .set({
-          outcome: "accepted",
-          resolvedAt: new Date(),
-          providerMessageId,
-          failureCode: null,
-        })
-        .where(
-          and(
-            eq(authEmailAttempts.id, taggedAttempt.id),
-            eq(authEmailAttempts.provider, "resend"),
-            eq(authEmailAttempts.outcome, "reserved"),
-            isNull(authEmailAttempts.providerMessageId),
-            lte(
-              authEmailAttempts.createdAt,
-              new Date(Date.now() - AUTH_EMAIL_WEBHOOK_REPAIR_MIN_AGE_MS),
-            ),
-          ),
-        );
+      await repairSignedTaggedAttempt(taggedAttempt, taggedAttempt.id);
     }
 
     return {
@@ -625,14 +776,16 @@ export async function recordAuthEmailDeliveryEvent(input: {
       duplicate: false,
       conflict: attribution === "identity_conflict",
       attribution,
-    } satisfies AuthEmailDeliveryRecordResult;
+      alertConflict: attribution === "identity_conflict",
+    } satisfies InternalResult;
   });
 
-  if (result.conflict) {
+  if (result.alertConflict) {
     await safeAuthEmailAlert(
       "Auth email webhook identity conflict",
       "A signed verification callback disagreed with immutable provider evidence. Review the recovery queue.",
     );
   }
-  return result;
+  const { alertConflict: _alertConflict, ...publicResult } = result;
+  return publicResult;
 }

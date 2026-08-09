@@ -17,7 +17,11 @@ import {
 import { createAuthToken, consumeAuthToken } from "@/lib/auth-tokens";
 import { PASSWORD_HASH_COST } from "@/lib/auth-hashing";
 import { authPasswordInput } from "@/lib/auth-password";
-import { sendPasswordResetEmail, sendWelcomeEmail } from "@/lib/email";
+import {
+  sendPasswordResetEmail,
+  sendWelcomeEmail,
+  type EmailProvider,
+} from "@/lib/email";
 import { sendTrackedVerificationEmail } from "@/lib/auth-email-delivery";
 import { appBaseUrl, exposeAuthLinksForPreview } from "@/lib/app-url";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
@@ -101,7 +105,7 @@ const onboardingDraftSchema = z.object({
   logoName: authTextInput(
     "Logo name",
     1,
-    AUTH_ONBOARDING_LOGO_NAME_MAX_LENGTH
+    AUTH_ONBOARDING_LOGO_NAME_MAX_LENGTH,
   ).optional(),
   brandColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
   teamMembers: z.array(onboardingTeamMemberSchema).max(8).optional(),
@@ -413,7 +417,13 @@ export const authRouter = createRouter({
         verificationRequired,
         verificationEmailSent: hostedBilling ? false : undefined,
         verificationEmailPossiblySent: hostedBilling ? false : undefined,
-        verificationUrl: exposeAuthLinksForPreview() ? verificationUrl : undefined,
+        verificationEmailPreviewed: hostedBilling ? false : undefined,
+        verificationEmailProvider: hostedBilling
+          ? (null as EmailProvider | null)
+          : undefined,
+        verificationUrl: exposeAuthLinksForPreview()
+          ? verificationUrl
+          : undefined,
         checkoutUrl,
         // Hosted signups (no-card trial) land in the first-run onboarding wizard
         // instead of the bare dashboard.
@@ -430,9 +440,13 @@ export const authRouter = createRouter({
               ...verificationDispatch,
               db: rootDb,
             });
-            response.verificationEmailSent = result.outcome === "accepted";
+            response.verificationEmailProvider = result.provider;
+            response.verificationEmailSent =
+              result.outcome === "accepted" && result.provider === "resend";
             response.verificationEmailPossiblySent =
               result.outcome === "outcome_unknown";
+            response.verificationEmailPreviewed =
+              result.outcome === "accepted" && result.provider === "console";
           } catch {
             // Signup is already committed. Keep verification soft and do not
             // log the auth link or recipient embedded in the closure.
@@ -519,6 +533,8 @@ export const authRouter = createRouter({
         alreadyVerified: true,
         verificationEmailSent: false,
         possiblySent: false,
+        verificationEmailPreviewed: false,
+        verificationEmailProvider: null as EmailProvider | null,
         message: "Your email is already verified.",
       };
     }
@@ -542,6 +558,8 @@ export const authRouter = createRouter({
       alreadyVerified: false,
       verificationEmailSent: false,
       possiblySent: false,
+      verificationEmailPreviewed: false,
+      verificationEmailProvider: null as EmailProvider | null,
       message: "Verification email is being prepared.",
     };
 
@@ -562,10 +580,17 @@ export const authRouter = createRouter({
           verifyUrl: `${appBaseUrl()}/verify-email?token=${token}`,
           db: rootDb,
         });
+        response.verificationEmailProvider = result.provider;
         if (result.outcome === "accepted") {
-          response.verificationEmailSent = true;
-          response.message =
-            "Verification email sent. Check your inbox and spam folder.";
+          if (result.provider === "console") {
+            response.verificationEmailPreviewed = true;
+            response.message =
+              "Verification email preview generated in the server console. No email was sent.";
+          } else {
+            response.verificationEmailSent = true;
+            response.message =
+              "Verification email sent. Check your inbox and spam folder.";
+          }
         } else if (result.outcome === "outcome_unknown") {
           response.possiblySent = true;
           response.message =

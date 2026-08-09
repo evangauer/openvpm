@@ -77,9 +77,10 @@ export function VerifyEmailBanner() {
     !resend.isSuccess ||
     Boolean(
       resend.data &&
-        !resend.data.alreadyVerified &&
-        !resend.data.verificationEmailSent &&
-        !resend.data.possiblySent,
+      !resend.data.alreadyVerified &&
+      !resend.data.verificationEmailSent &&
+      !resend.data.verificationEmailPreviewed &&
+      !resend.data.possiblySent,
     );
 
   return (
@@ -89,7 +90,8 @@ export function VerifyEmailBanner() {
       <p className="min-w-0 flex-1 basis-48">
         {resend.isSuccess && resend.data ? (
           <span className="inline-flex items-center gap-1.5">
-            {resend.data.verificationEmailSent ? (
+            {resend.data.verificationEmailSent ||
+            resend.data.verificationEmailPreviewed ? (
               <Check className="h-4 w-4" />
             ) : (
               <AlertTriangle className="h-4 w-4" />
@@ -98,8 +100,8 @@ export function VerifyEmailBanner() {
           </span>
         ) : (
           <>
-            Verify your email{data.email ? ` (${data.email})` : ""} to secure your
-            account and keep reminders deliverable.
+            Verify your email{data.email ? ` (${data.email})` : ""} to secure
+            your account and keep reminders deliverable.
           </>
         )}
         {resend.error ? (
@@ -115,7 +117,9 @@ export function VerifyEmailBanner() {
           onClick={() => resend.mutate()}
           className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-amber-300 bg-white px-2.5 py-1 text-xs font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50"
         >
-          {resend.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+          {resend.isPending ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : null}
           Resend email
         </button>
       )}

@@ -9,6 +9,12 @@ const queue = source.slice(
 
 describe("auth verification email recovery queue", () => {
   it("surfaces missing and uncertain provider outcomes", () => {
+    expect(queue).toContain("latest_attempts as");
+    expect(queue).toContain(
+      "distinct on (attempt.practice_id, attempt.user_id)",
+    );
+    expect(queue).toContain("attempt.created_at desc");
+    expect(queue).toContain("from latest_attempts attempt");
     expect(queue).toContain("provider_outcome_missing");
     expect(queue).toContain("provider_outcome_unknown");
     expect(queue).toContain("provider_definite_failure");
@@ -20,6 +26,18 @@ describe("auth verification email recovery queue", () => {
     expect(queue).toContain("attempt.provider = 'resend'");
     expect(queue).toContain("'delivered', 'failed', 'complained'");
     expect(queue).not.toContain("'opened', 'clicked'");
+  });
+
+  it("surfaces the latest terminal failed or complained delivery incident", () => {
+    expect(queue).toContain("delivery_incidents as");
+    expect(queue).toContain("delivery_failed");
+    expect(queue).toContain("delivery_complained");
+    expect(queue).toContain(
+      "terminal.classification in ('failed', 'complained')",
+    );
+    expect(queue).toContain("delivery.occurred_at desc");
+    expect(queue).toContain("limit 1");
+    expect(queue).toContain("select * from delivery_incidents");
   });
 
   it("derives out-of-order delivery matches without rewriting evidence", () => {
@@ -35,6 +53,12 @@ describe("auth verification email recovery queue", () => {
     expect(queue).toContain(
       "delivery.provider_message_id <> attempt.provider_message_id",
     );
+    expect(queue).toContain("webhook_conflicts as");
+    expect(queue).toContain("from auth_email_webhook_conflicts quarantine");
+    expect(queue).toContain(
+      "original.webhook_id = quarantine.original_webhook_id",
+    );
+    expect(queue).toContain("webhook_payload_conflict");
   });
 
   it("keeps the operator result bounded, no-store, and recipient-free", () => {

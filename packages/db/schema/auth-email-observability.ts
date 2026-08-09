@@ -180,3 +180,56 @@ export const authEmailDeliveryEvents = pgTable(
     ),
   }),
 );
+
+/**
+ * Append-only quarantine for a signed callback that reuses an existing Svix
+ * id with a different verified body. Only safe provider identity and SHA-256
+ * evidence is retained; message content and recipients are never copied.
+ */
+export const authEmailWebhookConflicts = pgTable(
+  "auth_email_webhook_conflicts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    receivedAt: timestamp("received_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    originalWebhookId: varchar("original_webhook_id", {
+      length: 128,
+    }).notNull(),
+    incomingRawBodyFingerprint: varchar("incoming_raw_body_fingerprint", {
+      length: 64,
+    }).notNull(),
+    provider: varchar("provider", { length: 16 }).notNull().default("resend"),
+    incomingProviderMessageId: varchar("incoming_provider_message_id", {
+      length: 128,
+    }).notNull(),
+    incomingEventType: varchar("incoming_event_type", { length: 64 }).notNull(),
+  },
+  (table) => ({
+    originalWebhookFk: foreignKey({
+      columns: [table.originalWebhookId],
+      foreignColumns: [authEmailDeliveryEvents.webhookId],
+      name: "auth_email_webhook_conflicts_webhook_fk",
+    }),
+    identityUq: uniqueIndex("auth_email_webhook_conflicts_identity_uq").on(
+      table.originalWebhookId,
+      table.incomingRawBodyFingerprint,
+    ),
+    recoveryIdx: index("auth_email_webhook_conflicts_recovery_idx").on(
+      table.receivedAt,
+      table.id,
+    ),
+    providerCheck: check(
+      "auth_email_webhook_conflicts_provider_check",
+      sql`${table.provider} = 'resend'`,
+    ),
+    eventTypeCheck: check(
+      "auth_email_webhook_conflicts_event_type_check",
+      sql`${table.incomingEventType} ~ '^email\\.'`,
+    ),
+    rawBodyFingerprintCheck: check(
+      "auth_email_webhook_conflicts_raw_body_fingerprint_check",
+      sql`${table.incomingRawBodyFingerprint} ~ '^[0-9a-f]{64}$'`,
+    ),
+  }),
+);

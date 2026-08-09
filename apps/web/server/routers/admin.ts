@@ -634,7 +634,21 @@ export const adminRouter = createRouter({
       noStore();
       return withSystem(db, async (tx) => {
         const result = await tx.execute(sql`
-          with attempt_issues as (
+          with latest_attempts as (
+            select distinct on (attempt.practice_id, attempt.user_id)
+              attempt.*
+            from auth_email_attempts attempt
+            join users account
+              on account.id = attempt.user_id
+             and account.practice_id = attempt.practice_id
+             and account.deleted_at is null
+             and account.email_verified_at is null
+            order by
+              attempt.practice_id,
+              attempt.user_id,
+              attempt.created_at desc,
+              attempt.id desc
+          ), attempt_issues as (
             select
               attempt.created_at as "occurredAt",
               practice.name as "practiceName",
@@ -649,15 +663,10 @@ export const adminRouter = createRouter({
                   then 'provider_definite_failure'
                 else 'delivery_confirmation_missing'
               end as reason
-            from auth_email_attempts attempt
+            from latest_attempts attempt
             join practices practice
               on practice.id = attempt.practice_id
              and practice.deleted_at is null
-            join users account
-              on account.id = attempt.user_id
-             and account.practice_id = attempt.practice_id
-             and account.deleted_at is null
-             and account.email_verified_at is null
             where (
               (
                 attempt.outcome = 'reserved'
@@ -684,6 +693,45 @@ export const adminRouter = createRouter({
                   )
                 )
             )
+          ), delivery_incidents as (
+            select
+              terminal.received_at as "occurredAt",
+              practice.name as "practiceName",
+              attempt.source::text as source,
+              attempt.outcome::text as outcome,
+              case
+                when terminal.classification = 'complained'
+                  then 'delivery_complained'
+                else 'delivery_failed'
+              end as reason
+            from latest_attempts attempt
+            join practices practice
+              on practice.id = attempt.practice_id
+             and practice.deleted_at is null
+            join lateral (
+              select
+                delivery.received_at,
+                delivery.classification
+              from auth_email_delivery_events delivery
+              where (
+                delivery.attempt_id = attempt.id
+                or (
+                  delivery.attempt_id is null
+                  and delivery.provider = attempt.provider
+                  and delivery.provider_message_id = attempt.provider_message_id
+                )
+              )
+                and delivery.classification in (
+                  'delivered', 'failed', 'complained'
+                )
+              order by
+                delivery.occurred_at desc,
+                delivery.received_at desc,
+                delivery.id desc
+              limit 1
+            ) terminal on true
+            where attempt.outcome = 'accepted'
+              and terminal.classification in ('failed', 'complained')
           ), attribution_issues as (
             select
               delivery.received_at as "occurredAt",
@@ -729,12 +777,36 @@ export const adminRouter = createRouter({
                  attempt.provider_message_id is not null
                  and delivery.provider_message_id <> attempt.provider_message_id
                )
+          ), webhook_conflicts as (
+            select
+              quarantine.received_at as "occurredAt",
+              coalesce(practice.name, 'Unattributed auth email') as "practiceName",
+              attempt.source::text as source,
+              attempt.outcome::text as outcome,
+              'webhook_payload_conflict'::text as reason
+            from auth_email_webhook_conflicts quarantine
+            join auth_email_delivery_events original
+              on original.webhook_id = quarantine.original_webhook_id
+            left join auth_email_attempts attempt
+              on attempt.id = original.attempt_id
+              or (
+                original.attempt_id is null
+                and attempt.provider = original.provider
+                and attempt.provider_message_id = original.provider_message_id
+              )
+            left join practices practice
+              on practice.id = attempt.practice_id
+             and practice.deleted_at is null
           ), queue as (
             select * from attempt_issues
+            union all
+            select * from delivery_incidents
             union all
             select * from attribution_issues
             union all
             select * from identity_mismatches
+            union all
+            select * from webhook_conflicts
           )
           select
             "occurredAt",
@@ -768,8 +840,11 @@ export const adminRouter = createRouter({
               | "provider_outcome_unknown"
               | "provider_definite_failure"
               | "delivery_confirmation_missing"
+              | "delivery_failed"
+              | "delivery_complained"
               | "delivery_identity_conflict"
-              | "delivery_attribution_unmatched";
+              | "delivery_attribution_unmatched"
+              | "webhook_payload_conflict";
             ageMinutes: number;
           }>(result).map((row) => ({
             ...row,

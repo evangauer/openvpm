@@ -92,6 +92,8 @@ export const PRACTICE_EXPORT_SYSTEM_EXCLUSIONS = {
     "System verification-email dispatch evidence; it contains live provider identity and is recovered only through operational database disaster recovery.",
   authEmailDeliveryEvents:
     "Global immutable verification-email provider callback evidence; it is not clinic-owned restore data.",
+  authEmailWebhookConflicts:
+    "Global immutable verification-email callback conflict evidence; it is not clinic-owned restore data.",
   captureSessions:
     "Expiring QR photo-capture link tokens; restoring them would resurrect old capture URLs. The photos themselves are in the files section.",
   consentRequests:

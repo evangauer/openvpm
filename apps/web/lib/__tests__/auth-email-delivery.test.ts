@@ -31,7 +31,6 @@ vi.mock("@/lib/email", () => ({
 }));
 
 const {
-  AUTH_EMAIL_WEBHOOK_REPAIR_MIN_AGE_MS,
   authEmailDeliveryClassification,
   authEmailWebhookFingerprint,
   recordAuthEmailDeliveryEvent,
@@ -52,6 +51,7 @@ function databaseDouble(options?: {
   ];
   const updateResults = [...(options?.updateResults ?? [])];
   const insertedValues: unknown[] = [];
+  const insertTargets: unknown[] = [];
   const updatedValues: unknown[] = [];
 
   const selectLimit = vi.fn(async () => {
@@ -76,7 +76,10 @@ function databaseDouble(options?: {
     }
     return { onConflictDoNothing };
   });
-  const insert = vi.fn(() => ({ values: insertValues }));
+  const insert = vi.fn((target: unknown) => {
+    insertTargets.push(target);
+    return { values: insertValues };
+  });
 
   const updateReturning = vi.fn(async () => {
     const next = updateResults.shift() ?? [];
@@ -94,6 +97,7 @@ function databaseDouble(options?: {
   return {
     db,
     insertedValues,
+    insertTargets,
     updatedValues,
     insertReturning,
     onConflictDoNothing,
@@ -277,6 +281,34 @@ describe("tracked verification email dispatch", () => {
     expect(result.error).not.toMatch(/try again|retry/i);
   });
 
+  it("returns accepted when matching signed tagged evidence wins a timeout race", async () => {
+    const { db } = databaseDouble({
+      updateResults: [[]],
+      selectResults: [
+        [acceptedState("resend", "provider-email-from-webhook")],
+        [{ id: "signed-tagged-evidence" }],
+      ],
+    });
+    mocks.sendVerificationEmailWithProviderEvidence.mockResolvedValue({
+      success: false,
+      provider: "resend",
+      outcome: "outcome_unknown",
+      failureCode: "send_timeout",
+    });
+
+    await expect(
+      sendTrackedVerificationEmail(trackedInput(db)),
+    ).resolves.toMatchObject({
+      success: true,
+      provider: "resend",
+      outcome: "accepted",
+      possiblySent: false,
+      evidencePersisted: true,
+      providerMessageId: "provider-email-from-webhook",
+    });
+    expect(mocks.alertOps).not.toHaveBeenCalled();
+  });
+
   it("models local console acceptance without expecting Resend delivery", async () => {
     mocks.verificationEmailProvider.mockReturnValue("console");
     const { db, insertedValues } = databaseDouble({
@@ -363,14 +395,13 @@ describe("auth verification delivery evidence", () => {
     );
   });
 
-  it("links an early out-of-order tag callback without racing provider resolution", async () => {
+  it("immediately repairs an early reserved attempt from exact signed tags", async () => {
     const { db, insertedValues, updateSet } = databaseDouble({
       selectResults: [
         [],
         [
           {
             id: attemptId,
-            createdAt: new Date(),
             outcome: "reserved",
             provider: "resend",
             providerMessageId: null,
@@ -398,7 +429,13 @@ describe("auth verification delivery evidence", () => {
       conflict: false,
       attribution: "attempt_tag",
     });
-    expect(updateSet).not.toHaveBeenCalled();
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "accepted",
+        providerMessageId: "provider-email-1",
+        failureCode: null,
+      }),
+    );
     expect(insertedValues[0]).toMatchObject({
       rawBodyFingerprint: fingerprint,
       providerMessageId: "provider-email-1",
@@ -411,17 +448,14 @@ describe("auth verification delivery evidence", () => {
     expect(persisted).not.toContain("openvpm_attempt_id");
   });
 
-  it("repairs a stale reserved attempt from a consistent signed tag", async () => {
+  it("repairs a persisted unknown Resend outcome from exact signed tags", async () => {
     const { db, updateSet } = databaseDouble({
       selectResults: [
         [],
         [
           {
             id: attemptId,
-            createdAt: new Date(
-              Date.now() - AUTH_EMAIL_WEBHOOK_REPAIR_MIN_AGE_MS - 1_000,
-            ),
-            outcome: "reserved",
+            outcome: "outcome_unknown",
             provider: "resend",
             providerMessageId: null,
           },
@@ -434,7 +468,10 @@ describe("auth verification delivery evidence", () => {
       recordInput(
         db,
         webhookEvent({
-          tags: { openvpm_attempt_id: attemptId },
+          tags: {
+            openvpm_attempt_id: attemptId,
+            openvpm_email_kind: "auth_verification",
+          },
         }),
       ),
     );
@@ -471,6 +508,7 @@ describe("auth verification delivery evidence", () => {
       provider: "resend",
       providerMessageId: "provider-email-1",
       eventType: "email.delivered",
+      attemptId,
       attribution: "attempt_tag",
     };
     const { db, insertedValues } = databaseDouble({
@@ -488,15 +526,63 @@ describe("auth verification delivery evidence", () => {
     expect(insertedValues).toEqual([]);
   });
 
-  it("surfaces the same Svix id with a changed fingerprint as a PHI-free conflict", async () => {
+  it("re-enters repair when exact tagged evidence is redelivered", async () => {
+    const existing = {
+      rawBodyFingerprint: fingerprint,
+      provider: "resend",
+      providerMessageId: "provider-email-1",
+      eventType: "email.delivered",
+      attemptId,
+      attribution: "attempt_tag",
+    };
+    const { db, insertedValues, updateSet } = databaseDouble({
+      selectResults: [
+        [existing],
+        [
+          {
+            id: attemptId,
+            outcome: "reserved",
+            provider: "resend",
+            providerMessageId: null,
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      recordAuthEmailDeliveryEvent(
+        recordInput(
+          db,
+          webhookEvent({
+            tags: {
+              openvpm_attempt_id: attemptId,
+              openvpm_email_kind: "auth_verification",
+            },
+          }),
+        ),
+      ),
+    ).resolves.toMatchObject({ duplicate: true, conflict: false });
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "accepted",
+        providerMessageId: "provider-email-1",
+      }),
+    );
+    expect(insertedValues).toEqual([]);
+  });
+
+  it("durably quarantines a changed body under the same Svix id", async () => {
     const existing = {
       rawBodyFingerprint: "0".repeat(64),
       provider: "resend",
       providerMessageId: "provider-email-1",
       eventType: "email.delivered",
+      attemptId,
       attribution: "attempt_tag",
     };
-    const { db } = databaseDouble({ selectResults: [[existing]] });
+    const { db, insertedValues } = databaseDouble({
+      selectResults: [[existing]],
+    });
 
     await expect(
       recordAuthEmailDeliveryEvent(recordInput(db)),
@@ -506,10 +592,62 @@ describe("auth verification delivery evidence", () => {
       conflict: true,
       attribution: "identity_conflict",
     });
+    expect(insertedValues).toHaveLength(1);
+    expect(insertedValues[0]).toEqual({
+      originalWebhookId: "svix-event-1",
+      incomingRawBodyFingerprint: fingerprint,
+      provider: "resend",
+      incomingProviderMessageId: "provider-email-1",
+      incomingEventType: "email.delivered",
+    });
+    expect(JSON.stringify(insertedValues[0])).not.toMatch(
+      /owner@example|verify|subject|token/i,
+    );
     expect(mocks.alertOps).toHaveBeenCalledWith(
       "Auth email webhook identity conflict",
       expect.not.stringMatching(/owner|provider-email-1|subject/i),
     );
+  });
+
+  it("idempotently records repeated changed-body conflict evidence without alert storms", async () => {
+    const existing = {
+      rawBodyFingerprint: "0".repeat(64),
+      provider: "resend",
+      providerMessageId: "provider-email-1",
+      eventType: "email.delivered",
+      attemptId,
+      attribution: "attempt_tag",
+    };
+    const { db, insertedValues } = databaseDouble({
+      selectResults: [[existing], [existing]],
+      deliveryInsertResults: [[{ id: "new-conflict" }], []],
+    });
+
+    await recordAuthEmailDeliveryEvent(recordInput(db));
+    await recordAuthEmailDeliveryEvent(recordInput(db));
+
+    expect(insertedValues).toHaveLength(2);
+    expect(mocks.alertOps).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails retryably when changed-body conflict evidence cannot be committed", async () => {
+    const existing = {
+      rawBodyFingerprint: "0".repeat(64),
+      provider: "resend",
+      providerMessageId: "provider-email-1",
+      eventType: "email.delivered",
+      attemptId,
+      attribution: "attempt_tag",
+    };
+    const { db } = databaseDouble({
+      selectResults: [[existing]],
+      deliveryInsertResults: [new Error("conflict ledger unavailable")],
+    });
+
+    await expect(recordAuthEmailDeliveryEvent(recordInput(db))).rejects.toThrow(
+      "conflict ledger unavailable",
+    );
+    expect(mocks.alertOps).not.toHaveBeenCalled();
   });
 
   it("race-safely re-reads a winning exact insert before claiming duplicate", async () => {
@@ -518,6 +656,7 @@ describe("auth verification delivery evidence", () => {
       provider: "resend",
       providerMessageId: "provider-email-1",
       eventType: "email.delivered",
+      attemptId,
       attribution: "attempt_tag",
     };
     const { db } = databaseDouble({
@@ -526,7 +665,6 @@ describe("auth verification delivery evidence", () => {
         [
           {
             id: attemptId,
-            createdAt: new Date(),
             outcome: "reserved",
             provider: "resend",
             providerMessageId: null,
@@ -554,6 +692,7 @@ describe("auth verification delivery evidence", () => {
       provider: "resend",
       providerMessageId: "different-provider-message",
       eventType: "email.failed",
+      attemptId,
       attribution: "attempt_tag",
     };
     const { db } = databaseDouble({
@@ -562,7 +701,6 @@ describe("auth verification delivery evidence", () => {
         [
           {
             id: attemptId,
-            createdAt: new Date(),
             outcome: "reserved",
             provider: "resend",
             providerMessageId: null,
@@ -571,7 +709,7 @@ describe("auth verification delivery evidence", () => {
         [],
         [racedIdentity],
       ],
-      deliveryInsertResults: [[]],
+      deliveryInsertResults: [[], [{ id: "quarantined-conflict" }]],
     });
 
     await expect(
@@ -595,7 +733,6 @@ describe("auth verification delivery evidence", () => {
         [
           {
             id: attemptId,
-            createdAt: new Date(),
             outcome: "accepted",
             provider: "resend",
             providerMessageId: "different-provider-id",

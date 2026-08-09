@@ -307,7 +307,7 @@ describe("Resend webhook", () => {
     expect(mocks.insertValues).not.toHaveBeenCalled();
   });
 
-  it("surfaces a changed-body Svix identity conflict without tenant work", async () => {
+  it("acknowledges a durably quarantined Svix identity conflict without tenant work", async () => {
     process.env.RESEND_WEBHOOK_SECRET = "whsec_test";
     mocks.verify.mockReturnValue({
       type: "email.delivered",
@@ -330,10 +330,8 @@ describe("Resend webhook", () => {
 
     const response = await POST(signedRequest("changed signed body"));
 
-    expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toEqual({
-      error: "webhook identity conflict",
-    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true });
     expect(mocks.withTenant).not.toHaveBeenCalled();
     expect(mocks.insertValues).not.toHaveBeenCalled();
   });

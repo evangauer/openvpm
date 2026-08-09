@@ -152,13 +152,11 @@ export async function POST(request: Request) {
     rawBodyFingerprint: authEmailWebhookFingerprint(rawBody.text),
     db,
   });
-  if (authDelivery.conflict) {
-    return NextResponse.json(
-      { error: "webhook identity conflict" },
-      { status: 409 },
-    );
-  }
   if (authDelivery.tracked) {
+    // Identity conflicts are acknowledged only after the recorder durably
+    // quarantines safe fingerprint/provider evidence. A database failure
+    // throws above and remains retryable; a committed conflict must not cause
+    // an infinite provider retry loop.
     return NextResponse.json({ ok: true });
   }
 
