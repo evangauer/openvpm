@@ -85,6 +85,7 @@ const bLabResultEvent = randomUUID();
 const aAppSmsSendAttempt = randomUUID();
 const aAppSmsSendAttemptEvent = randomUUID();
 const aAuthEmailAttempt = randomUUID();
+const aTransitionAuthEmailAttempt = randomUUID();
 const aAuthEmailDeliveryEvent = randomUUID();
 const aSmsDeliveryEvent = randomUUID();
 const bSmsDeliveryEvent = randomUUID();
@@ -128,12 +129,18 @@ try {
       ${`rls-auth:${aAuthEmailAttempt}`}, ${`resend-${aAuthEmailAttempt}`},
       'accepted')`;
   await owner`insert into auth_email_delivery_events
-    (id, webhook_id, provider_message_id, attempt_id, event_type,
+    (id, webhook_id, raw_body_fingerprint, provider_message_id, attempt_id, event_type,
      classification, attribution, occurred_at)
     values
     (${aAuthEmailDeliveryEvent}, ${`svix-${aAuthEmailDeliveryEvent}`},
+      ${"a".repeat(64)},
       ${`resend-${aAuthEmailAttempt}`}, ${aAuthEmailAttempt},
       'email.delivered', 'delivered', 'attempt_tag', now())`;
+  await owner`insert into auth_email_attempts
+    (id, practice_id, user_id, source, provider, idempotency_key)
+    values
+    (${aTransitionAuthEmailAttempt}, ${aId}, ${aUser}, 'authenticated_resend',
+      'console', ${`rls-auth:${aTransitionAuthEmailAttempt}`})`;
   await owner`insert into sms_consent_events
     (id, practice_id, client_id, destination_e164, action, source, detail, actor_type, event_key)
     values
@@ -1243,6 +1250,59 @@ try {
     systemAuthEmailRows.length === 1,
   );
 
+  const transitionedAuthEmailAttempt = await appTransaction(async (tx) => {
+    await tx`select set_config('app.rls_bypass', 'on', true)`;
+    return tx`update auth_email_attempts
+      set outcome = 'accepted', resolved_at = now(),
+          provider_message_id = ${`console-${aTransitionAuthEmailAttempt}`}
+      where id = ${aTransitionAuthEmailAttempt} and outcome = 'reserved'
+      returning outcome`;
+  });
+  check(
+    "system bypass can resolve a reserved auth email attempt exactly once",
+    transitionedAuthEmailAttempt.length === 1 &&
+      transitionedAuthEmailAttempt[0]!.outcome === "accepted",
+  );
+
+  let appCannotReresolveAuthEmailAttempt = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`update auth_email_attempts
+        set resolved_at = now() where id = ${aTransitionAuthEmailAttempt}`;
+    });
+  } catch {
+    appCannotReresolveAuthEmailAttempt = true;
+  }
+  check(
+    "database trigger keeps resolved auth email attempts immutable",
+    appCannotReresolveAuthEmailAttempt,
+  );
+
+  let ownerCannotRewriteAuthEmailIdentity = false;
+  try {
+    await owner`update auth_email_attempts
+      set source = 'authenticated_resend' where id = ${aAuthEmailAttempt}`;
+  } catch {
+    ownerCannotRewriteAuthEmailIdentity = true;
+  }
+  check(
+    "database trigger freezes auth email attempt identity for the owner",
+    ownerCannotRewriteAuthEmailIdentity,
+  );
+
+  let ownerCannotDeleteAuthEmailAttempt = false;
+  try {
+    await owner`delete from auth_email_attempts
+      where id = ${aTransitionAuthEmailAttempt}`;
+  } catch {
+    ownerCannotDeleteAuthEmailAttempt = true;
+  }
+  check(
+    "owner cannot delete auth email attempts outside ledger maintenance",
+    ownerCannotDeleteAuthEmailAttempt,
+  );
+
   let appCannotRewriteAuthEmailDelivery = false;
   try {
     await appTransaction(async (tx) => {
@@ -1350,7 +1410,7 @@ try {
     const cleanup = tx as unknown as typeof owner;
     await cleanup`select set_config('app.ledger_maintenance', 'on', true)`;
     await cleanup`delete from auth_email_delivery_events where id = ${aAuthEmailDeliveryEvent}`;
-    await cleanup`delete from auth_email_attempts where id = ${aAuthEmailAttempt}`;
+    await cleanup`delete from auth_email_attempts where id in (${aAuthEmailAttempt}, ${aTransitionAuthEmailAttempt})`;
     await cleanup`delete from sms_delivery_event_history where id in (${aSmsDeliveryHistory}, ${bSmsDeliveryHistory}, ${bSmsDeliveryConflictHistory})`;
     await cleanup`delete from sms_delivery_events where id in (${aSmsDeliveryEvent}, ${bSmsDeliveryEvent}, ${unmatchedSmsDeliveryEvent})`;
     await cleanup`delete from lab_result_events where id in (${aLabResultEvent}, ${bLabResultEvent})`;

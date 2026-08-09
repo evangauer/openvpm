@@ -995,7 +995,22 @@ describe("committed Drizzle migrations", () => {
     expect(sql).toContain('CREATE TABLE "auth_email_attempts"');
     expect(sql).toContain('CREATE TABLE "auth_email_delivery_events"');
     expect(sql).toContain("auth_email_attempts_outcome_shape_check");
+    expect(sql).toContain("auth_email_attempts_state_guard");
+    expect(sql).toContain("guard_auth_email_attempt_mutation");
+    expect(sql).toContain("Auth email attempt identity is immutable");
+    expect(sql).toContain("Auth email attempt state may resolve exactly once");
+    expect(sql).toContain(
+      "Auth email attempts may only be deleted during owner maintenance",
+    );
+    expect(sql).toContain(
+      '"provider" in (\'resend\', \'console\')',
+    );
     expect(sql).toContain("auth_email_delivery_events_attribution_shape_check");
+    expect(sql).toContain(
+      "auth_email_delivery_events_raw_body_fingerprint_check",
+    );
+    expect(sql).toContain('"raw_body_fingerprint" varchar(64) NOT NULL');
+    expect(sql).toContain("'^[0-9a-f]{64}$'");
     expect(sql).toContain("auth_email_delivery_events_immutable");
     expect(sql).toContain(
       "ALTER TABLE auth_email_attempts ENABLE ROW LEVEL SECURITY",
@@ -1010,7 +1025,7 @@ describe("committed Drizzle migrations", () => {
       "GRANT SELECT, INSERT ON auth_email_delivery_events TO openpims_app",
     );
     expect(sql).not.toMatch(
-      /recipient|verify_url|token|subject|body|html|\bto\b varchar/i,
+      /recipient|verify_url|auth_token|subject|html|\bto\b varchar/i,
     );
 
     const reset = readRepoFile("packages/db/reset.ts");

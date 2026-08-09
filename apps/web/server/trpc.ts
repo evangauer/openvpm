@@ -42,7 +42,32 @@ export type TRPCContext = {
   db: Database;
   session: AppSession | null;
   ip?: string | null;
+  /**
+   * Queue a mutation side effect that must begin only after the procedure's
+   * outer RLS transaction commits. The callback receives the root pool, not
+   * the transaction handle; it must establish its own tenant/system scope for
+   * every database operation. Effects run before the tRPC result is returned.
+   */
+  postCommitEffect?: (effect: (rootDb: Database) => Promise<void>) => void;
 };
+
+type PostCommitEffect = (rootDb: Database) => Promise<void>;
+
+async function runPostCommitEffects(
+  rootDb: Database,
+  effects: PostCommitEffect[],
+  path: string,
+): Promise<void> {
+  for (const effect of effects) {
+    try {
+      await effect(rootDb);
+    } catch {
+      // Do not log the thrown value: effects may handle auth links or contact
+      // data. The route path is sufficient for a PHI-free operational signal.
+      console.error(`[trpc post-commit] effect failed for ${path}`);
+    }
+  }
+}
 
 function clientIp(req?: Request): string | null {
   if (!req) return null;
@@ -140,8 +165,26 @@ function practiceNotFound(): TRPCError {
  * They have no tenant session and do their own scoping (tokens, email, rate
  * limits), so they run in a system DB context that bypasses tenant RLS.
  */
-export const publicProcedure = t.procedure.use(async ({ ctx, next }) => {
-  return withSystem(ctx.db, (tx) => next({ ctx: { ...ctx, db: tx } }));
+export const publicProcedure = t.procedure.use(async ({ ctx, next, type, path }) => {
+  const effects: PostCommitEffect[] = [];
+  const result = await withSystem(ctx.db, (tx) =>
+    next({
+      ctx: {
+        ...ctx,
+        db: tx,
+        postCommitEffect: (effect: PostCommitEffect) => {
+          if (type !== "mutation") {
+            throw new Error("Post-commit effects are mutation-only.");
+          }
+          effects.push(effect);
+        },
+      },
+    }),
+  );
+  if (result.ok) {
+    await runPostCommitEffects(ctx.db, effects, path);
+  }
+  return result;
 });
 
 /** Requires an authenticated session */
@@ -161,7 +204,8 @@ export const protectedProcedure = t.procedure.use(
     const user = ctx.session.user;
     // Run the whole request in a tenant DB context so Postgres RLS scopes every
     // query to this practice (defense-in-depth behind the app-layer filters).
-    return withTenant(ctx.db, user.practiceId, async (tx) => {
+    const effects: PostCommitEffect[] = [];
+    const result = await withTenant(ctx.db, user.practiceId, async (tx) => {
       // Hosted read-only guard: block mutations unless the practice has an
       // active trial or subscription. This MUST run inside withTenant (via tx),
       // not on the raw connection — under the least-privilege production role
@@ -208,6 +252,12 @@ export const protectedProcedure = t.procedure.use(
           user,
           practiceId: user.practiceId,
           db: tx,
+          postCommitEffect: (effect: PostCommitEffect) => {
+            if (type !== "mutation") {
+              throw new Error("Post-commit effects are mutation-only.");
+            }
+            effects.push(effect);
+          },
         },
       });
 
@@ -230,6 +280,10 @@ export const protectedProcedure = t.procedure.use(
 
       return result;
     });
+    if (result.ok) {
+      await runPostCommitEffects(ctx.db, effects, path);
+    }
+    return result;
   },
 );
 

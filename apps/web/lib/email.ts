@@ -40,9 +40,11 @@ export type EmailProviderOutcome =
   | "accepted"
   | "definite_failure"
   | "outcome_unknown";
+export type EmailProvider = "resend" | "console";
 
 export interface EmailProviderEvidence {
   success: boolean;
+  provider: EmailProvider;
   id?: string;
   error?: string;
   outcome: EmailProviderOutcome;
@@ -139,6 +141,8 @@ async function dispatchEmail(
   options: EmailDispatchOptions,
 ): Promise<EmailProviderEvidence> {
   const client = getResend();
+  const provider: EmailProvider =
+    client || (billingEnforced() && !emailDemoMode()) ? "resend" : "console";
   const from = defaultEmailFrom(options.from);
   const replyTo = nonBlankEmailValue(options.replyTo);
 
@@ -146,6 +150,7 @@ async function dispatchEmail(
     if (billingEnforced() && !emailDemoMode()) {
       return {
         success: false,
+        provider,
         error: "Email provider is not configured for hosted sending.",
         outcome: "definite_failure",
         failureCode: "provider_not_configured",
@@ -166,6 +171,7 @@ async function dispatchEmail(
     console.log("──────────────────────────────────────────");
     return {
       success: true,
+      provider,
       id: options.idempotencyKey
         ? `dev-console:${options.idempotencyKey}`.slice(0, 128)
         : "dev-console",
@@ -208,6 +214,7 @@ async function dispatchEmail(
       const timedOut = controller.signal.aborted;
       return {
         success: false,
+        provider,
         error: timedOut ? emailSendTimeoutMessage() : error.message,
         outcome: timedOut ? "outcome_unknown" : "definite_failure",
         failureCode: timedOut ? "send_timeout" : "provider_rejected",
@@ -217,13 +224,14 @@ async function dispatchEmail(
     if (!data?.id) {
       return {
         success: false,
+        provider,
         error: "Email provider response did not include a message id.",
         outcome: "outcome_unknown",
         failureCode: "missing_provider_id",
       };
     }
 
-    return { success: true, id: data.id, outcome: "accepted" };
+    return { success: true, provider, id: data.id, outcome: "accepted" };
   } catch (err) {
     const message = controller.signal.aborted
       ? emailSendTimeoutMessage()
@@ -238,6 +246,7 @@ async function dispatchEmail(
     );
     return {
       success: false,
+      provider,
       error: message,
       outcome: "outcome_unknown",
       failureCode: controller.signal.aborted
@@ -247,6 +256,16 @@ async function dispatchEmail(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+/**
+ * Resolve the durable provider identity before reserving a tracked attempt.
+ * Hosted mode without credentials still models Resend (as a definite
+ * configuration failure); only the explicit local/demo fallback is console.
+ */
+export function verificationEmailProvider(): EmailProvider {
+  if (getResend()) return "resend";
+  return billingEnforced() && !emailDemoMode() ? "resend" : "console";
 }
 
 export async function sendEmail(

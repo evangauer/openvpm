@@ -11,8 +11,18 @@ const mocks = vi.hoisted(() => ({
   consumeAuthToken: vi.fn(),
   sendPasswordResetEmail: vi.fn(async () => ({ success: true })),
   sendTrackedVerificationEmail: vi.fn(
-    async (): Promise<{ success: boolean; id?: string; error?: string }> => ({
+    async (): Promise<{
+      success: boolean;
+      provider: "resend" | "console";
+      outcome: "accepted" | "definite_failure" | "outcome_unknown";
+      possiblySent: boolean;
+      evidencePersisted: boolean;
+    }> => ({
       success: true,
+      provider: "resend",
+      outcome: "accepted",
+      possiblySent: false,
+      evidencePersisted: true,
     }),
   ),
   sendWelcomeEmail: vi.fn(async () => ({ success: true })),
@@ -137,13 +147,25 @@ function createSelectDb(selectResults: unknown[][]) {
   const selectFrom = vi.fn(() => ({ where: selectWhere }));
   const select = vi.fn(() => ({ from: selectFrom }));
 
+  let transactionDepth = 0;
   const db: Record<string, unknown> = {
-    transaction: async (fn: (tx: unknown) => unknown) => fn(db),
+    transaction: async (fn: (tx: unknown) => unknown) => {
+      transactionDepth += 1;
+      try {
+        return await fn(db);
+      } finally {
+        transactionDepth -= 1;
+      }
+    },
     execute: vi.fn(async () => undefined),
     select,
   };
 
-  return { db, selectWhere };
+  return {
+    db,
+    selectWhere,
+    isInTransaction: () => transactionDepth > 0,
+  };
 }
 
 function createRegistrationDb(opts?: { insertRows?: unknown[] }) {
@@ -168,13 +190,13 @@ function createRegistrationDb(opts?: { insertRows?: unknown[] }) {
   const updateSet = vi.fn(() => ({ where: updateWhere }));
   const update = vi.fn(() => ({ set: updateSet }));
 
-  let inTransaction = false;
+  let transactionDepth = 0;
   const transaction = vi.fn(async (fn: (tx: unknown) => unknown) => {
-    inTransaction = true;
+    transactionDepth += 1;
     try {
       return await fn(db);
     } finally {
-      inTransaction = false;
+      transactionDepth -= 1;
     }
   });
   const db: Record<string, unknown> = {
@@ -190,7 +212,7 @@ function createRegistrationDb(opts?: { insertRows?: unknown[] }) {
     insertValues,
     updateSet,
     transaction,
-    isInTransaction: () => inTransaction,
+    isInTransaction: () => transactionDepth > 0,
   };
 }
 
@@ -229,7 +251,13 @@ afterEach(() => {
   mocks.billingEnforced.mockReturnValue(false);
   mocks.noCardTrialEnabled.mockReturnValue(false);
   mocks.createAuthToken.mockResolvedValue("token-123");
-  mocks.sendTrackedVerificationEmail.mockResolvedValue({ success: true });
+  mocks.sendTrackedVerificationEmail.mockResolvedValue({
+    success: true,
+    provider: "resend",
+    outcome: "accepted",
+    possiblySent: false,
+    evidencePersisted: true,
+  });
   mocks.createSubscriptionCheckoutSession.mockResolvedValue({
     url: "https://stripe.example/signup-checkout",
   });
@@ -540,7 +568,25 @@ describe("auth router input validation", () => {
     vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
     mocks.billingEnforced.mockReturnValue(true);
     mocks.noCardTrialEnabled.mockReturnValue(true);
-    const { db, insertValues } = createRegistrationDb();
+    const { db, insertValues, isInTransaction } = createRegistrationDb();
+    mocks.createAuthToken.mockImplementationOnce(async () => {
+      expect(isInTransaction()).toBe(true);
+      return "token-123";
+    });
+    mocks.sendTrackedVerificationEmail.mockImplementationOnce(async () => {
+      expect(isInTransaction()).toBe(false);
+      return {
+        success: true,
+        provider: "resend",
+        outcome: "accepted",
+        possiblySent: false,
+        evidencePersisted: true,
+      };
+    });
+    mocks.sendWelcomeEmail.mockImplementationOnce(async () => {
+      expect(isInTransaction()).toBe(false);
+      return { success: true };
+    });
 
     await expect(
       callerWithDb(db).register({
@@ -552,6 +598,8 @@ describe("auth router input validation", () => {
       id: "user-1",
       email: "owner@example.com",
       verificationRequired: true,
+      verificationEmailSent: true,
+      verificationEmailPossiblySent: false,
       onboardingRequired: true,
       checkoutUrl: undefined,
     });
@@ -680,11 +728,30 @@ describe("authenticated verification resend", () => {
   });
 
   it("binds resend to the signed-in account and reports provider acceptance", async () => {
-    const { db, selectWhere } = createSelectDb([[unverifiedUser]]);
+    const { db, selectWhere, isInTransaction } = createSelectDb([
+      [unverifiedUser],
+    ]);
+    mocks.createAuthToken.mockImplementationOnce(async () => {
+      expect(isInTransaction()).toBe(true);
+      return "token-123";
+    });
+    mocks.sendTrackedVerificationEmail.mockImplementationOnce(async () => {
+      expect(isInTransaction()).toBe(false);
+      return {
+        success: true,
+        provider: "resend",
+        outcome: "accepted",
+        possiblySent: false,
+        evidencePersisted: true,
+      };
+    });
 
     await expect(callerWithSession(db).resendVerification()).resolves.toEqual({
       ok: true,
       alreadyVerified: false,
+      verificationEmailSent: true,
+      possiblySent: false,
+      message: "Verification email sent. Check your inbox and spam folder.",
     });
 
     const condition = selectWhere.mock.calls[0]?.[0];
@@ -726,37 +793,53 @@ describe("authenticated verification resend", () => {
     await expect(callerWithSession(db).resendVerification()).resolves.toEqual({
       ok: true,
       alreadyVerified: true,
+      verificationEmailSent: false,
+      possiblySent: false,
+      message: "Your email is already verified.",
     });
     expect(mocks.rateLimit).not.toHaveBeenCalled();
     expect(mocks.createAuthToken).not.toHaveBeenCalled();
     expect(mocks.sendTrackedVerificationEmail).not.toHaveBeenCalled();
   });
 
-  it("reports provider rejection instead of claiming the email was sent", async () => {
-    const consoleError = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => undefined);
+  it("reports provider rejection without claiming the email was sent", async () => {
     const { db } = createSelectDb([[unverifiedUser]]);
     mocks.sendTrackedVerificationEmail.mockResolvedValueOnce({
       success: false,
-      error: "provider unavailable",
+      provider: "resend",
+      outcome: "definite_failure",
+      possiblySent: false,
+      evidencePersisted: true,
     });
 
-    try {
-      await expect(
-        callerWithSession(db).resendVerification(),
-      ).rejects.toMatchObject({
-        code: "INTERNAL_SERVER_ERROR",
-        message:
-          "We couldn't send the verification email. Please try again in a moment.",
-      });
-      expect(consoleError).toHaveBeenCalledWith(
-        "[resendVerification] email failed:",
-        expect.any(Error),
-      );
-    } finally {
-      consoleError.mockRestore();
-    }
+    await expect(callerWithSession(db).resendVerification()).resolves.toEqual({
+      ok: true,
+      alreadyVerified: false,
+      verificationEmailSent: false,
+      possiblySent: false,
+      message:
+        "The email provider did not accept the verification email. Please try again later.",
+    });
+  });
+
+  it("tells users to check their inbox when the provider outcome is unknown", async () => {
+    const { db } = createSelectDb([[unverifiedUser]]);
+    mocks.sendTrackedVerificationEmail.mockResolvedValueOnce({
+      success: false,
+      provider: "resend",
+      outcome: "outcome_unknown",
+      possiblySent: true,
+      evidencePersisted: true,
+    });
+
+    const result = await callerWithSession(db).resendVerification();
+
+    expect(result).toMatchObject({
+      verificationEmailSent: false,
+      possiblySent: true,
+    });
+    expect(result.message).toMatch(/may have been sent/i);
+    expect(result.message).not.toMatch(/try again|retry/i);
   });
 
   it("fails closed when the resend limiter is unavailable", async () => {

@@ -269,6 +269,7 @@ describe("sendEmail", () => {
       }),
     ).resolves.toEqual({
       success: true,
+      provider: "resend",
       id: "email-verify-1",
       outcome: "accepted",
     });
@@ -300,6 +301,7 @@ describe("sendEmail", () => {
       }),
     ).resolves.toMatchObject({
       success: true,
+      provider: "console",
       id: "dev-console:auth-email:00000000-0000-4000-8000-000000000001",
       outcome: "accepted",
     });
@@ -311,6 +313,27 @@ describe("sendEmail", () => {
       "private-owner@example.com",
     );
     consoleLog.mockRestore();
+  });
+
+  it("models hosted missing configuration as a definite Resend failure", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    const { sendVerificationEmailWithProviderEvidence } = await loadEmail();
+
+    await expect(
+      sendVerificationEmailWithProviderEvidence({
+        to: "private-owner@example.com",
+        name: "Dr Admin",
+        verifyUrl: "https://app.openvpm.com/verify-email?token=safe-token",
+        attemptId: "00000000-0000-4000-8000-000000000001",
+        idempotencyKey: "auth-email:00000000-0000-4000-8000-000000000001",
+      }),
+    ).resolves.toMatchObject({
+      success: false,
+      provider: "resend",
+      outcome: "definite_failure",
+      failureCode: "provider_not_configured",
+    });
+    expect(mocks.resendSend).not.toHaveBeenCalled();
   });
 
   it("redacts auth verification provider rejection detail from logs", async () => {

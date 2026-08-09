@@ -384,7 +384,9 @@ export const authRouter = createRouter({
       // Non-fatal: signup still succeeds. Self-host skips this.
       let verificationRequired = false;
       let verificationUrl: string | undefined;
-      let verificationEmailSent: boolean | undefined;
+      let verificationDispatch:
+        | { to: string; name: string; verifyUrl: string }
+        | undefined;
       if (hostedBilling) {
         verificationRequired = true;
         try {
@@ -395,47 +397,67 @@ export const authRouter = createRouter({
             db: ctx.db,
           });
           verificationUrl = `${appBaseUrl()}/verify-email?token=${token}`;
-          const result = await sendTrackedVerificationEmail({
-            practiceId: practice.id,
-            userId: user.id,
-            source: "registration",
+          verificationDispatch = {
             to: user.email,
             name: user.name,
             verifyUrl: verificationUrl,
-            db: ctx.db,
-          });
-          verificationEmailSent = result.success;
-        } catch (err) {
-          console.error("[register] verification email failed:", err);
-          verificationEmailSent = false;
+          };
+        } catch {
+          console.error("[register] verification token preparation failed");
         }
       }
 
-      // Send a branded welcome email (hosted only). Non-fatal — signup succeeds
-      // regardless of delivery.
-      if (hostedBilling) {
-        try {
-          await sendWelcomeEmail({
-            to: user.email,
-            practiceName: input.practiceName.trim(),
-            trialDays: TRIAL_DAYS,
-          });
-        } catch (err) {
-          console.error("[register] welcome email failed:", err);
-        }
-      }
-
-      return {
+      const response = {
         id: user.id,
         email: user.email,
         verificationRequired,
-        verificationEmailSent,
+        verificationEmailSent: hostedBilling ? false : undefined,
+        verificationEmailPossiblySent: hostedBilling ? false : undefined,
         verificationUrl: exposeAuthLinksForPreview() ? verificationUrl : undefined,
         checkoutUrl,
         // Hosted signups (no-card trial) land in the first-run onboarding wizard
         // instead of the bare dashboard.
         onboardingRequired: noCardTrial,
       };
+
+      if (verificationDispatch && ctx.postCommitEffect) {
+        ctx.postCommitEffect(async (rootDb) => {
+          try {
+            const result = await sendTrackedVerificationEmail({
+              practiceId: practice.id,
+              userId: user.id,
+              source: "registration",
+              ...verificationDispatch,
+              db: rootDb,
+            });
+            response.verificationEmailSent = result.outcome === "accepted";
+            response.verificationEmailPossiblySent =
+              result.outcome === "outcome_unknown";
+          } catch {
+            // Signup is already committed. Keep verification soft and do not
+            // log the auth link or recipient embedded in the closure.
+            console.error("[register] post-commit verification dispatch failed");
+          }
+        });
+      }
+
+      // Welcome mail is external I/O as well, so it shares the same strict
+      // post-commit boundary. It remains non-fatal and untracked.
+      if (hostedBilling && ctx.postCommitEffect) {
+        ctx.postCommitEffect(async () => {
+          try {
+            await sendWelcomeEmail({
+              to: user.email,
+              practiceName: input.practiceName.trim(),
+              trialDays: TRIAL_DAYS,
+            });
+          } catch {
+            console.error("[register] post-commit welcome email failed");
+          }
+        });
+      }
+
+      return response;
     }),
 
   /** Confirm an email-verification token (hosted). */
@@ -492,7 +514,13 @@ export const authRouter = createRouter({
       throw new TRPCError({ code: "NOT_FOUND", message: "Account not found." });
     }
     if (user.emailVerifiedAt) {
-      return { ok: true, alreadyVerified: true };
+      return {
+        ok: true,
+        alreadyVerified: true,
+        verificationEmailSent: false,
+        possiblySent: false,
+        message: "Your email is already verified.",
+      };
     }
 
     await assertPreAuthRateLimit({
@@ -503,37 +531,60 @@ export const authRouter = createRouter({
       logContext: "resendVerification",
     });
 
-    try {
-      const token = await createAuthToken({
-        userId: user.id,
-        email: user.email,
-        type: "email_verify",
-        db: ctx.db,
-      });
-      const result = await sendTrackedVerificationEmail({
-        practiceId: ctx.practiceId,
-        userId: user.id,
-        source: "authenticated_resend",
-        to: user.email,
-        name: user.name,
-        verifyUrl: `${appBaseUrl()}/verify-email?token=${token}`,
-        db: ctx.db,
-      });
-      if (!result.success) {
-        throw new Error(
-          result.error || "Email provider did not accept the verification message."
-        );
-      }
-    } catch (err) {
-      console.error("[resendVerification] email failed:", err);
-      throw new TRPCError({
-        code: "INTERNAL_SERVER_ERROR",
-        message:
-          "We couldn't send the verification email. Please try again in a moment.",
-      });
+    const token = await createAuthToken({
+      userId: user.id,
+      email: user.email,
+      type: "email_verify",
+      db: ctx.db,
+    });
+    const response = {
+      ok: true,
+      alreadyVerified: false,
+      verificationEmailSent: false,
+      possiblySent: false,
+      message: "Verification email is being prepared.",
+    };
+
+    if (!ctx.postCommitEffect) {
+      response.message =
+        "We couldn't prepare the verification email. Please try again later.";
+      return response;
     }
 
-    return { ok: true, alreadyVerified: false };
+    ctx.postCommitEffect(async (rootDb) => {
+      try {
+        const result = await sendTrackedVerificationEmail({
+          practiceId: ctx.practiceId,
+          userId: user.id,
+          source: "authenticated_resend",
+          to: user.email,
+          name: user.name,
+          verifyUrl: `${appBaseUrl()}/verify-email?token=${token}`,
+          db: rootDb,
+        });
+        if (result.outcome === "accepted") {
+          response.verificationEmailSent = true;
+          response.message =
+            "Verification email sent. Check your inbox and spam folder.";
+        } else if (result.outcome === "outcome_unknown") {
+          response.possiblySent = true;
+          response.message =
+            "The verification email may have been sent. Check your inbox and spam folder before requesting another.";
+        } else {
+          response.message =
+            "The email provider did not accept the verification email. Please try again later.";
+        }
+      } catch {
+        // A post-provider failure is conservatively reported as possibly sent
+        // so the user is never encouraged to create an immediate duplicate.
+        response.possiblySent = true;
+        response.message =
+          "The verification email may have been sent. Check your inbox and spam folder before requesting another.";
+        console.error("[resendVerification] post-commit dispatch failed");
+      }
+    });
+
+    return response;
   }),
 
   /** Request a password-reset email. Always succeeds (no account enumeration). */

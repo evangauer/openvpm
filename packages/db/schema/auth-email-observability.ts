@@ -92,7 +92,7 @@ export const authEmailAttempts = pgTable(
     ),
     providerCheck: check(
       "auth_email_attempts_provider_check",
-      sql`${table.provider} = 'resend'`,
+      sql`${table.provider} in ('resend', 'console')`,
     ),
     outcomeShapeCheck: check(
       "auth_email_attempts_outcome_shape_check",
@@ -129,6 +129,9 @@ export const authEmailDeliveryEvents = pgTable(
       .notNull()
       .defaultNow(),
     webhookId: varchar("webhook_id", { length: 128 }).notNull(),
+    rawBodyFingerprint: varchar("raw_body_fingerprint", {
+      length: 64,
+    }).notNull(),
     provider: varchar("provider", { length: 16 }).notNull().default("resend"),
     providerMessageId: varchar("provider_message_id", {
       length: 128,
@@ -160,6 +163,10 @@ export const authEmailDeliveryEvents = pgTable(
     eventTypeCheck: check(
       "auth_email_delivery_events_event_type_check",
       sql`${table.eventType} ~ '^email\\.'`,
+    ),
+    rawBodyFingerprintCheck: check(
+      "auth_email_delivery_events_raw_body_fingerprint_check",
+      sql`${table.rawBodyFingerprint} ~ '^[0-9a-f]{64}$'`,
     ),
     attributionShapeCheck: check(
       "auth_email_delivery_events_attribution_shape_check",

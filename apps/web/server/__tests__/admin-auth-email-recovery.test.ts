@@ -17,6 +17,9 @@ describe("auth verification email recovery queue", () => {
       "attempt.outcome in ('outcome_unknown', 'definite_failure')",
     );
     expect(queue).toContain("interval '15 minutes'");
+    expect(queue).toContain("attempt.provider = 'resend'");
+    expect(queue).toContain("'delivered', 'failed', 'complained'");
+    expect(queue).not.toContain("'opened', 'clicked'");
   });
 
   it("derives out-of-order delivery matches without rewriting evidence", () => {
@@ -27,6 +30,11 @@ describe("auth verification email recovery queue", () => {
     );
     expect(queue).toContain("delivery_confirmation_missing");
     expect(queue).toContain("interval '60 minutes'");
+    expect(queue).toContain("identity_mismatches as");
+    expect(queue).toContain("delivery.provider <> attempt.provider");
+    expect(queue).toContain(
+      "delivery.provider_message_id <> attempt.provider_message_id",
+    );
   });
 
   it("keeps the operator result bounded, no-store, and recipient-free", () => {
@@ -40,5 +48,6 @@ describe("auth verification email recovery queue", () => {
     expect(queue).not.toContain("token");
     expect(queue).not.toContain("subject");
     expect(queue).not.toContain("body");
+    expect(queue).toContain("account.email_verified_at is null");
   });
 });

@@ -49,13 +49,16 @@ const mocks = vi.hoisted(() => {
       async (): Promise<{
         tracked: boolean;
         duplicate: boolean;
+        conflict: boolean;
         attribution: string | null;
       }> => ({
         tracked: false,
         duplicate: false,
+        conflict: false,
         attribution: null,
       }),
     ),
+    authEmailWebhookFingerprint: vi.fn(() => "f".repeat(64)),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
       fn(db),
     ),
@@ -81,6 +84,7 @@ vi.mock("@/lib/tenant-db", () => ({
 
 vi.mock("@/lib/auth-email-delivery", () => ({
   recordAuthEmailDeliveryEvent: mocks.recordAuthEmailDeliveryEvent,
+  authEmailWebhookFingerprint: mocks.authEmailWebhookFingerprint,
 }));
 
 const { POST } = await import("./route");
@@ -109,6 +113,7 @@ afterEach(() => {
   mocks.recordAuthEmailDeliveryEvent.mockResolvedValue({
     tracked: false,
     duplicate: false,
+    conflict: false,
     attribution: null,
   });
   delete process.env.RESEND_WEBHOOK_SECRET;
@@ -284,6 +289,7 @@ describe("Resend webhook", () => {
     mocks.recordAuthEmailDeliveryEvent.mockResolvedValue({
       tracked: true,
       duplicate: false,
+      conflict: false,
       attribution: "attempt_tag",
     });
 
@@ -293,10 +299,42 @@ describe("Resend webhook", () => {
     expect(mocks.recordAuthEmailDeliveryEvent).toHaveBeenCalledWith({
       event,
       webhookId: "msg_123",
+      rawBodyFingerprint: "f".repeat(64),
       db: mocks.db,
     });
     expect(mocks.withTenant).not.toHaveBeenCalled();
     expect(mocks.updateSet).not.toHaveBeenCalled();
+    expect(mocks.insertValues).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a changed-body Svix identity conflict without tenant work", async () => {
+    process.env.RESEND_WEBHOOK_SECRET = "whsec_test";
+    mocks.verify.mockReturnValue({
+      type: "email.delivered",
+      created_at: "2026-06-29T12:00:00Z",
+      data: {
+        email_id: "email-auth-1",
+        from: "OpenVPM <noreply@mail.openvpm.com>",
+        to: ["owner@example.com"],
+        subject: "Verify your OpenVPM email",
+        created_at: "2026-06-29T12:00:00Z",
+        tags: { openvpm_email_kind: "auth_verification" },
+      },
+    });
+    mocks.recordAuthEmailDeliveryEvent.mockResolvedValue({
+      tracked: true,
+      duplicate: false,
+      conflict: true,
+      attribution: "identity_conflict",
+    });
+
+    const response = await POST(signedRequest("changed signed body"));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "webhook identity conflict",
+    });
+    expect(mocks.withTenant).not.toHaveBeenCalled();
     expect(mocks.insertValues).not.toHaveBeenCalled();
   });
 

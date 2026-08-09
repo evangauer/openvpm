@@ -659,28 +659,31 @@ export const adminRouter = createRouter({
              and account.deleted_at is null
              and account.email_verified_at is null
             where (
-              attempt.outcome = 'reserved'
-              and attempt.created_at <= now() - interval '15 minutes'
-            ) or attempt.outcome in ('outcome_unknown', 'definite_failure')
-              or (
-                attempt.outcome = 'accepted'
-                and attempt.resolved_at <= now() - interval '60 minutes'
-                and not exists (
-                  select 1
-                  from auth_email_delivery_events delivery
-                  where (
-                    delivery.attempt_id = attempt.id
-                    or (
-                      delivery.attempt_id is null
-                      and delivery.provider = attempt.provider
-                      and delivery.provider_message_id = attempt.provider_message_id
+              (
+                attempt.outcome = 'reserved'
+                and attempt.created_at <= now() - interval '15 minutes'
+              ) or attempt.outcome in ('outcome_unknown', 'definite_failure')
+                or (
+                  attempt.provider = 'resend'
+                  and attempt.outcome = 'accepted'
+                  and attempt.resolved_at <= now() - interval '60 minutes'
+                  and not exists (
+                    select 1
+                    from auth_email_delivery_events delivery
+                    where (
+                      delivery.attempt_id = attempt.id
+                      or (
+                        delivery.attempt_id is null
+                        and delivery.provider = attempt.provider
+                        and delivery.provider_message_id = attempt.provider_message_id
+                      )
+                    )
+                    and delivery.classification in (
+                      'delivered', 'failed', 'complained'
                     )
                   )
-                  and delivery.classification in (
-                    'delivered', 'failed', 'complained', 'opened', 'clicked'
-                  )
                 )
-              )
+            )
           ), attribution_issues as (
             select
               delivery.received_at as "occurredAt",
@@ -708,10 +711,30 @@ export const adminRouter = createRouter({
                 delivery.attribution = 'unmatched'
                 and attempt.id is null
               )
+          ), identity_mismatches as (
+            select
+              delivery.received_at as "occurredAt",
+              practice.name as "practiceName",
+              attempt.source::text as source,
+              attempt.outcome::text as outcome,
+              'delivery_identity_conflict'::text as reason
+            from auth_email_delivery_events delivery
+            join auth_email_attempts attempt
+              on attempt.id = delivery.attempt_id
+            join practices practice
+              on practice.id = attempt.practice_id
+             and practice.deleted_at is null
+            where delivery.provider <> attempt.provider
+               or (
+                 attempt.provider_message_id is not null
+                 and delivery.provider_message_id <> attempt.provider_message_id
+               )
           ), queue as (
             select * from attempt_issues
             union all
             select * from attribution_issues
+            union all
+            select * from identity_mismatches
           )
           select
             "occurredAt",

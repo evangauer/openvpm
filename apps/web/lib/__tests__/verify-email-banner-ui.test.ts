@@ -25,6 +25,10 @@ describe("verify email banner UI", () => {
     expect(source).toContain("onClick={() => resend.mutate()}");
     expect(source).not.toContain("resend.mutate({ email:");
     expect(source).toContain("resend.error.message");
-    expect(source).toContain("Verification email sent. Check your inbox (and spam).");
+    expect(source).toContain("resend.data.verificationEmailSent");
+    expect(source).toContain("!resend.data.alreadyVerified");
+    expect(source).toContain("!resend.data.possiblySent");
+    expect(source).toContain("{showResendAction && (");
+    expect(source).toContain("resend.data.message");
   });
 });

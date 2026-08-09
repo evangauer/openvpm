@@ -12781,7 +12781,7 @@
       "checkConstraints": {
         "auth_email_attempts_provider_check": {
           "name": "auth_email_attempts_provider_check",
-          "value": "\"auth_email_attempts\".\"provider\" = 'resend'"
+          "value": "\"auth_email_attempts\".\"provider\" in ('resend', 'console')"
         },
         "auth_email_attempts_outcome_shape_check": {
           "name": "auth_email_attempts_outcome_shape_check",
@@ -12811,6 +12811,12 @@
         "webhook_id": {
           "name": "webhook_id",
           "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "raw_body_fingerprint": {
+          "name": "raw_body_fingerprint",
+          "type": "varchar(64)",
           "primaryKey": false,
           "notNull": true
         },
@@ -12986,6 +12992,10 @@
         "auth_email_delivery_events_event_type_check": {
           "name": "auth_email_delivery_events_event_type_check",
           "value": "\"auth_email_delivery_events\".\"event_type\" ~ '^email\\.'"
+        },
+        "auth_email_delivery_events_raw_body_fingerprint_check": {
+          "name": "auth_email_delivery_events_raw_body_fingerprint_check",
+          "value": "\"auth_email_delivery_events\".\"raw_body_fingerprint\" ~ '^[0-9a-f]{64}$'"
         },
         "auth_email_delivery_events_attribution_shape_check": {
           "name": "auth_email_delivery_events_attribution_shape_check",

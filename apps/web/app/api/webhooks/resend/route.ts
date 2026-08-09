@@ -15,6 +15,7 @@ import {
 } from "@/lib/email-suppression";
 import { emailEnv } from "@/lib/email-env";
 import {
+  authEmailWebhookFingerprint,
   recordAuthEmailDeliveryEvent,
   type AuthEmailWebhookEvent,
 } from "@/lib/auth-email-delivery";
@@ -148,8 +149,15 @@ export async function POST(request: Request) {
   const authDelivery = await recordAuthEmailDeliveryEvent({
     event,
     webhookId: request.headers.get("svix-id")!,
+    rawBodyFingerprint: authEmailWebhookFingerprint(rawBody.text),
     db,
   });
+  if (authDelivery.conflict) {
+    return NextResponse.json(
+      { error: "webhook identity conflict" },
+      { status: 409 },
+    );
+  }
   if (authDelivery.tracked) {
     return NextResponse.json({ ok: true });
   }

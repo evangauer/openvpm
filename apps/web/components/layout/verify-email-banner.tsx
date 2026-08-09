@@ -73,14 +73,28 @@ export function VerifyEmailBanner() {
 
   if (!data.verificationEnabled || data.emailVerified) return null;
 
+  const showResendAction =
+    !resend.isSuccess ||
+    Boolean(
+      resend.data &&
+        !resend.data.alreadyVerified &&
+        !resend.data.verificationEmailSent &&
+        !resend.data.possiblySent,
+    );
+
   return (
     // Wraps at phone widths so the resend button never clips off-screen.
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-900 sm:px-6">
       <Mail className="hidden h-4 w-4 shrink-0 sm:block" />
       <p className="min-w-0 flex-1 basis-48">
-        {resend.isSuccess ? (
+        {resend.isSuccess && resend.data ? (
           <span className="inline-flex items-center gap-1.5">
-            <Check className="h-4 w-4" /> Verification email sent. Check your inbox (and spam).
+            {resend.data.verificationEmailSent ? (
+              <Check className="h-4 w-4" />
+            ) : (
+              <AlertTriangle className="h-4 w-4" />
+            )}
+            {resend.data.message}
           </span>
         ) : (
           <>
@@ -94,7 +108,7 @@ export function VerifyEmailBanner() {
           </span>
         ) : null}
       </p>
-      {!resend.isSuccess && (
+      {showResendAction && (
         <button
           type="button"
           disabled={resend.isPending}

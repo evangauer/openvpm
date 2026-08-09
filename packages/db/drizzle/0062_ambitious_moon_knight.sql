@@ -14,7 +14,7 @@ CREATE TABLE "auth_email_attempts" (
 	"provider_message_id" varchar(128),
 	"outcome" "auth_email_attempt_outcome" DEFAULT 'reserved' NOT NULL,
 	"failure_code" varchar(64),
-	CONSTRAINT "auth_email_attempts_provider_check" CHECK ("auth_email_attempts"."provider" = 'resend'),
+	CONSTRAINT "auth_email_attempts_provider_check" CHECK ("auth_email_attempts"."provider" in ('resend', 'console')),
 	CONSTRAINT "auth_email_attempts_outcome_shape_check" CHECK ((
         "auth_email_attempts"."outcome" = 'reserved'
         and "auth_email_attempts"."resolved_at" is null
@@ -37,6 +37,7 @@ CREATE TABLE "auth_email_delivery_events" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"received_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"webhook_id" varchar(128) NOT NULL,
+	"raw_body_fingerprint" varchar(64) NOT NULL,
 	"provider" varchar(16) DEFAULT 'resend' NOT NULL,
 	"provider_message_id" varchar(128) NOT NULL,
 	"attempt_id" uuid,
@@ -46,6 +47,7 @@ CREATE TABLE "auth_email_delivery_events" (
 	"occurred_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "auth_email_delivery_events_provider_check" CHECK ("auth_email_delivery_events"."provider" = 'resend'),
 	CONSTRAINT "auth_email_delivery_events_event_type_check" CHECK ("auth_email_delivery_events"."event_type" ~ '^email\.'),
+	CONSTRAINT "auth_email_delivery_events_raw_body_fingerprint_check" CHECK ("auth_email_delivery_events"."raw_body_fingerprint" ~ '^[0-9a-f]{64}$'),
 	CONSTRAINT "auth_email_delivery_events_attribution_shape_check" CHECK ((
         "auth_email_delivery_events"."attribution" in ('attempt_tag', 'provider_message_id')
         and "auth_email_delivery_events"."attempt_id" is not null
@@ -66,6 +68,59 @@ CREATE UNIQUE INDEX "auth_email_delivery_events_webhook_uq" ON "auth_email_deliv
 CREATE INDEX "auth_email_delivery_events_attempt_timeline_idx" ON "auth_email_delivery_events" USING btree ("attempt_id","occurred_at","id");--> statement-breakpoint
 CREATE INDEX "auth_email_delivery_events_provider_timeline_idx" ON "auth_email_delivery_events" USING btree ("provider","provider_message_id","occurred_at","id");--> statement-breakpoint
 CREATE INDEX "auth_email_delivery_events_attribution_queue_idx" ON "auth_email_delivery_events" USING btree ("attribution","received_at","id");--> statement-breakpoint
+CREATE OR REPLACE FUNCTION guard_auth_email_attempt_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = ''
+AS $$
+DECLARE
+	is_owner boolean;
+BEGIN
+	is_owner := current_user = (
+		SELECT pg_catalog.pg_get_userbyid(class.relowner)
+		FROM pg_catalog.pg_class class
+		JOIN pg_catalog.pg_namespace namespace
+			ON namespace.oid = class.relnamespace
+		WHERE namespace.nspname = TG_TABLE_SCHEMA
+			AND class.relname = TG_TABLE_NAME
+	);
+
+	IF TG_OP = 'DELETE' THEN
+		IF is_owner
+			AND coalesce(current_setting('app.ledger_maintenance', true), '') = 'on'
+		THEN
+			RETURN OLD;
+		END IF;
+		RAISE EXCEPTION USING
+			ERRCODE = '55000',
+			MESSAGE = 'Auth email attempts may only be deleted during owner maintenance.';
+	END IF;
+
+	IF NEW.id IS DISTINCT FROM OLD.id
+		OR NEW.created_at IS DISTINCT FROM OLD.created_at
+		OR NEW.practice_id IS DISTINCT FROM OLD.practice_id
+		OR NEW.user_id IS DISTINCT FROM OLD.user_id
+		OR NEW.source IS DISTINCT FROM OLD.source
+		OR NEW.provider IS DISTINCT FROM OLD.provider
+		OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
+	THEN
+		RAISE EXCEPTION USING
+			ERRCODE = '55000',
+			MESSAGE = 'Auth email attempt identity is immutable.';
+	END IF;
+
+	IF OLD.outcome <> 'reserved' OR NEW.outcome = 'reserved' THEN
+		RAISE EXCEPTION USING
+			ERRCODE = '55000',
+			MESSAGE = 'Auth email attempt state may resolve exactly once.';
+	END IF;
+
+	RETURN NEW;
+END;
+$$;--> statement-breakpoint
+CREATE TRIGGER auth_email_attempts_state_guard
+	BEFORE UPDATE OR DELETE ON auth_email_attempts
+	FOR EACH ROW EXECUTE FUNCTION guard_auth_email_attempt_mutation();--> statement-breakpoint
 CREATE OR REPLACE FUNCTION reject_auth_email_delivery_event_mutation()
 RETURNS trigger
 LANGUAGE plpgsql
