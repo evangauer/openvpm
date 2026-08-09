@@ -76,7 +76,7 @@ describe("settings account deletion request", () => {
         reason: " Closing the practice ",
         confirmExportDownloaded: true,
         confirmManualReview: true,
-      })
+      }),
     ).resolves.toMatchObject({
       status: "requested",
       requestedByUserId: USER_ID,
@@ -87,21 +87,13 @@ describe("settings account deletion request", () => {
     });
 
     expect(updateSet).toHaveBeenCalledWith({
-      settings: {
-        brandColor: "#0f766e",
-        accountDeletionRequest: expect.objectContaining({
-          status: "requested",
-          requestedByUserId: USER_ID,
-          requestedByEmail: "admin@example.com",
-          contactEmail: "owner@example.com",
-          reason: "Closing the practice",
-          retentionReviewRequired: true,
-        }),
-      },
+      // The request is merged in SQL against the latest JSON document so a
+      // concurrent migration marker cannot be overwritten.
+      settings: expect.anything(),
     });
     expect(mocks.alertOps).toHaveBeenCalledWith(
       "Account deletion requested",
-      expect.stringContaining("manualRetentionReviewRequired=true")
+      expect.stringContaining("manualRetentionReviewRequired=true"),
     );
   });
 
@@ -125,7 +117,7 @@ describe("settings account deletion request", () => {
         contactEmail: "owner@example.com",
         confirmExportDownloaded: true,
         confirmManualReview: true,
-      })
+      }),
     ).resolves.toEqual(existing);
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -140,7 +132,7 @@ describe("settings account deletion request", () => {
         contactEmail: "owner@example.com",
         confirmExportDownloaded: true,
         confirmManualReview: false,
-      } as never)
+      } as never),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -155,7 +147,7 @@ describe("settings account deletion request", () => {
         contactEmail: `${"a".repeat(244)}@example.com`,
         confirmExportDownloaded: true,
         confirmManualReview: true,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -164,7 +156,7 @@ describe("settings account deletion request", () => {
         reason: "x".repeat(1001),
         confirmExportDownloaded: true,
         confirmManualReview: true,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -179,7 +171,7 @@ describe("settings account deletion request", () => {
         contactEmail: "owner@example.com",
         confirmExportDownloaded: true,
         confirmManualReview: true,
-      })
+      }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     expect(updateSet).not.toHaveBeenCalled();

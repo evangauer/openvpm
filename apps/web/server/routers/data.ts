@@ -44,6 +44,7 @@ import {
   IMPORT_MAX_ROWS,
   isImportCsvSizeValid,
 } from "@/lib/import/policy";
+import { MIGRATION_SOURCE_PATTERN } from "@/lib/import/sources";
 import { clinicalDateInput } from "@/lib/records/clinical-inputs";
 import {
   MigrationPreviewError,
@@ -59,6 +60,7 @@ import {
   type MigrationRunMode,
 } from "@/lib/import/run-ledger";
 import { recordActivationAfterAppointmentCreated } from "@/lib/funnel-events-server";
+import { migrationImportFingerprint } from "@/lib/import/fingerprint";
 
 const adminProcedure = protectedProcedure.use(requireRole("admin"));
 export { IMPORT_CSV_MAX_BYTES, IMPORT_MAX_ROWS } from "@/lib/import/policy";
@@ -123,7 +125,7 @@ const importSourceInput = z
   .trim()
   .toLowerCase()
   .regex(
-    /^[a-z0-9][a-z0-9_-]{0,63}$/,
+    MIGRATION_SOURCE_PATTERN,
     "Import source must use letters, numbers, underscores, or hyphens.",
   )
   .default("other");
@@ -273,6 +275,8 @@ type CsvImportIntent = z.infer<typeof importCsvInput>;
 
 const CLIENT_IMPORT_PLANNER_VERSION = "clients-v1";
 const PATIENT_IMPORT_PLANNER_VERSION = "patients-v1";
+const VACCINATION_IMPORT_PLANNER_VERSION = "vaccinations-v1";
+const SOAP_NOTE_IMPORT_PLANNER_VERSION = "soap-notes-v1";
 
 function csvPreviewResult<T extends Record<string, unknown>>(value: T) {
   return value as T & { imported?: never; reconciled?: never };
@@ -376,6 +380,27 @@ async function finishCsvImportRun(
   committedBy: string,
   reconciledCount = 0,
 ): Promise<void> {
+  if (importedCount + reconciledCount > 0) {
+    const committedAt = new Date().toISOString();
+    // This marker must commit atomically with the imported records. The
+    // onboarding shell uses it after a reload to avoid silently treating a
+    // practice with real imported data as sample-only again.
+    await db.execute(sql`
+      update ${practices}
+      set settings = jsonb_set(
+        coalesce(${practices.settings}, '{}'::jsonb),
+        '{onboardingState}',
+        coalesce(${practices.settings} -> 'onboardingState', '{}'::jsonb)
+          || jsonb_build_object(
+            'migrationHasCommittedChanges', true,
+            'migrationLastCommittedAt', ${committedAt}
+          ),
+        true
+      )
+      where ${practices.id} = ${practiceId}
+        and ${practices.deletedAt} is null
+    `);
+  }
   if (!previewToken) return;
   try {
     await completeMigrationRun(db, {
@@ -403,6 +428,27 @@ function activePracticePredicate(practiceId: string) {
     from ${practices}
     where ${practices.id} = ${practiceId}
       and ${practices.deletedAt} is null
+  )`;
+}
+
+function isDemoDataId(
+  practiceId: string,
+  key: "clientIds" | "patientIds",
+  column: typeof clients.id | typeof patients.id,
+) {
+  return sql<boolean>`exists (
+    select 1
+    from practices as demo_practice
+    cross join lateral jsonb_array_elements_text(
+      case
+        when jsonb_typeof(demo_practice.settings -> 'demoData' -> ${key}) = 'array'
+          then demo_practice.settings -> 'demoData' -> ${key}
+        else '[]'::jsonb
+      end
+    ) as demo_id(value)
+    where demo_practice.id = ${practiceId}
+      and demo_practice.deleted_at is null
+      and demo_id.value = ${column}::text
   )`;
 }
 
@@ -445,9 +491,11 @@ type ExistingClientImportIdentity = {
   email: string | null;
   externalSource: string | null;
   externalId: string | null;
+  importFingerprint?: string | null;
   deletedAt: Date | null;
   updatedAt?: Date;
   plannedRowIndex?: number;
+  isDemo?: boolean;
 };
 
 type ExternalIdentityUpdate = {
@@ -495,8 +543,13 @@ function planClientCsvImport(
   const byEmail = new Map<string, ExistingClientImportIdentity>();
   const ambiguousEmails = new Set<string>();
   const byExternalId = new Map<string, ExistingClientImportIdentity>();
+  const importFingerprints = new Set<string>();
 
   for (const client of existingClients) {
+    if (client.isDemo) continue;
+    if (!client.deletedAt && client.importFingerprint) {
+      importFingerprints.add(client.importFingerprint);
+    }
     if (client.externalSource && client.externalId) {
       byExternalId.set(
         externalIdentityKey(client.externalSource, client.externalId),
@@ -634,6 +687,25 @@ function planClientCsvImport(
       zip: client.zip?.trim() || null,
       ...(externalId ? { externalSource: source, externalId } : {}),
     };
+    row.importFingerprint = migrationImportFingerprint("clients", [
+      email ? "email" : externalId ? "external" : "record",
+      email ?? (externalId ? source : normalizeImportText(row.firstName)),
+      email ?? externalId ?? normalizeImportText(row.lastName),
+      email || externalId ? null : normalizeImportText(row.phone),
+      email || externalId ? null : normalizeImportText(row.address),
+      email || externalId ? null : normalizeImportText(row.city),
+      email || externalId ? null : normalizeImportText(row.state),
+      email || externalId ? null : normalizeImportText(row.zip),
+    ]);
+    if (importFingerprints.has(row.importFingerprint)) {
+      duplicates++;
+      reviewedDispositions.push(
+        reviewedDisposition(index, "client", "duplicate"),
+      );
+      errors.push(`Row ${index + 1}: Skipped a duplicate client.`);
+      return;
+    }
+    importFingerprints.add(row.importFingerprint);
     reviewedDispositions.push(reviewedDisposition(index, "client", "insert"));
     rows.push(row);
 
@@ -691,11 +763,13 @@ function patientMicrochipKey(microchipNumber?: string | null): string | null {
 function dedupeClientImport(
   records: ClientImportRecord[],
   existingEmails: Set<string>,
+  existingImportFingerprints: Set<string>,
 ): {
   rows: ClientImportRow[];
   errors: string[];
 } {
   const seen = new Set([...existingEmails].map((email) => email.toLowerCase()));
+  const seenImportFingerprints = new Set(existingImportFingerprints);
   const rows: ClientImportRow[] = [];
   const errors: string[] = [];
 
@@ -711,7 +785,7 @@ function dedupeClientImport(
       seen.add(email);
     }
 
-    rows.push({
+    const row: ClientImportRow = {
       firstName: client.firstName.trim(),
       lastName: client.lastName.trim(),
       email,
@@ -720,7 +794,23 @@ function dedupeClientImport(
       city: client.city?.trim() || null,
       state: client.state?.trim() || null,
       zip: client.zip?.trim() || null,
-    });
+      importFingerprint: migrationImportFingerprint("clients", [
+        email ? "email" : "record",
+        email ?? normalizeImportText(client.firstName),
+        email ?? normalizeImportText(client.lastName),
+        email ? null : normalizeImportText(client.phone),
+        email ? null : normalizeImportText(client.address),
+        email ? null : normalizeImportText(client.city),
+        email ? null : normalizeImportText(client.state),
+        email ? null : normalizeImportText(client.zip),
+      ]),
+    };
+    if (seenImportFingerprints.has(row.importFingerprint!)) {
+      errors.push(`Row ${index + 1}: Skipped a duplicate imported client.`);
+      return;
+    }
+    seenImportFingerprints.add(row.importFingerprint!);
+    rows.push(row);
   });
 
   return { rows, errors };
@@ -795,6 +885,13 @@ function dedupePatientImport(
       dob: patient.dob?.trim() || null,
       color: patient.color?.trim() || null,
       microchipNumber: patient.microchipNumber?.trim() || null,
+      importFingerprint: migrationImportFingerprint("patients", [
+        clientId,
+        normalizeImportText(patient.name),
+        patient.species,
+        patient.dob?.trim() ?? "",
+        patientMicrochipKey(patient.microchipNumber),
+      ]),
     });
   });
 
@@ -810,9 +907,11 @@ type ExistingPatientImportIdentity = {
   microchipNumber: string | null;
   externalSource: string | null;
   externalId: string | null;
+  importFingerprint?: string | null;
   deletedAt: Date | null;
   updatedAt?: Date;
   plannedRowIndex?: number;
+  isDemo?: boolean;
 };
 
 type ClientTargetReference = {
@@ -832,6 +931,7 @@ function createClientReferenceLookup(
   const byExternalId = new Map<string, ClientTargetReference | "archived">();
 
   for (const client of clientsToIndex) {
+    if (client.isDemo) continue;
     const email = normalizeImportEmail(client.email);
     if (email && !client.deletedAt) {
       byEmail.set(
@@ -910,8 +1010,13 @@ function planPatientCsvImport(
     string,
     ExistingPatientImportIdentity | "ambiguous"
   >();
+  const importFingerprints = new Set<string>();
 
   for (const patient of existingPatients) {
+    if (patient.isDemo) continue;
+    if (!patient.deletedAt && patient.importFingerprint) {
+      importFingerprints.add(patient.importFingerprint);
+    }
     if (patient.externalSource && patient.externalId) {
       byExternalId.set(
         externalIdentityKey(patient.externalSource, patient.externalId),
@@ -1144,6 +1249,22 @@ function planPatientCsvImport(
       microchipNumber: patient.microchipNumber?.trim() || null,
       ...(externalId ? { externalSource: source, externalId } : {}),
     };
+    row.importFingerprint = migrationImportFingerprint("patients", [
+      clientId,
+      normalizeImportText(row.name),
+      row.species,
+      row.dob?.trim() ?? "",
+      patientMicrochipKey(row.microchipNumber),
+    ]);
+    if (importFingerprints.has(row.importFingerprint)) {
+      duplicates++;
+      reviewedDispositions.push(
+        reviewedDisposition(index, "patient", "duplicate"),
+      );
+      errors.push(`Row ${index + 1}: Skipped a duplicate patient.`);
+      return;
+    }
+    importFingerprints.add(row.importFingerprint);
     reviewedDispositions.push(reviewedDisposition(index, "patient", "insert"));
     rows.push(row);
 
@@ -1191,6 +1312,8 @@ async function loadClientCsvPlan(
       externalId: clients.externalId,
       deletedAt: clients.deletedAt,
       updatedAt: clients.updatedAt,
+      isDemo: isDemoDataId(practiceId, "clientIds", clients.id),
+      importFingerprint: clients.importFingerprint,
     })
     .from(clients)
     .where(
@@ -1234,6 +1357,7 @@ async function loadPatientCsvPlan(
       externalId: clients.externalId,
       deletedAt: clients.deletedAt,
       updatedAt: clients.updatedAt,
+      isDemo: isDemoDataId(practiceId, "clientIds", clients.id),
     })
     .from(clients)
     .where(
@@ -1258,6 +1382,8 @@ async function loadPatientCsvPlan(
       externalId: patients.externalId,
       deletedAt: patients.deletedAt,
       updatedAt: patients.updatedAt,
+      isDemo: isDemoDataId(practiceId, "patientIds", patients.id),
+      importFingerprint: patients.importFingerprint,
     })
     .from(patients)
     .where(
@@ -1309,17 +1435,30 @@ function externalOwnerPatientKey(
 }
 
 type PatientReferenceLookup = {
-  byExternalPatientId: Record<string, string>;
-  byEmailAndName: Record<string, string | "ambiguous">;
-  byExternalOwnerAndName: Record<string, string | "ambiguous">;
+  byExternalPatientId: Record<string, PatientTargetReference>;
+  byEmailAndName: Record<string, PatientTargetReference | "ambiguous">;
+  byExternalOwnerAndName: Record<string, PatientTargetReference | "ambiguous">;
 };
 
+type PatientTargetReference = {
+  id: string;
+  updatedAt?: Date;
+};
+
+type ResolvedPatientReference =
+  | {
+      target: PatientTargetReference;
+      role: "external_match" | "identity_match";
+    }
+  | "ambiguous"
+  | undefined;
+
 function addUniquePatientReference(
-  target: Record<string, string | "ambiguous">,
+  target: Record<string, PatientTargetReference | "ambiguous">,
   key: string,
-  patientId: string,
+  patient: PatientTargetReference,
 ) {
-  target[key] = target[key] ? "ambiguous" : patientId;
+  target[key] = target[key] ? "ambiguous" : patient;
 }
 
 function createPatientReferenceLookup(
@@ -1331,6 +1470,9 @@ function createPatientReferenceLookup(
     clientEmail: string | null;
     clientExternalSource: string | null;
     clientExternalId: string | null;
+    updatedAt?: Date;
+    isDemoClient?: boolean;
+    isDemoPatient?: boolean;
   }>,
 ): PatientReferenceLookup {
   const lookup: PatientReferenceLookup = {
@@ -1340,16 +1482,18 @@ function createPatientReferenceLookup(
   };
 
   for (const patient of patientRows) {
+    if (patient.isDemoClient || patient.isDemoPatient) continue;
+    const target = { id: patient.id, updatedAt: patient.updatedAt };
     if (patient.externalSource && patient.externalId) {
       lookup.byExternalPatientId[
         externalIdentityKey(patient.externalSource, patient.externalId)
-      ] = patient.id;
+      ] = target;
     }
     if (patient.clientEmail) {
       addUniquePatientReference(
         lookup.byEmailAndName,
         vaccinationPatientKey(patient.clientEmail, patient.name),
-        patient.id,
+        target,
       );
     }
     if (patient.clientExternalSource && patient.clientExternalId) {
@@ -1360,7 +1504,7 @@ function createPatientReferenceLookup(
           patient.clientExternalId,
           patient.name,
         ),
-        patient.id,
+        target,
       );
     }
   }
@@ -1375,9 +1519,9 @@ function resolvePatientReference(
   >,
   source: string,
   lookup: PatientReferenceLookup,
-): string | "ambiguous" | undefined {
+): ResolvedPatientReference {
   const externalPatientId = normalizeExternalId(record.externalPatientId);
-  const matches = new Set<string>();
+  const matches = new Map<string, PatientTargetReference>();
   let ambiguous = false;
   if (externalPatientId) {
     const directMatch =
@@ -1385,7 +1529,7 @@ function resolvePatientReference(
         externalIdentityKey(source, externalPatientId)
       ];
     if (!directMatch) return undefined;
-    matches.add(directMatch);
+    matches.set(directMatch.id, directMatch);
   }
 
   if (record.patientName && record.clientEmail) {
@@ -1394,7 +1538,7 @@ function resolvePatientReference(
         vaccinationPatientKey(record.clientEmail, record.patientName)
       ];
     if (match === "ambiguous") ambiguous = true;
-    else if (match) matches.add(match);
+    else if (match) matches.set(match.id, match);
   }
   const externalClientId = normalizeExternalId(record.externalClientId);
   if (record.patientName && externalClientId) {
@@ -1403,11 +1547,16 @@ function resolvePatientReference(
         externalOwnerPatientKey(source, externalClientId, record.patientName)
       ];
     if (match === "ambiguous") ambiguous = true;
-    else if (match) matches.add(match);
+    else if (match) matches.set(match.id, match);
   }
 
   if (ambiguous || matches.size > 1) return "ambiguous";
-  return matches.values().next().value;
+  const target = matches.values().next().value;
+  if (!target) return undefined;
+  return {
+    target,
+    role: externalPatientId ? "external_match" : "identity_match",
+  };
 }
 
 /** Identity of an administered dose: patient + vaccine + date given. */
@@ -1443,6 +1592,8 @@ function dedupeVaccinationImport(
   }>,
 ): {
   rows: VaccinationImportRow[];
+  reviewedDispositions: MigrationReviewedDisposition[];
+  reviewedTargets: MigrationReviewedTarget[];
   errors: string[];
   duplicates: number;
   unmatchedPatient: number;
@@ -1458,26 +1609,46 @@ function dedupeVaccinationImport(
   );
 
   const rows: VaccinationImportRow[] = [];
+  const reviewedDispositions: MigrationReviewedDisposition[] = [];
+  const reviewedTargets: MigrationReviewedTarget[] = [];
   const errors: string[] = [];
   let duplicates = 0;
   let unmatchedPatient = 0;
 
   records.forEach((record, index) => {
-    const patientId = resolvePatientReference(record, source, patientLookup);
-    if (!patientId) {
+    const patientReference = resolvePatientReference(
+      record,
+      source,
+      patientLookup,
+    );
+    if (!patientReference) {
       unmatchedPatient++;
+      reviewedDispositions.push(
+        reviewedDisposition(index, "vaccination", "unmatched"),
+      );
       errors.push(
         `Row ${index + 1}: No matching patient was found for the supplied reference.`,
       );
       return;
     }
-    if (patientId === "ambiguous") {
+    if (patientReference === "ambiguous") {
       unmatchedPatient++;
+      reviewedDispositions.push(
+        reviewedDisposition(index, "vaccination", "error"),
+      );
       errors.push(
         `Row ${index + 1}: The supplied patient references are ambiguous or conflict. Nothing was changed.`,
       );
       return;
     }
+    const patientId = patientReference.target.id;
+    const target = reviewedTarget(
+      index,
+      "patient",
+      patientReference.role,
+      patientReference.target,
+    );
+    if (target) reviewedTargets.push(target);
 
     const identityKey = vaccinationIdentityKey({
       patientId,
@@ -1486,10 +1657,16 @@ function dedupeVaccinationImport(
     });
     if (seen.has(identityKey)) {
       duplicates++;
+      reviewedDispositions.push(
+        reviewedDisposition(index, "vaccination", "duplicate"),
+      );
       errors.push(`Row ${index + 1}: Skipped a duplicate vaccine dose.`);
       return;
     }
     seen.add(identityKey);
+    reviewedDispositions.push(
+      reviewedDisposition(index, "vaccination", "insert"),
+    );
 
     rows.push({
       patientId,
@@ -1500,10 +1677,102 @@ function dedupeVaccinationImport(
       manufacturer: record.manufacturer?.trim() || null,
       // Historical import: no OpenVPM user administered this dose.
       administeredBy: null,
+      importFingerprint: migrationImportFingerprint("vaccinations", [
+        patientId,
+        normalizeImportText(record.vaccineName),
+        record.administeredAt,
+      ]),
     });
   });
 
-  return { rows, errors, duplicates, unmatchedPatient };
+  return {
+    rows,
+    reviewedDispositions,
+    reviewedTargets,
+    errors,
+    duplicates,
+    unmatchedPatient,
+  };
+}
+
+async function loadMigrationPatientReferences(
+  db: Database,
+  practiceId: string,
+) {
+  return db
+    .select({
+      id: patients.id,
+      name: patients.name,
+      externalSource: patients.externalSource,
+      externalId: patients.externalId,
+      clientEmail: clients.email,
+      clientExternalSource: clients.externalSource,
+      clientExternalId: clients.externalId,
+      updatedAt: patients.updatedAt,
+      isDemoClient: isDemoDataId(practiceId, "clientIds", clients.id),
+      isDemoPatient: isDemoDataId(practiceId, "patientIds", patients.id),
+    })
+    .from(patients)
+    .innerJoin(clients, eq(patients.clientId, clients.id))
+    .where(
+      and(
+        eq(patients.practiceId, practiceId),
+        eq(clients.practiceId, practiceId),
+        activePracticePredicate(practiceId),
+        isNull(patients.deletedAt),
+        isNull(clients.deletedAt),
+      ),
+    )
+    .orderBy(patients.id)
+    .for("update", { of: patients });
+}
+
+async function loadVaccinationCsvPlan(
+  db: Database,
+  practiceId: string,
+  records: VaccinationImportRecord[],
+  source: string,
+  parseErrors: string[],
+) {
+  const patientRows = await loadMigrationPatientReferences(db, practiceId);
+  const patientLookup = createPatientReferenceLookup(patientRows);
+  const existingDoses = await db
+    .select({
+      id: vaccinationRecords.id,
+      patientId: vaccinationRecords.patientId,
+      vaccineName: vaccinationRecords.vaccineName,
+      administeredAt: vaccinationRecords.administeredAt,
+    })
+    .from(vaccinationRecords)
+    .where(
+      and(
+        eq(vaccinationRecords.practiceId, practiceId),
+        activePracticePredicate(practiceId),
+        isNull(vaccinationRecords.deletedAt),
+      ),
+    )
+    .orderBy(vaccinationRecords.id)
+    .for("update");
+  const plan = dedupeVaccinationImport(
+    records,
+    patientLookup,
+    source,
+    existingDoses,
+  );
+  const combinedErrors = [...parseErrors, ...plan.errors];
+  const summary: MigrationPreviewSummary = {
+    sourceRowCount: records.length,
+    plannedInsertCount: plan.rows.length,
+    duplicateCount: plan.duplicates,
+    unmatchedCount: plan.unmatchedPatient,
+    errorCount: combinedErrors.length,
+  };
+  const reviewedPlan: MigrationReviewedPlan = {
+    plannerVersion: VACCINATION_IMPORT_PLANNER_VERSION,
+    dispositions: plan.reviewedDispositions,
+    targets: plan.reviewedTargets,
+  };
+  return { plan, combinedErrors, summary, reviewedPlan };
 }
 
 function parseVaccinationImportRecords(
@@ -1568,6 +1837,8 @@ function dedupeSoapNoteImport(
   }>,
 ): {
   rows: SoapNoteImportRow[];
+  reviewedDispositions: MigrationReviewedDisposition[];
+  reviewedTargets: MigrationReviewedTarget[];
   errors: string[];
   duplicates: number;
   unmatchedPatient: number;
@@ -1583,26 +1854,46 @@ function dedupeSoapNoteImport(
   );
 
   const rows: SoapNoteImportRow[] = [];
+  const reviewedDispositions: MigrationReviewedDisposition[] = [];
+  const reviewedTargets: MigrationReviewedTarget[] = [];
   const errors: string[] = [];
   let duplicates = 0;
   let unmatchedPatient = 0;
 
   records.forEach((record, index) => {
-    const patientId = resolvePatientReference(record, source, patientLookup);
-    if (!patientId) {
+    const patientReference = resolvePatientReference(
+      record,
+      source,
+      patientLookup,
+    );
+    if (!patientReference) {
       unmatchedPatient++;
+      reviewedDispositions.push(
+        reviewedDisposition(index, "soap_note", "unmatched"),
+      );
       errors.push(
         `Row ${index + 1}: No matching patient was found for the supplied reference.`,
       );
       return;
     }
-    if (patientId === "ambiguous") {
+    if (patientReference === "ambiguous") {
       unmatchedPatient++;
+      reviewedDispositions.push(
+        reviewedDisposition(index, "soap_note", "error"),
+      );
       errors.push(
         `Row ${index + 1}: The supplied patient references are ambiguous or conflict. Nothing was changed.`,
       );
       return;
     }
+    const patientId = patientReference.target.id;
+    const target = reviewedTarget(
+      index,
+      "patient",
+      patientReference.role,
+      patientReference.target,
+    );
+    if (target) reviewedTargets.push(target);
 
     const identityKey = soapNoteIdentityKey({
       patientId,
@@ -1611,10 +1902,16 @@ function dedupeSoapNoteImport(
     });
     if (seen.has(identityKey)) {
       duplicates++;
+      reviewedDispositions.push(
+        reviewedDisposition(index, "soap_note", "duplicate"),
+      );
       errors.push(`Row ${index + 1}: Skipped a duplicate medical note.`);
       return;
     }
     seen.add(identityKey);
+    reviewedDispositions.push(
+      reviewedDisposition(index, "soap_note", "insert"),
+    );
 
     rows.push({
       patientId,
@@ -1625,10 +1922,73 @@ function dedupeSoapNoteImport(
       plan: record.plan?.trim() || null,
       // Preserve the visit date so the history reads in chronological order.
       createdAt: soapNoteInstant(record.date),
+      importFingerprint: migrationImportFingerprint("soap_notes", [
+        patientId,
+        record.date,
+        soapNoteContentSignature(record),
+      ]),
     });
   });
 
-  return { rows, errors, duplicates, unmatchedPatient };
+  return {
+    rows,
+    reviewedDispositions,
+    reviewedTargets,
+    errors,
+    duplicates,
+    unmatchedPatient,
+  };
+}
+
+async function loadSoapNoteCsvPlan(
+  db: Database,
+  practiceId: string,
+  records: SoapNoteImportRecord[],
+  source: string,
+  parseErrors: string[],
+) {
+  const patientRows = await loadMigrationPatientReferences(db, practiceId);
+  const patientLookup = createPatientReferenceLookup(patientRows);
+  const existingNotes = await db
+    .select({
+      id: soapNotes.id,
+      patientId: soapNotes.patientId,
+      createdAt: soapNotes.createdAt,
+      subjective: soapNotes.subjective,
+      objective: soapNotes.objective,
+      assessment: soapNotes.assessment,
+      plan: soapNotes.plan,
+    })
+    .from(soapNotes)
+    .where(
+      and(
+        eq(soapNotes.practiceId, practiceId),
+        activePracticePredicate(practiceId),
+        isNull(soapNotes.deletedAt),
+      ),
+    )
+    .orderBy(soapNotes.id)
+    .for("update");
+  const plan = dedupeSoapNoteImport(
+    records,
+    patientLookup,
+    source,
+    existingNotes,
+  );
+  const combinedErrors = [...parseErrors, ...plan.errors];
+  const summary: MigrationPreviewSummary = {
+    sourceRowCount: records.length,
+    plannedInsertCount: plan.rows.length,
+    duplicateCount: plan.duplicates,
+    unmatchedCount: plan.unmatchedPatient,
+    errorCount: combinedErrors.length,
+  };
+  const reviewedPlan: MigrationReviewedPlan = {
+    plannerVersion: SOAP_NOTE_IMPORT_PLANNER_VERSION,
+    dispositions: plan.reviewedDispositions,
+    targets: plan.reviewedTargets,
+  };
+  return { plan, combinedErrors, summary, reviewedPlan };
 }
 
 function parseSoapNoteImportRecords(
@@ -2046,7 +2406,10 @@ export const dataRouter = createRouter({
       }
 
       const existing = await ctx.db
-        .select({ email: clients.email })
+        .select({
+          email: clients.email,
+          importFingerprint: clients.importFingerprint,
+        })
         .from(clients)
         .where(
           and(
@@ -2060,9 +2423,15 @@ export const dataRouter = createRouter({
           .map((client) => normalizeImportEmail(client.email))
           .filter((email): email is string => !!email),
       );
+      const existingImportFingerprints = new Set(
+        existing
+          .map((client) => client.importFingerprint)
+          .filter((fingerprint): fingerprint is string => !!fingerprint),
+      );
       const { rows, errors } = dedupeClientImport(
         input.clients,
         existingEmails,
+        existingImportFingerprints,
       );
 
       if (rows.length > 0) {
@@ -2145,37 +2514,78 @@ export const dataRouter = createRouter({
       const validRecords = parseClientImportRecords(records);
 
       if (validRecords.length === 0 && errors.length > 0) {
-        if (input.dryRun) {
-          await assertActivePractice(ctx);
+        await assertActivePractice(ctx);
+        return ctx.db.transaction(async (tx) => {
+          await tx.execute(sql`set transaction isolation level serializable`);
+          const migrationDb = tx as unknown as Database;
+          await lockMigrationPractice(migrationDb, ctx.practiceId);
           const summary: MigrationPreviewSummary = {
             sourceRowCount: 0,
             plannedInsertCount: 0,
             errorCount: errors.length,
           };
-          const previewToken = await createCsvImportPreview(
-            ctx,
+          const reviewedPlan: MigrationReviewedPlan = {
+            plannerVersion: CLIENT_IMPORT_PLANNER_VERSION,
+            dispositions: [],
+            targets: [],
+          };
+          if (input.dryRun) {
+            const previewToken = await createCsvImportPreview(
+              ctx,
+              input,
+              "clients",
+              summary,
+              reviewedPlan,
+              migrationDb,
+            );
+            return csvPreviewResult({
+              dryRun: true as const,
+              previewToken,
+              total: 0,
+              willInsert: 0,
+              willReconcile: 0,
+              duplicates: 0,
+              errors,
+            });
+          }
+          if (!input.previewToken) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message:
+                "This CSV has no importable client rows. Check it again.",
+            });
+          }
+          const claim = await claimCsvImportPreview(
+            migrationDb,
+            ctx.practiceId,
             input,
             "clients",
             summary,
+            reviewedPlan,
           );
-          return csvPreviewResult({
-            dryRun: true as const,
-            previewToken,
-            total: 0,
-            willInsert: 0,
-            willReconcile: 0,
-            duplicates: 0,
-            errors,
-          });
-        }
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "This CSV has no importable client rows. Check it again.",
+          if (claim.alreadyCommitted) {
+            return {
+              imported: claim.importedCount,
+              reconciled: claim.reconciledCount,
+              errors,
+              alreadyCommitted: true as const,
+              migrationRunId: input.previewToken,
+            };
+          }
+          await finishCsvImportRun(
+            migrationDb,
+            ctx.practiceId,
+            input.previewToken,
+            0,
+            ctx.user.id,
+          );
+          return { imported: 0, reconciled: 0, errors };
         });
       }
 
       await assertActivePractice(ctx);
       return ctx.db.transaction(async (tx) => {
+        await tx.execute(sql`set transaction isolation level serializable`);
         const migrationDb = tx as unknown as Database;
         await lockMigrationPractice(migrationDb, ctx.practiceId);
         const { plan, combinedErrors, summary, reviewedPlan } =
@@ -2289,38 +2699,79 @@ export const dataRouter = createRouter({
       const validRecords = parsePatientImportRecords(records);
 
       if (validRecords.length === 0 && errors.length > 0) {
-        if (input.dryRun) {
-          await assertActivePractice(ctx);
+        await assertActivePractice(ctx);
+        return ctx.db.transaction(async (tx) => {
+          await tx.execute(sql`set transaction isolation level serializable`);
+          const migrationDb = tx as unknown as Database;
+          await lockMigrationPractice(migrationDb, ctx.practiceId);
           const summary: MigrationPreviewSummary = {
             sourceRowCount: 0,
             plannedInsertCount: 0,
             errorCount: errors.length,
           };
-          const previewToken = await createCsvImportPreview(
-            ctx,
+          const reviewedPlan: MigrationReviewedPlan = {
+            plannerVersion: PATIENT_IMPORT_PLANNER_VERSION,
+            dispositions: [],
+            targets: [],
+          };
+          if (input.dryRun) {
+            const previewToken = await createCsvImportPreview(
+              ctx,
+              input,
+              "patients",
+              summary,
+              reviewedPlan,
+              migrationDb,
+            );
+            return csvPreviewResult({
+              dryRun: true as const,
+              previewToken,
+              total: 0,
+              willInsert: 0,
+              willReconcile: 0,
+              unmatchedClient: 0,
+              duplicates: 0,
+              errors,
+            });
+          }
+          if (!input.previewToken) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message:
+                "This CSV has no importable patient rows. Check it again.",
+            });
+          }
+          const claim = await claimCsvImportPreview(
+            migrationDb,
+            ctx.practiceId,
             input,
             "patients",
             summary,
+            reviewedPlan,
           );
-          return csvPreviewResult({
-            dryRun: true as const,
-            previewToken,
-            total: 0,
-            willInsert: 0,
-            willReconcile: 0,
-            unmatchedClient: 0,
-            duplicates: 0,
-            errors,
-          });
-        }
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "This CSV has no importable patient rows. Check it again.",
+          if (claim.alreadyCommitted) {
+            return {
+              imported: claim.importedCount,
+              reconciled: claim.reconciledCount,
+              errors,
+              alreadyCommitted: true as const,
+              migrationRunId: input.previewToken,
+            };
+          }
+          await finishCsvImportRun(
+            migrationDb,
+            ctx.practiceId,
+            input.previewToken,
+            0,
+            ctx.user.id,
+          );
+          return { imported: 0, reconciled: 0, errors };
         });
       }
 
       await assertActivePractice(ctx);
       return ctx.db.transaction(async (tx) => {
+        await tx.execute(sql`set transaction isolation level serializable`);
         const migrationDb = tx as unknown as Database;
         await lockMigrationPractice(migrationDb, ctx.practiceId);
         const { plan, combinedErrors, summary, reviewedPlan } =
@@ -2433,153 +2884,143 @@ export const dataRouter = createRouter({
       const validRecords = parseVaccinationImportRecords(records);
 
       if (validRecords.length === 0 && errors.length > 0) {
-        if (input.dryRun) {
-          await assertActivePractice(ctx);
+        await assertActivePractice(ctx);
+        return ctx.db.transaction(async (tx) => {
+          await tx.execute(sql`set transaction isolation level serializable`);
+          const migrationDb = tx as unknown as Database;
+          await lockMigrationPractice(migrationDb, ctx.practiceId);
           const summary: MigrationPreviewSummary = {
             sourceRowCount: 0,
             plannedInsertCount: 0,
             errorCount: errors.length,
           };
+          const reviewedPlan: MigrationReviewedPlan = {
+            plannerVersion: VACCINATION_IMPORT_PLANNER_VERSION,
+            dispositions: [],
+            targets: [],
+          };
+          if (input.dryRun) {
+            const previewToken = await createCsvImportPreview(
+              ctx,
+              input,
+              "vaccinations",
+              summary,
+              reviewedPlan,
+              migrationDb,
+            );
+            return {
+              dryRun: true as const,
+              previewToken,
+              total: 0,
+              willInsert: 0,
+              unmatchedPatient: 0,
+              duplicates: 0,
+              errors,
+            };
+          }
+          if (!input.previewToken) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message:
+                "This CSV has no importable vaccination rows. Check it again.",
+            });
+          }
+          const claim = await claimCsvImportPreview(
+            migrationDb,
+            ctx.practiceId,
+            input,
+            "vaccinations",
+            summary,
+            reviewedPlan,
+          );
+          if (claim.alreadyCommitted) {
+            return {
+              imported: claim.importedCount,
+              errors,
+              alreadyCommitted: true as const,
+              migrationRunId: input.previewToken,
+            };
+          }
+          await finishCsvImportRun(
+            migrationDb,
+            ctx.practiceId,
+            input.previewToken,
+            0,
+            ctx.user.id,
+          );
+          return { imported: 0, errors };
+        });
+      }
+
+      await assertActivePractice(ctx);
+      return ctx.db.transaction(async (tx) => {
+        await tx.execute(sql`set transaction isolation level serializable`);
+        const migrationDb = tx as unknown as Database;
+        await lockMigrationPractice(migrationDb, ctx.practiceId);
+        const { plan, combinedErrors, summary, reviewedPlan } =
+          await loadVaccinationCsvPlan(
+            migrationDb,
+            ctx.practiceId,
+            validRecords,
+            input.source,
+            errors,
+          );
+
+        if (input.dryRun) {
           const previewToken = await createCsvImportPreview(
             ctx,
             input,
             "vaccinations",
             summary,
+            reviewedPlan,
+            migrationDb,
           );
           return {
             dryRun: true as const,
             previewToken,
-            total: 0,
-            willInsert: 0,
-            unmatchedPatient: 0,
-            duplicates: 0,
-            errors,
+            total: validRecords.length,
+            willInsert: plan.rows.length,
+            unmatchedPatient: plan.unmatchedPatient,
+            duplicates: plan.duplicates,
+            errors: combinedErrors,
           };
         }
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message:
-            "This CSV has no importable vaccination rows. Check it again.",
-        });
-      }
 
-      await assertActivePractice(ctx);
-      await lockMigrationPractice(ctx.db, ctx.practiceId);
-
-      const patientRows = await ctx.db
-        .select({
-          id: patients.id,
-          name: patients.name,
-          externalSource: patients.externalSource,
-          externalId: patients.externalId,
-          clientEmail: clients.email,
-          clientExternalSource: clients.externalSource,
-          clientExternalId: clients.externalId,
-        })
-        .from(patients)
-        .innerJoin(clients, eq(patients.clientId, clients.id))
-        .where(
-          and(
-            eq(patients.practiceId, ctx.practiceId),
-            eq(clients.practiceId, ctx.practiceId),
-            activePracticePredicate(ctx.practiceId),
-            isNull(patients.deletedAt),
-            isNull(clients.deletedAt),
-          ),
-        );
-      const patientLookup = createPatientReferenceLookup(patientRows);
-
-      const existingDoses = await ctx.db
-        .select({
-          patientId: vaccinationRecords.patientId,
-          vaccineName: vaccinationRecords.vaccineName,
-          administeredAt: vaccinationRecords.administeredAt,
-        })
-        .from(vaccinationRecords)
-        .where(
-          and(
-            eq(vaccinationRecords.practiceId, ctx.practiceId),
-            activePracticePredicate(ctx.practiceId),
-            isNull(vaccinationRecords.deletedAt),
-          ),
-        );
-
-      const deduped = dedupeVaccinationImport(
-        validRecords,
-        patientLookup,
-        input.source,
-        existingDoses,
-      );
-      const combinedErrors = [...errors, ...deduped.errors];
-      const summary: MigrationPreviewSummary = {
-        sourceRowCount: validRecords.length,
-        plannedInsertCount: deduped.rows.length,
-        duplicateCount: deduped.duplicates,
-        unmatchedCount: deduped.unmatchedPatient,
-        errorCount: combinedErrors.length,
-      };
-
-      if (input.dryRun) {
-        const previewToken = await createCsvImportPreview(
-          ctx,
-          input,
-          "vaccinations",
-          summary,
-        );
-        return {
-          dryRun: true as const,
-          previewToken,
-          total: validRecords.length,
-          willInsert: deduped.rows.length,
-          unmatchedPatient: deduped.unmatchedPatient,
-          duplicates: deduped.duplicates,
-          errors: combinedErrors,
-        };
-      }
-
-      let replay:
-        | Extract<MigrationClaimResult, { alreadyCommitted: true }>
-        | undefined;
-      await ctx.db.transaction(async (tx) => {
-        const migrationDb = tx as unknown as Database;
         const claim = await claimCsvImportPreview(
           migrationDb,
           ctx.practiceId,
           input,
           "vaccinations",
           summary,
+          reviewedPlan,
         );
         if (claim.alreadyCommitted) {
-          replay = claim;
-          return;
+          return {
+            imported: claim.importedCount,
+            errors: [] as string[],
+            alreadyCommitted: true as const,
+            migrationRunId: input.previewToken!,
+          };
         }
-        if (deduped.rows.length > 0) {
+        if (plan.rows.length > 0) {
           await tx
             .insert(vaccinationRecords)
             .values(
-              deduped.rows.map((v) => ({ ...v, practiceId: ctx.practiceId })),
+              plan.rows.map((v) => ({ ...v, practiceId: ctx.practiceId })),
             );
         }
         await finishCsvImportRun(
           migrationDb,
           ctx.practiceId,
           input.previewToken!,
-          deduped.rows.length,
+          plan.rows.length,
           ctx.user.id,
         );
-      });
-      if (replay) {
         return {
-          imported: replay.importedCount,
-          errors: [] as string[],
-          alreadyCommitted: true as const,
-          migrationRunId: input.previewToken!,
+          imported: plan.rows.length,
+          errors: combinedErrors,
         };
-      }
-      return {
-        imported: deduped.rows.length,
-        errors: combinedErrors,
-      };
+      });
     }),
 
   /**
@@ -2598,132 +3039,127 @@ export const dataRouter = createRouter({
       const validRecords = parseSoapNoteImportRecords(records);
 
       if (validRecords.length === 0 && errors.length > 0) {
-        if (input.dryRun) {
-          await assertActivePractice(ctx);
+        await assertActivePractice(ctx);
+        return ctx.db.transaction(async (tx) => {
+          await tx.execute(sql`set transaction isolation level serializable`);
+          const migrationDb = tx as unknown as Database;
+          await lockMigrationPractice(migrationDb, ctx.practiceId);
           const summary: MigrationPreviewSummary = {
             sourceRowCount: 0,
             plannedInsertCount: 0,
             errorCount: errors.length,
           };
+          const reviewedPlan: MigrationReviewedPlan = {
+            plannerVersion: SOAP_NOTE_IMPORT_PLANNER_VERSION,
+            dispositions: [],
+            targets: [],
+          };
+          if (input.dryRun) {
+            const previewToken = await createCsvImportPreview(
+              ctx,
+              input,
+              "soap_notes",
+              summary,
+              reviewedPlan,
+              migrationDb,
+            );
+            return {
+              dryRun: true as const,
+              previewToken,
+              total: 0,
+              willInsert: 0,
+              unmatchedPatient: 0,
+              duplicates: 0,
+              errors,
+            };
+          }
+          if (!input.previewToken) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message:
+                "This CSV has no importable medical history rows. Check it again.",
+            });
+          }
+          const claim = await claimCsvImportPreview(
+            migrationDb,
+            ctx.practiceId,
+            input,
+            "soap_notes",
+            summary,
+            reviewedPlan,
+          );
+          if (claim.alreadyCommitted) {
+            return {
+              imported: claim.importedCount,
+              errors,
+              alreadyCommitted: true as const,
+              migrationRunId: input.previewToken,
+            };
+          }
+          await finishCsvImportRun(
+            migrationDb,
+            ctx.practiceId,
+            input.previewToken,
+            0,
+            ctx.user.id,
+          );
+          return { imported: 0, errors };
+        });
+      }
+
+      await assertActivePractice(ctx);
+      return ctx.db.transaction(async (tx) => {
+        await tx.execute(sql`set transaction isolation level serializable`);
+        const migrationDb = tx as unknown as Database;
+        await lockMigrationPractice(migrationDb, ctx.practiceId);
+        const { plan, combinedErrors, summary, reviewedPlan } =
+          await loadSoapNoteCsvPlan(
+            migrationDb,
+            ctx.practiceId,
+            validRecords,
+            input.source,
+            errors,
+          );
+
+        if (input.dryRun) {
           const previewToken = await createCsvImportPreview(
             ctx,
             input,
             "soap_notes",
             summary,
+            reviewedPlan,
+            migrationDb,
           );
           return {
             dryRun: true as const,
             previewToken,
-            total: 0,
-            willInsert: 0,
-            unmatchedPatient: 0,
-            duplicates: 0,
-            errors,
+            total: validRecords.length,
+            willInsert: plan.rows.length,
+            unmatchedPatient: plan.unmatchedPatient,
+            duplicates: plan.duplicates,
+            errors: combinedErrors,
           };
         }
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message:
-            "This CSV has no importable medical history rows. Check it again.",
-        });
-      }
 
-      await assertActivePractice(ctx);
-      await lockMigrationPractice(ctx.db, ctx.practiceId);
-
-      const patientRows = await ctx.db
-        .select({
-          id: patients.id,
-          name: patients.name,
-          externalSource: patients.externalSource,
-          externalId: patients.externalId,
-          clientEmail: clients.email,
-          clientExternalSource: clients.externalSource,
-          clientExternalId: clients.externalId,
-        })
-        .from(patients)
-        .innerJoin(clients, eq(patients.clientId, clients.id))
-        .where(
-          and(
-            eq(patients.practiceId, ctx.practiceId),
-            eq(clients.practiceId, ctx.practiceId),
-            activePracticePredicate(ctx.practiceId),
-            isNull(patients.deletedAt),
-            isNull(clients.deletedAt),
-          ),
-        );
-      const patientLookup = createPatientReferenceLookup(patientRows);
-
-      const existingNotes = await ctx.db
-        .select({
-          patientId: soapNotes.patientId,
-          createdAt: soapNotes.createdAt,
-          subjective: soapNotes.subjective,
-          objective: soapNotes.objective,
-          assessment: soapNotes.assessment,
-          plan: soapNotes.plan,
-        })
-        .from(soapNotes)
-        .where(
-          and(
-            eq(soapNotes.practiceId, ctx.practiceId),
-            activePracticePredicate(ctx.practiceId),
-            isNull(soapNotes.deletedAt),
-          ),
-        );
-
-      const deduped = dedupeSoapNoteImport(
-        validRecords,
-        patientLookup,
-        input.source,
-        existingNotes,
-      );
-      const combinedErrors = [...errors, ...deduped.errors];
-      const summary: MigrationPreviewSummary = {
-        sourceRowCount: validRecords.length,
-        plannedInsertCount: deduped.rows.length,
-        duplicateCount: deduped.duplicates,
-        unmatchedCount: deduped.unmatchedPatient,
-        errorCount: combinedErrors.length,
-      };
-
-      if (input.dryRun) {
-        const previewToken = await createCsvImportPreview(
-          ctx,
-          input,
-          "soap_notes",
-          summary,
-        );
-        return {
-          dryRun: true as const,
-          previewToken,
-          total: validRecords.length,
-          willInsert: deduped.rows.length,
-          unmatchedPatient: deduped.unmatchedPatient,
-          duplicates: deduped.duplicates,
-          errors: combinedErrors,
-        };
-      }
-
-      let replay:
-        | Extract<MigrationClaimResult, { alreadyCommitted: true }>
-        | undefined;
-      await ctx.db.transaction(async (tx) => {
-        const migrationDb = tx as unknown as Database;
         const claim = await claimCsvImportPreview(
           migrationDb,
           ctx.practiceId,
           input,
           "soap_notes",
           summary,
+          reviewedPlan,
         );
         if (claim.alreadyCommitted) {
-          replay = claim;
-          return;
+          return {
+            imported: claim.importedCount,
+            errors: [] as string[],
+            alreadyCommitted: true as const,
+            migrationRunId: input.previewToken!,
+          };
         }
-        if (deduped.rows.length > 0) {
+        if (plan.rows.length > 0) {
           await tx.insert(soapNotes).values(
-            deduped.rows.map((n) => ({
+            plan.rows.map((n) => ({
               ...n,
               practiceId: ctx.practiceId,
               authorId: ctx.user.id,
@@ -2737,21 +3173,13 @@ export const dataRouter = createRouter({
           migrationDb,
           ctx.practiceId,
           input.previewToken!,
-          deduped.rows.length,
+          plan.rows.length,
           ctx.user.id,
         );
-      });
-      if (replay) {
         return {
-          imported: replay.importedCount,
-          errors: [] as string[],
-          alreadyCommitted: true as const,
-          migrationRunId: input.previewToken!,
+          imported: plan.rows.length,
+          errors: combinedErrors,
         };
-      }
-      return {
-        imported: deduped.rows.length,
-        errors: combinedErrors,
-      };
+      });
     }),
 });

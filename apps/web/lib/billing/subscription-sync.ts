@@ -64,17 +64,12 @@ async function writeBillingSyncState(
   practiceId: string,
   state: BillingSyncState
 ): Promise<void> {
-  const [practice] = await db
-    .select({ settings: practices.settings })
-    .from(practices)
-    .where(and(eq(practices.id, practiceId), isNull(practices.deletedAt)))
-    .limit(1);
-  if (!practice) return;
-
-  const settings = (practice.settings ?? {}) as PracticeSettings;
   await db
     .update(practices)
-    .set({ settings: { ...settings, billingSync: state } })
+    .set({
+      settings: sql`coalesce(${practices.settings}, '{}'::jsonb)
+        || ${JSON.stringify({ billingSync: state })}::jsonb`,
+    })
     .where(and(eq(practices.id, practiceId), isNull(practices.deletedAt)));
 }
 

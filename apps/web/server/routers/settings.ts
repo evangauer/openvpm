@@ -1,6 +1,16 @@
 import { z } from "zod";
 import { randomUUID } from "crypto";
-import { asc, eq, and, isNull, inArray, ne, notInArray, sql } from "drizzle-orm";
+import {
+  asc,
+  desc,
+  eq,
+  and,
+  isNull,
+  inArray,
+  ne,
+  notInArray,
+  sql,
+} from "drizzle-orm";
 import { hash } from "bcryptjs";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
@@ -23,6 +33,7 @@ import {
   products,
   locations,
   locationMessaging,
+  migrationRuns,
   visitCloseouts,
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
@@ -58,6 +69,7 @@ import {
   ONBOARDING_INTENTS,
   type OnboardingIntent,
 } from "@/lib/onboarding/intent";
+import { isValidMigrationSource } from "@/lib/import/sources";
 
 const adminProcedure = protectedProcedure.use(requireRole("admin"));
 
@@ -93,7 +105,7 @@ const currencyInput = z
 const phoneInput = optionalTrimmedString("Phone", SETTINGS_PHONE_MAX_LENGTH);
 const addressInput = optionalTrimmedString(
   "Address",
-  SETTINGS_ADDRESS_MAX_LENGTH
+  SETTINGS_ADDRESS_MAX_LENGTH,
 );
 const timezoneInput = z
   .string()
@@ -101,31 +113,31 @@ const timezoneInput = z
   .min(1, "Timezone is required")
   .max(
     SETTINGS_TIMEZONE_MAX_LENGTH,
-    `Timezone must be at most ${SETTINGS_TIMEZONE_MAX_LENGTH} characters`
+    `Timezone must be at most ${SETTINGS_TIMEZONE_MAX_LENGTH} characters`,
   )
   .refine(
     isSupportedPracticeTimezone,
-    "Timezone must be a valid IANA timezone"
+    "Timezone must be a valid IANA timezone",
   );
 const practiceNameInput = requiredTrimmedString(
   "Practice name",
-  PRACTICE_NAME_MAX_LENGTH
+  PRACTICE_NAME_MAX_LENGTH,
 );
 const locationNameInput = requiredTrimmedString(
   "Location name",
-  LOCATION_NAME_MAX_LENGTH
+  LOCATION_NAME_MAX_LENGTH,
 );
 const staffNameInput = requiredTrimmedString(
   "Staff name",
-  STAFF_NAME_MAX_LENGTH
+  STAFF_NAME_MAX_LENGTH,
 );
 const licenseNumberInput = optionalTrimmedString(
   "License number",
-  STAFF_LICENSE_NUMBER_MAX_LENGTH
+  STAFF_LICENSE_NUMBER_MAX_LENGTH,
 );
 const appointmentTypeNameInput = requiredTrimmedString(
   "Appointment type name",
-  APPOINTMENT_TYPE_NAME_MAX_LENGTH
+  APPOINTMENT_TYPE_NAME_MAX_LENGTH,
 );
 const roomNameInput = requiredTrimmedString("Room name", ROOM_NAME_MAX_LENGTH);
 const activeSchedulingStatuses = [
@@ -214,28 +226,28 @@ async function assertActivePractice(ctx: {
 
 async function syncBillingAfterStaffChange(
   db: Parameters<typeof syncPracticeSubscriptionQuantities>[0]["db"],
-  practiceId: string
+  practiceId: string,
 ): Promise<void> {
   try {
     await syncPracticeSubscriptionQuantities({ db, practiceId });
   } catch (err) {
     await alertOps(
       "Staff billing sync crashed",
-      `practice=${practiceId}: ${err instanceof Error ? err.message : String(err)}`
+      `practice=${practiceId}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 }
 
 async function syncBillingAfterLocationChange(
   db: Parameters<typeof syncPracticeSubscriptionQuantities>[0]["db"],
-  practiceId: string
+  practiceId: string,
 ): Promise<void> {
   try {
     await syncPracticeSubscriptionQuantities({ db, practiceId });
   } catch (err) {
     await alertOps(
       "Location billing sync crashed",
-      `practice=${practiceId}: ${err instanceof Error ? err.message : String(err)}`
+      `practice=${practiceId}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 }
@@ -277,6 +289,15 @@ interface PracticeSettings {
     journeyStepId?: string | null;
     /** "I'll finish later" — suppresses auto-open without completing onboarding. */
     journeyDismissed?: boolean;
+    /** Sticky marker: a reviewed migration committed real clinic data. */
+    migrationHasCommittedChanges?: boolean;
+    migrationLastCommittedAt?: string;
+    /** Latest source and completed modes are derived from migration_runs. */
+    migrationSource?: string | null;
+    migrationSourceHasCommittedChanges?: boolean;
+    migrationCompletedModes?: Array<
+      "clients" | "patients" | "vaccinations" | "soapNotes"
+    >;
     /** A clinic-admin request for an OpenVPM-assisted first setup session. */
     setupHelpRequestedAt?: string;
     setupHelpRequestedByUserId?: string;
@@ -328,17 +349,20 @@ export const settingsRouter = createRouter({
           .trim()
           .regex(
             SETTINGS_TAX_RATE_PATTERN,
-            "Tax rate must be a number like 20 or 20.00"
+            "Tax rate must be a number like 20 or 20.00",
           )
           .optional(),
         vatNumber: optionalTrimmedString(
           "VAT number",
-          SETTINGS_VAT_NUMBER_MAX_LENGTH
+          SETTINGS_VAT_NUMBER_MAX_LENGTH,
         ),
         // Branding. logoUrl is a real column; brandColor lives in settings.
         logoUrl: optionalTrimmedString("Logo URL", 512),
-        brandColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
-      })
+        brandColor: z
+          .string()
+          .regex(/^#[0-9a-fA-F]{6}$/)
+          .optional(),
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       // brandColor isn't a column — merge it into practices.settings without
@@ -358,16 +382,9 @@ export const settingsRouter = createRouter({
         patch.currency = (patch.currency as string).toLowerCase();
       }
       if (brandColor !== undefined) {
-        const [practice] = await ctx.db
-          .select({ settings: practices.settings })
-          .from(practices)
-          .where(activePracticeWhere(ctx.practiceId))
-          .limit(1);
-        if (!practice) {
-          throw practiceNotFound();
-        }
-        const settings = (practice.settings ?? {}) as PracticeSettings;
-        patch.settings = { ...settings, brandColor: brandColor.toLowerCase() };
+        patch.settings = settingsMergePatch({
+          brandColor: brandColor.toLowerCase(),
+        });
       }
       const [updated] = await ctx.db
         .update(practices)
@@ -401,11 +418,11 @@ export const settingsRouter = createRouter({
         contactEmail: emailInput,
         reason: optionalTrimmedString(
           "Deletion reason",
-          ACCOUNT_DELETION_REASON_MAX_LENGTH
+          ACCOUNT_DELETION_REASON_MAX_LENGTH,
         ),
         confirmExportDownloaded: z.literal(true),
         confirmManualReview: z.literal(true),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const [practice] = await ctx.db
@@ -437,7 +454,7 @@ export const settingsRouter = createRouter({
       await ctx.db
         .update(practices)
         .set({
-          settings: { ...settings, accountDeletionRequest: request },
+          settings: settingsMergePatch({ accountDeletionRequest: request }),
         })
         .where(activePracticeWhere(ctx.practiceId));
 
@@ -449,7 +466,7 @@ export const settingsRouter = createRouter({
           `requestedBy=${ctx.user.email}`,
           `contact=${request.contactEmail}`,
           "manualRetentionReviewRequired=true",
-        ].join(" ")
+        ].join(" "),
       );
 
       return request;
@@ -497,8 +514,8 @@ export const settingsRouter = createRouter({
         and(
           eq(locations.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(locations.deletedAt)
-        )
+          isNull(locations.deletedAt),
+        ),
       );
   }),
 
@@ -509,7 +526,7 @@ export const settingsRouter = createRouter({
         address: addressInput,
         phone: phoneInput,
         isPrimary: z.boolean().optional(),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
@@ -521,8 +538,8 @@ export const settingsRouter = createRouter({
             and(
               eq(locations.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(locations.deletedAt)
-            )
+              isNull(locations.deletedAt),
+            ),
           );
       }
 
@@ -548,7 +565,7 @@ export const settingsRouter = createRouter({
         name: locationNameInput.optional(),
         address: addressInput,
         phone: phoneInput,
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const { id, ...data } = input;
@@ -560,8 +577,8 @@ export const settingsRouter = createRouter({
             eq(locations.id, id),
             eq(locations.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(locations.deletedAt)
-          )
+            isNull(locations.deletedAt),
+          ),
         )
         .returning();
 
@@ -587,8 +604,8 @@ export const settingsRouter = createRouter({
               eq(locations.id, input.id),
               eq(locations.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(locations.deletedAt)
-            )
+              isNull(locations.deletedAt),
+            ),
           )
           .returning();
 
@@ -607,8 +624,8 @@ export const settingsRouter = createRouter({
               eq(locations.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
               isNull(locations.deletedAt),
-              ne(locations.id, input.id)
-            )
+              ne(locations.id, input.id),
+            ),
           );
 
         return target;
@@ -627,8 +644,8 @@ export const settingsRouter = createRouter({
           and(
             eq(locations.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(locations.deletedAt)
-          )
+            isNull(locations.deletedAt),
+          ),
         );
       const target = activeLocations.find((loc) => loc.id === input.id);
 
@@ -654,8 +671,8 @@ export const settingsRouter = createRouter({
             eq(rooms.locationId, input.id),
             eq(rooms.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(rooms.deletedAt)
-          )
+            isNull(rooms.deletedAt),
+          ),
         )
         .limit(1);
 
@@ -674,8 +691,8 @@ export const settingsRouter = createRouter({
             eq(users.locationId, input.id),
             eq(users.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(users.deletedAt)
-          )
+            isNull(users.deletedAt),
+          ),
         )
         .limit(1);
 
@@ -694,8 +711,8 @@ export const settingsRouter = createRouter({
             eq(products.locationId, input.id),
             eq(products.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(products.deletedAt)
-          )
+            isNull(products.deletedAt),
+          ),
         )
         .limit(1);
 
@@ -714,8 +731,8 @@ export const settingsRouter = createRouter({
             eq(staffSchedules.locationId, input.id),
             eq(staffSchedules.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(staffSchedules.deletedAt)
-          )
+            isNull(staffSchedules.deletedAt),
+          ),
         )
         .limit(1);
 
@@ -735,8 +752,8 @@ export const settingsRouter = createRouter({
               eq(locations.id, input.id),
               eq(locations.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(locations.deletedAt)
-            )
+              isNull(locations.deletedAt),
+            ),
           )
           .returning({ id: locations.id });
 
@@ -754,12 +771,14 @@ export const settingsRouter = createRouter({
             and(
               eq(locationMessaging.locationId, input.id),
               eq(locationMessaging.practiceId, ctx.practiceId),
-              activePracticePredicate(ctx.practiceId)
-            )
+              activePracticePredicate(ctx.practiceId),
+            ),
           );
 
         if (target.isPrimary) {
-          const replacement = activeLocations.find((loc) => loc.id !== input.id);
+          const replacement = activeLocations.find(
+            (loc) => loc.id !== input.id,
+          );
           if (replacement) {
             const [promoted] = await tx
               .update(locations)
@@ -769,8 +788,8 @@ export const settingsRouter = createRouter({
                   eq(locations.id, replacement.id),
                   eq(locations.practiceId, ctx.practiceId),
                   activePracticePredicate(ctx.practiceId),
-                  isNull(locations.deletedAt)
-                )
+                  isNull(locations.deletedAt),
+                ),
               )
               .returning({ id: locations.id });
 
@@ -816,83 +835,83 @@ export const settingsRouter = createRouter({
       completedRealVisit,
       nextRealAppointment,
     ] = await Promise.all([
-        ctx.db
-          .select({ id: patients.id })
-          .from(patients)
-          .where(
-            and(
-              eq(patients.practiceId, ctx.practiceId),
-              isNull(patients.deletedAt)
-            )
-          )
-          .limit(ESTABLISHED_PRACTICE_PATIENT_THRESHOLD),
-        ctx.db
-          .select({ id: appointments.id })
-          .from(appointments)
-          .where(
-            and(
-              eq(appointments.practiceId, ctx.practiceId),
-              isNull(appointments.deletedAt),
-              realAppointmentFilter
-            )
-          )
-          .limit(1),
-        ctx.db
-          .select({ id: appointments.id })
-          .from(appointments)
-          .where(
-            and(
-              eq(appointments.practiceId, ctx.practiceId),
-              eq(appointments.status, "checked_out"),
-              isNull(appointments.deletedAt),
-              realAppointmentFilter
-            )
-          )
-          .limit(1),
-        ctx.db
-          .select({ id: visitCloseouts.id })
-          .from(visitCloseouts)
-          .innerJoin(
-            appointments,
-            and(
-              eq(appointments.id, visitCloseouts.appointmentId),
-              eq(appointments.practiceId, ctx.practiceId),
-              isNull(appointments.deletedAt),
-              realAppointmentFilter
-            )
-          )
-          .where(
-            and(
-              eq(visitCloseouts.practiceId, ctx.practiceId),
-              eq(visitCloseouts.status, "completed"),
-              isNull(visitCloseouts.deletedAt)
-            )
-          )
-          .limit(1),
-        ctx.db
-          .select({ id: appointments.id })
-          .from(appointments)
-          .where(
-            and(
-              eq(appointments.practiceId, ctx.practiceId),
-              inArray(appointments.status, activeSchedulingStatuses),
-              isNull(appointments.deletedAt),
-              realAppointmentFilter
-            )
-          )
-          .orderBy(
-            sql`case ${appointments.status}
+      ctx.db
+        .select({ id: patients.id })
+        .from(patients)
+        .where(
+          and(
+            eq(patients.practiceId, ctx.practiceId),
+            isNull(patients.deletedAt),
+          ),
+        )
+        .limit(ESTABLISHED_PRACTICE_PATIENT_THRESHOLD),
+      ctx.db
+        .select({ id: appointments.id })
+        .from(appointments)
+        .where(
+          and(
+            eq(appointments.practiceId, ctx.practiceId),
+            isNull(appointments.deletedAt),
+            realAppointmentFilter,
+          ),
+        )
+        .limit(1),
+      ctx.db
+        .select({ id: appointments.id })
+        .from(appointments)
+        .where(
+          and(
+            eq(appointments.practiceId, ctx.practiceId),
+            eq(appointments.status, "checked_out"),
+            isNull(appointments.deletedAt),
+            realAppointmentFilter,
+          ),
+        )
+        .limit(1),
+      ctx.db
+        .select({ id: visitCloseouts.id })
+        .from(visitCloseouts)
+        .innerJoin(
+          appointments,
+          and(
+            eq(appointments.id, visitCloseouts.appointmentId),
+            eq(appointments.practiceId, ctx.practiceId),
+            isNull(appointments.deletedAt),
+            realAppointmentFilter,
+          ),
+        )
+        .where(
+          and(
+            eq(visitCloseouts.practiceId, ctx.practiceId),
+            eq(visitCloseouts.status, "completed"),
+            isNull(visitCloseouts.deletedAt),
+          ),
+        )
+        .limit(1),
+      ctx.db
+        .select({ id: appointments.id })
+        .from(appointments)
+        .where(
+          and(
+            eq(appointments.practiceId, ctx.practiceId),
+            inArray(appointments.status, activeSchedulingStatuses),
+            isNull(appointments.deletedAt),
+            realAppointmentFilter,
+          ),
+        )
+        .orderBy(
+          sql`case ${appointments.status}
               when 'in_exam' then 0
               when 'checked_in' then 1
               when 'confirmed' then 2
               when 'scheduled' then 3
               else 4
             end`,
-            asc(appointments.startTime),
-            asc(appointments.id)
-          )
-          .limit(1),
-      ]);
+          asc(appointments.startTime),
+          asc(appointments.id),
+        )
+        .limit(1),
+    ]);
     const demoPatientIds = new Set(settings.demoData?.patientIds ?? []);
     return {
       completedAt: settings.onboardingCompletedAt ?? null,
@@ -901,7 +920,7 @@ export const settingsRouter = createRouter({
       // delete the sample clinic first. This also keeps the checklist honest
       // when real and demo patients intentionally coexist during evaluation.
       hasRealData: existingPatients.some(
-        (patient) => !demoPatientIds.has(patient.id)
+        (patient) => !demoPatientIds.has(patient.id),
       ),
       // Scheduling a real appointment is the first operational commitment in
       // the clinic-ready path. Demo appointments must never complete it.
@@ -959,8 +978,8 @@ export const settingsRouter = createRouter({
           and(
             eq(clients.id, demoClientId),
             eq(clients.practiceId, ctx.practiceId),
-            isNull(clients.deletedAt)
-          )
+            isNull(clients.deletedAt),
+          ),
         )
         .limit(1);
       portalClient = row ?? null;
@@ -976,8 +995,8 @@ export const settingsRouter = createRouter({
         .where(
           and(
             eq(clients.practiceId, ctx.practiceId),
-            isNull(clients.deletedAt)
-          )
+            isNull(clients.deletedAt),
+          ),
         )
         .limit(1);
       portalClient = row ?? null;
@@ -994,8 +1013,8 @@ export const settingsRouter = createRouter({
           and(
             eq(patients.id, candidatePatientId),
             eq(patients.practiceId, ctx.practiceId),
-            isNull(patients.deletedAt)
-          )
+            isNull(patients.deletedAt),
+          ),
         )
         .limit(1);
       demoPatientName = row?.name ?? null;
@@ -1013,8 +1032,8 @@ export const settingsRouter = createRouter({
           and(
             eq(invoices.id, candidateInvoiceId),
             eq(invoices.practiceId, ctx.practiceId),
-            isNull(invoices.deletedAt)
-          )
+            isNull(invoices.deletedAt),
+          ),
         )
         .limit(1);
       demoInvoiceId = row?.id ?? null;
@@ -1049,16 +1068,60 @@ export const settingsRouter = createRouter({
 
   /** Read the in-app value-tour + finish-setup progress. */
   getOnboardingState: adminProcedure.query(async ({ ctx }) => {
-    const [practice] = await ctx.db
-      .select({ settings: practices.settings })
-      .from(practices)
-      .where(activePracticeWhere(ctx.practiceId))
-      .limit(1);
+    const [practiceRows, committedRuns] = await Promise.all([
+      ctx.db
+        .select({ settings: practices.settings })
+        .from(practices)
+        .where(activePracticeWhere(ctx.practiceId))
+        .limit(1),
+      ctx.db
+        .select({
+          mode: migrationRuns.mode,
+          source: migrationRuns.source,
+          importedCount: migrationRuns.importedCount,
+          reconciledCount: migrationRuns.reconciledCount,
+          committedAt: migrationRuns.committedAt,
+        })
+        .from(migrationRuns)
+        .where(
+          and(
+            eq(migrationRuns.practiceId, ctx.practiceId),
+            eq(migrationRuns.status, "committed"),
+            isNull(migrationRuns.deletedAt),
+          ),
+        )
+        .orderBy(desc(migrationRuns.committedAt), desc(migrationRuns.id)),
+    ]);
+    const practice = practiceRows[0];
     if (!practice) {
       throw practiceNotFound();
     }
     const settings = (practice.settings ?? {}) as PracticeSettings;
-    return {
+    const savedState = settings.onboardingState ?? {};
+    const latestCommittedRun = committedRuns[0];
+    const latestMigrationSource = isValidMigrationSource(
+      latestCommittedRun?.source,
+    )
+      ? latestCommittedRun.source
+      : null;
+    const completedModes = Array.from(
+      new Set(
+        committedRuns
+          .filter((run) => run.source === latestMigrationSource)
+          .map((run) =>
+            run.mode === "soap_notes" ? ("soapNotes" as const) : run.mode,
+          ),
+      ),
+    );
+    const ledgerHasCommittedChanges = committedRuns.some(
+      (run) => run.importedCount + run.reconciledCount > 0,
+    );
+    const latestSourceHasCommittedChanges = committedRuns.some(
+      (run) =>
+        run.source === latestMigrationSource &&
+        run.importedCount + run.reconciledCount > 0,
+    );
+    const defaults = {
       tourStatus: "not_started" as const,
       lastStepId: null,
       setupDismissed: false,
@@ -1066,7 +1129,30 @@ export const settingsRouter = createRouter({
       onboardingIntentSelectedAt: null,
       journeyStepId: null,
       journeyDismissed: false,
-      ...(settings.onboardingState ?? {}),
+      migrationHasCommittedChanges: false,
+      migrationLastCommittedAt: null,
+      migrationSource: null as string | null,
+      migrationSourceHasCommittedChanges: false,
+      migrationCompletedModes: [] as Array<
+        "clients" | "patients" | "vaccinations" | "soapNotes"
+      >,
+    };
+    return {
+      ...defaults,
+      ...savedState,
+      // migration_runs is authoritative for reviewed imports. The settings
+      // marker remains only as a fallback for compatibility-window commits
+      // that predate the run ledger.
+      migrationHasCommittedChanges:
+        ledgerHasCommittedChanges ||
+        savedState.migrationHasCommittedChanges === true,
+      migrationLastCommittedAt:
+        latestCommittedRun?.committedAt?.toISOString() ??
+        savedState.migrationLastCommittedAt ??
+        null,
+      migrationSource: latestMigrationSource,
+      migrationSourceHasCommittedChanges: latestSourceHasCommittedChanges,
+      migrationCompletedModes: completedModes,
     };
   }),
 
@@ -1076,7 +1162,7 @@ export const settingsRouter = createRouter({
       z.object({
         status: z.enum(["not_started", "in_progress", "completed", "skipped"]),
         lastStepId: tourStepIdInput,
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const patch: Record<string, unknown> = { tourStatus: input.status };
@@ -1124,12 +1210,13 @@ export const settingsRouter = createRouter({
       z.object({
         stepId: journeyStepIdInput,
         dismissed: z.boolean().optional(),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const patch: Record<string, unknown> = {};
       if (input.stepId != null) patch.journeyStepId = input.stepId;
-      if (input.dismissed !== undefined) patch.journeyDismissed = input.dismissed;
+      if (input.dismissed !== undefined)
+        patch.journeyDismissed = input.dismissed;
       if (Object.keys(patch).length === 0) return { ok: true };
 
       const [updated] = await ctx.db
@@ -1159,8 +1246,7 @@ export const settingsRouter = createRouter({
     }
 
     const settings = (practice.settings ?? {}) as PracticeSettings;
-    const existingRequestedAt =
-      settings.onboardingState?.setupHelpRequestedAt;
+    const existingRequestedAt = settings.onboardingState?.setupHelpRequestedAt;
     if (existingRequestedAt) {
       return { requestedAt: existingRequestedAt };
     }
@@ -1188,7 +1274,7 @@ export const settingsRouter = createRouter({
         `practiceName=${practice.name}`,
         `requestedBy=${ctx.user.email}`,
         `requestedAt=${requestedAt}`,
-      ].join(" ")
+      ].join(" "),
     );
 
     return { requestedAt };
@@ -1230,8 +1316,8 @@ export const settingsRouter = createRouter({
           .where(
             and(
               eq(products.practiceId, ctx.practiceId),
-              inArray(products.id, demo.productIds)
-            )
+              inArray(products.id, demo.productIds),
+            ),
           );
       }
       if (demo.communicationIds?.length) {
@@ -1241,8 +1327,8 @@ export const settingsRouter = createRouter({
           .where(
             and(
               eq(communications.practiceId, ctx.practiceId),
-              inArray(communications.id, demo.communicationIds)
-            )
+              inArray(communications.id, demo.communicationIds),
+            ),
           );
       }
       if (demo.invoiceItemIds?.length) {
@@ -1257,8 +1343,8 @@ export const settingsRouter = createRouter({
                 from ${invoices}
                 where ${invoices.id} = ${invoiceItems.invoiceId}
                   and ${invoices.practiceId} = ${ctx.practiceId}
-              )`
-            )
+              )`,
+            ),
           );
       }
       if (demo.invoiceIds?.length) {
@@ -1268,8 +1354,8 @@ export const settingsRouter = createRouter({
           .where(
             and(
               eq(invoices.practiceId, ctx.practiceId),
-              inArray(invoices.id, demo.invoiceIds)
-            )
+              inArray(invoices.id, demo.invoiceIds),
+            ),
           );
       }
       if (demo.problemIds?.length) {
@@ -1279,8 +1365,8 @@ export const settingsRouter = createRouter({
           .where(
             and(
               eq(problemList.practiceId, ctx.practiceId),
-              inArray(problemList.id, demo.problemIds)
-            )
+              inArray(problemList.id, demo.problemIds),
+            ),
           );
       }
       if (demo.vaccinationIds?.length) {
@@ -1290,8 +1376,8 @@ export const settingsRouter = createRouter({
           .where(
             and(
               eq(vaccinationRecords.practiceId, ctx.practiceId),
-              inArray(vaccinationRecords.id, demo.vaccinationIds)
-            )
+              inArray(vaccinationRecords.id, demo.vaccinationIds),
+            ),
           );
       }
       if (demo.soapNoteIds?.length) {
@@ -1301,8 +1387,8 @@ export const settingsRouter = createRouter({
           .where(
             and(
               eq(soapNotes.practiceId, ctx.practiceId),
-              inArray(soapNotes.id, demo.soapNoteIds)
-            )
+              inArray(soapNotes.id, demo.soapNoteIds),
+            ),
           );
       }
       if (demo.appointmentIds?.length) {
@@ -1312,8 +1398,8 @@ export const settingsRouter = createRouter({
           .where(
             and(
               eq(appointments.practiceId, ctx.practiceId),
-              inArray(appointments.id, demo.appointmentIds)
-            )
+              inArray(appointments.id, demo.appointmentIds),
+            ),
           );
       }
       if (demo.patientIds?.length) {
@@ -1323,8 +1409,8 @@ export const settingsRouter = createRouter({
           .where(
             and(
               eq(patients.practiceId, ctx.practiceId),
-              inArray(patients.id, demo.patientIds)
-            )
+              inArray(patients.id, demo.patientIds),
+            ),
           );
       }
       if (demo.clientIds?.length) {
@@ -1334,8 +1420,8 @@ export const settingsRouter = createRouter({
           .where(
             and(
               eq(clients.practiceId, ctx.practiceId),
-              inArray(clients.id, demo.clientIds)
-            )
+              inArray(clients.id, demo.clientIds),
+            ),
           );
       }
     }
@@ -1386,8 +1472,8 @@ export const settingsRouter = createRouter({
         and(
           eq(users.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(users.deletedAt)
-        )
+          isNull(users.deletedAt),
+        ),
       );
   }),
 
@@ -1397,10 +1483,16 @@ export const settingsRouter = createRouter({
         name: staffNameInput,
         email: emailInput,
         password: authPasswordInput,
-        role: z.enum(["admin", "veterinarian", "technician", "front_desk", "viewer"]),
+        role: z.enum([
+          "admin",
+          "veterinarian",
+          "technician",
+          "front_desk",
+          "viewer",
+        ]),
         phone: phoneInput,
         licenseNumber: licenseNumberInput,
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
@@ -1452,7 +1544,7 @@ export const settingsRouter = createRouter({
           "front_desk",
           "viewer",
         ]),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const email = input.email.trim().toLowerCase();
@@ -1494,7 +1586,7 @@ export const settingsRouter = createRouter({
       // Unguessable placeholder — replaced when the invite is accepted.
       const passwordHash = await hash(
         `invite:${randomUUID()}:${randomUUID()}`,
-        PASSWORD_HASH_COST
+        PASSWORD_HASH_COST,
       );
 
       const [user] = await ctx.db
@@ -1551,7 +1643,7 @@ export const settingsRouter = createRouter({
           .optional(),
         phone: phoneInput,
         licenseNumber: licenseNumberInput,
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const { id, ...data } = input;
@@ -1559,8 +1651,8 @@ export const settingsRouter = createRouter({
         return ctx.db.transaction(async (tx) => {
           await tx.execute(
             sql`select pg_advisory_xact_lock(hashtext(${staffAdminRosterLockKey(
-              ctx.practiceId
-            )}::text))`
+              ctx.practiceId,
+            )}::text))`,
           );
 
           const [targetUser] = await tx
@@ -1571,13 +1663,16 @@ export const settingsRouter = createRouter({
                 eq(users.id, id),
                 eq(users.practiceId, ctx.practiceId),
                 activePracticePredicate(ctx.practiceId),
-                isNull(users.deletedAt)
-              )
+                isNull(users.deletedAt),
+              ),
             )
             .limit(1);
 
           if (!targetUser) {
-            throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: "User not found",
+            });
           }
 
           if (targetUser.role === "admin") {
@@ -1590,8 +1685,8 @@ export const settingsRouter = createRouter({
                   eq(users.role, "admin"),
                   ne(users.id, id),
                   activePracticePredicate(ctx.practiceId),
-                  isNull(users.deletedAt)
-                )
+                  isNull(users.deletedAt),
+                ),
               )
               .limit(1);
 
@@ -1612,8 +1707,8 @@ export const settingsRouter = createRouter({
                 eq(users.practiceId, ctx.practiceId),
                 eq(users.role, targetUser.role),
                 activePracticePredicate(ctx.practiceId),
-                isNull(users.deletedAt)
-              )
+                isNull(users.deletedAt),
+              ),
             )
             .returning();
 
@@ -1636,8 +1731,8 @@ export const settingsRouter = createRouter({
             eq(users.id, id),
             eq(users.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(users.deletedAt)
-          )
+            isNull(users.deletedAt),
+          ),
         )
         .returning();
       if (!updated) {
@@ -1659,8 +1754,8 @@ export const settingsRouter = createRouter({
       await ctx.db.transaction(async (tx) => {
         await tx.execute(
           sql`select pg_advisory_xact_lock(hashtext(${staffAdminRosterLockKey(
-            ctx.practiceId
-          )}::text))`
+            ctx.practiceId,
+          )}::text))`,
         );
 
         const [targetUser] = await tx
@@ -1671,8 +1766,8 @@ export const settingsRouter = createRouter({
               eq(users.id, input.id),
               eq(users.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(users.deletedAt)
-            )
+              isNull(users.deletedAt),
+            ),
           )
           .limit(1);
 
@@ -1690,8 +1785,8 @@ export const settingsRouter = createRouter({
                 eq(users.role, "admin"),
                 ne(users.id, input.id),
                 activePracticePredicate(ctx.practiceId),
-                isNull(users.deletedAt)
-              )
+                isNull(users.deletedAt),
+              ),
             )
             .limit(1);
 
@@ -1712,8 +1807,8 @@ export const settingsRouter = createRouter({
               eq(appointments.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
               isNull(appointments.deletedAt),
-              inArray(appointments.status, activeSchedulingStatuses)
-            )
+              inArray(appointments.status, activeSchedulingStatuses),
+            ),
           )
           .limit(1);
 
@@ -1733,8 +1828,8 @@ export const settingsRouter = createRouter({
               eq(staffSchedules.userId, input.id),
               eq(staffSchedules.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(staffSchedules.deletedAt)
-            )
+              isNull(staffSchedules.deletedAt),
+            ),
           )
           .limit(1);
 
@@ -1755,8 +1850,8 @@ export const settingsRouter = createRouter({
               eq(users.practiceId, ctx.practiceId),
               eq(users.role, targetUser.role),
               activePracticePredicate(ctx.practiceId),
-              isNull(users.deletedAt)
-            )
+              isNull(users.deletedAt),
+            ),
           )
           .returning({ id: users.id });
         if (!updated) {
@@ -1780,8 +1875,8 @@ export const settingsRouter = createRouter({
           and(
             eq(users.id, input.id),
             eq(users.practiceId, ctx.practiceId),
-            activePracticePredicate(ctx.practiceId)
-          )
+            activePracticePredicate(ctx.practiceId),
+          ),
         )
         .returning({ id: users.id });
       if (!updated) {
@@ -1802,8 +1897,8 @@ export const settingsRouter = createRouter({
         and(
           eq(appointmentTypes.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(appointmentTypes.deletedAt)
-        )
+          isNull(appointmentTypes.deletedAt),
+        ),
       );
   }),
 
@@ -1821,7 +1916,7 @@ export const settingsRouter = createRouter({
         defaultRoomType: z
           .enum(["exam", "surgery", "treatment", "boarding"])
           .default("exam"),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
@@ -1843,12 +1938,15 @@ export const settingsRouter = createRouter({
           .min(APPOINTMENT_TYPE_DURATION_MIN_MINUTES)
           .max(APPOINTMENT_TYPE_DURATION_MAX_MINUTES)
           .optional(),
-        color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+        color: z
+          .string()
+          .regex(/^#[0-9a-fA-F]{6}$/)
+          .optional(),
         requiresDoctor: z.number().int().min(0).max(1).optional(),
         defaultRoomType: z
           .enum(["exam", "surgery", "treatment", "boarding"])
           .optional(),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const { id, ...data } = input;
@@ -1860,8 +1958,8 @@ export const settingsRouter = createRouter({
             eq(appointmentTypes.id, id),
             eq(appointmentTypes.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(appointmentTypes.deletedAt)
-          )
+            isNull(appointmentTypes.deletedAt),
+          ),
         )
         .returning();
       if (!updated) {
@@ -1885,8 +1983,8 @@ export const settingsRouter = createRouter({
               eq(appointmentTypes.id, input.id),
               eq(appointmentTypes.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(appointmentTypes.deletedAt)
-            )
+              isNull(appointmentTypes.deletedAt),
+            ),
           )
           .limit(1);
 
@@ -1906,8 +2004,8 @@ export const settingsRouter = createRouter({
               eq(appointments.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
               isNull(appointments.deletedAt),
-              inArray(appointments.status, activeSchedulingStatuses)
-            )
+              inArray(appointments.status, activeSchedulingStatuses),
+            ),
           )
           .limit(1);
 
@@ -1928,8 +2026,8 @@ export const settingsRouter = createRouter({
               eq(appointmentWaitlist.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
               eq(appointmentWaitlist.status, "waiting"),
-              isNull(appointmentWaitlist.deletedAt)
-            )
+              isNull(appointmentWaitlist.deletedAt),
+            ),
           )
           .limit(1);
 
@@ -1949,8 +2047,8 @@ export const settingsRouter = createRouter({
               eq(appointmentTypes.id, input.id),
               eq(appointmentTypes.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(appointmentTypes.deletedAt)
-            )
+              isNull(appointmentTypes.deletedAt),
+            ),
           )
           .returning({ id: appointmentTypes.id });
         if (!deleted) {
@@ -1974,8 +2072,8 @@ export const settingsRouter = createRouter({
         and(
           eq(rooms.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(rooms.deletedAt)
-        )
+          isNull(rooms.deletedAt),
+        ),
       );
   }),
 
@@ -1984,7 +2082,7 @@ export const settingsRouter = createRouter({
       z.object({
         name: roomNameInput,
         type: z.enum(["exam", "surgery", "treatment", "boarding"]),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
@@ -2007,8 +2105,8 @@ export const settingsRouter = createRouter({
               eq(rooms.id, input.id),
               eq(rooms.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(rooms.deletedAt)
-            )
+              isNull(rooms.deletedAt),
+            ),
           )
           .limit(1);
 
@@ -2025,8 +2123,8 @@ export const settingsRouter = createRouter({
               eq(appointments.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
               isNull(appointments.deletedAt),
-              inArray(appointments.status, activeSchedulingStatuses)
-            )
+              inArray(appointments.status, activeSchedulingStatuses),
+            ),
           )
           .limit(1);
 
@@ -2045,8 +2143,8 @@ export const settingsRouter = createRouter({
               eq(rooms.id, input.id),
               eq(rooms.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(rooms.deletedAt)
-            )
+              isNull(rooms.deletedAt),
+            ),
           )
           .returning({ id: rooms.id });
         if (!deleted) {

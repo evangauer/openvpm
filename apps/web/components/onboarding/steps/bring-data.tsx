@@ -5,22 +5,42 @@ import Link from "next/link";
 import {
   ArrowRight,
   Check,
+  ChevronDown,
   FileSpreadsheet,
   Loader2,
   PlugZap,
   Sparkles,
 } from "lucide-react";
-import { trpc } from "@/lib/trpc";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import {
+  isOnboardingImportModeLocked,
+  isOnboardingMigrationSourceLocked,
+  lastCommittedImportIndex,
+  nextOnboardingImportMode,
+  onboardingImportChangeCount,
+  summarizeOnboardingImports,
+  type OnboardingImportCommit,
+  type OnboardingImportCommits,
+  type OnboardingImportSelections,
+  type OnboardingImportSummary,
+} from "@/lib/import/onboarding-workflow";
 import {
   IMPORT_CSV_MAX_BYTES,
   isImportCsvSizeValid,
 } from "@/lib/import/policy";
+import {
+  isValidMigrationSource,
+  MIGRATION_SOURCES,
+  MIGRATION_STEPS,
+  migrationSourceExportHint,
+  migrationSourceName,
+  type MigrationImportMode,
+} from "@/lib/import/sources";
 import { getOnboardingIntentOption } from "@/lib/onboarding/intent";
-import { MIGRATION_SOURCES } from "@/lib/import/sources";
-import { toast } from "sonner";
-import type { StepHandle, StepProps } from "../journey-types";
+import { trpc } from "@/lib/trpc";
+import { cn } from "@/lib/utils";
+import type { StepProps } from "../journey-types";
 
 type Choice = "import" | "api" | "keep";
 type CsvPreview = {
@@ -30,18 +50,26 @@ type CsvPreview = {
   willReconcile?: number;
   duplicates?: number;
   unmatchedClient?: number;
+  unmatchedPatient?: number;
   errors: string[];
 };
-type CommittedCsvImport = {
-  imported: number;
-  reconciled: number;
+type CsvPreviews = Partial<Record<MigrationImportMode, CsvPreview>>;
+type CsvMeta = { hasContent: boolean; sizeValid: boolean };
+type ImportResponse = {
+  dryRun?: boolean;
+  previewToken?: string;
+  total?: number;
+  willInsert?: number;
+  willReconcile?: number;
+  duplicates?: number;
+  unmatchedClient?: number;
+  unmatchedPatient?: number;
+  imported?: number;
+  reconciled?: number;
+  alreadyCommitted?: boolean;
   errors: string[];
 };
 
-const CLIENT_COLUMNS =
-  "firstName, lastName, email or client ID, phone, address, city, state, zip";
-const PET_COLUMNS =
-  "clientEmail or client ID, patient ID, name, species, breed, sex, dob, color, microchipNumber";
 const IMPORT_CSV_SIZE_MESSAGE = "CSV imports must be 5 MB or less.";
 
 const textareaClass =
@@ -50,7 +78,21 @@ const textareaClass =
 const fileInputClass =
   "block w-full text-xs text-slate-600 file:mr-3 file:rounded-md file:border-0 file:bg-emerald-600 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-emerald-700";
 
-// Read a chosen file to text so we can pass the CSV string to the import calls.
+function importMap<T>(create: () => T): Record<MigrationImportMode, T> {
+  return Object.fromEntries(
+    MIGRATION_STEPS.map(({ mode }) => [mode, create()]),
+  ) as Record<MigrationImportMode, T>;
+}
+
+function migrationModeLabels(modes: readonly MigrationImportMode[]): string {
+  return modes
+    .map(
+      (mode) =>
+        MIGRATION_STEPS.find((step) => step.mode === mode)?.label ?? mode,
+    )
+    .join(", ");
+}
+
 function readFileText(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -84,404 +126,464 @@ function downloadIssueReport(errors: string[], fileName: string) {
 }
 
 /**
- * Step 4: choose how real data gets in. Import from a file now, connect by API
- * later, or keep the sample data for now (the default and the skip behavior).
+ * Step 4: choose how real data gets in. Every supplied file is processed in
+ * dependency order and gets its own server preview before an explicit commit.
  */
 export function BringDataStep({ register, state, setState }: StepProps) {
+  const pathway = getOnboardingIntentOption(state.onboardingIntent);
+  const utils = trpc.useUtils();
   const importClientsCsv = trpc.data.importClientsCsv.useMutation();
   const importPatientsCsv = trpc.data.importPatientsCsv.useMutation();
+  const importVaccinationsCsv = trpc.data.importVaccinationsCsv.useMutation();
+  const importSoapNotesCsv = trpc.data.importSoapNotesCsv.useMutation();
 
-  // Default to keeping the sample data; the skip behavior matches this too.
-  const [choice, setChoice] = useState<Choice>("keep");
-  const [migrationSource, setMigrationSource] =
-    useState<(typeof MIGRATION_SOURCES)[number]["id"]>("other");
-  const [clientsCsv, setClientsCsv] = useState("");
-  const [petsCsv, setPetsCsv] = useState("");
-  const [clientsFileName, setClientsFileName] = useState("");
-  const [petsFileName, setPetsFileName] = useState("");
-  const [clientsPreview, setClientsPreview] = useState<CsvPreview | null>(null);
-  const [petsPreview, setPetsPreview] = useState<CsvPreview | null>(null);
-  const [committedClients, setCommittedClients] =
-    useState<CommittedCsvImport | null>(null);
+  const [choice, setChoice] = useState<Choice>(
+    state.hasImportedData || (state.migrationCompletedModes?.length ?? 0) > 0
+      ? "import"
+      : "keep",
+  );
+  const [historyExpanded, setHistoryExpanded] = useState(
+    pathway.value === "replace",
+  );
+  const [migrationSource, setMigrationSource] = useState<string>(() =>
+    isValidMigrationSource(state.migrationSource)
+      ? state.migrationSource
+      : "other",
+  );
+  const [knownCompletedModes, setKnownCompletedModes] = useState<
+    MigrationImportMode[]
+  >(() =>
+    MIGRATION_STEPS.flatMap(({ mode }) =>
+      state.migrationCompletedModes?.includes(mode) ? [mode] : [],
+    ),
+  );
+  const [csvByMode, setCsvByMode] = useState(() => importMap(() => ""));
+  const [csvMetaByMode, setCsvMetaByMode] = useState(() =>
+    importMap<CsvMeta>(() => ({ hasContent: false, sizeValid: true })),
+  );
+  const [fileNameByMode, setFileNameByMode] = useState(() =>
+    importMap(() => ""),
+  );
+  const [previewByMode, setPreviewByMode] = useState<CsvPreviews>({});
+  const [committedByMode, setCommittedByMode] =
+    useState<OnboardingImportCommits>({});
+  const [fileReadPending, setFileReadPending] = useState(() =>
+    importMap(() => false),
+  );
   const [importRecoveryMessage, setImportRecoveryMessage] = useState("");
+  const [result, setResult] = useState<OnboardingImportSummary | null>(null);
   const importReviewVersionRef = useRef(0);
-  const fileReadVersionRef = useRef({ clients: 0, pets: 0 });
-  const [fileReadPending, setFileReadPending] = useState({
-    clients: false,
-    pets: false,
-  });
-  const [result, setResult] = useState<{
-    clients: number;
-    pets: number;
-    reconciled: number;
-    errors: string[];
-  } | null>(null);
-  const importing = importClientsCsv.isPending || importPatientsCsv.isPending;
-  const readingFiles = fileReadPending.clients || fileReadPending.pets;
+  const fileReadVersionRef = useRef(importMap(() => 0));
+
+  const importing =
+    importClientsCsv.isPending ||
+    importPatientsCsv.isPending ||
+    importVaccinationsCsv.isPending ||
+    importSoapNotesCsv.isPending;
+  const readingFiles = Object.values(fileReadPending).some(Boolean);
   const importInputsBusy = importing || readingFiles;
+  const lastCommittedIndex = lastCommittedImportIndex(committedByMode);
+  const migrationSourceLocked = isOnboardingMigrationSourceLocked(
+    state.migrationSourceHasCommittedChanges === true,
+    committedByMode,
+  );
 
-  function clearImportReview() {
+  function clearAllImportReview() {
     importReviewVersionRef.current += 1;
-    setClientsPreview(null);
-    setPetsPreview(null);
-    setCommittedClients(null);
+    setPreviewByMode({});
+    setCommittedByMode({});
     setImportRecoveryMessage("");
     setResult(null);
   }
 
-  function updateClientsCsv(value: string) {
-    fileReadVersionRef.current.clients += 1;
-    setClientsCsv(value);
-    clearImportReview();
-  }
-
-  function updatePetsCsv(value: string) {
-    fileReadVersionRef.current.pets += 1;
-    setPetsCsv(value);
-    clearPetReview();
-  }
-
-  function clearPetReview() {
+  function clearReviewFrom(mode: MigrationImportMode) {
     importReviewVersionRef.current += 1;
-    setPetsPreview(null);
+    const start = MIGRATION_STEPS.findIndex((step) => step.mode === mode);
+    setPreviewByMode(
+      (current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(([key]) => {
+            const index = MIGRATION_STEPS.findIndex(
+              (step) => step.mode === key,
+            );
+            return index < start;
+          }),
+        ) as CsvPreviews,
+    );
+    setCommittedByMode(
+      (current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(([key]) => {
+            const index = MIGRATION_STEPS.findIndex(
+              (step) => step.mode === key,
+            );
+            return index < start;
+          }),
+        ) as OnboardingImportCommits,
+    );
     setImportRecoveryMessage("");
     setResult(null);
+  }
+
+  function updateCsv(mode: MigrationImportMode, value: string) {
+    fileReadVersionRef.current[mode] += 1;
+    setFileReadPending((current) => ({ ...current, [mode]: false }));
+    setCsvByMode((current) => ({ ...current, [mode]: value }));
+    setCsvMetaByMode((current) => ({
+      ...current,
+      [mode]: {
+        hasContent: value.trim().length > 0,
+        sizeValid: isImportCsvSizeValid(value),
+      },
+    }));
+    setFileNameByMode((current) => ({ ...current, [mode]: "" }));
+    clearReviewFrom(mode);
   }
 
   function invalidatePendingFileReads() {
-    fileReadVersionRef.current.clients += 1;
-    fileReadVersionRef.current.pets += 1;
+    for (const { mode } of MIGRATION_STEPS) {
+      fileReadVersionRef.current[mode] += 1;
+    }
+    setFileReadPending(importMap(() => false));
   }
 
   async function onPickFile(
-    e: React.ChangeEvent<HTMLInputElement>,
-    setCsv: (v: string) => void,
-    which: "clients" | "pets",
+    event: React.ChangeEvent<HTMLInputElement>,
+    mode: MigrationImportMode,
   ) {
-    const file = e.target.files?.[0];
+    const input = event.currentTarget;
+    const file = input.files?.[0];
     if (!file) return;
-    if (which === "clients") clearImportReview();
-    else clearPetReview();
-    setFileReadPending((current) => ({ ...current, [which]: true }));
-    const readVersion = ++fileReadVersionRef.current[which];
+    // Let a clinic select the same path again after fixing the file externally.
+    input.value = "";
+    clearReviewFrom(mode);
+    setFileReadPending((current) => ({ ...current, [mode]: true }));
+    const readVersion = ++fileReadVersionRef.current[mode];
+
     function finishFileRead() {
-      setFileReadPending((current) => ({ ...current, [which]: false }));
+      setFileReadPending((current) => ({ ...current, [mode]: false }));
     }
+
     function clearPickedFile() {
-      setCsv("");
-      if (which === "clients") setClientsFileName("");
-      else setPetsFileName("");
-      e.target.value = "";
+      setCsvByMode((current) => ({ ...current, [mode]: "" }));
+      setCsvMetaByMode((current) => ({
+        ...current,
+        [mode]: { hasContent: false, sizeValid: true },
+      }));
+      setFileNameByMode((current) => ({ ...current, [mode]: "" }));
       finishFileRead();
     }
+
     if (file.size > IMPORT_CSV_MAX_BYTES) {
       clearPickedFile();
       toast.error(IMPORT_CSV_SIZE_MESSAGE);
       return;
     }
+
     try {
       const text = await readFileText(file);
-      if (fileReadVersionRef.current[which] !== readVersion) return;
+      if (fileReadVersionRef.current[mode] !== readVersion) return;
+      if (!text.trim()) {
+        clearPickedFile();
+        toast.error("CSV file is empty.");
+        return;
+      }
       if (!isImportCsvSizeValid(text)) {
         clearPickedFile();
         toast.error(IMPORT_CSV_SIZE_MESSAGE);
         return;
       }
-      setCsv(text);
-      if (which === "clients") setClientsFileName(file.name);
-      else setPetsFileName(file.name);
+      setCsvByMode((current) => ({ ...current, [mode]: text }));
+      setCsvMetaByMode((current) => ({
+        ...current,
+        [mode]: { hasContent: text.trim().length > 0, sizeValid: true },
+      }));
+      setFileNameByMode((current) => ({ ...current, [mode]: file.name }));
       finishFileRead();
     } catch {
-      if (fileReadVersionRef.current[which] !== readVersion) return;
+      if (fileReadVersionRef.current[mode] !== readVersion) return;
       finishFileRead();
       toast.error("Could not read that file. Try again.");
     }
   }
 
-  const clientsCsvTooLarge = !isImportCsvSizeValid(clientsCsv);
-  const petsCsvTooLarge = !isImportCsvSizeValid(petsCsv);
-  const importCsvSizeError = [
-    clientsCsvTooLarge ? "Client CSV must be 5 MB or less." : null,
-    petsCsvTooLarge ? "Pet CSV must be 5 MB or less." : null,
-  ]
-    .filter(Boolean)
-    .join(" ");
-  const hasImportCsvSizeError = importCsvSizeError.length > 0;
-  const hasClientsCsv = clientsCsv.trim().length > 0;
-  const hasPetsCsv = petsCsv.trim().length > 0;
-  const hasImportCsv = choice === "import" && (hasClientsCsv || hasPetsCsv);
-  const needsClientPreview =
-    hasClientsCsv && !clientsPreview && !committedClients;
-  const needsClientCommit =
-    hasClientsCsv && Boolean(clientsPreview) && !committedClients;
-  const needsPetsPreview = hasPetsCsv && !petsPreview;
-  const previewReady = Boolean(clientsPreview || petsPreview);
-  const previewWillInsert =
-    (clientsPreview?.willInsert ?? 0) + (petsPreview?.willInsert ?? 0);
-  const previewWillReconcile =
-    (clientsPreview?.willReconcile ?? 0) + (petsPreview?.willReconcile ?? 0);
-  const previewChangeCount = previewWillInsert + previewWillReconcile;
+  async function runImport(
+    mode: MigrationImportMode,
+    input: {
+      csv: string;
+      dryRun: boolean;
+      source: typeof migrationSource;
+      previewToken?: string;
+      migrationProtocol: "reviewed-v1";
+    },
+  ): Promise<ImportResponse> {
+    if (mode === "clients") return importClientsCsv.mutateAsync(input);
+    if (mode === "patients") return importPatientsCsv.mutateAsync(input);
+    if (mode === "vaccinations")
+      return importVaccinationsCsv.mutateAsync(input);
+    return importSoapNotesCsv.mutateAsync(input);
+  }
+
+  async function finishStage(
+    mode: MigrationImportMode,
+    committed: OnboardingImportCommit,
+  ) {
+    const completedChanges = committed.imported + committed.reconciled;
+    const committedAt = new Date().toISOString();
+    const nextKnownCompletedModes = MIGRATION_STEPS.flatMap(
+      ({ mode: currentMode }) =>
+        knownCompletedModes.includes(currentMode) || currentMode === mode
+          ? [currentMode]
+          : [],
+    );
+    setKnownCompletedModes(nextKnownCompletedModes);
+    utils.settings.getOnboardingState.setData(undefined, (previous) =>
+      previous
+        ? {
+            ...previous,
+            migrationSource,
+            migrationCompletedModes: nextKnownCompletedModes,
+            ...(completedChanges > 0
+              ? {
+                  migrationHasCommittedChanges: true,
+                  migrationSourceHasCommittedChanges: true,
+                  migrationLastCommittedAt: committedAt,
+                }
+              : {}),
+          }
+        : previous,
+    );
+    void utils.settings.getOnboardingState.invalidate();
+    setState({
+      migrationSource,
+      migrationCompletedModes: nextKnownCompletedModes,
+      ...(completedChanges > 0
+        ? {
+            keepSampleData: false,
+            hasImportedData: true,
+            migrationSourceHasCommittedChanges: true,
+          }
+        : {}),
+    });
+    const nextCommitted = { ...committedByMode, [mode]: committed };
+    setCommittedByMode(nextCommitted);
+    setPreviewByMode((current) => ({ ...current, [mode]: undefined }));
+    const selectedByMode = Object.fromEntries(
+      MIGRATION_STEPS.map(({ mode }) => [mode, csvMetaByMode[mode].hasContent]),
+    ) as OnboardingImportSelections;
+    const nextMode = nextOnboardingImportMode(selectedByMode, nextCommitted);
+    if (nextMode) {
+      const currentLabel = MIGRATION_STEPS.find(
+        (step) => step.mode === mode,
+      )!.label;
+      const nextLabel = MIGRATION_STEPS.find(
+        (step) => step.mode === nextMode,
+      )!.shortLabel;
+      setImportRecoveryMessage(
+        `${currentLabel} complete (${completedChanges} changes). Check the ${nextLabel} file next.`,
+      );
+      return;
+    }
+
+    const summary = summarizeOnboardingImports(nextCommitted);
+    setImportRecoveryMessage("");
+    setResult(summary);
+    const changeCount = onboardingImportChangeCount(summary);
+    toast.success(
+      changeCount > 0
+        ? `${changeCount.toLocaleString()} clinic record changes completed`
+        : "Import review complete",
+    );
+  }
+
+  const csvSizeErrors = MIGRATION_STEPS.flatMap(({ mode, label }) =>
+    csvMetaByMode[mode].sizeValid ? [] : [`${label} CSV must be 5 MB or less.`],
+  );
+  const hasImportCsvSizeError = csvSizeErrors.length > 0;
+  const selectedByMode = Object.fromEntries(
+    MIGRATION_STEPS.map(({ mode }) => [mode, csvMetaByMode[mode].hasContent]),
+  ) as OnboardingImportSelections;
+  const hasImportCsv = Object.values(selectedByMode).some(Boolean);
+  const activeMode = nextOnboardingImportMode(selectedByMode, committedByMode);
+  const activeStep = activeMode
+    ? MIGRATION_STEPS.find((step) => step.mode === activeMode)!
+    : null;
+  const activePreview = activeMode ? previewByMode[activeMode] : undefined;
+  const previewChangeCount = activePreview
+    ? activePreview.willInsert + (activePreview.willReconcile ?? 0)
+    : 0;
+  const previewReady = Object.values(previewByMode).some(Boolean);
   const continueLabel =
     choice !== "import" || !hasImportCsv || result
       ? "Continue"
-      : needsClientPreview
-        ? "Check client file"
-        : needsClientCommit
-          ? `Import ${previewChangeCount.toLocaleString()} client changes`
-          : needsPetsPreview
-            ? "Check pet file"
-            : previewChangeCount > 0
-              ? `Import ${previewChangeCount.toLocaleString()} pet changes`
-              : "Review import";
+      : !activeStep
+        ? "Finish import review"
+        : !activePreview
+          ? `Check ${activeStep.shortLabel} file`
+          : previewChangeCount > 0
+            ? `Import ${previewChangeCount.toLocaleString()} ${activeStep.shortLabel} ${previewChangeCount === 1 ? "change" : "changes"}`
+            : activePreview.total === 0
+              ? `Skip ${activeStep.shortLabel} file`
+              : `Confirm no ${activeStep.shortLabel} changes`;
 
-  // Finish only clears sample data after real rows have imported. Checking a
-  // CSV or connecting later leaves the demo clinic intact.
+  const currentSummary = summarizeOnboardingImports(committedByMode);
   const hasImportedRows =
-    choice === "import" &&
-    Boolean(
-      (result && result.clients + result.pets + result.reconciled > 0) ||
-      (committedClients &&
-        committedClients.imported + committedClients.reconciled > 0),
-    );
+    choice === "import" && onboardingImportChangeCount(currentSummary) > 0;
+  const hasCommittedStages = Object.keys(committedByMode).length > 0;
   useEffect(() => {
-    setState({ keepSampleData: !hasImportedRows });
-  }, [hasImportedRows, setState]);
+    setState({
+      keepSampleData: state.keepSampleData && !hasImportedRows,
+      hasPartialImport: hasCommittedStages && !result,
+    });
+  }, [
+    hasCommittedStages,
+    hasImportedRows,
+    result,
+    setState,
+    state.keepSampleData,
+  ]);
 
   useEffect(() => {
     register({
       continueLabel,
       continueDisabled: readingFiles,
       async onContinue() {
-        // Only the file path does extra work on Continue; the others just move on.
         if (choice !== "import") return true;
-        if (!hasClientsCsv && !hasPetsCsv) return true;
+        if (!hasImportCsv) return true;
         if (result) return true;
         if (hasImportCsvSizeError) {
-          toast.error(importCsvSizeError || IMPORT_CSV_SIZE_MESSAGE);
+          toast.error(csvSizeErrors.join(" ") || IMPORT_CSV_SIZE_MESSAGE);
           return false;
         }
+        if (!activeMode || !activeStep) return true;
 
-        if (needsClientPreview) {
-          const reviewVersion = importReviewVersionRef.current;
-          setImportRecoveryMessage("");
-          const r = await importClientsCsv.mutateAsync({
-            csv: clientsCsv.trim(),
-            dryRun: true,
-            source: migrationSource,
-            migrationProtocol: "reviewed-v1",
-          });
-          if (importReviewVersionRef.current !== reviewVersion) return false;
-          if ("dryRun" in r && r.dryRun) {
-            setClientsPreview({
-              previewToken: r.previewToken,
-              total: r.total,
-              willInsert: r.willInsert,
-              willReconcile: r.willReconcile,
-              duplicates: r.duplicates,
-              errors: r.errors,
-            });
-          }
-          toast.success(
-            "Client CSV checked. Review the plan before importing.",
-          );
-          return false;
-        }
+        const csv = csvByMode[activeMode].trim();
+        const reviewVersion = importReviewVersionRef.current;
+        setImportRecoveryMessage("");
 
-        if (needsClientCommit) {
-          const preview = clientsPreview!;
-          if (preview.willInsert + (preview.willReconcile ?? 0) === 0) {
-            const committed = {
-              imported: 0,
-              reconciled: 0,
-              errors: preview.errors,
-            };
-            setCommittedClients(committed);
-            setClientsPreview(null);
-            if (hasPetsCsv) {
-              setImportRecoveryMessage(
-                "No client changes were needed. Check the pet file next.",
-              );
-            } else {
-              setResult({
-                clients: 0,
-                pets: 0,
-                reconciled: 0,
-                errors: [
-                  ...preview.errors,
-                  "No new client rows were found to import.",
-                ],
-              });
-            }
-            return false;
-          }
-
+        if (!activePreview) {
           try {
-            const reviewVersion = importReviewVersionRef.current;
-            const r = await importClientsCsv.mutateAsync({
-              csv: clientsCsv.trim(),
-              dryRun: false,
-              source: migrationSource,
-              previewToken: preview.previewToken,
-              migrationProtocol: "reviewed-v1",
-            });
-            if (importReviewVersionRef.current !== reviewVersion) return false;
-            const committed = {
-              imported: r.imported ?? 0,
-              reconciled: r.reconciled ?? 0,
-              errors: r.errors ?? [],
-            };
-            setCommittedClients(committed);
-            setClientsPreview(null);
-            if (hasPetsCsv) {
-              setImportRecoveryMessage(
-                `Clients imported (${committed.imported}). Check the pet file next.`,
-              );
-            } else {
-              setResult({
-                clients: committed.imported,
-                pets: 0,
-                reconciled: committed.reconciled,
-                errors: committed.errors,
-              });
-              toast.success(`Added ${committed.imported} clients`);
-            }
-          } catch (error) {
-            if (isPreviewConflict(error)) {
-              setClientsPreview(null);
-              setImportRecoveryMessage(
-                "Nothing was imported because the client preview expired or changed. Check the same file again.",
-              );
-            } else {
-              setImportRecoveryMessage(
-                "We could not confirm the client import response. Retry the same import; it is safe and will not add the rows twice.",
-              );
-            }
-          }
-          return false;
-        }
-
-        if (needsPetsPreview) {
-          const reviewVersion = importReviewVersionRef.current;
-          setImportRecoveryMessage("");
-          try {
-            const r = await importPatientsCsv.mutateAsync({
-              csv: petsCsv.trim(),
+            const response = await runImport(activeMode, {
+              csv,
               dryRun: true,
               source: migrationSource,
               migrationProtocol: "reviewed-v1",
             });
             if (importReviewVersionRef.current !== reviewVersion) return false;
-            if ("dryRun" in r && r.dryRun) {
-              setPetsPreview({
-                previewToken: r.previewToken,
-                total: r.total,
-                willInsert: r.willInsert,
-                willReconcile: r.willReconcile,
-                unmatchedClient: r.unmatchedClient,
-                errors: r.errors,
-              });
+            if (
+              response.dryRun !== true ||
+              !response.previewToken ||
+              typeof response.total !== "number" ||
+              typeof response.willInsert !== "number"
+            ) {
+              throw new Error("The import preview response was incomplete.");
             }
-            toast.success("Pet CSV checked. Review the plan before importing.");
-          } catch {
-            setPetsPreview(null);
+            setPreviewByMode((current) => ({
+              ...current,
+              [activeMode]: {
+                previewToken: response.previewToken!,
+                total: response.total!,
+                willInsert: response.willInsert!,
+                willReconcile: response.willReconcile,
+                duplicates: response.duplicates,
+                unmatchedClient: response.unmatchedClient,
+                unmatchedPatient: response.unmatchedPatient,
+                errors: response.errors,
+              },
+            }));
+            toast.success(
+              `${activeStep.label} checked. Review the plan before importing.`,
+            );
+          } catch (error) {
+            if (importReviewVersionRef.current !== reviewVersion) return false;
+            setPreviewByMode((current) => ({
+              ...current,
+              [activeMode]: undefined,
+            }));
             setImportRecoveryMessage(
-              committedClients
-                ? `Clients imported (${committedClients.imported}); pets were not checked. Try the pet file again.`
-                : "Pets were not checked. Try the pet file again.",
+              error instanceof Error && error.message.trim()
+                ? error.message
+                : `The ${activeStep.shortLabel} file was not checked. Check your connection and try again.`,
             );
           }
-          return false;
-        }
-
-        if (previewChangeCount === 0) {
-          setResult({
-            clients: committedClients?.imported ?? 0,
-            pets: 0,
-            reconciled: committedClients?.reconciled ?? 0,
-            errors: [
-              "No new rows were found to import. You can adjust the CSV or continue with sample data.",
-            ],
-          });
           return false;
         }
 
         try {
-          const reviewVersion = importReviewVersionRef.current;
-          const r = await importPatientsCsv.mutateAsync({
-            csv: petsCsv.trim(),
+          const response = await runImport(activeMode, {
+            csv,
             dryRun: false,
             source: migrationSource,
-            previewToken: petsPreview!.previewToken,
+            previewToken: activePreview.previewToken,
             migrationProtocol: "reviewed-v1",
           });
           if (importReviewVersionRef.current !== reviewVersion) return false;
-          const clientsImported = committedClients?.imported ?? 0;
-          const petsImported = r.imported ?? 0;
-          const reconciled =
-            (committedClients?.reconciled ?? 0) + (r.reconciled ?? 0);
-          setImportRecoveryMessage("");
-          setResult({
-            clients: clientsImported,
-            pets: petsImported,
-            reconciled,
-            errors: [...(committedClients?.errors ?? []), ...(r.errors ?? [])],
+          if (response.dryRun === true) {
+            throw new Error("The import commit response was incomplete.");
+          }
+          await finishStage(activeMode, {
+            imported: response.imported ?? 0,
+            reconciled: response.reconciled ?? 0,
+            errors:
+              response.alreadyCommitted && response.errors.length === 0
+                ? activePreview.errors
+                : response.errors,
           });
-          toast.success(
-            `Added ${clientsImported} clients and ${petsImported} pets${reconciled > 0 ? `; connected ${reconciled} IDs` : ""}`,
-          );
         } catch (error) {
+          if (importReviewVersionRef.current !== reviewVersion) return false;
           if (isPreviewConflict(error)) {
-            setPetsPreview(null);
+            setPreviewByMode((current) => ({
+              ...current,
+              [activeMode]: undefined,
+            }));
             setImportRecoveryMessage(
-              committedClients
-                ? `Clients imported (${committedClients.imported}); nothing was imported from the pet file because its preview expired or changed. Check the pet file again.`
-                : "Nothing was imported because the pet preview expired or changed. Check the pet file again.",
+              `Nothing was imported from the ${activeStep.shortLabel} file because its preview expired or clinic records changed. Check the same file again. Earlier completed stages are safe.`,
             );
           } else {
             setImportRecoveryMessage(
-              committedClients
-                ? `Clients imported (${committedClients.imported}); we could not confirm the pet import response. Retry the same pet import—it is safe and will not add rows twice.`
-                : "We could not confirm the pet import response. Retry the same import; it is safe and will not add rows twice.",
+              `We could not confirm the ${activeStep.shortLabel} import response. Retry the same import. It is safe and will not add the rows twice. Earlier completed stages are safe.`,
             );
           }
         }
-        // Stay on the step so they can see the result before moving on.
         return false;
       },
     });
   }, [
     register,
     choice,
-    clientsCsv,
-    petsCsv,
-    hasClientsCsv,
-    hasPetsCsv,
+    hasImportCsv,
+    result,
     hasImportCsvSizeError,
-    importCsvSizeError,
-    needsClientPreview,
-    needsClientCommit,
-    needsPetsPreview,
+    csvSizeErrors,
+    activeMode,
+    activeStep,
+    activePreview,
     previewChangeCount,
+    csvByMode,
+    csvMetaByMode,
+    migrationSource,
     continueLabel,
     readingFiles,
-    clientsPreview,
-    petsPreview,
-    committedClients,
-    migrationSource,
-    result,
+    committedByMode,
     importClientsCsv,
     importPatientsCsv,
+    importVaccinationsCsv,
+    importSoapNotesCsv,
+    setState,
+    utils,
   ]);
 
-  const pathway = getOnboardingIntentOption(state.onboardingIntent);
-  const selectedMigrationSource = MIGRATION_SOURCES.find(
+  const selectedMigrationSourceName = migrationSourceName(migrationSource);
+  const selectedMigrationSourceHint =
+    migrationSourceExportHint(migrationSource);
+  const isCustomMigrationSource = !MIGRATION_SOURCES.some(
     (source) => source.id === migrationSource,
-  )!;
+  );
   const pathwayIntro =
     pathway.value === "alongside"
-      ? "Start small: bring in a few real clients and pets while your current PIMS stays in place."
+      ? "Start small: bring a few real records over while your current PIMS stays in place."
       : pathway.value === "replace"
-        ? "Make the move in stages: check a client and pet export before any live workflow changes."
+        ? "Move in stages: check owners, pets, vaccines, and visit notes before your team changes live workflows."
         : pathway.value === "self_host"
           ? "The same import and export tools work in hosted and self-hosted OpenVPM."
           : "Keep the sample clinic as long as you need, or try an import when you are ready.";
@@ -497,52 +599,79 @@ export function BringDataStep({ register, state, setState }: StepProps) {
           active={choice === "import"}
           icon={<FileSpreadsheet className="h-5 w-5" />}
           title="Import from a file"
-          subtitle="Paste your clients and pets from a spreadsheet."
+          subtitle="Bring clients, pets, vaccine history, and visit notes."
           onClick={() => {
             if (
               importInputsBusy ||
               choice === "import" ||
-              committedClients ||
+              lastCommittedIndex >= 0 ||
               result
             )
               return;
             invalidatePendingFileReads();
             setChoice("import");
-            clearImportReview();
           }}
           disabled={
-            importInputsBusy || Boolean(committedClients) || Boolean(result)
+            importInputsBusy || lastCommittedIndex >= 0 || Boolean(result)
           }
         />
         {choice === "import" ? (
           <div className="space-y-4 rounded-lg border border-slate-200 bg-slate-50/70 p-4">
-            <p className="text-xs text-slate-500">
-              Pick a CSV file for each one, or paste the rows below. Continue
-              checks the files first; nothing imports until you review the plan.
-            </p>
-            <p className="text-xs text-slate-500">
-              Existing owners connect by one exact email. Existing pets need a
-              matching microchip or date of birth before an ID is connected.
-            </p>
+            <div className="space-y-1 text-xs text-slate-500">
+              {knownCompletedModes.length > 0 ? (
+                <p className="rounded-md border border-emerald-200 bg-emerald-50 p-3 font-medium text-emerald-900">
+                  Already reviewed: {migrationModeLabels(knownCompletedModes)}. Reselect
+                  only the files you still need to finish. {" "}
+                  {migrationSourceLocked
+                    ? `This migration will keep using ${selectedMigrationSourceName} so saved owner and patient IDs stay linked.`
+                    : "No clinic records changed, so you can still choose a different source."}
+                </p>
+              ) : state.hasImportedData ? (
+                <p className="rounded-md border border-emerald-200 bg-emerald-50 p-3 font-medium text-emerald-900">
+                  Earlier import changes are already saved. If you are unsure
+                  which file finished, reselecting it is safe because duplicate
+                  rows are skipped.
+                </p>
+              ) : null}
+              <p>
+                Add any files you have. OpenVPM checks each one in order. No
+                records import until you review that file's plan.
+              </p>
+              <p>
+                Keep the same source for all four files so owner and patient IDs
+                stay linked. Rows with issues are shown before you confirm.
+              </p>
+              <p>
+                Completed stages stay saved. Unfinished files stay only in this
+                setup, so reselect them if you leave and return.
+              </p>
+            </div>
             <label className="block space-y-1.5 text-sm font-medium text-slate-700">
               <span>Which system are you moving from?</span>
               <select
                 value={migrationSource}
-                disabled={
-                  importInputsBusy ||
-                  Boolean(committedClients) ||
-                  Boolean(result)
-                }
+                disabled={importInputsBusy || migrationSourceLocked}
                 onChange={(event) => {
+                  const nextSource = event.target.value;
+                  if (!isValidMigrationSource(nextSource)) return;
                   invalidatePendingFileReads();
-                  setMigrationSource(
-                    event.target
-                      .value as (typeof MIGRATION_SOURCES)[number]["id"],
-                  );
-                  clearImportReview();
+                  setMigrationSource(nextSource);
+                  setKnownCompletedModes([]);
+                  clearAllImportReview();
+                  setState({
+                    migrationSource: nextSource,
+                    migrationSourceHasCommittedChanges: false,
+                    migrationCompletedModes: [],
+                    hasPartialImport: false,
+                  });
                 }}
                 className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm font-normal"
               >
+                {isCustomMigrationSource ? (
+                  <option value={migrationSource}>
+                    {selectedMigrationSourceName}
+                  </option>
+                ) : null}
                 {MIGRATION_SOURCES.map((source) => (
                   <option key={source.id} value={source.id}>
                     {source.name}
@@ -551,169 +680,162 @@ export function BringDataStep({ register, state, setState }: StepProps) {
               </select>
             </label>
             <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
-              <p>{selectedMigrationSource.exportHint}</p>
-              {migrationSource === "shepherd" ? (
-                <a
-                  href="mailto:support@openvpm.com?subject=Assisted%20Shepherd%20migration"
-                  className="mt-2 inline-flex font-medium text-emerald-700 hover:underline"
-                >
-                  Request a migration review before the full import
-                </a>
-              ) : null}
+              <p>{selectedMigrationSourceHint}</p>
+              <a
+                href={`mailto:support@openvpm.com?subject=${encodeURIComponent(`${selectedMigrationSourceName} full history migration review`)}`}
+                className="mt-2 inline-flex font-medium text-emerald-700 hover:underline"
+              >
+                Ask us to review your full-history export before import
+              </a>
             </div>
-            <div className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">
-                Clients
-              </span>
-              <p className="text-xs text-slate-500">
-                Columns: {CLIENT_COLUMNS}
-              </p>
-              <input
-                type="file"
-                disabled={
-                  importInputsBusy ||
-                  Boolean(committedClients) ||
-                  Boolean(result)
-                }
-                accept=".csv,text/csv"
-                onChange={(e) => onPickFile(e, updateClientsCsv, "clients")}
-                className={fileInputClass}
-                aria-label="Choose a clients CSV file"
-              />
-              {clientsFileName ? (
-                <p className="text-xs text-emerald-700">
-                  Loaded {clientsFileName}
-                </p>
-              ) : null}
-              <textarea
-                rows={4}
-                className={textareaClass}
-                value={clientsCsv}
-                disabled={
-                  importInputsBusy ||
-                  Boolean(committedClients) ||
-                  Boolean(result)
-                }
-                maxLength={IMPORT_CSV_MAX_BYTES}
-                aria-invalid={clientsCsvTooLarge || undefined}
-                aria-describedby={
-                  clientsCsvTooLarge ? "clients-csv-size-error" : undefined
-                }
-                onChange={(e) => updateClientsCsv(e.target.value)}
-                placeholder={`firstName,lastName,email,phone,address,city,state,zip`}
-              />
-              {clientsCsvTooLarge ? (
-                <p id="clients-csv-size-error" className="text-xs text-red-700">
-                  Client CSV must be 5 MB or less.
-                </p>
-              ) : null}
+
+            <div className="space-y-4">
+              {MIGRATION_STEPS.slice(0, 2).map((step, index) => (
+                <ImportFileFields
+                  key={step.mode}
+                  stepNumber={index + 1}
+                  step={step}
+                  csv={csvByMode[step.mode]}
+                  tooLarge={!csvMetaByMode[step.mode].sizeValid}
+                  fileName={fileNameByMode[step.mode]}
+                  locked={
+                    importInputsBusy ||
+                    isOnboardingImportModeLocked(
+                      step.mode,
+                      committedByMode,
+                      Boolean(result),
+                    )
+                  }
+                  onPickFile={(event) => onPickFile(event, step.mode)}
+                  onChangeCsv={(value) => updateCsv(step.mode, value)}
+                />
+              ))}
             </div>
-            <div className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Pets</span>
-              <p className="text-xs text-slate-500">Columns: {PET_COLUMNS}</p>
-              <input
-                type="file"
-                disabled={importInputsBusy || Boolean(result)}
-                accept=".csv,text/csv"
-                onChange={(e) => onPickFile(e, updatePetsCsv, "pets")}
-                className={fileInputClass}
-                aria-label="Choose a pets CSV file"
-              />
-              {petsFileName ? (
-                <p className="text-xs text-emerald-700">
-                  Loaded {petsFileName}
+
+            <details
+              className="group rounded-lg border border-slate-200 bg-white"
+              open={historyExpanded}
+              onToggle={(event) => setHistoryExpanded(event.currentTarget.open)}
+            >
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-3 text-sm font-medium text-slate-800">
+                <span>
+                  Also bring vaccine and visit history
+                  <span className="ml-1 font-normal text-slate-500">
+                    (optional)
+                  </span>
+                </span>
+                <ChevronDown className="h-4 w-4 text-slate-500 transition-transform group-open:rotate-180" />
+              </summary>
+              <div className="space-y-4 border-t border-slate-200 p-3">
+                <p className="text-xs text-slate-500">
+                  History attaches only to a safely matched real patient. Use
+                  the same patient ID from the pet file whenever possible.
+                  Existing OpenVPM pets can also match by owner email or client
+                  ID plus patient name.
                 </p>
-              ) : null}
-              <textarea
-                rows={4}
-                className={textareaClass}
-                value={petsCsv}
-                disabled={importInputsBusy || Boolean(result)}
-                maxLength={IMPORT_CSV_MAX_BYTES}
-                aria-invalid={petsCsvTooLarge || undefined}
-                aria-describedby={
-                  petsCsvTooLarge ? "pets-csv-size-error" : undefined
-                }
-                onChange={(e) => updatePetsCsv(e.target.value)}
-                placeholder={`clientEmail,name,species,breed,sex,dob,color,microchipNumber`}
-              />
-              {petsCsvTooLarge ? (
-                <p id="pets-csv-size-error" className="text-xs text-red-700">
-                  Pet CSV must be 5 MB or less.
-                </p>
-              ) : null}
-            </div>
-            {clientsPreview || petsPreview ? (
-              <div className="space-y-3">
+                {MIGRATION_STEPS.slice(2).map((step, index) => (
+                  <ImportFileFields
+                    key={step.mode}
+                    stepNumber={index + 3}
+                    step={step}
+                    csv={csvByMode[step.mode]}
+                    tooLarge={!csvMetaByMode[step.mode].sizeValid}
+                    fileName={fileNameByMode[step.mode]}
+                    locked={
+                      importInputsBusy ||
+                      isOnboardingImportModeLocked(
+                        step.mode,
+                        committedByMode,
+                        Boolean(result),
+                      )
+                    }
+                    onPickFile={(event) => onPickFile(event, step.mode)}
+                    onChangeCsv={(value) => updateCsv(step.mode, value)}
+                  />
+                ))}
+              </div>
+            </details>
+
+            {activeMode && activePreview ? (
+              <div className="space-y-3" aria-live="polite">
                 <div>
                   <p className="text-sm font-medium text-slate-800">
                     Dry-run preview
                   </p>
                   <p className="mt-1 text-xs text-slate-500">
-                    No data in this preview has been imported yet. Only the
-                    listed changes will be saved; issue rows will be skipped.
+                    No data in this preview has been imported yet. Review the
+                    planned changes and every issue before you confirm.
                   </p>
                 </div>
-                {clientsPreview ? (
-                  <CsvPreviewCard
-                    title="Clients"
-                    preview={clientsPreview}
-                    duplicateLabel="Duplicates"
-                    duplicateValue={clientsPreview.duplicates ?? 0}
-                  />
+                <CsvPreviewCard mode={activeMode} preview={activePreview} />
+                {previewChangeCount > 0 && activePreview.errors.length > 0 ? (
+                  <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                    {previewChangeCount.toLocaleString()} valid changes can
+                    import. Review{" "}
+                    {activePreview.errors.length.toLocaleString()}{" "}
+                    {activePreview.errors.length === 1 ? "issue" : "issues"}.
+                    Some affected rows may be skipped or imported without an
+                    optional field. Edit the file above to fix them, or import
+                    the valid changes now.
+                  </p>
                 ) : null}
-                {petsPreview ? (
-                  <CsvPreviewCard
-                    title="Pets"
-                    preview={petsPreview}
-                    duplicateLabel="Missing owners"
-                    duplicateValue={petsPreview.unmatchedClient ?? 0}
-                  />
+                {previewChangeCount === 0 && activePreview.total === 0 ? (
+                  <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                    Nothing in this file can be imported yet. Edit the file to
+                    fix the listed issues, or use Skip file to continue without
+                    it.
+                  </p>
+                ) : null}
+                {previewChangeCount === 0 && activePreview.total > 0 ? (
+                  <p className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+                    These rows are already present or cannot be matched. Confirm
+                    the reviewed no-change plan to continue, or edit the file
+                    above.
+                  </p>
                 ) : null}
               </div>
             ) : null}
+
             {readingFiles ? (
-              <p className="flex items-center gap-2 text-xs text-slate-500">
+              <p
+                className="flex items-center gap-2 text-xs text-slate-500"
+                role="status"
+              >
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 Reading the selected file
               </p>
             ) : importing ? (
-              <p className="flex items-center gap-2 text-xs text-slate-500">
+              <p
+                className="flex items-center gap-2 text-xs text-slate-500"
+                role="status"
+              >
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 {previewReady ? "Importing your data" : "Checking your data"}
               </p>
             ) : null}
+
             {importRecoveryMessage ? (
-              <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+              <div
+                className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900"
+                role="status"
+                aria-live="polite"
+              >
                 {importRecoveryMessage}
               </div>
             ) : null}
-            {result ? (
-              <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900">
-                <p className="font-medium">
-                  Added {result.clients} clients and {result.pets} pets.
-                  {result.reconciled > 0
-                    ? ` Connected ${result.reconciled} existing record IDs.`
-                    : ""}
-                </p>
-                {result.errors.length > 0 ? (
-                  <>
-                    <ImportIssues
-                      errors={result.errors}
-                      fileName="openvpm-import-issues.txt"
-                    />
-                    <p className="mt-2">Press Continue when you are ready.</p>
-                  </>
-                ) : (
-                  <p className="mt-1">Press Continue when you are ready.</p>
-                )}
-              </div>
-            ) : null}
+
+            {result ? <ImportResultCard result={result} /> : null}
+
             {!importRecoveryMessage &&
-            (importClientsCsv.error || importPatientsCsv.error) ? (
-              <p className="text-xs text-red-700">
+            (importClientsCsv.error ||
+              importPatientsCsv.error ||
+              importVaccinationsCsv.error ||
+              importSoapNotesCsv.error) ? (
+              <p className="text-xs text-red-700" role="alert">
                 {importClientsCsv.error?.message ??
-                  importPatientsCsv.error?.message}
+                  importPatientsCsv.error?.message ??
+                  importVaccinationsCsv.error?.message ??
+                  importSoapNotesCsv.error?.message}
               </p>
             ) : null}
           </div>
@@ -725,13 +847,13 @@ export function BringDataStep({ register, state, setState }: StepProps) {
           title="Connect later by API"
           subtitle="Move data in from another system whenever you want."
           onClick={() => {
-            if (importInputsBusy || committedClients || result) return;
+            if (importInputsBusy || lastCommittedIndex >= 0 || result) return;
             invalidatePendingFileReads();
             setChoice("api");
-            clearImportReview();
+            clearAllImportReview();
           }}
           disabled={
-            importInputsBusy || Boolean(committedClients) || Boolean(result)
+            importInputsBusy || lastCommittedIndex >= 0 || Boolean(result)
           }
         />
         {choice === "api" ? (
@@ -754,15 +876,29 @@ export function BringDataStep({ register, state, setState }: StepProps) {
           active={choice === "keep"}
           icon={<Sparkles className="h-5 w-5" />}
           title="Keep the sample data for now"
-          subtitle="Explore with the example pets we set up for you."
+          subtitle={
+            state.hasImportedData
+              ? "Real data is saved, so sample records will be removed when setup finishes."
+              : "Explore with the example pets we set up for you."
+          }
           onClick={() => {
-            if (importInputsBusy || committedClients || result) return;
+            if (
+              state.hasImportedData ||
+              importInputsBusy ||
+              lastCommittedIndex >= 0 ||
+              result
+            )
+              return;
             invalidatePendingFileReads();
             setChoice("keep");
-            clearImportReview();
+            clearAllImportReview();
+            setState({ keepSampleData: true, hasPartialImport: false });
           }}
           disabled={
-            importInputsBusy || Boolean(committedClients) || Boolean(result)
+            state.hasImportedData ||
+            importInputsBusy ||
+            lastCommittedIndex >= 0 ||
+            Boolean(result)
           }
         />
       </div>
@@ -770,38 +906,129 @@ export function BringDataStep({ register, state, setState }: StepProps) {
   );
 }
 
-function CsvPreviewCard({
-  title,
-  preview,
-  duplicateLabel,
-  duplicateValue,
+function ImportFileFields({
+  stepNumber,
+  step,
+  csv,
+  tooLarge,
+  fileName,
+  locked,
+  onPickFile,
+  onChangeCsv,
 }: {
-  title: string;
-  preview: CsvPreview;
-  duplicateLabel: string;
-  duplicateValue: number;
+  stepNumber: number;
+  step: (typeof MIGRATION_STEPS)[number];
+  csv: string;
+  tooLarge: boolean;
+  fileName: string;
+  locked: boolean;
+  onPickFile: (event: React.ChangeEvent<HTMLInputElement>) => void;
+  onChangeCsv: (value: string) => void;
 }) {
+  const [showPasteEditor, setShowPasteEditor] = useState(false);
+  useEffect(() => {
+    if (fileName) setShowPasteEditor(false);
+  }, [fileName]);
+  const textareaId = `${step.mode}-csv-text`;
+  const errorId = `${step.mode}-csv-size-error`;
+  return (
+    <div className="space-y-1.5 rounded-md border border-slate-200 bg-white p-3">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm font-medium text-slate-700">
+          {stepNumber}. {step.label}
+        </span>
+        <span className="text-[11px] text-slate-400">CSV</span>
+      </div>
+      <p className="text-xs text-slate-500">Columns: {step.columnHint}</p>
+      <input
+        type="file"
+        disabled={locked}
+        accept=".csv,text/csv"
+        onChange={onPickFile}
+        className={fileInputClass}
+        aria-label={`Choose a ${step.label.toLowerCase()} CSV file`}
+      />
+      {fileName ? (
+        <p className="text-xs text-emerald-700">Loaded {fileName}</p>
+      ) : null}
+      {!locked ? (
+        <button
+          type="button"
+          className="text-xs font-medium text-emerald-700 underline underline-offset-2"
+          onClick={() => setShowPasteEditor((current) => !current)}
+          aria-expanded={showPasteEditor}
+        >
+          {showPasteEditor
+            ? "Hide CSV text"
+            : fileName
+              ? "Review or edit file text"
+              : "Paste CSV text instead"}
+        </button>
+      ) : null}
+      {showPasteEditor ? (
+        <textarea
+          id={textareaId}
+          rows={3}
+          className={textareaClass}
+          value={csv}
+          disabled={locked}
+          maxLength={IMPORT_CSV_MAX_BYTES}
+          aria-label={`Paste ${step.label.toLowerCase()} CSV text`}
+          aria-invalid={tooLarge || undefined}
+          aria-describedby={tooLarge ? errorId : undefined}
+          onChange={(event) => onChangeCsv(event.target.value)}
+          placeholder={step.placeholder}
+        />
+      ) : null}
+      {tooLarge ? (
+        <p id={errorId} className="text-xs text-red-700">
+          {step.label} CSV must be 5 MB or less.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function CsvPreviewCard({
+  mode,
+  preview,
+}: {
+  mode: MigrationImportMode;
+  preview: CsvPreview;
+}) {
+  const step = MIGRATION_STEPS.find((candidate) => candidate.mode === mode)!;
+  const unmatched =
+    mode === "patients"
+      ? preview.unmatchedClient
+      : mode === "vaccinations" || mode === "soapNotes"
+        ? preview.unmatchedPatient
+        : undefined;
+  const needsAttention =
+    preview.errors.length > 0 ||
+    (preview.duplicates ?? 0) > 0 ||
+    (unmatched ?? 0) > 0;
+
   return (
     <div className="rounded-md border border-slate-200 bg-white p-3">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-sm font-medium text-slate-800">{title}</p>
+        <p className="text-sm font-medium text-slate-800">{step.label}</p>
         <span
           className={cn(
             "rounded-full px-2 py-0.5 text-xs font-medium",
-            preview.errors.length > 0 || duplicateValue > 0
+            needsAttention
               ? "bg-amber-50 text-amber-700"
               : "bg-emerald-50 text-emerald-700",
           )}
         >
-          {preview.errors.length > 0 || duplicateValue > 0
-            ? "Ready with skipped rows"
+          {needsAttention
+            ? "Ready with issues to review"
             : preview.willInsert + (preview.willReconcile ?? 0) > 0
               ? "Ready"
-              : "Review"}
+              : "No changes needed"}
         </span>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <ImportStat label="Rows" value={preview.total} />
+        <ImportStat label="Valid rows parsed" value={preview.total} />
         <ImportStat label="Will import" value={preview.willInsert} />
         {(preview.willReconcile ?? 0) > 0 ? (
           <ImportStat
@@ -809,15 +1036,67 @@ function CsvPreviewCard({
             value={preview.willReconcile ?? 0}
           />
         ) : null}
-        <ImportStat label={duplicateLabel} value={duplicateValue} />
+        {typeof preview.duplicates === "number" ? (
+          <ImportStat label="Duplicates" value={preview.duplicates} />
+        ) : null}
+        {typeof unmatched === "number" ? (
+          <ImportStat
+            label={step.unmatchedLabel ?? "Unmatched"}
+            value={unmatched}
+          />
+        ) : null}
         <ImportStat label="Issues" value={preview.errors.length} />
       </div>
       {preview.errors.length > 0 ? (
         <ImportIssues
           errors={preview.errors}
-          fileName={`openvpm-${title.toLowerCase()}-preview-issues.txt`}
+          fileName={`openvpm-${mode}-preview-issues.txt`}
         />
       ) : null}
+    </div>
+  );
+}
+
+function ImportResultCard({ result }: { result: OnboardingImportSummary }) {
+  const changeCount = onboardingImportChangeCount(result);
+  const hasIssues = result.errors.length > 0;
+  return (
+    <div
+      className={cn(
+        "rounded-md border p-3 text-xs",
+        hasIssues
+          ? "border-amber-200 bg-amber-50 text-amber-900"
+          : "border-emerald-200 bg-emerald-50 text-emerald-900",
+      )}
+      aria-live="polite"
+    >
+      <p className="font-medium">
+        {hasIssues ? "Review completed with issues. " : ""}
+        {changeCount > 0
+          ? `Added ${result.imported.clients} clients, ${result.imported.patients} pets, ${result.imported.vaccinations} vaccine records, and ${result.imported.soapNotes} visit notes.`
+          : "Review complete. No new records were needed."}
+        {result.reconciled > 0
+          ? ` Connected ${result.reconciled} existing record IDs.`
+          : ""}
+      </p>
+      {result.errors.length > 0 ? (
+        <>
+          <ImportIssues
+            errors={result.errors}
+            fileName="openvpm-import-issues.txt"
+          />
+          <Link
+            href="/settings?tab=data"
+            target="_blank"
+            rel="noreferrer"
+            className="mt-3 inline-flex items-center gap-1 font-medium text-amber-950 underline underline-offset-2"
+          >
+            Fix skipped records in Settings, then Data
+            <ArrowRight className="h-3.5 w-3.5" />
+          </Link>
+        </>
+      ) : null}
+      <p className="mt-2">Press Continue when you are ready.</p>
     </div>
   );
 }
@@ -837,13 +1116,14 @@ function ImportIssues({
           <li key={index}>{error}</li>
         ))}
       </ul>
-      {errors.length > visibleErrors.length ? (
+      {errors.length > 0 ? (
         <button
           type="button"
           className="mt-2 font-medium text-amber-900 underline underline-offset-2"
           onClick={() => downloadIssueReport(errors, fileName)}
         >
-          Download all {errors.length} issues
+          Download{" "}
+          {errors.length === 1 ? "issue report" : `all ${errors.length} issues`}
         </button>
       ) : null}
     </div>
@@ -881,6 +1161,7 @@ function ChoiceCard({
       type="button"
       onClick={onClick}
       disabled={disabled}
+      aria-pressed={active}
       className={cn(
         "flex items-start gap-3 rounded-lg border bg-white p-4 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
         active

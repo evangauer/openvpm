@@ -103,6 +103,15 @@ describe("dashboard onboarding UI states", () => {
     expect(tourProviderSource).toContain("enabled: isAdmin");
     expect(tourProviderSource).toContain("if (!isAdmin) return;");
     expect(tourProviderSource).toContain(
+      "migrationSource: prev?.migrationSource ?? null"
+    );
+    expect(tourProviderSource).toContain(
+      "prev?.migrationSourceHasCommittedChanges ?? false"
+    );
+    expect(tourProviderSource).toContain(
+      "migrationCompletedModes: prev?.migrationCompletedModes ?? []"
+    );
+    expect(tourProviderSource).toContain(
       "setTourStatus.mutate({ status, lastStepId: stepId ?? null })"
     );
     expect(settingsRouter).toContain("setTourStatus: adminProcedure");

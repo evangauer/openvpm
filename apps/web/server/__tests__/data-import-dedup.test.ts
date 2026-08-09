@@ -100,16 +100,25 @@ function createDb(
   const updateWhere = vi.fn(() => ({ returning: updateReturning }));
   const updateSet = vi.fn(() => ({ where: updateWhere }));
   const update = vi.fn(() => ({ set: updateSet }));
+  const execute = vi.fn(async () => undefined);
 
   const db: Record<string, unknown> = {
     transaction: async (fn: (tx: unknown) => unknown) => fn(db),
-    execute: vi.fn(async () => undefined),
+    execute,
     select,
     insert,
     update,
   };
 
-  return { db, insertValues, select, update, updateSet, updateReturning };
+  return {
+    db,
+    execute,
+    insertValues,
+    select,
+    update,
+    updateSet,
+    updateReturning,
+  };
 }
 
 afterEach(() => {
@@ -307,6 +316,56 @@ describe("data import duplicate handling", () => {
 
     expect(select).toHaveBeenCalledTimes(1);
     expect(insertValues).not.toHaveBeenCalled();
+    expect(
+      migrationRunMocks.createMigrationPreview.mock.calls.at(-1)?.[1],
+    ).toMatchObject({
+      mode: "clients",
+      reviewedPlan: {
+        plannerVersion: "clients-v1",
+        dispositions: [],
+        targets: [],
+      },
+    });
+  });
+
+  it("commits a malformed client CSV as an explicit zero-write skip", async () => {
+    const { db, execute, insertValues } = createDb([]);
+    const csv = 'firstName,lastName,email\n"Jane,Doe,jane@example.com';
+
+    await expect(
+      callerWithDb(db).importClientsCsv({
+        csv,
+        source: "shepherd",
+        dryRun: false,
+        previewToken: PREVIEW_TOKEN,
+        migrationProtocol: "reviewed-v1",
+      }),
+    ).resolves.toEqual({
+      imported: 0,
+      reconciled: 0,
+      errors: ["CSV has an unterminated quoted field."],
+    });
+
+    expect(migrationRunMocks.claimMigrationPreview).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({
+        mode: "clients",
+        summary: expect.objectContaining({ plannedInsertCount: 0 }),
+        reviewedPlan: {
+          plannerVersion: "clients-v1",
+          dispositions: [],
+          targets: [],
+        },
+      }),
+    );
+    expect(migrationRunMocks.completeMigrationRun).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({ importedCount: 0, reconciledCount: 0 }),
+    );
+    // Tenant scoping plus SERIALIZABLE isolation both execute inside the same
+    // transaction before the ledger is completed.
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(insertValues).not.toHaveBeenCalled();
   });
 
   it("skips existing and in-file duplicate client emails", async () => {
@@ -355,6 +414,7 @@ describe("data import duplicate handling", () => {
         city: "Boston",
         state: "MA",
         zip: "02110",
+        importFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
       },
       {
         practiceId: PRACTICE_ID,
@@ -366,6 +426,7 @@ describe("data import duplicate handling", () => {
         city: null,
         state: null,
         zip: null,
+        importFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
       },
     ]);
   });
@@ -406,6 +467,7 @@ describe("data import duplicate handling", () => {
         city: null,
         state: null,
         zip: null,
+        importFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
       },
     ]);
   });
@@ -441,8 +503,39 @@ describe("data import duplicate handling", () => {
     expect(insertValues).not.toHaveBeenCalled();
   });
 
+  it("does not reconcile a real client import onto a disposable demo owner", async () => {
+    const { db, insertValues } = createDb([
+      [
+        {
+          id: CLIENT_ID,
+          email: "owner@example.com",
+          externalSource: null,
+          externalId: null,
+          deletedAt: null,
+          isDemo: true,
+        },
+      ],
+    ]);
+
+    const result = await callerWithDb(db).importClientsCsv({
+      csv: "Client ID,First Name,Last Name,Email\nC-42,Ada,Client,owner@example.com",
+      source: "shepherd",
+      dryRun: true,
+      migrationProtocol: "reviewed-v1",
+    });
+
+    expect(result).toMatchObject({
+      dryRun: true,
+      willInsert: 1,
+      willReconcile: 0,
+      duplicates: 0,
+      errors: [],
+    });
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("imports an ID-only client with a source-scoped external identity", async () => {
-    const { db, insertValues } = createDb([[]]);
+    const { db, execute, insertValues } = createDb([[]]);
 
     await expect(
       callerWithDb(db).importClientsCsv({
@@ -463,6 +556,7 @@ describe("data import duplicate handling", () => {
         email: null,
       }),
     ]);
+    expect(execute).toHaveBeenCalled();
   });
 
   it("merges a later external ID into the pending client insert", async () => {
@@ -687,6 +781,7 @@ describe("data import duplicate handling", () => {
         dob: "2021-03-04",
         color: "Black",
         microchipNumber: "985112003009999",
+        importFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
       },
     ]);
   });
@@ -1040,6 +1135,54 @@ describe("data import duplicate handling", () => {
 
     expect(select).toHaveBeenCalledTimes(1);
     expect(insertValues).not.toHaveBeenCalled();
+    expect(
+      migrationRunMocks.createMigrationPreview.mock.calls.at(-1)?.[1],
+    ).toMatchObject({
+      mode: "patients",
+      reviewedPlan: {
+        plannerVersion: "patients-v1",
+        dispositions: [],
+        targets: [],
+      },
+    });
+  });
+
+  it("commits a malformed patient CSV as an explicit zero-write skip", async () => {
+    const { db, execute, insertValues } = createDb([]);
+    const csv = 'clientEmail,name,species\n"owner@example.com,Rex,canine';
+
+    await expect(
+      callerWithDb(db).importPatientsCsv({
+        csv,
+        source: "shepherd",
+        dryRun: false,
+        previewToken: PREVIEW_TOKEN,
+        migrationProtocol: "reviewed-v1",
+      }),
+    ).resolves.toEqual({
+      imported: 0,
+      reconciled: 0,
+      errors: ["CSV has an unterminated quoted field."],
+    });
+
+    expect(migrationRunMocks.claimMigrationPreview).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({
+        mode: "patients",
+        summary: expect.objectContaining({ plannedInsertCount: 0 }),
+        reviewedPlan: {
+          plannerVersion: "patients-v1",
+          dispositions: [],
+          targets: [],
+        },
+      }),
+    );
+    expect(migrationRunMocks.completeMigrationRun).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({ importedCount: 0, reconciledCount: 0 }),
+    );
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(insertValues).not.toHaveBeenCalled();
   });
 
   it("dry-runs patient CSV imports with duplicate planning and no inserts", async () => {
@@ -1081,6 +1224,53 @@ describe("data import duplicate handling", () => {
       ],
     });
 
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("does not reconcile a real patient import onto a disposable demo pet", async () => {
+    const { db, insertValues } = createDb([
+      [
+        {
+          id: CLIENT_ID,
+          email: "owner@example.com",
+          externalSource: null,
+          externalId: null,
+          deletedAt: null,
+        },
+      ],
+      [
+        {
+          id: PATIENT_ID,
+          clientId: CLIENT_ID,
+          name: "Rex",
+          species: "canine",
+          dob: "2020-01-01",
+          microchipNumber: null,
+          externalSource: null,
+          externalId: null,
+          deletedAt: null,
+          isDemo: true,
+        },
+      ],
+    ]);
+
+    const result = await callerWithDb(db).importPatientsCsv({
+      csv: [
+        "Patient ID,Client Email,Name,Species,DOB",
+        "P-42,owner@example.com,Rex,canine,2020-01-01",
+      ].join("\n"),
+      source: "shepherd",
+      dryRun: true,
+      migrationProtocol: "reviewed-v1",
+    });
+
+    expect(result).toMatchObject({
+      dryRun: true,
+      willInsert: 1,
+      willReconcile: 0,
+      duplicates: 0,
+      errors: [],
+    });
     expect(insertValues).not.toHaveBeenCalled();
   });
 

@@ -10,6 +10,7 @@ import {
   useState,
 } from "react";
 import { useSession } from "next-auth/react";
+import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { ArrowLeft, ArrowRight, Loader2, PawPrint } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -59,7 +60,7 @@ function buildSteps(billingEnforced: boolean): StepDef[] {
     { id: "basics", title: "Tell us about your clinic." },
     { id: "branding", title: "Make it feel like yours." },
     { id: "team", title: "Bring your team in." },
-    { id: "data", title: "Add your real clients and pets." },
+    { id: "data", title: "Bring your clinic records." },
     { id: "agent", title: "Try your AI helper." },
     { id: "phone", title: "Set up texting." },
     ...(billingEnforced
@@ -193,6 +194,16 @@ export function OnboardingJourneyProvider({
           index={index!}
           setIndex={setIndex}
           initialIntent={onboardingIntent ?? DEFAULT_ONBOARDING_INTENT}
+          initialMigrationHasCommittedChanges={
+            onboardingState.data?.migrationHasCommittedChanges === true
+          }
+          initialMigrationSource={onboardingState.data?.migrationSource ?? null}
+          initialMigrationSourceHasCommittedChanges={
+            onboardingState.data?.migrationSourceHasCommittedChanges === true
+          }
+          initialMigrationCompletedModes={
+            onboardingState.data?.migrationCompletedModes ?? []
+          }
         />
       ) : null}
     </OnboardingJourneyContext.Provider>
@@ -208,11 +219,21 @@ function JourneyShell({
   index,
   setIndex,
   initialIntent,
+  initialMigrationHasCommittedChanges,
+  initialMigrationSource,
+  initialMigrationSourceHasCommittedChanges,
+  initialMigrationCompletedModes,
 }: {
   steps: StepDef[];
   index: number;
   setIndex: (i: number | null) => void;
   initialIntent: OnboardingIntent;
+  initialMigrationHasCommittedChanges: boolean;
+  initialMigrationSource: JourneyState["migrationSource"];
+  initialMigrationSourceHasCommittedChanges: boolean;
+  initialMigrationCompletedModes: NonNullable<
+    JourneyState["migrationCompletedModes"]
+  >;
 }) {
   const utils = trpc.useUtils();
   const { start: startTour } = useTour();
@@ -223,8 +244,14 @@ function JourneyShell({
   // Shared step state. Default to keeping sample data and offering the tour.
   const [state, setStateRaw] = useState<JourneyState>({
     onboardingIntent: initialIntent,
-    keepSampleData: true,
+    keepSampleData: !initialMigrationHasCommittedChanges,
     startTourAfter: true,
+    hasPartialImport: false,
+    hasImportedData: initialMigrationHasCommittedChanges,
+    migrationSource: initialMigrationSource,
+    migrationSourceHasCommittedChanges:
+      initialMigrationSourceHasCommittedChanges,
+    migrationCompletedModes: initialMigrationCompletedModes,
   });
   const setState = useCallback(
     (patch: Partial<JourneyState>) =>
@@ -323,14 +350,23 @@ function JourneyShell({
   ]);
 
   const handleBack = useCallback(() => {
-    if (busy || continueDisabled || index === 0) return;
+    if (busy || continueDisabled || state.hasPartialImport || index === 0)
+      return;
     handleRef.current = null;
     setContinueLabel(null);
     setContinueDisabled(false);
     const prev = index - 1;
     persistCursor(steps[prev]!.id);
     setIndex(prev);
-  }, [busy, continueDisabled, index, steps, persistCursor, setIndex]);
+  }, [
+    busy,
+    continueDisabled,
+    state.hasPartialImport,
+    index,
+    steps,
+    persistCursor,
+    setIndex,
+  ]);
 
   const handleFinishLater = useCallback(() => {
     if (busy || continueDisabled) return;
@@ -342,124 +378,178 @@ function JourneyShell({
     );
     setJourneyProgress.mutate({ stepId: step.id, dismissed: true });
     setIndex(null);
-  }, [busy, continueDisabled, step.id, utils, setJourneyProgress, setIndex]);
+    if (state.hasPartialImport) {
+      toast.success(
+        "Completed records are saved. Reopen setup or use Settings, then Data, to finish the remaining files.",
+      );
+    }
+  }, [
+    busy,
+    continueDisabled,
+    step.id,
+    state.hasPartialImport,
+    utils,
+    setJourneyProgress,
+    setIndex,
+  ]);
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="Make it yours setup"
-      className="fixed inset-0 z-[80] overflow-y-auto bg-[linear-gradient(135deg,#fff7ed_0%,#fdf2f8_45%,#ecfdf5_100%)] p-4 text-slate-950 sm:p-6"
+    <DialogPrimitive.Root
+      open
+      onOpenChange={(open) => {
+        if (!open) handleFinishLater();
+      }}
     >
-      <div className="flex min-h-full items-center justify-center">
-        <div className="w-full max-w-2xl rounded-2xl border border-white/80 bg-white p-6 shadow-xl shadow-rose-200/30 sm:p-8">
-          {/* Brand mark + progress */}
-          <div className="flex items-center justify-between gap-4">
-            <div className="inline-flex items-center gap-2 text-sm font-medium text-emerald-700">
-              <PawPrint className="h-4 w-4" />
-              Make it yours
-            </div>
-            <span className="text-xs font-medium text-slate-500">
-              Step {index + 1} of {total}
-            </span>
-          </div>
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Overlay className="fixed inset-0 z-[80] bg-[linear-gradient(135deg,#fff7ed_0%,#fdf2f8_45%,#ecfdf5_100%)]" />
+        <DialogPrimitive.Content
+          className="fixed inset-0 z-[80] overflow-y-auto p-4 text-slate-950 outline-none sm:p-6"
+          onInteractOutside={(event) => event.preventDefault()}
+          onPointerDownOutside={(event) => event.preventDefault()}
+        >
+          <DialogPrimitive.Description className="sr-only">
+            Guided setup for your OpenVPM clinic.
+          </DialogPrimitive.Description>
+          <div className="flex min-h-full items-center justify-center">
+            <div className="w-full max-w-2xl rounded-2xl border border-white/80 bg-white p-6 shadow-xl shadow-rose-200/30 sm:p-8">
+              {/* Brand mark + progress */}
+              <div className="flex items-center justify-between gap-4">
+                <div className="inline-flex items-center gap-2 text-sm font-medium text-emerald-700">
+                  <PawPrint className="h-4 w-4" />
+                  Make it yours
+                </div>
+                <span className="text-xs font-medium text-slate-500">
+                  Step {index + 1} of {total}
+                </span>
+              </div>
 
-          <div className="mt-3 flex gap-1.5" aria-hidden="true">
-            {steps.map((s, i) => (
-              <span
-                key={s.id}
-                className={cn(
-                  "h-1.5 flex-1 rounded-full transition-colors",
-                  i <= index ? "bg-emerald-500" : "bg-slate-200",
-                )}
-              />
-            ))}
-          </div>
+              <div className="mt-3 flex gap-1.5" aria-hidden="true">
+                {steps.map((s, i) => (
+                  <span
+                    key={s.id}
+                    className={cn(
+                      "h-1.5 flex-1 rounded-full transition-colors",
+                      i <= index ? "bg-emerald-500" : "bg-slate-200",
+                    )}
+                  />
+                ))}
+              </div>
 
-          {/* Title */}
-          <h2 className="mt-6 font-heading text-2xl font-bold tracking-tight text-slate-950">
-            {step.title}
-          </h2>
+              {/* Title */}
+              <DialogPrimitive.Title asChild>
+                <h2 className="mt-6 font-heading text-2xl font-bold tracking-tight text-slate-950">
+                  {step.title}
+                </h2>
+              </DialogPrimitive.Title>
 
-          {/* Active step */}
-          <div className="mt-5">
-            {step.id === "intent" ? (
-              <ChoosePathStep
-                register={register}
-                state={state}
-                setState={setState}
-              />
-            ) : null}
-            {step.id === "basics" ? (
-              <PracticeBasicsStep register={register} />
-            ) : null}
-            {step.id === "branding" ? (
-              <BrandingStep register={register} />
-            ) : null}
-            {step.id === "team" ? <InviteTeamStep register={register} /> : null}
-            {step.id === "data" ? (
-              <BringDataStep
-                register={register}
-                state={state}
-                setState={setState}
-              />
-            ) : null}
-            {step.id === "agent" ? <TryAgentStep register={register} /> : null}
-            {step.id === "phone" ? (
-              <SetUpTextingStep register={register} />
-            ) : null}
-            {step.id === "billing" ? (
-              <AddACardStep register={register} />
-            ) : null}
-            {step.id === "allSet" ? (
-              <AllSetStep
-                register={register}
-                state={state}
-                setState={setState}
-              />
-            ) : null}
-          </div>
+              {/* Active step */}
+              <div className="mt-5">
+                {step.id === "intent" ? (
+                  <ChoosePathStep
+                    register={register}
+                    state={state}
+                    setState={setState}
+                  />
+                ) : null}
+                {step.id === "basics" ? (
+                  <PracticeBasicsStep register={register} />
+                ) : null}
+                {step.id === "branding" ? (
+                  <BrandingStep register={register} />
+                ) : null}
+                {step.id === "team" ? (
+                  <InviteTeamStep register={register} />
+                ) : null}
+                {step.id === "data" ? (
+                  <BringDataStep
+                    register={register}
+                    state={state}
+                    setState={setState}
+                  />
+                ) : null}
+                {step.id === "agent" ? (
+                  <TryAgentStep register={register} />
+                ) : null}
+                {step.id === "phone" ? (
+                  <SetUpTextingStep register={register} />
+                ) : null}
+                {step.id === "billing" ? (
+                  <AddACardStep register={register} />
+                ) : null}
+                {step.id === "allSet" ? (
+                  <AllSetStep
+                    register={register}
+                    state={state}
+                    setState={setState}
+                  />
+                ) : null}
+              </div>
 
-          {/* Footer */}
-          <div className="mt-8 flex items-center justify-between gap-4 border-t border-slate-100 pt-5">
-            <div className="flex items-center gap-3">
-              {index > 0 ? (
+              {/* Footer */}
+              <div className="mt-8 flex flex-col-reverse items-stretch gap-4 border-t border-slate-100 pt-5 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center justify-between gap-3 sm:justify-start">
+                    {index > 0 ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        onClick={handleBack}
+                        disabled={
+                          busy || continueDisabled || state.hasPartialImport
+                        }
+                        aria-describedby={
+                          state.hasPartialImport
+                            ? "onboarding-back-disabled-reason"
+                            : undefined
+                        }
+                      >
+                        <ArrowLeft className="mr-1.5 h-4 w-4" />
+                        Back
+                      </Button>
+                    ) : null}
+                    {!isLast ? (
+                      <button
+                        type="button"
+                        onClick={handleFinishLater}
+                        disabled={busy || continueDisabled}
+                        className="text-sm font-medium text-slate-500 hover:text-slate-700 disabled:opacity-50"
+                      >
+                        {state.hasPartialImport
+                          ? "Finish remaining import later"
+                          : "I'll finish later"}
+                      </button>
+                    ) : null}
+                  </div>
+                  {state.hasPartialImport ? (
+                    <p
+                      id="onboarding-back-disabled-reason"
+                      className="max-w-sm text-xs leading-5 text-slate-500"
+                    >
+                      Back is unavailable after records are saved. Finish the
+                      remaining import now or continue it later.
+                    </p>
+                  ) : null}
+                </div>
+
                 <Button
                   type="button"
-                  variant="ghost"
-                  onClick={handleBack}
+                  onClick={handleContinue}
                   disabled={busy || continueDisabled}
+                  className="h-auto min-h-10 w-full whitespace-normal py-2 text-center sm:w-auto"
                 >
-                  <ArrowLeft className="mr-1.5 h-4 w-4" />
-                  Back
+                  {busy ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : null}
+                  {isLast ? "Finish" : (continueLabel ?? "Continue")}
+                  {!isLast && !busy ? (
+                    <ArrowRight className="ml-2 h-4 w-4" />
+                  ) : null}
                 </Button>
-              ) : null}
-              {!isLast ? (
-                <button
-                  type="button"
-                  onClick={handleFinishLater}
-                  disabled={busy || continueDisabled}
-                  className="text-sm font-medium text-slate-500 hover:text-slate-700 disabled:opacity-50"
-                >
-                  I&apos;ll finish later
-                </button>
-              ) : null}
+              </div>
             </div>
-
-            <Button
-              type="button"
-              onClick={handleContinue}
-              disabled={busy || continueDisabled}
-            >
-              {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              {isLast ? "Finish" : (continueLabel ?? "Continue")}
-              {!isLast && !busy ? (
-                <ArrowRight className="ml-2 h-4 w-4" />
-              ) : null}
-            </Button>
           </div>
-        </div>
-      </div>
-    </div>
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   );
 }

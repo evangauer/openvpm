@@ -9,11 +9,12 @@ import {
   numeric,
   date,
   boolean,
+  check,
   foreignKey,
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import { baseColumns } from "./common";
 import { practices } from "./practices";
 import { users } from "./users";
@@ -46,12 +47,10 @@ export const treatmentPlanStatusEnum = pgEnum("treatment_plan_status", [
   "discontinued",
 ]);
 
-export const treatmentPlanItemStatusEnum = pgEnum("treatment_plan_item_status", [
-  "pending",
-  "in_progress",
-  "done",
-  "skipped",
-]);
+export const treatmentPlanItemStatusEnum = pgEnum(
+  "treatment_plan_item_status",
+  ["pending", "in_progress", "done", "skipped"],
+);
 
 export const soapNotes = pgTable(
   "soap_notes",
@@ -75,18 +74,33 @@ export const soapNotes = pgTable(
     // no OpenVPM author, so authorId holds the importing admin; this flag lets
     // the record show "Imported" instead of implying that admin wrote the note.
     imported: boolean("imported").notNull().default(false),
+    // Import-only content identity. Clinic-authored notes keep this null so
+    // clinically legitimate repeated notes remain representable.
+    importFingerprint: varchar("import_fingerprint", { length: 64 }),
   },
   (table) => ({
     patientIdx: index("soap_notes_patient_idx").on(table.patientId),
     practiceRecordUq: uniqueIndex("soap_notes_practice_record_uq").on(
       table.practiceId,
-      table.id
+      table.id,
     ),
-    practiceIdx: index("soap_notes_practice_idx").on(table.practiceId, table.deletedAt),
+    importFingerprintUq: uniqueIndex("soap_notes_import_fingerprint_uq")
+      .on(table.practiceId, table.importFingerprint)
+      .where(
+        sql`${table.importFingerprint} is not null and ${table.deletedAt} is null`,
+      ),
+    importFingerprintCheck: check(
+      "soap_notes_import_fingerprint_check",
+      sql`${table.importFingerprint} is null or ${table.importFingerprint} ~ '^[0-9a-f]{64}$'`,
+    ),
+    practiceIdx: index("soap_notes_practice_idx").on(
+      table.practiceId,
+      table.deletedAt,
+    ),
     appointmentIdx: index("soap_notes_appointment_idx").on(
       table.practiceId,
       table.appointmentId,
-      table.deletedAt
+      table.deletedAt,
     ),
     patientPracticeFk: foreignKey({
       columns: [table.practiceId, table.patientId],
@@ -102,7 +116,7 @@ export const soapNotes = pgTable(
       ],
       name: "soap_notes_practice_appointment_fk",
     }),
-  })
+  }),
 );
 
 export const vaccinationRecords = pgTable(
@@ -117,6 +131,8 @@ export const vaccinationRecords = pgTable(
       .references(() => patients.id),
     appointmentId: uuid("appointment_id").references(() => appointments.id),
     vaccineName: varchar("vaccine_name", { length: 255 }).notNull(),
+    // Import-only dose identity. Normal administered doses keep this null.
+    importFingerprint: varchar("import_fingerprint", { length: 64 }),
     lotNumber: varchar("lot_number", { length: 64 }),
     manufacturer: varchar("manufacturer", { length: 128 }),
     administeredBy: uuid("administered_by").references(() => users.id),
@@ -129,29 +145,40 @@ export const vaccinationRecords = pgTable(
   (table) => ({
     patientIdx: index("vaccination_records_patient_idx").on(
       table.patientId,
-      table.nextDueDate
+      table.nextDueDate,
     ),
     practiceDueIdx: index("vaccination_records_practice_due_idx").on(
       table.practiceId,
       table.nextDueDate,
-      table.deletedAt
+      table.deletedAt,
     ),
     appointmentIdx: index("vaccination_records_appointment_idx").on(
       table.practiceId,
       table.appointmentId,
-      table.deletedAt
+      table.deletedAt,
     ),
     visitSourceUq: uniqueIndex("vaccination_records_visit_source_uq").on(
       table.practiceId,
       table.appointmentId,
-      table.id
+      table.id,
+    ),
+    importFingerprintUq: uniqueIndex(
+      "vaccination_records_import_fingerprint_uq",
+    )
+      .on(table.practiceId, table.importFingerprint)
+      .where(
+        sql`${table.importFingerprint} is not null and ${table.deletedAt} is null`,
+      ),
+    importFingerprintCheck: check(
+      "vaccination_records_import_fingerprint_check",
+      sql`${table.importFingerprint} is null or ${table.importFingerprint} ~ '^[0-9a-f]{64}$'`,
     ),
     appointmentPracticeFk: foreignKey({
       columns: [table.practiceId, table.appointmentId],
       foreignColumns: [appointments.practiceId, appointments.id],
       name: "vaccination_records_practice_appointment_fk",
     }),
-  })
+  }),
 );
 
 export const labResults = pgTable(
@@ -181,28 +208,31 @@ export const labResults = pgTable(
     reviewedBy: uuid("reviewed_by").references(() => users.id),
   },
   (table) => ({
-    patientIdx: index("lab_results_patient_idx").on(table.patientId, table.status),
+    patientIdx: index("lab_results_patient_idx").on(
+      table.patientId,
+      table.status,
+    ),
     practiceStatusIdx: index("lab_results_practice_status_idx").on(
       table.practiceId,
       table.status,
-      table.deletedAt
+      table.deletedAt,
     ),
     appointmentIdx: index("lab_results_appointment_idx").on(
       table.practiceId,
       table.appointmentId,
-      table.deletedAt
+      table.deletedAt,
     ),
     visitSourceUq: uniqueIndex("lab_results_visit_source_uq").on(
       table.practiceId,
       table.appointmentId,
-      table.id
+      table.id,
     ),
     appointmentPracticeFk: foreignKey({
       columns: [table.practiceId, table.appointmentId],
       foreignColumns: [appointments.practiceId, appointments.id],
       name: "lab_results_practice_appointment_fk",
     }),
-  })
+  }),
 );
 
 export const procedures = pgTable(
@@ -227,24 +257,24 @@ export const procedures = pgTable(
     patientIdx: index("procedures_patient_idx").on(table.patientId),
     practiceIdx: index("procedures_practice_idx").on(
       table.practiceId,
-      table.deletedAt
+      table.deletedAt,
     ),
     appointmentIdx: index("procedures_appointment_idx").on(
       table.practiceId,
       table.appointmentId,
-      table.deletedAt
+      table.deletedAt,
     ),
     visitSourceUq: uniqueIndex("procedures_visit_source_uq").on(
       table.practiceId,
       table.appointmentId,
-      table.id
+      table.id,
     ),
     appointmentPracticeFk: foreignKey({
       columns: [table.practiceId, table.appointmentId],
       foreignColumns: [appointments.practiceId, appointments.id],
       name: "procedures_practice_appointment_fk",
     }),
-  })
+  }),
 );
 
 export const clinicalNotes = pgTable(
@@ -266,13 +296,13 @@ export const clinicalNotes = pgTable(
   (table) => ({
     patientIdx: index("clinical_notes_patient_idx").on(
       table.patientId,
-      table.noteType
+      table.noteType,
     ),
     practiceIdx: index("clinical_notes_practice_idx").on(
       table.practiceId,
-      table.deletedAt
+      table.deletedAt,
     ),
-  })
+  }),
 );
 
 export const problemList = pgTable(
@@ -293,14 +323,14 @@ export const problemList = pgTable(
   (table) => ({
     patientStatusIdx: index("problem_list_patient_status_idx").on(
       table.patientId,
-      table.status
+      table.status,
     ),
     practiceStatusIdx: index("problem_list_practice_status_idx").on(
       table.practiceId,
       table.status,
-      table.deletedAt
+      table.deletedAt,
     ),
-  })
+  }),
 );
 
 export const vitalSigns = pgTable(
@@ -327,21 +357,30 @@ export const vitalSigns = pgTable(
     /** Pain score, 0-10 scale. */
     painScore: integer("pain_score"),
     mucousMembrane: varchar("mucous_membrane", { length: 64 }),
-    capillaryRefillSec: numeric("capillary_refill_sec", { precision: 3, scale: 1 }),
+    capillaryRefillSec: numeric("capillary_refill_sec", {
+      precision: 3,
+      scale: 1,
+    }),
     notes: text("notes"),
   },
   (table) => ({
-    patientIdx: index("vital_signs_patient_idx").on(table.patientId, table.recordedAt),
+    patientIdx: index("vital_signs_patient_idx").on(
+      table.patientId,
+      table.recordedAt,
+    ),
     practiceRecordUq: uniqueIndex("vital_signs_practice_record_uq").on(
       table.practiceId,
-      table.id
+      table.id,
     ),
-    practiceIdx: index("vital_signs_practice_idx").on(table.practiceId, table.deletedAt),
+    practiceIdx: index("vital_signs_practice_idx").on(
+      table.practiceId,
+      table.deletedAt,
+    ),
     appointmentIdx: index("vital_signs_appointment_idx").on(
       table.practiceId,
       table.appointmentId,
       table.deletedAt,
-      table.recordedAt
+      table.recordedAt,
     ),
     patientPracticeFk: foreignKey({
       columns: [table.practiceId, table.patientId],
@@ -357,7 +396,7 @@ export const vitalSigns = pgTable(
       ],
       name: "vital_signs_practice_appointment_fk",
     }),
-  })
+  }),
 );
 
 export const cases = pgTable(
@@ -382,14 +421,14 @@ export const cases = pgTable(
   (table) => ({
     patientStatusIdx: index("cases_patient_status_idx").on(
       table.patientId,
-      table.status
+      table.status,
     ),
     practiceStatusIdx: index("cases_practice_status_idx").on(
       table.practiceId,
       table.status,
-      table.deletedAt
+      table.deletedAt,
     ),
-  })
+  }),
 );
 
 export const caseEntries = pgTable(
@@ -405,11 +444,8 @@ export const caseEntries = pgTable(
     notes: text("notes"),
   },
   (table) => ({
-    caseIdx: index("case_entries_case_idx").on(
-      table.caseId,
-      table.deletedAt
-    ),
-  })
+    caseIdx: index("case_entries_case_idx").on(table.caseId, table.deletedAt),
+  }),
 );
 
 export const treatmentPlans = pgTable(
@@ -432,8 +468,11 @@ export const treatmentPlans = pgTable(
   },
   (table) => ({
     patientIdx: index("treatment_plans_patient_idx").on(table.patientId),
-    practiceIdx: index("treatment_plans_practice_idx").on(table.practiceId, table.deletedAt),
-  })
+    practiceIdx: index("treatment_plans_practice_idx").on(
+      table.practiceId,
+      table.deletedAt,
+    ),
+  }),
 );
 
 export const treatmentPlanItems = pgTable(
@@ -452,9 +491,9 @@ export const treatmentPlanItems = pgTable(
     planOrderIdx: index("treatment_plan_items_plan_order_idx").on(
       table.planId,
       table.deletedAt,
-      table.sortOrder
+      table.sortOrder,
     ),
-  })
+  }),
 );
 
 // Relations
@@ -492,7 +531,7 @@ export const vaccinationRecordsRelations = relations(
       fields: [vaccinationRecords.administeredBy],
       references: [users.id],
     }),
-  })
+  }),
 );
 
 export const labResultsRelations = relations(labResults, ({ one }) => ({
@@ -629,7 +668,7 @@ export const treatmentPlansRelations = relations(
       references: [users.id],
     }),
     items: many(treatmentPlanItems),
-  })
+  }),
 );
 
 export const treatmentPlanItemsRelations = relations(
@@ -639,5 +678,5 @@ export const treatmentPlanItemsRelations = relations(
       fields: [treatmentPlanItems.planId],
       references: [treatmentPlans.id],
     }),
-  })
+  }),
 );

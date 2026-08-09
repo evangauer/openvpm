@@ -275,6 +275,88 @@ describe("migrationReviewedPlanHash", () => {
     expect(swapped).not.toBe(first);
   });
 
+  it("binds history row dispositions and versioned patient targets", () => {
+    const history = {
+      mode: "vaccinations" as const,
+      source: "shepherd",
+      csv: [
+        "Patient ID,Vaccine,Date Given",
+        "P-1,Rabies,2025-01-01",
+        "P-2,DHPP,2025-01-02",
+      ].join("\n"),
+      summary: {
+        sourceRowCount: 2,
+        plannedInsertCount: 1,
+        duplicateCount: 1,
+        unmatchedCount: 0,
+        errorCount: 1,
+      },
+    };
+    const reviewedPlan = {
+      plannerVersion: "vaccinations-v1",
+      dispositions: [
+        {
+          rowIndex: 0,
+          entityKind: "vaccination" as const,
+          action: "insert" as const,
+        },
+        {
+          rowIndex: 1,
+          entityKind: "vaccination" as const,
+          action: "duplicate" as const,
+        },
+      ],
+      targets: [
+        {
+          rowIndex: 0,
+          kind: "patient" as const,
+          role: "external_match" as const,
+          targetId: "00000000-0000-0000-0000-0000000000d1",
+          targetVersion: "2026-08-08T12:00:00.000Z",
+        },
+        {
+          rowIndex: 1,
+          kind: "patient" as const,
+          role: "external_match" as const,
+          targetId: "00000000-0000-0000-0000-0000000000d2",
+          targetVersion: "2026-08-08T12:00:00.000Z",
+        },
+      ],
+    };
+    const reviewedHash = migrationReviewedPlanHash({
+      ...history,
+      reviewedPlan,
+    });
+
+    expect(
+      migrationReviewedPlanHash({
+        ...history,
+        reviewedPlan: {
+          ...reviewedPlan,
+          dispositions: [
+            { ...reviewedPlan.dispositions[0], action: "duplicate" as const },
+            { ...reviewedPlan.dispositions[1], action: "insert" as const },
+          ],
+        },
+      }),
+    ).not.toBe(reviewedHash);
+    expect(
+      migrationReviewedPlanHash({
+        ...history,
+        reviewedPlan: {
+          ...reviewedPlan,
+          targets: [
+            {
+              ...reviewedPlan.targets[0],
+              targetVersion: "2026-08-08T12:01:00.000Z",
+            },
+            reviewedPlan.targets[1],
+          ],
+        },
+      }),
+    ).not.toBe(reviewedHash);
+  });
+
   it("requires a deliberate planner version and schema version", () => {
     expect(MIGRATION_REVIEWED_PLAN_SCHEMA_VERSION).toBe(1);
     expect(

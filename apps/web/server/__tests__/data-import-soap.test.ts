@@ -1,25 +1,37 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+type MigrationMockInput = {
+  summary: { plannedInsertCount: number };
+  reviewedPlan?: {
+    plannerVersion: string;
+    dispositions: Array<Record<string, unknown>>;
+    targets: Array<Record<string, unknown>>;
+  };
+};
+
 vi.mock("@/lib/audit", () => ({
   recordAuditLog: vi.fn(async () => undefined),
 }));
 
 const migrationRunMocks = vi.hoisted(() => ({
+  MigrationPreviewError: class MigrationPreviewError extends Error {},
   createMigrationPreview: vi.fn(
-    async () => "00000000-0000-0000-0000-0000000000f1",
+    async (_db: unknown, _input: MigrationMockInput) =>
+      "00000000-0000-0000-0000-0000000000f1",
   ),
-  claimMigrationPreview: vi.fn(async () => ({
-    alreadyCommitted: false,
-    importedCount: 0,
-    reconciledCount: 0,
-    errorCount: 0,
-  })),
+  claimMigrationPreview: vi.fn(
+    async (_db: unknown, _input: MigrationMockInput) => ({
+      alreadyCommitted: false,
+      importedCount: 0,
+      reconciledCount: 0,
+      errorCount: 0,
+    }),
+  ),
   completeMigrationRun: vi.fn(async () => undefined),
   lockMigrationPractice: vi.fn(async () => undefined),
 }));
 
 vi.mock("@/lib/import/run-ledger", () => ({
-  MigrationPreviewError: class MigrationPreviewError extends Error {},
   ...migrationRunMocks,
 }));
 
@@ -44,13 +56,16 @@ function callerWithDb(db: Record<string, unknown>, role = "admin") {
 }
 
 function thenableRows(result: unknown[]) {
-  return {
+  const rows = {
     limit: vi.fn(async () => result),
+    orderBy: vi.fn(() => rows),
+    for: vi.fn(async () => result),
     then: (
       resolve: (value: unknown[]) => unknown,
       reject?: (error: unknown) => unknown,
     ) => Promise.resolve(result).then(resolve, reject),
   };
+  return rows;
 }
 
 function createDb(
@@ -137,6 +152,50 @@ describe("medical history (SOAP notes) import", () => {
     });
     expect(select).toHaveBeenCalledTimes(1);
     expect(insertValues).not.toHaveBeenCalled();
+    expect(
+      migrationRunMocks.createMigrationPreview.mock.calls.at(-1)?.[1],
+    ).toMatchObject({
+      mode: "soap_notes",
+      reviewedPlan: {
+        plannerVersion: "soap-notes-v1",
+        dispositions: [],
+        targets: [],
+      },
+    });
+  });
+
+  it("commits malformed medical-history CSV as an explicit zero-write skip", async () => {
+    const { db, insertValues } = createDb([]);
+    const csv = `${HEADER}\n"jane@x.com,Rex`;
+
+    await expect(
+      callerWithDb(db).importSoapNotesCsv({
+        csv,
+        source: "shepherd",
+        dryRun: false,
+        previewToken: PREVIEW_TOKEN,
+        migrationProtocol: "reviewed-v1",
+      }),
+    ).resolves.toEqual({
+      imported: 0,
+      errors: ["CSV has an unterminated quoted field."],
+    });
+    expect(migrationRunMocks.claimMigrationPreview).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({
+        mode: "soap_notes",
+        reviewedPlan: {
+          plannerVersion: "soap-notes-v1",
+          dispositions: [],
+          targets: [],
+        },
+      }),
+    );
+    expect(migrationRunMocks.completeMigrationRun).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({ importedCount: 0 }),
+    );
+    expect(insertValues).not.toHaveBeenCalled();
   });
 
   it("dry run reports matches, duplicates, and missing pets without inserting", async () => {
@@ -171,6 +230,142 @@ describe("medical history (SOAP notes) import", () => {
     expect(
       result.errors.some((e) => /No matching patient was found/.test(e)),
     ).toBe(true);
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("binds each medical-history disposition to the versioned patient selected inside the transaction", async () => {
+    const updatedAt = new Date("2026-08-08T12:00:00.000Z");
+    const { db } = createDb([[{ ...patientRows[0], updatedAt }], []]);
+
+    await callerWithDb(db).importSoapNotesCsv({
+      csv: `${HEADER}\n${REX_ROW}`,
+      dryRun: true,
+      migrationProtocol: "reviewed-v1",
+    });
+
+    expect(migrationRunMocks.lockMigrationPractice).toHaveBeenCalledWith(
+      db,
+      PRACTICE_ID,
+    );
+    expect(
+      migrationRunMocks.createMigrationPreview.mock.calls.at(-1)?.[1],
+    ).toMatchObject({
+      mode: "soap_notes",
+      reviewedPlan: {
+        plannerVersion: "soap-notes-v1",
+        dispositions: [
+          {
+            rowIndex: 0,
+            entityKind: "soap_note",
+            action: "insert",
+          },
+        ],
+        targets: [
+          {
+            rowIndex: 0,
+            kind: "patient",
+            role: "identity_match",
+            targetId: PATIENT_ID,
+            targetVersion: updatedAt.toISOString(),
+          },
+        ],
+      },
+    });
+  });
+
+  it("fails closed when a selected patient's version changes after preview", async () => {
+    const csv = `${HEADER}\n${REX_ROW}`;
+    const previewDb = createDb([
+      [
+        {
+          ...patientRows[0],
+          updatedAt: new Date("2026-08-08T12:00:00.000Z"),
+        },
+      ],
+      [],
+    ]);
+    await callerWithDb(previewDb.db).importSoapNotesCsv({
+      csv,
+      dryRun: true,
+      migrationProtocol: "reviewed-v1",
+    });
+    const reviewed =
+      migrationRunMocks.createMigrationPreview.mock.calls.at(-1)?.[1]
+        ?.reviewedPlan;
+    migrationRunMocks.claimMigrationPreview.mockImplementationOnce(
+      async (_db, input) => {
+        expect(input.summary).toMatchObject({ plannedInsertCount: 1 });
+        expect(input.reviewedPlan).not.toEqual(reviewed);
+        throw new migrationRunMocks.MigrationPreviewError(
+          "The reviewed import plan changed.",
+        );
+      },
+    );
+    const commitDb = createDb([
+      [
+        {
+          ...patientRows[0],
+          updatedAt: new Date("2026-08-08T12:01:00.000Z"),
+        },
+      ],
+      [],
+    ]);
+
+    await expect(
+      callerWithDb(commitDb.db).importSoapNotesCsv({
+        csv,
+        dryRun: false,
+        previewToken: PREVIEW_TOKEN,
+        migrationProtocol: "reviewed-v1",
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(commitDb.insertValues).not.toHaveBeenCalled();
+  });
+
+  it("returns the saved medical-history result when an exact committed request is retried", async () => {
+    migrationRunMocks.claimMigrationPreview.mockResolvedValueOnce({
+      alreadyCommitted: true,
+      importedCount: 9,
+      reconciledCount: 0,
+      errorCount: 0,
+    });
+    const { db, insertValues } = createDb([[], []]);
+
+    await expect(
+      callerWithDb(db).importSoapNotesCsv({
+        csv: `${HEADER}\n${REX_ROW}`,
+        dryRun: false,
+        previewToken: PREVIEW_TOKEN,
+        migrationProtocol: "reviewed-v1",
+      }),
+    ).resolves.toEqual({
+      imported: 9,
+      errors: [],
+      alreadyCommitted: true,
+      migrationRunId: PREVIEW_TOKEN,
+    });
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(migrationRunMocks.completeMigrationRun).not.toHaveBeenCalled();
+  });
+
+  it("treats patients under seeded demo clients as unavailable migration targets", async () => {
+    const { db, insertValues } = createDb([
+      [{ ...patientRows[0], isDemoClient: true }],
+      [],
+    ]);
+
+    const result = await callerWithDb(db).importSoapNotesCsv({
+      csv: `${HEADER}\n${REX_ROW}`,
+      dryRun: true,
+      migrationProtocol: "reviewed-v1",
+    });
+
+    expect(result).toMatchObject({
+      dryRun: true,
+      willInsert: 0,
+      unmatchedPatient: 1,
+    });
+    expect(result.errors[0]).toMatch(/No matching patient/i);
     expect(insertValues).not.toHaveBeenCalled();
   });
 

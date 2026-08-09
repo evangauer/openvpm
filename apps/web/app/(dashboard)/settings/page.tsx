@@ -89,7 +89,11 @@ import {
   IMPORT_CSV_MAX_BYTES,
   isImportCsvSizeValid,
 } from "@/lib/import/policy";
-import { MIGRATION_SOURCES } from "@/lib/import/sources";
+import {
+  MIGRATION_SOURCES,
+  MIGRATION_STEPS,
+  type MigrationImportMode,
+} from "@/lib/import/sources";
 import {
   AUTH_PASSWORD_MAX_LENGTH,
   AUTH_PASSWORD_MIN_LENGTH,
@@ -2777,7 +2781,7 @@ type ImportPreview = {
   unmatchedPatient?: number;
   errors: string[];
 };
-type ImportMode = "clients" | "patients" | "vaccinations" | "soapNotes";
+type ImportMode = MigrationImportMode;
 const IMPORT_CSV_SIZE_MESSAGE = "CSV imports must be 5 MB or less.";
 function importPreviewRequestKey(
   mode: ImportMode,
@@ -2792,17 +2796,6 @@ function importPreviewRequestKey(
   }
   return `${mode}:${source}:${csv.length}:${(hash >>> 0).toString(16)}`;
 }
-const IMPORT_COLUMN_HINTS: Record<ImportMode, string> = {
-  clients:
-    "Expected columns: firstName, lastName, plus email or client ID. Optional: phone, address, city, state, zip",
-  patients:
-    "Expected columns: clientEmail or client ID, name, species. Patient ID is recommended. Optional: breed, sex, dob, color, microchipNumber",
-  vaccinations:
-    "Expected columns: patient ID, or an owner reference plus patientName; vaccineName and dateGiven. Optional: nextDueDate, lotNumber, manufacturer",
-  soapNotes:
-    "Expected columns: patient ID, or an owner reference plus patientName; date, and either subjective, objective, assessment, plan or a single notes column",
-};
-
 // ── Data Tab ─────────────────────────────────────────────────
 function DataTab() {
   const [exportingType, setExportingType] = useState<string | null>(null);
@@ -3924,18 +3917,7 @@ function DataTab() {
 
         {/* Import mode selector */}
         <div className="flex flex-wrap gap-2 mb-4">
-          {[
-            { mode: "clients" as const, label: "1. Import Clients" },
-            { mode: "patients" as const, label: "2. Import Patients" },
-            {
-              mode: "vaccinations" as const,
-              label: "3. Import Vaccine History",
-            },
-            {
-              mode: "soapNotes" as const,
-              label: "4. Import Medical History",
-            },
-          ].map(({ mode, label }) => (
+          {MIGRATION_STEPS.map(({ mode, label }, index) => (
             <Button
               key={mode}
               variant={importMode === mode ? "default" : "outline"}
@@ -3952,7 +3934,7 @@ function DataTab() {
               }}
             >
               <Upload className="mr-2 h-4 w-4" />
-              {label}
+              {index + 1}. Import {label}
             </Button>
           ))}
         </div>
@@ -3961,7 +3943,11 @@ function DataTab() {
           <div className="max-w-2xl space-y-4">
             {/* Expected columns hint */}
             <p className="text-xs text-muted-foreground">
-              {IMPORT_COLUMN_HINTS[importMode]}
+              Expected columns:{" "}
+              {
+                MIGRATION_STEPS.find((step) => step.mode === importMode)!
+                  .columnHint
+              }
             </p>
 
             {/* Drop zone */}

@@ -58,6 +58,8 @@ export const patients = pgTable(
       .references(() => clients.id),
     externalSource: varchar("external_source", { length: 64 }),
     externalId: varchar("external_id", { length: 160 }),
+    // Import-only identity. Ordinary clinic-created charts keep this null.
+    importFingerprint: varchar("import_fingerprint", { length: 64 }),
     name: varchar("name", { length: 128 }).notNull(),
     species: speciesEnum("species").notNull(),
     breed: varchar("breed", { length: 128 }),
@@ -84,6 +86,15 @@ export const patients = pgTable(
       .where(
         sql`${table.externalSource} is not null and ${table.externalId} is not null`,
       ),
+    importFingerprintUq: uniqueIndex("patients_import_fingerprint_uq")
+      .on(table.practiceId, table.importFingerprint)
+      .where(
+        sql`${table.importFingerprint} is not null and ${table.deletedAt} is null`,
+      ),
+    importFingerprintCheck: check(
+      "patients_import_fingerprint_check",
+      sql`${table.importFingerprint} is null or ${table.importFingerprint} ~ '^[0-9a-f]{64}$'`,
+    ),
     externalIdentityPairCheck: check(
       "patients_external_identity_pair_check",
       sql`(${table.externalSource} is null) = (${table.externalId} is null)`,

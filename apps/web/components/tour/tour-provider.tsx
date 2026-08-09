@@ -74,8 +74,7 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const { data: session, status } = useSession();
-  const isAdmin =
-    status === "authenticated" && session?.user?.role === "admin";
+  const isAdmin = status === "authenticated" && session?.user?.role === "admin";
   const userId = session?.user?.id ?? null;
 
   const utils = trpc.useUtils();
@@ -112,15 +111,21 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
         journeyDismissed: prev?.journeyDismissed ?? false,
         ...prev,
         onboardingIntent: prev?.onboardingIntent ?? null,
-        onboardingIntentSelectedAt:
-          prev?.onboardingIntentSelectedAt ?? null,
+        onboardingIntentSelectedAt: prev?.onboardingIntentSelectedAt ?? null,
+        migrationHasCommittedChanges:
+          prev?.migrationHasCommittedChanges ?? false,
+        migrationLastCommittedAt: prev?.migrationLastCommittedAt ?? null,
+        migrationSource: prev?.migrationSource ?? null,
+        migrationSourceHasCommittedChanges:
+          prev?.migrationSourceHasCommittedChanges ?? false,
+        migrationCompletedModes: prev?.migrationCompletedModes ?? [],
         tourStatus: status,
         lastStepId: stepId ?? prev?.lastStepId ?? null,
         setupDismissed: prev?.setupDismissed ?? false,
       }));
       setTourStatus.mutate({ status, lastStepId: stepId ?? null });
     },
-    [isAdmin, setTourStatus, utils]
+    [isAdmin, setTourStatus, utils],
   );
 
   // Warm every route a guide will visit so each Next paints immediately
@@ -131,7 +136,7 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
         if (s.route) router.prefetch(s.route.split("?")[0]!);
       }
     },
-    [router]
+    [router],
   );
 
   const start = useCallback(
@@ -147,8 +152,7 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
             ctx.demoPatientName ?? welcomeCtx.data?.demoPatientName,
           demoPatientId: welcomeCtx.data?.demoPatientId,
           demoInvoiceId: welcomeCtx.data?.demoInvoiceId,
-          agentConfigured:
-            ctx.agentConfigured ?? agentStatus.data?.configured,
+          agentConfigured: ctx.agentConfigured ?? agentStatus.data?.configured,
         });
         prefetchSteps(steps);
         setRun({ recipe, steps, index: 0 });
@@ -160,7 +164,7 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
       prefetchSteps(steps);
       setRun({ recipe, steps, index: 0 });
     },
-    [isAdmin, persist, prefetchSteps, welcomeCtx.data, agentStatus.data]
+    [isAdmin, persist, prefetchSteps, welcomeCtx.data, agentStatus.data],
   );
 
   // Start ONLY on an explicit ?tour=start deep-link. Onboarding is opt-in: a
@@ -180,9 +184,16 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
       start();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAdmin, stateQuery.data, pathname, run, welcomeCtx.isLoading, agentStatus.isLoading]);
+  }, [
+    isAdmin,
+    stateQuery.data,
+    pathname,
+    run,
+    welcomeCtx.isLoading,
+    agentStatus.isLoading,
+  ]);
 
-  const step = run ? run.steps[run.index] ?? null : null;
+  const step = run ? (run.steps[run.index] ?? null) : null;
 
   // Navigate to the step's route when the step changes. Routes may carry a
   // one-shot query string (e.g. /agent?ask=...); compare on the path only.
@@ -225,7 +236,7 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
         if (prevStep.route) router.push(prevStep.route);
         return { ...r, index: prev };
       }),
-    [router]
+    [router],
   );
 
   const onSkip = useCallback(() => {
@@ -254,7 +265,11 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <TourContext.Provider
-      value={{ start, isActive: run !== null, activeGuide: run?.recipe ?? null }}
+      value={{
+        start,
+        isActive: run !== null,
+        activeGuide: run?.recipe ?? null,
+      }}
     >
       {children}
       {run && step ? (

@@ -32,6 +32,9 @@ export const clients = pgTable(
     lastName: varchar("last_name", { length: 128 }).notNull(),
     externalSource: varchar("external_source", { length: 64 }),
     externalId: varchar("external_id", { length: 160 }),
+    // Set only by supervised migrations. Normal clinic-created clients leave
+    // this null, so legitimate shared contact details remain possible.
+    importFingerprint: varchar("import_fingerprint", { length: 64 }),
     email: varchar("email", { length: 255 }),
     phone: varchar("phone", { length: 32 }),
     address: text("address"),
@@ -72,6 +75,15 @@ export const clients = pgTable(
       .where(
         sql`${table.externalSource} is not null and ${table.externalId} is not null`,
       ),
+    importFingerprintUq: uniqueIndex("clients_import_fingerprint_uq")
+      .on(table.practiceId, table.importFingerprint)
+      .where(
+        sql`${table.importFingerprint} is not null and ${table.deletedAt} is null`,
+      ),
+    importFingerprintCheck: check(
+      "clients_import_fingerprint_check",
+      sql`${table.importFingerprint} is null or ${table.importFingerprint} ~ '^[0-9a-f]{64}$'`,
+    ),
     externalIdentityPairCheck: check(
       "clients_external_identity_pair_check",
       sql`(${table.externalSource} is null) = (${table.externalId} is null)`,

@@ -1,6 +1,7 @@
 /** Shared collected state and the per-step contract for the onboarding journey. */
 
 import type { OnboardingIntent } from "@/lib/onboarding/intent";
+import type { MigrationImportMode } from "@/lib/import/sources";
 
 export interface JourneyState {
   /** The adoption path selected on the first setup step. */
@@ -9,6 +10,16 @@ export interface JourneyState {
   keepSampleData: boolean;
   /** When true, finishing the wizard launches the quick product tour. */
   startTourAfter: boolean;
+  /** A reviewed multi-file migration has committed at least one stage locally. */
+  hasPartialImport: boolean;
+  /** Sticky for this journey once reviewed real data has reached the practice. */
+  hasImportedData: boolean;
+  /** Source used by the latest reviewed migration, safe to persist without CSV data. */
+  migrationSource?: string | null;
+  /** True only when the latest source has committed material record changes. */
+  migrationSourceHasCommittedChanges?: boolean;
+  /** Stages already reviewed and completed in earlier sessions. */
+  migrationCompletedModes?: MigrationImportMode[];
 }
 
 export interface StepHandle {

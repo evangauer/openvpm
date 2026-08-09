@@ -349,6 +349,13 @@ describe("settings UI states", () => {
     expect(source).toContain(
       "const importPatientsCsv = trpc.data.importPatientsCsv.useMutation",
     );
+    expect(source).toContain(
+      "const importVaccinationsCsv = trpc.data.importVaccinationsCsv.useMutation",
+    );
+    expect(source).toContain(
+      "const importSoapNotesCsv = trpc.data.importSoapNotesCsv.useMutation",
+    );
+    expect(source).toContain("MIGRATION_STEPS.map");
     expect(source).toContain('from "@/lib/import/policy"');
     expect(source).toContain("file.size > IMPORT_CSV_MAX_BYTES");
     expect(source).toContain("isImportCsvSizeValid(text)");
@@ -358,6 +365,8 @@ describe("settings UI states", () => {
     expect(source).toContain('const importSource = migrationSource ?? "other"');
     expect(source).toContain("importClientsCsv.mutate({");
     expect(source).toContain("importPatientsCsv.mutate({");
+    expect(source).toContain("importVaccinationsCsv.mutate({");
+    expect(source).toContain("importSoapNotesCsv.mutate({");
     expect(source).toContain("source: importSource");
     expect(source.match(/migrationProtocol: "reviewed-v1"/g)).toHaveLength(5);
     expect(source).toContain("previewToken: string;");

@@ -37,7 +37,7 @@ export type MigrationReviewedTarget = {
 
 export type MigrationReviewedDisposition = {
   rowIndex: number;
-  entityKind: "client" | "patient";
+  entityKind: "client" | "patient" | "vaccination" | "soap_note";
   action:
     | "insert"
     | "reconcile"
