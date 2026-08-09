@@ -227,7 +227,10 @@ function LocationCard({
       </div>
 
       {loc.messaging ? (
-        <ConfiguredLocation loc={loc} onChanged={refresh} />
+        <ConfiguredLocation
+          loc={loc}
+          onChanged={refresh}
+        />
       ) : (
         <UnconfiguredLocation loc={loc} onStartSetup={onStartSetup} />
       )}
@@ -259,6 +262,13 @@ function ConfiguredLocation({
     onSuccess: () => toast.success("Test message sent"),
     onError: (e) => toast.error(e.message),
   });
+  const reconcileSetup = trpc.messaging.provisionNumber.useMutation({
+    onSuccess: () => {
+      toast.success("Provider setup reconciled. No additional number was purchased.");
+      onChanged();
+    },
+    onError: (e) => toast.error(e.message),
+  });
 
   return (
     <div className="mt-4 space-y-4">
@@ -281,6 +291,25 @@ function ConfiguredLocation({
           {m.registrationDetail}
         </p>
       )}
+
+      {m.registrationStatus === "failed" && !m.enabled ? (
+        <Button
+          variant="outline"
+          disabled={reconcileSetup.isPending}
+          onClick={() =>
+            reconcileSetup.mutate({
+              locationId: loc.locationId,
+              mode: "buy",
+              action: "resume",
+            })
+          }
+        >
+          {reconcileSetup.isPending ? (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          ) : null}
+          Reconcile provider setup
+        </Button>
+      ) : null}
 
       <label className="flex items-center gap-2 text-sm">
         <Checkbox
@@ -338,8 +367,8 @@ function UnconfiguredLocation({
         <div className="space-y-1">
           <p className="text-sm font-medium">Texting is not set up yet</p>
           <p className="text-sm text-muted-foreground">
-            Start a guided setup for this location. You can text-enable an
-            existing number or choose a new local texting number.
+            Start a guided setup and choose a new local texting number. Your
+            existing clinic phone line will not be ported or changed.
           </p>
           {loc.existingPhone ? (
             <p className="text-xs text-muted-foreground">

@@ -1,15 +1,29 @@
 import { readFileSync } from "node:fs";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
   class MockTelnyxNotConfiguredError extends Error {}
+  class MockTelnyxError extends Error {
+    constructor(message: string, readonly status: number) {
+      super(message);
+    }
+  }
+  class MockTelnyxMutationUncertainError extends Error {}
   return {
     sendSms: vi.fn(),
     searchAvailableNumbers: vi.fn(),
-    checkHostedEligibility: vi.fn(),
+    findAvailableNumberQuotes: vi.fn(),
     createMessagingProfile: vi.fn(),
     buyNumber: vi.fn(),
-    createHostedOrder: vi.fn(),
+    deleteMessagingProfile: vi.fn(),
+    deleteOwnedPhoneNumber: vi.fn(),
+    findMessagingProfilesByName: vi.fn(),
+    findOwnedPhoneNumbers: vi.fn(),
+    findNumberOrdersByCustomerReference: vi.fn(),
+    reserveMessagingProfileAttempt: vi.fn(),
+    releaseMessagingProfileAttempt: vi.fn(),
+    TelnyxError: MockTelnyxError,
+    TelnyxMutationUncertainError: MockTelnyxMutationUncertainError,
     TelnyxNotConfiguredError: MockTelnyxNotConfiguredError,
     usageForPractice: vi.fn(async () => 0),
     currentPeriodMonth: vi.fn(() => "2026-06"),
@@ -22,11 +36,23 @@ vi.mock("@/lib/sms", () => ({
 
 vi.mock("@/lib/messaging/telnyx-provisioning", () => ({
   searchAvailableNumbers: mocks.searchAvailableNumbers,
-  checkHostedEligibility: mocks.checkHostedEligibility,
+  findAvailableNumberQuotes: mocks.findAvailableNumberQuotes,
   createMessagingProfile: mocks.createMessagingProfile,
   buyNumber: mocks.buyNumber,
-  createHostedOrder: mocks.createHostedOrder,
+  deleteMessagingProfile: mocks.deleteMessagingProfile,
+  deleteOwnedPhoneNumber: mocks.deleteOwnedPhoneNumber,
+  findMessagingProfilesByName: mocks.findMessagingProfilesByName,
+  findOwnedPhoneNumbers: mocks.findOwnedPhoneNumbers,
+  findNumberOrdersByCustomerReference:
+    mocks.findNumberOrdersByCustomerReference,
+  TelnyxError: mocks.TelnyxError,
+  TelnyxMutationUncertainError: mocks.TelnyxMutationUncertainError,
   TelnyxNotConfiguredError: mocks.TelnyxNotConfiguredError,
+}));
+
+vi.mock("@/lib/messaging/provisioning-attempt-gate", () => ({
+  reserveMessagingProfileAttempt: mocks.reserveMessagingProfileAttempt,
+  releaseMessagingProfileAttempt: mocks.releaseMessagingProfileAttempt,
 }));
 
 vi.mock("@/lib/billing/usage", () => ({
@@ -39,6 +65,40 @@ const { messagingRouter } = await import("../routers/messaging");
 const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const USER_ID = "00000000-0000-0000-0000-000000000001";
 const LOCATION_ID = "00000000-0000-0000-0000-000000000002";
+const SELECTED_QUOTE = {
+  upfrontCost: "3.21",
+  monthlyCost: "6.54",
+  currency: "USD",
+} as const;
+
+function startNumberInput() {
+  return {
+    locationId: LOCATION_ID,
+    mode: "buy" as const,
+    action: "start" as const,
+    phoneNumber: "+15555550100",
+    quote: SELECTED_QUOTE,
+    confirmProviderCharges: true as const,
+  };
+}
+
+function resumeNumberInput() {
+  return {
+    locationId: LOCATION_ID,
+    mode: "buy" as const,
+    action: "resume" as const,
+  };
+}
+
+function preparedMessagingGate() {
+  return {
+    provider: "telnyx",
+    messagingProfileId: null,
+    senderE164: "+15555550100",
+    numberSource: "purchased",
+    registrationStatus: "failed",
+  };
+}
 
 function callerWithDb(db: Record<string, unknown>) {
   const session = {
@@ -130,19 +190,40 @@ function createDb(opts?: {
   }));
   const insert = vi.fn(() => ({ values: insertValues }));
 
+  const execute = vi.fn(async () => undefined);
   const db: Record<string, unknown> = {
     transaction: async (fn: (tx: unknown) => unknown) => fn(db),
-    execute: vi.fn(async () => undefined),
+    execute,
     select,
     update,
     insert,
   };
 
-  return { db, select, updateSet, updateWhere, insertValues, insertUpdate };
+  return {
+    db,
+    select,
+    execute,
+    updateSet,
+    updateWhere,
+    insertValues,
+    insertUpdate,
+  };
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.findMessagingProfilesByName.mockResolvedValue([]);
+  mocks.findOwnedPhoneNumbers.mockResolvedValue([]);
+  mocks.findNumberOrdersByCustomerReference.mockResolvedValue([]);
+  mocks.findAvailableNumberQuotes.mockResolvedValue([
+    { phoneNumber: "+15555550100", ...SELECTED_QUOTE },
+  ]);
+  mocks.reserveMessagingProfileAttempt.mockResolvedValue(true);
+  mocks.releaseMessagingProfileAttempt.mockResolvedValue(true);
+  mocks.createMessagingProfile.mockResolvedValue({ id: "profile_123" });
+  mocks.buyNumber.mockResolvedValue({ orderId: "order_123", status: "pending" });
+  mocks.deleteMessagingProfile.mockResolvedValue(undefined);
+  mocks.deleteOwnedPhoneNumber.mockResolvedValue(undefined);
   delete process.env.NEXT_PUBLIC_APP_URL;
   delete process.env.NEXTAUTH_URL;
   delete process.env.HOSTED_BILLING_ENABLED;
@@ -152,13 +233,17 @@ beforeEach(() => {
   vi.stubEnv("MESSAGING_PROVISIONING_ENABLED", "true");
 });
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 describe("messaging provisioning kill-switch", () => {
   it("blocks number search and provisioning until ops enables it", async () => {
     vi.stubEnv("MESSAGING_PROVISIONING_ENABLED", "");
     const { db, select } = createDb();
 
     await expect(
-      callerWithDb(db).provisionNumber({ locationId: LOCATION_ID, mode: "host" })
+      callerWithDb(db).provisionNumber(startNumberInput())
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message: expect.stringContaining("almost ready"),
@@ -185,7 +270,7 @@ describe("messaging provisioning kill-switch", () => {
     });
 
     await expect(
-      callerWithDb(db).provisionNumber({ locationId: LOCATION_ID, mode: "host" })
+      callerWithDb(db).provisionNumber(startNumberInput())
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message: expect.stringContaining("approved pilot clinics"),
@@ -195,7 +280,7 @@ describe("messaging provisioning kill-switch", () => {
     // stops before its practice/location queries or any provider call.
     expect(select).toHaveBeenCalledTimes(1);
     expect(mocks.createMessagingProfile).not.toHaveBeenCalled();
-    expect(mocks.createHostedOrder).not.toHaveBeenCalled();
+    expect(mocks.buyNumber).not.toHaveBeenCalled();
   });
 });
 
@@ -366,8 +451,7 @@ describe("messaging location target safety", () => {
 
     await expect(
       callerWithDb(db).provisionNumber({
-        locationId: LOCATION_ID,
-        mode: "buy",
+        ...startNumberInput(),
         phoneNumber: "12345",
       })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
@@ -381,7 +465,6 @@ describe("messaging location target safety", () => {
 
     expect(select).not.toHaveBeenCalled();
     expect(mocks.createMessagingProfile).not.toHaveBeenCalled();
-    expect(mocks.createHostedOrder).not.toHaveBeenCalled();
     expect(mocks.buyNumber).not.toHaveBeenCalled();
     expect(mocks.sendSms).not.toHaveBeenCalled();
   });
@@ -408,7 +491,7 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      caller.provisionNumber({ locationId: LOCATION_ID, mode: "host" })
+      caller.provisionNumber(startNumberInput())
     ).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
@@ -416,7 +499,6 @@ describe("messaging location target safety", () => {
 
     expect(mocks.searchAvailableNumbers).not.toHaveBeenCalled();
     expect(mocks.createMessagingProfile).not.toHaveBeenCalled();
-    expect(mocks.createHostedOrder).not.toHaveBeenCalled();
     expect(mocks.buyNumber).not.toHaveBeenCalled();
     expect(mocks.sendSms).not.toHaveBeenCalled();
     expect(updateSet).not.toHaveBeenCalled();
@@ -447,18 +529,49 @@ describe("messaging location target safety", () => {
       callerWithDb(db).checkEligibility({ locationId: LOCATION_ID })
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
-    expect(mocks.checkHostedEligibility).not.toHaveBeenCalled();
+    expect(mocks.findMessagingProfilesByName).not.toHaveBeenCalled();
   });
 
-  it("rejects provisioning stale or deleted locations before provider calls", async () => {
-    const { db } = createDb({ selectResults: [[]] });
+  it("reports existing-number hosting as unavailable without contacting a provider", async () => {
+    const { db } = createDb({
+      selectResults: [[{ phone: "+15555550100" }]],
+    });
+
+    await expect(
+      callerWithDb(db).checkEligibility({ locationId: LOCATION_ID })
+    ).resolves.toEqual({
+      eligible: false,
+      detail: expect.stringContaining("has not ported or changed"),
+    });
+
+    expect(mocks.findMessagingProfilesByName).not.toHaveBeenCalled();
+    expect(mocks.findOwnedPhoneNumbers).not.toHaveBeenCalled();
+  });
+
+  it("truthfully rejects existing-number hosting without provider mutation", async () => {
+    const { db } = createDb();
 
     await expect(
       callerWithDb(db).provisionNumber({ locationId: LOCATION_ID, mode: "host" })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("has not ported or changed"),
+    });
+
+    expect(mocks.findMessagingProfilesByName).not.toHaveBeenCalled();
+    expect(mocks.createMessagingProfile).not.toHaveBeenCalled();
+    expect(mocks.buyNumber).not.toHaveBeenCalled();
+  });
+
+  it("rejects provisioning stale or deleted locations before provider calls", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
+    const { db } = createDb({ selectResults: [[]] });
+
+    await expect(
+      callerWithDb(db).provisionNumber(startNumberInput())
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(mocks.createMessagingProfile).not.toHaveBeenCalled();
-    expect(mocks.createHostedOrder).not.toHaveBeenCalled();
     expect(mocks.buyNumber).not.toHaveBeenCalled();
   });
 
@@ -470,10 +583,7 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      callerWithDb(missingEnv.db).provisionNumber({
-        locationId: LOCATION_ID,
-        mode: "host",
-      })
+      callerWithDb(missingEnv.db).provisionNumber(startNumberInput())
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message:
@@ -488,79 +598,88 @@ describe("messaging location target safety", () => {
     });
 
     await expect(
-      callerWithDb(localEnv.db).provisionNumber({
-        locationId: LOCATION_ID,
-        mode: "host",
-      })
+      callerWithDb(localEnv.db).provisionNumber(startNumberInput())
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
     });
 
     expect(mocks.createMessagingProfile).not.toHaveBeenCalled();
-    expect(mocks.createHostedOrder).not.toHaveBeenCalled();
+    expect(mocks.buyNumber).not.toHaveBeenCalled();
+  });
+
+  it("never calls the provider when a fresh durable attempt cannot be reserved", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
+    mocks.reserveMessagingProfileAttempt.mockResolvedValueOnce(false);
+    const { db } = createDb({
+      selectResults: [[{ id: LOCATION_ID }], []],
+    });
+
+    await expect(
+      callerWithDb(db).provisionNumber(startNumberInput())
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: expect.stringContaining("could not reserve"),
+    });
+    expect(mocks.findMessagingProfilesByName).not.toHaveBeenCalled();
+    expect(mocks.createMessagingProfile).not.toHaveBeenCalled();
     expect(mocks.buyNumber).not.toHaveBeenCalled();
   });
 
   it("falls back to NEXTAUTH_URL when NEXT_PUBLIC_APP_URL is blank", async () => {
     process.env.NEXT_PUBLIC_APP_URL = "   ";
     process.env.NEXTAUTH_URL = "https://auth.example.com/settings";
-    mocks.createMessagingProfile.mockResolvedValue({ id: "profile_123" });
-    mocks.createHostedOrder.mockResolvedValue({ id: "hosted_123" });
     const { db } = createDb({
       selectResults: [
-        [{ id: LOCATION_ID, name: "Main Clinic", phone: "(555) 555-0100" }],
+        [{ id: LOCATION_ID }],
+        [],
       ],
     });
 
     await expect(
-      callerWithDb(db).provisionNumber({
-        locationId: LOCATION_ID,
-        mode: "host",
-      })
+      callerWithDb(db).provisionNumber(startNumberInput())
     ).resolves.toMatchObject({
       ok: true,
       senderE164: "+15555550100",
-      numberSource: "hosted",
+      numberSource: "purchased",
     });
 
     expect(mocks.createMessagingProfile).toHaveBeenCalledWith({
-      name: "Main Clinic — OpenVPM",
+      name: `OpenVPM provision ${LOCATION_ID}`,
       webhookUrl: "https://auth.example.com/api/webhooks/telnyx",
     });
-    expect(mocks.createHostedOrder).toHaveBeenCalledWith({
+    expect(mocks.buyNumber).toHaveBeenCalledWith({
       phoneNumber: "+15555550100",
       messagingProfileId: "profile_123",
+      customerReference: `openvpm:${PRACTICE_ID}:${LOCATION_ID}`,
     });
   });
 
   it("passes the public Telnyx webhook URL and reactivates sender rows", async () => {
     process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
-    mocks.createMessagingProfile.mockResolvedValue({ id: "profile_123" });
-    mocks.createHostedOrder.mockResolvedValue({ id: "hosted_123" });
     const { db, insertValues, insertUpdate } = createDb({
       selectResults: [
-        [{ id: LOCATION_ID, name: "Main Clinic", phone: "(555) 555-0100" }],
+        [{ id: LOCATION_ID }],
+        [],
       ],
     });
 
     await expect(
-      callerWithDb(db).provisionNumber({
-        locationId: LOCATION_ID,
-        mode: "host",
-      })
+      callerWithDb(db).provisionNumber(startNumberInput())
     ).resolves.toEqual({
       ok: true,
       senderE164: "+15555550100",
-      numberSource: "hosted",
+      numberSource: "purchased",
+      recovered: false,
     });
 
     expect(mocks.createMessagingProfile).toHaveBeenCalledWith({
-      name: "Main Clinic — OpenVPM",
+      name: `OpenVPM provision ${LOCATION_ID}`,
       webhookUrl: "https://app.example.com/api/webhooks/telnyx",
     });
-    expect(mocks.createHostedOrder).toHaveBeenCalledWith({
+    expect(mocks.buyNumber).toHaveBeenCalledWith({
       phoneNumber: "+15555550100",
       messagingProfileId: "profile_123",
+      customerReference: `openvpm:${PRACTICE_ID}:${LOCATION_ID}`,
     });
     expect(insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -568,8 +687,8 @@ describe("messaging location target safety", () => {
         locationId: LOCATION_ID,
         messagingProfileId: "profile_123",
         senderE164: "+15555550100",
-        registrationStatus: "pending",
-        registrationDetail: expect.stringContaining("Carrier registration"),
+        registrationStatus: "not_started",
+        registrationDetail: expect.stringContaining("Number order accepted"),
         enabled: false,
       })
     );
@@ -578,12 +697,659 @@ describe("messaging location target safety", () => {
         set: expect.objectContaining({
           messagingProfileId: "profile_123",
           senderE164: "+15555550100",
-          registrationStatus: "pending",
-          registrationDetail: expect.stringContaining("Carrier registration"),
+          registrationStatus: "not_started",
+          registrationDetail: expect.stringContaining("Number order accepted"),
           enabled: false,
           deletedAt: null,
           updatedAt: expect.any(Date),
         }),
+      })
+    );
+  });
+
+  it("returns an existing completed operation without another provider call", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
+    const { db } = createDb({
+      selectResults: [
+        [{ id: LOCATION_ID }],
+        [
+          {
+            provider: "telnyx",
+            messagingProfileId: "profile_123",
+            senderE164: "+15555550100",
+            numberSource: "purchased",
+            registrationStatus: "not_started",
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).provisionNumber(startNumberInput())
+    ).resolves.toEqual({
+      ok: true,
+      senderE164: "+15555550100",
+      numberSource: "purchased",
+      recovered: true,
+    });
+
+    expect(mocks.findMessagingProfilesByName).not.toHaveBeenCalled();
+    expect(mocks.findOwnedPhoneNumbers).not.toHaveBeenCalled();
+    expect(mocks.createMessagingProfile).not.toHaveBeenCalled();
+    expect(mocks.buyNumber).not.toHaveBeenCalled();
+  });
+
+  it("reconciles an interrupted purchase without buying the number twice", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
+    mocks.findMessagingProfilesByName.mockResolvedValue([
+      {
+        id: "profile_123",
+        name: `OpenVPM provision ${LOCATION_ID}`,
+        webhookUrl: "https://app.example.com/api/webhooks/telnyx",
+        enabled: false,
+      },
+    ]);
+    mocks.findOwnedPhoneNumbers.mockResolvedValue([
+      {
+        id: "number_123",
+        phoneNumber: "+15555550100",
+        messagingProfileId: "profile_123",
+        status: "active",
+      },
+    ]);
+    const { db, insertValues } = createDb({
+      selectResults: [
+        [{ id: LOCATION_ID }],
+        [
+          {
+            provider: "telnyx",
+            messagingProfileId: "profile_123",
+            senderE164: "+15555550100",
+            numberSource: "purchased",
+            registrationStatus: "failed",
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).provisionNumber(resumeNumberInput())
+    ).resolves.toMatchObject({ recovered: true, numberSource: "purchased" });
+
+    expect(mocks.createMessagingProfile).not.toHaveBeenCalled();
+    expect(mocks.buyNumber).not.toHaveBeenCalled();
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        registrationStatus: "not_started",
+        enabled: false,
+      })
+    );
+  });
+
+  it("recovers a pending exact customer-reference order before phone inventory appears", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
+    mocks.findMessagingProfilesByName.mockResolvedValue([
+      {
+        id: "profile_123",
+        name: `OpenVPM provision ${LOCATION_ID}`,
+        webhookUrl: "https://app.example.com/api/webhooks/telnyx",
+        enabled: false,
+      },
+    ]);
+    mocks.findNumberOrdersByCustomerReference.mockResolvedValue([
+      {
+        id: "order_123",
+        status: "pending",
+        customerReference: `openvpm:${PRACTICE_ID}:${LOCATION_ID}`,
+        messagingProfileId: "profile_123",
+        phoneNumbers: ["+15555550100"],
+      },
+    ]);
+    const { db, insertValues } = createDb({
+      selectResults: [
+        [{ id: LOCATION_ID }],
+        [
+          {
+            provider: "telnyx",
+            messagingProfileId: "profile_123",
+            senderE164: "+15555550100",
+            numberSource: "purchased",
+            registrationStatus: "failed",
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).provisionNumber(resumeNumberInput())
+    ).resolves.toMatchObject({ recovered: true, senderE164: "+15555550100" });
+
+    expect(mocks.buyNumber).not.toHaveBeenCalled();
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messagingProfileId: "profile_123",
+        senderE164: "+15555550100",
+        registrationStatus: "not_started",
+      })
+    );
+  });
+
+  it.each([
+    "transport timeout",
+    "HTTP 408",
+    "HTTP 429",
+    "HTTP 500",
+    "malformed successful response",
+  ])("never issues a second order POST after %s", async (scenario) => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
+    mocks.findMessagingProfilesByName
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: "profile_123",
+          name: `OpenVPM provision ${LOCATION_ID}`,
+          webhookUrl: "https://app.example.com/api/webhooks/telnyx",
+          enabled: false,
+        },
+      ]);
+    mocks.findNumberOrdersByCustomerReference
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: "order_123",
+          status: "pending",
+          customerReference: `openvpm:${PRACTICE_ID}:${LOCATION_ID}`,
+          messagingProfileId: "profile_123",
+          phoneNumbers: ["+15555550100"],
+        },
+      ]);
+    mocks.buyNumber.mockRejectedValueOnce(
+      new mocks.TelnyxMutationUncertainError(`${scenario}: reconcile required`)
+    );
+
+    const first = createDb({ selectResults: [[{ id: LOCATION_ID }], []] });
+    await expect(
+      callerWithDb(first.db).provisionNumber(startNumberInput())
+    ).rejects.toMatchObject({ code: "BAD_GATEWAY" });
+
+    const retry = createDb({
+      selectResults: [
+        [{ id: LOCATION_ID }],
+        [
+          {
+            provider: "telnyx",
+            messagingProfileId: "profile_123",
+            senderE164: "+15555550100",
+            numberSource: "purchased",
+            registrationStatus: "failed",
+          },
+        ],
+      ],
+    });
+    await expect(
+      callerWithDb(retry.db).provisionNumber(resumeNumberInput())
+    ).resolves.toMatchObject({ recovered: true });
+    expect(mocks.buyNumber).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    "profile transport timeout",
+    "profile HTTP 408",
+    "profile HTTP 429",
+    "profile HTTP 500",
+    "malformed profile success response",
+  ])(
+    "persists a pre-attempt gate and never repeats profile creation after %s",
+    async (scenario) => {
+      process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
+      mocks.createMessagingProfile.mockRejectedValueOnce(
+        new mocks.TelnyxMutationUncertainError(
+          `${scenario}: profile reconciliation required`
+        )
+      );
+      mocks.reserveMessagingProfileAttempt.mockResolvedValueOnce(true);
+      const gate = preparedMessagingGate();
+      const first = createDb({
+        selectResults: [[{ id: LOCATION_ID }], [gate], [gate]],
+      });
+
+      await expect(
+        callerWithDb(first.db).provisionNumber(startNumberInput())
+      ).rejects.toMatchObject({ code: "BAD_GATEWAY" });
+      expect(mocks.reserveMessagingProfileAttempt).toHaveBeenCalledWith({
+        practiceId: PRACTICE_ID,
+        locationId: LOCATION_ID,
+        senderE164: "+15555550100",
+        customerReference: `openvpm:${PRACTICE_ID}:${LOCATION_ID}`,
+        detail: expect.stringContaining("will not create another provider profile"),
+      });
+      expect(
+        mocks.reserveMessagingProfileAttempt.mock.invocationCallOrder[0]
+      ).toBeLessThan(mocks.createMessagingProfile.mock.invocationCallOrder[0]!);
+      expect(first.insertValues).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          messagingProfileId: null,
+          senderE164: "+15555550100",
+          numberSource: "purchased",
+          registrationStatus: "failed",
+          enabled: false,
+        })
+      );
+
+      const retry = createDb({
+        selectResults: [[{ id: LOCATION_ID }], [gate]],
+      });
+      await expect(
+        callerWithDb(retry.db).provisionNumber(resumeNumberInput())
+      ).rejects.toMatchObject({
+        code: "CONFLICT",
+        message: expect.stringContaining("No additional purchase"),
+      });
+
+      expect(mocks.createMessagingProfile).toHaveBeenCalledTimes(1);
+      expect(mocks.buyNumber).not.toHaveBeenCalled();
+      expect(mocks.releaseMessagingProfileAttempt).not.toHaveBeenCalled();
+    }
+  );
+
+  it("keeps resume read-only when the exact profile later becomes visible", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
+    const gate = preparedMessagingGate();
+    mocks.reserveMessagingProfileAttempt.mockResolvedValueOnce(true);
+    mocks.findMessagingProfilesByName
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: "profile_123",
+          name: `OpenVPM provision ${LOCATION_ID}`,
+          webhookUrl: "https://app.example.com/api/webhooks/telnyx",
+          enabled: false,
+        },
+      ]);
+    mocks.createMessagingProfile.mockRejectedValueOnce(
+      new mocks.TelnyxMutationUncertainError("profile response timed out")
+    );
+    const first = createDb({
+      selectResults: [[{ id: LOCATION_ID }], [gate], [gate]],
+    });
+    await expect(
+      callerWithDb(first.db).provisionNumber(startNumberInput())
+    ).rejects.toMatchObject({ code: "BAD_GATEWAY" });
+
+    const retry = createDb({
+      selectResults: [[{ id: LOCATION_ID }], [gate], [gate]],
+    });
+    await expect(
+      callerWithDb(retry.db).provisionNumber(resumeNumberInput())
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    expect(mocks.createMessagingProfile).toHaveBeenCalledTimes(1);
+    expect(mocks.buyNumber).not.toHaveBeenCalled();
+    expect(mocks.releaseMessagingProfileAttempt).not.toHaveBeenCalled();
+  });
+
+  it("fails closed on duplicate, mismatched, and inconclusive order records", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
+    mocks.findMessagingProfilesByName.mockResolvedValue([
+      {
+        id: "profile_123",
+        name: `OpenVPM provision ${LOCATION_ID}`,
+        webhookUrl: "https://app.example.com/api/webhooks/telnyx",
+        enabled: false,
+      },
+    ]);
+    mocks.findNumberOrdersByCustomerReference.mockResolvedValue([
+      {
+        id: "order_1",
+        status: "pending",
+        customerReference: `openvpm:${PRACTICE_ID}:${LOCATION_ID}`,
+        messagingProfileId: "different_profile",
+        phoneNumbers: ["+15555550100"],
+      },
+    ]);
+    const { db } = createDb({
+      selectResults: [
+        [{ id: LOCATION_ID }],
+        [
+          {
+            provider: "telnyx",
+            messagingProfileId: "profile_123",
+            senderE164: "+15555550100",
+            numberSource: "purchased",
+            registrationStatus: "failed",
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).provisionNumber(resumeNumberInput())
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: expect.stringContaining("No additional purchase"),
+    });
+    expect(mocks.buyNumber).not.toHaveBeenCalled();
+  });
+
+  it("requires literal charge authorization and a current immutable quote", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
+    const noConfirmation = createDb();
+    await expect(
+      callerWithDb(noConfirmation.db).provisionNumber({
+        ...startNumberInput(),
+        confirmProviderCharges: false,
+      } as never)
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    mocks.reserveMessagingProfileAttempt
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true);
+    mocks.findAvailableNumberQuotes
+      .mockResolvedValueOnce([
+        {
+          phoneNumber: "+15555550100",
+          upfrontCost: "4.00",
+          monthlyCost: "6.54",
+          currency: "USD",
+        },
+      ])
+      .mockResolvedValueOnce([
+        { phoneNumber: "+15555550100", ...SELECTED_QUOTE },
+      ]);
+    const gate = preparedMessagingGate();
+    const changedQuote = createDb({
+      selectResults: [[{ id: LOCATION_ID }], [gate]],
+    });
+    await expect(
+      callerWithDb(changedQuote.db).provisionNumber(startNumberInput())
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: expect.stringContaining("price changed"),
+    });
+    expect(mocks.releaseMessagingProfileAttempt).toHaveBeenCalledWith({
+      practiceId: PRACTICE_ID,
+      locationId: LOCATION_ID,
+      senderE164: "+15555550100",
+      customerReference: `openvpm:${PRACTICE_ID}:${LOCATION_ID}`,
+      detail: expect.stringContaining("will not create another provider profile"),
+    });
+    expect(mocks.createMessagingProfile).not.toHaveBeenCalled();
+    expect(mocks.buyNumber).not.toHaveBeenCalled();
+
+    const retryAfterRelease = createDb({
+      selectResults: [[{ id: LOCATION_ID }], [gate]],
+    });
+    await expect(
+      callerWithDb(retryAfterRelease.db).provisionNumber(startNumberInput())
+    ).resolves.toMatchObject({
+      ok: true,
+      senderE164: "+15555550100",
+    });
+    expect(mocks.createMessagingProfile).toHaveBeenCalledTimes(1);
+    expect(mocks.buyNumber).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases an untouched gate when provider configuration is missing before the first request", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
+    const gate = preparedMessagingGate();
+    mocks.findMessagingProfilesByName.mockRejectedValueOnce(
+      new mocks.TelnyxNotConfiguredError()
+    );
+
+    const missingConfig = createDb({
+      selectResults: [[{ id: LOCATION_ID }], [gate], [gate]],
+    });
+    await expect(
+      callerWithDb(missingConfig.db).provisionNumber(startNumberInput())
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    expect(mocks.releaseMessagingProfileAttempt).toHaveBeenCalledWith({
+      practiceId: PRACTICE_ID,
+      locationId: LOCATION_ID,
+      senderE164: "+15555550100",
+      customerReference: `openvpm:${PRACTICE_ID}:${LOCATION_ID}`,
+      detail: expect.stringContaining("will not create another provider profile"),
+    });
+    expect(mocks.createMessagingProfile).not.toHaveBeenCalled();
+    expect(mocks.buyNumber).not.toHaveBeenCalled();
+
+    const retryAfterConfiguration = createDb({
+      selectResults: [[{ id: LOCATION_ID }], [gate]],
+    });
+    await expect(
+      callerWithDb(retryAfterConfiguration.db).provisionNumber(
+        startNumberInput()
+      )
+    ).resolves.toMatchObject({
+      ok: true,
+      senderE164: "+15555550100",
+    });
+    expect(mocks.createMessagingProfile).toHaveBeenCalledTimes(1);
+    expect(mocks.buyNumber).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains the gate when provider configuration disappears after profile creation", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
+    const gate = preparedMessagingGate();
+    mocks.findOwnedPhoneNumbers.mockRejectedValueOnce(
+      new mocks.TelnyxNotConfiguredError()
+    );
+
+    const interruptedAfterProfile = createDb({
+      selectResults: [[{ id: LOCATION_ID }], [gate], [gate]],
+    });
+    await expect(
+      callerWithDb(interruptedAfterProfile.db).provisionNumber(
+        startNumberInput()
+      )
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    expect(mocks.createMessagingProfile).toHaveBeenCalledTimes(1);
+    expect(mocks.releaseMessagingProfileAttempt).not.toHaveBeenCalled();
+    expect(mocks.buyNumber).not.toHaveBeenCalled();
+
+    mocks.findMessagingProfilesByName.mockResolvedValueOnce([
+      {
+        id: "profile_123",
+        name: `OpenVPM provision ${LOCATION_ID}`,
+        webhookUrl: "https://app.example.com/api/webhooks/telnyx",
+        enabled: false,
+      },
+    ]);
+    const retry = createDb({
+      selectResults: [
+        [{ id: LOCATION_ID }],
+        [
+          {
+            ...gate,
+            messagingProfileId: "profile_123",
+          },
+        ],
+      ],
+    });
+    await expect(
+      callerWithDb(retry.db).provisionNumber(resumeNumberInput())
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: expect.stringContaining("No additional purchase"),
+    });
+
+    expect(mocks.createMessagingProfile).toHaveBeenCalledTimes(1);
+    expect(mocks.releaseMessagingProfileAttempt).not.toHaveBeenCalled();
+    expect(mocks.buyNumber).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when deterministic provider profiles are duplicated", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
+    mocks.findMessagingProfilesByName.mockResolvedValue([
+      {
+        id: "profile_1",
+        name: `OpenVPM provision ${LOCATION_ID}`,
+        webhookUrl: "https://app.example.com/api/webhooks/telnyx",
+        enabled: false,
+      },
+      {
+        id: "profile_2",
+        name: `OpenVPM provision ${LOCATION_ID}`,
+        webhookUrl: "https://app.example.com/api/webhooks/telnyx",
+        enabled: false,
+      },
+    ]);
+    const { db } = createDb({
+      selectResults: [[{ id: LOCATION_ID }], []],
+    });
+
+    await expect(
+      callerWithDb(db).provisionNumber(startNumberInput())
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: expect.stringContaining("more than one incomplete"),
+    });
+
+    expect(mocks.createMessagingProfile).not.toHaveBeenCalled();
+    expect(mocks.buyNumber).not.toHaveBeenCalled();
+  });
+
+  it("refuses to recover a provider profile that is already enabled", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
+    mocks.findMessagingProfilesByName.mockResolvedValue([
+      {
+        id: "profile_123",
+        name: `OpenVPM provision ${LOCATION_ID}`,
+        webhookUrl: "https://app.example.com/api/webhooks/telnyx",
+        enabled: true,
+      },
+    ]);
+    const { db } = createDb({
+      selectResults: [[{ id: LOCATION_ID }], []],
+    });
+
+    await expect(
+      callerWithDb(db).provisionNumber(startNumberInput())
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: expect.stringContaining("unsafe settings"),
+    });
+
+    expect(mocks.createMessagingProfile).not.toHaveBeenCalled();
+    expect(mocks.buyNumber).not.toHaveBeenCalled();
+  });
+
+  it("retains an accepted order identity when the durable write fails", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.findOwnedPhoneNumbers
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: "number_123",
+          phoneNumber: "+15555550100",
+          messagingProfileId: "profile_123",
+          status: "active",
+        },
+      ]);
+    const { db, insertUpdate, insertValues } = createDb({
+      selectResults: [[{ id: LOCATION_ID }], []],
+    });
+    insertUpdate
+      .mockRejectedValueOnce(new Error("database write failed"))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(
+      callerWithDb(db).provisionNumber(startNumberInput())
+    ).rejects.toMatchObject({
+      code: "INTERNAL_SERVER_ERROR",
+      message: expect.not.stringContaining("database write failed"),
+    });
+
+    expect(mocks.deleteOwnedPhoneNumber).not.toHaveBeenCalled();
+    expect(mocks.deleteMessagingProfile).not.toHaveBeenCalled();
+    expect(insertValues).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        messagingProfileId: "profile_123",
+        senderE164: "+15555550100",
+        registrationStatus: "failed",
+        enabled: false,
+      })
+    );
+    expect(errorLog).toHaveBeenCalledWith(
+      "Unexpected messaging provisioning failure",
+      expect.any(Error)
+    );
+  });
+
+  it("does not let older compensation overwrite a newer completed retry", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { db, insertUpdate, insertValues } = createDb({
+      selectResults: [
+        [{ id: LOCATION_ID }],
+        [],
+        [
+          {
+            provider: "telnyx",
+            messagingProfileId: "profile_123",
+            senderE164: "+15555550100",
+            numberSource: "purchased",
+            registrationStatus: "not_started",
+          },
+        ],
+      ],
+    });
+    insertUpdate.mockRejectedValueOnce(new Error("database write failed"));
+
+    await expect(
+      callerWithDb(db).provisionNumber(startNumberInput())
+    ).rejects.toMatchObject({ code: "INTERNAL_SERVER_ERROR" });
+
+    expect(mocks.deleteOwnedPhoneNumber).not.toHaveBeenCalled();
+    expect(mocks.deleteMessagingProfile).not.toHaveBeenCalled();
+    expect(insertValues).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a deterministic profile recoverable after an uncertain order timeout", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
+    mocks.buyNumber.mockRejectedValue(
+      new mocks.TelnyxMutationUncertainError("request outcome uncertain")
+    );
+    const { db, insertValues } = createDb({
+      selectResults: [[{ id: LOCATION_ID }], []],
+    });
+
+    await expect(
+      callerWithDb(db).provisionNumber(startNumberInput())
+    ).rejects.toMatchObject({ code: "BAD_GATEWAY" });
+
+    expect(mocks.deleteOwnedPhoneNumber).not.toHaveBeenCalled();
+    expect(mocks.deleteMessagingProfile).not.toHaveBeenCalled();
+    expect(insertValues).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        messagingProfileId: "profile_123",
+        registrationStatus: "failed",
+      })
+    );
+  });
+
+  it("rechecks the kill switch immediately before a number purchase", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
+    mocks.createMessagingProfile.mockImplementation(async () => {
+      process.env.MESSAGING_PROVISIONING_ENABLED = "false";
+      return { id: "profile_123" };
+    });
+    const { db, insertValues } = createDb({
+      selectResults: [[{ id: LOCATION_ID }], []],
+    });
+
+    await expect(
+      callerWithDb(db).provisionNumber(startNumberInput())
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    expect(mocks.buyNumber).not.toHaveBeenCalled();
+    expect(mocks.deleteMessagingProfile).not.toHaveBeenCalled();
+    expect(insertValues).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        messagingProfileId: "profile_123",
+        registrationStatus: "failed",
       })
     );
   });

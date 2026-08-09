@@ -16,6 +16,10 @@ describe("messaging settings UI", () => {
     "utf8"
   );
   const routerSource = readFileSync("server/routers/messaging.ts", "utf8");
+  const onboardingSource = readFileSync(
+    "components/onboarding/steps/set-up-texting.tsx",
+    "utf8"
+  );
 
   it("keeps messaging phone policy aligned across settings and router", () => {
     expect(MESSAGING_PHONE_MIN_LENGTH).toBe(7);
@@ -84,5 +88,39 @@ describe("messaging settings UI", () => {
     expect(tabSource).not.toContain("data?.locations ?? []");
     expect(tabSource).not.toContain("const usage = data?.usage");
     expect(tabSource).not.toContain("const consent = data?.consent");
+  });
+
+  it("is explicit about unsupported existing numbers, charges, and recoverable setup", () => {
+    expect(wizardSource).toContain(
+      "Existing-number texting is not available yet"
+    );
+    expect(wizardSource).toContain(
+      "will not be ported, hosted, or changed"
+    );
+    expect(wizardSource).toContain("chargeAcknowledged");
+    expect(wizardSource).toContain(
+      "I authorize the exact upfront and monthly provider charges"
+    );
+    expect(wizardSource).toContain("confirmProviderCharges: true");
+    expect(wizardSource).toContain(
+      '(step === "registration" &&\n      mode === "buy" &&\n      Boolean(selectedNumber) &&\n      chargeAcknowledged)'
+    );
+    expect(wizardSource).toContain("upfrontCost");
+    expect(wizardSource).toContain("monthlyCost");
+    expect(wizardSource).toContain("currency");
+    expect(wizardSource).toContain("Purchase number and start setup");
+    expect(tabSource).toContain("Reconcile provider setup");
+    expect(tabSource).toContain('action: "resume"');
+    expect(onboardingSource).not.toContain(
+      "You can text from your existing number"
+    );
+    expect(onboardingSource).toContain("Number order accepted");
+    expect(onboardingSource).toContain("Carrier registration is under review");
+    expect(onboardingSource).toContain("Carrier registration is approved");
+    expect(onboardingSource).toContain("Number setup did not finish");
+    expect(routerSource).toContain("pg_advisory_xact_lock");
+    expect(routerSource).toContain("assertProvisioningEnabled();");
+    expect(routerSource).toContain("confirmProviderCharges: z.literal(true)");
+    expect(routerSource).toContain("findNumberOrdersByCustomerReference");
   });
 });

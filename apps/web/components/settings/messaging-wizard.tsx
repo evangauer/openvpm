@@ -50,21 +50,32 @@ export type MessagingSetupLocation = {
 };
 
 type Step = "choose" | "confirm" | "registration" | "done";
-type SearchNumber = { phoneNumber: string; monthlyCost: string | null };
+type SearchNumber = {
+  phoneNumber: string;
+  upfrontCost: string;
+  monthlyCost: string;
+  currency: string;
+};
 
-/** Format a provider's raw monthly cost (e.g. "1.00000") as "$1.00". */
-function formatMonthlyCost(cost: string | null): string | null {
-  if (!cost) return null;
+/** Format a provider's raw cost (e.g. "1.00000") using its quoted currency. */
+function formatCost(cost: string, currency: string): string {
   const value = Number(cost);
-  if (!Number.isFinite(value)) return null;
-  return `$${value.toFixed(2)}`;
+  if (!Number.isFinite(value)) return `${cost} ${currency}`;
+  try {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency,
+    }).format(value);
+  } catch {
+    return `${value.toFixed(2)} ${currency}`;
+  }
 }
 
 const STEPS: { id: Step; title: string }[] = [
   { id: "choose", title: "Choose a texting number" },
   { id: "confirm", title: "Confirm the number" },
-  { id: "registration", title: "Carrier registration" },
-  { id: "done", title: "Registration pending" },
+  { id: "registration", title: "Review and purchase" },
+  { id: "done", title: "Number ordered; registration not started" },
 ];
 
 export function MessagingWizard({
@@ -92,8 +103,10 @@ export function MessagingWizard({
   const [checking, setChecking] = useState(false);
   const [areaCode, setAreaCode] = useState("");
   const [numbers, setNumbers] = useState<SearchNumber[]>([]);
-  const [selectedNumber, setSelectedNumber] = useState<string | null>(null);
+  const [hasSearched, setHasSearched] = useState(false);
+  const [selectedNumber, setSelectedNumber] = useState<SearchNumber | null>(null);
   const [provisionedSender, setProvisionedSender] = useState<string | null>(null);
+  const [chargeAcknowledged, setChargeAcknowledged] = useState(false);
 
   useEffect(() => {
     if (!open || !location) return;
@@ -103,15 +116,19 @@ export function MessagingWizard({
     setChecking(false);
     setAreaCode("");
     setNumbers([]);
+    setHasSearched(false);
     setSelectedNumber(null);
     setProvisionedSender(null);
+    setChargeAcknowledged(false);
   }, [open, location]);
 
   const provision = trpc.messaging.provisionNumber.useMutation({
     onSuccess: (result) => {
       setProvisionedSender(result.senderE164);
       setStep("done");
-      toast.success("Number set up. Carrier registration is now pending.");
+      toast.success(
+        "Number order accepted. Sending stays off until carrier approval."
+      );
       onChanged();
     },
     onError: (e) => toast.error(e.message),
@@ -123,10 +140,14 @@ export function MessagingWizard({
   const currentIndex = STEPS.findIndex((s) => s.id === step);
   const canContinue =
     step === "choose" ||
-    step === "registration" ||
     step === "done" ||
-    (mode === "host" && eligibility?.eligible === true) ||
-    (mode === "buy" && Boolean(selectedNumber));
+    (step === "confirm" &&
+      ((mode === "host" && eligibility?.eligible === true) ||
+        (mode === "buy" && Boolean(selectedNumber)))) ||
+    (step === "registration" &&
+      mode === "buy" &&
+      Boolean(selectedNumber) &&
+      chargeAcknowledged);
 
   async function checkExisting() {
     if (!location) return;
@@ -146,12 +167,16 @@ export function MessagingWizard({
   async function searchNumbers() {
     if (!isMessagingAreaCodeInputValid(areaCode)) return;
     setChecking(true);
+    setChargeAcknowledged(false);
+    setSelectedNumber(null);
+    setHasSearched(false);
     try {
       const result = await utils.messaging.searchNumbers.fetch(
         areaCode ? { areaCode } : {}
       );
       setNumbers(result);
-      setSelectedNumber(result[0]?.phoneNumber ?? null);
+      setSelectedNumber(result[0] ?? null);
+      setHasSearched(true);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Number search failed");
     } finally {
@@ -177,10 +202,18 @@ export function MessagingWizard({
       return;
     }
     if (step === "registration") {
+      if (mode !== "buy" || !selectedNumber || !chargeAcknowledged) return;
       provision.mutate({
         locationId: activeLocation.locationId,
-        mode,
-        phoneNumber: mode === "buy" ? selectedNumber ?? undefined : undefined,
+        mode: "buy",
+        action: "start",
+        phoneNumber: selectedNumber.phoneNumber,
+        quote: {
+          upfrontCost: selectedNumber.upfrontCost,
+          monthlyCost: selectedNumber.monthlyCost,
+          currency: selectedNumber.currency,
+        },
+        confirmProviderCharges: true,
       });
       return;
     }
@@ -242,7 +275,10 @@ export function MessagingWizard({
             {step === "choose" ? (
               <ChooseStep
                 mode={mode}
-                setMode={setMode}
+                setMode={(nextMode) => {
+                  setMode(nextMode);
+                  setChargeAcknowledged(false);
+                }}
                 existingPhone={location.existingPhone}
               />
             ) : null}
@@ -254,10 +290,20 @@ export function MessagingWizard({
                 checking={checking}
                 checkExisting={checkExisting}
                 areaCode={areaCode}
-                setAreaCode={setAreaCode}
+                setAreaCode={(nextAreaCode) => {
+                  setAreaCode(nextAreaCode);
+                  setNumbers([]);
+                  setHasSearched(false);
+                  setSelectedNumber(null);
+                  setChargeAcknowledged(false);
+                }}
                 numbers={numbers}
+                hasSearched={hasSearched}
                 selectedNumber={selectedNumber}
-                setSelectedNumber={setSelectedNumber}
+                setSelectedNumber={(number) => {
+                  setSelectedNumber(number);
+                  setChargeAcknowledged(false);
+                }}
                 searchNumbers={searchNumbers}
               />
             ) : null}
@@ -266,6 +312,8 @@ export function MessagingWizard({
                 mode={mode}
                 location={location}
                 selectedNumber={selectedNumber}
+                chargeAcknowledged={chargeAcknowledged}
+                setChargeAcknowledged={setChargeAcknowledged}
               />
             ) : null}
             {step === "done" ? (
@@ -320,35 +368,26 @@ function ChooseStep({
   return (
     <div className="space-y-4">
       <p className="text-sm leading-6 text-slate-600">
-        Most clinics start by text-enabling the phone number clients already
-        know. You can also get a new local number for texting only.
+        OpenVPM currently sets up a new local number for texting. Your clinic&apos;s
+        existing voice line stays unchanged.
       </p>
-      <button
-        type="button"
-        onClick={() => setMode("host")}
-        disabled={!existingPhone}
-        className={cn(
-          "w-full rounded-xl border p-4 text-left transition-colors",
-          mode === "host"
-            ? "border-emerald-500 bg-emerald-50"
-            : "border-slate-200 hover:border-emerald-300",
-          !existingPhone && "cursor-not-allowed opacity-60"
-        )}
+      <div
+        className="w-full rounded-xl border border-slate-200 bg-slate-50 p-4 text-left"
       >
         <div className="flex items-start gap-3">
-          <ShieldCheck className="mt-0.5 h-5 w-5 text-emerald-600" />
+          <ShieldCheck className="mt-0.5 h-5 w-5 text-slate-500" />
           <div>
             <p className="font-medium text-slate-950">
-              Text from your existing number
+              Existing-number texting is not available yet
             </p>
             <p className="mt-1 text-sm text-slate-600">
               {existingPhone
-                ? `Keep ${existingPhone} for calls while OpenVPM adds texting.`
-                : "Add a phone number in Practice Info to use this option."}
+                ? `${existingPhone} will not be ported, hosted, or changed.`
+                : "Your clinic phone line will not be ported, hosted, or changed."}
             </p>
           </div>
         </div>
-      </button>
+      </div>
       <button
         type="button"
         onClick={() => setMode("buy")}
@@ -384,6 +423,7 @@ function ConfirmStep({
   areaCode,
   setAreaCode,
   numbers,
+  hasSearched,
   selectedNumber,
   setSelectedNumber,
   searchNumbers,
@@ -396,8 +436,9 @@ function ConfirmStep({
   areaCode: string;
   setAreaCode: (areaCode: string) => void;
   numbers: SearchNumber[];
-  selectedNumber: string | null;
-  setSelectedNumber: (phoneNumber: string) => void;
+  hasSearched: boolean;
+  selectedNumber: SearchNumber | null;
+  setSelectedNumber: (number: SearchNumber) => void;
   searchNumbers: () => void;
 }) {
   if (mode === "host") {
@@ -445,7 +486,8 @@ function ConfirmStep({
     <div className="space-y-5">
       <p className="text-sm leading-6 text-slate-600">
         Search for a local number. The selected number will be assigned to this
-        location and carrier registration will begin after setup.
+        location. Carrier registration remains not started until you complete
+        the clinic details and OpenVPM reviews them.
       </p>
       <div className="flex flex-wrap items-end gap-2">
         <label className="space-y-1.5">
@@ -487,27 +529,31 @@ function ConfirmStep({
             <button
               type="button"
               key={n.phoneNumber}
-              onClick={() => setSelectedNumber(n.phoneNumber)}
+              onClick={() => setSelectedNumber(n)}
               className={cn(
                 "flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-sm transition-colors",
-                selectedNumber === n.phoneNumber
+                selectedNumber?.phoneNumber === n.phoneNumber
                   ? "bg-emerald-50"
                   : "hover:bg-slate-50"
               )}
             >
               <span className="font-medium text-slate-950">{n.phoneNumber}</span>
               <span className="flex items-center gap-2">
-                {formatMonthlyCost(n.monthlyCost) ? (
-                  <span className="text-xs text-slate-500">
-                    {formatMonthlyCost(n.monthlyCost)}/mo
-                  </span>
-                ) : null}
-                {selectedNumber === n.phoneNumber ? (
+                <span className="text-xs text-slate-500">
+                  {formatCost(n.upfrontCost, n.currency)} today ·{" "}
+                  {formatCost(n.monthlyCost, n.currency)}/mo
+                </span>
+                {selectedNumber?.phoneNumber === n.phoneNumber ? (
                   <Badge variant="success">Selected</Badge>
                 ) : null}
               </span>
             </button>
           ))}
+        </div>
+      ) : hasSearched ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          No available numbers returned a complete upfront price, monthly price,
+          and currency. Nothing can be selected or purchased; search again later.
         </div>
       ) : null}
     </div>
@@ -518,13 +564,19 @@ function RegistrationStep({
   mode,
   location,
   selectedNumber,
+  chargeAcknowledged,
+  setChargeAcknowledged,
 }: {
   mode: MessagingSetupMode;
   location: MessagingSetupLocation;
-  selectedNumber: string | null;
+  selectedNumber: SearchNumber | null;
+  chargeAcknowledged: boolean;
+  setChargeAcknowledged: (checked: boolean) => void;
 }) {
   const number =
-    mode === "host" ? location.existingPhone ?? "your number" : selectedNumber;
+    mode === "host"
+      ? location.existingPhone ?? "your number"
+      : selectedNumber?.phoneNumber;
 
   return (
     <div className="space-y-5">
@@ -534,6 +586,16 @@ function RegistrationStep({
         </p>
         <p className="mt-1 text-sm text-slate-600">{number}</p>
       </div>
+      {mode === "buy" && selectedNumber ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+          <p className="text-sm font-medium text-amber-950">Provider charges</p>
+          <p className="mt-2 text-sm text-amber-900">
+            {formatCost(selectedNumber.upfrontCost, selectedNumber.currency)} due
+            now, then {formatCost(selectedNumber.monthlyCost, selectedNumber.currency)}
+            /month for the number.
+          </p>
+        </div>
+      ) : null}
       <div className="rounded-xl border border-teal-200 bg-teal-50 p-4">
         <p className="text-sm font-medium text-teal-950">
           Carrier approval is required before live US texting.
@@ -545,6 +607,19 @@ function RegistrationStep({
           submission.
         </p>
       </div>
+      <label className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+        <input
+          type="checkbox"
+          checked={chargeAcknowledged}
+          onChange={(event) => setChargeAcknowledged(event.target.checked)}
+          className="mt-0.5 h-4 w-4 rounded border-amber-400"
+        />
+        <span>
+          I authorize the exact upfront and monthly provider charges shown above
+          for this selected number. Texting and fee-bearing carrier registration
+          stay off until later approval.
+        </span>
+      </label>
     </div>
   );
 }
@@ -555,12 +630,12 @@ function DoneStep({ sender }: { sender: string | null }) {
       <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
         <p className="flex items-center gap-2 text-sm font-medium text-emerald-900">
           <Check className="h-4 w-4" />
-          Number setup started
+          Number order accepted; sending remains off
         </p>
         <p className="mt-2 text-sm leading-6 text-emerald-800">
-          {sender ?? "Your number"} is saved and registration is pending. SMS
-          sending stays off until carrier approval is active and an admin turns
-          sending on.
+          {sender ?? "Your number"} is saved while the provider finishes any
+          activation work. Carrier registration has not been submitted yet, and
+          SMS sending stays off until approval is active and an admin turns it on.
         </p>
       </div>
       <div className="rounded-xl border border-slate-200 p-4">
@@ -595,7 +670,7 @@ function continueLabel({
   if (step === "confirm" && mode === "buy" && numbers.length === 0) {
     return "Search numbers";
   }
-  if (step === "registration") return "Start setup";
+  if (step === "registration") return "Purchase number and start setup";
   if (step === "done") return "Done";
   return "Continue";
 }

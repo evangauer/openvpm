@@ -25,10 +25,15 @@ import {
 import { sendSms } from "@/lib/sms";
 import {
   searchAvailableNumbers,
-  checkHostedEligibility,
+  findAvailableNumberQuotes,
   createMessagingProfile,
   buyNumber,
-  createHostedOrder,
+  deleteMessagingProfile,
+  findMessagingProfilesByName,
+  findOwnedPhoneNumbers,
+  findNumberOrdersByCustomerReference,
+  TelnyxError,
+  TelnyxMutationUncertainError,
   TelnyxNotConfiguredError,
 } from "@/lib/messaging/telnyx-provisioning";
 import { appBaseUrl, normalizeAppBaseUrl } from "@/lib/app-url";
@@ -37,10 +42,36 @@ import {
   MessagingRegistrationEncryptionError,
 } from "@/lib/messaging/registration-crypto";
 import { messagingProgramUrls } from "@/lib/messaging/public-program";
+import {
+  releaseMessagingProfileAttempt,
+  reserveMessagingProfileAttempt,
+} from "@/lib/messaging/provisioning-attempt-gate";
 
 const adminOnly = protectedProcedure.use(requireRole("admin"));
-const MESSAGING_REGISTRATION_PENDING_DETAIL =
-  "Carrier registration (A2P 10DLC) in progress — required before messages can send; typically 1–2 weeks.";
+const MESSAGING_NUMBER_ORDERED_DETAIL =
+  "Number order accepted. The provider may still be activating it, and sending is off. Complete the clinic carrier details; OpenVPM will review them before registration submission.";
+const MESSAGING_PROVISIONING_FAILED_DETAIL =
+  "Number setup did not finish. No sending was enabled. Reconcile the saved provider setup from this location, or contact OpenVPM support.";
+const MESSAGING_PROVISIONING_PREPARED_DETAIL =
+  "Number setup is reserved but not complete. No sending was enabled. Reconcile this saved setup; OpenVPM will not create another provider profile or purchase another number automatically.";
+const EXISTING_NUMBER_UNAVAILABLE_DETAIL =
+  "Texting from your clinic's existing phone number is not supported yet. OpenVPM has not ported or changed that number. Choose a new local texting number instead.";
+const INCONCLUSIVE_ORDER_DETAIL =
+  "OpenVPM could not conclusively reconcile the earlier number order. No additional purchase was attempted. Contact OpenVPM support before trying another number.";
+
+const providerPriceInput = z
+  .string()
+  .trim()
+  .regex(/^\d+(?:\.\d+)?$/, "A complete provider price is required.")
+  .refine((value) => Number.isFinite(Number(value)) && Number(value) >= 0, {
+    message: "A valid non-negative provider price is required.",
+  });
+
+const selectedQuoteInput = z.object({
+  upfrontCost: providerPriceInput,
+  monthlyCost: providerPriceInput,
+  currency: z.string().trim().regex(/^[A-Z]{3}$/),
+});
 
 const messagingPhoneInput = z
   .string()
@@ -131,13 +162,43 @@ const a2pRegistrationInput = z.object({
 
 /** Map a thrown provisioning error to a tRPC error the UI can show. */
 function provisioningError(e: unknown): TRPCError {
+  if (e instanceof TRPCError) return e;
   if (e instanceof TelnyxNotConfiguredError) {
     return new TRPCError({ code: "PRECONDITION_FAILED", message: e.message });
   }
+  if (e instanceof TelnyxMutationUncertainError) {
+    return new TRPCError({ code: "BAD_GATEWAY", message: e.message });
+  }
+  if (e instanceof TelnyxError) {
+    return new TRPCError({ code: "BAD_GATEWAY", message: e.message });
+  }
+  console.error("Unexpected messaging provisioning failure", e);
   return new TRPCError({
-    code: "BAD_GATEWAY",
-    message: e instanceof Error ? e.message : "Messaging provider request failed",
+    code: "INTERNAL_SERVER_ERROR",
+    message:
+      "Texting setup could not be completed safely. No additional purchase was attempted. Retry reconciliation or contact OpenVPM support.",
   });
+}
+
+function quotesMatch(
+  selected: z.infer<typeof selectedQuoteInput>,
+  current: z.infer<typeof selectedQuoteInput>
+): boolean {
+  return (
+    selected.currency === current.currency &&
+    Number(selected.upfrontCost) === Number(current.upfrontCost) &&
+    Number(selected.monthlyCost) === Number(current.monthlyCost)
+  );
+}
+
+function isFailedOrderStatus(status: string): boolean {
+  return ["failure", "failed", "cancelled", "canceled", "deleted"].includes(
+    status.toLowerCase()
+  );
+}
+
+function isRecoverableOrderStatus(status: string): boolean {
+  return ["pending", "success"].includes(status.toLowerCase());
 }
 
 function activePracticeWhere(practiceId: string) {
@@ -190,11 +251,11 @@ function assertProvisioningEnabled(): void {
 }
 
 /**
- * Hosted number orders can incur immediate and recurring provider charges.
+ * Number orders can incur immediate and recurring provider charges.
  * During controlled rollout, require an explicit tenant allowlist in addition
- * to the global kill-switch. Self-hosters retain the existing switch-only path.
+ * to the global kill-switch. Self-hosters retain the switch-only path.
  */
-function assertHostedProvisioningPracticeAllowed(practiceId: string): void {
+function assertProvisioningPracticeAllowed(practiceId: string): void {
   if (!billingEnforced()) return;
   const allowed = new Set(
     (process.env.MESSAGING_PROVISIONING_PRACTICE_IDS ?? "")
@@ -209,6 +270,21 @@ function assertHostedProvisioningPracticeAllowed(practiceId: string): void {
         "Texting number setup is available only to approved pilot clinics. Contact OpenVPM support.",
     });
   }
+}
+
+function provisioningOperationReference(
+  practiceId: string,
+  locationId: string
+): string {
+  return `openvpm:${practiceId}:${locationId}`;
+}
+
+function provisioningProfileName(locationId: string): string {
+  return `OpenVPM provision ${locationId}`;
+}
+
+function provisioningConflict(message: string): TRPCError {
+  return new TRPCError({ code: "CONFLICT", message });
 }
 
 function telnyxWebhookUrl(): string {
@@ -651,7 +727,9 @@ export const messagingRouter = createRouter({
         )
       );
     return {
-      hasAnyNumber: rows.some((r) => !!r.senderE164),
+      hasAnyNumber: rows.some(
+        (r) => !!r.senderE164 && r.registrationStatus !== "failed"
+      ),
       hasActiveNumber: rows.some(
         (r) => r.registrationStatus === "active" && r.enabled
       ),
@@ -682,13 +760,13 @@ export const messagingRouter = createRouter({
       }
     }),
 
-  /** Can this location's existing number be text-enabled (hosted SMS, no port)? */
+  /** Existing-number hosting is intentionally closed until it works end-to-end. */
   checkEligibility: adminOnly
     .input(z.object({ locationId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
       const [loc] = await ctx.db
-        .select({ phone: locations.phone })
+        .select({ id: locations.id })
         .from(locations)
         .where(
           and(
@@ -702,113 +780,505 @@ export const messagingRouter = createRouter({
       if (!loc) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Location not found" });
       }
-      const e164 = normalizeE164(loc.phone);
-      if (!e164) {
-        return {
-          eligible: false,
-          detail:
-            "Add a valid phone number to this location before checking eligibility.",
-        };
-      }
-      try {
-        return await checkHostedEligibility(e164);
-      } catch (e) {
-        throw provisioningError(e);
-      }
+      return {
+        eligible: false,
+        detail: EXISTING_NUMBER_UNAVAILABLE_DETAIL,
+      };
     }),
 
   /**
-   * Stand up a texting number for a location: create a messaging profile (with
-   * our inbound webhook), then either text-enable the location's existing number
-   * (host) or buy a new local number, and save the config. Leaves the location
-   * disabled + registration pending (carrier A2P approval precedes sending).
+   * Stand up a new texting number for a location. A location-scoped PostgreSQL
+   * advisory lock serializes clicks, while a deterministic provider profile
+   * name and customer reference let retries reconcile an interrupted attempt.
+   * Sending stays disabled until carrier approval.
    */
   provisionNumber: adminOnly
     .input(
-      z.object({
-        locationId: z.string().uuid(),
-        mode: z.enum(["host", "buy"]),
-        // Required for "buy"; for "host" we use the location's existing number.
-        phoneNumber: messagingPhoneInput.optional(),
-      })
+      z.union([
+        z.object({
+          locationId: z.string().uuid(),
+          mode: z.literal("host"),
+        }),
+        z.object({
+          locationId: z.string().uuid(),
+          mode: z.literal("buy"),
+          action: z.literal("start"),
+          phoneNumber: messagingPhoneInput,
+          quote: selectedQuoteInput,
+          confirmProviderCharges: z.literal(true),
+        }),
+        z.object({
+          locationId: z.string().uuid(),
+          mode: z.literal("buy"),
+          action: z.literal("resume"),
+        }),
+      ])
     )
     .mutation(async ({ ctx, input }) => {
-      assertProvisioningEnabled();
-      assertHostedProvisioningPracticeAllowed(ctx.practiceId);
-      await assertActivePractice(ctx);
-      const [loc] = await ctx.db
-        .select({ id: locations.id, name: locations.name, phone: locations.phone })
-        .from(locations)
-        .where(
-          and(
-            eq(locations.id, input.locationId),
-            eq(locations.practiceId, ctx.practiceId),
-            activePracticePredicate(ctx.practiceId),
-            isNull(locations.deletedAt)
-          )
-        )
-        .limit(1);
-      if (!loc) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Location not found" });
-      }
-
-      const e164 = normalizeE164(
-        input.mode === "host" ? loc.phone : input.phoneNumber
-      );
-      if (!e164) {
+      if (input.mode === "host") {
         throw new TRPCError({
-          code: "BAD_REQUEST",
-          message:
-            input.mode === "host"
-              ? "Add a valid phone number to this location before text-enabling it."
-              : "Select a valid number to purchase.",
+          code: "PRECONDITION_FAILED",
+          message: EXISTING_NUMBER_UNAVAILABLE_DETAIL,
         });
       }
+      assertProvisioningEnabled();
+      assertProvisioningPracticeAllowed(ctx.practiceId);
+      await assertActivePractice(ctx);
 
       const webhookUrl = telnyxWebhookUrl();
+      const profileName = provisioningProfileName(input.locationId);
+      const customerReference = provisioningOperationReference(
+        ctx.practiceId,
+        input.locationId
+      );
+      let profileId: string | null = null;
+      let profileCreated = false;
+      let profileMutationAttempted = false;
+      let conclusiveEmptyProfileState = false;
+      let orderMutationAttempted = false;
+      let purchaseOutcomeUncertain = false;
+      let failureRecordAllowed = false;
+      let preparedThisRequest = false;
+      let e164: string | null =
+        input.action === "start" ? normalizeE164(input.phoneNumber) : null;
 
       try {
-        const profile = await createMessagingProfile({
-          name: `${loc.name} — OpenVPM`,
-          webhookUrl,
-        });
-        const numberSource = input.mode === "host" ? "hosted" : "purchased";
-        if (input.mode === "host") {
-          await createHostedOrder({ phoneNumber: e164, messagingProfileId: profile.id });
-        } else {
-          await buyNumber({ phoneNumber: e164, messagingProfileId: profile.id });
+        if (input.action === "start") {
+          if (!e164) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "Select a valid number to purchase.",
+            });
+          }
+          // Commit a durable, disabled gate before the first provider profile
+          // POST. A timeout, 5xx, malformed response, or process exit can then
+          // never look like a fresh attempt: every later request sees this row
+          // and must use the read-only resume/reconciliation path.
+          preparedThisRequest = await reserveMessagingProfileAttempt({
+            practiceId: ctx.practiceId,
+            locationId: input.locationId,
+            senderE164: e164,
+            customerReference,
+            detail: MESSAGING_PROVISIONING_PREPARED_DETAIL,
+          });
+          failureRecordAllowed = preparedThisRequest;
         }
 
-        await ctx.db
-          .insert(locationMessaging)
-          .values({
-            practiceId: ctx.practiceId,
-            locationId: loc.id,
-            provider: "telnyx",
-            messagingProfileId: profile.id,
-            senderE164: e164,
-            numberSource,
-            registrationStatus: "pending",
-            registrationDetail: MESSAGING_REGISTRATION_PENDING_DETAIL,
-            enabled: false,
-          })
-          .onConflictDoUpdate({
-            target: locationMessaging.locationId,
-            set: {
-              provider: "telnyx",
-              messagingProfileId: profile.id,
-              senderE164: e164,
-              numberSource,
-              registrationStatus: "pending",
-              registrationDetail: MESSAGING_REGISTRATION_PENDING_DETAIL,
-              enabled: false,
-              deletedAt: null,
-              updatedAt: new Date(),
-            },
-          });
+        return await ctx.db.transaction(async (tx) => {
+          await tx.execute(
+            sql`select pg_advisory_xact_lock(hashtextextended(${customerReference}, 0))`
+          );
+          // A request may have waited on the lock. Re-check immediately before
+          // every possible provider mutation, not only at request entry.
+          assertProvisioningEnabled();
 
-        return { ok: true, senderE164: e164, numberSource };
+          const [loc] = await tx
+            .select({ id: locations.id })
+            .from(locations)
+            .where(
+              and(
+                eq(locations.id, input.locationId),
+                eq(locations.practiceId, ctx.practiceId),
+                activePracticePredicate(ctx.practiceId),
+                isNull(locations.deletedAt)
+              )
+            )
+            .limit(1);
+          if (!loc) {
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: "Location not found",
+            });
+          }
+
+          const [existing] = await tx
+            .select({
+              provider: locationMessaging.provider,
+              messagingProfileId: locationMessaging.messagingProfileId,
+              senderE164: locationMessaging.senderE164,
+              numberSource: locationMessaging.numberSource,
+              registrationStatus: locationMessaging.registrationStatus,
+            })
+            .from(locationMessaging)
+            .where(
+              and(
+                eq(locationMessaging.locationId, input.locationId),
+                eq(locationMessaging.practiceId, ctx.practiceId),
+                isNull(locationMessaging.deletedAt)
+              )
+            )
+            .limit(1);
+
+          if (
+            input.action === "start" &&
+            !existing &&
+            !preparedThisRequest
+          ) {
+            throw provisioningConflict(
+              "OpenVPM could not reserve a durable texting setup attempt. No provider profile or number was created; refresh and try again."
+            );
+          }
+
+          if (input.action === "resume") {
+            if (
+              !existing ||
+              existing.provider !== "telnyx" ||
+              existing.numberSource !== "purchased" ||
+              existing.registrationStatus !== "failed" ||
+              !existing.senderE164
+            ) {
+              throw provisioningConflict(
+                "There is no failed number setup to reconcile for this location. Start a new setup or contact OpenVPM support."
+              );
+            }
+            e164 = existing.senderE164;
+          }
+          if (!e164) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "Select a valid number to purchase.",
+            });
+          }
+
+          let isThisRequestPreparedGate = false;
+          if (existing) {
+            isThisRequestPreparedGate = Boolean(
+              input.action === "start" && preparedThisRequest
+            );
+            if (
+              existing.provider !== "telnyx" ||
+              (existing.numberSource && existing.numberSource !== "purchased") ||
+              (existing.senderE164 && existing.senderE164 !== e164)
+            ) {
+              throw provisioningConflict(
+                "This location already has a different texting setup. Contact OpenVPM support before changing numbers."
+              );
+            }
+            if (
+              existing.messagingProfileId &&
+              existing.senderE164 === e164 &&
+              existing.registrationStatus !== "failed"
+            ) {
+              return {
+                ok: true,
+                senderE164: e164,
+                numberSource: "purchased" as const,
+                recovered: true,
+              };
+            }
+            if (input.action === "start" && !isThisRequestPreparedGate) {
+              throw provisioningConflict(
+                "This location has an incomplete number setup. Use Reconcile provider setup; OpenVPM will not purchase another number automatically."
+              );
+            }
+            profileId = existing.messagingProfileId;
+          }
+          failureRecordAllowed ||= Boolean(existing);
+
+          const profiles = await findMessagingProfilesByName(profileName);
+          if (profiles.length > 1) {
+            throw provisioningConflict(
+              "OpenVPM found more than one incomplete provider setup for this location. No number was purchased; contact support to reconcile it."
+            );
+          }
+          const recoveredProfile = profiles[0];
+          if (
+            recoveredProfile &&
+            (recoveredProfile.webhookUrl !== webhookUrl ||
+              recoveredProfile.enabled !== false)
+          ) {
+            throw provisioningConflict(
+              "OpenVPM found an incomplete provider profile with unsafe settings. No number was purchased; contact support to reconcile it."
+            );
+          }
+          if (
+            profileId &&
+            (!recoveredProfile || recoveredProfile.id !== profileId)
+          ) {
+            throw provisioningConflict(
+              "The saved provider identity does not match the recoverable setup. No number was purchased; contact support to reconcile it."
+            );
+          }
+          profileId = recoveredProfile?.id ?? profileId;
+          failureRecordAllowed ||= Boolean(recoveredProfile);
+
+          const orders = await findNumberOrdersByCustomerReference(
+            customerReference
+          );
+          if (orders.length > 1) {
+            throw provisioningConflict(
+              "OpenVPM found duplicate provider orders for this location. No additional purchase was attempted; contact support to reconcile them."
+            );
+          }
+          const recoveredOrder = orders[0];
+          if (recoveredOrder) {
+            if (
+              !profileId ||
+              recoveredOrder.customerReference !== customerReference ||
+              recoveredOrder.messagingProfileId !== profileId ||
+              recoveredOrder.phoneNumbers.length !== 1 ||
+              recoveredOrder.phoneNumbers[0] !== e164
+            ) {
+              throw provisioningConflict(INCONCLUSIVE_ORDER_DETAIL);
+            }
+            if (isFailedOrderStatus(recoveredOrder.status)) {
+              throw provisioningConflict(
+                "The earlier provider order is in a failed or cancelled state. No additional purchase was attempted; contact OpenVPM support."
+              );
+            }
+            if (!isRecoverableOrderStatus(recoveredOrder.status)) {
+              throw provisioningConflict(INCONCLUSIVE_ORDER_DETAIL);
+            }
+          }
+
+          if (!profileId) {
+            if (recoveredOrder || input.action === "resume") {
+              throw provisioningConflict(INCONCLUSIVE_ORDER_DETAIL);
+            }
+            // Exact profile and order reads both completed with no matching
+            // state. Until the profile POST begins, failures such as a changed
+            // quote are definitively mutation-free and may release the gate.
+            conclusiveEmptyProfileState = Boolean(
+              preparedThisRequest && !recoveredProfile && !recoveredOrder
+            );
+            const currentQuotes = await findAvailableNumberQuotes(e164);
+            if (
+              currentQuotes.length !== 1 ||
+              !quotesMatch(input.quote, currentQuotes[0]!)
+            ) {
+              throw provisioningConflict(
+                "The selected number or its price changed before purchase. No charge was made. Search again and review the current price."
+              );
+            }
+            assertProvisioningEnabled();
+            profileMutationAttempted = true;
+            const profile = await createMessagingProfile({
+              name: profileName,
+              webhookUrl,
+            });
+            profileId = profile.id;
+            profileCreated = true;
+            failureRecordAllowed = true;
+          }
+          const activeProfileId = profileId;
+          if (!activeProfileId) {
+            throw new Error(
+              "The provider setup did not return a durable profile identity. Retry setup or contact OpenVPM support."
+            );
+          }
+
+          const ownedNumbers = await findOwnedPhoneNumbers(e164);
+          if (ownedNumbers.length > 1) {
+            throw provisioningConflict(
+              "The provider returned duplicate ownership records for this number. No new purchase was made; contact support to reconcile it."
+            );
+          }
+          const ownedNumber = ownedNumbers[0];
+          if (
+            ownedNumber &&
+            ["deleted", "failed", "cancelled", "canceled"].some((status) =>
+              ownedNumber.status?.toLowerCase().includes(status)
+            )
+          ) {
+            throw provisioningConflict(
+              "The provider reports this number in a failed or released state. No new purchase was made; search again or contact support."
+            );
+          }
+          if (ownedNumber && ownedNumber.messagingProfileId !== activeProfileId) {
+            throw provisioningConflict(
+              "This number is already owned under a different provider setup. No new purchase was made; contact support before reassigning it."
+            );
+          }
+
+          if (!ownedNumber && !recoveredOrder) {
+            if (
+              input.action === "resume" ||
+              recoveredProfile ||
+              (existing && !isThisRequestPreparedGate)
+            ) {
+              throw provisioningConflict(INCONCLUSIVE_ORDER_DETAIL);
+            }
+            assertProvisioningEnabled();
+            let order: Awaited<ReturnType<typeof buyNumber>>;
+            try {
+              orderMutationAttempted = true;
+              order = await buyNumber({
+                phoneNumber: e164,
+                messagingProfileId: activeProfileId,
+                customerReference,
+              });
+            } catch (error) {
+              purchaseOutcomeUncertain =
+                error instanceof TelnyxMutationUncertainError;
+              throw error;
+            }
+            if (
+              !order.orderId ||
+              !order.status ||
+              !isRecoverableOrderStatus(order.status)
+            ) {
+              purchaseOutcomeUncertain = true;
+              throw new TelnyxMutationUncertainError(
+                "The provider returned an inconclusive order status. No second purchase will be attempted automatically."
+              );
+            }
+          }
+
+          await tx
+            .insert(locationMessaging)
+            .values({
+              practiceId: ctx.practiceId,
+              locationId: loc.id,
+              provider: "telnyx",
+              messagingProfileId: activeProfileId,
+              senderE164: e164,
+              numberSource: "purchased",
+              registrationStatus: "not_started",
+              registrationDetail: MESSAGING_NUMBER_ORDERED_DETAIL,
+              enabled: false,
+            })
+            .onConflictDoUpdate({
+              target: locationMessaging.locationId,
+              set: {
+                provider: "telnyx",
+                messagingProfileId: activeProfileId,
+                senderE164: e164,
+                numberSource: "purchased",
+                registrationStatus: "not_started",
+                registrationDetail: MESSAGING_NUMBER_ORDERED_DETAIL,
+                enabled: false,
+                deletedAt: null,
+                updatedAt: new Date(),
+              },
+            });
+
+          return {
+            ok: true,
+            senderE164: e164,
+            numberSource: "purchased" as const,
+            recovered: Boolean(ownedNumber || recoveredOrder),
+          };
+        });
       } catch (e) {
+        if (
+          preparedThisRequest &&
+          e164 &&
+          !profileMutationAttempted &&
+          (e instanceof TelnyxNotConfiguredError ||
+            conclusiveEmptyProfileState)
+        ) {
+          try {
+            const released = await releaseMessagingProfileAttempt({
+              practiceId: ctx.practiceId,
+              locationId: input.locationId,
+              senderE164: e164,
+              customerReference,
+              detail: MESSAGING_PROVISIONING_PREPARED_DETAIL,
+            });
+            if (released) failureRecordAllowed = false;
+          } catch (releaseError) {
+            // Fail closed by retaining the gate if its exact release cannot be
+            // confirmed. Never mask the original setup error.
+            console.error(
+              "Unable to release untouched messaging profile attempt",
+              releaseError
+            );
+          }
+        }
+        if (failureRecordAllowed && e164) {
+          try {
+            await ctx.db.transaction(async (tx) => {
+              // Serialize compensation with a retry. If the retry won the lock
+              // and completed first, its durable sender owns the resources and
+              // must never be deleted or overwritten by this older attempt.
+              await tx.execute(
+                sql`select pg_advisory_xact_lock(hashtextextended(${customerReference}, 0))`
+              );
+              const [current] = await tx
+                .select({
+                  provider: locationMessaging.provider,
+                  messagingProfileId: locationMessaging.messagingProfileId,
+                  senderE164: locationMessaging.senderE164,
+                  numberSource: locationMessaging.numberSource,
+                  registrationStatus: locationMessaging.registrationStatus,
+                })
+                .from(locationMessaging)
+                .where(
+                  and(
+                    eq(locationMessaging.locationId, input.locationId),
+                    eq(locationMessaging.practiceId, ctx.practiceId),
+                    isNull(locationMessaging.deletedAt)
+                  )
+                )
+                .limit(1);
+              const newerAttemptCompleted = Boolean(
+                current?.provider === "telnyx" &&
+                  current.messagingProfileId &&
+                  current.senderE164 === e164 &&
+                  current.numberSource === "purchased" &&
+                  current.registrationStatus !== "failed"
+              );
+              const differentSetupExists = Boolean(
+                current &&
+                  (current.provider !== "telnyx" ||
+                    (current.senderE164 && current.senderE164 !== e164) ||
+                    (current.numberSource &&
+                      current.numberSource !== "purchased"))
+              );
+              if (newerAttemptCompleted || differentSetupExists) return;
+
+              // Keep any accepted or ambiguous order intact: the exact
+              // customer reference is the durable idempotency key a retry uses
+              // to reconcile without a second POST. Only remove a brand-new,
+              // unused profile after a definitive pre-order failure.
+              if (
+                profileId &&
+                profileCreated &&
+                !orderMutationAttempted &&
+                !purchaseOutcomeUncertain
+              ) {
+                try {
+                  assertProvisioningEnabled();
+                  await deleteMessagingProfile(profileId);
+                  profileId = null;
+                } catch {
+                  // Persist the recoverable provider identity below.
+                }
+              }
+
+              await tx
+                .insert(locationMessaging)
+                .values({
+                  practiceId: ctx.practiceId,
+                  locationId: input.locationId,
+                  provider: "telnyx",
+                  messagingProfileId: profileId,
+                  senderE164: e164,
+                  numberSource: "purchased",
+                  registrationStatus: "failed",
+                  registrationDetail: MESSAGING_PROVISIONING_FAILED_DETAIL,
+                  enabled: false,
+                })
+                .onConflictDoUpdate({
+                  target: locationMessaging.locationId,
+                  set: {
+                    provider: "telnyx",
+                    messagingProfileId: profileId,
+                    senderE164: e164,
+                    numberSource: "purchased",
+                    registrationStatus: "failed",
+                    registrationDetail: MESSAGING_PROVISIONING_FAILED_DETAIL,
+                    enabled: false,
+                    deletedAt: null,
+                    updatedAt: new Date(),
+                  },
+                });
+            });
+          } catch {
+            // Preserve the original provider/transaction error. Deterministic
+            // provider identities still let a later retry reconcile safely.
+          }
+        }
         throw provisioningError(e);
       }
     }),

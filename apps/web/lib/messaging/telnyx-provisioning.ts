@@ -3,8 +3,8 @@
  * the API integration; the messaging tRPC router orchestrates it and persists
  * results to `location_messaging`.
  *
- * Read-only operations (number search, hosted-SMS eligibility) are safe to call
- * anytime. Mutating operations (buy/host a number, register A2P brand/campaign)
+ * Read-only operations (number and account inventory searches) are safe to call
+ * anytime. Mutating operations (buy a number, register A2P brand/campaign)
  * spend money / require an L2-verified account and are added as the self-serve
  * flow is wired up.
  */
@@ -28,6 +28,18 @@ export class TelnyxNotConfiguredError extends Error {
   constructor() {
     super("Telnyx is not configured (TELNYX_API_KEY missing).");
     this.name = "TelnyxNotConfiguredError";
+  }
+}
+
+/**
+ * A mutating request may have reached Telnyx even though OpenVPM did not
+ * receive a durable response. Callers must reconcile provider state before
+ * considering another mutation.
+ */
+export class TelnyxMutationUncertainError extends Error {
+  constructor(message: string, readonly cause?: unknown) {
+    super(message);
+    this.name = "TelnyxMutationUncertainError";
   }
 }
 
@@ -79,8 +91,9 @@ function telnyxErrorMessage(json: unknown): string | undefined {
 
 export interface AvailableNumber {
   phoneNumber: string;
-  /** Monthly cost in USD, as returned by Telnyx (string). */
-  monthlyCost: string | null;
+  upfrontCost: string;
+  monthlyCost: string;
+  currency: string;
 }
 
 /**
@@ -105,7 +118,24 @@ export async function searchAvailableNumbers(opts: {
 
 interface TelnyxAvailableNumber {
   phone_number?: string;
-  cost_information?: { monthly_cost?: string };
+  cost_information?: {
+    upfront_cost?: string;
+    monthly_cost?: string;
+    currency?: string;
+  };
+}
+
+function isProviderPrice(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^\d+(?:\.\d+)?$/.test(value) &&
+    Number.isFinite(Number(value)) &&
+    Number(value) >= 0
+  );
+}
+
+function isCurrency(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Z]{3}$/.test(value);
 }
 
 /** Pure: map a Telnyx available-numbers response to our shape. */
@@ -113,18 +143,230 @@ export function parseAvailableNumbers(json: {
   data?: TelnyxAvailableNumber[];
 }): AvailableNumber[] {
   return (json.data ?? [])
-    .filter((n): n is TelnyxAvailableNumber & { phone_number: string } =>
-      Boolean(n.phone_number)
+    .filter((n): n is TelnyxAvailableNumber & {
+      phone_number: string;
+      cost_information: {
+        upfront_cost: string;
+        monthly_cost: string;
+        currency: string;
+      };
+    } =>
+      Boolean(n.phone_number) &&
+      isProviderPrice(n.cost_information?.upfront_cost) &&
+      isProviderPrice(n.cost_information?.monthly_cost) &&
+      isCurrency(n.cost_information?.currency)
     )
     .map((n) => ({
       phoneNumber: n.phone_number,
-      monthlyCost: n.cost_information?.monthly_cost ?? null,
+      upfrontCost: n.cost_information.upfront_cost,
+      monthlyCost: n.cost_information.monthly_cost,
+      currency: n.cost_information.currency,
     }));
+}
+
+/**
+ * Re-read the exact selected number immediately before purchase. An incomplete
+ * or missing price is intentionally returned as no quote so callers fail
+ * closed instead of authorizing an unknown charge.
+ */
+export async function findAvailableNumberQuotes(
+  phoneNumber: string
+): Promise<AvailableNumber[]> {
+  const nationalNumber = phoneNumber.replace(/^\+1/, "").replace(/\D/g, "");
+  const params = new URLSearchParams();
+  params.set("filter[country_code]", "US");
+  params.set("filter[features][]", "sms");
+  params.set("filter[phone_number][starts_with]", nationalNumber);
+  params.set("filter[limit]", "10");
+  const json = await telnyxRequest<{ data?: TelnyxAvailableNumber[] }>(
+    "GET",
+    `/available_phone_numbers?${params.toString()}`
+  );
+  return parseAvailableNumbers(json).filter(
+    (number) => number.phoneNumber === phoneNumber
+  );
 }
 
 export interface HostedEligibility {
   eligible: boolean;
   detail?: string;
+}
+
+export interface TelnyxMessagingProfile {
+  id: string;
+  name: string;
+  webhookUrl: string | null;
+  enabled: boolean | null;
+}
+
+/** Find profiles by an exact, durable operation name. Read-only. */
+export async function findMessagingProfilesByName(
+  name: string
+): Promise<TelnyxMessagingProfile[]> {
+  const params = new URLSearchParams();
+  params.set("filter[name][eq]", name);
+  params.set("page[size]", "10");
+  const json = await telnyxRequest<{
+    data?: Array<{
+      id?: string;
+      name?: string;
+      webhook_url?: string | null;
+      enabled?: boolean;
+    }>;
+  }>("GET", `/messaging_profiles?${params.toString()}`);
+
+  if (!Array.isArray(json.data)) {
+    throw new TelnyxError(
+      "The provider returned incomplete messaging-profile reconciliation data.",
+      502
+    );
+  }
+  const exactProfiles = json.data.filter((profile) => profile.name === name);
+  if (exactProfiles.some((profile) => !profile.id)) {
+    throw new TelnyxError(
+      "The provider returned a messaging profile without a durable identity.",
+      502
+    );
+  }
+  return exactProfiles
+    .filter(
+      (profile): profile is typeof profile & { id: string; name: string } =>
+        Boolean(profile.id)
+    )
+    .map((profile) => ({
+      id: profile.id,
+      name: profile.name,
+      webhookUrl: profile.webhook_url ?? null,
+      enabled: profile.enabled ?? null,
+    }));
+}
+
+export interface OwnedPhoneNumber {
+  id: string;
+  phoneNumber: string;
+  messagingProfileId: string | null;
+  status: string | null;
+}
+
+export interface TelnyxNumberOrder {
+  id: string;
+  status: string;
+  customerReference: string;
+  messagingProfileId: string;
+  phoneNumbers: string[];
+}
+
+/** Find exact provider orders for a durable operation reference. Read-only. */
+export async function findNumberOrdersByCustomerReference(
+  customerReference: string
+): Promise<TelnyxNumberOrder[]> {
+  const params = new URLSearchParams();
+  params.set("filter[customer_reference]", customerReference);
+  params.set("page[size]", "10");
+  const json = await telnyxRequest<{
+    data?: Array<{
+      id?: string;
+      status?: string;
+      customer_reference?: string;
+      messaging_profile_id?: string;
+      phone_numbers?: Array<{ phone_number?: string }>;
+    }>;
+  }>("GET", `/number_orders?${params.toString()}`);
+
+  if (!Array.isArray(json.data)) {
+    throw new TelnyxError(
+      "The provider returned incomplete number-order reconciliation data.",
+      502
+    );
+  }
+  if (
+    json.data.some((order) => order.customer_reference !== customerReference)
+  ) {
+    throw new TelnyxError(
+      "The provider returned a number order for a different operation reference.",
+      502
+    );
+  }
+  if (
+    json.data.some(
+      (order) =>
+        !order.id ||
+        !order.status ||
+        !order.messaging_profile_id ||
+        !Array.isArray(order.phone_numbers)
+    )
+  ) {
+    throw new TelnyxError(
+      "The provider returned an incomplete number-order identity.",
+      502
+    );
+  }
+  return json.data
+    .filter(
+      (order): order is typeof order & {
+        id: string;
+        status: string;
+        customer_reference: string;
+        messaging_profile_id: string;
+      } =>
+        Boolean(order.id) &&
+        Boolean(order.status) &&
+        order.customer_reference === customerReference &&
+        Boolean(order.messaging_profile_id)
+    )
+    .map((order) => ({
+      id: order.id,
+      status: order.status,
+      customerReference: order.customer_reference,
+      messagingProfileId: order.messaging_profile_id,
+      phoneNumbers: order.phone_numbers!
+        .map((number) => number.phone_number)
+        .filter((number): number is string => Boolean(number)),
+    }));
+}
+
+/** Find an account-owned phone number by exact E.164 value. Read-only. */
+export async function findOwnedPhoneNumbers(
+  phoneNumber: string
+): Promise<OwnedPhoneNumber[]> {
+  const params = new URLSearchParams();
+  params.set("filter[phone_number]", phoneNumber);
+  params.set("page[size]", "10");
+  const json = await telnyxRequest<{
+    data?: Array<{
+      id?: string;
+      phone_number?: string;
+      messaging_profile_id?: string | null;
+      status?: string;
+    }>;
+  }>("GET", `/phone_numbers?${params.toString()}`);
+
+  if (!Array.isArray(json.data)) {
+    throw new TelnyxError(
+      "The provider returned incomplete phone-number reconciliation data.",
+      502
+    );
+  }
+  const exactNumbers = json.data.filter(
+    (number) => number.phone_number === phoneNumber
+  );
+  if (exactNumbers.some((number) => !number.id)) {
+    throw new TelnyxError(
+      "The provider returned a phone number without a durable identity.",
+      502
+    );
+  }
+  return exactNumbers
+    .filter(
+      (number): number is typeof number & { id: string; phone_number: string } =>
+        Boolean(number.id) && number.phone_number === phoneNumber
+    )
+    .map((number) => ({
+      id: number.id,
+      phoneNumber: number.phone_number,
+      messagingProfileId: number.messaging_profile_id ?? null,
+      status: number.status ?? null,
+    }));
 }
 
 /**
@@ -160,11 +402,11 @@ export async function createMessagingProfile(opts: {
   name: string;
   webhookUrl: string;
 }): Promise<{ id: string }> {
-  const json = await telnyxRequest<{ data?: { id?: string } }>(
-    "POST",
-    "/messaging_profiles",
-    {
+  let json: { data?: { id?: string } };
+  try {
+    json = await telnyxRequest("POST", "/messaging_profiles", {
       name: opts.name,
+      enabled: false,
       webhook_url: opts.webhookUrl,
       webhook_api_version: "2",
       // Telnyx rejects new profiles without an explicit destination allowlist.
@@ -175,43 +417,73 @@ export async function createMessagingProfile(opts: {
       daily_spend_limit_enabled: true,
       daily_spend_limit: "10.00",
       smart_encoding: true,
+    });
+  } catch (error) {
+    if (
+      !(error instanceof TelnyxError) ||
+      error.status === 408 ||
+      error.status === 429 ||
+      error.status >= 500
+    ) {
+      throw new TelnyxMutationUncertainError(
+        "The messaging-profile outcome is uncertain and must be reconciled before retrying.",
+        error
+      );
     }
-  );
-  const id = json.data?.id;
-  if (!id) throw new TelnyxError("Telnyx did not return a messaging profile id", 502);
+    throw error;
+  }
+  const id = json?.data?.id;
+  if (!id) {
+    throw new TelnyxMutationUncertainError(
+      "The provider accepted the messaging-profile request without returning a durable identity."
+    );
+  }
   return { id };
+}
+
+/** Delete an unused messaging profile created by an incomplete attempt. */
+export async function deleteMessagingProfile(profileId: string): Promise<void> {
+  await telnyxRequest("DELETE", `/messaging_profiles/${encodeURIComponent(profileId)}`);
 }
 
 /** Purchase a new local number and assign it to a messaging profile. */
 export async function buyNumber(opts: {
   phoneNumber: string;
   messagingProfileId: string;
+  customerReference: string;
 }): Promise<{ orderId: string; status: string | null }> {
-  const json = await telnyxRequest<{ data?: { id?: string; status?: string } }>(
-    "POST",
-    "/number_orders",
-    {
+  let json: { data?: { id?: string; status?: string } };
+  try {
+    json = await telnyxRequest("POST", "/number_orders", {
       phone_numbers: [{ phone_number: opts.phoneNumber }],
       messaging_profile_id: opts.messagingProfileId,
+      customer_reference: opts.customerReference,
+    });
+  } catch (error) {
+    if (
+      !(error instanceof TelnyxError) ||
+      error.status === 408 ||
+      error.status === 429 ||
+      error.status >= 500
+    ) {
+      throw new TelnyxMutationUncertainError(
+        "The number order outcome is uncertain and must be reconciled before retrying.",
+        error
+      );
     }
-  );
-  return { orderId: json.data?.id ?? "", status: json.data?.status ?? null };
+    throw error;
+  }
+  if (!json?.data?.id) {
+    throw new TelnyxMutationUncertainError(
+      "The provider accepted the request without returning a durable order identity."
+    );
+  }
+  return { orderId: json.data.id, status: json.data.status ?? null };
 }
 
-/** Text-enable an existing (non-Telnyx) number via a hosted-SMS order. */
-export async function createHostedOrder(opts: {
-  phoneNumber: string;
-  messagingProfileId: string;
-}): Promise<{ orderId: string; status: string | null }> {
-  const json = await telnyxRequest<{ data?: { id?: string; status?: string } }>(
-    "POST",
-    "/messaging_hosted_number_orders",
-    {
-      phone_numbers: [opts.phoneNumber],
-      messaging_profile_id: opts.messagingProfileId,
-    }
-  );
-  return { orderId: json.data?.id ?? "", status: json.data?.status ?? null };
+/** Release a purchased number that could not be durably attached in OpenVPM. */
+export async function deleteOwnedPhoneNumber(phoneNumberId: string): Promise<void> {
+  await telnyxRequest("DELETE", `/phone_numbers/${encodeURIComponent(phoneNumberId)}`);
 }
 
 // --- A2P 10DLC registration --------------------------------------------------

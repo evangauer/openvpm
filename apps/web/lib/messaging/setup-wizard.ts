@@ -1,13 +1,13 @@
 export type MessagingSetupMode = "host" | "buy";
 
 export function defaultMessagingSetupMode(
-  existingPhone: string | null | undefined
+  _existingPhone: string | null | undefined
 ): MessagingSetupMode {
-  return existingPhone?.trim() ? "host" : "buy";
+  return "buy";
 }
 
 export function setupModeTitle(mode: MessagingSetupMode): string {
   return mode === "host"
-    ? "Text-enable your existing number"
+    ? "Existing-number texting is not available"
     : "Get a new local number";
 }

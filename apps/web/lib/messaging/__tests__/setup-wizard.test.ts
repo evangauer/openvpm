@@ -5,9 +5,9 @@ import {
 } from "../setup-wizard";
 
 describe("messaging setup wizard helpers", () => {
-  it("prefers hosting an existing location number when one is present", () => {
-    expect(defaultMessagingSetupMode("+1 555 555 0100")).toBe("host");
-    expect(defaultMessagingSetupMode("  (555) 555-0100  ")).toBe("host");
+  it("fails closed to a new number even when a clinic phone is present", () => {
+    expect(defaultMessagingSetupMode("+1 555 555 0100")).toBe("buy");
+    expect(defaultMessagingSetupMode("  (555) 555-0100  ")).toBe("buy");
   });
 
   it("falls back to buying a new number when no phone is on file", () => {
@@ -17,7 +17,9 @@ describe("messaging setup wizard helpers", () => {
   });
 
   it("labels setup modes for the wizard confirmation step", () => {
-    expect(setupModeTitle("host")).toBe("Text-enable your existing number");
+    expect(setupModeTitle("host")).toBe(
+      "Existing-number texting is not available"
+    );
     expect(setupModeTitle("buy")).toBe("Get a new local number");
   });
 });

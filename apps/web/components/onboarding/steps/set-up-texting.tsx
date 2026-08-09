@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { MessageSquare, Check, Loader2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -54,15 +55,44 @@ export function SetUpTextingStep({
   })();
 
   const messaging = location?.messaging ?? null;
-  const isConfigured = !!messaging?.senderE164;
-  const isActive = messaging?.registrationStatus === "active" && !!messaging?.enabled;
+  const hasSender = Boolean(
+    messaging?.senderE164?.trim() && messaging?.messagingProfileId?.trim()
+  );
+  const isFailed = messaging?.registrationStatus === "failed";
+  const isConfigured = hasSender && !isFailed;
+  const isActive =
+    messaging?.registrationStatus === "active" && !!messaging?.enabled;
+  const statusDetail = (() => {
+    if (!messaging) return null;
+    if (isFailed) {
+      return "Number setup did not finish. Reconcile the saved provider setup in Messaging settings; OpenVPM will not buy another number automatically.";
+    }
+    if (messaging.registrationStatus === "not_started" && hasSender) {
+      return "Number order accepted. Carrier registration has not been submitted; complete the clinic details in Messaging settings.";
+    }
+    if (messaging.registrationStatus === "pending") {
+      return "Carrier registration is under review. Sending remains off until approval.";
+    }
+    if (messaging.registrationStatus === "active" && !messaging.enabled) {
+      return "Carrier registration is approved. An admin still needs to enable sending in Messaging settings.";
+    }
+    if (isActive) return "Texting is active.";
+    if (messaging.registrationStatus === "action_required") {
+      return "Carrier registration needs more clinic information. Review the request in Messaging settings.";
+    }
+    if (messaging.registrationStatus === "suspended") {
+      return "Texting is suspended. Review Messaging settings and contact OpenVPM support.";
+    }
+    return "Texting is not ready yet. Review Messaging settings before sending.";
+  })();
 
   return (
     <div className="space-y-5">
       <p className="text-sm leading-6 text-slate-600">
         Text your clients about appointments, reminders, and results, and let them
-        text you back. You can text from your existing number or get a new local
-        one. This is optional, so skip it and set it up later if you like.
+        text you back. OpenVPM can set up a new local texting number; your existing
+        clinic voice line stays unchanged. This is optional, so skip it and set it
+        up later if you like.
       </p>
 
       <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-4">
@@ -76,15 +106,22 @@ export function SetUpTextingStep({
                 <Loader2 className="h-4 w-4 animate-spin" />
                 Checking your texting setup…
               </p>
-            ) : isConfigured ? (
+            ) : status.error ? (
               <div className="space-y-1">
                 <p className="text-sm font-medium text-slate-900">
-                  {messaging?.senderE164}
+                  Unable to check texting setup
                 </p>
                 <p className="text-xs text-slate-500">
-                  {isActive
-                    ? "Texting is active."
-                    : "Number set up. Carrier registration is pending. Sending turns on once it's approved."}
+                  Retry this step before starting or changing setup.
+                </p>
+              </div>
+            ) : messaging ? (
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-slate-900">
+                  {messaging.senderE164 ?? "Texting setup needs attention"}
+                </p>
+                <p className="text-xs text-slate-500">
+                  {statusDetail}
                 </p>
               </div>
             ) : (
@@ -98,22 +135,24 @@ export function SetUpTextingStep({
               </div>
             )}
           </div>
-          {!status.isLoading && location ? (
+          {!status.isLoading && !status.error && location ? (
+            messaging ? (
+              <Button asChild type="button" variant="outline" size="sm">
+                <Link href="/settings?tab=messaging">
+                  {isConfigured ? <Check className="mr-1.5 h-4 w-4" /> : null}
+                  Review
+                </Link>
+              </Button>
+            ) : (
             <Button
               type="button"
-              variant={isConfigured ? "outline" : "default"}
+              variant="default"
               size="sm"
               onClick={() => setWizardOpen(true)}
             >
-              {isConfigured ? (
-                <>
-                  <Check className="mr-1.5 h-4 w-4" />
-                  Manage
-                </>
-              ) : (
-                "Set up texting"
-              )}
+              Set up texting
             </Button>
+            )
           ) : null}
         </div>
       </div>
