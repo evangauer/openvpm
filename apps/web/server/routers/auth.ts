@@ -4,6 +4,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, publicProcedure, protectedProcedure } from "../trpc";
 import { users, practices, locations } from "@openpims/db";
+import type { Database } from "@openpims/db/client";
 import { rateLimit } from "@/lib/rate-limit";
 import { seedPractice, seedDemoData } from "@/lib/onboarding/defaults";
 import {
@@ -232,8 +233,21 @@ export const authRouter = createRouter({
       }
 
       const passwordHash = await hash(input.password, PASSWORD_HASH_COST);
+      const practiceSettings: Record<string, unknown> = {};
+      if (input.acquisition) {
+        practiceSettings.acquisition = {
+          ...input.acquisition,
+          capturedAt: new Date().toISOString(),
+        };
+      }
+      if (onboardingDraft) {
+        practiceSettings.onboardingDraft = onboardingDraft;
+      }
+      if (hostedBilling) {
+        practiceSettings.onboardingCompletedAt = null;
+      }
 
-      const { practice, location, user, checkoutUrl } =
+      const { practice, user, checkoutUrl } =
         await ctx.db.transaction(async (tx) => {
           const [createdPractice] = await tx
             .insert(practices)
@@ -294,6 +308,34 @@ export const authRouter = createRouter({
             });
           }
 
+          // A clinic account must never commit with a partial starter catalog
+          // or untracked sample rows. Seed and persist provenance inside the
+          // same transaction as the practice, location, and owner.
+          try {
+            await seedPractice(tx as unknown as Database, {
+              practiceId: createdPractice.id,
+              locationId: createdLocation.id,
+            });
+            if (hostedBilling) {
+              practiceSettings.demoData = await seedDemoData(
+                tx as unknown as Database,
+                { practiceId: createdPractice.id },
+              );
+            }
+            if (Object.keys(practiceSettings).length > 0) {
+              await tx
+                .update(practices)
+                .set({ settings: practiceSettings })
+                .where(eq(practices.id, createdPractice.id));
+            }
+          } catch (err) {
+            console.error("[register] clinic initialization failed:", err);
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "Account setup failed. Please retry.",
+            });
+          }
+
           let createdCheckoutUrl: string | undefined;
           if (hostedCheckoutLineItems) {
             try {
@@ -330,51 +372,10 @@ export const authRouter = createRouter({
 
           return {
             practice: createdPractice,
-            location: createdLocation,
             user: createdUser,
             checkoutUrl: createdCheckoutUrl,
           };
         });
-
-      // Seed sensible defaults (appointment types, rooms, starter services) so
-      // the new practice is usable immediately. Non-fatal: a seed hiccup must
-      // not block signup — the practice still works, just emptier.
-      try {
-        await seedPractice(ctx.db, {
-          practiceId: practice.id,
-          locationId: location?.id ?? null,
-        });
-      } catch (err) {
-        console.error("[register] practice seeding failed:", err);
-      }
-
-      // On the hosted service, seed demo data + start onboarding so the trial
-      // lands on a lively dashboard. Non-fatal. Self-host skips this.
-      const practiceSettings: Record<string, unknown> = {};
-      if (input.acquisition) {
-        practiceSettings.acquisition = {
-          ...input.acquisition,
-          capturedAt: new Date().toISOString(),
-        };
-      }
-      if (onboardingDraft) {
-        practiceSettings.onboardingDraft = onboardingDraft;
-      }
-      if (hostedBilling) {
-        practiceSettings.onboardingCompletedAt = null;
-        try {
-          const demoData = await seedDemoData(ctx.db, { practiceId: practice.id });
-          practiceSettings.demoData = demoData;
-        } catch (err) {
-          console.error("[register] demo seeding failed:", err);
-        }
-      }
-      if (Object.keys(practiceSettings).length) {
-        await ctx.db
-          .update(practices)
-          .set({ settings: practiceSettings })
-          .where(eq(practices.id, practice.id));
-      }
 
       // Durable, privacy-safe registration stage. Non-fatal so telemetry can
       // never turn a successful account creation into a failed signup.

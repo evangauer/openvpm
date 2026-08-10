@@ -5,6 +5,10 @@ const SETTINGS_SOURCE = readFileSync(
   new URL("../routers/settings.ts", import.meta.url),
   "utf8"
 );
+const DEMO_DATA_LIFECYCLE_SOURCE = readFileSync(
+  new URL("../../lib/onboarding/demo-data-lifecycle.ts", import.meta.url),
+  "utf8"
+);
 
 vi.mock("@/lib/billing/subscription-sync", () => ({
   syncPracticeSubscriptionQuantities: vi.fn(async () => ({
@@ -731,10 +735,7 @@ describe("settings admin stale target safety", () => {
 
 describe("settings demo data cleanup scoping", () => {
   it("scopes invoice-item cleanup through current-practice invoices", () => {
-    const clearDemoBlock = SETTINGS_SOURCE.match(
-      /clearDemoData:[\s\S]+?reseedDemoData:/
-    )?.[0];
-    const invoiceItemBlock = clearDemoBlock?.match(
+    const invoiceItemBlock = DEMO_DATA_LIFECYCLE_SOURCE.match(
       /\.update\(invoiceItems\)[\s\S]+?if \(demo\.invoiceIds/
     )?.[0];
 
@@ -746,33 +747,52 @@ describe("settings demo data cleanup scoping", () => {
       "${invoices.id} = ${invoiceItems.invoiceId}"
     );
     expect(invoiceItemBlock).toContain(
-      "${invoices.practiceId} = ${ctx.practiceId}"
+      "${invoices.practiceId} = ${practiceId}"
     );
   });
 
-  it("unions stored and user-created demo SOAP ids before immutable cleanup", () => {
-    const clearDemoBlock = SETTINGS_SOURCE.match(
-      /clearDemoData:[\s\S]+?reseedDemoData:/,
-    )?.[0];
-
-    expect(clearDemoBlock).toContain("let demoSoapNoteIds");
-    expect(clearDemoBlock).toContain("const storedDemoSoapNoteIds");
-    expect(clearDemoBlock).toContain("const discoveredDemoSoapNotes");
-    expect(clearDemoBlock).toContain("...storedDemoSoapNoteIds");
-    expect(clearDemoBlock).toContain("...discoveredDemoSoapNotes.map");
-    expect(clearDemoBlock).toContain(
+  it("preserves attribution while clearing stored and discovered demo SOAPs", () => {
+    expect(DEMO_DATA_LIFECYCLE_SOURCE).toContain("let demoSoapNoteIds");
+    expect(DEMO_DATA_LIFECYCLE_SOURCE).toContain(
+      "const storedDemoSoapNoteIds",
+    );
+    expect(DEMO_DATA_LIFECYCLE_SOURCE).toContain(
+      "const discoveredDemoSoapNotes",
+    );
+    expect(DEMO_DATA_LIFECYCLE_SOURCE).toContain("storedDemoSoapNoteIds,");
+    expect(DEMO_DATA_LIFECYCLE_SOURCE).toContain(
+      "discoveredDemoSoapNotes.map",
+    );
+    expect(DEMO_DATA_LIFECYCLE_SOURCE).toContain(
       "inArray(soapNotes.appointmentId, demo.appointmentIds)",
     );
-    expect(clearDemoBlock).toContain(
+    expect(DEMO_DATA_LIFECYCLE_SOURCE).toContain(
       "inArray(soapNotes.patientId, demo.patientIds)",
     );
-    expect(clearDemoBlock).toContain(
-      "demoData: { ...demo, soapNoteIds: demoSoapNoteIds }",
+    expect(DEMO_DATA_LIFECYCLE_SOURCE).toContain(
+      "soapNoteIds: demoSoapNoteIds",
     );
-    expect(clearDemoBlock?.indexOf("settingsMergePatch({")).toBeLessThan(
-      clearDemoBlock?.indexOf(".update(soapNotes)") ?? -1,
+    expect(DEMO_DATA_LIFECYCLE_SOURCE).toContain(
+      "clearedAt: now.toISOString()",
     );
-    expect(clearDemoBlock).toContain("inArray(soapNotes.id, demoSoapNoteIds)");
+    expect(DEMO_DATA_LIFECYCLE_SOURCE).toContain(
+      "inArray(soapNotes.id, demoSoapNoteIds)",
+    );
+    expect(DEMO_DATA_LIFECYCLE_SOURCE).not.toContain("settingsRemoveKey");
+  });
+
+  it("serializes clear and reseed and delegates both mutations", () => {
+    expect(DEMO_DATA_LIFECYCLE_SOURCE).toContain("pg_advisory_xact_lock");
+    expect(DEMO_DATA_LIFECYCLE_SOURCE).toContain('.for("update")');
+    expect(DEMO_DATA_LIFECYCLE_SOURCE).toContain(
+      "const latest = await seedDemoData(tx, { practiceId })",
+    );
+    expect(SETTINGS_SOURCE).toContain(
+      "clearSeededDemoData(ctx.db, ctx.practiceId)",
+    );
+    expect(SETTINGS_SOURCE).toContain(
+      "reseedSampleClinic(ctx.db, ctx.practiceId)",
+    );
   });
 });
 

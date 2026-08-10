@@ -25,12 +25,7 @@ import {
   clients,
   patients,
   appointments,
-  soapNotes,
-  vaccinationRecords,
-  problemList,
   invoices,
-  invoiceItems,
-  communications,
   products,
   locations,
   locationMessaging,
@@ -42,7 +37,12 @@ import type { Database } from "@openpims/db/client";
 import { regionDefaults } from "@/lib/locale/format";
 import { alertOps } from "@/lib/alerts";
 import { syncPracticeSubscriptionQuantities } from "@/lib/billing/subscription-sync";
-import { seedDemoData } from "@/lib/onboarding/defaults";
+import {
+  clearSeededDemoData,
+  hasLiveDemoData,
+  reseedSampleClinic,
+  type DemoDataProvenance,
+} from "@/lib/onboarding/demo-data-lifecycle";
 import { createAuthToken } from "@/lib/auth-tokens";
 import { PASSWORD_HASH_COST } from "@/lib/auth-hashing";
 import { authPasswordInput } from "@/lib/auth-password";
@@ -179,10 +179,6 @@ function settingsMergePatch(patch: Record<string, unknown>) {
   return sql`coalesce(${practices.settings}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb`;
 }
 
-function settingsRemoveKey(key: string) {
-  return sql`coalesce(${practices.settings}, '{}'::jsonb) - ${key}`;
-}
-
 function onboardingStateMergePatch(patch: Record<string, unknown>) {
   return sql`jsonb_set(
     coalesce(${practices.settings}, '{}'::jsonb),
@@ -285,18 +281,7 @@ async function syncBillingAfterLocationChange(
 
 interface PracticeSettings {
   onboardingCompletedAt?: string | null;
-  demoData?: {
-    clientIds: string[];
-    patientIds: string[];
-    appointmentIds: string[];
-    soapNoteIds?: string[];
-    vaccinationIds?: string[];
-    problemIds?: string[];
-    invoiceIds?: string[];
-    invoiceItemIds?: string[];
-    communicationIds?: string[];
-    productIds?: string[];
-  };
+  demoData?: DemoDataProvenance;
   onboardingDraft?: {
     logoName?: string;
     brandColor?: string;
@@ -1058,7 +1043,7 @@ export const settingsRouter = createRouter({
     const demoPatientIds = new Set(settings.demoData?.patientIds ?? []);
     return {
       completedAt: settings.onboardingCompletedAt ?? null,
-      hasDemoData: !!settings.demoData,
+      hasDemoData: hasLiveDemoData(settings.demoData),
       // A secondary-PIMS buyer reaches a real-data milestone without having to
       // delete the sample clinic first. This also keeps the checklist honest
       // when real and demo patients intentionally coexist during evaluation.
@@ -1438,195 +1423,16 @@ export const settingsRouter = createRouter({
 
   /** Remove the seeded demo clients/patients/appointments (soft delete). */
   clearDemoData: adminProcedure.mutation(async ({ ctx }) => {
-    const [practice] = await ctx.db
-      .select({ settings: practices.settings })
-      .from(practices)
-      .where(activePracticeWhere(ctx.practiceId))
-      .limit(1);
-    if (!practice) {
-      throw practiceNotFound();
-    }
-    const settings = (practice.settings ?? {}) as PracticeSettings;
-    const demo = settings.demoData;
-    if (demo) {
-      const now = new Date();
-      const storedDemoSoapNoteIds = demo.soapNoteIds ?? [];
-      let demoSoapNoteIds = [...storedDemoSoapNoteIds];
-      if (demo.appointmentIds.length > 0 || demo.patientIds.length > 0) {
-        // Always discover every descendant note. Replacement SOAPs can be
-        // created after seeding and therefore are not present in saved IDs.
-        const discoveredDemoSoapNotes = await ctx.db
-          .select({ id: soapNotes.id })
-          .from(soapNotes)
-          .where(
-            and(
-              eq(soapNotes.practiceId, ctx.practiceId),
-              or(
-                inArray(soapNotes.appointmentId, demo.appointmentIds),
-                inArray(soapNotes.patientId, demo.patientIds),
-              ),
-            ),
-          );
-        demoSoapNoteIds = [
-          ...new Set([
-            ...storedDemoSoapNoteIds,
-            ...discoveredDemoSoapNotes.map((note) => note.id),
-          ]),
-        ];
-        if (demoSoapNoteIds.length !== storedDemoSoapNoteIds.length) {
-          await ctx.db
-            .update(practices)
-            .set({
-              settings: settingsMergePatch({
-                demoData: { ...demo, soapNoteIds: demoSoapNoteIds },
-              }),
-            })
-            .where(activePracticeWhere(ctx.practiceId));
-        }
-      }
-      // Soft-delete the clinical and billing records first, then the
-      // appointments/patients/clients they hang off of.
-      if (demo.productIds?.length) {
-        await ctx.db
-          .update(products)
-          .set({ deletedAt: now })
-          .where(
-            and(
-              eq(products.practiceId, ctx.practiceId),
-              inArray(products.id, demo.productIds),
-            ),
-          );
-      }
-      if (demo.communicationIds?.length) {
-        await ctx.db
-          .update(communications)
-          .set({ deletedAt: now })
-          .where(
-            and(
-              eq(communications.practiceId, ctx.practiceId),
-              inArray(communications.id, demo.communicationIds),
-            ),
-          );
-      }
-      if (demo.invoiceItemIds?.length) {
-        await ctx.db
-          .update(invoiceItems)
-          .set({ deletedAt: now })
-          .where(
-            and(
-              inArray(invoiceItems.id, demo.invoiceItemIds),
-              sql`exists (
-                select 1
-                from ${invoices}
-                where ${invoices.id} = ${invoiceItems.invoiceId}
-                  and ${invoices.practiceId} = ${ctx.practiceId}
-              )`,
-            ),
-          );
-      }
-      if (demo.invoiceIds?.length) {
-        await ctx.db
-          .update(invoices)
-          .set({ deletedAt: now })
-          .where(
-            and(
-              eq(invoices.practiceId, ctx.practiceId),
-              inArray(invoices.id, demo.invoiceIds),
-            ),
-          );
-      }
-      if (demo.problemIds?.length) {
-        await ctx.db
-          .update(problemList)
-          .set({ deletedAt: now })
-          .where(
-            and(
-              eq(problemList.practiceId, ctx.practiceId),
-              inArray(problemList.id, demo.problemIds),
-            ),
-          );
-      }
-      if (demo.vaccinationIds?.length) {
-        await ctx.db
-          .update(vaccinationRecords)
-          .set({ deletedAt: now })
-          .where(
-            and(
-              eq(vaccinationRecords.practiceId, ctx.practiceId),
-              inArray(vaccinationRecords.id, demo.vaccinationIds),
-            ),
-          );
-      }
-      if (demoSoapNoteIds.length) {
-        await ctx.db
-          .update(soapNotes)
-          .set({ deletedAt: now })
-          .where(
-            and(
-              eq(soapNotes.practiceId, ctx.practiceId),
-              inArray(soapNotes.id, demoSoapNoteIds),
-            ),
-          );
-      }
-      if (demo.appointmentIds?.length) {
-        await ctx.db
-          .update(appointments)
-          .set({ deletedAt: now })
-          .where(
-            and(
-              eq(appointments.practiceId, ctx.practiceId),
-              inArray(appointments.id, demo.appointmentIds),
-            ),
-          );
-      }
-      if (demo.patientIds?.length) {
-        await ctx.db
-          .update(patients)
-          .set({ deletedAt: now })
-          .where(
-            and(
-              eq(patients.practiceId, ctx.practiceId),
-              inArray(patients.id, demo.patientIds),
-            ),
-          );
-      }
-      if (demo.clientIds?.length) {
-        await ctx.db
-          .update(clients)
-          .set({ deletedAt: now })
-          .where(
-            and(
-              eq(clients.practiceId, ctx.practiceId),
-              inArray(clients.id, demo.clientIds),
-            ),
-          );
-      }
-    }
-    await ctx.db
-      .update(practices)
-      .set({ settings: settingsRemoveKey("demoData") })
-      .where(activePracticeWhere(ctx.practiceId));
-    return { ok: true };
+    const result = await clearSeededDemoData(ctx.db, ctx.practiceId);
+    if (!result.found) throw practiceNotFound();
+    return { ok: true, alreadyCleared: result.alreadyCleared };
   }),
 
   /** Add the sample clients, pets, and visits back. No-op if already present. */
   reseedDemoData: adminProcedure.mutation(async ({ ctx }) => {
-    const [practice] = await ctx.db
-      .select({ settings: practices.settings })
-      .from(practices)
-      .where(activePracticeWhere(ctx.practiceId))
-      .limit(1);
-    if (!practice) {
-      throw practiceNotFound();
-    }
-    const settings = (practice.settings ?? {}) as PracticeSettings;
-    if (settings.demoData) return { ok: true, alreadyPresent: true };
-    const demoData = await seedDemoData(ctx.db, { practiceId: ctx.practiceId });
-    await ctx.db
-      .update(practices)
-      .set({ settings: settingsMergePatch({ demoData }) })
-      .where(activePracticeWhere(ctx.practiceId));
-    return { ok: true, alreadyPresent: false };
+    const result = await reseedSampleClinic(ctx.db, ctx.practiceId);
+    if (!result.found) throw practiceNotFound();
+    return { ok: true, alreadyPresent: result.alreadyPresent };
   }),
 
   // ── Staff / Users ─────────────────────────────────────────

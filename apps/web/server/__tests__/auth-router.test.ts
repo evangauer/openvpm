@@ -261,6 +261,8 @@ afterEach(() => {
   mocks.createSubscriptionCheckoutSession.mockResolvedValue({
     url: "https://stripe.example/signup-checkout",
   });
+  mocks.seedPractice.mockResolvedValue(undefined);
+  mocks.seedDemoData.mockResolvedValue({});
   vi.unstubAllEnvs();
 });
 
@@ -471,7 +473,7 @@ describe("auth router input validation", () => {
     expect(updateSet).not.toHaveBeenCalled();
   });
 
-  it("fails hosted signup before setup side effects when checkout cannot be created", async () => {
+  it("rolls back initialized hosted signup when checkout cannot be created", async () => {
     vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
     mocks.billingEnforced.mockReturnValue(true);
     const consoleError = vi
@@ -504,8 +506,13 @@ describe("auth router input validation", () => {
         customerEmail: "owner@example.com",
       }),
     );
-    expect(mocks.seedPractice).not.toHaveBeenCalled();
-    expect(mocks.seedDemoData).not.toHaveBeenCalled();
+    expect(mocks.seedPractice).toHaveBeenCalledWith(
+      db,
+      { practiceId: "practice-1", locationId: "location-1" },
+    );
+    expect(mocks.seedDemoData).toHaveBeenCalledWith(db, {
+      practiceId: "practice-1",
+    });
     expect(mocks.createAuthToken).not.toHaveBeenCalled();
     expect(mocks.sendTrackedVerificationEmail).not.toHaveBeenCalled();
     expect(mocks.sendWelcomeEmail).not.toHaveBeenCalled();
@@ -514,7 +521,12 @@ describe("auth router input validation", () => {
       expect.any(Error),
     );
     consoleError.mockRestore();
-    expect(updateSet).not.toHaveBeenCalled();
+    expect(updateSet).toHaveBeenCalledWith({
+      settings: {
+        onboardingCompletedAt: null,
+        demoData: {},
+      },
+    });
   });
 
   it("creates hosted signup checkout without granting a no-card trial", async () => {
@@ -678,9 +690,49 @@ describe("auth router input validation", () => {
 
     expect(transaction).toHaveBeenCalled();
     expect(insertValues).toHaveBeenCalledTimes(3);
-    expect(mocks.seedPractice).not.toHaveBeenCalled();
+    expect(mocks.seedPractice).toHaveBeenCalledWith(
+      db,
+      { practiceId: "practice-1", locationId: "location-1" },
+    );
+    expect(mocks.seedDemoData).toHaveBeenCalledWith(db, {
+      practiceId: "practice-1",
+    });
+    expect(updateSet).toHaveBeenCalledWith({
+      settings: {
+        onboardingCompletedAt: null,
+        demoData: {},
+      },
+    });
+  });
+
+  it("fails the account transaction if starter catalog seeding fails", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const { db, insertValues, transaction, updateSet } = createRegistrationDb();
+    mocks.seedPractice.mockRejectedValueOnce(new Error("catalog unavailable"));
+
+    await expect(
+      callerWithDb(db).register({
+        email: "owner@example.com",
+        password: "password123",
+        practiceName: "Neighborhood Veterinary",
+      }),
+    ).rejects.toMatchObject({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "Account setup failed. Please retry.",
+    });
+
+    expect(transaction).toHaveBeenCalled();
+    expect(insertValues).toHaveBeenCalledTimes(3);
     expect(mocks.seedDemoData).not.toHaveBeenCalled();
     expect(updateSet).not.toHaveBeenCalled();
+    expect(mocks.createAuthToken).not.toHaveBeenCalled();
+    expect(consoleError).toHaveBeenCalledWith(
+      "[register] clinic initialization failed:",
+      expect.any(Error),
+    );
+    consoleError.mockRestore();
   });
 });
 
