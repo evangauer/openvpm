@@ -1,0 +1,3 @@
+ALTER TABLE "practices" ADD COLUMN "appointment_reminders_enabled" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "practices" ADD COLUMN "appointment_reminder_lead_hours" integer DEFAULT 24 NOT NULL;--> statement-breakpoint
+ALTER TABLE "practices" ADD CONSTRAINT "practices_appointment_reminder_lead_hours_check" CHECK ("practices"."appointment_reminder_lead_hours" in (24, 48, 72));

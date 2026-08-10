@@ -101,11 +101,13 @@ export function MessagingRegistrationForm() {
   }, [data, defaults]);
 
   const submitted = Boolean(
-    data?.providerBrandStatus || data?.providerCampaignStatus
+    data?.providerBrandStatus || data?.providerCampaignStatus,
   );
   const save = trpc.messaging.saveRegistration.useMutation({
     onSuccess: () => {
-      toast.success("Carrier registration details saved for OpenVPM review.");
+      toast.success(
+        "Carrier registration details saved for administrator review.",
+      );
       setForm((current) => ({ ...current, taxId: "" }));
       setAttested(false);
       utils.messaging.getRegistration.invalidate();
@@ -144,7 +146,7 @@ export function MessagingRegistrationForm() {
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
             US carriers verify the clinic and its texting use case before
             messages can send. Saving this form does not submit or charge
-            anything; an OpenVPM operator reviews it first.
+            anything; your messaging administrator reviews it first.
           </p>
         </div>
         {data ? (
@@ -222,7 +224,7 @@ export function MessagingRegistrationForm() {
             onChange={(event) =>
               update(
                 "entityType",
-                event.target.value as FormState["entityType"]
+                event.target.value as FormState["entityType"],
               )
             }
             disabled={submitted}

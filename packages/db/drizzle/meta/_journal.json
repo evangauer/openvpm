@@ -498,6 +498,13 @@
       "when": 1786339170251,
       "tag": "0070_petite_quasimodo",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1786343344347,
+      "tag": "0071_boring_devos",
+      "breakpoints": true
     }
   ]
 }

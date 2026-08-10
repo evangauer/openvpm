@@ -84,11 +84,13 @@ const STEPS: { id: Step; title: string }[] = [
 
 export function MessagingWizard({
   location,
+  hosted,
   open,
   onOpenChange,
   onChanged,
 }: {
   location: MessagingSetupLocation | null;
+  hosted: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onChanged: () => void;
@@ -96,7 +98,7 @@ export function MessagingWizard({
   const utils = trpc.useUtils();
   const defaultMode = useMemo(
     () => defaultMessagingSetupMode(location?.existingPhone),
-    [location?.existingPhone]
+    [location?.existingPhone],
   );
   const [step, setStep] = useState<Step>("choose");
   const [mode, setMode] = useState<MessagingSetupMode>(defaultMode);
@@ -109,10 +111,10 @@ export function MessagingWizard({
   const [numbers, setNumbers] = useState<SearchNumber[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
   const [selectedNumber, setSelectedNumber] = useState<SearchNumber | null>(
-    null
+    null,
   );
   const [provisionedSender, setProvisionedSender] = useState<string | null>(
-    null
+    null,
   );
   const [chargeAcknowledged, setChargeAcknowledged] = useState(false);
 
@@ -135,7 +137,7 @@ export function MessagingWizard({
       setProvisionedSender(result.senderE164);
       setStep("done");
       toast.success(
-        "Number order accepted. Sending stays off until carrier approval."
+        "Number order accepted. Sending stays off until carrier approval.",
       );
       onChanged();
     },
@@ -180,7 +182,7 @@ export function MessagingWizard({
     setHasSearched(false);
     try {
       const result = await utils.messaging.searchNumbers.fetch(
-        areaCode ? { areaCode } : {}
+        areaCode ? { areaCode } : {},
       );
       setNumbers(result);
       setSelectedNumber(result[0] ?? null);
@@ -273,7 +275,7 @@ export function MessagingWizard({
                 key={s.id}
                 className={cn(
                   "h-1.5 flex-1 rounded-full transition-colors",
-                  i <= currentIndex ? "bg-emerald-500" : "bg-slate-200"
+                  i <= currentIndex ? "bg-emerald-500" : "bg-slate-200",
                 )}
               />
             ))}
@@ -292,6 +294,7 @@ export function MessagingWizard({
             ) : null}
             {step === "confirm" ? (
               <ConfirmStep
+                hosted={hosted}
                 mode={mode}
                 location={location}
                 eligibility={eligibility}
@@ -317,6 +320,7 @@ export function MessagingWizard({
             ) : null}
             {step === "registration" ? (
               <RegistrationStep
+                hosted={hosted}
                 mode={mode}
                 location={location}
                 selectedNumber={selectedNumber}
@@ -324,7 +328,9 @@ export function MessagingWizard({
                 setChargeAcknowledged={setChargeAcknowledged}
               />
             ) : null}
-            {step === "done" ? <DoneStep sender={provisionedSender} /> : null}
+            {step === "done" ? (
+              <DoneStep sender={provisionedSender} hosted={hosted} />
+            ) : null}
           </div>
 
           <div className="mt-6 flex items-center justify-between border-t border-slate-200 pt-5">
@@ -399,7 +405,7 @@ function ChooseStep({
           "w-full rounded-xl border p-4 text-left transition-colors",
           mode === "buy"
             ? "border-emerald-500 bg-emerald-50"
-            : "border-slate-200 hover:border-emerald-300"
+            : "border-slate-200 hover:border-emerald-300",
         )}
       >
         <div className="flex items-start gap-3">
@@ -419,6 +425,7 @@ function ChooseStep({
 }
 
 function ConfirmStep({
+  hosted,
   mode,
   location,
   eligibility,
@@ -432,6 +439,7 @@ function ConfirmStep({
   setSelectedNumber,
   searchNumbers,
 }: {
+  hosted: boolean;
   mode: MessagingSetupMode;
   location: MessagingSetupLocation;
   eligibility: { eligible: boolean; detail?: string } | null;
@@ -491,7 +499,10 @@ function ConfirmStep({
       <p className="text-sm leading-6 text-slate-600">
         Search for a local number. The selected number will be assigned to this
         location. Carrier registration remains not started until you complete
-        the clinic details and OpenVPM reviews them.
+        the clinic details and{" "}
+        {hosted
+          ? "OpenVPM reviews them."
+          : "your administrator finishes provider activation."}
       </p>
       <div className="flex flex-wrap items-end gap-2">
         <label className="space-y-1.5">
@@ -502,7 +513,7 @@ function ConfirmStep({
               setAreaCode(
                 e.target.value
                   .replace(/\D/g, "")
-                  .slice(0, MESSAGING_AREA_CODE_LENGTH)
+                  .slice(0, MESSAGING_AREA_CODE_LENGTH),
               )
             }
             maxLength={MESSAGING_AREA_CODE_LENGTH}
@@ -536,7 +547,7 @@ function ConfirmStep({
                 "flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-sm transition-colors",
                 selectedNumber?.phoneNumber === n.phoneNumber
                   ? "bg-emerald-50"
-                  : "hover:bg-slate-50"
+                  : "hover:bg-slate-50",
               )}
             >
               <span className="font-medium text-slate-950">
@@ -566,12 +577,14 @@ function ConfirmStep({
 }
 
 function RegistrationStep({
+  hosted,
   mode,
   location,
   selectedNumber,
   chargeAcknowledged,
   setChargeAcknowledged,
 }: {
+  hosted: boolean;
   mode: MessagingSetupMode;
   location: MessagingSetupLocation;
   selectedNumber: SearchNumber | null;
@@ -607,10 +620,9 @@ function RegistrationStep({
           Carrier approval is required before live US texting.
         </p>
         <p className="mt-2 text-sm leading-6 text-teal-800">
-          OpenVPM will set up the number and keep sending off. After this step,
-          complete the clinic&apos;s legal and consent details in Messaging
-          settings; OpenVPM reviews them before any fee-bearing carrier
-          submission.
+          {hosted
+            ? "The selected number will be saved with sending off. After this step, complete the clinic's legal and consent details in Messaging settings; OpenVPM reviews them before any fee-bearing carrier submission."
+            : "The selected number will be saved with sending off. After this step, complete the clinic's legal and consent details in Messaging settings; your administrator must finish carrier activation before sending."}
         </p>
       </div>
       <label className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
@@ -622,15 +634,21 @@ function RegistrationStep({
         />
         <span>
           I authorize the exact upfront and monthly provider charges shown above
-          for this selected number. Texting and fee-bearing carrier registration
-          stay off until later approval.
+          for this selected number. Texting stays off until carrier approval is
+          active and an administrator enables sending.
         </span>
       </label>
     </div>
   );
 }
 
-function DoneStep({ sender }: { sender: string | null }) {
+function DoneStep({
+  sender,
+  hosted,
+}: {
+  sender: string | null;
+  hosted: boolean;
+}) {
   return (
     <div className="space-y-5">
       <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
@@ -650,10 +668,9 @@ function DoneStep({ sender }: { sender: string | null }) {
           Next: carrier approval
         </p>
         <p className="mt-2 text-sm leading-6 text-slate-600">
-          Complete the US carrier registration form in Messaging settings.
-          OpenVPM will review and submit it. Hosted sending remains off until
-          the clinic and one location are explicitly approved for the pilot;
-          after approval, validate through a current consented client workflow.
+          {hosted
+            ? "Complete the US carrier registration form in Messaging settings. OpenVPM will review and submit it. Hosted sending remains off until the clinic and one location are explicitly approved for the pilot; after approval, validate through a current consented client workflow."
+            : "Complete the US carrier registration form in Messaging settings. Your administrator must finish provider activation before enabling sending; after approval, validate through a current consented client workflow."}
         </p>
       </div>
     </div>

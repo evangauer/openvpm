@@ -32,6 +32,7 @@ import {
   migrationRuns,
   visitCloseouts,
   bookingPages,
+  authTokens,
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import { regionDefaults } from "@/lib/locale/format";
@@ -318,6 +319,10 @@ function onboardingCompletionPatch(now: string) {
 
 function staffAdminRosterLockKey(practiceId: string) {
   return `settings:staff-admin-roster:${practiceId}`;
+}
+
+function staffInviteLockKey(email: string) {
+  return `settings:staff-invite:${email}`;
 }
 
 function activePracticeWhere(practiceId: string) {
@@ -2120,6 +2125,7 @@ export const settingsRouter = createRouter({
    * Invite a staff member by email. Creates the user with an unguessable
    * placeholder password (passwordHash is NOT NULL) and an unverified email,
    * then emails an "invite" link to set their password via /accept-invite.
+   * A retry for the same pending invite reuses the user and rotates the token.
    */
   inviteStaff: adminProcedure
     .input(
@@ -2148,75 +2154,147 @@ export const settingsRouter = createRouter({
         throw practiceNotFound();
       }
 
-      const [existing] = await ctx.db
-        .select({ id: users.id })
-        .from(users)
-        .where(eq(users.email, email))
-        .limit(1);
-      if (existing) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "A user with that email already exists.",
-        });
-      }
+      // The user identity and invite token are one atomic unit. The email lock
+      // serializes first invites and retries across practices, matching the
+      // global unique-email boundary and ensuring only the newest token stays
+      // active. A token failure rolls back a newly inserted staff seat.
+      const { user, token } = await ctx.db
+        .transaction(async (tx) => {
+          await tx.execute(
+            sql`select pg_advisory_xact_lock(hashtext(${staffInviteLockKey(
+              email,
+            )}::text))`,
+          );
+          const [existing] = await tx
+            .select({
+              id: users.id,
+              email: users.email,
+              practiceId: users.practiceId,
+              emailVerifiedAt: users.emailVerifiedAt,
+              deletedAt: users.deletedAt,
+            })
+            .from(users)
+            .where(eq(users.email, email))
+            .limit(1);
 
-      // Derive a display name from the email local-part when not provided.
-      const name =
-        input.name?.trim() ||
-        (() => {
-          const local = email.split("@")[0] ?? "";
-          const words = local
-            .split(/[._-]+/)
-            .filter(Boolean)
-            .map((w) => w[0]!.toUpperCase() + w.slice(1));
-          return words.join(" ") || "Team Member";
-        })();
+          let user: { id: string; email: string };
+          if (existing) {
+            // Provider failures leave the pending staff row in place so billing
+            // and the roster stay consistent. Only a prior invite token proves
+            // this is a safe retry; ordinary users retain the conflict path.
+            const [priorInvite] = await tx
+              .select({ id: authTokens.id })
+              .from(authTokens)
+              .where(
+                and(
+                  eq(authTokens.userId, existing.id),
+                  eq(authTokens.type, "invite"),
+                ),
+              )
+              .limit(1);
+            const isPendingInviteRetry =
+              existing.practiceId === ctx.practiceId &&
+              existing.emailVerifiedAt === null &&
+              existing.deletedAt === null &&
+              Boolean(priorInvite);
 
-      // Unguessable placeholder — replaced when the invite is accepted.
-      const passwordHash = await hash(
-        `invite:${randomUUID()}:${randomUUID()}`,
-        PASSWORD_HASH_COST,
-      );
+            if (!isPendingInviteRetry) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: "A user with that email already exists.",
+              });
+            }
+            user = { id: existing.id, email: existing.email };
+          } else {
+            // Derive a display name from the email local-part when not provided.
+            const name =
+              input.name?.trim() ||
+              (() => {
+                const local = email.split("@")[0] ?? "";
+                const words = local
+                  .split(/[._-]+/)
+                  .filter(Boolean)
+                  .map((w) => w[0]!.toUpperCase() + w.slice(1));
+                return words.join(" ") || "Team Member";
+              })();
 
-      const [user] = await ctx.db
-        .insert(users)
-        .values({
-          email,
-          name,
-          role: input.role,
-          isVeterinarian: input.role === "veterinarian",
-          passwordHash,
-          emailVerifiedAt: null,
-          practiceId: ctx.practiceId,
+            // Unguessable placeholder — replaced when the invite is accepted.
+            const passwordHash = await hash(
+              `invite:${randomUUID()}:${randomUUID()}`,
+              PASSWORD_HASH_COST,
+            );
+
+            const [createdUser] = await tx
+              .insert(users)
+              .values({
+                email,
+                name,
+                role: input.role,
+                isVeterinarian: input.role === "veterinarian",
+                passwordHash,
+                emailVerifiedAt: null,
+                practiceId: ctx.practiceId,
+              })
+              .returning({
+                id: users.id,
+                email: users.email,
+              });
+            if (!createdUser) {
+              throw new TRPCError({
+                code: "INTERNAL_SERVER_ERROR",
+                message: "The staff invitation could not be created.",
+              });
+            }
+            user = createdUser;
+          }
+
+          const token = await createAuthToken({
+            userId: user.id,
+            email: user.email,
+            type: "invite",
+            db: tx as unknown as Database,
+          });
+          return { user, token };
         })
-        .returning({
-          id: users.id,
-          email: users.email,
-          name: users.name,
-          role: users.role,
-          isVeterinarian: users.isVeterinarian,
+        .catch((error) => {
+          if (error instanceof TRPCError) throw error;
+          console.error("[inviteStaff] identity preparation failed");
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message:
+              "The staff invitation could not be prepared. Please retry in a moment.",
+          });
         });
-
-      const token = await createAuthToken({
-        userId: user!.id,
-        email: user!.email,
-        type: "invite",
-        db: ctx.db,
-      });
       const inviteUrl = `${appBaseUrl()}/accept-invite?token=${token}`;
 
+      // Keep the pending seat synchronized even when delivery is refused. A
+      // later retry is idempotent: it reuses this user and rotates the token.
+      await syncBillingAfterStaffChange(ctx.db, ctx.practiceId);
+
       try {
-        await sendStaffInviteEmail({
-          to: user!.email,
+        const delivery = await sendStaffInviteEmail({
+          to: user.email,
           inviterName: ctx.user.name,
           practiceName: practice.name,
           inviteUrl,
         });
+        if (!delivery.success) {
+          console.error("[inviteStaff] email provider refused delivery");
+          throw new TRPCError({
+            code: "BAD_GATEWAY",
+            message:
+              "Staff access was saved, but the invitation email could not be sent. Please retry the invite in a moment.",
+          });
+        }
       } catch (err) {
-        console.error("[inviteStaff] email failed:", err);
+        if (err instanceof TRPCError) throw err;
+        console.error("[inviteStaff] email provider request failed");
+        throw new TRPCError({
+          code: "BAD_GATEWAY",
+          message:
+            "Staff access was saved, but the invitation email could not be sent. Please retry the invite in a moment.",
+        });
       }
-
-      await syncBillingAfterStaffChange(ctx.db, ctx.practiceId);
 
       return {
         ok: true,

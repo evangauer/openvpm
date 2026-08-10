@@ -4,15 +4,15 @@ import { describe, expect, it } from "vitest";
 describe("dashboard onboarding UI states", () => {
   const activationSource = readFileSync(
     "components/dashboard/activation-checklist.tsx",
-    "utf8"
+    "utf8",
   );
   const tourProviderSource = readFileSync(
     "components/tour/tour-provider.tsx",
-    "utf8"
+    "utf8",
   );
   const journeyProviderSource = readFileSync(
     "components/onboarding/journey-overlay.tsx",
-    "utf8"
+    "utf8",
   );
   const settingsRouter = readFileSync("server/routers/settings.ts", "utf8");
 
@@ -24,63 +24,73 @@ describe("dashboard onboarding UI states", () => {
     expect(activationSource).toContain("const isChecklistLoading");
     expect(activationSource).toContain("practice.isLoading");
     expect(activationSource).toContain(
-      "if (isChecklistLoading) return <ActivationChecklistLoading />"
+      "if (isChecklistLoading) return <ActivationChecklistLoading />",
     );
     expect(activationSource).toContain("!clientPayments.data");
     expect(activationSource).toContain(
-      "Setup checklist data was unavailable. Try loading it again."
+      "Setup checklist data was unavailable. Try loading it again.",
     );
     expect(activationSource).toContain("state.refetch()");
     expect(activationSource).toContain("onboarding.refetch()");
     expect(activationSource).toContain("practice.refetch()");
     expect(activationSource).toContain("sub.refetch()");
     expect(activationSource.indexOf("if (loadError)")).toBeLessThan(
-      activationSource.indexOf("if (isChecklistLoading)")
+      activationSource.indexOf("if (isChecklistLoading)"),
     );
     expect(activationSource.indexOf("if (isChecklistLoading)")).toBeLessThan(
-      activationSource.indexOf("!clientPayments.data")
+      activationSource.indexOf("!clientPayments.data"),
     );
     expect(activationSource.indexOf("!clientPayments.data")).toBeLessThan(
-      activationSource.indexOf("const practiceData = practice.data")
+      activationSource.indexOf("const practiceData = practice.data"),
     );
     expect(activationSource).toContain("const checklistState = state.data");
-    expect(activationSource).toContain("const onboardingData = onboarding.data");
+    expect(activationSource).toContain(
+      "const onboardingData = onboarding.data",
+    );
     expect(activationSource).toContain("const practiceData = practice.data");
     expect(activationSource).toContain("const subscriptionData = sub.data");
     expect(activationSource).toContain(
-      "const practiceName = practiceData.name ?? \"your practice\""
-    );
-    expect(activationSource).toContain("done: !!practiceData.logoUrl || !!brandColor");
-    expect(activationSource).toContain(
-      "done: onboardingData.hasRealData"
-    );
-    expect(activationSource).toContain('label: "Configure appointment requests"');
-    expect(activationSource).toContain(
-      "bookingData.page?.published === true &&"
+      'const practiceName = practiceData.name ?? "your practice"',
     );
     expect(activationSource).toContain(
-      "bookingData.page.config.bookableTypeIds.length > 0"
+      "done: !!practiceData.logoUrl || !!brandColor",
+    );
+    expect(activationSource).toContain("done: onboardingData.hasRealData");
+    expect(activationSource).toContain(
+      'label: "Configure appointment requests"',
+    );
+    expect(activationSource).toContain(
+      "bookingData.page?.published === true &&",
+    );
+    expect(activationSource).toContain(
+      "bookingData.page.config.bookableTypeIds.length > 0",
     );
     expect(activationSource).toContain('label: "Finish texting activation"');
     expect(activationSource).toContain("done: textingData.hasActiveNumber");
+    expect(activationSource).toContain(
+      "textingData.setupAvailable || textingData.hasAnyNumber",
+    );
+    expect(activationSource.indexOf("includeTextingMilestone")).toBeLessThan(
+      activationSource.indexOf('key: "texting"'),
+    );
     expect(activationSource).toContain('label: "Add one real client and pet"');
     expect(activationSource).toContain('href: "/clients/new"');
     expect(activationSource).toContain(
-      'label: "Book that pet\'s first appointment"'
+      'label: "Book that pet\'s first appointment"',
     );
     expect(activationSource).toContain(
-      "done: onboardingData.hasRealAppointment"
+      "done: onboardingData.hasRealAppointment",
     );
     expect(activationSource).toContain('label: "Complete your first visit"');
     expect(activationSource).toContain(
-      "done: onboardingData.hasCompletedRealVisit"
+      "done: onboardingData.hasCompletedRealVisit",
     );
     expect(activationSource).toContain(
-      "`/encounters/${onboardingData.nextRealAppointmentId}`"
+      "`/encounters/${onboardingData.nextRealAppointmentId}`",
     );
     expect(activationSource).toContain(': "/schedule"');
     expect(activationSource.indexOf('key: "firstAppointment"')).toBeLessThan(
-      activationSource.indexOf('key: "firstVisit"')
+      activationSource.indexOf('key: "firstVisit"'),
     );
     expect(activationSource).toContain('label: "Set up client card payments"');
     expect(activationSource).toContain("done: clientPaymentData.enabled");
@@ -99,60 +109,68 @@ describe("dashboard onboarding UI states", () => {
   });
 
   it("keeps tour setup persistence admin-only at the provider boundary", () => {
-    expect(tourProviderSource).toContain('import { useSession } from "next-auth/react"');
     expect(tourProviderSource).toContain(
-      'status === "authenticated" && session?.user?.role === "admin"'
+      'import { useSession } from "next-auth/react"',
+    );
+    expect(tourProviderSource).toContain(
+      'status === "authenticated" && session?.user?.role === "admin"',
     );
     expect(tourProviderSource).toContain("enabled: isAdmin");
     expect(tourProviderSource).toContain("if (!isAdmin) return;");
     expect(tourProviderSource).toContain(
-      "migrationSource: prev?.migrationSource ?? null"
+      "migrationSource: prev?.migrationSource ?? null",
     );
     expect(tourProviderSource).toContain(
-      "prev?.migrationSourceHasCommittedChanges ?? false"
+      "prev?.migrationSourceHasCommittedChanges ?? false",
     );
     expect(tourProviderSource).toContain(
-      "migrationCompletedModes: prev?.migrationCompletedModes ?? []"
+      "migrationCompletedModes: prev?.migrationCompletedModes ?? []",
     );
     expect(tourProviderSource).toContain(
-      "setTourStatus.mutate({ status, lastStepId: stepId ?? null })"
+      "setTourStatus.mutate({ status, lastStepId: stepId ?? null })",
     );
     expect(settingsRouter).toContain("setTourStatus: adminProcedure");
   });
 
   it("keeps guided setup overlay mutations admin-only at the provider boundary", () => {
-    expect(journeyProviderSource).toContain('import { useSession } from "next-auth/react"');
     expect(journeyProviderSource).toContain(
-      'status === "authenticated" && session?.user?.role === "admin"'
+      'import { useSession } from "next-auth/react"',
     );
-    expect(journeyProviderSource).toContain("const openJourney = useCallback(() => {");
+    expect(journeyProviderSource).toContain(
+      'status === "authenticated" && session?.user?.role === "admin"',
+    );
+    expect(journeyProviderSource).toContain(
+      "const openJourney = useCallback(() => {",
+    );
     expect(journeyProviderSource).toContain("if (!isAdmin) return;");
+    expect(journeyProviderSource).toContain("pendingManualOpen.current = true");
+    expect(journeyProviderSource).toContain("!pendingManualOpen.current ||");
     expect(journeyProviderSource).toContain(
-      "pendingManualOpen.current = true"
+      "pendingManualOpen.current = false",
     );
     expect(journeyProviderSource).toContain(
-      "!pendingManualOpen.current ||"
+      "if (subscription.error) retryPendingManualOpen();",
     );
     expect(journeyProviderSource).toContain(
-      "pendingManualOpen.current = false"
+      "if (result.error && pendingManualOpen.current)",
     );
     expect(journeyProviderSource).toContain(
-      "if (subscription.error) retryPendingManualOpen();"
+      "const isOpen = isAdmin && index !== null",
     );
-    expect(journeyProviderSource).toContain(
-      "if (result.error && pendingManualOpen.current)"
-    );
-    expect(journeyProviderSource).toContain("const isOpen = isAdmin && index !== null");
     expect(journeyProviderSource).toContain("value={{ openJourney, isOpen }}");
     expect(journeyProviderSource).toMatch(/<JourneyShell\s+steps=\{steps\}/);
-    expect(journeyProviderSource).toContain("disabled={busy || continueDisabled}");
     expect(journeyProviderSource).toContain(
-      "trpc.settings.completeOnboarding.useMutation"
+      "disabled={busy || continueDisabled}",
     );
     expect(journeyProviderSource).toContain(
-      "trpc.settings.clearDemoData.useMutation"
+      "trpc.settings.completeOnboarding.useMutation",
     );
-    expect(settingsRouter).toContain("completeOnboarding: adminProcedure.mutation");
+    expect(journeyProviderSource).toContain(
+      "trpc.settings.clearDemoData.useMutation",
+    );
+    expect(settingsRouter).toContain(
+      "completeOnboarding: adminProcedure.mutation",
+    );
     expect(settingsRouter).toContain("clearDemoData: adminProcedure.mutation");
     expect(settingsRouter).toContain("setOnboardingIntent: adminProcedure");
   });
@@ -167,19 +185,19 @@ describe("dashboard onboarding UI states", () => {
 
   it("turns the activation checklist into a mobile first-win path with a persisted help request", () => {
     expect(activationSource).toContain(
-      "trpc.settings.requestOnboardingHelp.useMutation"
+      "trpc.settings.requestOnboardingHelp.useMutation",
     );
     expect(activationSource).toContain("Help me set this up");
     expect(activationSource).toContain("Setup help requested");
     expect(activationSource).toContain("setupHelpRequestedAt");
     expect(activationSource).toContain(
-      "relative z-20 w-full sm:fixed sm:bottom-4"
+      "relative z-20 w-full sm:fixed sm:bottom-4",
     );
     expect(activationSource).not.toContain(
-      "fixed bottom-4 right-4 z-[70] hidden"
+      "fixed bottom-4 right-4 z-[70] hidden",
     );
     expect(settingsRouter).toContain(
-      "requestOnboardingHelp: adminProcedure.mutation"
+      "requestOnboardingHelp: adminProcedure.mutation",
     );
     expect(settingsRouter).toContain('"Hands-on onboarding requested"');
     expect(activationSource).toContain("useOnboardingJourney");
@@ -191,29 +209,27 @@ describe("dashboard onboarding UI states", () => {
   it("auto-opens the wizard for unfinished, non-dismissed onboarding and resumes durably", () => {
     // Auto-open gate: only when onboarding is not finished and not dismissed.
     expect(journeyProviderSource).toContain(
-      "onboardingStatus.data.completedAt == null"
+      "onboardingStatus.data.completedAt == null",
     );
     expect(journeyProviderSource).toContain(
-      "onboardingState.data.journeyDismissed === true"
+      "onboardingState.data.journeyDismissed === true",
     );
     expect(journeyProviderSource).toContain(
-      "if (notFinished && !dismissed && !established)"
+      "if (notFinished && !dismissed && !established)",
     );
     // Established practices (seeded demo, self-host upgrades) are never
     // greeted like new signups even without a recorded completion date.
     expect(journeyProviderSource).toContain(
-      "onboardingStatus.data.establishedPractice === true"
+      "onboardingStatus.data.establishedPractice === true",
     );
     expect(settingsRouter).toContain("ESTABLISHED_PRACTICE_PATIENT_THRESHOLD");
     expect(settingsRouter).toContain(
-      "eq(visitCloseouts.practiceId, ctx.practiceId)"
+      "eq(visitCloseouts.practiceId, ctx.practiceId)",
     );
-    expect(settingsRouter).toContain(
-      'eq(visitCloseouts.status, "completed")'
-    );
+    expect(settingsRouter).toContain('eq(visitCloseouts.status, "completed")');
     expect(settingsRouter).toContain("isNull(visitCloseouts.deletedAt)");
     expect(settingsRouter).toContain(
-      "eq(appointments.practiceId, ctx.practiceId)"
+      "eq(appointments.practiceId, ctx.practiceId)",
     );
     expect(settingsRouter).toContain("realAppointmentFilter");
     expect(settingsRouter).toContain("when 'in_exam' then 0");
@@ -221,24 +237,24 @@ describe("dashboard onboarding UI states", () => {
     expect(settingsRouter).toContain("asc(appointments.id)");
     // Resume from the durable cursor rather than always step 0.
     expect(journeyProviderSource).toContain(
-      "steps.findIndex((s) => s.id === journeyStepId)"
+      "steps.findIndex((s) => s.id === journeyStepId)",
     );
     expect(journeyProviderSource).toContain("setIndex(resumeIndex)");
     // "I'll finish later" records dismissal WITHOUT completing onboarding.
     expect(journeyProviderSource).toContain(
-      "await persistCursor(step.id, true)"
+      "await persistCursor(step.id, true)",
     );
     expect(journeyProviderSource).toContain(
-      "await setJourneyProgress.mutateAsync({ stepId, dismissed })"
+      "await setJourneyProgress.mutateAsync({ stepId, dismissed })",
     );
     expect(journeyProviderSource).toContain(
-      "await persistCursor(steps[next]!.id, false)"
+      "await persistCursor(steps[next]!.id, false)",
     );
     expect(journeyProviderSource).toContain(
-      "await persistCursor(steps[prev]!.id, false)"
+      "await persistCursor(steps[prev]!.id, false)",
     );
     expect(journeyProviderSource).toContain(
-      "if (!onboardingState.data || !subscription.data) return;"
+      "if (!onboardingState.data || !subscription.data) return;",
     );
     expect(settingsRouter).toContain("setJourneyProgress: adminProcedure");
   });

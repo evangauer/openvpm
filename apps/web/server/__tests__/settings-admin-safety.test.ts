@@ -1,14 +1,27 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 
+const mocks = vi.hoisted(() => ({
+  createAuthToken: vi.fn(async () => "invite-token"),
+  sendStaffInviteEmail: vi.fn(async () => ({ success: true })),
+}));
+
 const SETTINGS_SOURCE = readFileSync(
   new URL("../routers/settings.ts", import.meta.url),
-  "utf8"
+  "utf8",
 );
 const DEMO_DATA_LIFECYCLE_SOURCE = readFileSync(
   new URL("../../lib/onboarding/demo-data-lifecycle.ts", import.meta.url),
-  "utf8"
+  "utf8",
 );
+
+vi.mock("@/lib/auth-tokens", () => ({
+  createAuthToken: mocks.createAuthToken,
+}));
+
+vi.mock("@/lib/email", () => ({
+  sendStaffInviteEmail: mocks.sendStaffInviteEmail,
+}));
 
 vi.mock("@/lib/billing/subscription-sync", () => ({
   syncPracticeSubscriptionQuantities: vi.fn(async () => ({
@@ -21,12 +34,10 @@ vi.mock("@/lib/billing/subscription-sync", () => ({
 }));
 
 const { settingsRouter } = await import("../routers/settings");
-const { syncPracticeSubscriptionQuantities } = await import(
-  "@/lib/billing/subscription-sync"
-);
-const { AUTH_PASSWORD_MAX_LENGTH, AUTH_PASSWORD_MIN_LENGTH } = await import(
-  "@/lib/auth-password"
-);
+const { syncPracticeSubscriptionQuantities } =
+  await import("@/lib/billing/subscription-sync");
+const { AUTH_PASSWORD_MAX_LENGTH, AUTH_PASSWORD_MIN_LENGTH } =
+  await import("@/lib/auth-password");
 const {
   SETTINGS_EMAIL_MAX_LENGTH,
   STAFF_NAME_MAX_LENGTH,
@@ -60,6 +71,7 @@ function createDb(opts?: {
   updatedRows?: unknown[];
   selectRows?: unknown[];
   selectResults?: unknown[][];
+  insertedRows?: unknown[];
 }) {
   const selectResults = [...(opts?.selectResults ?? [])];
   const select = vi.fn(() => ({
@@ -80,19 +92,21 @@ function createDb(opts?: {
   const updateWhere = vi.fn(() => ({ returning: updateReturning }));
   const updateSet = vi.fn(() => ({ where: updateWhere }));
   const update = vi.fn(() => ({ set: updateSet }));
-  const insertReturning = vi.fn(async () => []);
+  const insertReturning = vi.fn(async () => opts?.insertedRows ?? []);
   const insertValues = vi.fn(() => ({ returning: insertReturning }));
   const insert = vi.fn(() => ({ values: insertValues }));
 
+  const transaction = vi.fn(async (fn: (tx: unknown) => unknown) => fn(db));
+  const execute = vi.fn(async () => undefined);
   const db: Record<string, unknown> = {
-    transaction: async (fn: (tx: unknown) => unknown) => fn(db),
-    execute: vi.fn(async () => undefined),
+    transaction,
+    execute,
     select,
     update,
     insert,
   };
 
-  return { db, updateSet, insertValues };
+  return { db, transaction, execute, updateSet, insertValues };
 }
 
 beforeEach(() => {
@@ -104,50 +118,50 @@ describe("settings admin stale target safety", () => {
     const { db, updateSet, insertValues } = createDb();
 
     await expect(
-      callerWithDb(db).updatePractice({ name: "A".repeat(256) })
+      callerWithDb(db).updatePractice({ name: "A".repeat(256) }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
-      callerWithDb(db).updatePractice({ address: "A".repeat(501) })
+      callerWithDb(db).updatePractice({ address: "A".repeat(501) }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
-      callerWithDb(db).updatePractice({ phone: "1".repeat(33) })
+      callerWithDb(db).updatePractice({ phone: "1".repeat(33) }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
-      callerWithDb(db).updatePractice({ country: "U1" })
+      callerWithDb(db).updatePractice({ country: "U1" }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
-      callerWithDb(db).updatePractice({ timezone: "   " })
+      callerWithDb(db).updatePractice({ timezone: "   " }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
-      callerWithDb(db).updatePractice({ timezone: "Mars/Olympus_Mons" })
+      callerWithDb(db).updatePractice({ timezone: "Mars/Olympus_Mons" }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
-      callerWithDb(db).updatePractice({ taxRatePercent: "100.01" })
+      callerWithDb(db).updatePractice({ taxRatePercent: "100.01" }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
-      callerWithDb(db).updateUser({ id: STAFF_ID, name: "A".repeat(256) })
+      callerWithDb(db).updateUser({ id: STAFF_ID, name: "A".repeat(256) }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).updateAppointmentType({
         id: TYPE_ID,
         name: "A".repeat(129),
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).createRoom({
         name: "A".repeat(129),
         type: "exam",
-        locationId: LOCATION_ID
-      })
+        locationId: LOCATION_ID,
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -156,7 +170,7 @@ describe("settings admin stale target safety", () => {
         email: "taylor@example.com",
         password: "p".repeat(AUTH_PASSWORD_MIN_LENGTH - 1),
         role: "front_desk",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -165,21 +179,21 @@ describe("settings admin stale target safety", () => {
         email: "taylor@example.com",
         password: "p".repeat(AUTH_PASSWORD_MAX_LENGTH + 1),
         role: "front_desk",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     const oversizedInviteEmail = `${"a".repeat(64)}@${"b".repeat(
-      63
+      63,
     )}.${"c".repeat(63)}.${"d".repeat(63)}.com`;
     expect(oversizedInviteEmail.length).toBeGreaterThan(
-      SETTINGS_EMAIL_MAX_LENGTH
+      SETTINGS_EMAIL_MAX_LENGTH,
     );
 
     await expect(
       callerWithDb(db).inviteStaff({
         email: oversizedInviteEmail,
         role: "front_desk",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -187,18 +201,18 @@ describe("settings admin stale target safety", () => {
         email: "invite@example.com",
         name: "A".repeat(STAFF_NAME_MAX_LENGTH + 1),
         role: "front_desk",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).setTourStatus({
         status: "in_progress",
         lastStepId: "A".repeat(129),
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
-      callerWithDb(db).setOnboardingIntent({ intent: "unknown" as never })
+      callerWithDb(db).setOnboardingIntent({ intent: "unknown" as never }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -211,7 +225,7 @@ describe("settings admin stale target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).setOnboardingIntent({ intent: "alongside" })
+      callerWithDb(db).setOnboardingIntent({ intent: "alongside" }),
     ).resolves.toEqual({ ok: true });
 
     expect(updateSet).toHaveBeenCalledTimes(1);
@@ -320,7 +334,7 @@ describe("settings admin stale target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).getAccountDeletionRequest()
+      callerWithDb(db).getAccountDeletionRequest(),
     ).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
@@ -344,7 +358,7 @@ describe("settings admin stale target safety", () => {
     updateSet.mockClear();
 
     await expect(
-      callerWithDb(db).updatePractice({ name: "Neighborhood Veterinary" })
+      callerWithDb(db).updatePractice({ name: "Neighborhood Veterinary" }),
     ).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
@@ -359,7 +373,7 @@ describe("settings admin stale target safety", () => {
     expect(SETTINGS_SOURCE).toContain('message: "Practice not found"');
     expect(
       SETTINGS_SOURCE.match(/activePracticeWhere\(ctx\.practiceId\)/g)
-        ?.length ?? 0
+        ?.length ?? 0,
     ).toBeGreaterThanOrEqual(15);
     expect(SETTINGS_SOURCE).not.toContain("practice?.settings ?? {}");
     expect(SETTINGS_SOURCE).not.toContain('practice?.name ?? "OpenVPM"');
@@ -369,7 +383,7 @@ describe("settings admin stale target safety", () => {
     const { db, updateSet } = createDb({ updatedRows: [] });
 
     await expect(
-      callerWithDb(db).updateUser({ id: STAFF_ID, name: "Taylor" })
+      callerWithDb(db).updateUser({ id: STAFF_ID, name: "Taylor" }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(updateSet).toHaveBeenCalledWith({ name: "Taylor" });
@@ -384,7 +398,7 @@ describe("settings admin stale target safety", () => {
         email: "Taylor@Example.com",
         password: "password123",
         role: "front_desk",
-      })
+      }),
     ).rejects.toMatchObject({ code: "CONFLICT" });
 
     expect(insertValues).not.toHaveBeenCalled();
@@ -407,7 +421,7 @@ describe("settings admin stale target safety", () => {
         email: "taylor@example.com",
         password: "password123",
         role: "front_desk",
-      })
+      }),
     ).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
@@ -425,7 +439,7 @@ describe("settings admin stale target safety", () => {
       callerWithDb(db).inviteStaff({
         email: "invite@example.com",
         role: "front_desk",
-      })
+      }),
     ).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
@@ -435,24 +449,165 @@ describe("settings admin stale target safety", () => {
     expect(syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
   });
 
+  it("reports provider refusal and safely retries the same pending staff invite", async () => {
+    const invitedUser = {
+      id: STAFF_ID,
+      email: "invite@example.com",
+      practiceId: PRACTICE_ID,
+      emailVerifiedAt: null,
+      deletedAt: null,
+    };
+    const { db, execute, insertValues } = createDb({
+      selectResults: [
+        [{ name: "Neighborhood Veterinary" }],
+        [],
+        [{ name: "Neighborhood Veterinary" }],
+        [invitedUser],
+        [{ id: "previous-invite-token" }],
+      ],
+      insertedRows: [invitedUser],
+    });
+    mocks.sendStaffInviteEmail
+      .mockResolvedValueOnce({ success: false })
+      .mockResolvedValueOnce({ success: true });
+    mocks.createAuthToken
+      .mockResolvedValueOnce("first-invite-token")
+      .mockResolvedValueOnce("retry-invite-token");
+
+    await expect(
+      callerWithDb(db).inviteStaff({
+        email: invitedUser.email,
+        role: "front_desk",
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_GATEWAY",
+      message:
+        "Staff access was saved, but the invitation email could not be sent. Please retry the invite in a moment.",
+    });
+
+    await expect(
+      callerWithDb(db).inviteStaff({
+        email: invitedUser.email,
+        role: "front_desk",
+      }),
+    ).resolves.toMatchObject({ ok: true });
+
+    expect(mocks.sendStaffInviteEmail).toHaveBeenCalledTimes(2);
+    expect(mocks.sendStaffInviteEmail).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        inviteUrl:
+          "http://localhost:3000/accept-invite?token=retry-invite-token",
+      }),
+    );
+    expect(mocks.createAuthToken).toHaveBeenCalledTimes(2);
+    expect(execute).toHaveBeenCalled();
+    expect(insertValues).toHaveBeenCalledTimes(1);
+    expect(syncPracticeSubscriptionQuantities).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps staff identity and token issuance atomic when token storage fails", async () => {
+    const invitedUser = {
+      id: STAFF_ID,
+      email: "invite@example.com",
+    };
+    const { db, transaction, execute } = createDb({
+      selectResults: [[{ name: "Neighborhood Veterinary" }], []],
+      insertedRows: [invitedUser],
+    });
+    mocks.createAuthToken.mockRejectedValueOnce(
+      new Error("token-storage-secret"),
+    );
+
+    await expect(
+      callerWithDb(db).inviteStaff({
+        email: invitedUser.email,
+        role: "front_desk",
+      }),
+    ).rejects.toMatchObject({
+      code: "INTERNAL_SERVER_ERROR",
+      message: expect.not.stringContaining("token-storage-secret"),
+    });
+
+    expect(transaction).toHaveBeenCalled();
+    expect(execute).toHaveBeenCalled();
+    expect(mocks.sendStaffInviteEmail).not.toHaveBeenCalled();
+    expect(syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
+    expect(SETTINGS_SOURCE).toMatch(/staffInviteLockKey\(\s*email,\s*\)/);
+    expect(SETTINGS_SOURCE).toContain("db: tx as unknown as Database");
+  });
+
+  it("does not treat an ordinary unverified user as a pending invite retry", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [
+        [{ name: "Neighborhood Veterinary" }],
+        [
+          {
+            id: STAFF_ID,
+            email: "existing@example.com",
+            practiceId: PRACTICE_ID,
+            emailVerifiedAt: null,
+            deletedAt: null,
+          },
+        ],
+        [],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).inviteStaff({
+        email: "existing@example.com",
+        role: "front_desk",
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(mocks.createAuthToken).not.toHaveBeenCalled();
+    expect(mocks.sendStaffInviteEmail).not.toHaveBeenCalled();
+  });
+
+  it("sanitizes thrown invitation-provider errors", async () => {
+    const invitedUser = {
+      id: STAFF_ID,
+      email: "invite@example.com",
+    };
+    const { db } = createDb({
+      selectResults: [[{ name: "Neighborhood Veterinary" }], []],
+      insertedRows: [invitedUser],
+    });
+    mocks.sendStaffInviteEmail.mockRejectedValueOnce(
+      new Error("provider-secret-response"),
+    );
+
+    await expect(
+      callerWithDb(db).inviteStaff({
+        email: invitedUser.email,
+        role: "front_desk",
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_GATEWAY",
+      message: expect.not.stringContaining("provider-secret-response"),
+    });
+  });
+
   it("requires an active practice for staff reads, writes, and deactivation dependencies", () => {
     const staffBlock = SETTINGS_SOURCE.match(
-      /\/\/ ── Staff \/ Users[\s\S]+?\/\/ ── Appointment Types/
+      /\/\/ ── Staff \/ Users[\s\S]+?\/\/ ── Appointment Types/,
     )?.[0];
 
     expect(staffBlock).toContain("await assertActivePractice(ctx)");
     expect(
       staffBlock?.match(/activePracticePredicate\(ctx\.practiceId\)/g)
-        ?.length ?? 0
+        ?.length ?? 0,
     ).toBeGreaterThanOrEqual(10);
     expect(staffBlock).toMatch(
-      /eq\(users\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(users\.deletedAt\)/
+      /eq\(users\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(users\.deletedAt\)/,
     );
     expect(staffBlock).toMatch(
-      /eq\(appointments\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(appointments\.deletedAt\)/
+      /eq\(appointments\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(appointments\.deletedAt\)/,
     );
     expect(staffBlock).toMatch(
-      /eq\(staffSchedules\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(staffSchedules\.deletedAt\)/
+      /eq\(staffSchedules\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(staffSchedules\.deletedAt\)/,
     );
     expect(staffBlock).toContain("activePracticeWhere(ctx.practiceId)");
     expect(staffBlock).toContain("eq(users.role, targetUser.role)");
@@ -464,7 +619,7 @@ describe("settings admin stale target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).updateUser({ id: STAFF_ID, role: "viewer" })
+      callerWithDb(db).updateUser({ id: STAFF_ID, role: "viewer" }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(db.execute).toHaveBeenCalled();
@@ -473,15 +628,12 @@ describe("settings admin stale target safety", () => {
 
   it("allows admin demotion when another active admin remains", async () => {
     const { db, updateSet } = createDb({
-      selectResults: [
-        [{ id: STAFF_ID, role: "admin" }],
-        [{ id: USER_ID }],
-      ],
+      selectResults: [[{ id: STAFF_ID, role: "admin" }], [{ id: USER_ID }]],
       updatedRows: [{ id: STAFF_ID, role: "viewer" }],
     });
 
     await expect(
-      callerWithDb(db).updateUser({ id: STAFF_ID, role: "viewer" })
+      callerWithDb(db).updateUser({ id: STAFF_ID, role: "viewer" }),
     ).resolves.toMatchObject({ id: STAFF_ID, role: "viewer" });
 
     expect(db.execute).toHaveBeenCalled();
@@ -490,15 +642,12 @@ describe("settings admin stale target safety", () => {
 
   it("rejects stale staff role demotions", async () => {
     const { db, updateSet } = createDb({
-      selectResults: [
-        [{ id: STAFF_ID, role: "admin" }],
-        [{ id: USER_ID }],
-      ],
+      selectResults: [[{ id: STAFF_ID, role: "admin" }], [{ id: USER_ID }]],
       updatedRows: [],
     });
 
     await expect(
-      callerWithDb(db).updateUser({ id: STAFF_ID, role: "viewer" })
+      callerWithDb(db).updateUser({ id: STAFF_ID, role: "viewer" }),
     ).rejects.toMatchObject({ code: "CONFLICT" });
 
     expect(db.execute).toHaveBeenCalled();
@@ -509,7 +658,7 @@ describe("settings admin stale target safety", () => {
     const { db, updateSet } = createDb();
 
     await expect(
-      callerWithDb(db).deactivateUser({ id: USER_ID })
+      callerWithDb(db).deactivateUser({ id: USER_ID }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -520,7 +669,7 @@ describe("settings admin stale target safety", () => {
     const { db, updateSet } = createDb({ selectResults: [[]] });
 
     await expect(
-      callerWithDb(db).deactivateUser({ id: STAFF_ID })
+      callerWithDb(db).deactivateUser({ id: STAFF_ID }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -533,7 +682,7 @@ describe("settings admin stale target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).deactivateUser({ id: STAFF_ID })
+      callerWithDb(db).deactivateUser({ id: STAFF_ID }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -549,7 +698,7 @@ describe("settings admin stale target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).deactivateUser({ id: STAFF_ID })
+      callerWithDb(db).deactivateUser({ id: STAFF_ID }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -566,7 +715,7 @@ describe("settings admin stale target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).deactivateUser({ id: STAFF_ID })
+      callerWithDb(db).deactivateUser({ id: STAFF_ID }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -580,7 +729,7 @@ describe("settings admin stale target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).deactivateUser({ id: STAFF_ID })
+      callerWithDb(db).deactivateUser({ id: STAFF_ID }),
     ).rejects.toMatchObject({ code: "CONFLICT" });
 
     expect(db.execute).toHaveBeenCalled();
@@ -592,7 +741,7 @@ describe("settings admin stale target safety", () => {
     const { db, updateSet } = createDb({ updatedRows: [] });
 
     await expect(
-      callerWithDb(db).restoreUser({ id: STAFF_ID })
+      callerWithDb(db).restoreUser({ id: STAFF_ID }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(updateSet).toHaveBeenCalledWith({ deletedAt: null });
@@ -604,17 +753,19 @@ describe("settings admin stale target safety", () => {
       selectResults: [[], [], [], []],
     });
 
-    await expect(callerWithDb(db).listAppointmentTypes()).rejects.toMatchObject({
-      code: "NOT_FOUND",
-      message: "Practice not found",
-    });
+    await expect(callerWithDb(db).listAppointmentTypes()).rejects.toMatchObject(
+      {
+        code: "NOT_FOUND",
+        message: "Practice not found",
+      },
+    );
 
     await expect(
       callerWithDb(db).createAppointmentType({
         name: "Consultation",
         durationMinutes: 30,
         color: "#1a8f8a",
-      })
+      }),
     ).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
@@ -629,8 +780,8 @@ describe("settings admin stale target safety", () => {
       callerWithDb(db).createRoom({
         name: "Exam 1",
         type: "exam",
-        locationId: LOCATION_ID
-      })
+        locationId: LOCATION_ID,
+      }),
     ).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
@@ -647,7 +798,7 @@ describe("settings admin stale target safety", () => {
       callerWithDb(db).updateAppointmentType({
         id: TYPE_ID,
         name: "Surgery",
-      })
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(updateSet).toHaveBeenCalledWith({ name: "Surgery" });
@@ -657,7 +808,7 @@ describe("settings admin stale target safety", () => {
     const { db, updateSet } = createDb({ selectResults: [[]] });
 
     await expect(
-      callerWithDb(db).deleteAppointmentType({ id: TYPE_ID })
+      callerWithDb(db).deleteAppointmentType({ id: TYPE_ID }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -669,7 +820,7 @@ describe("settings admin stale target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).deleteAppointmentType({ id: TYPE_ID })
+      callerWithDb(db).deleteAppointmentType({ id: TYPE_ID }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -681,7 +832,7 @@ describe("settings admin stale target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).deleteAppointmentType({ id: TYPE_ID })
+      callerWithDb(db).deleteAppointmentType({ id: TYPE_ID }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -694,7 +845,7 @@ describe("settings admin stale target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).deleteAppointmentType({ id: TYPE_ID })
+      callerWithDb(db).deleteAppointmentType({ id: TYPE_ID }),
     ).resolves.toEqual({ success: true });
 
     expect(updateSet).toHaveBeenCalledWith({ deletedAt: expect.any(Date) });
@@ -711,7 +862,7 @@ describe("settings admin stale target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).deleteAppointmentType({ id: TYPE_ID })
+      callerWithDb(db).deleteAppointmentType({ id: TYPE_ID }),
     ).rejects.toMatchObject({
       code: "BAD_REQUEST",
       message: expect.stringContaining("appointment request page"),
@@ -724,7 +875,7 @@ describe("settings admin stale target safety", () => {
     const { db, updateSet } = createDb({ selectResults: [[]] });
 
     await expect(
-      callerWithDb(db).deleteRoom({ id: ROOM_ID })
+      callerWithDb(db).deleteRoom({ id: ROOM_ID }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -736,7 +887,7 @@ describe("settings admin stale target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).deleteRoom({ id: ROOM_ID })
+      callerWithDb(db).deleteRoom({ id: ROOM_ID }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -748,9 +899,9 @@ describe("settings admin stale target safety", () => {
       updatedRows: [{ id: ROOM_ID }],
     });
 
-    await expect(
-      callerWithDb(db).deleteRoom({ id: ROOM_ID })
-    ).resolves.toEqual({ success: true });
+    await expect(callerWithDb(db).deleteRoom({ id: ROOM_ID })).resolves.toEqual(
+      { success: true },
+    );
 
     expect(updateSet).toHaveBeenCalledWith({ deletedAt: expect.any(Date) });
   });
@@ -759,33 +910,29 @@ describe("settings admin stale target safety", () => {
 describe("settings demo data cleanup scoping", () => {
   it("scopes invoice-item cleanup through current-practice invoices", () => {
     const invoiceItemBlock = DEMO_DATA_LIFECYCLE_SOURCE.match(
-      /\.update\(invoiceItems\)[\s\S]+?if \(demo\.invoiceIds/
+      /\.update\(invoiceItems\)[\s\S]+?if \(demo\.invoiceIds/,
     )?.[0];
 
     expect(invoiceItemBlock).toContain(
-      "inArray(invoiceItems.id, demo.invoiceItemIds)"
+      "inArray(invoiceItems.id, demo.invoiceItemIds)",
     );
     expect(invoiceItemBlock).toContain("from ${invoices}");
     expect(invoiceItemBlock).toContain(
-      "${invoices.id} = ${invoiceItems.invoiceId}"
+      "${invoices.id} = ${invoiceItems.invoiceId}",
     );
     expect(invoiceItemBlock).toContain(
-      "${invoices.practiceId} = ${practiceId}"
+      "${invoices.practiceId} = ${practiceId}",
     );
   });
 
   it("preserves attribution while clearing stored and discovered demo SOAPs", () => {
     expect(DEMO_DATA_LIFECYCLE_SOURCE).toContain("let demoSoapNoteIds");
-    expect(DEMO_DATA_LIFECYCLE_SOURCE).toContain(
-      "const storedDemoSoapNoteIds",
-    );
+    expect(DEMO_DATA_LIFECYCLE_SOURCE).toContain("const storedDemoSoapNoteIds");
     expect(DEMO_DATA_LIFECYCLE_SOURCE).toContain(
       "const discoveredDemoSoapNotes",
     );
     expect(DEMO_DATA_LIFECYCLE_SOURCE).toContain("storedDemoSoapNoteIds,");
-    expect(DEMO_DATA_LIFECYCLE_SOURCE).toContain(
-      "discoveredDemoSoapNotes.map",
-    );
+    expect(DEMO_DATA_LIFECYCLE_SOURCE).toContain("discoveredDemoSoapNotes.map");
     expect(DEMO_DATA_LIFECYCLE_SOURCE).toContain(
       "inArray(soapNotes.appointmentId, demo.appointmentIds)",
     );
@@ -822,113 +969,117 @@ describe("settings demo data cleanup scoping", () => {
 describe("settings scheduling metadata delete safety", () => {
   it("requires an active practice for appointment type and room reads and writes", () => {
     const appointmentTypeBlock = SETTINGS_SOURCE.match(
-      /\/\/ ── Appointment Types[\s\S]+?\/\/ ── Rooms/
+      /\/\/ ── Appointment Types[\s\S]+?\/\/ ── Rooms/,
     )?.[0];
     const roomBlock = SETTINGS_SOURCE.match(
-      /\/\/ ── Rooms[\s\S]+?\n\s*\}\),\n\}\);/
+      /\/\/ ── Rooms[\s\S]+?\n\s*\}\),\n\}\);/,
     )?.[0];
 
     expect(appointmentTypeBlock).toContain("await assertActivePractice(ctx)");
     expect(
       appointmentTypeBlock?.match(/activePracticePredicate\(ctx\.practiceId\)/g)
-        ?.length ?? 0
+        ?.length ?? 0,
     ).toBeGreaterThanOrEqual(6);
     expect(appointmentTypeBlock).toMatch(
-      /eq\(appointmentTypes\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(appointmentTypes\.deletedAt\)/
+      /eq\(appointmentTypes\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(appointmentTypes\.deletedAt\)/,
     );
     expect(appointmentTypeBlock).toMatch(
-      /eq\(appointmentWaitlist\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+eq\(appointmentWaitlist\.status, "waiting"\)/
+      /eq\(appointmentWaitlist\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+eq\(appointmentWaitlist\.status, "waiting"\)/,
     );
 
     expect(roomBlock).toContain("await assertActivePractice(ctx)");
     expect(
       roomBlock?.match(/activePracticePredicate\(ctx\.practiceId\)/g)?.length ??
-        0
+        0,
     ).toBeGreaterThanOrEqual(4);
     expect(roomBlock).toMatch(
-      /eq\(rooms\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(rooms\.deletedAt\)/
+      /eq\(rooms\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(rooms\.deletedAt\)/,
     );
   });
 
   it("guards appointment type and room deletes with tenant-scoped active scheduling checks", () => {
     const appointmentTypeDeleteBlock = SETTINGS_SOURCE.match(
-      /deleteAppointmentType:[\s\S]+?\/\/ ── Rooms/
+      /deleteAppointmentType:[\s\S]+?\/\/ ── Rooms/,
     )?.[0];
     const roomDeleteBlock = SETTINGS_SOURCE.match(
-      /deleteRoom:[\s\S]+?\n\s*\}\),\n\}\);/
+      /deleteRoom:[\s\S]+?\n\s*\}\),\n\}\);/,
     )?.[0];
 
-    expect(appointmentTypeDeleteBlock).toContain("eq(appointments.typeId, input.id)");
     expect(appointmentTypeDeleteBlock).toContain(
-      "eq(appointments.practiceId, ctx.practiceId)"
+      "eq(appointments.typeId, input.id)",
     );
     expect(appointmentTypeDeleteBlock).toContain(
-      "activePracticePredicate(ctx.practiceId)"
+      "eq(appointments.practiceId, ctx.practiceId)",
     );
     expect(appointmentTypeDeleteBlock).toContain(
-      "inArray(appointments.status, activeSchedulingStatuses)"
+      "activePracticePredicate(ctx.practiceId)",
     );
     expect(appointmentTypeDeleteBlock).toContain(
-      "eq(appointmentWaitlist.typeId, input.id)"
+      "inArray(appointments.status, activeSchedulingStatuses)",
     );
     expect(appointmentTypeDeleteBlock).toContain(
-      "eq(appointmentWaitlist.practiceId, ctx.practiceId)"
+      "eq(appointmentWaitlist.typeId, input.id)",
     );
     expect(appointmentTypeDeleteBlock).toContain(
-      "activePracticePredicate(ctx.practiceId)"
+      "eq(appointmentWaitlist.practiceId, ctx.practiceId)",
     );
     expect(appointmentTypeDeleteBlock).toContain(
-      'eq(appointmentWaitlist.status, "waiting")'
+      "activePracticePredicate(ctx.practiceId)",
+    );
+    expect(appointmentTypeDeleteBlock).toContain(
+      'eq(appointmentWaitlist.status, "waiting")',
     );
     expect(appointmentTypeDeleteBlock).toContain('.for("update")');
     expect(appointmentTypeDeleteBlock).toContain(
-      "parseBookingPageConfig(publishedPage.config)"
+      "parseBookingPageConfig(publishedPage.config)",
     );
 
     expect(roomDeleteBlock).toContain("eq(appointments.roomId, input.id)");
     expect(roomDeleteBlock).toContain(
-      "eq(appointments.practiceId, ctx.practiceId)"
+      "eq(appointments.practiceId, ctx.practiceId)",
     );
-    expect(roomDeleteBlock).toContain("activePracticePredicate(ctx.practiceId)");
     expect(roomDeleteBlock).toContain(
-      "inArray(appointments.status, activeSchedulingStatuses)"
+      "activePracticePredicate(ctx.practiceId)",
+    );
+    expect(roomDeleteBlock).toContain(
+      "inArray(appointments.status, activeSchedulingStatuses)",
     );
   });
 
   it("guards staff deactivation with admin and active appointment checks", () => {
     const deactivateBlock = SETTINGS_SOURCE.match(
-      /deactivateUser:[\s\S]+?restoreUser:/
+      /deactivateUser:[\s\S]+?restoreUser:/,
     )?.[0];
 
     expect(deactivateBlock).toContain("input.id === ctx.user.id");
     expect(deactivateBlock).toContain("pg_advisory_xact_lock");
-    expect(deactivateBlock).toContain("targetUser.role === \"admin\"");
-    expect(deactivateBlock).toContain("eq(users.role, \"admin\")");
+    expect(deactivateBlock).toContain('targetUser.role === "admin"');
+    expect(deactivateBlock).toContain('eq(users.role, "admin")');
     expect(deactivateBlock).toContain("ne(users.id, input.id)");
     expect(deactivateBlock).toContain("eq(users.role, targetUser.role)");
     expect(deactivateBlock).toContain("eq(appointments.doctorId, input.id)");
     expect(deactivateBlock).toContain(
-      "eq(appointments.practiceId, ctx.practiceId)"
+      "eq(appointments.practiceId, ctx.practiceId)",
     );
     expect(deactivateBlock).toContain(
-      "inArray(appointments.status, activeSchedulingStatuses)"
+      "inArray(appointments.status, activeSchedulingStatuses)",
     );
     expect(deactivateBlock).toContain("eq(staffSchedules.userId, input.id)");
     expect(deactivateBlock).toContain(
-      "eq(staffSchedules.practiceId, ctx.practiceId)"
+      "eq(staffSchedules.practiceId, ctx.practiceId)",
     );
     expect(deactivateBlock).toContain("isNull(staffSchedules.deletedAt)");
   });
 
   it("guards staff role demotions with an admin roster lock", () => {
     const updateUserBlock = SETTINGS_SOURCE.match(
-      /updateUser:[\s\S]+?deactivateUser:/
+      /updateUser:[\s\S]+?deactivateUser:/,
     )?.[0];
 
     expect(updateUserBlock).toContain('data.role !== "admin"');
     expect(updateUserBlock).toContain("pg_advisory_xact_lock");
-    expect(updateUserBlock).toContain("targetUser.role === \"admin\"");
-    expect(updateUserBlock).toContain("eq(users.role, \"admin\")");
+    expect(updateUserBlock).toContain('targetUser.role === "admin"');
+    expect(updateUserBlock).toContain('eq(users.role, "admin")');
     expect(updateUserBlock).toContain("ne(users.id, id)");
     expect(updateUserBlock).toContain("eq(users.role, targetUser.role)");
   });

@@ -5,12 +5,14 @@ import {
   text,
   jsonb,
   boolean,
+  integer,
   numeric,
   timestamp,
   index,
   uniqueIndex,
+  check,
 } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import { baseColumns } from "./common";
 
 export const practices = pgTable(
@@ -47,6 +49,15 @@ export const practices = pgTable(
       .notNull()
       .default("8.00"),
     vatNumber: varchar("vat_number", { length: 32 }), // shown on invoices where applicable
+    // Automated appointment reminders are deliberately clinic-controlled.
+    // New and existing clinics remain off until an admin explicitly enables
+    // them after reviewing contact preferences and messaging setup.
+    appointmentRemindersEnabled: boolean("appointment_reminders_enabled")
+      .notNull()
+      .default(false),
+    appointmentReminderLeadHours: integer("appointment_reminder_lead_hours")
+      .notNull()
+      .default(24),
     // Capability token for the read-only ICS schedule feed (null = feed off).
     // Practice-wide by design: one shared clinic calendar, same trust
     // boundary as the whiteboard. Rotating it invalidates the old URL.
@@ -70,6 +81,10 @@ export const practices = pgTable(
     // treats NULLs as distinct, so practices without a feed are unaffected.
     calendarFeedTokenUq: uniqueIndex("practices_calendar_feed_token_uq").on(
       table.calendarFeedToken,
+    ),
+    appointmentReminderLeadHoursCheck: check(
+      "practices_appointment_reminder_lead_hours_check",
+      sql`${table.appointmentReminderLeadHours} in (24, 48, 72)`,
     ),
   }),
 );

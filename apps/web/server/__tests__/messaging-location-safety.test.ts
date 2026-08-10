@@ -326,9 +326,83 @@ describe("messaging provisioning kill-switch", () => {
     expect(mocks.createMessagingProfile).not.toHaveBeenCalled();
     expect(mocks.buyNumber).not.toHaveBeenCalled();
   });
+
+  it("does not search provider inventory for a hosted clinic outside the pilot", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    const { db } = createDb({
+      practiceRows: [
+        {
+          tier: "cloud",
+          billingStatus: "trialing",
+          trialEndsAt: new Date("2099-01-01T00:00:00Z"),
+        },
+      ],
+      selectResults: [[{ id: PRACTICE_ID }]],
+    });
+
+    await expect(
+      callerWithDb(db).searchNumbers({ areaCode: "212" }),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("approved pilot clinics"),
+    });
+
+    expect(mocks.searchAvailableNumbers).not.toHaveBeenCalled();
+  });
 });
 
 describe("messaging location target safety", () => {
+  it("keeps automated appointment reminders admin-controlled and constrained", async () => {
+    const { db, updateSet } = createDb({
+      updateRows: [{ enabled: true, leadHours: 48 }],
+    });
+
+    await expect(
+      callerWithDb(db).setAppointmentReminderSettings({
+        enabled: true,
+        leadHours: 48,
+      }),
+    ).resolves.toEqual({ enabled: true, leadHours: 48 });
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        appointmentRemindersEnabled: true,
+        appointmentReminderLeadHours: 48,
+        updatedAt: expect.any(Date),
+      }),
+    );
+  });
+
+  it("rejects unsupported appointment reminder lead times before database access", async () => {
+    const { db, select, updateSet } = createDb();
+
+    await expect(
+      callerWithDb(db).setAppointmentReminderSettings({
+        enabled: true,
+        leadHours: 36 as 24,
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    expect(select).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("does not change appointment reminder settings for a missing practice", async () => {
+    const { db, updateSet } = createDb({ practiceRows: [] });
+
+    await expect(
+      callerWithDb(db).setAppointmentReminderSettings({
+        enabled: true,
+        leadHours: 24,
+      }),
+    ).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      message: "Practice not found",
+    });
+
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
   it("prefills carrier registration from the active clinic without exposing legal fields", async () => {
     vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.openvpm.com");
     const { db } = createDb({
@@ -445,6 +519,29 @@ describe("messaging location target safety", () => {
     expect(insertUpdate.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({ setWhere: expect.anything() }),
     );
+  });
+
+  it("does not collect new carrier registration data outside the hosted pilot", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    const { db, insertValues } = createDb({
+      practiceRows: [
+        {
+          tier: "cloud",
+          billingStatus: "trialing",
+          trialEndsAt: new Date("2099-01-01T00:00:00Z"),
+        },
+      ],
+      selectResults: [[{ id: PRACTICE_ID }], [], []],
+    });
+
+    await expect(
+      callerWithDb(db).saveRegistration(registrationInput()),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("approved texting pilot clinics"),
+    });
+
+    expect(insertValues).not.toHaveBeenCalled();
   });
 
   it("refuses clinic registration edits while a provider operation is locked", async () => {

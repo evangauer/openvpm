@@ -69,6 +69,11 @@ const EXISTING_NUMBER_UNAVAILABLE_DETAIL =
 const INCONCLUSIVE_ORDER_DETAIL =
   "OpenVPM could not conclusively reconcile the earlier number order. No additional purchase was attempted. Contact OpenVPM support before trying another number.";
 const HOSTED_PROVIDER_PROFILE_ATTESTATION_MAX_AGE_MS = 15 * 60 * 1000;
+const appointmentReminderLeadHoursInput = z.union([
+  z.literal(24),
+  z.literal(48),
+  z.literal(72),
+]);
 
 const providerPriceInput = z
   .string()
@@ -253,9 +258,13 @@ async function assertActivePractice(ctx: {
  * so provisioning stays off until ops flips MESSAGING_PROVISIONING_ENABLED.
  * The Telnyx key alone being present must not open the purchase path.
  */
-function assertProvisioningEnabled(): void {
+function provisioningEnabled(): boolean {
   const flag = process.env.MESSAGING_PROVISIONING_ENABLED?.trim().toLowerCase();
-  if (flag !== "true" && flag !== "1") {
+  return flag === "true" || flag === "1";
+}
+
+function assertProvisioningEnabled(): void {
+  if (!provisioningEnabled()) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message:
@@ -269,21 +278,29 @@ function assertProvisioningEnabled(): void {
  * During controlled rollout, require an explicit tenant allowlist in addition
  * to the global kill-switch. Self-hosters retain the switch-only path.
  */
-function assertProvisioningPracticeAllowed(practiceId: string): void {
-  if (!billingEnforced()) return;
+function provisioningPracticeAllowed(practiceId: string): boolean {
+  if (!billingEnforced()) return true;
   const allowed = new Set(
     (process.env.MESSAGING_PROVISIONING_PRACTICE_IDS ?? "")
       .split(",")
       .map((value) => value.trim())
       .filter(Boolean),
   );
-  if (!allowed.has(practiceId)) {
+  return allowed.has(practiceId);
+}
+
+function assertProvisioningPracticeAllowed(practiceId: string): void {
+  if (!provisioningPracticeAllowed(practiceId)) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message:
         "Texting number setup is available only to approved pilot clinics. Contact OpenVPM support.",
     });
   }
+}
+
+function provisioningAvailableForPractice(practiceId: string): boolean {
+  return provisioningEnabled() && provisioningPracticeAllowed(practiceId);
 }
 
 function assertHostedSendingAllowed(practiceId: string, locationId: string) {
@@ -486,6 +503,31 @@ export const messagingRouter = createRouter({
           ),
         )
         .limit(1);
+
+      // Do not collect new legal/contact/EIN data for clinics outside the
+      // controlled provisioning scope. Existing registrations or sender rows
+      // remain editable so an already-started pilot can be reconciled safely.
+      if (!existing && !provisioningAvailableForPractice(ctx.practiceId)) {
+        const [existingSender] = await ctx.db
+          .select({ locationId: locationMessaging.locationId })
+          .from(locationMessaging)
+          .where(
+            and(
+              eq(locationMessaging.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(locationMessaging.deletedAt),
+            ),
+          )
+          .limit(1);
+        if (!existingSender) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: billingEnforced()
+              ? "Carrier registration is available only to approved texting pilot clinics. Contact OpenVPM support."
+              : "Carrier registration is disabled by this OpenVPM deployment.",
+          });
+        }
+      }
 
       if (existing?.providerBrandId || existing?.providerCampaignId) {
         throw new TRPCError({
@@ -721,7 +763,11 @@ export const messagingRouter = createRouter({
     const smsUsed = await usageForPractice(ctx.practiceId, "sms", period);
 
     const [practice] = await ctx.db
-      .select({ tier: practices.subscriptionTier })
+      .select({
+        tier: practices.subscriptionTier,
+        appointmentRemindersEnabled: practices.appointmentRemindersEnabled,
+        appointmentReminderLeadHours: practices.appointmentReminderLeadHours,
+      })
       .from(practices)
       .where(activePracticeWhere(ctx.practiceId))
       .limit(1);
@@ -791,14 +837,50 @@ export const messagingRouter = createRouter({
         optedIn: consentRow?.n ?? 0,
         suppressed: suppressedRow?.n ?? 0,
       },
+      appointmentReminders: {
+        enabled: practice.appointmentRemindersEnabled,
+        leadHours: practice.appointmentReminderLeadHours,
+      },
       launch: {
         hosted: billingEnforced(),
-        pilotEnabled:
-          !billingEnforced() || launchEligibleLocationIds.size === 1,
+        setupAvailable: provisioningAvailableForPractice(ctx.practiceId),
+        pilotEnabled: !billingEnforced() || launchEligibleLocationIds.size > 0,
         testSendAllowed: !billingEnforced(),
       },
     };
   }),
+
+  /**
+   * Clinic-controlled automated appointment reminder policy. Reminders are
+   * default-off in the database and can only be enabled by a clinic admin.
+   */
+  setAppointmentReminderSettings: adminOnly
+    .input(
+      z.object({
+        enabled: z.boolean(),
+        leadHours: appointmentReminderLeadHoursInput,
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
+      const [updated] = await ctx.db
+        .update(practices)
+        .set({
+          appointmentRemindersEnabled: input.enabled,
+          appointmentReminderLeadHours: input.leadHours,
+          updatedAt: new Date(),
+        })
+        .where(activePracticeWhere(ctx.practiceId))
+        .returning({
+          enabled: practices.appointmentRemindersEnabled,
+          leadHours: practices.appointmentReminderLeadHours,
+        });
+
+      if (!updated) {
+        throw practiceNotFound();
+      }
+      return updated;
+    }),
 
   /**
    * Lightweight messaging state for the activation checklist: whether a number
@@ -827,6 +909,7 @@ export const messagingRouter = createRouter({
       rows.map((row) => row.locationId),
     );
     return {
+      setupAvailable: provisioningAvailableForPractice(ctx.practiceId),
       hasAnyNumber: rows.some(
         (r) => !!r.senderE164 && r.registrationStatus !== "failed",
       ),
@@ -862,6 +945,7 @@ export const messagingRouter = createRouter({
     .query(async ({ ctx, input }) => {
       assertProvisioningEnabled();
       await assertActivePractice(ctx);
+      assertProvisioningPracticeAllowed(ctx.practiceId);
       try {
         return await searchAvailableNumbers(input);
       } catch (e) {

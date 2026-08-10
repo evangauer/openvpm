@@ -41,12 +41,26 @@ const REGISTRATION_BADGE: Record<
 };
 
 const EMPTY_MESSAGING_LOCATIONS: MessagingSetupLocation[] = [];
+const APPOINTMENT_REMINDER_LEAD_OPTIONS = [24, 48, 72] as const;
+
+function confirmReminderCatchUp(
+  action: "enable" | "expand",
+  leadHours: (typeof APPOINTMENT_REMINDER_LEAD_OPTIONS)[number],
+) {
+  const actionLabel =
+    action === "enable"
+      ? "Enabling automatic reminders"
+      : `Increasing the reminder window to ${leadHours} hours`;
+  return window.confirm(
+    `${actionLabel} may send reminders for existing eligible confirmed appointments on the next hourly run. Continue?`,
+  );
+}
 
 function hasConfiguredSender(
-  messaging: NonNullable<MessagingSetupLocation["messaging"]>
+  messaging: NonNullable<MessagingSetupLocation["messaging"]>,
 ) {
   return Boolean(
-    messaging.senderE164?.trim() || messaging.messagingProfileId?.trim()
+    messaging.senderE164?.trim() || messaging.messagingProfileId?.trim(),
   );
 }
 
@@ -55,6 +69,18 @@ export function MessagingTab() {
   const { data, isLoading, error, refetch } =
     trpc.messaging.getStatus.useQuery();
   const utils = trpc.useUtils();
+  const updateReminderSettings =
+    trpc.messaging.setAppointmentReminderSettings.useMutation({
+      onSuccess: async (_result, variables) => {
+        await utils.messaging.getStatus.invalidate();
+        toast.success(
+          variables.enabled
+            ? "Appointment reminders enabled"
+            : "Appointment reminders turned off",
+        );
+      },
+      onError: (mutationError) => toast.error(mutationError.message),
+    });
   const [wizardLocation, setWizardLocation] =
     useState<MessagingSetupLocation | null>(null);
   const openedSetupParam = useRef(false);
@@ -67,11 +93,12 @@ export function MessagingTab() {
   useEffect(() => {
     if (openedSetupParam.current) return;
     if (searchParams.get("setup") !== "texting") return;
+    if (!data?.launch.setupAvailable) return;
     const loc = setupLocations.find((l) => !l.messaging) ?? setupLocations[0];
     if (!loc) return;
     openedSetupParam.current = true;
     setWizardLocation(loc);
-  }, [setupLocations, searchParams]);
+  }, [data?.launch.setupAvailable, setupLocations, searchParams]);
 
   if (isLoading) {
     return (
@@ -102,6 +129,7 @@ export function MessagingTab() {
   const locations = data.locations as MessagingSetupLocation[];
   const usage = data.usage;
   const consent = data.consent;
+  const reminderSettings = data.appointmentReminders;
 
   return (
     <div className="max-w-3xl space-y-6">
@@ -116,16 +144,98 @@ export function MessagingTab() {
         </p>
       </div>
 
-      {data.launch.hosted && !data.launch.pilotEnabled ? (
+      {data.launch.hosted && !data.launch.setupAvailable ? (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
+          <p className="font-medium">Texting is a controlled clinic pilot</p>
+          <p className="mt-1">
+            Number setup is not enabled for this clinic yet, so OpenVPM will not
+            search for or purchase a number. Email appointment reminders remain
+            available. Contact OpenVPM support when your clinic is ready to join
+            the texting pilot.
+          </p>
+        </div>
+      ) : data.launch.hosted && !data.launch.pilotEnabled ? (
         <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
           <p className="font-medium">Outbound texting is safely off</p>
           <p className="mt-1">
-            OpenVPM enables one approved clinic location at a time after carrier
-            activation and pilot review. Setup can continue, but no SMS can send
-            until your clinic and location are explicitly approved.
+            Your clinic can continue setup, but no SMS can send until carrier
+            activation is complete and OpenVPM approves the exact clinic
+            location for the controlled pilot.
           </p>
         </div>
       ) : null}
+
+      <div className="rounded-lg border border-border bg-card p-4 sm:p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="font-medium">Automatic appointment reminders</p>
+            <p className="mt-1 text-sm leading-6 text-muted-foreground">
+              Send one reminder for each confirmed appointment. Delivery follows
+              the client&apos;s saved reminder preference. Texts require
+              recorded consent and an active clinic number; suppressed email
+              addresses stay blocked.
+            </p>
+          </div>
+          <Checkbox
+            aria-label="Enable automatic appointment reminders"
+            checked={reminderSettings.enabled}
+            disabled={updateReminderSettings.isPending}
+            onChange={(event) => {
+              const enabled = event.target.checked;
+              if (
+                enabled &&
+                !confirmReminderCatchUp(
+                  "enable",
+                  reminderSettings.leadHours as 24 | 48 | 72,
+                )
+              ) {
+                return;
+              }
+              updateReminderSettings.mutate({
+                enabled,
+                leadHours: reminderSettings.leadHours as 24 | 48 | 72,
+              });
+            }}
+          />
+        </div>
+
+        <label className="mt-4 block max-w-xs space-y-1.5 text-sm">
+          <span className="font-medium">Send approximately</span>
+          <select
+            className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+            value={reminderSettings.leadHours}
+            disabled={updateReminderSettings.isPending}
+            onChange={(event) => {
+              const leadHours = Number(event.target.value) as 24 | 48 | 72;
+              if (
+                reminderSettings.enabled &&
+                leadHours > reminderSettings.leadHours &&
+                !confirmReminderCatchUp("expand", leadHours)
+              ) {
+                return;
+              }
+              updateReminderSettings.mutate({
+                enabled: reminderSettings.enabled,
+                leadHours,
+              });
+            }}
+          >
+            {APPOINTMENT_REMINDER_LEAD_OPTIONS.map((hours) => (
+              <option key={hours} value={hours}>
+                {hours} hours before the appointment
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <p className="mt-3 text-xs text-muted-foreground">
+          {reminderSettings.enabled
+            ? "Automatic reminders are on. "
+            : "Off by default. No automatic appointment reminders are sent until a clinic administrator enables them here. "}
+          Enabling reminders or increasing this window may send reminders for
+          existing eligible confirmed appointments on the next hourly run.
+        </p>
+      </div>
 
       {/* Usage + consent summary */}
       <div className="grid gap-4 sm:grid-cols-3">
@@ -156,6 +266,8 @@ export function MessagingTab() {
           <LocationCard
             key={loc.locationId}
             loc={loc}
+            hosted={data.launch.hosted}
+            setupAvailable={data.launch.setupAvailable}
             testSendAllowed={data.launch.testSendAllowed}
             onStartSetup={() => setWizardLocation(loc)}
           />
@@ -167,16 +279,22 @@ export function MessagingTab() {
         )}
       </div>
 
-      <MessagingRegistrationForm />
+      {data.launch.setupAvailable ||
+      locations.some((location) => location.messaging) ? (
+        <MessagingRegistrationForm />
+      ) : null}
 
-      <MessagingWizard
-        location={wizardLocation}
-        open={Boolean(wizardLocation)}
-        onOpenChange={(open) => {
-          if (!open) setWizardLocation(null);
-        }}
-        onChanged={() => utils.messaging.getStatus.invalidate()}
-      />
+      {data.launch.setupAvailable ? (
+        <MessagingWizard
+          location={wizardLocation}
+          hosted={data.launch.hosted}
+          open={Boolean(wizardLocation)}
+          onOpenChange={(open) => {
+            if (!open) setWizardLocation(null);
+          }}
+          onChanged={() => utils.messaging.getStatus.invalidate()}
+        />
+      ) : null}
     </div>
   );
 }
@@ -235,10 +353,14 @@ function SummaryStat({
 
 function LocationCard({
   loc,
+  hosted,
+  setupAvailable,
   testSendAllowed,
   onStartSetup,
 }: {
   loc: MessagingSetupLocation;
+  hosted: boolean;
+  setupAvailable: boolean;
   testSendAllowed: boolean;
   onStartSetup: () => void;
 }) {
@@ -266,11 +388,18 @@ function LocationCard({
       {loc.messaging ? (
         <ConfiguredLocation
           loc={loc}
+          hosted={hosted}
+          setupAvailable={setupAvailable}
           testSendAllowed={testSendAllowed}
           onChanged={refresh}
         />
       ) : (
-        <UnconfiguredLocation loc={loc} onStartSetup={onStartSetup} />
+        <UnconfiguredLocation
+          loc={loc}
+          hosted={hosted}
+          setupAvailable={setupAvailable}
+          onStartSetup={onStartSetup}
+        />
       )}
     </div>
   );
@@ -278,10 +407,14 @@ function LocationCard({
 
 function ConfiguredLocation({
   loc,
+  hosted,
+  setupAvailable,
   testSendAllowed,
   onChanged,
 }: {
   loc: MessagingSetupLocation;
+  hosted: boolean;
+  setupAvailable: boolean;
   testSendAllowed: boolean;
   onChanged: () => void;
 }) {
@@ -316,7 +449,7 @@ function ConfiguredLocation({
   const reconcileSetup = trpc.messaging.provisionNumber.useMutation({
     onSuccess: () => {
       toast.success(
-        "Provider setup reconciled. No additional number was purchased."
+        "Provider setup reconciled. No additional number was purchased.",
       );
       onChanged();
     },
@@ -357,7 +490,7 @@ function ConfiguredLocation({
         </div>
       ) : null}
 
-      {m.registrationStatus === "failed" && !m.enabled ? (
+      {m.registrationStatus === "failed" && !m.enabled && setupAvailable ? (
         <Button
           variant="outline"
           disabled={reconcileSetup.isPending}
@@ -374,6 +507,12 @@ function ConfiguredLocation({
           ) : null}
           Reconcile provider setup
         </Button>
+      ) : m.registrationStatus === "failed" && !m.enabled ? (
+        <p className="text-xs text-muted-foreground">
+          {hosted
+            ? "OpenVPM support must review this failed pilot setup before another provider reconciliation attempt."
+            : "Your OpenVPM administrator must enable provisioning before another provider reconciliation attempt."}
+        </p>
       ) : null}
 
       <label className="flex items-center gap-2 text-sm">
@@ -435,9 +574,13 @@ function ConfiguredLocation({
 
 function UnconfiguredLocation({
   loc,
+  hosted,
+  setupAvailable,
   onStartSetup,
 }: {
   loc: MessagingSetupLocation;
+  hosted: boolean;
+  setupAvailable: boolean;
   onStartSetup: () => void;
 }) {
   return (
@@ -446,8 +589,11 @@ function UnconfiguredLocation({
         <div className="space-y-1">
           <p className="text-sm font-medium">Texting is not set up yet</p>
           <p className="text-sm text-muted-foreground">
-            Start a guided setup and choose a new local texting number. Your
-            existing clinic phone line will not be ported or changed.
+            {setupAvailable
+              ? "Start a guided setup and choose a new local texting number. Your existing clinic phone line will not be ported or changed."
+              : hosted
+                ? "OpenVPM will enable number setup after your clinic joins the controlled texting pilot. Email reminders can be used now."
+                : "Number setup is disabled by your OpenVPM administrator. Email reminders can be used now."}
           </p>
           {loc.existingPhone ? (
             <p className="text-xs text-muted-foreground">
@@ -455,9 +601,11 @@ function UnconfiguredLocation({
             </p>
           ) : null}
         </div>
-        <Button onClick={onStartSetup} className="shrink-0">
-          Set up texting
-        </Button>
+        {setupAvailable ? (
+          <Button onClick={onStartSetup} className="shrink-0">
+            Set up texting
+          </Button>
+        ) : null}
       </div>
     </div>
   );

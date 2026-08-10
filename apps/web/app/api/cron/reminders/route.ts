@@ -29,6 +29,8 @@ import { automatedAppointmentReminderSuppressionReason } from "@/lib/automated-r
 import {
   appointmentReminderDedupeKey,
   appointmentReminderSmsIdempotencyKey,
+  appointmentReminderDispatchEligible,
+  currentAppointmentReminderEmailRecipient,
   claimAppointmentReminderCommunication,
 } from "@/lib/messaging/appointment-reminder";
 
@@ -80,18 +82,34 @@ async function claimReminderCommunication(opts: {
   channel: ReminderChannel;
   patientName: string | null;
   startTime: Date;
-  dedupeKey: string;
-}): Promise<string | null> {
-  return withTenant(db, opts.practiceId, (tx) =>
-    claimAppointmentReminderCommunication(tx, {
+  now: Date;
+}): Promise<
+  | { status: "claimed"; communicationId: string }
+  | { status: "deduped" }
+  | { status: "ineligible" }
+> {
+  return withTenant(db, opts.practiceId, async (tx) => {
+    const eligible = await appointmentReminderDispatchEligible(tx, {
+      practiceId: opts.practiceId,
+      appointmentId: opts.appointmentId,
+      clientId: opts.clientId,
+      startTime: opts.startTime,
+      now: opts.now,
+    });
+    if (!eligible) return { status: "ineligible" };
+
+    const communicationId = await claimAppointmentReminderCommunication(tx, {
       practiceId: opts.practiceId,
       appointmentId: opts.appointmentId,
       clientId: opts.clientId,
       channel: opts.channel,
       patientName: opts.patientName,
       startTime: opts.startTime,
-    }),
-  );
+    });
+    return communicationId
+      ? { status: "claimed", communicationId }
+      : { status: "deduped" };
+  });
 }
 
 async function recordReminderOutcome(opts: {
@@ -130,17 +148,32 @@ async function recordReminderOutcome(opts: {
   );
 }
 
+async function currentEmailRecipient(opts: {
+  practiceId: string;
+  appointmentId: string;
+  clientId: string;
+  startTime: Date;
+}) {
+  return withTenant(db, opts.practiceId, (tx) =>
+    currentAppointmentReminderEmailRecipient(tx, {
+      ...opts,
+      now: new Date(),
+    }),
+  );
+}
+
 export async function GET(request: Request) {
   const authError = cronAuthError(request);
   if (authError) return authError;
 
   try {
     const now = new Date();
-    const in24h = new Date(now.getTime() + 24 * 60 * 60 * 1000);
 
     // Cross-tenant sweep across all practices → system context (RLS bypass).
     // Joins the client's contact prefs/consent, the practice (name/phone/tz for
     // the message + quiet hours), and the room's location (for its own number).
+    // A clinic must explicitly enable automated reminders; the configured lead
+    // time controls the upper edge of its rolling hourly window.
     const upcomingAppointments = await withSystem(db, (tx) =>
       tx
         .select({
@@ -161,7 +194,9 @@ export async function GET(request: Request) {
           practiceName: practices.name,
           practicePhone: practices.phone,
           practiceTimezone: practices.timezone,
-          locationId: sql<string | null>`coalesce(${appointments.locationId}, ${rooms.locationId})`,
+          locationId: sql<
+            string | null
+          >`coalesce(${appointments.locationId}, ${rooms.locationId})`,
           isSeededDemoClient: sql<boolean>`
             coalesce(${practices.settings} -> 'demoData' -> 'clientIds', '[]'::jsonb)
               @> to_jsonb(${appointments.clientId}::text)
@@ -227,8 +262,12 @@ export async function GET(request: Request) {
             isNull(patients.deletedAt),
             eq(clients.practiceId, appointments.practiceId),
             isNull(clients.deletedAt),
+            eq(practices.appointmentRemindersEnabled, true),
             gte(appointments.startTime, now),
-            lte(appointments.startTime, in24h),
+            lte(
+              appointments.startTime,
+              sql`${now} + (${practices.appointmentReminderLeadHours} * interval '1 hour')`,
+            ),
             eq(appointments.status, "confirmed"),
           ),
         )
@@ -239,6 +278,7 @@ export async function GET(request: Request) {
     let failed = 0;
     let skipped = 0; // SMS-preferred but deferred by quiet hours (no email fallback)
     let deduped = 0;
+    let ineligible = 0;
     let suppressed = 0; // Seeded demo rows or reserved fixture addresses.
     let suppressedDemo = 0;
     let suppressedReservedAddress = 0;
@@ -320,15 +360,32 @@ export async function GET(request: Request) {
       const emailReminder = async (
         communicationId: string,
       ): Promise<boolean> => {
-        const clientEmail = normalizeEmailSuppressionAddress(appt.clientEmail);
-        if (!clientEmail) return false;
-        if (appt.emailSuppressionReason) {
+        const currentRecipient = await currentEmailRecipient({
+          practiceId: appt.practiceId,
+          appointmentId: appt.id,
+          clientId: appt.clientId!,
+          startTime: startDate,
+        });
+        const clientEmail = normalizeEmailSuppressionAddress(
+          currentRecipient?.recipientEmail,
+        );
+        if (!currentRecipient || !clientEmail) {
+          await recordReminderOutcome({
+            practiceId: appt.practiceId,
+            communicationId,
+            channel: "email",
+            content: `Automated appointment reminder blocked because the appointment or current client email is no longer eligible`,
+            status: "failed",
+          });
+          return false;
+        }
+        if (currentRecipient.suppressionReason) {
           await recordReminderOutcome({
             practiceId: appt.practiceId,
             communicationId,
             channel: "email",
             content: `Automated appointment reminder blocked for ${appt.patientName} on ${appt.startTime.toISOString()}: ${emailSuppressionSendBlockMessage(
-              appt.emailSuppressionReason,
+              currentRecipient.suppressionReason,
             )}`,
             status: "failed",
           });
@@ -339,11 +396,11 @@ export async function GET(request: Request) {
         try {
           const result = await sendAppointmentReminder({
             to: clientEmail,
-            clientName: `${appt.clientFirstName} ${appt.clientLastName}`,
-            patientName: appt.patientName ?? "Unknown",
+            clientName: `${currentRecipient.clientFirstName} ${currentRecipient.clientLastName}`,
+            patientName: currentRecipient.patientName ?? "Unknown",
             appointmentDate,
             appointmentTime,
-            practiceName: appt.practiceName ?? "",
+            practiceName: currentRecipient.practiceName,
           });
           success = result.success;
           providerMessageId = result.id;
@@ -402,19 +459,24 @@ export async function GET(request: Request) {
         const initialChannel: ReminderChannel =
           channel === "sms" ? "sms" : "email";
         claimedChannel = initialChannel;
-        const communicationId = await claimReminderCommunication({
+        const claim = await claimReminderCommunication({
           practiceId: appt.practiceId,
           appointmentId: appt.id,
           clientId: appt.clientId,
           channel: initialChannel,
           patientName: appt.patientName,
           startTime: startDate,
-          dedupeKey,
+          now: new Date(),
         });
-        if (!communicationId) {
+        if (claim.status === "ineligible") {
+          ineligible++;
+          continue;
+        }
+        if (claim.status === "deduped") {
           deduped++;
           continue;
         }
+        const communicationId = claim.communicationId;
         claimedCommunicationId = communicationId;
 
         if (channel === "sms") {
@@ -534,22 +596,22 @@ export async function GET(request: Request) {
       }
     }
 
-    const eligible = upcomingAppointments.length - suppressed;
+    const eligible = upcomingAppointments.length - suppressed - ineligible;
     console.log(
-      `Cron reminders completed: ${sent} sent, ${failed} failed, ${skipped} deferred (quiet hours), ${deduped} deduped, ${suppressed} suppressed (${suppressedDemo} demo, ${suppressedReservedAddress} reserved address) out of ${upcomingAppointments.length} total`,
+      `Cron reminders completed: ${sent} sent, ${failed} failed, ${skipped} deferred (quiet hours), ${deduped} deduped, ${ineligible} no longer eligible, ${suppressed} suppressed (${suppressedDemo} demo, ${suppressedReservedAddress} reserved address) out of ${upcomingAppointments.length} total`,
     );
 
     if (failed > 0) {
       void alertOps(
         "Appointment reminders had failures",
-        `${failed} of ${eligible} eligible reminders failed to send (${sent} sent, ${skipped} deferred, ${deduped} deduped, ${suppressed} suppressed).`,
+        `${failed} of ${eligible} eligible reminders failed to send (${sent} sent, ${skipped} deferred, ${deduped} deduped, ${ineligible} no longer eligible, ${suppressed} suppressed).`,
       );
     }
 
     await reportCronHeartbeat({
       job: "reminders",
       status: failed > 0 ? "degraded" : "ok",
-      detail: `${sent} sent, ${failed} failed, ${skipped} deferred, ${deduped} deduped, ${suppressed} suppressed`,
+      detail: `${sent} sent, ${failed} failed, ${skipped} deferred, ${deduped} deduped, ${ineligible} no longer eligible, ${suppressed} suppressed`,
       metrics: {
         total: upcomingAppointments.length,
         eligible,
@@ -557,6 +619,7 @@ export async function GET(request: Request) {
         failed,
         skipped,
         deduped,
+        ineligible,
         suppressed,
         suppressedDemo,
         suppressedReservedAddress,

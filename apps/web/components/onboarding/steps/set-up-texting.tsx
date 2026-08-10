@@ -56,8 +56,20 @@ export function SetUpTextingStep({
   })();
 
   const messaging = location?.messaging ?? null;
+  const hosted = status.data?.launch.hosted ?? false;
+  const setupAvailable = status.data?.launch.setupAvailable;
+  const setupCapabilityKnown = Boolean(status.data);
+  const hasAnyNumber = Boolean(
+    status.data?.locations.some(
+      (loc) =>
+        loc.messaging?.senderE164?.trim() &&
+        loc.messaging.registrationStatus !== "failed",
+    ),
+  );
+  const setupDisabled = setupAvailable === false;
+  const setupUnavailable = setupAvailable === false && !hasAnyNumber;
   const hasSender = Boolean(
-    messaging?.senderE164?.trim() && messaging?.messagingProfileId?.trim()
+    messaging?.senderE164?.trim() && messaging?.messagingProfileId?.trim(),
   );
   const isFailed = messaging?.registrationStatus === "failed";
   const isConfigured = hasSender && !isFailed;
@@ -68,7 +80,7 @@ export function SetUpTextingStep({
   const statusDetail = (() => {
     if (!messaging) return null;
     if (isFailed) {
-      return "Number setup did not finish. Reconcile the saved provider setup in Messaging settings; OpenVPM will not buy another number automatically.";
+      return "Number setup did not finish. Reconcile the saved provider setup in Messaging settings; the system will not buy another number automatically.";
     }
     if (messaging.registrationStatus === "not_started" && hasSender) {
       return "Number order accepted. Carrier registration has not been submitted; complete the clinic details in Messaging settings.";
@@ -84,14 +96,18 @@ export function SetUpTextingStep({
       messaging.enabled &&
       messaging.launchEligible === false
     ) {
-      return "Carrier registration is approved, but outbound texting remains off until OpenVPM approves this clinic location for the controlled pilot.";
+      return hosted
+        ? "Carrier registration is approved, but outbound texting remains off until OpenVPM approves this clinic location for the controlled pilot."
+        : "Carrier registration is approved, but outbound texting remains off until your administrator enables this clinic location.";
     }
     if (isActive) return "Texting is active.";
     if (messaging.registrationStatus === "action_required") {
       return "Carrier registration needs more clinic information. Review the request in Messaging settings.";
     }
     if (messaging.registrationStatus === "suspended") {
-      return "Texting is suspended. Review Messaging settings and contact OpenVPM support.";
+      return hosted
+        ? "Texting is suspended. Review Messaging settings and contact OpenVPM support."
+        : "Texting is suspended. Review Messaging settings and contact your administrator.";
     }
     return "Texting is not ready yet. Review Messaging settings before sending.";
   })();
@@ -99,10 +115,53 @@ export function SetUpTextingStep({
   return (
     <div className="space-y-5">
       <p className="text-sm leading-6 text-slate-600">
-        Text your clients about appointments, reminders, and results, and let
-        them text you back. OpenVPM can set up a new local texting number; your
-        existing clinic voice line stays unchanged. This is optional, so skip it
-        and set it up later if you like.
+        {!setupCapabilityKnown ? (
+          <>
+            Texting setup is optional. We are checking whether new-number setup
+            is available for this clinic. Email appointment reminders remain
+            available, so you can continue and return to texting later.
+          </>
+        ) : setupDisabled ? (
+          hosted ? (
+            <>
+              {hasAnyNumber
+                ? "Your clinic has an existing texting setup to review, but new-number setup is not currently available. "
+                : "Texting setup is currently a controlled clinic pilot and is not available for this clinic yet. "}
+              Email appointment reminders remain available, so you can continue
+              without new texting setup. Review{" "}
+              <Link
+                href="/settings?tab=messaging"
+                className="font-medium text-emerald-700 underline underline-offset-2"
+              >
+                Messaging settings
+              </Link>{" "}
+              or{" "}
+              <a
+                href="mailto:support@openvpm.com?subject=OpenVPM%20texting%20pilot"
+                className="font-medium text-emerald-700 underline underline-offset-2"
+              >
+                contact OpenVPM support
+              </a>{" "}
+              {hasAnyNumber
+                ? " for help with the existing setup."
+                : " when your clinic is ready to join the pilot."}
+            </>
+          ) : (
+            <>
+              Texting number setup is disabled in this deployment. Email
+              appointment reminders remain available, so you can continue
+              without texting. Ask your deployment administrator to configure
+              the provider and enable provisioning before setup.
+            </>
+          )
+        ) : (
+          <>
+            Text your clients about appointments, reminders, and results, and
+            let them text you back. OpenVPM can set up a new local texting
+            number; your existing clinic voice line stays unchanged. This is
+            optional, so skip it and set it up later if you like.
+          </>
+        )}
       </p>
 
       <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-4">
@@ -125,6 +184,29 @@ export function SetUpTextingStep({
                   Retry this step before starting or changing setup.
                 </p>
               </div>
+            ) : setupUnavailable ? (
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-slate-900">
+                  {hosted
+                    ? "Texting setup is in a controlled pilot"
+                    : "Texting number setup is disabled"}
+                </p>
+                <p className="text-xs text-slate-500">
+                  {hosted
+                    ? "Email appointment reminders remain available while OpenVPM approves clinics for texting setup."
+                    : "Email appointment reminders remain available while your administrator configures texting."}
+                </p>
+              </div>
+            ) : setupDisabled && !messaging ? (
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-slate-900">
+                  New-number setup is unavailable
+                </p>
+                <p className="text-xs text-slate-500">
+                  Review the clinic&apos;s existing texting setup in Messaging
+                  settings.
+                </p>
+              </div>
             ) : messaging ? (
               <div className="space-y-1">
                 <p className="text-sm font-medium text-slate-900">
@@ -144,14 +226,14 @@ export function SetUpTextingStep({
             )}
           </div>
           {!status.isLoading && !status.error && location ? (
-            messaging ? (
+            setupAvailable === false || messaging ? (
               <Button asChild type="button" variant="outline" size="sm">
                 <Link href="/settings?tab=messaging">
                   {isConfigured ? <Check className="mr-1.5 h-4 w-4" /> : null}
-                  Review
+                  Messaging settings
                 </Link>
               </Button>
-            ) : (
+            ) : setupAvailable ? (
               <Button
                 type="button"
                 variant="default"
@@ -160,17 +242,20 @@ export function SetUpTextingStep({
               >
                 Set up texting
               </Button>
-            )
+            ) : null
           ) : null}
         </div>
       </div>
 
-      <MessagingWizard
-        location={location}
-        open={wizardOpen}
-        onOpenChange={setWizardOpen}
-        onChanged={() => void status.refetch()}
-      />
+      {setupAvailable ? (
+        <MessagingWizard
+          location={location}
+          hosted={hosted}
+          open={wizardOpen}
+          onOpenChange={setWizardOpen}
+          onChanged={() => void status.refetch()}
+        />
+      ) : null}
     </div>
   );
 }

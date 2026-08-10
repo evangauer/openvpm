@@ -23,7 +23,7 @@ function thenableRows(rows: Record<string, unknown>[]) {
     limit: vi.fn(async () => rows),
     then: (
       resolve: (value: Record<string, unknown>[]) => unknown,
-      reject?: (error: unknown) => unknown
+      reject?: (error: unknown) => unknown,
     ) => Promise.resolve(rows).then(resolve, reject),
   };
 }
@@ -84,7 +84,7 @@ describe("messaging.getInboxStatus", () => {
     ]);
 
     await expect(
-      callerWithDb(db, "admin").getInboxStatus()
+      callerWithDb(db, "admin").getInboxStatus(),
     ).resolves.toMatchObject({
       canManage: true,
       summary: {
@@ -177,14 +177,37 @@ describe("messaging.activationSummary", () => {
     vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
     const { db } = createDb([activeRow]);
     await expect(
-      callerWithDb(db, "admin").activationSummary()
-    ).resolves.toEqual({ hasAnyNumber: true, hasActiveNumber: false });
+      callerWithDb(db, "admin").activationSummary(),
+    ).resolves.toEqual({
+      setupAvailable: false,
+      hasAnyNumber: true,
+      hasActiveNumber: false,
+    });
+  });
+
+  it("reports setup availability only for an allowlisted hosted clinic", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    vi.stubEnv("MESSAGING_PROVISIONING_ENABLED", "true");
+    vi.stubEnv("MESSAGING_PROVISIONING_PRACTICE_IDS", PRACTICE_ID);
+    const { db } = createDb([]);
+
+    await expect(
+      callerWithDb(db, "admin").activationSummary(),
+    ).resolves.toEqual({
+      setupAvailable: true,
+      hasAnyNumber: false,
+      hasActiveNumber: false,
+    });
   });
 
   it("preserves self-host active sender behavior", async () => {
     const { db } = createDb([activeRow]);
     await expect(
-      callerWithDb(db, "admin").activationSummary()
-    ).resolves.toEqual({ hasAnyNumber: true, hasActiveNumber: true });
+      callerWithDb(db, "admin").activationSummary(),
+    ).resolves.toEqual({
+      setupAvailable: false,
+      hasAnyNumber: true,
+      hasActiveNumber: true,
+    });
   });
 });

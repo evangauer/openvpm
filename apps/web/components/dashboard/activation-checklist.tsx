@@ -171,6 +171,8 @@ export function ActivationChecklist() {
   const pathway = getOnboardingIntentOption(
     checklistState.onboardingIntent ?? DEFAULT_ONBOARDING_INTENT,
   );
+  const includeTextingMilestone =
+    textingData.setupAvailable || textingData.hasAnyNumber;
 
   const explorationMilestones: Milestone[] = [
     {
@@ -243,13 +245,17 @@ export function ActivationChecklist() {
         bookingData.page.config.bookableTypeIds.length > 0,
       href: "/settings?tab=booking",
     },
-    {
-      key: "texting",
-      label: "Finish texting activation",
-      hint: "Submit carrier registration and wait for approval. Texting is not live until an active number is enabled.",
-      done: textingData.hasActiveNumber,
-      href: "/settings?tab=messaging&setup=texting",
-    },
+    ...(includeTextingMilestone
+      ? [
+          {
+            key: "texting",
+            label: "Finish texting activation",
+            hint: "Submit carrier registration and wait for approval. Texting is not live until an active number is enabled.",
+            done: textingData.hasActiveNumber,
+            href: "/settings?tab=messaging&setup=texting",
+          } as Milestone,
+        ]
+      : []),
     ...(clientPaymentData.stripeConfigured
       ? [
           {

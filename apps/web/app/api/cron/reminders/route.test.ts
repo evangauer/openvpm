@@ -3,8 +3,26 @@ import { readFileSync } from "node:fs";
 
 const mocks = vi.hoisted(() => {
   const selectResults: unknown[][] = [];
-  const select = vi.fn(() => {
-    const result = selectResults.shift() ?? [];
+  const eligibilityResults: unknown[][] = [];
+  const recipientResults: unknown[][] = [];
+  const select = vi.fn((fields?: Record<string, unknown>) => {
+    const result = Object.prototype.hasOwnProperty.call(
+      fields ?? {},
+      "dispatchEligible",
+    )
+      ? (eligibilityResults.shift() ?? [{ dispatchEligible: true }])
+      : Object.prototype.hasOwnProperty.call(fields ?? {}, "recipientEmail")
+        ? (recipientResults.shift() ?? [
+            {
+              recipientEmail: "ada@lovelacevet.com",
+              suppressionReason: null,
+              clientFirstName: "Ada",
+              clientLastName: "Lovelace",
+              patientName: "Miso",
+              practiceName: "Neighborhood Veterinary",
+            },
+          ])
+        : (selectResults.shift() ?? []);
     const afterWhere: {
       limit: ReturnType<typeof vi.fn>;
       orderBy: ReturnType<typeof vi.fn>;
@@ -54,6 +72,8 @@ const mocks = vi.hoisted(() => {
   return {
     db,
     selectResults,
+    eligibilityResults,
+    recipientResults,
     claimResults,
     deleteResults,
     insertValues,
@@ -150,6 +170,8 @@ afterEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
   mocks.selectResults.length = 0;
+  mocks.eligibilityResults.length = 0;
+  mocks.recipientResults.length = 0;
   mocks.claimResults.length = 0;
   mocks.deleteResults.length = 0;
 });
@@ -174,6 +196,29 @@ describe("appointment reminder cron", () => {
     expect(mocks.insertValues).not.toHaveBeenCalled();
   });
 
+  it("does not claim or dispatch an appointment that becomes ineligible after the sweep", async () => {
+    mocks.selectResults.push([appointment()]);
+    mocks.eligibilityResults.push([]);
+
+    const response = await GET(
+      new Request("https://openvpm.test/api/cron/reminders"),
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      sent: 0,
+      failed: 0,
+      skipped: 0,
+      deduped: 0,
+      suppressed: 0,
+    });
+    expect(mocks.insertValues).not.toHaveBeenCalled();
+    expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
+    expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
+    expect(consoleLog).toHaveBeenCalledWith(
+      expect.stringContaining("1 no longer eligible"),
+    );
+  });
+
   it("suppresses seeded demo appointments before any provider or delivery claim", async () => {
     mocks.selectResults.push([
       appointment({
@@ -196,7 +241,7 @@ describe("appointment reminder cron", () => {
     expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
     expect(mocks.insertValues).not.toHaveBeenCalled();
     expect(consoleLog).toHaveBeenCalledWith(
-      "Cron reminders completed: 0 sent, 0 failed, 0 deferred (quiet hours), 0 deduped, 1 suppressed (1 demo, 0 reserved address) out of 1 total",
+      "Cron reminders completed: 0 sent, 0 failed, 0 deferred (quiet hours), 0 deduped, 0 no longer eligible, 1 suppressed (1 demo, 0 reserved address) out of 1 total",
     );
     expect(consoleLog).not.toHaveBeenCalledWith(
       expect.stringContaining("Miso"),
@@ -228,7 +273,7 @@ describe("appointment reminder cron", () => {
     expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
     expect(mocks.insertValues).not.toHaveBeenCalled();
     expect(consoleLog).toHaveBeenCalledWith(
-      "Cron reminders completed: 0 sent, 0 failed, 0 deferred (quiet hours), 0 deduped, 1 suppressed (0 demo, 1 reserved address) out of 1 total",
+      "Cron reminders completed: 0 sent, 0 failed, 0 deferred (quiet hours), 0 deduped, 0 no longer eligible, 1 suppressed (0 demo, 1 reserved address) out of 1 total",
     );
   });
 
@@ -400,6 +445,16 @@ describe("appointment reminder cron", () => {
   });
 
   it("blocks scheduled email reminders to provider-suppressed recipients", async () => {
+    mocks.recipientResults.push([
+      {
+        recipientEmail: "ada@lovelacevet.com",
+        suppressionReason: "bounce",
+        clientFirstName: "Ada",
+        clientLastName: "Lovelace",
+        patientName: "Miso",
+        practiceName: "Neighborhood Veterinary",
+      },
+    ]);
     mocks.selectResults.push([
       appointment({
         preferredContactMethod: "email",
@@ -440,7 +495,44 @@ describe("appointment reminder cron", () => {
     );
   });
 
+  it("honors an email suppression added after the sweep and before provider dispatch", async () => {
+    mocks.selectResults.push([
+      appointment({
+        preferredContactMethod: "email",
+        emailSuppressionReason: null,
+      }),
+    ]);
+    mocks.recipientResults.push([
+      {
+        recipientEmail: "new-address@example.com",
+        suppressionReason: "bounce",
+        clientFirstName: "Ada",
+        clientLastName: "Lovelace",
+        patientName: "Miso",
+        practiceName: "Neighborhood Veterinary",
+      },
+    ]);
+
+    const response = await GET(
+      new Request("https://openvpm.test/api/cron/reminders"),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      sent: 0,
+      failed: 1,
+    });
+    expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
+    expect(mocks.updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "email",
+        status: "failed",
+        content: expect.stringContaining("delivery bounce"),
+      }),
+    );
+  });
+
   it("fails SMS-only scheduled reminders when no active sender exists", async () => {
+    mocks.recipientResults.push([]);
     mocks.selectResults.push([appointment({ clientEmail: null })], []);
 
     const response = await GET(
@@ -660,6 +752,13 @@ describe("appointment reminder cron", () => {
 
 describe("appointment reminder cron query scoping", () => {
   const source = readFileSync(new URL("./route.ts", import.meta.url), "utf8");
+  const claimSource = readFileSync(
+    new URL(
+      "../../../../lib/messaging/appointment-reminder.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
 
   function expectScopedJoin(table: string, foreignKey: string) {
     expect(source).toMatch(
@@ -684,8 +783,28 @@ describe("appointment reminder cron query scoping", () => {
       /innerJoin\(\s*practices,\s*and\(\s*eq\(appointments\.practiceId, practices\.id\),\s*isNull\(practices\.deletedAt\),?\s*\),?\s*\)/s,
     );
     expect(source).toContain('eq(appointments.status, "confirmed")');
+    expect(source).toContain("eq(practices.appointmentRemindersEnabled, true)");
+    expect(source).toContain("practices.appointmentReminderLeadHours");
+    expect(source).toContain("interval '1 hour'");
     expect(source).not.toContain(
       'inArray(appointments.status, ["scheduled", "confirmed"])',
+    );
+  });
+
+  it("revalidates clinic and appointment state inside the tenant claim", () => {
+    expect(source).toContain("appointmentReminderDispatchEligible(tx");
+    expect(claimSource).toContain(
+      "eq(practices.appointmentRemindersEnabled, true)",
+    );
+    expect(claimSource).toContain('eq(appointments.status, "confirmed")');
+    expect(claimSource).toContain(
+      "eq(appointments.startTime, options.startTime)",
+    );
+    expect(claimSource).toContain("practices.appointmentReminderLeadHours");
+    expect(claimSource).toContain("isNull(appointments.deletedAt)");
+    expect(source).toContain("currentAppointmentReminderEmailRecipient(tx");
+    expect(claimSource).toContain(
+      "sql`${emailSuppressions.email} = lower(trim(${clients.email}))`",
     );
   });
 
