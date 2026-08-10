@@ -75,5 +75,11 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next).*)"],
+  // Do not invoke Next middleware for Vercel's analytics proxy. Vercel rewrites
+  // /_vercel/insights to a deployment-specific 16-hex path in production; if
+  // middleware handles that rewritten path, the analytics script falls through
+  // to the app 404 instead of the platform proxy.
+  matcher: [
+    "/((?!_next|_vercel/insights|[a-f0-9]{16}/(?:script\\.js|view|event|session)).*)",
+  ],
 };

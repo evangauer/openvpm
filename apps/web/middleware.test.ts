@@ -204,8 +204,21 @@ describe("middleware security headers", () => {
     expectSecurityHeaders(response);
   });
 
-  it("runs on dynamic public and API routes so headers are global", () => {
-    expect(config.matcher).toEqual(["/((?!_next).*)"]);
+  it("runs on application routes but leaves Vercel analytics at the edge", () => {
+    expect(config.matcher).toEqual([
+      "/((?!_next|_vercel/insights|[a-f0-9]{16}/(?:script\\.js|view|event|session)).*)",
+    ]);
+
+    const matcher = new RegExp(`^${config.matcher[0]}$`);
+    expect(matcher.test("/register")).toBe(true);
+    expect(matcher.test("/api/health")).toBe(true);
+    expect(matcher.test("/_next/static/chunk.js")).toBe(false);
+    expect(matcher.test("/_vercel/insights/script.js")).toBe(false);
+    expect(matcher.test("/5691167a7e0cfa40/script.js")).toBe(false);
+    expect(matcher.test("/5691167a7e0cfa40/view")).toBe(false);
+    expect(matcher.test("/5691167a7e0cfa40/event")).toBe(false);
+    expect(matcher.test("/5691167a7e0cfa40/session")).toBe(false);
+    expect(matcher.test("/5691167a7e0cfa40/clinic-route")).toBe(true);
   });
 
   it("also configures app-wide headers for static and framework assets", async () => {
