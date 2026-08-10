@@ -24,6 +24,8 @@ import {
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
+import { useOnlineStatus } from "@/lib/use-online-status";
+import { useUnsavedChangesGuard } from "@/lib/use-unsaved-changes-guard";
 import { formatClinicalDateTime } from "@/lib/records/clinical-dates";
 import { soapSectionText } from "@/lib/records/soap-content";
 import { Button } from "@/components/ui/button";
@@ -599,6 +601,7 @@ function RecordsPageContent() {
   const utils = trpc.useUtils();
   const searchParams = useSearchParams();
   const { data: session } = useSession();
+  const isOnline = useOnlineStatus();
   const linkedPatientId = searchParams.get("patientId") ?? "";
   const linkedAppointmentId = searchParams.get("appointmentId") ?? "";
   const requestedTab = searchParams.get("tab");
@@ -753,6 +756,24 @@ function RecordsPageContent() {
   const recordsPracticePhone = verifiedRecordsSettings
     ? verifiedRecordsSettings.phone
     : undefined;
+  const hasUnsavedRecordForm =
+    (showVaccinationForm &&
+      JSON.stringify(vaccinationForm) !==
+        JSON.stringify(initialVaccinationForm())) ||
+    (showProblemForm &&
+      JSON.stringify(problemForm) !== JSON.stringify(initialProblemForm())) ||
+    (showLabForm &&
+      JSON.stringify(labForm) !== JSON.stringify(initialLabResultForm())) ||
+    (showProcedureForm &&
+      JSON.stringify(procedureForm) !==
+        JSON.stringify(initialProcedureForm())) ||
+    (showPrescriptionForm &&
+      JSON.stringify(prescriptionForm) !==
+        JSON.stringify(initialPrescriptionForm(recordsTimeZone)));
+  useUnsavedChangesGuard(
+    hasUnsavedRecordForm,
+    "This clinical record has not been saved on the server. Leave and lose these values?"
+  );
 
   const {
     data: soapNotes,
@@ -1139,6 +1160,7 @@ function RecordsPageContent() {
   });
   const canSubmitVaccination =
     Boolean(patientId) &&
+    isOnline &&
     visitContextMatchesPatient &&
     isVaccinationRequiredTextInputValid(
       vaccinationForm.vaccineName,
@@ -1156,6 +1178,7 @@ function RecordsPageContent() {
     !createVaccination.isPending;
   const canSubmitProblem =
     Boolean(patientId) &&
+    isOnline &&
     isProblemRequiredTextInputValid(
       problemForm.description,
       PROBLEM_DESCRIPTION_MAX_LENGTH
@@ -1165,6 +1188,7 @@ function RecordsPageContent() {
     !createProblem.isPending;
   const canSubmitLabResult =
     Boolean(patientId) &&
+    isOnline &&
     visitContextMatchesPatient &&
     (!linkedAppointmentId || !replacesLabResultId) &&
     (!replacesLabResultId || Boolean(replacementPatient)) &&
@@ -1184,6 +1208,7 @@ function RecordsPageContent() {
     !createLabResult.isPending;
   const canSubmitProcedure =
     Boolean(patientId) &&
+    isOnline &&
     visitContextMatchesPatient &&
     isProcedureRequiredTextInputValid(
       procedureForm.name,
@@ -1205,6 +1230,7 @@ function RecordsPageContent() {
     !createProcedure.isPending;
   const canSubmitPrescription =
     Boolean(patientId) &&
+    isOnline &&
     visitContextMatchesPatient &&
     isPrescriptionRequiredTextInputValid(
       prescriptionForm.medicationName,
@@ -1262,7 +1288,7 @@ function RecordsPageContent() {
               setSearchQuery(e.target.value);
               if (!e.target.value) setSelectedPatient(null);
             }}
-            className="pl-10"
+            className="h-11 pl-10 sm:h-10"
           />
         </div>
 
@@ -1333,10 +1359,12 @@ function RecordsPageContent() {
 
       {/* Selected Patient Banner */}
       {selectedPatient && (
-        <div className="mt-4 flex items-center justify-between rounded-lg border border-border bg-card px-4 py-3">
-          <div className="text-sm">
-            <span className="font-medium">{selectedPatient.name}</span>
-            <span className="ml-2 text-muted-foreground">
+        <div className="mt-4 flex flex-col items-stretch gap-3 rounded-lg border border-border bg-card px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0 text-sm">
+            <span className="block truncate font-medium sm:inline">
+              {selectedPatient.name}
+            </span>
+            <span className="block truncate text-muted-foreground sm:ml-2 sm:inline">
               {selectedPatient.species
                 ? selectedPatient.species.charAt(0).toUpperCase() +
                   selectedPatient.species.slice(1)
@@ -1344,7 +1372,7 @@ function RecordsPageContent() {
               {selectedPatient.breed ? ` - ${selectedPatient.breed}` : ""}
             </span>
             {selectedPatient.clientFirstName && (
-              <span className="ml-3 text-muted-foreground">
+              <span className="block truncate text-muted-foreground sm:ml-3 sm:inline">
                 Owner: {selectedPatient.clientFirstName}{" "}
                 {selectedPatient.clientLastName}
               </span>
@@ -1354,6 +1382,7 @@ function RecordsPageContent() {
             <Button
               variant="ghost"
               size="sm"
+              className="h-11 w-full sm:h-9 sm:w-auto"
               onClick={() => {
                 setSelectedPatient(null);
                 setSearchQuery("");
@@ -1387,12 +1416,22 @@ function RecordsPageContent() {
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" variant="outline" asChild>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-11 flex-1 sm:h-9 sm:flex-none"
+              asChild
+            >
               <Link href={`/encounters/${linkedAppointmentId}`}>
                 Back to visit
               </Link>
             </Button>
-            <Button size="sm" variant="ghost" asChild>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-11 flex-1 sm:h-9 sm:flex-none"
+              asChild
+            >
               <Link
                 href={`/records?patientId=${encodeURIComponent(linkedPatientId)}&tab=${encodeURIComponent(requestedTab ?? "soap")}`}
               >
@@ -1403,19 +1442,30 @@ function RecordsPageContent() {
         </div>
       ) : null}
 
+      {selectedPatient && !isOnline ? (
+        <div
+          className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-950 dark:text-amber-100"
+          role="status"
+        >
+          Offline — clinical forms stay only on this device. Keep this page
+          open and reconnect before saving a record.
+        </div>
+      ) : null}
+
       {/* Tabs */}
       {selectedPatient && (
         <>
-          <div className="mt-6 border-b border-border">
-            <div className="flex gap-0">
+          <div className="mt-6 max-w-full overflow-x-auto border-b border-border">
+            <div className="flex min-w-max gap-0">
               {visibleTabs.map((tab) => {
                 const Icon = tab.icon;
                 return (
                   <button
                     key={tab.id}
+                    type="button"
                     onClick={() => setActiveTab(tab.id)}
                     className={cn(
-                      "relative flex items-center gap-2 px-4 py-2.5 text-sm font-medium transition-colors",
+                      "relative flex min-h-11 shrink-0 items-center gap-2 px-4 py-2.5 text-sm font-medium transition-colors",
                       currentTab === tab.id
                         ? "text-primary"
                         : "text-muted-foreground hover:text-foreground"
@@ -1826,6 +1876,7 @@ function RecordsPageContent() {
                   <div className="mb-4 flex justify-end">
                     <Button
                       size="sm"
+                      className="h-11 w-full sm:h-9 sm:w-auto"
                       variant={showVaccinationForm ? "outline" : "default"}
                       onClick={() => {
                         if (showVaccinationForm) {
@@ -1859,8 +1910,8 @@ function RecordsPageContent() {
                       });
                     }}
                   >
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="col-span-2 sm:col-span-1">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <div>
                         <label className="block text-xs font-medium text-muted-foreground mb-1">
                           Vaccine *
                         </label>
@@ -1938,6 +1989,7 @@ function RecordsPageContent() {
                       <Button
                         type="submit"
                         size="sm"
+                        className="h-11 sm:h-9"
                         disabled={!canSubmitVaccination}
                       >
                         {createVaccination.isPending ? "Saving..." : "Save"}
@@ -1946,6 +1998,7 @@ function RecordsPageContent() {
                         type="button"
                         variant="ghost"
                         size="sm"
+                        className="h-11 sm:h-9"
                         onClick={() => {
                           setShowVaccinationForm(false);
                           setVaccinationForm(initialVaccinationForm());
@@ -2093,6 +2146,7 @@ function RecordsPageContent() {
                   <div className="mb-4 flex justify-end">
                     <Button
                       size="sm"
+                      className="h-11 w-full sm:h-9 sm:w-auto"
                       variant={showPrescriptionForm ? "outline" : "default"}
                       onClick={() => {
                         if (showPrescriptionForm) {
@@ -2401,6 +2455,7 @@ function RecordsPageContent() {
                       <Button
                         type="submit"
                         size="sm"
+                        className="h-11 sm:h-9"
                         disabled={!canSubmitPrescription}
                       >
                         {createPrescription.isPending ? (
@@ -2412,6 +2467,7 @@ function RecordsPageContent() {
                         type="button"
                         variant="ghost"
                         size="sm"
+                        className="h-11 sm:h-9"
                         onClick={() => {
                           prescriptionOperationId.current = null;
                           setShowPrescriptionForm(false);
@@ -2597,6 +2653,7 @@ function RecordsPageContent() {
                   <div className="mb-4 flex justify-end">
                     <Button
                       size="sm"
+                      className="h-11 w-full sm:h-9 sm:w-auto"
                       variant={showProblemForm ? "outline" : "default"}
                       onClick={() => {
                         if (showProblemForm) {
@@ -2625,8 +2682,8 @@ function RecordsPageContent() {
                       });
                     }}
                   >
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="col-span-2">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <div className="sm:col-span-2">
                         <label className="block text-xs font-medium text-muted-foreground mb-1">
                           Problem *
                         </label>
@@ -2692,6 +2749,7 @@ function RecordsPageContent() {
                       <Button
                         type="submit"
                         size="sm"
+                        className="h-11 sm:h-9"
                         disabled={!canSubmitProblem}
                       >
                         {createProblem.isPending ? "Saving..." : "Save"}
@@ -2700,6 +2758,7 @@ function RecordsPageContent() {
                         type="button"
                         variant="ghost"
                         size="sm"
+                        className="h-11 sm:h-9"
                         onClick={() => {
                           setShowProblemForm(false);
                           setProblemForm(initialProblemForm());
@@ -2847,6 +2906,7 @@ function RecordsPageContent() {
                   {canManageLabResults && (
                     <Button
                       size="sm"
+                      className="h-11 w-full sm:h-9 sm:w-auto"
                       onClick={() => {
                         if (showLabForm) setLabForm(initialLabResultForm());
                         setReplacesLabResultId(null);
@@ -2979,8 +3039,8 @@ function RecordsPageContent() {
                         </div>
                       </div>
                     ) : null}
-                    <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-                      <div className="col-span-2 sm:col-span-1">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                      <div>
                         <label className="block text-xs font-medium text-muted-foreground mb-1">
                           Test Name *
                         </label>
@@ -3121,6 +3181,7 @@ function RecordsPageContent() {
                       <Button
                         type="submit"
                         size="sm"
+                        className="h-11 sm:h-9"
                         disabled={!canSubmitLabResult}
                       >
                         {createLabResult.isPending ? "Saving..." : "Save"}
@@ -3129,6 +3190,7 @@ function RecordsPageContent() {
                         type="button"
                         variant="ghost"
                         size="sm"
+                        className="h-11 sm:h-9"
                         onClick={() => {
                           setShowLabForm(false);
                           setLabForm(initialLabResultForm());
@@ -3466,6 +3528,7 @@ function RecordsPageContent() {
                   <div className="flex justify-end mb-4">
                     <Button
                       size="sm"
+                      className="h-11 w-full sm:h-9 sm:w-auto"
                       onClick={() => {
                         if (showProcedureForm) {
                           setProcedureForm(initialProcedureForm());
@@ -3502,8 +3565,8 @@ function RecordsPageContent() {
                       });
                     }}
                   >
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="col-span-2 sm:col-span-1">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <div>
                         <label className="block text-xs font-medium text-muted-foreground mb-1">
                           Name *
                         </label>
@@ -3546,7 +3609,7 @@ function RecordsPageContent() {
                           placeholder="e.g. 45"
                         />
                       </div>
-                      <div className="col-span-2">
+                      <div className="sm:col-span-2">
                         <label className="block text-xs font-medium text-muted-foreground mb-1">
                           Description
                         </label>
@@ -3580,7 +3643,7 @@ function RecordsPageContent() {
                           placeholder="e.g. Isoflurane"
                         />
                       </div>
-                      <div className="col-span-2">
+                      <div className="sm:col-span-2">
                         <label className="block text-xs font-medium text-muted-foreground mb-1">
                           Notes
                         </label>
@@ -3602,6 +3665,7 @@ function RecordsPageContent() {
                       <Button
                         type="submit"
                         size="sm"
+                        className="h-11 sm:h-9"
                         disabled={!canSubmitProcedure}
                       >
                         {createProcedure.isPending ? "Saving..." : "Save"}
@@ -3610,6 +3674,7 @@ function RecordsPageContent() {
                         type="button"
                         variant="ghost"
                         size="sm"
+                        className="h-11 sm:h-9"
                         onClick={() => {
                           setShowProcedureForm(false);
                           setProcedureForm(initialProcedureForm());

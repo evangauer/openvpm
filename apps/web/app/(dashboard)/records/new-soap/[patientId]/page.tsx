@@ -14,6 +14,7 @@ import {
   Save,
   ShieldAlert,
   Sparkles,
+  WifiOff,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -37,6 +38,7 @@ import {
   runSoapSafeLeave,
   soapEditorNeedsLeaveGuard,
 } from "@/lib/records/soap-navigation";
+import { useOnlineStatus } from "@/lib/use-online-status";
 
 const SoapNoteEditor = dynamic(
   () =>
@@ -75,6 +77,15 @@ type SoapEditorSections = {
   assessment: string;
   plan: string;
 };
+
+type SoapDraftSaveState =
+  | "idle"
+  | "offline"
+  | "unsaved"
+  | "saving"
+  | "saved"
+  | "error"
+  | "conflict";
 
 function soapDraftFingerprint(sections: SoapEditorSections): string {
   return JSON.stringify({
@@ -170,9 +181,11 @@ export default function NewSoapNotePage() {
   const discardMutation = trpc.records.discardSoapDraft.useMutation();
   const [draftInitialized, setDraftInitialized] = useState(false);
   const draftInitializedRef = useRef(false);
-  const [saveState, setSaveState] = useState<
-    "idle" | "unsaved" | "saving" | "saved" | "error" | "conflict"
-  >("idle");
+  const [saveState, setSaveState] = useState<SoapDraftSaveState>("idle");
+  const isOnline = useOnlineStatus();
+  const onlineStatusRef = useRef(isOnline);
+  onlineStatusRef.current = isOnline;
+  const wasOnlineRef = useRef(isOnline);
   const [finalizedElsewhere, setFinalizedElsewhere] = useState(false);
   const [localTextCopied, setLocalTextCopied] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
@@ -247,9 +260,18 @@ export default function NewSoapNotePage() {
     )
       return null;
 
+    if (!onlineStatusRef.current) {
+      setSaveState("offline");
+      return null;
+    }
+
     while (true) {
       if (finalizedElsewhereRef.current) return null;
       if (conflictRef.current) return null;
+      if (!onlineStatusRef.current) {
+        setSaveState("offline");
+        return null;
+      }
       if (savePromiseRef.current) {
         await savePromiseRef.current.catch(() => null);
         continue;
@@ -291,12 +313,16 @@ export default function NewSoapNotePage() {
         setLastSavedAt(result.draft.updatedAt);
         setSaveState("saved");
       } catch (error) {
-        setSaveState("error");
-        toast.error(
-          error instanceof Error
-            ? error.message
-            : "SOAP draft could not be saved",
-        );
+        if (!onlineStatusRef.current) {
+          setSaveState("offline");
+        } else {
+          setSaveState("error");
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : "SOAP draft could not be saved",
+          );
+        }
         return null;
       } finally {
         if (savePromiseRef.current === request) savePromiseRef.current = null;
@@ -305,14 +331,42 @@ export default function NewSoapNotePage() {
   }, [appointmentId, draftInitialized, params.patientId]);
 
   useEffect(() => {
+    const wasOnline = wasOnlineRef.current;
+    wasOnlineRef.current = isOnline;
     if (
-      finalizedElsewhere ||
       !draftInitialized ||
+      finalizedElsewhereRef.current ||
       conflictRef.current
-    )
+    ) {
       return;
+    }
+    if (!isOnline) {
+      setSaveState("offline");
+      return;
+    }
+    if (wasOnline) return;
+
+    const fingerprint = soapDraftFingerprint(sectionsRef.current);
+    if (fingerprint === lastSavedFingerprintRef.current) {
+      setSaveState(draftIdRef.current ? "saved" : "idle");
+      return;
+    }
+
+    // Retry only the in-memory SOAP draft through the existing revision guard.
+    // No clinical content is written to browser persistence while offline.
+    setSaveState("unsaved");
+    void persistDraft();
+  }, [draftInitialized, isOnline, persistDraft]);
+
+  useEffect(() => {
+    if (finalizedElsewhere || !draftInitialized || conflictRef.current) return;
     const fingerprint = soapDraftFingerprint(sectionsRef.current);
     if (fingerprint === lastSavedFingerprintRef.current) return;
+    if (!isOnline) {
+      setSaveState("offline");
+      return;
+    }
+    if (savePromiseRef.current) return;
     setSaveState("unsaved");
     const timer = window.setTimeout(() => void persistDraft(), 1_200);
     return () => window.clearTimeout(timer);
@@ -320,6 +374,7 @@ export default function NewSoapNotePage() {
     assessment,
     draftInitialized,
     finalizedElsewhere,
+    isOnline,
     objective,
     persistDraft,
     plan,
@@ -849,7 +904,7 @@ export default function NewSoapNotePage() {
               variant="outline"
               size="sm"
               onClick={handleDraftWithAi}
-              disabled={!aiConfigured || draftWithAi.isPending}
+              disabled={!isOnline || !aiConfigured || draftWithAi.isPending}
             >
               {draftWithAi.isPending ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -873,7 +928,9 @@ export default function NewSoapNotePage() {
           aria-live="polite"
         >
           <div className="flex items-center gap-2 text-sm">
-            {saveState === "saving" ? (
+            {saveState === "offline" ? (
+              <WifiOff className="h-4 w-4 text-amber-600" />
+            ) : saveState === "saving" ? (
               <Loader2 className="h-4 w-4 animate-spin text-primary" />
             ) : saveState === "saved" ? (
               <CheckCircle2 className="h-4 w-4 text-emerald-600" />
@@ -885,19 +942,21 @@ export default function NewSoapNotePage() {
             <span>
               {saveState === "saving"
                 ? "Saving draft..."
-                : saveState === "saved"
-                  ? `Draft saved${lastSavedAt ? ` at ${lastSavedAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : ""}`
-                  : saveState === "error"
-                    ? "Draft could not be saved"
-                    : saveState === "conflict"
-                      ? "A newer draft exists in another session"
-                      : saveState === "unsaved"
-                        ? "Changes not saved yet"
-                        : "Draft will save after you begin typing"}
+                : saveState === "offline"
+                  ? "Offline — autosave is paused"
+                  : saveState === "saved"
+                    ? `Draft saved${lastSavedAt ? ` at ${lastSavedAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : ""}`
+                    : saveState === "error"
+                      ? "Draft could not be saved"
+                      : saveState === "conflict"
+                        ? "A newer draft exists in another session"
+                        : saveState === "unsaved"
+                          ? "Changes not saved yet"
+                          : "Draft will save after you begin typing"}
             </span>
           </div>
           <div className="flex gap-2">
-            {(saveState === "error" || saveState === "unsaved") && (
+            {isOnline && (saveState === "error" || saveState === "unsaved") ? (
               <Button
                 type="button"
                 variant="outline"
@@ -906,14 +965,18 @@ export default function NewSoapNotePage() {
               >
                 Retry save
               </Button>
-            )}
+            ) : null}
             {draftIdRef.current ? (
               <Button
                 type="button"
                 variant="ghost"
                 size="sm"
                 className="text-destructive hover:text-destructive"
-                disabled={discardMutation.isPending || saveState === "saving"}
+                disabled={
+                  !isOnline ||
+                  discardMutation.isPending ||
+                  saveState === "saving"
+                }
                 onClick={() => void handleDiscardDraft()}
               >
                 {discardMutation.isPending ? "Discarding..." : "Discard draft"}
@@ -921,6 +984,17 @@ export default function NewSoapNotePage() {
             ) : null}
           </div>
         </div>
+
+        {saveState === "offline" ? (
+          <div
+            role="status"
+            className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100"
+          >
+            Keep this tab open. New SOAP changes remain only in this tab, and
+            OpenVPM will retry the same revision-checked draft automatically
+            when the connection returns.
+          </div>
+        ) : null}
 
         {conflictDraft ? (
           <div
@@ -1074,6 +1148,7 @@ export default function NewSoapNotePage() {
             onClick={() => void handleFinalize()}
             disabled={
               finalizeMutation.isPending ||
+              !isOnline ||
               saveState === "saving" ||
               saveState === "error" ||
               saveState === "conflict" ||

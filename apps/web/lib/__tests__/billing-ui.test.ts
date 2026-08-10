@@ -203,6 +203,31 @@ describe("billing invoice payment actions", () => {
     expect(source).toContain("Take Card");
   });
 
+  it("keeps appointment-linked invoices connected to their visit", () => {
+    expect(source).toContain("detail.data.appointmentId");
+    expect(source).toContain("Back to visit");
+    expect(source).toContain(
+      "`/encounters/${encodeURIComponent(detail.data.appointmentId)}#charge-capture`"
+    );
+  });
+
+  it("stacks payment actions and forms at phone width", () => {
+    expect(source).toContain(
+      'className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"'
+    );
+    expect(source).toContain(
+      'className="grid w-full grid-cols-1 gap-2 sm:w-auto sm:grid-cols-3"'
+    );
+    expect(source.match(/grid grid-cols-1 gap-3 sm:grid-cols-3/g)).toHaveLength(
+      2
+    );
+    expect(
+      source.match(
+        /flex flex-col-reverse gap-2 sm:flex-row sm:items-center/g
+      )
+    ).toHaveLength(2);
+  });
+
   it("offers invoice email only while a balance-bearing invoice is sent or overdue", () => {
     expect(source).toContain(
       '(invoice.status === "sent" ||\n                          invoice.status === "overdue")'

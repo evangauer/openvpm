@@ -160,6 +160,25 @@ function canTransitionInvoiceStatus(current: InvoiceStatus, next: InvoiceStatus)
   return current === next || allowedInvoiceStatusTransitions[current].includes(next);
 }
 
+function invoiceCheckoutReturnUrl({
+  base,
+  invoiceId,
+  appointmentId,
+  payment,
+}: {
+  base: string;
+  invoiceId: string;
+  appointmentId?: string | null;
+  payment: "success" | "cancelled";
+}) {
+  const params = new URLSearchParams({ payment, invoice: invoiceId });
+  if (!appointmentId) {
+    return `${base}/billing?${params.toString()}`;
+  }
+
+  return `${base}/encounters/${encodeURIComponent(appointmentId)}?${params.toString()}#charge-capture`;
+}
+
 type PaymentAccountRow = typeof practicePaymentAccounts.$inferSelect;
 
 const billingAdminProcedure = protectedProcedure.use(requireRole("admin"));
@@ -2418,6 +2437,7 @@ export const billingRouter = createRouter({
           tax: invoices.tax,
           total: invoices.total,
           paidAmount: invoices.paidAmount,
+          appointmentId: invoices.appointmentId,
           dueDate: invoices.dueDate,
           createdAt: invoices.createdAt,
           updatedAt: invoices.updatedAt,
@@ -3782,8 +3802,18 @@ export const billingRouter = createRouter({
         applicationFeeAmount: connectedAccount
           ? stripeConnectApplicationFeeAmount(balanceCents)
           : undefined,
-        successUrl: `${base}/billing?payment=success&invoice=${invoice.id}`,
-        cancelUrl: `${base}/billing?payment=cancelled&invoice=${invoice.id}`,
+        successUrl: invoiceCheckoutReturnUrl({
+          base,
+          invoiceId: invoice.id,
+          appointmentId: invoice.appointmentId,
+          payment: "success",
+        }),
+        cancelUrl: invoiceCheckoutReturnUrl({
+          base,
+          invoiceId: invoice.id,
+          appointmentId: invoice.appointmentId,
+          payment: "cancelled",
+        }),
       });
 
       const checkoutUrl = result?.url;

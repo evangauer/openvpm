@@ -102,7 +102,7 @@ describe("consult companion UI states", () => {
 
   it("hides the AI draft affordance behind configuration with a gentle note", () => {
     expect(soapPage).toContain("agentStatus.data?.configured ?? false");
-    expect(soapPage).toContain("disabled={!aiConfigured || draftWithAi.isPending}");
+    expect(soapPage).toContain("disabled={!isOnline || !aiConfigured || draftWithAi.isPending}");
     expect(soapPage).toContain(
       "AI is not set up yet. Ask your admin to add an AI key."
     );

@@ -45,6 +45,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ClinicalCorrectionControl } from "@/components/records/clinical-correction-control";
 import { cn } from "@/lib/utils";
+import { useOnlineStatus } from "@/lib/use-online-status";
+import { useUnsavedChangesGuard } from "@/lib/use-unsaved-changes-guard";
 
 type VitalsFormState = {
   temperatureC: string;
@@ -161,6 +163,7 @@ export function EncounterVitalsCard({
   timeZone?: string | null;
 }) {
   const utils = trpc.useUtils();
+  const isOnline = useOnlineStatus();
   const [form, setForm] = useState<VitalsFormState>(() => ({
     ...EMPTY_VITALS_FORM,
   }));
@@ -200,9 +203,14 @@ export function EncounterVitalsCard({
   const hasContent = Object.values(form).some(
     (value) => value.trim().length > 0,
   );
+  useUnsavedChangesGuard(
+    hasContent,
+    "Vitals have not been recorded on the server. Leave and lose these values?",
+  );
   const vitalsReady = Boolean(vitalsQuery.data) && !vitalsQuery.error;
   const canSubmit =
     canRecord &&
+    isOnline &&
     vitalsReady &&
     hasContent &&
     isVitalsOptionalTemperatureInputValid(form.temperatureC) &&
@@ -257,6 +265,15 @@ export function EncounterVitalsCard({
       <CardContent className="space-y-4">
         {canRecord ? (
           <form onSubmit={submitVitals} className="space-y-3">
+            {!isOnline ? (
+              <div
+                className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100"
+                role="status"
+              >
+                Offline — keep this page open. Vitals stay only in this form
+                until you reconnect and record them.
+              </div>
+            ) : null}
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
               <VitalNumberInput
                 label="Temp (C)"

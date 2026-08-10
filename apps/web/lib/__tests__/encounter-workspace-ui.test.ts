@@ -150,7 +150,7 @@ describe("clinic encounter workspace", () => {
     expect(encounterVitalsSource).toContain(
       "const vitalsReady = Boolean(vitalsQuery.data) && !vitalsQuery.error",
     );
-    expect(encounterVitalsSource).toContain("canRecord &&\n    vitalsReady &&");
+    expect(encounterVitalsSource).toContain("canRecord &&\n    isOnline &&\n    vitalsReady &&");
     expect(encounterVitalsSource).toMatch(
       /recordVitals\.mutate\(\{\s+patientId,\s+appointmentId,/,
     );
@@ -278,5 +278,63 @@ describe("clinic encounter workspace", () => {
     expect(workspaceSource).toContain("No charge");
     expect(workspaceSource).toContain("Void/corrected");
     expect(workspaceSource).toContain("never bills a suggestion automatically");
+  });
+
+  it("autosaves revisioned closeout drafts and preserves local work on conflict", () => {
+    expect(workspaceSource).toContain("persistCloseoutDraft");
+    expect(workspaceSource).toContain("expectedRevision: revisionRef.current");
+    expect(workspaceSource).toContain("clinicalDraftFingerprint");
+    expect(workspaceSource).toContain("const timer = window.setTimeout(");
+    expect(workspaceSource).toContain('setDraftSaveState("conflict")');
+    expect(workspaceSource).toContain("Use server version");
+    expect(workspaceSource).toContain("Overwrite with local version");
+    expect(workspaceSource).toContain("async function finalizeClinicalHandoff()");
+    expect(workspaceSource).toContain("const saved = await persistCloseoutDraft()");
+    expect(workspaceSource).toContain("autosaveTimerRef.current");
+    expect(workspaceSource).toContain(
+      "Offline — changes are only on this device until you reconnect.",
+    );
+  });
+
+  it("guards unsaved vitals and charges without persisting clinical data in the browser", () => {
+    const guardSource = readFileSync("lib/use-unsaved-changes-guard.ts", "utf8");
+    expect(encounterVitalsSource).toContain("useUnsavedChangesGuard(");
+    expect(encounterVitalsSource).toContain("Offline — keep this page open.");
+    expect(workspaceSource).toContain("hasUnsavedCharges");
+    expect(workspaceSource).toContain(
+      "Visit charges have not been saved on the server.",
+    );
+    expect(recordsSource).toContain("const hasUnsavedRecordForm =");
+    expect(recordsSource).toContain(
+      "This clinical record has not been saved on the server.",
+    );
+    expect(recordsSource).toContain(
+      "Offline — clinical forms stay only on this device.",
+    );
+    expect(guardSource).toContain('window.addEventListener("beforeunload"');
+    expect(guardSource).toContain(
+      'document.addEventListener("click", handleDocumentClick, true)',
+    );
+    expect(guardSource).toContain(
+      'window.addEventListener("popstate", handlePopState, true)',
+    );
+    expect(guardSource).toContain("HISTORY_SENTINEL_KEY");
+    expect(guardSource).toContain('pendingPopAction = "restore"');
+    expect(guardSource).toContain('pendingPopAction = "leave"');
+    expect(guardSource).toContain("isSameDocumentHashNavigation(");
+    expect(guardSource).toContain('anchor.hasAttribute("download")');
+    expect(guardSource).not.toContain("window.history.pushState =");
+    for (const forbiddenStorage of [
+      "localStorage",
+      "sessionStorage",
+      "indexedDB",
+      "caches.open",
+      "serviceWorker",
+    ]) {
+      expect(workspaceSource).not.toContain(forbiddenStorage);
+      expect(encounterVitalsSource).not.toContain(forbiddenStorage);
+      expect(recordsSource).not.toContain(forbiddenStorage);
+      expect(guardSource).not.toContain(forbiddenStorage);
+    }
   });
 });

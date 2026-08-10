@@ -985,6 +985,7 @@ function InvoiceRow({
     dueDate: string | null;
     createdAt: Date | string | null;
     isEstimate: boolean;
+    appointmentId: string | null;
     clientFirstName: string | null;
     clientLastName: string | null;
     patientName: string | null;
@@ -1128,6 +1129,16 @@ function InvoiceRow({
               </div>
             ) : detail.data ? (
               <div className="space-y-4">
+                {detail.data.appointmentId ? (
+                  <Button variant="outline" size="sm" asChild>
+                    <Link
+                      href={`/encounters/${encodeURIComponent(detail.data.appointmentId)}#charge-capture`}
+                    >
+                      Back to visit
+                    </Link>
+                  </Button>
+                ) : null}
+
                 {/* Estimate Approval Card */}
                 {invoice.isEstimate && (
                   <div className="flex items-center justify-between rounded-lg border border-purple-200 bg-purple-50 p-4 dark:border-purple-900 dark:bg-purple-950/30">
@@ -1645,17 +1656,23 @@ function PaymentSection({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h4 className="text-sm font-medium">Payments &amp; Adjustments</h4>
         {canCollect && (
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={handleOpenForm}>
+          <div className="grid w-full grid-cols-1 gap-2 sm:w-auto sm:grid-cols-3">
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full sm:w-auto"
+              onClick={handleOpenForm}
+            >
               <DollarSign className="mr-1 h-3.5 w-3.5" />
               Record Payment
             </Button>
             <Button
               variant="outline"
               size="sm"
+              className="w-full sm:w-auto"
               disabled={
                 cardCheckout.isPending ||
                 cardPaymentStatus.isLoading ||
@@ -1678,6 +1695,7 @@ function PaymentSection({
             <Button
               variant="outline"
               size="sm"
+              className="w-full sm:w-auto"
               onClick={handleOpenAdjustmentForm}
             >
               <DollarSign className="mr-1 h-3.5 w-3.5" />
@@ -1702,7 +1720,7 @@ function PaymentSection({
       {/* Payment form */}
       {showPaymentForm && (
         <div className="rounded-lg border border-border bg-background p-4 space-y-3">
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">
                 Amount
@@ -1745,9 +1763,10 @@ function PaymentSection({
               />
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center">
             <Button
               size="sm"
+              className="w-full sm:w-auto"
               onClick={handleRecordPayment}
               disabled={!canRecordPayment}
             >
@@ -1756,6 +1775,7 @@ function PaymentSection({
             <Button
               variant="ghost"
               size="sm"
+              className="w-full sm:w-auto"
               onClick={() => {
                 paymentOperationId.current = null;
                 setShowPaymentForm(false);
@@ -1774,7 +1794,7 @@ function PaymentSection({
 
       {showAdjustmentForm && (
         <div className="space-y-3 rounded-lg border border-border bg-background p-4">
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">
                 Type
@@ -1816,9 +1836,10 @@ function PaymentSection({
               />
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center">
             <Button
               size="sm"
+              className="w-full sm:w-auto"
               onClick={handleApplyAdjustment}
               disabled={!canApplyAdjustment}
             >
@@ -1827,6 +1848,7 @@ function PaymentSection({
             <Button
               variant="ghost"
               size="sm"
+              className="w-full sm:w-auto"
               onClick={() => {
                 adjustmentOperationId.current = null;
                 setShowAdjustmentForm(false);

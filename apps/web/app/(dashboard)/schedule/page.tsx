@@ -628,6 +628,149 @@ function DayCalendar({
   );
 }
 
+function PhoneAgenda({
+  appointments,
+  timeZone,
+  view,
+  onAppointmentClick,
+}: {
+  appointments: Appointment[];
+  timeZone?: string | null;
+  view: CalendarView;
+  onAppointmentClick: (appointment: Appointment) => void;
+}) {
+  const appointmentsByDay = new Map<string, Appointment[]>();
+
+  for (const appointment of appointments) {
+    const dateKey = toISODate(new Date(appointment.startTime), timeZone);
+    const dayAppointments = appointmentsByDay.get(dateKey);
+    if (dayAppointments) {
+      dayAppointments.push(appointment);
+    } else {
+      appointmentsByDay.set(dateKey, [appointment]);
+    }
+  }
+
+  const rangeLabel =
+    view === "day" ? "Day" : view === "week" ? "Week" : "Month";
+
+  return (
+    <section
+      aria-label={`${rangeLabel} appointment agenda`}
+      className="mt-4 max-w-full space-y-4 overflow-hidden sm:hidden"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <h4 className="text-sm font-semibold">{rangeLabel} agenda</h4>
+        <span className="text-xs text-muted-foreground">
+          {appointments.length} appointment
+          {appointments.length !== 1 ? "s" : ""}
+        </span>
+      </div>
+
+      {appointments.length === 0 ? (
+        <div className="rounded-lg border border-border bg-card px-4 py-8 text-center">
+          <Calendar className="mx-auto h-8 w-8 text-muted-foreground/40" />
+          <p className="mt-2 text-sm font-medium">No appointments</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            The selected {view} is clear.
+          </p>
+        </div>
+      ) : (
+        Array.from(appointmentsByDay.entries()).map(
+          ([dateKey, dayAppointments]) => (
+            <div key={dateKey} className="min-w-0 space-y-2">
+              {view !== "day" && (
+                <h5 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  {new Date(
+                    dayAppointments[0]!.startTime
+                  ).toLocaleDateString("en-US", {
+                    weekday: "long",
+                    month: "short",
+                    day: "numeric",
+                    timeZone: timeZone ?? undefined,
+                  })}
+                </h5>
+              )}
+              {dayAppointments.map((appointment) => {
+                const start = new Date(appointment.startTime);
+                const end = new Date(appointment.endTime);
+                const patientName =
+                  appointment.patientName || "Unknown Patient";
+                const clientName = [
+                  appointment.clientFirstName,
+                  appointment.clientLastName,
+                ]
+                  .filter(Boolean)
+                  .join(" ");
+                const careTeam = appointment.doctorName
+                  ? `Dr. ${appointment.doctorName}`
+                  : "Team";
+                const place = [
+                  appointment.locationName,
+                  appointment.roomName,
+                ]
+                  .filter(Boolean)
+                  .join(" · ");
+
+                return (
+                  <button
+                    key={appointment.id}
+                    type="button"
+                    onClick={() => onAppointmentClick(appointment)}
+                    aria-label={`Open ${patientName} appointment at ${formatTime(start, timeZone)}`}
+                    className="min-h-11 w-full overflow-hidden rounded-lg border border-border bg-card p-3 text-left transition-colors hover:bg-muted/30 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                    style={{
+                      borderLeftColor: getAppointmentColor(appointment),
+                      borderLeftWidth: 3,
+                    }}
+                  >
+                    <span className="flex min-w-0 items-start justify-between gap-3">
+                      <span className="min-w-0">
+                        <span className="block text-xs font-medium text-muted-foreground">
+                          {formatTime(start, timeZone)}–
+                          {formatTime(end, timeZone)}
+                        </span>
+                        <span className="mt-0.5 block truncate text-sm font-semibold text-foreground">
+                          {patientName}
+                        </span>
+                      </span>
+                      <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground">
+                        <StatusDot status={appointment.status} />
+                        {appointmentStatusLabel(appointment)}
+                      </span>
+                    </span>
+                    <span className="mt-2 block min-w-0 space-y-1 text-xs text-muted-foreground">
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <User className="h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate">
+                          {clientName || "Client not listed"}
+                          {appointment.patientSpecies
+                            ? ` · ${appointment.patientSpecies}`
+                            : ""}
+                        </span>
+                      </span>
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <Stethoscope className="h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate">
+                          {careTeam}
+                          {place ? ` · ${place}` : ""}
+                        </span>
+                      </span>
+                      <span className="block truncate font-medium text-foreground">
+                        {appointment.typeName || "Appointment"}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )
+        )
+      )}
+    </section>
+  );
+}
+
 function WeekCalendar({
   days,
   appointmentsByDate,
@@ -2568,36 +2711,53 @@ export default function SchedulePage() {
       </div>
 
       {/* Toolbar */}
-      <div className="mt-4 flex flex-wrap items-center gap-3">
+      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
         {/* Date navigation */}
-        <div className="flex items-center gap-1">
-          <Button variant="outline" size="icon" onClick={goPrev} className="h-9 w-9">
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
-          <Button
-            variant={isToday ? "secondary" : "outline"}
-            size="sm"
-            onClick={goToday}
-          >
-            Today
-          </Button>
-          <Button variant="outline" size="icon" onClick={goNext} className="h-9 w-9">
-            <ChevronRight className="h-4 w-4" />
-          </Button>
+        <div className="flex min-w-0 items-center justify-between gap-3 sm:justify-start">
+          <div className="flex shrink-0 items-center gap-1">
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={goPrev}
+              className="h-11 w-11 sm:h-9 sm:w-9"
+              aria-label="Previous date range"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <Button
+              variant={isToday ? "secondary" : "outline"}
+              size="sm"
+              onClick={goToday}
+              className="h-11 sm:h-9"
+            >
+              Today
+            </Button>
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={goNext}
+              className="h-11 w-11 sm:h-9 sm:w-9"
+              aria-label="Next date range"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+
+          <h3 className="min-w-0 truncate text-right text-sm font-medium sm:text-left">
+            {formatToolbarDate(currentDate, view)}
+          </h3>
         </div>
 
-        <h3 className="text-sm font-medium">{formatToolbarDate(currentDate, view)}</h3>
-
-        <div className="ml-auto flex items-center gap-2">
+        <div className="flex w-full min-w-0 flex-wrap items-center gap-2 sm:ml-auto sm:w-auto sm:flex-nowrap">
           {/* View toggle */}
-          <div className="flex rounded-md border border-border">
+          <div className="grid h-11 w-full grid-cols-3 rounded-md border border-border sm:flex sm:h-9 sm:w-auto">
             {viewOptions.map((option, index) => (
               <button
                 key={option.id}
                 type="button"
                 onClick={() => setView(option.id)}
                 className={cn(
-                  "px-3 py-1.5 text-xs font-medium transition-colors",
+                  "min-h-11 px-3 py-1.5 text-xs font-medium transition-colors sm:min-h-0",
                   index > 0 && "border-l border-border",
                   index === 0 && "rounded-l-md",
                   index === viewOptions.length - 1 && "rounded-r-md",
@@ -2613,7 +2773,7 @@ export default function SchedulePage() {
 
           {/* Doctor filter */}
           {scheduleLocations.length > 1 && (
-            <div className="relative">
+            <div className="relative min-w-0 flex-1 sm:flex-none">
               <MapPin className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground pointer-events-none" />
               <select
                 aria-label="Filter schedule by clinic location"
@@ -2622,7 +2782,7 @@ export default function SchedulePage() {
                   setLocationFilter(event.target.value);
                   setSelectedAppointment(null);
                 }}
-                className="h-9 appearance-none rounded-md border border-input bg-background pl-8 pr-8 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-11 w-full min-w-0 appearance-none rounded-md border border-input bg-background pl-8 pr-8 text-xs focus:outline-none focus:ring-2 focus:ring-ring sm:h-9 sm:w-auto"
               >
                 <option value="all">All Locations</option>
                 {scheduleLocations.map((location) => (
@@ -2634,12 +2794,12 @@ export default function SchedulePage() {
             </div>
           )}
 
-          <div className="relative">
+          <div className="relative min-w-0 flex-1 sm:flex-none">
             <Filter className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground pointer-events-none" />
             <select
               value={doctorFilter}
               onChange={(e) => setDoctorFilter(e.target.value)}
-              className="h-9 appearance-none rounded-md border border-input bg-background pl-8 pr-8 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-11 w-full min-w-0 appearance-none rounded-md border border-input bg-background pl-8 pr-8 text-xs focus:outline-none focus:ring-2 focus:ring-ring sm:h-9 sm:w-auto"
             >
               <option value="all">All Doctors</option>
               {doctors?.map((doc) => (
@@ -2654,6 +2814,7 @@ export default function SchedulePage() {
           {canCreateAppointments && (
             <Button
               size="sm"
+              className="h-11 w-full sm:h-9 sm:w-auto"
               disabled={!canUseScheduleInteractions}
               onClick={() => {
                 openBookingForm(currentDate);
@@ -2677,7 +2838,16 @@ export default function SchedulePage() {
           <Loader2 className="h-4 w-4 animate-spin" />
           Loading appointments...
         </div>
-      ) : view === "week" ? (
+      ) : (
+        <>
+          <PhoneAgenda
+            appointments={appointments}
+            timeZone={calendarTimeZone}
+            view={view}
+            onAppointmentClick={setSelectedAppointment}
+          />
+          <div className="hidden sm:block">
+          {view === "week" ? (
         appointments.length > 0 ? (
           <WeekCalendar
             days={weekDays}
@@ -2770,6 +2940,9 @@ export default function SchedulePage() {
           }
           onAppointmentClick={setSelectedAppointment}
         />
+          )}
+          </div>
+        </>
       )}
       </div>
 

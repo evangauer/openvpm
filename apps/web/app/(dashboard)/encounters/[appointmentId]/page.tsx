@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useDeferredValue,
   useEffect,
   useMemo,
@@ -45,6 +46,8 @@ import {
 import { centsToMoney, moneyToCents } from "@/lib/billing/invoice-balance";
 import { tryCalculateInvoiceTaxTotals } from "@/lib/billing/invoice-tax";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
+import { useUnsavedChangesGuard } from "@/lib/use-unsaved-changes-guard";
+import { useOnlineStatus } from "@/lib/use-online-status";
 import {
   APPOINTMENT_PATIENT_SEARCH_MAX_LENGTH,
   isAppointmentPatientSearchInputValid,
@@ -90,6 +93,51 @@ type ChargeItem = {
   sourcePrescriptionId?: string;
   sourceDispenseChargeId?: string;
 };
+
+type ClinicalDraftFields = {
+  diagnosisSummary: string;
+  dischargeInstructions: string;
+  warningSigns: string;
+  noInstructionsReason: string;
+  prescriptionDisposition: "" | "prescribed" | "not_needed";
+  followUpDisposition: "" | "none" | "needed" | "scheduled";
+  followUpNotes: string;
+  followUpAppointmentId: string;
+  followUpDueDate: string;
+  followUpAssignedTo: string;
+  documentationExceptionReason: string;
+};
+
+function chargeItemsFingerprint(items: ChargeItem[]): string {
+  return JSON.stringify(
+    items.map((item) => [
+      item.description,
+      item.quantity,
+      item.unitPrice,
+      item.itemType,
+      item.itemId ?? null,
+      item.taxable,
+      item.sourcePrescriptionId ?? null,
+      item.sourceDispenseChargeId ?? null,
+    ]),
+  );
+}
+
+function clinicalDraftFingerprint(fields: ClinicalDraftFields): string {
+  return JSON.stringify([
+    fields.diagnosisSummary,
+    fields.dischargeInstructions,
+    fields.warningSigns,
+    fields.noInstructionsReason,
+    fields.prescriptionDisposition,
+    fields.followUpDisposition,
+    fields.followUpNotes,
+    fields.followUpAppointmentId,
+    fields.followUpDueDate,
+    fields.followUpAssignedTo,
+    fields.documentationExceptionReason,
+  ]);
+}
 
 const APPOINTMENT_STATUS_LABELS: Record<string, string> = {
   scheduled: "Scheduled",
@@ -810,6 +858,7 @@ function VisitCloseout({
   invoicesQuery: InvoiceQueryState;
 }) {
   const utils = trpc.useUtils();
+  const isOnline = useOnlineStatus();
   const data = closeoutQuery.data;
   const closeout = data?.closeout ?? null;
   const activeInvoice = data?.invoices[0] ?? null;
@@ -845,30 +894,112 @@ function VisitCloseout({
   >("");
   const [resolutionAppointmentId, setResolutionAppointmentId] = useState("");
   const [resolutionNotes, setResolutionNotes] = useState("");
+  const [draftSaveState, setDraftSaveState] = useState<
+    "idle" | "unsaved" | "saving" | "saved" | "error" | "conflict"
+  >("idle");
+  const [lastDraftSavedAt, setLastDraftSavedAt] = useState<Date | null>(null);
+  const [conflictRevision, setConflictRevision] = useState<number | null>(null);
+  const draftInitializedRef = useRef(false);
+  const revisionRef = useRef(0);
+  const lastSavedFingerprintRef = useRef("");
+  const savePromiseRef = useRef<Promise<unknown> | null>(null);
+  const autosaveTimerRef = useRef<number | null>(null);
+  const conflictRef = useRef(false);
+  const fieldsRef = useRef<ClinicalDraftFields>({
+    diagnosisSummary,
+    dischargeInstructions,
+    warningSigns,
+    noInstructionsReason,
+    prescriptionDisposition,
+    followUpDisposition,
+    followUpNotes,
+    followUpAppointmentId,
+    followUpDueDate,
+    followUpAssignedTo,
+    documentationExceptionReason,
+  });
+  fieldsRef.current = {
+    diagnosisSummary,
+    dischargeInstructions,
+    warningSigns,
+    noInstructionsReason,
+    prescriptionDisposition,
+    followUpDisposition,
+    followUpNotes,
+    followUpAppointmentId,
+    followUpDueDate,
+    followUpAssignedTo,
+    documentationExceptionReason,
+  };
+
+  const applyClinicalFields = useCallback((fields: ClinicalDraftFields) => {
+    setDiagnosisSummary(fields.diagnosisSummary);
+    setDischargeInstructions(fields.dischargeInstructions);
+    setWarningSigns(fields.warningSigns);
+    setNoInstructionsReason(fields.noInstructionsReason);
+    setPrescriptionDisposition(fields.prescriptionDisposition);
+    setFollowUpDisposition(fields.followUpDisposition);
+    setFollowUpNotes(fields.followUpNotes);
+    setFollowUpAppointmentId(fields.followUpAppointmentId);
+    setFollowUpDueDate(fields.followUpDueDate);
+    setFollowUpAssignedTo(fields.followUpAssignedTo);
+    setDocumentationExceptionReason(fields.documentationExceptionReason);
+    fieldsRef.current = fields;
+  }, []);
 
   useEffect(() => {
     if (!data) return;
     const key = closeout ? `${closeout.id}:${closeout.revision}` : "empty";
     if (hydratedRevision.current === key) return;
     const clinicalSource = closeout?.amendmentDraft ?? closeout;
-    setDiagnosisSummary(clinicalSource?.diagnosisSummary ?? "");
-    setDischargeInstructions(clinicalSource?.dischargeInstructions ?? "");
-    setWarningSigns(clinicalSource?.warningSigns ?? "");
-    setNoInstructionsReason(clinicalSource?.noInstructionsReason ?? "");
-    setPrescriptionDisposition(clinicalSource?.prescriptionDisposition ?? "");
-    setFollowUpDisposition(clinicalSource?.followUpDisposition ?? "");
-    setFollowUpNotes(clinicalSource?.followUpNotes ?? "");
-    setFollowUpAppointmentId(clinicalSource?.followUpAppointmentId ?? "");
-    setFollowUpDueDate(clinicalSource?.followUpDueDate ?? "");
-    setFollowUpAssignedTo(clinicalSource?.followUpAssignedTo ?? "");
-    setDocumentationExceptionReason(
-      clinicalSource?.documentationExceptionReason ?? "",
-    );
+    const serverFields: ClinicalDraftFields = {
+      diagnosisSummary: clinicalSource?.diagnosisSummary ?? "",
+      dischargeInstructions: clinicalSource?.dischargeInstructions ?? "",
+      warningSigns: clinicalSource?.warningSigns ?? "",
+      noInstructionsReason: clinicalSource?.noInstructionsReason ?? "",
+      prescriptionDisposition: clinicalSource?.prescriptionDisposition ?? "",
+      followUpDisposition: clinicalSource?.followUpDisposition ?? "",
+      followUpNotes: clinicalSource?.followUpNotes ?? "",
+      followUpAppointmentId: clinicalSource?.followUpAppointmentId ?? "",
+      followUpDueDate: clinicalSource?.followUpDueDate ?? "",
+      followUpAssignedTo: clinicalSource?.followUpAssignedTo ?? "",
+      documentationExceptionReason:
+        clinicalSource?.documentationExceptionReason ?? "",
+    };
+    const serverRevision = closeout?.revision ?? 0;
+    const localDirty =
+      clinicalDraftFingerprint(fieldsRef.current) !==
+      lastSavedFingerprintRef.current;
+    if (
+      draftInitializedRef.current &&
+      serverRevision > revisionRef.current &&
+      (localDirty || savePromiseRef.current)
+    ) {
+      conflictRef.current = true;
+      setConflictRevision(serverRevision);
+      setDraftSaveState("conflict");
+      return;
+    }
+    if (
+      draftInitializedRef.current &&
+      serverRevision <= revisionRef.current
+    ) {
+      hydratedRevision.current = key;
+      return;
+    }
+    applyClinicalFields(serverFields);
+    revisionRef.current = serverRevision;
+    lastSavedFingerprintRef.current = clinicalDraftFingerprint(serverFields);
+    setLastDraftSavedAt(closeout?.updatedAt ?? null);
+    setDraftSaveState(closeout ? "saved" : "idle");
+    conflictRef.current = false;
+    setConflictRevision(null);
+    draftInitializedRef.current = true;
     setChargeDisposition(closeout?.chargeDisposition ?? "");
     setNoChargeReason(closeout?.noChargeReason ?? "");
     setHandoffMethod(closeout?.handoffMethod ?? "");
     hydratedRevision.current = key;
-  }, [closeout, data]);
+  }, [applyClinicalFields, closeout, data]);
 
   useEffect(() => {
     if (!data) return;
@@ -896,19 +1027,32 @@ function VisitCloseout({
     ]);
   };
 
-  const saveDraft = trpc.encounters.saveDraft.useMutation({
-    onSuccess: async () => {
-      toast.success("Clinical closeout draft saved");
-      await refresh();
-    },
-    onError: (error) => toast.error(error.message),
-  });
+  const saveDraft = trpc.encounters.saveDraft.useMutation();
+  const saveDraftRef = useRef(saveDraft.mutateAsync);
+  saveDraftRef.current = saveDraft.mutateAsync;
   const finalizeClinical = trpc.encounters.finalizeClinical.useMutation({
     onSuccess: async () => {
+      conflictRef.current = false;
+      setConflictRevision(null);
+      setDraftSaveState("saved");
       toast.success("Clinical handoff finalized");
       await refresh();
     },
-    onError: (error) => toast.error(error.message),
+    onError: async (error) => {
+      if ((error as { data?: { code?: string } }).data?.code === "CONFLICT") {
+        conflictRef.current = true;
+        try {
+          const latest = await utils.encounters.getCloseout.fetch({
+            appointmentId,
+          });
+          setConflictRevision(latest.closeout?.revision ?? 0);
+        } catch {
+          setConflictRevision(null);
+        }
+        setDraftSaveState("conflict");
+      }
+      toast.error(error.message);
+    },
   });
   const completeVisit = trpc.encounters.completeVisit.useMutation({
     onSuccess: async () => {
@@ -952,21 +1096,224 @@ function VisitCloseout({
   const amendingClinical = Boolean(closeout?.amendmentDraft);
   const clinicalLocked = signedClinical && !amendingClinical;
   const isCompleted = closeout?.status === "completed";
-  const clinicalInput = {
-    appointmentId,
-    expectedRevision: closeout?.revision ?? 0,
-    diagnosisSummary: diagnosisSummary || null,
-    dischargeInstructions: dischargeInstructions || null,
-    warningSigns: warningSigns || null,
-    noInstructionsReason: noInstructionsReason || null,
-    prescriptionDisposition: prescriptionDisposition || null,
-    followUpDisposition: followUpDisposition || null,
-    followUpNotes: followUpNotes || null,
-    followUpAppointmentId: followUpAppointmentId || null,
-    followUpDueDate: followUpDueDate || null,
-    followUpAssignedTo: followUpAssignedTo || null,
-    documentationExceptionReason: documentationExceptionReason || null,
-  } as const;
+  const persistCloseoutDraft = useCallback(async () => {
+    if (!draftInitializedRef.current || clinicalLocked || !canDraftClinical) {
+      return null;
+    }
+    while (true) {
+      if (conflictRef.current) return null;
+      if (!window.navigator.onLine) {
+        setDraftSaveState("unsaved");
+        return null;
+      }
+      if (savePromiseRef.current) {
+        await savePromiseRef.current.catch(() => null);
+        continue;
+      }
+      const fields = { ...fieldsRef.current };
+      const fingerprint = clinicalDraftFingerprint(fields);
+      if (fingerprint === lastSavedFingerprintRef.current) {
+        return { revision: revisionRef.current };
+      }
+      setDraftSaveState("saving");
+      const request = saveDraftRef.current({
+        appointmentId,
+        expectedRevision: revisionRef.current,
+        diagnosisSummary: fields.diagnosisSummary || null,
+        dischargeInstructions: fields.dischargeInstructions || null,
+        warningSigns: fields.warningSigns || null,
+        noInstructionsReason: fields.noInstructionsReason || null,
+        prescriptionDisposition: fields.prescriptionDisposition || null,
+        followUpDisposition: fields.followUpDisposition || null,
+        followUpNotes: fields.followUpNotes || null,
+        followUpAppointmentId: fields.followUpAppointmentId || null,
+        followUpDueDate: fields.followUpDueDate || null,
+        followUpAssignedTo: fields.followUpAssignedTo || null,
+        documentationExceptionReason:
+          fields.documentationExceptionReason || null,
+      });
+      savePromiseRef.current = request;
+      try {
+        const result = await request;
+        revisionRef.current = result.revision;
+        lastSavedFingerprintRef.current = fingerprint;
+        setLastDraftSavedAt(result.updatedAt ?? new Date());
+        setDraftSaveState("saved");
+        await utils.encounters.getCloseout.invalidate({ appointmentId });
+      } catch (error) {
+        const code = (error as { data?: { code?: string } })?.data?.code;
+        if (code === "CONFLICT") {
+          conflictRef.current = true;
+          try {
+            const latest = await utils.encounters.getCloseout.fetch({
+              appointmentId,
+            });
+            setConflictRevision(latest.closeout?.revision ?? 0);
+          } catch {
+            setConflictRevision(null);
+          }
+          setDraftSaveState("conflict");
+          toast.error(
+            "Closeout changed in another session. Your local work is still here.",
+          );
+        } else {
+          setDraftSaveState("error");
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : "Clinical closeout draft could not be saved",
+          );
+        }
+        return null;
+      } finally {
+        if (savePromiseRef.current === request) savePromiseRef.current = null;
+      }
+    }
+  }, [appointmentId, canDraftClinical, clinicalLocked, utils.encounters.getCloseout]);
+
+  const closeoutNeedsLeaveGuard = useCallback(() => {
+    if (!draftInitializedRef.current || clinicalLocked) return false;
+    return (
+      conflictRef.current ||
+      savePromiseRef.current !== null ||
+      clinicalDraftFingerprint(fieldsRef.current) !==
+        lastSavedFingerprintRef.current
+    );
+  }, [clinicalLocked]);
+
+  useEffect(() => {
+    if (!draftInitializedRef.current || clinicalLocked || conflictRef.current) {
+      return;
+    }
+    const fingerprint = clinicalDraftFingerprint(fieldsRef.current);
+    if (fingerprint === lastSavedFingerprintRef.current) return;
+    setDraftSaveState("unsaved");
+    if (!isOnline) return;
+    const timer = window.setTimeout(
+      () => void persistCloseoutDraft(),
+      1_200,
+    );
+    autosaveTimerRef.current = timer;
+    return () => {
+      window.clearTimeout(timer);
+      if (autosaveTimerRef.current === timer) autosaveTimerRef.current = null;
+    };
+  }, [
+    clinicalLocked,
+    diagnosisSummary,
+    dischargeInstructions,
+    documentationExceptionReason,
+    followUpAppointmentId,
+    followUpAssignedTo,
+    followUpDisposition,
+    followUpDueDate,
+    followUpNotes,
+    isOnline,
+    noInstructionsReason,
+    persistCloseoutDraft,
+    prescriptionDisposition,
+    warningSigns,
+  ]);
+
+  useEffect(() => {
+    if (!isOnline || conflictRef.current || !closeoutNeedsLeaveGuard()) return;
+    void persistCloseoutDraft();
+  }, [closeoutNeedsLeaveGuard, isOnline, persistCloseoutDraft]);
+
+  useUnsavedChangesGuard(
+    closeoutNeedsLeaveGuard(),
+    "This closeout has changes that are not saved on the server. Leave and lose those changes?",
+  );
+
+  async function finalizeClinicalHandoff() {
+    if (autosaveTimerRef.current !== null) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    const saved = await persistCloseoutDraft();
+    if (!saved || conflictRef.current || !window.navigator.onLine) return;
+    const fields = { ...fieldsRef.current };
+    finalizeClinical.mutate({
+      appointmentId,
+      expectedRevision: revisionRef.current,
+      diagnosisSummary: fields.diagnosisSummary || null,
+      dischargeInstructions: fields.dischargeInstructions || null,
+      warningSigns: fields.warningSigns || null,
+      noInstructionsReason: fields.noInstructionsReason || null,
+      prescriptionDisposition: fields.prescriptionDisposition || null,
+      followUpDisposition: fields.followUpDisposition || null,
+      followUpNotes: fields.followUpNotes || null,
+      followUpAppointmentId: fields.followUpAppointmentId || null,
+      followUpDueDate: fields.followUpDueDate || null,
+      followUpAssignedTo: fields.followUpAssignedTo || null,
+      documentationExceptionReason:
+        fields.documentationExceptionReason || null,
+    });
+  }
+
+  const fieldsFromPayload = (
+    payload: NonNullable<CloseoutQueryState["data"]>,
+  ): ClinicalDraftFields => {
+    const source = payload.closeout?.amendmentDraft ?? payload.closeout;
+    return {
+      diagnosisSummary: source?.diagnosisSummary ?? "",
+      dischargeInstructions: source?.dischargeInstructions ?? "",
+      warningSigns: source?.warningSigns ?? "",
+      noInstructionsReason: source?.noInstructionsReason ?? "",
+      prescriptionDisposition: source?.prescriptionDisposition ?? "",
+      followUpDisposition: source?.followUpDisposition ?? "",
+      followUpNotes: source?.followUpNotes ?? "",
+      followUpAppointmentId: source?.followUpAppointmentId ?? "",
+      followUpDueDate: source?.followUpDueDate ?? "",
+      followUpAssignedTo: source?.followUpAssignedTo ?? "",
+      documentationExceptionReason:
+        source?.documentationExceptionReason ?? "",
+    };
+  };
+
+  async function useServerCloseoutDraft() {
+    try {
+      const latest = await utils.encounters.getCloseout.fetch({ appointmentId });
+      const serverFields = fieldsFromPayload(latest);
+      applyClinicalFields(serverFields);
+      revisionRef.current = latest.closeout?.revision ?? 0;
+      lastSavedFingerprintRef.current = clinicalDraftFingerprint(serverFields);
+      setLastDraftSavedAt(latest.closeout?.updatedAt ?? null);
+      conflictRef.current = false;
+      setConflictRevision(null);
+      setDraftSaveState(latest.closeout ? "saved" : "idle");
+      await utils.encounters.getCloseout.invalidate({ appointmentId });
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "The server closeout could not be loaded",
+      );
+    }
+  }
+
+  async function overwriteServerCloseoutDraft() {
+    if (!window.navigator.onLine) {
+      toast.error("Reconnect before replacing the server closeout draft");
+      return;
+    }
+    try {
+      const latest = await utils.encounters.getCloseout.fetch({ appointmentId });
+      const serverFields = fieldsFromPayload(latest);
+      revisionRef.current = latest.closeout?.revision ?? conflictRevision ?? 0;
+      lastSavedFingerprintRef.current = clinicalDraftFingerprint(serverFields);
+      conflictRef.current = false;
+      setConflictRevision(null);
+      setDraftSaveState("unsaved");
+      await persistCloseoutDraft();
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "The local closeout could not replace the server draft",
+      );
+    }
+  }
   const clientName = [appointment.clientFirstName, appointment.clientLastName]
     .filter(Boolean)
     .join(" ");
@@ -1208,11 +1555,16 @@ function VisitCloseout({
               followUpAssignees={data.followUpAssignees}
               timeZone={data.practice.timezone}
               isAmendment={amendingClinical}
+              saveState={draftSaveState}
+              lastSavedAt={lastDraftSavedAt}
+              isOnline={isOnline}
               isSaving={saveDraft.isPending || finalizeClinical.isPending}
               isFinalizing={finalizeClinical.isPending}
               canFinalize={canFinalizeClinical}
-              onSave={() => saveDraft.mutate(clinicalInput)}
-              onFinalize={() => finalizeClinical.mutate(clinicalInput)}
+              onSave={() => void persistCloseoutDraft()}
+              onUseServer={() => void useServerCloseoutDraft()}
+              onOverwrite={() => void overwriteServerCloseoutDraft()}
+              onFinalize={() => void finalizeClinicalHandoff()}
             />
           ) : (
             <div className="rounded-md border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
@@ -1614,10 +1966,15 @@ type ClinicalCloseoutFormProps = {
   }>;
   timeZone?: string | null;
   isAmendment: boolean;
+  saveState: "idle" | "unsaved" | "saving" | "saved" | "error" | "conflict";
+  lastSavedAt: Date | null;
+  isOnline: boolean;
   isSaving: boolean;
   isFinalizing: boolean;
   canFinalize: boolean;
   onSave: () => void;
+  onUseServer: () => void;
+  onOverwrite: () => void;
   onFinalize: () => void;
 };
 
@@ -1653,7 +2010,31 @@ function ClinicalCloseoutForm(props: ClinicalCloseoutFormProps) {
       : null,
   ].filter((issue): issue is string => Boolean(issue));
   const canFinalizeNow =
-    props.canFinalize && finalizationIssues.length === 0 && !props.isSaving;
+    props.canFinalize &&
+    props.isOnline &&
+    props.saveState !== "conflict" &&
+    finalizationIssues.length === 0 &&
+    !props.isSaving;
+  const saveStatus = !props.isOnline
+    ? "Offline — changes are only on this device until you reconnect."
+    : props.saveState === "saving"
+      ? "Saving closeout draft to the server..."
+      : props.saveState === "saved"
+        ? `Saved to the server${
+            props.lastSavedAt
+              ? ` at ${props.lastSavedAt.toLocaleTimeString([], {
+                  hour: "numeric",
+                  minute: "2-digit",
+                })}`
+              : ""
+          }.`
+        : props.saveState === "error"
+          ? "Draft save failed. Your changes remain on this device; retry before leaving."
+          : props.saveState === "conflict"
+            ? "Another session changed this closeout. Your local version remains visible."
+            : props.saveState === "unsaved"
+              ? "Changes have not reached the server yet."
+              : "Server draft recovery is ready.";
 
   return (
     <div className="space-y-4 rounded-md border border-border p-4">
@@ -1667,6 +2048,36 @@ function ClinicalCloseoutForm(props: ClinicalCloseoutFormProps) {
             : "Finalized content becomes the durable discharge record and cannot be silently edited."}
         </p>
       </div>
+      <div
+        className={`rounded-md border px-3 py-2 text-xs ${
+          !props.isOnline || props.saveState === "error"
+            ? "border-amber-500/40 bg-amber-500/10 text-amber-950 dark:text-amber-100"
+            : props.saveState === "conflict"
+              ? "border-destructive/40 bg-destructive/10 text-destructive"
+              : "border-border bg-muted/20 text-muted-foreground"
+        }`}
+        role="status"
+        aria-live="polite"
+      >
+        {saveStatus}
+      </div>
+      {props.saveState === "conflict" ? (
+        <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 p-3">
+          <p className="text-sm font-medium">Choose which closeout to keep</p>
+          <p className="text-xs text-muted-foreground">
+            Use the newest server version, or deliberately replace it with the
+            local fields still visible below. Nothing is overwritten silently.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" size="sm" variant="outline" onClick={props.onUseServer}>
+              Use server version
+            </Button>
+            <Button type="button" size="sm" onClick={props.onOverwrite}>
+              Overwrite with local version
+            </Button>
+          </div>
+        </div>
+      ) : null}
       <div>
         <label className="text-sm font-medium" htmlFor="closeout-diagnosis">
           Diagnosis or visit summary{" "}
@@ -1951,7 +2362,9 @@ function ClinicalCloseoutForm(props: ClinicalCloseoutFormProps) {
       <div className="flex flex-wrap justify-end gap-2">
         <Button
           variant="outline"
-          disabled={props.isSaving}
+          disabled={
+            props.isSaving || !props.isOnline || props.saveState === "conflict"
+          }
           onClick={props.onSave}
         >
           <Save className="mr-2 h-4 w-4" />
@@ -2782,10 +3195,14 @@ function ChargeCapture({
   }>;
 }) {
   const utils = trpc.useUtils();
+  const isOnline = useOnlineStatus();
   const [selectedCatalogId, setSelectedCatalogId] = useState("");
   const [quantity, setQuantity] = useState(1);
   const [items, setItems] = useState<ChargeItem[]>([]);
   const [loadedInvoiceId, setLoadedInvoiceId] = useState<string | null>(null);
+  const lastSavedItemsFingerprintRef = useRef(
+    chargeItemsFingerprint([]),
+  );
   const configQuery = trpc.billing.getTaxConfig.useQuery(undefined, {
     staleTime: 5 * 60 * 1000,
   });
@@ -2822,6 +3239,7 @@ function ChargeCapture({
     if (!activeInvoice) {
       if (loadedInvoiceId) {
         setItems([]);
+        lastSavedItemsFingerprintRef.current = chargeItemsFingerprint([]);
         setLoadedInvoiceId(null);
       }
       return;
@@ -2831,8 +3249,7 @@ function ChargeCapture({
       invoiceDetailQuery.data?.id === activeInvoice.id &&
       loadedInvoiceId !== activeInvoice.id
     ) {
-      setItems(
-        invoiceDetailQuery.data.items.map((item) => ({
+      const loadedItems = invoiceDetailQuery.data.items.map((item) => ({
           key: item.id,
           description: item.description,
           quantity: item.quantity,
@@ -2842,8 +3259,10 @@ function ChargeCapture({
           taxable: item.taxable,
           sourcePrescriptionId: item.sourcePrescriptionId ?? undefined,
           sourceDispenseChargeId: item.sourceDispenseChargeId ?? undefined,
-        })),
-      );
+        }));
+      setItems(loadedItems);
+      lastSavedItemsFingerprintRef.current =
+        chargeItemsFingerprint(loadedItems);
       setLoadedInvoiceId(activeInvoice.id);
     }
   }, [
@@ -2947,6 +3366,7 @@ function ChargeCapture({
     items.length < BILLING_INVOICE_MAX_ITEMS;
   const canSubmit =
     Boolean(clientId && patientId) &&
+    isOnline &&
     items.length > 0 &&
     items.every((item) =>
       isBillingInvoiceLineTotalValid(item.unitPrice, item.quantity),
@@ -2962,6 +3382,7 @@ function ChargeCapture({
     onSuccess: () => {
       toast.success("Visit charges saved as a draft invoice");
       setItems([]);
+      lastSavedItemsFingerprintRef.current = chargeItemsFingerprint([]);
       setSelectedCatalogId("");
       setQuantity(1);
       utils.billing.listInvoices.invalidate({
@@ -2976,6 +3397,7 @@ function ChargeCapture({
   const updateInvoiceItems = trpc.billing.updateInvoiceItems.useMutation({
     onSuccess: () => {
       toast.success("Visit invoice charges updated");
+      lastSavedItemsFingerprintRef.current = chargeItemsFingerprint(items);
       utils.billing.listInvoices.invalidate({
         appointmentId,
         limit: 25,
@@ -2989,6 +3411,12 @@ function ChargeCapture({
     onError: (error) => toast.error(error.message),
   });
   const isSaving = createInvoice.isPending || updateInvoiceItems.isPending;
+  const hasUnsavedCharges =
+    chargeItemsFingerprint(items) !== lastSavedItemsFingerprintRef.current;
+  useUnsavedChangesGuard(
+    hasUnsavedCharges,
+    "Visit charges have not been saved on the server. Leave and lose these changes?",
+  );
 
   function addSelectedItem() {
     if (!selected || !canAdd) return;
@@ -3131,6 +3559,15 @@ function ChargeCapture({
           />
         ) : (
           <div className="flex flex-col gap-4">
+            {!isOnline ? (
+              <div
+                className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100"
+                role="status"
+              >
+                Offline — charges stay only in this form. Reconnect before
+                creating or updating the visit invoice.
+              </div>
+            ) : null}
             <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_90px_auto] lg:grid-cols-1 xl:grid-cols-[minmax(0,1fr)_80px_auto]">
               <ServicePicker
                 services={catalog}

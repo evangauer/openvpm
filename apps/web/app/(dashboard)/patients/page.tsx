@@ -83,25 +83,29 @@ export default function PatientsPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="font-heading text-xl font-semibold">Patients</h2>
           <p className="text-sm text-muted-foreground">
             Manage patient records
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center">
           {canReviewDuplicates ? (
             <Button
               variant="outline"
               onClick={() => router.push("/patients/duplicates")}
+              className="h-11 w-full sm:h-10 sm:w-auto"
             >
               <GitMerge className="mr-2 h-4 w-4" />
               Review duplicates
             </Button>
           ) : null}
           {canManagePatients && (
-            <Button onClick={() => router.push("/patients/new")}>
+            <Button
+              onClick={() => router.push("/patients/new")}
+              className="h-11 w-full sm:h-10 sm:w-auto"
+            >
               <Plus className="mr-2 h-4 w-4" />
               New Patient
             </Button>
@@ -109,21 +113,21 @@ export default function PatientsPage() {
         </div>
       </div>
 
-      <div className="mt-6 flex items-center gap-4">
-        <div className="relative flex-1 max-w-sm">
+      <div className="mt-6 flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:gap-4">
+        <div className="relative w-full min-w-0 sm:max-w-sm sm:flex-1">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             placeholder="Search patients..."
             value={search}
             maxLength={PATIENT_SEARCH_MAX_LENGTH}
             onChange={(e) => setSearch(e.target.value)}
-            className="pl-9"
+            className="h-11 pl-9 sm:h-10"
           />
         </div>
         <select
           value={species}
           onChange={(e) => setSpecies(e.target.value as SpeciesFilter)}
-          className="h-10 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-10 sm:w-auto"
         >
           {speciesOptions.map((opt) => (
             <option key={opt.value} value={opt.value}>
@@ -132,7 +136,7 @@ export default function PatientsPage() {
           ))}
         </select>
         {data && (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-sm text-muted-foreground sm:shrink-0">
             {data.total} patient{data.total !== 1 ? "s" : ""}
           </p>
         )}
@@ -145,7 +149,58 @@ export default function PatientsPage() {
       ) : isLoading ? (
         <TableSkeleton rows={8} cols={5} />
       ) : data && data.items.length > 0 ? (
-        <div className="mt-6 overflow-x-auto rounded-lg border border-border">
+        <>
+          <div className="mt-6 space-y-3 sm:hidden">
+            {data.items.map((patient) => {
+              const ownerName =
+                patient.clientFirstName && patient.clientLastName
+                  ? `${patient.clientFirstName} ${patient.clientLastName}`
+                  : "Owner not listed";
+
+              return (
+                <button
+                  key={patient.id}
+                  type="button"
+                  onClick={() => router.push(`/patients/${patient.id}`)}
+                  aria-label={`Open patient ${patient.name}`}
+                  className="min-h-11 w-full min-w-0 overflow-hidden rounded-lg border border-border bg-card p-4 text-left transition-colors hover:bg-muted/30 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                >
+                  <span className="flex min-w-0 items-start justify-between gap-3">
+                    <span className="min-w-0 truncate text-sm font-semibold text-foreground">
+                      <span className="mr-1.5" aria-hidden="true">
+                        {speciesEmoji[patient.species ?? "other"] ?? "🐾"}
+                      </span>
+                      {patient.name}
+                    </span>
+                    <span
+                      className={`inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium ${
+                        patient.status === "active"
+                          ? "bg-emerald-100 text-emerald-700"
+                          : patient.status === "deceased"
+                            ? "bg-gray-100 text-gray-600"
+                            : "bg-amber-100 text-amber-700"
+                      }`}
+                    >
+                      {patient.status ?? "active"}
+                    </span>
+                  </span>
+                  <span className="mt-2 block min-w-0 space-y-1 text-sm text-muted-foreground">
+                    <span className="block truncate">
+                      {[patient.breed, patient.species]
+                        .filter(Boolean)
+                        .join(" · ") || "Breed and species not listed"}
+                    </span>
+                    <span className="block truncate">Owner: {ownerName}</span>
+                    <span className="block text-xs">
+                      Sex: {formatSex(patient.sex)}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="mt-6 hidden overflow-x-auto rounded-lg border border-border sm:block">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border bg-muted/50">
@@ -207,7 +262,8 @@ export default function PatientsPage() {
               ))}
             </tbody>
           </table>
-        </div>
+          </div>
+        </>
       ) : (
         <EmptyState
           className="mt-6"

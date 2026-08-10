@@ -60,13 +60,16 @@ const activeHostedPractice = {
   trialEndsAt: null,
 };
 
-function callerWithDb(db: Record<string, unknown>) {
+function callerWithDb(
+  db: Record<string, unknown>,
+  role: "admin" | "front_desk" | "veterinarian" = "front_desk"
+) {
   const session = {
     user: {
       id: USER_ID,
       email: "frontdesk@example.com",
       name: "Front Desk",
-      role: "front_desk",
+      role,
       practiceId: PRACTICE_ID,
     },
   };
@@ -118,6 +121,19 @@ afterEach(() => {
 });
 
 describe("billing card checkout", () => {
+  it("keeps card checkout limited to billing roles", async () => {
+    const { db, select } = createDb([[baseInvoice]]);
+
+    await expect(
+      callerWithDb(db, "veterinarian").createCardPaymentCheckout({
+        invoiceId: INVOICE_ID,
+      })
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    expect(select).not.toHaveBeenCalled();
+    expect(mocks.createCheckoutSession).not.toHaveBeenCalled();
+  });
+
   it("reports whether card payment checkout is configured", async () => {
     const { db } = createDb([]);
 
@@ -229,6 +245,32 @@ describe("billing card checkout", () => {
         currency: "usd",
         successUrl: `https://app.example.com/billing?payment=success&invoice=${INVOICE_ID}`,
         cancelUrl: `https://app.example.com/billing?payment=cancelled&invoice=${INVOICE_ID}`,
+      })
+    );
+  });
+
+  it("returns appointment-linked checkout to the same visit with payment status", async () => {
+    const visitInvoice = { ...baseInvoice, appointmentId: APPOINTMENT_ID };
+    const { db } = createDb([
+      [visitInvoice],
+      [{ id: APPOINTMENT_ID }],
+      [visitInvoice],
+      [{ status: "completed" }],
+      [],
+    ]);
+
+    await expect(
+      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID })
+    ).resolves.toEqual({ url: "https://stripe.example/checkout" });
+
+    expect(mocks.createCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        successUrl:
+          `https://app.example.com/encounters/${APPOINTMENT_ID}` +
+          `?payment=success&invoice=${INVOICE_ID}#charge-capture`,
+        cancelUrl:
+          `https://app.example.com/encounters/${APPOINTMENT_ID}` +
+          `?payment=cancelled&invoice=${INVOICE_ID}#charge-capture`,
       })
     );
   });

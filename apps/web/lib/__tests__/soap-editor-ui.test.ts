@@ -98,6 +98,43 @@ describe("SOAP note editor UX", () => {
     expect(source).toContain("normalizeSoapSection(sections.subjective)");
   });
 
+  it("recovers the revision-guarded SOAP draft after reconnect without browser persistence", () => {
+    const source = readFileSync(
+      "app/(dashboard)/records/new-soap/[patientId]/page.tsx",
+      "utf8"
+    );
+    const onlineHook = readFileSync("lib/use-online-status.ts", "utf8");
+
+    expect(source).toContain(
+      'import { useOnlineStatus } from "@/lib/use-online-status"',
+    );
+    expect(source).toContain("const isOnline = useOnlineStatus()");
+    expect(source).toContain('| "offline"');
+    expect(source).toContain('setSaveState("offline")');
+    expect(source).toContain("Offline — autosave is paused");
+    expect(source).toContain(
+      "OpenVPM will retry the same revision-checked draft automatically",
+    );
+    expect(source).toContain("if (wasOnline) return;");
+    expect(source).toContain("void persistDraft()");
+    expect(source).toContain("noteId: draftIdRef.current ?? undefined");
+    expect(source).toContain("expectedRevision: revisionRef.current");
+    expect(source).toContain("conflictRef.current");
+    expect(source).toContain("soapEditorNeedsLeaveGuard({");
+    expect(source).toContain('window.addEventListener("beforeunload"');
+
+    for (const forbiddenStorage of [
+      "localStorage",
+      "sessionStorage",
+      "indexedDB",
+      "caches.open",
+      "serviceWorker",
+    ]) {
+      expect(source).not.toContain(forbiddenStorage);
+      expect(onlineHook).not.toContain(forbiddenStorage);
+    }
+  });
+
   it("offers structured SOAP templates without clobbering drafts by default", () => {
     const source = readFileSync(
       "app/(dashboard)/records/new-soap/[patientId]/page.tsx",
@@ -219,7 +256,7 @@ describe("SOAP note editor UX", () => {
     expect(source).toContain("View signed patient chart");
     expect(source).toContain("if (finalizedElsewhereRef.current) return;");
     expect(source).toContain(
-      "finalizedElsewhere ||\n      !draftInitialized",
+      "finalizedElsewhere || !draftInitialized || conflictRef.current",
     );
     const alreadyFinalized = source.slice(
       source.indexOf('if (result.outcome === "already_finalized")'),
