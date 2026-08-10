@@ -79,6 +79,10 @@ const aInvoice = randomUUID();
 const bInvoice = randomUUID();
 const aUser = randomUUID();
 const bUser = randomUUID();
+const aLocation = randomUUID();
+const bLocation = randomUUID();
+const aStaffSchedule = randomUUID();
+const bStaffSchedule = randomUUID();
 const aMigrationRun = randomUUID();
 const bMigrationRun = randomUUID();
 const aAppointment = randomUUID();
@@ -197,6 +201,14 @@ try {
   await owner`insert into users (id, email, password_hash, name, role, practice_id) values
     (${aUser}, ${`rls-${aUser}@example.com`}, 'not-a-real-hash', 'RLS Admin A', 'admin', ${aId}),
     (${bUser}, ${`rls-${bUser}@example.com`}, 'not-a-real-hash', 'RLS Admin B', 'admin', ${bId})`;
+  await owner`insert into locations (id, practice_id, name, is_primary) values
+    (${aLocation}, ${aId}, 'RLS Location A', true),
+    (${bLocation}, ${bId}, 'RLS Location B', true)`;
+  await owner`insert into staff_schedules
+    (id, practice_id, user_id, location_id, day_of_week, start_time, end_time)
+    values
+    (${aStaffSchedule}, ${aId}, ${aUser}, ${aLocation}, 1, '08:00', '17:00'),
+    (${bStaffSchedule}, ${bId}, ${bUser}, ${bLocation}, 1, '08:00', '17:00')`;
   await owner`insert into auth_email_attempts
     (id, resolved_at, practice_id, user_id, source, idempotency_key,
      provider_message_id, outcome)
@@ -423,12 +435,12 @@ try {
         values (${aSoapReplacementEvidence}, ${aId}, ${aSoapCorrection},
           ${aSoapSource}, ${aSoapReplacement}, ${aUser}, 'RLS Admin A',
           ${randomUUID()}, ${soapReplacementPayloadHash({
-              patientId: aPatient,
-              sourceNoteId: aSoapSource,
-              actorId: aUser,
-              reason: aSoapCorrectionReason,
-              subjective: "Replacement SOAP",
-            })})`;
+            patientId: aPatient,
+            sourceNoteId: aSoapSource,
+            actorId: aUser,
+            reason: aSoapCorrectionReason,
+            subjective: "Replacement SOAP",
+          })})`;
     });
     correctedReplacementTransactionAllowed = true;
   } catch {
@@ -488,12 +500,12 @@ try {
       values (${bSoapReplacementEvidence}, ${bId}, ${bSoapCorrection},
         ${bSoapSource}, ${bSoapReplacement}, ${bUser}, 'RLS Admin B',
         ${randomUUID()}, ${soapReplacementPayloadHash({
-            patientId: bPatient,
-            sourceNoteId: bSoapSource,
-            actorId: bUser,
-            reason: bSoapCorrectionReason,
-            subjective: "Replacement SOAP B",
-          })})`;
+          patientId: bPatient,
+          sourceNoteId: bSoapSource,
+          actorId: bUser,
+          reason: bSoapCorrectionReason,
+          subjective: "Replacement SOAP B",
+        })})`;
   });
 
   await owner`insert into soap_notes
@@ -2044,6 +2056,98 @@ try {
   }
   check("cross-tenant migration run INSERT is blocked", migrationInsertBlocked);
 
+  const visibleStaffSchedules = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id from staff_schedules where id in (${aStaffSchedule}, ${bStaffSchedule})`;
+  });
+  check(
+    "tenant A sees only A's provider hours",
+    visibleStaffSchedules.length === 1 &&
+      visibleStaffSchedules[0]!.id === aStaffSchedule,
+  );
+
+  let crossTenantScheduleUserBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into staff_schedules
+        (practice_id, user_id, location_id, day_of_week, start_time, end_time)
+        values (${aId}, ${bUser}, ${aLocation}, 2, '08:00', '17:00')`;
+    });
+  } catch {
+    crossTenantScheduleUserBlocked = true;
+  }
+  check(
+    "provider hours composite FK rejects a cross-tenant user",
+    crossTenantScheduleUserBlocked,
+  );
+
+  let crossTenantScheduleLocationBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into staff_schedules
+        (practice_id, user_id, location_id, day_of_week, start_time, end_time)
+        values (${aId}, ${aUser}, ${bLocation}, 2, '08:00', '17:00')`;
+    });
+  } catch {
+    crossTenantScheduleLocationBlocked = true;
+  }
+  check(
+    "provider hours composite FK rejects a cross-tenant location",
+    crossTenantScheduleLocationBlocked,
+  );
+
+  let duplicateNullLocationWindowBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into staff_schedules
+        (practice_id, user_id, location_id, day_of_week, start_time, end_time)
+        values
+        (${aId}, ${aUser}, null, 3, '09:00', '12:00'),
+        (${aId}, ${aUser}, null, 3, '09:00', '12:00')`;
+    });
+  } catch {
+    duplicateNullLocationWindowBlocked = true;
+  }
+  check(
+    "provider hours unique index rejects duplicate active null-location windows",
+    duplicateNullLocationWindowBlocked,
+  );
+
+  let invalidScheduleDayBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into staff_schedules
+        (practice_id, user_id, location_id, day_of_week, start_time, end_time)
+        values (${aId}, ${aUser}, ${aLocation}, 7, '09:00', '12:00')`;
+    });
+  } catch {
+    invalidScheduleDayBlocked = true;
+  }
+  check(
+    "provider hours check rejects an invalid weekday",
+    invalidScheduleDayBlocked,
+  );
+
+  let invalidScheduleRangeBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into staff_schedules
+        (practice_id, user_id, location_id, day_of_week, start_time, end_time)
+        values (${aId}, ${aUser}, ${aLocation}, 3, '12:00', '09:00')`;
+    });
+  } catch {
+    invalidScheduleRangeBlocked = true;
+  }
+  check(
+    "provider hours check rejects an inverted time range",
+    invalidScheduleRangeBlocked,
+  );
+
   // Child tables without practice_id isolate via the parent join policy.
   // invoice_adjustments is the representative (regression: it was missing
   // from enable-rls.sql entirely, leaving it readable across tenants).
@@ -2083,6 +2187,12 @@ try {
   check(
     "no tenant context hides migration runs",
     noContextMigrationRows.length === 0,
+  );
+  const noContextStaffSchedules =
+    await app`select id from staff_schedules where id in (${aStaffSchedule}, ${bStaffSchedule})`;
+  check(
+    "no tenant context hides provider hours",
+    noContextStaffSchedules.length === 0,
   );
 
   // Product analytics is system-only even with a valid tenant context. The
@@ -2470,6 +2580,8 @@ try {
     await cleanup`delete from products where id in (${aProduct}, ${bProduct})`;
     await cleanup`delete from patients where id in (${aPatient}, ${bPatient}, ${aMergeTargetPatient}, ${bMergeTargetPatient}, ${aLineageCandidatePatient})`;
     await cleanup`delete from clients where practice_id in (${aId}, ${bId})`;
+    await cleanup`delete from staff_schedules where id in (${aStaffSchedule}, ${bStaffSchedule})`;
+    await cleanup`delete from locations where id in (${aLocation}, ${bLocation})`;
     await cleanup`delete from users where id in (${aUser}, ${bUser})`;
     await cleanup`delete from practices where id in (${aId}, ${bId})`;
   });

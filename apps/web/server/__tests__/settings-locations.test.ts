@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const SETTINGS_SOURCE = readFileSync(
   new URL("../routers/settings.ts", import.meta.url),
-  "utf8"
+  "utf8",
 );
 
 vi.mock("@/lib/billing/subscription-sync", () => ({
@@ -17,9 +17,8 @@ vi.mock("@/lib/billing/subscription-sync", () => ({
 }));
 
 const { settingsRouter } = await import("../routers/settings");
-const { syncPracticeSubscriptionQuantities } = await import(
-  "@/lib/billing/subscription-sync"
-);
+const { syncPracticeSubscriptionQuantities } =
+  await import("@/lib/billing/subscription-sync");
 
 const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const USER_ID = "00000000-0000-0000-0000-000000000001";
@@ -48,7 +47,7 @@ function thenableRows(result: unknown[]) {
     limit: vi.fn(async () => result),
     then: (
       resolve: (value: unknown[]) => unknown,
-      reject?: (error: unknown) => unknown
+      reject?: (error: unknown) => unknown,
     ) => Promise.resolve(result).then(resolve, reject),
   };
 }
@@ -59,7 +58,9 @@ function createDb(opts?: {
   updateReturns?: unknown[][];
 }) {
   const selectResults = [...(opts?.selectResults ?? [])];
+  const operationOrder: string[] = [];
   const select = vi.fn(() => {
+    operationOrder.push("select");
     const result = selectResults.shift() ?? [];
     const afterWhere = thenableRows(result);
     const builder = {
@@ -91,13 +92,15 @@ function createDb(opts?: {
 
   const db: Record<string, unknown> = {
     transaction: async (fn: (tx: unknown) => unknown) => fn(db),
-    execute: vi.fn(async () => undefined),
+    execute: vi.fn(async () => {
+      operationOrder.push("roster-lock");
+    }),
     select,
     insert,
     update,
   };
 
-  return { db, insertValues, updateSet };
+  return { db, insertValues, operationOrder, updateSet };
 }
 
 beforeEach(() => {
@@ -111,35 +114,35 @@ describe("settings location workflows", () => {
     await expect(
       callerWithDb(db).createLocation({
         name: "A".repeat(256),
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).createLocation({
         name: "Downtown Clinic",
         address: "A".repeat(501),
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).createLocation({
         name: "Downtown Clinic",
         phone: "1".repeat(33),
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).updateLocation({
         id: LOCATION_ID,
         name: "A".repeat(256),
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).updateLocation({
         id: LOCATION_ID,
         address: "A".repeat(501),
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(insertValues).not.toHaveBeenCalled();
@@ -158,7 +161,7 @@ describe("settings location workflows", () => {
         address: "100 Main St",
         phone: "555-0100",
         isPrimary: true,
-      })
+      }),
     ).resolves.toMatchObject({ id: LOCATION_ID, name: "Downtown Clinic" });
 
     expect(updateSet).toHaveBeenCalledWith({ isPrimary: false });
@@ -189,7 +192,7 @@ describe("settings location workflows", () => {
       callerWithDb(db).createLocation({
         name: "Downtown Clinic",
         isPrimary: true,
-      })
+      }),
     ).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
@@ -202,7 +205,7 @@ describe("settings location workflows", () => {
 
   it("requires an active practice for location reads, writes, and delete dependencies", () => {
     const locationBlock = SETTINGS_SOURCE.match(
-      /\/\/ ── Locations[\s\S]+?\/\/ ── Onboarding/
+      /\/\/ ── Locations[\s\S]+?\/\/ ── Onboarding/,
     )?.[0];
 
     expect(SETTINGS_SOURCE).toContain("function activePracticePredicate");
@@ -210,18 +213,20 @@ describe("settings location workflows", () => {
     expect(locationBlock).toContain("await assertActivePractice(ctx)");
     expect(
       locationBlock?.match(/activePracticePredicate\(ctx\.practiceId\)/g)
-        ?.length ?? 0
+        ?.length ?? 0,
     ).toBeGreaterThanOrEqual(10);
     expect(locationBlock).toMatch(
-      /eq\(locations\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(locations\.deletedAt\)/
+      /eq\(locations\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(locations\.deletedAt\)/,
     );
     expect(locationBlock).toMatch(
-      /eq\(rooms\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(rooms\.deletedAt\)/
+      /eq\(rooms\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(rooms\.deletedAt\)/,
     );
     expect(locationBlock).toMatch(
-      /eq\(products\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(products\.deletedAt\)/
+      /eq\(products\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(products\.deletedAt\)/,
     );
-    expect(locationBlock).toContain("eq(locationMessaging.practiceId, ctx.practiceId)");
+    expect(locationBlock).toContain(
+      "eq(locationMessaging.practiceId, ctx.practiceId)",
+    );
     expect(locationBlock).toContain("activePracticePredicate(ctx.practiceId)");
   });
 
@@ -231,7 +236,7 @@ describe("settings location workflows", () => {
     });
 
     await expect(
-      callerWithDb(db).deleteLocation({ id: LOCATION_ID })
+      callerWithDb(db).deleteLocation({ id: LOCATION_ID }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -239,7 +244,7 @@ describe("settings location workflows", () => {
   });
 
   it("retires a primary location, disables its messaging setup, promotes another, and syncs billing", async () => {
-    const { db, updateSet } = createDb({
+    const { db, operationOrder, updateSet } = createDb({
       selectResults: [
         [
           { id: LOCATION_ID, isPrimary: true },
@@ -254,9 +259,11 @@ describe("settings location workflows", () => {
     });
 
     await expect(
-      callerWithDb(db).deleteLocation({ id: LOCATION_ID })
+      callerWithDb(db).deleteLocation({ id: LOCATION_ID }),
     ).resolves.toEqual({ success: true });
 
+    expect(operationOrder[0]).toBe("roster-lock");
+    expect(operationOrder.indexOf("select")).toBeGreaterThan(0);
     expect(updateSet).toHaveBeenCalledWith({
       deletedAt: expect.any(Date),
       isPrimary: false,
@@ -281,7 +288,7 @@ describe("settings location workflows", () => {
     });
 
     await expect(
-      callerWithDb(db).deleteLocation({ id: LOCATION_ID })
+      callerWithDb(db).deleteLocation({ id: LOCATION_ID }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -301,7 +308,7 @@ describe("settings location workflows", () => {
     });
 
     await expect(
-      callerWithDb(db).deleteLocation({ id: LOCATION_ID })
+      callerWithDb(db).deleteLocation({ id: LOCATION_ID }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -322,7 +329,7 @@ describe("settings location workflows", () => {
     });
 
     await expect(
-      callerWithDb(db).deleteLocation({ id: LOCATION_ID })
+      callerWithDb(db).deleteLocation({ id: LOCATION_ID }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -344,7 +351,7 @@ describe("settings location workflows", () => {
     });
 
     await expect(
-      callerWithDb(db).deleteLocation({ id: LOCATION_ID })
+      callerWithDb(db).deleteLocation({ id: LOCATION_ID }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -367,7 +374,7 @@ describe("settings location workflows", () => {
     });
 
     await expect(
-      callerWithDb(db).deleteLocation({ id: LOCATION_ID })
+      callerWithDb(db).deleteLocation({ id: LOCATION_ID }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(updateSet).toHaveBeenCalledWith({
@@ -394,7 +401,7 @@ describe("settings location workflows", () => {
     });
 
     await expect(
-      callerWithDb(db).deleteLocation({ id: LOCATION_ID })
+      callerWithDb(db).deleteLocation({ id: LOCATION_ID }),
     ).rejects.toMatchObject({ code: "CONFLICT" });
 
     expect(updateSet).toHaveBeenCalledWith({ enabled: false });
@@ -408,18 +415,32 @@ describe("settings location workflows", () => {
     });
 
     await expect(
-      callerWithDb(db).setPrimaryLocation({ id: LOCATION_ID })
+      callerWithDb(db).setPrimaryLocation({ id: LOCATION_ID }),
     ).resolves.toMatchObject({ id: LOCATION_ID, isPrimary: true });
 
     expect(updateSet).toHaveBeenCalledWith({ isPrimary: true });
     expect(updateSet).toHaveBeenCalledWith({ isPrimary: false });
   });
 
+  it("refuses to strand provider hours by changing the primary location", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [[{ id: SCHEDULE_ID }]],
+    });
+
+    await expect(
+      callerWithDb(db).setPrimaryLocation({ id: LOCATION_ID }),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("Clear provider working hours"),
+    });
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
   it("rejects stale primary-location targets before clearing other primaries", async () => {
     const { db, updateSet } = createDb({ updateReturns: [[]] });
 
     await expect(
-      callerWithDb(db).setPrimaryLocation({ id: LOCATION_ID })
+      callerWithDb(db).setPrimaryLocation({ id: LOCATION_ID }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(updateSet).toHaveBeenCalledWith({ isPrimary: true });

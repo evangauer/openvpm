@@ -56,8 +56,7 @@ export function ActivationChecklist() {
   const { openJourney } = useOnboardingJourney();
   const [hidden, setHidden] = useState(false);
   const { data: session, status } = useSession();
-  const isAdmin =
-    status === "authenticated" && session?.user?.role === "admin";
+  const isAdmin = status === "authenticated" && session?.user?.role === "admin";
 
   // No long staleTime: each dashboard mount re-checks, so operational progress
   // such as publishing booking or completing a visit shows as done immediately.
@@ -74,7 +73,7 @@ export function ActivationChecklist() {
   const booking = trpc.booking.getMyPage.useQuery(undefined, opts);
   const clientPayments = trpc.billing.paymentAccountStatus.useQuery(
     undefined,
-    opts
+    opts,
   );
   const dismiss = trpc.settings.dismissSetup.useMutation();
   const utils = trpc.useUtils();
@@ -170,7 +169,7 @@ export function ActivationChecklist() {
     ?.brandColor;
   const practiceName = practiceData.name ?? "your practice";
   const pathway = getOnboardingIntentOption(
-    checklistState.onboardingIntent ?? DEFAULT_ONBOARDING_INTENT
+    checklistState.onboardingIntent ?? DEFAULT_ONBOARDING_INTENT,
   );
 
   const explorationMilestones: Milestone[] = [
@@ -288,21 +287,22 @@ export function ActivationChecklist() {
       : pathway.value === "self_host"
         ? [
             explorationMilestones.find(
-              (milestone) => milestone.key === "brand"
+              (milestone) => milestone.key === "brand",
             )!,
             goLiveMilestones.find((milestone) => milestone.key === "data")!,
             goLiveMilestones.find((milestone) => milestone.key === "team")!,
             goLiveMilestones.find(
-              (milestone) => milestone.key === "firstAppointment"
+              (milestone) => milestone.key === "firstAppointment",
             )!,
             goLiveMilestones.find(
-              (milestone) => milestone.key === "firstVisit"
+              (milestone) => milestone.key === "firstVisit",
             )!,
           ]
         : goLiveMilestones;
   const firstWinBase =
-    standardMilestones.find((milestone) => milestone.key === pathway.firstWinTarget) ??
-    standardMilestones[0]!;
+    standardMilestones.find(
+      (milestone) => milestone.key === pathway.firstWinTarget,
+    ) ?? standardMilestones[0]!;
   const firstWin: Milestone = {
     ...firstWinBase,
     label: pathway.firstWin,
@@ -427,7 +427,7 @@ export function ActivationChecklist() {
               <div
                 className={cn(
                   "group flex items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors",
-                  m.done ? "opacity-60" : "hover:bg-zinc-800"
+                  m.done ? "opacity-60" : "hover:bg-zinc-800",
                 )}
                 title={m.hint}
               >
@@ -436,7 +436,7 @@ export function ActivationChecklist() {
                     "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition-colors",
                     m.done
                       ? "border-emerald-500 bg-emerald-500 text-zinc-950"
-                      : "border-zinc-600 text-transparent group-hover:border-emerald-400"
+                      : "border-zinc-600 text-transparent group-hover:border-emerald-400",
                   )}
                 >
                   <Check className="h-3 w-3" />
@@ -444,7 +444,7 @@ export function ActivationChecklist() {
                 <p
                   className={cn(
                     "min-w-0 flex-1 truncate text-[13px] font-medium",
-                    m.done && "text-zinc-400 line-through"
+                    m.done && "text-zinc-400 line-through",
                   )}
                 >
                   {m.label}
@@ -526,7 +526,9 @@ function ActivationChecklistError({
       <div className="flex items-start gap-3 rounded-2xl border border-zinc-800 bg-zinc-900 p-4 text-zinc-50 shadow-2xl shadow-black/30">
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold">Setup checklist could not load</p>
+          <p className="text-sm font-semibold">
+            Setup checklist could not load
+          </p>
           <p className="mt-1 text-xs text-zinc-400">{message}</p>
           <Button
             variant="outline"

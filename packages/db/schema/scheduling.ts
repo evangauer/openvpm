@@ -8,10 +8,12 @@ import {
   integer,
   date,
   time,
+  check,
+  foreignKey,
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import { baseColumns } from "./common";
 import { practices } from "./practices";
 import { locations } from "./practices";
@@ -65,9 +67,9 @@ export const appointmentTypes = pgTable(
     practiceNameIdx: index("appointment_types_practice_name_idx").on(
       table.practiceId,
       table.deletedAt,
-      table.name
+      table.name,
     ),
-  })
+  }),
 );
 
 export const rooms = pgTable(
@@ -85,14 +87,14 @@ export const rooms = pgTable(
     practiceNameIdx: index("rooms_practice_name_idx").on(
       table.practiceId,
       table.deletedAt,
-      table.name
+      table.name,
     ),
     locationIdx: index("rooms_location_idx").on(
       table.practiceId,
       table.locationId,
-      table.deletedAt
+      table.deletedAt,
     ),
-  })
+  }),
 );
 
 export const recurringSeries = pgTable("recurring_series", {
@@ -122,21 +124,23 @@ export const appointments = pgTable(
     status: appointmentStatusEnum("status").notNull().default("scheduled"),
     notes: text("notes"),
     recurringSeriesId: uuid("recurring_series_id").references(
-      () => recurringSeries.id
+      () => recurringSeries.id,
     ),
   },
   (table) => ({
     practiceIdUq: uniqueIndex("appointments_practice_id_uq").on(
       table.practiceId,
-      table.id
+      table.id,
     ),
-    practicePatientIdUq: uniqueIndex(
-      "appointments_practice_patient_id_uq"
-    ).on(table.practiceId, table.id, table.patientId),
+    practicePatientIdUq: uniqueIndex("appointments_practice_patient_id_uq").on(
+      table.practiceId,
+      table.id,
+      table.patientId,
+    ),
     practiceTimeIdx: index("appointments_practice_time_idx").on(
       table.practiceId,
       table.startTime,
-      table.doctorId
+      table.doctorId,
     ),
     conversionCreatedIdx: index("appointments_conversion_created_idx").on(
       table.practiceId,
@@ -144,38 +148,41 @@ export const appointments = pgTable(
       table.id,
     ),
     patientIdx: index("appointments_patient_idx").on(table.patientId),
-    doctorIdx: index("appointments_doctor_idx").on(table.doctorId, table.startTime),
+    doctorIdx: index("appointments_doctor_idx").on(
+      table.doctorId,
+      table.startTime,
+    ),
     clientStatusIdx: index("appointments_client_status_idx").on(
       table.practiceId,
       table.clientId,
       table.status,
-      table.deletedAt
+      table.deletedAt,
     ),
     patientStatusIdx: index("appointments_patient_status_idx").on(
       table.practiceId,
       table.patientId,
       table.status,
-      table.deletedAt
+      table.deletedAt,
     ),
     doctorStatusIdx: index("appointments_doctor_status_idx").on(
       table.practiceId,
       table.doctorId,
       table.status,
-      table.deletedAt
+      table.deletedAt,
     ),
     typeStatusIdx: index("appointments_type_status_idx").on(
       table.practiceId,
       table.typeId,
       table.status,
-      table.deletedAt
+      table.deletedAt,
     ),
     roomStatusIdx: index("appointments_room_status_idx").on(
       table.practiceId,
       table.roomId,
       table.status,
-      table.deletedAt
+      table.deletedAt,
     ),
-  })
+  }),
 );
 
 export const appointmentWaitlist = pgTable(
@@ -198,20 +205,23 @@ export const appointmentWaitlist = pgTable(
     createdBy: uuid("created_by").references(() => users.id),
   },
   (table) => ({
-    practiceIdx: index("waitlist_practice_idx").on(table.practiceId, table.status),
+    practiceIdx: index("waitlist_practice_idx").on(
+      table.practiceId,
+      table.status,
+    ),
     clientStatusIdx: index("waitlist_client_status_idx").on(
       table.practiceId,
       table.clientId,
       table.status,
-      table.deletedAt
+      table.deletedAt,
     ),
     patientStatusIdx: index("waitlist_patient_status_idx").on(
       table.practiceId,
       table.patientId,
       table.status,
-      table.deletedAt
+      table.deletedAt,
     ),
-  })
+  }),
 );
 
 export const staffSchedules = pgTable(
@@ -230,17 +240,61 @@ export const staffSchedules = pgTable(
     locationId: uuid("location_id").references(() => locations.id),
   },
   (table) => ({
+    activeDayIdx: index("staff_schedules_active_day_idx")
+      .on(table.practiceId, table.locationId, table.dayOfWeek, table.userId)
+      .where(sql`${table.deletedAt} is null`),
+    activeWindowUq: uniqueIndex("staff_schedules_active_window_uq")
+      .on(
+        table.practiceId,
+        table.userId,
+        table.locationId,
+        table.dayOfWeek,
+        table.startTime,
+        table.endTime,
+      )
+      .where(
+        sql`${table.deletedAt} is null and ${table.locationId} is not null`,
+      ),
+    activeNullLocationWindowUq: uniqueIndex(
+      "staff_schedules_active_null_location_window_uq",
+    )
+      .on(
+        table.practiceId,
+        table.userId,
+        table.dayOfWeek,
+        table.startTime,
+        table.endTime,
+      )
+      .where(sql`${table.deletedAt} is null and ${table.locationId} is null`),
     locationIdx: index("staff_schedules_location_idx").on(
       table.practiceId,
       table.locationId,
-      table.deletedAt
+      table.deletedAt,
     ),
     userIdx: index("staff_schedules_user_idx").on(
       table.practiceId,
       table.userId,
-      table.deletedAt
+      table.deletedAt,
     ),
-  })
+    userTenantFk: foreignKey({
+      columns: [table.practiceId, table.userId],
+      foreignColumns: [users.practiceId, users.id],
+      name: "staff_schedules_user_tenant_fk",
+    }),
+    locationTenantFk: foreignKey({
+      columns: [table.practiceId, table.locationId],
+      foreignColumns: [locations.practiceId, locations.id],
+      name: "staff_schedules_location_tenant_fk",
+    }),
+    dayOfWeekCheck: check(
+      "staff_schedules_day_of_week_check",
+      sql`${table.dayOfWeek} between 0 and 6`,
+    ),
+    timeRangeCheck: check(
+      "staff_schedules_time_range_check",
+      sql`${table.startTime} < ${table.endTime}`,
+    ),
+  }),
 );
 
 // Relations
@@ -251,7 +305,7 @@ export const appointmentTypesRelations = relations(
       fields: [appointmentTypes.practiceId],
       references: [practices.id],
     }),
-  })
+  }),
 );
 
 export const roomsRelations = relations(rooms, ({ one }) => ({
@@ -296,23 +350,20 @@ export const appointmentsRelations = relations(appointments, ({ one }) => ({
   }),
 }));
 
-export const staffSchedulesRelations = relations(
-  staffSchedules,
-  ({ one }) => ({
-    practice: one(practices, {
-      fields: [staffSchedules.practiceId],
-      references: [practices.id],
-    }),
-    user: one(users, {
-      fields: [staffSchedules.userId],
-      references: [users.id],
-    }),
-    location: one(locations, {
-      fields: [staffSchedules.locationId],
-      references: [locations.id],
-    }),
-  })
-);
+export const staffSchedulesRelations = relations(staffSchedules, ({ one }) => ({
+  practice: one(practices, {
+    fields: [staffSchedules.practiceId],
+    references: [practices.id],
+  }),
+  user: one(users, {
+    fields: [staffSchedules.userId],
+    references: [users.id],
+  }),
+  location: one(locations, {
+    fields: [staffSchedules.locationId],
+    references: [locations.id],
+  }),
+}));
 
 export const appointmentWaitlistRelations = relations(
   appointmentWaitlist,
@@ -333,5 +384,5 @@ export const appointmentWaitlistRelations = relations(
       fields: [appointmentWaitlist.typeId],
       references: [appointmentTypes.id],
     }),
-  })
+  }),
 );

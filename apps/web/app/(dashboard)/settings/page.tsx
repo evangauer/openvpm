@@ -43,6 +43,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { AccentColorPicker } from "@/components/brand/accent-color-picker";
 import { MessagingTab } from "@/components/settings/messaging-tab";
 import { BookingTab } from "@/components/settings/booking-tab";
+import { ProviderHours } from "@/components/settings/provider-hours";
 import { ServicesTab } from "@/components/settings/services-tab";
 import { useWelcome } from "@/components/welcome/welcome-provider";
 import { cn, isValidEmail } from "@/lib/utils";
@@ -2421,6 +2422,7 @@ function StaffTab() {
           </tbody>
         </table>
       </div>
+      <ProviderHours />
     </div>
   );
 }
@@ -4859,8 +4861,7 @@ function TemplatesTab() {
   const hasProductRows = addItems.some((item) => item.itemType === "product");
   const hasUnlinkedProductRows = addItems.some(
     (item) =>
-      item.itemType === "product" &&
-      !hasActiveTemplateProductLink(item.itemId),
+      item.itemType === "product" && !hasActiveTemplateProductLink(item.itemId),
   );
   const hasStaleProductRows = addItems.some(
     (item) =>

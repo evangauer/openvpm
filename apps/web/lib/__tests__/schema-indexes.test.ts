@@ -253,7 +253,13 @@ describe("hot table indexes", () => {
     [
       "staff_schedules",
       staffSchedules,
-      ["staff_schedules_location_idx", "staff_schedules_user_idx"],
+      [
+        "staff_schedules_active_day_idx",
+        "staff_schedules_active_window_uq",
+        "staff_schedules_active_null_location_window_uq",
+        "staff_schedules_location_idx",
+        "staff_schedules_user_idx",
+      ],
     ],
     [
       "products",

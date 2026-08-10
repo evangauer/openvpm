@@ -1024,6 +1024,124 @@ describe("restorePracticeData", () => {
     });
   });
 
+  it("rejects unsafe provider hours before a backup restore writes", () => {
+    const providerHoursBackup = () => ({
+      practiceId: "practice-1",
+      ...emptyBackup(),
+      users: [
+        {
+          id: "provider-1",
+          practiceId: "practice-1",
+          role: "admin",
+          isVeterinarian: true,
+          deletedAt: null,
+        },
+      ],
+      locations: [
+        {
+          id: "location-1",
+          practiceId: "practice-1",
+          deletedAt: null,
+        },
+      ],
+      staffSchedules: [
+        {
+          id: "hours-1",
+          practiceId: "practice-1",
+          userId: "provider-1",
+          locationId: "location-1",
+          dayOfWeek: 1,
+          startTime: "08:00:00",
+          endTime: "12:00:00",
+        },
+        {
+          id: "hours-2",
+          practiceId: "practice-1",
+          userId: "provider-1",
+          locationId: "location-1",
+          dayOfWeek: 1,
+          startTime: "12:00:00",
+          endTime: "17:00:00",
+        },
+      ],
+    });
+
+    expect(validatePracticeExportRestore(providerHoursBackup())).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const overlapping = providerHoursBackup();
+    overlapping.staffSchedules[1]!.startTime = "11:30:00";
+    expect(validatePracticeExportRestore(overlapping).errors).toContain(
+      "staffSchedules[hours-2] overlaps another provider working window.",
+    );
+
+    const invalidRange = providerHoursBackup();
+    invalidRange.staffSchedules[0]!.endTime = "08:00:00";
+    expect(validatePracticeExportRestore(invalidRange).errors).toContain(
+      "staffSchedules[hours-1] must contain a valid startTime before endTime.",
+    );
+
+    const nonProvider = providerHoursBackup();
+    nonProvider.users[0]!.isVeterinarian = false;
+    expect(validatePracticeExportRestore(nonProvider).errors).toContain(
+      "staffSchedules[hours-1].userId must reference an active veterinarian provider.",
+    );
+
+    const tooManyWindows = providerHoursBackup();
+    tooManyWindows.staffSchedules = [
+      ...tooManyWindows.staffSchedules,
+      {
+        id: "hours-3",
+        practiceId: "practice-1",
+        userId: "provider-1",
+        locationId: "location-1",
+        dayOfWeek: 1,
+        startTime: "17:00:00",
+        endTime: "18:00:00",
+      },
+      {
+        id: "hours-4",
+        practiceId: "practice-1",
+        userId: "provider-1",
+        locationId: "location-1",
+        dayOfWeek: 1,
+        startTime: "18:00:00",
+        endTime: "19:00:00",
+      },
+    ];
+    expect(validatePracticeExportRestore(tooManyWindows).errors).toContain(
+      "staffSchedules[hours-4] exceeds the maximum of three provider working windows per day.",
+    );
+  });
+
+  it("restores legacy veterinarian roles with provider capability", async () => {
+    const backup = {
+      practiceId: "source-practice",
+      ...emptyBackup(),
+      users: [
+        {
+          id: "legacy-vet",
+          practiceId: "source-practice",
+          role: "veterinarian",
+        },
+      ],
+    };
+    const { db, inserted } = restoreDb();
+
+    await restorePracticeData(db as never, "target-practice", backup);
+
+    expect(
+      inserted
+        .flatMap(({ rows }) => rows)
+        .find((row) => row.id === "legacy-vet"),
+    ).toMatchObject({
+      practiceId: "target-practice",
+      isVeterinarian: true,
+    });
+  });
+
   it("restores corrected same-encounter SOAP history and soft-deleted addendum evidence", async () => {
     const finalizedAt = "2026-08-09T15:00:00.000Z";
     const sourceAddendumContent =

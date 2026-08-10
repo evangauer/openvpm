@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import {
   asc,
   desc,
@@ -143,6 +143,89 @@ const appointmentTypeNameInput = requiredTrimmedString(
   APPOINTMENT_TYPE_NAME_MAX_LENGTH,
 );
 const roomNameInput = requiredTrimmedString("Room name", ROOM_NAME_MAX_LENGTH);
+const providerScheduleTimeInput = z
+  .string()
+  .regex(/^([01]\d|2[0-3]):[0-5]\d$/, {
+    message: "Provider hours must use 24-hour HH:MM time.",
+  });
+const providerScheduleWindowsInput = z
+  .array(
+    z.object({
+      dayOfWeek: z.number().int().min(0).max(6),
+      startTime: providerScheduleTimeInput,
+      endTime: providerScheduleTimeInput,
+    }),
+  )
+  .max(21, "A provider can have at most three working windows per day.")
+  .superRefine((windows, validation) => {
+    const byDay = new Map<number, typeof windows>();
+    for (const window of windows) {
+      if (window.startTime >= window.endTime) {
+        validation.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Each provider working window must end after it starts.",
+        });
+      }
+      const day = byDay.get(window.dayOfWeek) ?? [];
+      day.push(window);
+      byDay.set(window.dayOfWeek, day);
+    }
+
+    for (const day of byDay.values()) {
+      if (day.length > 3) {
+        validation.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "A provider can have at most three working windows per day.",
+        });
+      }
+      const ordered = [...day].sort((a, b) =>
+        a.startTime.localeCompare(b.startTime),
+      );
+      for (let index = 1; index < ordered.length; index += 1) {
+        if (ordered[index]!.startTime < ordered[index - 1]!.endTime) {
+          validation.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Provider working windows cannot overlap.",
+          });
+        }
+      }
+    }
+  });
+
+type ProviderScheduleRevisionRow = {
+  id: string;
+  locationId: string | null;
+  dayOfWeek: number;
+  startTime: string;
+  endTime: string;
+};
+
+function providerScheduleRevision(
+  timezone: string,
+  primaryLocationId: string | null,
+  providerLocationId: string | null,
+  rows: ProviderScheduleRevisionRow[],
+) {
+  const schedule = [...rows]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((row) => ({
+      id: row.id,
+      locationId: row.locationId,
+      dayOfWeek: row.dayOfWeek,
+      startTime: row.startTime.slice(0, 5),
+      endTime: row.endTime.slice(0, 5),
+    }));
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        timezone,
+        primaryLocationId,
+        providerLocationId,
+        schedule,
+      }),
+    )
+    .digest("hex");
+}
 const activeSchedulingStatuses = [
   "scheduled",
   "confirmed",
@@ -288,6 +371,59 @@ async function assertProviderHasNoActiveAppointments(ctx: {
         "Reassign active appointments before removing veterinarian provider access.",
     });
   }
+
+  const [activeSchedule] = await ctx.db
+    .select({ id: staffSchedules.id })
+    .from(staffSchedules)
+    .where(
+      and(
+        eq(staffSchedules.userId, ctx.userId),
+        eq(staffSchedules.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(staffSchedules.deletedAt),
+      ),
+    )
+    .limit(1);
+  if (activeSchedule) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message:
+        "Clear this provider's working hours before removing veterinarian provider access.",
+    });
+  }
+}
+
+async function assertPrimaryLocationCanChange(ctx: {
+  db: Pick<Database, "select">;
+  practiceId: string;
+  nextPrimaryLocationId?: string;
+}) {
+  const [activeHours] = await ctx.db
+    .select({ id: staffSchedules.id })
+    .from(staffSchedules)
+    .where(
+      and(
+        eq(staffSchedules.practiceId, ctx.practiceId),
+        isNull(staffSchedules.deletedAt),
+        sql`exists (
+          select 1
+          from ${locations}
+          where ${locations.id} = ${staffSchedules.locationId}
+            and ${locations.practiceId} = ${ctx.practiceId}
+            and ${locations.isPrimary} = true
+            and ${locations.deletedAt} is null
+            ${ctx.nextPrimaryLocationId ? sql`and ${locations.id} <> ${ctx.nextPrimaryLocationId}` : sql``}
+        )`,
+      ),
+    )
+    .limit(1);
+  if (activeHours) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Clear provider working hours at the current primary location before changing the primary location.",
+    });
+  }
 }
 
 async function syncBillingAfterStaffChange(
@@ -426,6 +562,11 @@ export const settingsRouter = createRouter({
     )
     .mutation(async ({ ctx, input }) =>
       ctx.db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${staffAdminRosterLockKey(
+            ctx.practiceId,
+          )}::text))`,
+        );
         await assertActivePractice({ db: tx, practiceId: ctx.practiceId });
         const [user] = await tx
           .select({
@@ -533,38 +674,73 @@ export const settingsRouter = createRouter({
           .optional(),
       }),
     )
-    .mutation(async ({ ctx, input }) => {
-      // brandColor isn't a column — merge it into practices.settings without
-      // clobbering other keys.
-      const { brandColor, ...columns } = input;
-      const patch: Record<string, unknown> = { ...columns };
-      // When the country changes, fill in any region fields the caller didn't
-      // explicitly set (currency/tax) with that country's sensible defaults.
-      if (input.country) {
-        const defaults = regionDefaults(input.country);
-        patch.country = input.country.toUpperCase();
-        if (input.currency === undefined) patch.currency = defaults.currency;
-        if (input.taxRatePercent === undefined)
-          patch.taxRatePercent = defaults.taxRatePercent;
-      }
-      if (typeof patch.currency === "string") {
-        patch.currency = (patch.currency as string).toLowerCase();
-      }
-      if (brandColor !== undefined) {
-        patch.settings = settingsMergePatch({
-          brandColor: brandColor.toLowerCase(),
-        });
-      }
-      const [updated] = await ctx.db
-        .update(practices)
-        .set(patch)
-        .where(activePracticeWhere(ctx.practiceId))
-        .returning();
-      if (!updated) {
-        throw practiceNotFound();
-      }
-      return updated!;
-    }),
+    .mutation(async ({ ctx, input }) =>
+      ctx.db.transaction(async (tx) => {
+        if (input.timezone !== undefined) {
+          await tx.execute(
+            sql`select pg_advisory_xact_lock(hashtext(${staffAdminRosterLockKey(
+              ctx.practiceId,
+            )}::text))`,
+          );
+          const [currentPractice] = await tx
+            .select({ timezone: practices.timezone })
+            .from(practices)
+            .where(activePracticeWhere(ctx.practiceId))
+            .limit(1);
+          if (!currentPractice) throw practiceNotFound();
+          if (currentPractice.timezone !== input.timezone) {
+            const [activeHours] = await tx
+              .select({ id: staffSchedules.id })
+              .from(staffSchedules)
+              .where(
+                and(
+                  eq(staffSchedules.practiceId, ctx.practiceId),
+                  isNull(staffSchedules.deletedAt),
+                ),
+              )
+              .limit(1);
+            if (activeHours) {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message:
+                  "Clear provider working hours before changing the practice timezone, then recreate them in the new timezone.",
+              });
+            }
+          }
+        }
+
+        // brandColor isn't a column — merge it into practices.settings without
+        // clobbering other keys.
+        const { brandColor, ...columns } = input;
+        const patch: Record<string, unknown> = { ...columns };
+        // When the country changes, fill in any region fields the caller didn't
+        // explicitly set (currency/tax) with that country's sensible defaults.
+        if (input.country) {
+          const defaults = regionDefaults(input.country);
+          patch.country = input.country.toUpperCase();
+          if (input.currency === undefined) patch.currency = defaults.currency;
+          if (input.taxRatePercent === undefined)
+            patch.taxRatePercent = defaults.taxRatePercent;
+        }
+        if (typeof patch.currency === "string") {
+          patch.currency = (patch.currency as string).toLowerCase();
+        }
+        if (brandColor !== undefined) {
+          patch.settings = settingsMergePatch({
+            brandColor: brandColor.toLowerCase(),
+          });
+        }
+        const [updated] = await tx
+          .update(practices)
+          .set(patch)
+          .where(activePracticeWhere(ctx.practiceId))
+          .returning();
+        if (!updated) {
+          throw practiceNotFound();
+        }
+        return updated!;
+      }),
+    ),
 
   // ── Account Lifecycle ─────────────────────────────────────
 
@@ -698,33 +874,45 @@ export const settingsRouter = createRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      await assertActivePractice(ctx);
-      if (input.isPrimary) {
-        await ctx.db
-          .update(locations)
-          .set({ isPrimary: false })
-          .where(
-            and(
-              eq(locations.practiceId, ctx.practiceId),
-              activePracticePredicate(ctx.practiceId),
-              isNull(locations.deletedAt),
-            ),
+      const created = await ctx.db.transaction(async (tx) => {
+        await assertActivePractice({ db: tx, practiceId: ctx.practiceId });
+        if (input.isPrimary) {
+          await tx.execute(
+            sql`select pg_advisory_xact_lock(hashtext(${staffAdminRosterLockKey(
+              ctx.practiceId,
+            )}::text))`,
           );
-      }
+          await assertPrimaryLocationCanChange({
+            db: tx,
+            practiceId: ctx.practiceId,
+          });
+          await tx
+            .update(locations)
+            .set({ isPrimary: false })
+            .where(
+              and(
+                eq(locations.practiceId, ctx.practiceId),
+                activePracticePredicate(ctx.practiceId),
+                isNull(locations.deletedAt),
+              ),
+            );
+        }
 
-      const [created] = await ctx.db
-        .insert(locations)
-        .values({
-          practiceId: ctx.practiceId,
-          name: input.name,
-          address: input.address,
-          phone: input.phone,
-          isPrimary: input.isPrimary ?? false,
-        })
-        .returning();
+        const [inserted] = await tx
+          .insert(locations)
+          .values({
+            practiceId: ctx.practiceId,
+            name: input.name,
+            address: input.address,
+            phone: input.phone,
+            isPrimary: input.isPrimary ?? false,
+          })
+          .returning();
+        return inserted!;
+      });
 
       await syncBillingAfterLocationChange(ctx.db, ctx.practiceId);
-      return created!;
+      return created;
     }),
 
   updateLocation: adminProcedure
@@ -765,6 +953,17 @@ export const settingsRouter = createRouter({
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
       const updated = await ctx.db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${staffAdminRosterLockKey(
+            ctx.practiceId,
+          )}::text))`,
+        );
+        await assertPrimaryLocationCanChange({
+          db: tx,
+          practiceId: ctx.practiceId,
+          nextPrimaryLocationId: input.id,
+        });
+
         const [target] = await tx
           .update(locations)
           .set({ isPrimary: true })
@@ -806,113 +1005,113 @@ export const settingsRouter = createRouter({
   deleteLocation: adminProcedure
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
-      const activeLocations = await ctx.db
-        .select({ id: locations.id, isPrimary: locations.isPrimary })
-        .from(locations)
-        .where(
-          and(
-            eq(locations.practiceId, ctx.practiceId),
-            activePracticePredicate(ctx.practiceId),
-            isNull(locations.deletedAt),
-          ),
-        );
-      const target = activeLocations.find((loc) => loc.id === input.id);
-
-      if (!target) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "Location not found",
-        });
-      }
-
-      if (activeLocations.length <= 1) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "A practice must keep at least one active location",
-        });
-      }
-
-      const [activeRoom] = await ctx.db
-        .select({ id: rooms.id })
-        .from(rooms)
-        .where(
-          and(
-            eq(rooms.locationId, input.id),
-            eq(rooms.practiceId, ctx.practiceId),
-            activePracticePredicate(ctx.practiceId),
-            isNull(rooms.deletedAt),
-          ),
-        )
-        .limit(1);
-
-      if (activeRoom) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "Cannot delete a location with active rooms.",
-        });
-      }
-
-      const [activeUser] = await ctx.db
-        .select({ id: users.id })
-        .from(users)
-        .where(
-          and(
-            eq(users.locationId, input.id),
-            eq(users.practiceId, ctx.practiceId),
-            activePracticePredicate(ctx.practiceId),
-            isNull(users.deletedAt),
-          ),
-        )
-        .limit(1);
-
-      if (activeUser) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "Cannot delete a location assigned to active staff.",
-        });
-      }
-
-      const [activeProduct] = await ctx.db
-        .select({ id: products.id })
-        .from(products)
-        .where(
-          and(
-            eq(products.locationId, input.id),
-            eq(products.practiceId, ctx.practiceId),
-            activePracticePredicate(ctx.practiceId),
-            isNull(products.deletedAt),
-          ),
-        )
-        .limit(1);
-
-      if (activeProduct) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "Cannot delete a location with active inventory products.",
-        });
-      }
-
-      const [activeSchedule] = await ctx.db
-        .select({ id: staffSchedules.id })
-        .from(staffSchedules)
-        .where(
-          and(
-            eq(staffSchedules.locationId, input.id),
-            eq(staffSchedules.practiceId, ctx.practiceId),
-            activePracticePredicate(ctx.practiceId),
-            isNull(staffSchedules.deletedAt),
-          ),
-        )
-        .limit(1);
-
-      if (activeSchedule) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "Cannot delete a location with active staff schedules.",
-        });
-      }
-
       await ctx.db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${staffAdminRosterLockKey(
+            ctx.practiceId,
+          )}::text))`,
+        );
+
+        const activeLocations = await tx
+          .select({ id: locations.id, isPrimary: locations.isPrimary })
+          .from(locations)
+          .where(
+            and(
+              eq(locations.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(locations.deletedAt),
+            ),
+          );
+        const target = activeLocations.find((loc) => loc.id === input.id);
+        if (!target) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Location not found",
+          });
+        }
+        if (activeLocations.length <= 1) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "A practice must keep at least one active location",
+          });
+        }
+
+        const [activeRoom] = await tx
+          .select({ id: rooms.id })
+          .from(rooms)
+          .where(
+            and(
+              eq(rooms.locationId, input.id),
+              eq(rooms.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(rooms.deletedAt),
+            ),
+          )
+          .limit(1);
+        if (activeRoom) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Cannot delete a location with active rooms.",
+          });
+        }
+
+        const [activeUser] = await tx
+          .select({ id: users.id })
+          .from(users)
+          .where(
+            and(
+              eq(users.locationId, input.id),
+              eq(users.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(users.deletedAt),
+            ),
+          )
+          .limit(1);
+        if (activeUser) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Cannot delete a location assigned to active staff.",
+          });
+        }
+
+        const [activeProduct] = await tx
+          .select({ id: products.id })
+          .from(products)
+          .where(
+            and(
+              eq(products.locationId, input.id),
+              eq(products.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(products.deletedAt),
+            ),
+          )
+          .limit(1);
+        if (activeProduct) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Cannot delete a location with active inventory products.",
+          });
+        }
+
+        const [activeSchedule] = await tx
+          .select({ id: staffSchedules.id })
+          .from(staffSchedules)
+          .where(
+            and(
+              eq(staffSchedules.locationId, input.id),
+              eq(staffSchedules.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(staffSchedules.deletedAt),
+            ),
+          )
+          .limit(1);
+        if (activeSchedule) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Cannot delete a location with active staff schedules.",
+          });
+        }
+
         const [deleted] = await tx
           .update(locations)
           .set({ deletedAt: new Date(), isPrimary: false })
@@ -1500,6 +1699,294 @@ export const settingsRouter = createRouter({
         ),
       );
   }),
+
+  /**
+   * Weekly veterinarian hours for the practice's primary location. These are
+   * stored as wall-clock times in the practice timezone. They are clinic setup
+   * data only until the shared availability engine consumes them.
+   */
+  providerScheduleSetup: adminProcedure.query(async ({ ctx }) => {
+    const [practice] = await ctx.db
+      .select({ timezone: practices.timezone })
+      .from(practices)
+      .where(activePracticeWhere(ctx.practiceId))
+      .limit(1);
+    if (!practice) throw practiceNotFound();
+
+    const [primaryLocation] = await ctx.db
+      .select({ id: locations.id, name: locations.name })
+      .from(locations)
+      .where(
+        and(
+          eq(locations.practiceId, ctx.practiceId),
+          eq(locations.isPrimary, true),
+          isNull(locations.deletedAt),
+        ),
+      )
+      .orderBy(asc(locations.createdAt), asc(locations.id))
+      .limit(1);
+
+    const providers = await ctx.db
+      .select({
+        id: users.id,
+        name: users.name,
+        locationId: users.locationId,
+      })
+      .from(users)
+      .where(
+        and(
+          eq(users.practiceId, ctx.practiceId),
+          eq(users.isVeterinarian, true),
+          isNull(users.deletedAt),
+        ),
+      )
+      .orderBy(asc(users.name), asc(users.id));
+
+    const scheduleRows = await ctx.db
+      .select({
+        id: staffSchedules.id,
+        userId: staffSchedules.userId,
+        locationId: staffSchedules.locationId,
+        dayOfWeek: staffSchedules.dayOfWeek,
+        startTime: staffSchedules.startTime,
+        endTime: staffSchedules.endTime,
+      })
+      .from(staffSchedules)
+      .where(
+        and(
+          eq(staffSchedules.practiceId, ctx.practiceId),
+          isNull(staffSchedules.deletedAt),
+        ),
+      )
+      .orderBy(
+        asc(staffSchedules.userId),
+        asc(staffSchedules.dayOfWeek),
+        asc(staffSchedules.startTime),
+        asc(staffSchedules.id),
+      );
+
+    return {
+      timezone: practice.timezone,
+      primaryLocation: primaryLocation ?? null,
+      providers: providers.map((provider) => {
+        const providerRows = scheduleRows.filter(
+          (row) => row.userId === provider.id,
+        );
+        const primaryRows = primaryLocation
+          ? providerRows.filter((row) => row.locationId === primaryLocation.id)
+          : [];
+        return {
+          ...provider,
+          assignedToPrimary:
+            primaryLocation !== undefined &&
+            (provider.locationId === null ||
+              provider.locationId === primaryLocation.id),
+          otherLocationWindowCount: primaryLocation
+            ? providerRows.length - primaryRows.length
+            : providerRows.length,
+          revision: providerScheduleRevision(
+            practice.timezone,
+            primaryLocation?.id ?? null,
+            provider.locationId,
+            providerRows,
+          ),
+          windows: primaryRows.map((row) => ({
+            dayOfWeek: row.dayOfWeek,
+            startTime: row.startTime.slice(0, 5),
+            endTime: row.endTime.slice(0, 5),
+          })),
+        };
+      }),
+    };
+  }),
+
+  replaceProviderSchedule: adminProcedure
+    .input(
+      z.object({
+        userId: z.string().uuid(),
+        windows: providerScheduleWindowsInput,
+        expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
+        moveToPrimaryLocation: z.boolean().optional(),
+        replaceOtherLocationHours: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      return ctx.db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${staffAdminRosterLockKey(
+            ctx.practiceId,
+          )}::text))`,
+        );
+
+        const [primaryLocation] = await tx
+          .select({
+            id: locations.id,
+            name: locations.name,
+            timezone: practices.timezone,
+          })
+          .from(locations)
+          .innerJoin(
+            practices,
+            and(
+              eq(practices.id, locations.practiceId),
+              eq(practices.id, ctx.practiceId),
+              isNull(practices.deletedAt),
+            ),
+          )
+          .where(
+            and(
+              eq(locations.practiceId, ctx.practiceId),
+              eq(locations.isPrimary, true),
+              isNull(locations.deletedAt),
+            ),
+          )
+          .orderBy(asc(locations.createdAt), asc(locations.id))
+          .limit(1)
+          .for("share");
+        if (!primaryLocation) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "Set a primary location before adding provider hours.",
+          });
+        }
+
+        const [provider] = await tx
+          .select({
+            id: users.id,
+            locationId: users.locationId,
+            isVeterinarian: users.isVeterinarian,
+          })
+          .from(users)
+          .where(
+            and(
+              eq(users.id, input.userId),
+              eq(users.practiceId, ctx.practiceId),
+              eq(users.isVeterinarian, true),
+              isNull(users.deletedAt),
+            ),
+          )
+          .limit(1)
+          .for("update");
+        if (!provider) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Active veterinarian provider not found.",
+          });
+        }
+
+        const currentRows = await tx
+          .select({
+            id: staffSchedules.id,
+            locationId: staffSchedules.locationId,
+            dayOfWeek: staffSchedules.dayOfWeek,
+            startTime: staffSchedules.startTime,
+            endTime: staffSchedules.endTime,
+          })
+          .from(staffSchedules)
+          .where(
+            and(
+              eq(staffSchedules.practiceId, ctx.practiceId),
+              eq(staffSchedules.userId, provider.id),
+              isNull(staffSchedules.deletedAt),
+            ),
+          )
+          .orderBy(asc(staffSchedules.id))
+          .for("update");
+
+        if (
+          providerScheduleRevision(
+            primaryLocation.timezone,
+            primaryLocation.id,
+            provider.locationId,
+            currentRows,
+          ) !== input.expectedRevision
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Provider hours changed; refresh and try again.",
+          });
+        }
+
+        const hasNewWindows = input.windows.length > 0;
+        const otherLocationWindowCount = currentRows.filter(
+          (row) => row.locationId !== primaryLocation.id,
+        ).length;
+        if (
+          otherLocationWindowCount > 0 &&
+          input.replaceOtherLocationHours !== true
+        ) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: `Confirm replacing ${otherLocationWindowCount} working ${otherLocationWindowCount === 1 ? "window" : "windows"} saved outside the primary location.`,
+          });
+        }
+
+        const movingFromAnotherLocation =
+          hasNewWindows &&
+          provider.locationId !== null &&
+          provider.locationId !== primaryLocation.id;
+        if (movingFromAnotherLocation) {
+          if (input.moveToPrimaryLocation !== true) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "Confirm moving this provider to the primary location before setting primary-location hours.",
+            });
+          }
+        }
+
+        // Empty schedules clear existing hours without changing the staff
+        // assignment. New hours attach an unassigned provider automatically;
+        // moving a provider from another location requires consent above.
+        if (hasNewWindows && provider.locationId !== primaryLocation.id) {
+          await tx
+            .update(users)
+            .set({ locationId: primaryLocation.id })
+            .where(
+              and(
+                eq(users.id, provider.id),
+                eq(users.practiceId, ctx.practiceId),
+                isNull(users.deletedAt),
+              ),
+            );
+        }
+
+        await tx
+          .update(staffSchedules)
+          .set({ deletedAt: new Date() })
+          .where(
+            and(
+              eq(staffSchedules.practiceId, ctx.practiceId),
+              eq(staffSchedules.userId, provider.id),
+              isNull(staffSchedules.deletedAt),
+            ),
+          );
+
+        const orderedWindows = [...input.windows].sort(
+          (left, right) =>
+            left.dayOfWeek - right.dayOfWeek ||
+            left.startTime.localeCompare(right.startTime),
+        );
+        if (orderedWindows.length > 0) {
+          await tx.insert(staffSchedules).values(
+            orderedWindows.map((window) => ({
+              practiceId: ctx.practiceId,
+              userId: provider.id,
+              locationId: primaryLocation.id,
+              dayOfWeek: window.dayOfWeek,
+              startTime: window.startTime,
+              endTime: window.endTime,
+            })),
+          );
+        }
+
+        return {
+          userId: provider.id,
+          locationId: hasNewWindows ? primaryLocation.id : provider.locationId,
+          windowCount: orderedWindows.length,
+        };
+      });
+    }),
 
   createUser: adminProcedure
     .input(

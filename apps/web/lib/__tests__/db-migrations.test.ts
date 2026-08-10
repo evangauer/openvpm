@@ -96,6 +96,9 @@ describe("committed Drizzle migrations", () => {
     expect(journal.entries?.map((entry) => entry.tag)).toContain(
       "0066_reflective_lord_tyger",
     );
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0067_wooden_orphan",
+    );
   });
 
   it("backfills clinical provider capability before indexing it", () => {
@@ -111,6 +114,33 @@ describe("committed Drizzle migrations", () => {
     expect(addColumn).toBeGreaterThanOrEqual(0);
     expect(backfill).toBeGreaterThan(addColumn);
     expect(index).toBeGreaterThan(backfill);
+  });
+
+  it("hardens weekly provider schedules before online availability uses them", () => {
+    const sql = readRepoFile("packages/db/drizzle/0067_wooden_orphan.sql");
+
+    const preflight = sql.indexOf("staff_schedules contains a cross-tenant");
+    const userTenantFk = sql.indexOf("staff_schedules_user_tenant_fk");
+    const locationTenantFk = sql.indexOf("staff_schedules_location_tenant_fk");
+    const activeWindowIndex = sql.indexOf("staff_schedules_active_window_uq");
+    const activeNullLocationWindowIndex = sql.indexOf(
+      "staff_schedules_active_null_location_window_uq",
+    );
+    const dayCheck = sql.indexOf("staff_schedules_day_of_week_check");
+    const timeCheck = sql.indexOf("staff_schedules_time_range_check");
+
+    expect(preflight).toBeGreaterThanOrEqual(0);
+    expect(userTenantFk).toBeGreaterThan(preflight);
+    expect(locationTenantFk).toBeGreaterThan(preflight);
+    expect(activeWindowIndex).toBeGreaterThan(preflight);
+    expect(activeNullLocationWindowIndex).toBeGreaterThan(preflight);
+    expect(dayCheck).toBeGreaterThan(preflight);
+    expect(timeCheck).toBeGreaterThan(preflight);
+    expect(sql).toContain("duplicate active working windows");
+    expect(sql).toContain("day_of_week NOT BETWEEN 0 AND 6");
+    expect(sql).toContain("start_time >= end_time");
+    expect(sql).toContain('"location_id" is not null');
+    expect(sql).toContain('"location_id" is null');
   });
 
   it("captures hot-table indexes in the baseline SQL", () => {

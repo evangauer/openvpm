@@ -705,6 +705,101 @@ export function validatePracticeExportRestore(data: unknown): {
         )
         .map((row) => [row.id, row]),
     );
+  const backupPracticeId = isRecord(data) ? data.practiceId : undefined;
+  const userRows = rowsById("users");
+  const locationRows = rowsById("locations");
+  const scheduleWindows = new Map<
+    string,
+    Array<{ startMinutes: number; endMinutes: number; label: string }>
+  >();
+  const scheduleTimeMinutes = (value: unknown): number | null => {
+    if (typeof value !== "string") return null;
+    const match = /^([01]\d|2[0-3]):([0-5]\d)(?::[0-5]\d(?:\.\d{1,6})?)?$/.exec(
+      value,
+    );
+    return match ? Number(match[1]) * 60 + Number(match[2]) : null;
+  };
+  rowsFor(data, "staffSchedules").forEach((row, index) => {
+    const label = `staffSchedules[${rowLabel(row, index)}]`;
+    const provider =
+      typeof row.userId === "string" ? userRows.get(row.userId) : undefined;
+    const location =
+      typeof row.locationId === "string"
+        ? locationRows.get(row.locationId)
+        : undefined;
+    const startMinutes = scheduleTimeMinutes(row.startTime);
+    const endMinutes = scheduleTimeMinutes(row.endTime);
+    if (
+      typeof row.practiceId !== "string" ||
+      row.practiceId !== backupPracticeId
+    ) {
+      pushError(`${label}.practiceId must match the backup practiceId.`);
+    }
+    if (
+      !Number.isInteger(row.dayOfWeek) ||
+      Number(row.dayOfWeek) < 0 ||
+      Number(row.dayOfWeek) > 6
+    ) {
+      pushError(`${label}.dayOfWeek must be an integer from 0 through 6.`);
+    }
+    if (
+      startMinutes === null ||
+      endMinutes === null ||
+      startMinutes >= endMinutes
+    ) {
+      pushError(`${label} must contain a valid startTime before endTime.`);
+    }
+    if (
+      provider &&
+      (provider.practiceId !== row.practiceId ||
+        provider.deletedAt != null ||
+        !(
+          provider.isVeterinarian === true ||
+          (provider.isVeterinarian == null && provider.role === "veterinarian")
+        ))
+    ) {
+      pushError(
+        `${label}.userId must reference an active veterinarian provider.`,
+      );
+    }
+    if (
+      location &&
+      (location.practiceId !== row.practiceId || location.deletedAt != null)
+    ) {
+      pushError(
+        `${label}.locationId must reference an active same-practice location.`,
+      );
+    }
+    if (
+      typeof row.userId === "string" &&
+      Number.isInteger(row.dayOfWeek) &&
+      startMinutes !== null &&
+      endMinutes !== null &&
+      startMinutes < endMinutes
+    ) {
+      const key = `${row.userId}:${row.locationId ?? "global"}:${row.dayOfWeek}`;
+      const windows = scheduleWindows.get(key) ?? [];
+      windows.push({ startMinutes, endMinutes, label });
+      scheduleWindows.set(key, windows);
+    }
+  });
+  for (const windows of scheduleWindows.values()) {
+    const ordered = [...windows].sort(
+      (left, right) => left.startMinutes - right.startMinutes,
+    );
+    if (ordered.length > 3) {
+      pushError(
+        `${ordered[3]!.label} exceeds the maximum of three provider working windows per day.`,
+      );
+    }
+    for (let index = 1; index < ordered.length; index += 1) {
+      if (ordered[index]!.startMinutes < ordered[index - 1]!.endMinutes) {
+        pushError(
+          `${ordered[index]!.label} overlaps another provider working window.`,
+        );
+      }
+    }
+  }
   const appointmentRows = rowsById("appointments");
 
   for (const section of [
@@ -2488,7 +2583,20 @@ async function restorePracticeDataRows(
   await restorePracticeRows("emailSuppressions", emailSuppressions);
   await restorePracticeRows("webhooks", webhooks);
   await restorePracticeRows("apiKeys", apiKeys);
-  await restorePracticeRows("users", users);
+  restored.users = await restoreRows(
+    db,
+    users,
+    "users",
+    rowsFor(data, "users").map((row) => ({
+      ...row,
+      // Backups written before provider capability was separated from role
+      // still restore veterinarian-role users as schedulable providers.
+      isVeterinarian:
+        row.isVeterinarian === true ||
+        (row.isVeterinarian == null && row.role === "veterinarian"),
+    })),
+    { practiceId },
+  );
   await restorePracticeRows("auditLog", auditLog);
   await restorePracticeRows("appointmentTypes", appointmentTypes);
   await restorePracticeRows("rooms", rooms);
