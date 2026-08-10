@@ -19,7 +19,12 @@ import {
   dispatchAppointmentWebhookAfterCommit,
 } from "@/lib/appointment-webhooks";
 import { recordActivationAfterAppointmentCreated } from "@/lib/funnel-events-server";
-import { findOpenSlots } from "@/lib/scheduling/availability";
+import {
+  findOpenSlotsAcrossWindows,
+  intersectAvailabilityWindows,
+  slotFitsAvailability,
+} from "@/lib/scheduling/availability";
+import { providerCoverageForDate } from "@/lib/scheduling/provider-availability";
 import { billingEnforced, hasHostedFullAccess } from "@/lib/billing/plans";
 import { generatePortalAccessToken } from "@/lib/portal/tokens";
 import { latestAssignedToForClient } from "@/lib/communications/assignment";
@@ -189,13 +194,21 @@ async function bookableTypesForPage(
   db: any,
   practiceId: string,
   bookableTypeIds: string[]
-): Promise<Array<{ id: string; name: string; durationMinutes: number }>> {
+): Promise<
+  Array<{
+    id: string;
+    name: string;
+    durationMinutes: number;
+    requiresDoctor: number;
+  }>
+> {
   if (bookableTypeIds.length === 0) return [];
   const rows = await db
     .select({
       id: appointmentTypes.id,
       name: appointmentTypes.name,
       durationMinutes: appointmentTypes.durationMinutes,
+      requiresDoctor: appointmentTypes.requiresDoctor,
     })
     .from(appointmentTypes)
     .where(
@@ -220,12 +233,17 @@ async function lockBookableTypeForRequest(
   practiceId: string,
   bookableTypeIds: string[],
   requestedTypeId: string
-): Promise<{ id: string; durationMinutes: number } | null> {
+): Promise<{
+  id: string;
+  durationMinutes: number;
+  requiresDoctor: number;
+} | null> {
   if (!bookableTypeIds.includes(requestedTypeId)) return null;
   const [type] = await db
     .select({
       id: appointmentTypes.id,
       durationMinutes: appointmentTypes.durationMinutes,
+      requiresDoctor: appointmentTypes.requiresDoctor,
     })
     .from(appointmentTypes)
     .where(
@@ -369,6 +387,23 @@ export const bookingRouter = createRouter({
         });
       }
 
+      const coverage =
+        type.requiresDoctor === 1
+          ? await providerCoverageForDate(ctx.db, {
+              practiceId: practice.id,
+              date: input.date,
+              timezone: practice.timezone,
+              locationId: location.locationId,
+            })
+          : { configured: false as const, windows: [] };
+      const windows = coverage.configured
+        ? intersectAvailabilityWindows(coverage.windows, {
+            start: window.dayStart,
+            end: window.dayEnd,
+          })
+        : [{ start: window.dayStart, end: window.dayEnd }];
+      if (windows.length === 0) return [];
+
       const busy = await ctx.db
         .select({
           startTime: appointments.startTime,
@@ -387,9 +422,8 @@ export const bookingRouter = createRouter({
         );
 
       const earliest = minimumBookableInstant(config);
-      return findOpenSlots({
-        dayStart: window.dayStart,
-        dayEnd: window.dayEnd,
+      return findOpenSlotsAcrossWindows({
+        windows,
         slotMinutes: durationMinutes,
         busy,
       })
@@ -520,6 +554,27 @@ export const bookingRouter = createRouter({
           code: "BAD_REQUEST",
           message: "That time is too soon. Please choose a later time.",
         });
+      }
+      if (type.requiresDoctor === 1) {
+        const coverage = await providerCoverageForDate(ctx.db, {
+          practiceId: practice.id,
+          date: input.date,
+          timezone: practice.timezone,
+          locationId: location.locationId,
+        });
+        if (
+          coverage.configured &&
+          !slotFitsAvailability(
+            { start: slotStart, end: slotEnd },
+            coverage.windows,
+          )
+        ) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "That time is outside the clinic's provider coverage. Please choose another time.",
+          });
+        }
       }
 
       const [conflict] = await ctx.db

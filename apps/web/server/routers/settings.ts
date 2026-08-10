@@ -1725,11 +1725,7 @@ export const settingsRouter = createRouter({
       );
   }),
 
-  /**
-   * Weekly veterinarian hours for the practice's primary location. These are
-   * stored as wall-clock times in the practice timezone. They are clinic setup
-   * data only until the shared availability engine consumes them.
-   */
+  /** Weekly veterinarian hours by clinic location, in the practice timezone. */
   providerScheduleSetup: adminProcedure.query(async ({ ctx }) => {
     const [practice] = await ctx.db
       .select({ timezone: practices.timezone })
@@ -1738,18 +1734,27 @@ export const settingsRouter = createRouter({
       .limit(1);
     if (!practice) throw practiceNotFound();
 
-    const [primaryLocation] = await ctx.db
-      .select({ id: locations.id, name: locations.name })
+    const activeLocations = await ctx.db
+      .select({
+        id: locations.id,
+        name: locations.name,
+        isPrimary: locations.isPrimary,
+      })
       .from(locations)
       .where(
         and(
           eq(locations.practiceId, ctx.practiceId),
-          eq(locations.isPrimary, true),
           isNull(locations.deletedAt),
         ),
       )
-      .orderBy(asc(locations.createdAt), asc(locations.id))
-      .limit(1);
+      .orderBy(
+        desc(locations.isPrimary),
+        asc(locations.name),
+        asc(locations.id),
+      );
+    const primaryLocation = activeLocations.find(
+      (location) => location.isPrimary,
+    );
 
     const providers = await ctx.db
       .select({
@@ -1797,31 +1802,30 @@ export const settingsRouter = createRouter({
         const providerRows = scheduleRows.filter(
           (row) => row.userId === provider.id,
         );
-        const primaryRows = primaryLocation
-          ? providerRows.filter((row) => row.locationId === primaryLocation.id)
-          : [];
         return {
           ...provider,
-          assignedToPrimary:
-            primaryLocation !== undefined &&
-            (provider.locationId === null ||
-              provider.locationId === primaryLocation.id),
-          otherLocationWindowCount: primaryLocation
-            ? providerRows.length - primaryRows.length
-            : providerRows.length,
+          unspecifiedWindowCount: providerRows.filter(
+            (row) => row.locationId === null,
+          ).length,
           revision: providerScheduleRevision(
             practice.timezone,
             primaryLocation?.id ?? null,
             provider.locationId,
             providerRows,
           ),
-          windows: primaryRows.map((row) => ({
-            dayOfWeek: row.dayOfWeek,
-            startTime: row.startTime.slice(0, 5),
-            endTime: row.endTime.slice(0, 5),
+          locationSchedules: activeLocations.map((location) => ({
+            locationId: location.id,
+            windows: providerRows
+              .filter((row) => row.locationId === location.id)
+              .map((row) => ({
+                dayOfWeek: row.dayOfWeek,
+                startTime: row.startTime.slice(0, 5),
+                endTime: row.endTime.slice(0, 5),
+              })),
           })),
         };
       }),
+      locations: activeLocations,
     };
   }),
 
@@ -1829,8 +1833,11 @@ export const settingsRouter = createRouter({
     .input(
       z.object({
         userId: z.string().uuid(),
+        locationId: z.string().uuid().optional(),
         windows: providerScheduleWindowsInput,
         expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
+        // Retained briefly so a client loaded before this release fails safe
+        // instead of failing validation during the deployment window.
         moveToPrimaryLocation: z.boolean().optional(),
         replaceOtherLocationHours: z.boolean().optional(),
       }),
@@ -1843,10 +1850,11 @@ export const settingsRouter = createRouter({
           )}::text))`,
         );
 
-        const [primaryLocation] = await tx
+        const activeLocations = await tx
           .select({
             id: locations.id,
             name: locations.name,
+            isPrimary: locations.isPrimary,
             timezone: practices.timezone,
           })
           .from(locations)
@@ -1861,17 +1869,23 @@ export const settingsRouter = createRouter({
           .where(
             and(
               eq(locations.practiceId, ctx.practiceId),
-              eq(locations.isPrimary, true),
               isNull(locations.deletedAt),
             ),
           )
           .orderBy(asc(locations.createdAt), asc(locations.id))
-          .limit(1)
           .for("share");
-        if (!primaryLocation) {
+        const primaryLocation = activeLocations.find(
+          (location) => location.isPrimary,
+        );
+        const targetLocation = input.locationId
+          ? activeLocations.find((location) => location.id === input.locationId)
+          : primaryLocation;
+        if (!targetLocation) {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
-            message: "Set a primary location before adding provider hours.",
+            message: input.locationId
+              ? "Choose an active clinic location before saving provider hours."
+              : "Set a primary location before adding provider hours.",
           });
         }
 
@@ -1920,8 +1934,8 @@ export const settingsRouter = createRouter({
 
         if (
           providerScheduleRevision(
-            primaryLocation.timezone,
-            primaryLocation.id,
+            targetLocation.timezone,
+            primaryLocation?.id ?? null,
             provider.locationId,
             currentRows,
           ) !== input.expectedRevision
@@ -1932,50 +1946,6 @@ export const settingsRouter = createRouter({
           });
         }
 
-        const hasNewWindows = input.windows.length > 0;
-        const otherLocationWindowCount = currentRows.filter(
-          (row) => row.locationId !== primaryLocation.id,
-        ).length;
-        if (
-          otherLocationWindowCount > 0 &&
-          input.replaceOtherLocationHours !== true
-        ) {
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message: `Confirm replacing ${otherLocationWindowCount} working ${otherLocationWindowCount === 1 ? "window" : "windows"} saved outside the primary location.`,
-          });
-        }
-
-        const movingFromAnotherLocation =
-          hasNewWindows &&
-          provider.locationId !== null &&
-          provider.locationId !== primaryLocation.id;
-        if (movingFromAnotherLocation) {
-          if (input.moveToPrimaryLocation !== true) {
-            throw new TRPCError({
-              code: "PRECONDITION_FAILED",
-              message:
-                "Confirm moving this provider to the primary location before setting primary-location hours.",
-            });
-          }
-        }
-
-        // Empty schedules clear existing hours without changing the staff
-        // assignment. New hours attach an unassigned provider automatically;
-        // moving a provider from another location requires consent above.
-        if (hasNewWindows && provider.locationId !== primaryLocation.id) {
-          await tx
-            .update(users)
-            .set({ locationId: primaryLocation.id })
-            .where(
-              and(
-                eq(users.id, provider.id),
-                eq(users.practiceId, ctx.practiceId),
-                isNull(users.deletedAt),
-              ),
-            );
-        }
-
         await tx
           .update(staffSchedules)
           .set({ deletedAt: new Date() })
@@ -1983,6 +1953,7 @@ export const settingsRouter = createRouter({
             and(
               eq(staffSchedules.practiceId, ctx.practiceId),
               eq(staffSchedules.userId, provider.id),
+              eq(staffSchedules.locationId, targetLocation.id),
               isNull(staffSchedules.deletedAt),
             ),
           );
@@ -1997,7 +1968,7 @@ export const settingsRouter = createRouter({
             orderedWindows.map((window) => ({
               practiceId: ctx.practiceId,
               userId: provider.id,
-              locationId: primaryLocation.id,
+              locationId: targetLocation.id,
               dayOfWeek: window.dayOfWeek,
               startTime: window.startTime,
               endTime: window.endTime,
@@ -2007,7 +1978,7 @@ export const settingsRouter = createRouter({
 
         return {
           userId: provider.id,
-          locationId: hasNewWindows ? primaryLocation.id : provider.locationId,
+          locationId: targetLocation.id,
           windowCount: orderedWindows.length,
         };
       });

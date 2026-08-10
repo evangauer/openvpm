@@ -760,7 +760,7 @@ const sections: Section[] = [
         method: "GET",
         description: "List appointment types available for portal booking.",
         input: `{ token: string }`,
-        response: `Array<{ id: string, name: string, durationMinutes: number }>`,
+        response: `Array<{ id: string, name: string, durationMinutes: number, requiresDoctor: number }>`,
         auth: "Portal token",
       },
       {
@@ -770,8 +770,9 @@ const sections: Section[] = [
         input: `{
   token: string,
   date: string, // YYYY-MM-DD
+  typeId?: string, // uses the verified type duration and provider coverage
   locationId?: string, // required when the clinic has multiple locations
-  durationMinutes?: number // 5-480 minutes, defaults to 30
+  durationMinutes?: number // legacy fallback when typeId is omitted
 }`,
         response: `Array<{ time: string, iso: string }>`,
         auth: "Portal token",
@@ -784,7 +785,7 @@ const sections: Section[] = [
         input: `{
   token: string,
   patientId: string,
-  typeId?: string,
+  typeId: string,
   locationId?: string, // required when the clinic has multiple locations
   reason: string,
   preferredDate: string, // YYYY-MM-DD

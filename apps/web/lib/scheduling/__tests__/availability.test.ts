@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { findOpenSlots } from "../availability";
+import {
+  findOpenSlots,
+  findOpenSlotsAcrossWindows,
+  intersectAvailabilityWindows,
+  mergeAvailabilityWindows,
+  slotFitsAvailability,
+} from "../availability";
 
 const d = (iso: string) => new Date(iso);
 
@@ -21,7 +27,12 @@ describe("findOpenSlots", () => {
       dayStart: d("2026-06-02T09:00:00Z"),
       dayEnd: d("2026-06-02T11:00:00Z"),
       slotMinutes: 30,
-      busy: [{ startTime: d("2026-06-02T09:30:00Z"), endTime: d("2026-06-02T10:00:00Z") }],
+      busy: [
+        {
+          startTime: d("2026-06-02T09:30:00Z"),
+          endTime: d("2026-06-02T10:00:00Z"),
+        },
+      ],
     });
     const starts = slots.map((s) => s.start.toISOString());
     // 09:00 ok, 09:30 blocked, 10:00 ok (back-to-back), 10:30 ok
@@ -61,7 +72,62 @@ describe("findOpenSlots", () => {
 
   it("throws on a non-positive slot length", () => {
     expect(() =>
-      findOpenSlots({ dayStart: d("2026-06-02T09:00:00Z"), dayEnd: d("2026-06-02T10:00:00Z"), slotMinutes: 0, busy: [] })
+      findOpenSlots({
+        dayStart: d("2026-06-02T09:00:00Z"),
+        dayEnd: d("2026-06-02T10:00:00Z"),
+        slotMinutes: 0,
+        busy: [],
+      }),
     ).toThrow(/positive/);
+  });
+});
+
+describe("multi-window availability", () => {
+  it("merges overlapping provider coverage without duplicate slots", () => {
+    const windows = mergeAvailabilityWindows([
+      { start: d("2026-06-02T09:00:00Z"), end: d("2026-06-02T12:00:00Z") },
+      { start: d("2026-06-02T10:00:00Z"), end: d("2026-06-02T13:00:00Z") },
+      { start: d("2026-06-02T14:00:00Z"), end: d("2026-06-02T15:00:00Z") },
+    ]);
+    expect(windows).toEqual([
+      { start: d("2026-06-02T09:00:00Z"), end: d("2026-06-02T13:00:00Z") },
+      { start: d("2026-06-02T14:00:00Z"), end: d("2026-06-02T15:00:00Z") },
+    ]);
+    expect(
+      findOpenSlotsAcrossWindows({ windows, slotMinutes: 60, busy: [] }),
+    ).toHaveLength(5);
+  });
+
+  it("intersects coverage with the client-facing request window", () => {
+    expect(
+      intersectAvailabilityWindows(
+        [
+          { start: d("2026-06-02T07:00:00Z"), end: d("2026-06-02T10:00:00Z") },
+          { start: d("2026-06-02T16:00:00Z"), end: d("2026-06-02T20:00:00Z") },
+        ],
+        { start: d("2026-06-02T08:00:00Z"), end: d("2026-06-02T18:00:00Z") },
+      ),
+    ).toEqual([
+      { start: d("2026-06-02T08:00:00Z"), end: d("2026-06-02T10:00:00Z") },
+      { start: d("2026-06-02T16:00:00Z"), end: d("2026-06-02T18:00:00Z") },
+    ]);
+  });
+
+  it("requires the entire requested slot to fit coverage", () => {
+    const windows = [
+      { start: d("2026-06-02T09:00:00Z"), end: d("2026-06-02T10:00:00Z") },
+    ];
+    expect(
+      slotFitsAvailability(
+        { start: d("2026-06-02T09:30:00Z"), end: d("2026-06-02T10:00:00Z") },
+        windows,
+      ),
+    ).toBe(true);
+    expect(
+      slotFitsAvailability(
+        { start: d("2026-06-02T09:30:00Z"), end: d("2026-06-02T10:30:00Z") },
+        windows,
+      ),
+    ).toBe(false);
   });
 });

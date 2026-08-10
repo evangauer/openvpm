@@ -45,7 +45,7 @@ describe("portal booking UI", () => {
       "const hasValidPreferredTime = isPortalBookingStartWithinBounds("
     );
     expect(source).toContain(
-      "durationMinutes: selectedDurationMinutes,\n      locationId: locationId || undefined"
+      "durationMinutes: selectedDurationMinutes,\n      typeId: typeId || undefined,\n      locationId: locationId || undefined"
     );
     expect(source).not.toContain("const appointmentTypes = types.data ?? []");
     expect(source).not.toContain(

@@ -51,7 +51,11 @@ import {
   summarizePlanProgress,
   type PlanItemStatus,
 } from "@/lib/treatment-plans/progress";
-import { findOpenSlots } from "@/lib/scheduling/availability";
+import {
+  findOpenSlotsAcrossWindows,
+  intersectAvailabilityWindows,
+} from "@/lib/scheduling/availability";
+import { providerCoverageForDate } from "@/lib/scheduling/provider-availability";
 import {
   conflictMessage,
   detectConflicts,
@@ -929,6 +933,22 @@ const findOpenSlotsTool: AgentTool = {
       { hour: 18 },
       timezone
     );
+    const coverage = input.doctorId
+      ? await providerCoverageForDate(ctx.db, {
+          practiceId: ctx.practiceId,
+          date: input.date,
+          timezone,
+          locationId: location.locationId,
+          doctorId: input.doctorId,
+        })
+      : { configured: false as const, windows: [] };
+    const windows = coverage.configured
+      ? intersectAvailabilityWindows(coverage.windows, {
+          start: dayStart,
+          end: dayEnd,
+        })
+      : [{ start: dayStart, end: dayEnd }];
+    if (windows.length === 0) return [];
 
     const rows = await ctx.db
       .select({
@@ -957,9 +977,8 @@ const findOpenSlotsTool: AgentTool = {
       );
     });
 
-    return findOpenSlots({
-      dayStart,
-      dayEnd,
+    return findOpenSlotsAcrossWindows({
+      windows,
       slotMinutes: input.durationMinutes ?? 30,
       busy,
     }).map((s) => ({ start: s.start.toISOString(), end: s.end.toISOString() }));

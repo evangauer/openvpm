@@ -64,7 +64,7 @@ export function ProviderHours() {
   );
   const [editingRevision, setEditingRevision] = useState<string | null>(null);
   const [draft, setDraft] = useState<ProviderWindow[]>([]);
-  const [confirmMoveToPrimary, setConfirmMoveToPrimary] = useState(false);
+  const [selectedLocationId, setSelectedLocationId] = useState("");
   const validationError = useMemo(() => scheduleError(draft), [draft]);
   const save = trpc.settings.replaceProviderSchedule.useMutation({
     onSuccess: async () => {
@@ -74,7 +74,6 @@ export function ProviderHours() {
       ]);
       setEditingProviderId(null);
       setEditingRevision(null);
-      setConfirmMoveToPrimary(false);
       toast.success("Provider hours saved");
     },
     onError: (error) => toast.error(error.message),
@@ -106,7 +105,11 @@ export function ProviderHours() {
     );
   }
 
-  const { primaryLocation, providers, timezone } = setup.data;
+  const { locations, primaryLocation, providers, timezone } = setup.data;
+  const selectedLocation =
+    locations.find((location) => location.id === selectedLocationId) ??
+    primaryLocation ??
+    locations[0];
 
   return (
     <section className="space-y-4 rounded-lg border border-border bg-card p-4">
@@ -117,22 +120,39 @@ export function ProviderHours() {
             <h3 className="text-sm font-semibold">Provider working hours</h3>
           </div>
           <p className="mt-1 max-w-2xl text-xs text-muted-foreground">
-            Configure the weekly hours each veterinarian expects to work at the
-            primary location. Times use {timezone}. These hours are saved for
-            clinic setup and do not yet limit the schedule or client requests.
+            Set each veterinarian&apos;s weekly coverage at every clinic. Times
+            use {timezone}. Doctor-required client requests only show configured
+            provider coverage once your clinic saves its first hours.
           </p>
         </div>
-        {primaryLocation ? (
-          <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium">
-            {primaryLocation.name}
-          </span>
+        {locations.length > 0 ? (
+          <label className="text-xs font-medium text-muted-foreground">
+            Clinic location
+            <select
+              aria-label="Provider hours clinic location"
+              className="mt-1 block h-9 min-w-48 rounded-md border border-input bg-background px-3 text-sm text-foreground"
+              value={selectedLocation?.id ?? ""}
+              onChange={(event) => {
+                setSelectedLocationId(event.target.value);
+                setEditingProviderId(null);
+                setEditingRevision(null);
+                setDraft([]);
+              }}
+            >
+              {locations.map((location) => (
+                <option key={location.id} value={location.id}>
+                  {location.name}
+                  {location.isPrimary ? " (primary)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
         ) : null}
       </div>
 
-      {!primaryLocation ? (
+      {!selectedLocation ? (
         <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
-          Choose a primary location in the Locations tab before setting provider
-          hours.
+          Add an active clinic location before setting provider hours.
         </div>
       ) : providers.length === 0 ? (
         <div className="rounded-md bg-muted/50 p-4 text-sm text-muted-foreground">
@@ -143,15 +163,15 @@ export function ProviderHours() {
         <div className="space-y-3">
           {providers.map((provider) => {
             const editing = editingProviderId === provider.id;
-            const requiresMoveConsent =
-              draft.length > 0 && !provider.assignedToPrimary;
-            const requiresReplacementConsent =
-              provider.otherLocationWindowCount > 0;
-            const requiresConsent =
-              requiresMoveConsent || requiresReplacementConsent;
-            const dayCount = new Set(
-              provider.windows.map((window) => window.dayOfWeek),
-            ).size;
+            const windows =
+              provider.locationSchedules.find(
+                (schedule) => schedule.locationId === selectedLocation.id,
+              )?.windows ?? [];
+            const homeLocation = locations.find(
+              (location) => location.id === provider.locationId,
+            );
+            const dayCount = new Set(windows.map((window) => window.dayOfWeek))
+              .size;
             return (
               <div
                 key={provider.id}
@@ -161,17 +181,22 @@ export function ProviderHours() {
                   <div>
                     <p className="text-sm font-medium">{provider.name}</p>
                     <p className="text-xs text-muted-foreground">
-                      {provider.windows.length === 0
-                        ? "No working hours set"
-                        : `${dayCount} day${dayCount === 1 ? "" : "s"} · ${provider.windows.length} working window${provider.windows.length === 1 ? "" : "s"}`}
+                      {windows.length === 0
+                        ? `No hours set at ${selectedLocation.name}`
+                        : `${dayCount} day${dayCount === 1 ? "" : "s"} · ${windows.length} working window${windows.length === 1 ? "" : "s"}`}
                     </p>
-                    {provider.otherLocationWindowCount > 0 ? (
+                    {homeLocation ? (
+                      <p className="text-xs text-muted-foreground">
+                        Home base: {homeLocation.name}
+                      </p>
+                    ) : null}
+                    {provider.unspecifiedWindowCount > 0 ? (
                       <p className="text-xs text-amber-700">
-                        {provider.otherLocationWindowCount} additional working
-                        {provider.otherLocationWindowCount === 1
-                          ? " window is"
-                          : " windows are"}{" "}
-                        saved outside the primary location
+                        {provider.unspecifiedWindowCount} legacy practice-wide
+                        working{" "}
+                        {provider.unspecifiedWindowCount === 1
+                          ? "window"
+                          : "windows"}
                       </p>
                     ) : null}
                   </div>
@@ -183,27 +208,16 @@ export function ProviderHours() {
                       if (editing) {
                         setEditingProviderId(null);
                         setEditingRevision(null);
-                        setConfirmMoveToPrimary(false);
                         return;
                       }
                       setEditingProviderId(provider.id);
                       setEditingRevision(provider.revision);
-                      setConfirmMoveToPrimary(false);
-                      setDraft(
-                        provider.windows.map((window) => ({ ...window })),
-                      );
+                      setDraft(windows.map((window) => ({ ...window })));
                     }}
                   >
                     {editing ? "Close editor" : "Set hours"}
                   </Button>
                 </div>
-
-                {!provider.assignedToPrimary ? (
-                  <p className="mt-2 text-xs text-amber-700">
-                    This provider is assigned to another location.
-                    Primary-location hours require an explicit move below.
-                  </p>
-                ) : null}
 
                 {editing ? (
                   <div className="mt-4 space-y-3 border-t border-border pt-4">
@@ -223,27 +237,6 @@ export function ProviderHours() {
                         Mark all closed
                       </Button>
                     </div>
-
-                    {requiresConsent ? (
-                      <label className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950">
-                        <input
-                          className="mt-0.5 h-4 w-4"
-                          type="checkbox"
-                          checked={confirmMoveToPrimary}
-                          onChange={(event) =>
-                            setConfirmMoveToPrimary(event.target.checked)
-                          }
-                        />
-                        <span>
-                          {requiresMoveConsent
-                            ? `Move ${provider.name} to ${primaryLocation.name} when I save these hours. This updates their staff location. `
-                            : ""}
-                          {requiresReplacementConsent
-                            ? `Saving replaces ${provider.otherLocationWindowCount} existing working ${provider.otherLocationWindowCount === 1 ? "window" : "windows"} outside ${primaryLocation.name}. Multi-location hours are not supported yet.`
-                            : ""}
-                        </span>
-                      </label>
-                    ) : null}
 
                     <div className="space-y-2">
                       {DAYS.map((dayName, dayOfWeek) => {
@@ -376,19 +369,14 @@ export function ProviderHours() {
                         disabled={
                           Boolean(validationError) ||
                           save.isPending ||
-                          editingRevision === null ||
-                          (requiresConsent && !confirmMoveToPrimary)
+                          editingRevision === null
                         }
                         onClick={() =>
                           save.mutate({
                             userId: provider.id,
+                            locationId: selectedLocation.id,
                             windows: draft,
                             expectedRevision: editingRevision!,
-                            moveToPrimaryLocation:
-                              requiresMoveConsent && confirmMoveToPrimary,
-                            replaceOtherLocationHours:
-                              requiresReplacementConsent &&
-                              confirmMoveToPrimary,
                           })
                         }
                       >
@@ -404,7 +392,6 @@ export function ProviderHours() {
                         onClick={() => {
                           setEditingProviderId(null);
                           setEditingRevision(null);
-                          setConfirmMoveToPrimary(false);
                         }}
                       >
                         Cancel

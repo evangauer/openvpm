@@ -24,24 +24,20 @@ describe("provider hours settings UI", () => {
     expect(settingsPage.match(/<ProviderHours \/>/g)).toHaveLength(1);
   });
 
-  it("offers explicit hours, closed state, lunch windows, and destructive-change consent", () => {
+  it("offers explicit multi-location hours, closed state, and lunch windows", () => {
     expect(providerHours).toContain("Use Mon–Fri, 8–6");
     expect(providerHours).toContain("Mark all closed");
     expect(providerHours).toContain("Add window");
     expect(providerHours).toContain("working windows cannot overlap");
-    expect(providerHours).toContain(
-      "clinic setup and do not yet limit the schedule or client requests",
-    );
-    expect(providerHours).toContain("Move ${provider.name} to");
-    expect(providerHours).toContain(
-      "Multi-location hours are not supported yet",
-    );
+    expect(providerHours).toContain("Provider hours clinic location");
+    expect(providerHours).toContain("Doctor-required client requests");
+    expect(providerHours).toContain("locationSchedules.find");
+    expect(providerHours).toContain("Home base:");
     expect(providerHours).toContain("setEditingRevision(provider.revision)");
     expect(providerHours).toContain("expectedRevision: editingRevision!");
-    expect(providerHours).toContain("moveToPrimaryLocation:");
-    expect(providerHours).toContain("replaceOtherLocationHours:");
-    expect(providerHours).toContain(
-      "draft.length > 0 && !provider.assignedToPrimary",
+    expect(providerHours).toContain("locationId: selectedLocation.id");
+    expect(providerHours).not.toContain(
+      "Multi-location hours are not supported",
     );
   });
 });

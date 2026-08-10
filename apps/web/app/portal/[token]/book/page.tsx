@@ -63,6 +63,7 @@ export default function BookAppointmentPage() {
       token,
       date: preferredDate,
       durationMinutes: selectedDurationMinutes,
+      typeId: typeId || undefined,
       locationId: locationId || undefined
     },
     { enabled: !!preferredDate && hasValidAppointmentType && !!locationId }

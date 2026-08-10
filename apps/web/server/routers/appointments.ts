@@ -22,7 +22,11 @@ import {
   hasConflict,
   type ExistingBooking,
 } from "@/lib/scheduling/conflicts";
-import { findOpenSlots } from "@/lib/scheduling/availability";
+import {
+  findOpenSlotsAcrossWindows,
+  intersectAvailabilityWindows,
+} from "@/lib/scheduling/availability";
+import { providerCoverageForDate } from "@/lib/scheduling/provider-availability";
 import {
   dateInputDayUtcRange,
   formatDateInputForTimeZone,
@@ -1555,6 +1559,23 @@ export const appointmentsRouter = createRouter({
       });
       const locationId = await appointmentLocationOrThrow(ctx, input);
 
+      const coverage = input.doctorId
+        ? await providerCoverageForDate(ctx.db, {
+            practiceId: ctx.practiceId,
+            date: input.date,
+            timezone,
+            locationId,
+            doctorId: input.doctorId,
+          })
+        : { configured: false as const, windows: [] };
+      const windows = coverage.configured
+        ? intersectAvailabilityWindows(coverage.windows, {
+            start: dayStart,
+            end: dayEnd,
+          })
+        : [{ start: dayStart, end: dayEnd }];
+      if (windows.length === 0) return [];
+
       const existing = await fetchOverlapping(ctx.db, ctx.practiceId, dayStart, dayEnd);
       // Only the chosen doctor/room blocks availability; if neither given, any
       // booking on the day blocks (treat the schedule as a single resource).
@@ -1564,9 +1585,8 @@ export const appointmentsRouter = createRouter({
         return !input.doctorId && !input.roomId && b.locationId === locationId;
       });
 
-      return findOpenSlots({
-        dayStart,
-        dayEnd,
+      return findOpenSlotsAcrossWindows({
+        windows,
         slotMinutes: input.durationMinutes,
         stepMinutes: input.stepMinutes,
         busy,

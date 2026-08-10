@@ -10,6 +10,12 @@ const mocks = vi.hoisted(() => ({
   dispatchWebhookEvent: vi.fn(async () => undefined),
   recordActivationAfterAppointmentCreated: vi.fn(async () => true),
   hasHostedFullAccess: vi.fn(() => true),
+  providerCoverageForDate: vi.fn(
+    async (): Promise<{
+      configured: boolean;
+      windows: Array<{ start: Date; end: Date }>;
+    }> => ({ configured: false, windows: [] })
+  ),
 }));
 
 vi.mock("@/lib/rate-limit", () => ({
@@ -28,6 +34,10 @@ vi.mock("@/lib/funnel-events-server", () => ({
 vi.mock("@/lib/billing/plans", () => ({
   billingEnforced: mocks.billingEnforced,
   hasHostedFullAccess: mocks.hasHostedFullAccess,
+}));
+
+vi.mock("@/lib/scheduling/provider-availability", () => ({
+  providerCoverageForDate: mocks.providerCoverageForDate,
 }));
 
 const { portalRouter } = await import("../routers/portal");
@@ -176,6 +186,10 @@ afterEach(() => {
   vi.clearAllMocks();
   mocks.billingEnforced.mockReturnValue(false);
   mocks.hasHostedFullAccess.mockReturnValue(true);
+  mocks.providerCoverageForDate.mockResolvedValue({
+    configured: false,
+    windows: [],
+  });
 });
 
 describe("portal booking input validation", () => {
@@ -607,6 +621,43 @@ describe("portal booking input validation", () => {
     expect(result.map((slot) => slot.time)).toEqual(["08:00", "12:00"]);
   });
 
+  it("uses the selected type and configured provider coverage for suggestions", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-01T14:00:00.000Z"));
+    mocks.providerCoverageForDate.mockResolvedValue({
+      configured: true,
+      windows: [
+        {
+          start: new Date("2026-07-02T17:00:00.000Z"),
+          end: new Date("2026-07-02T19:00:00.000Z"),
+        },
+      ],
+    });
+    const { db } = createDb({
+      selectResults: [
+        [{ id: CLIENT_ID, practiceId: PRACTICE_ID }],
+        ACTIVE_PRACTICE,
+        [{ timezone: "America/Los_Angeles" }],
+        [{ id: TYPE_ID, durationMinutes: 30, requiresDoctor: 1 }],
+        [],
+      ],
+    });
+
+    const result = await callerWithDb(db).availableSlots({
+      token: TOKEN,
+      date: "2026-07-02",
+      durationMinutes: 240,
+      typeId: TYPE_ID,
+    });
+
+    expect(result.map((slot) => slot.time)).toEqual([
+      "10:00",
+      "10:30",
+      "11:00",
+      "11:30",
+    ]);
+  });
+
   it("rejects portal appointment requests when the requested slot is no longer available", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-01T14:00:00.000Z"));
@@ -641,6 +692,45 @@ describe("portal booking input validation", () => {
     );
     expect(insert).not.toHaveBeenCalled();
     expect(mocks.dispatchWebhookEvent).not.toHaveBeenCalled();
+  });
+
+  it("rejects a tampered doctor-required request outside provider coverage", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-01T14:00:00.000Z"));
+    mocks.providerCoverageForDate.mockResolvedValue({
+      configured: true,
+      windows: [
+        {
+          start: new Date("2026-07-01T17:00:00.000Z"),
+          end: new Date("2026-07-01T19:00:00.000Z"),
+        },
+      ],
+    });
+    const { db, insert } = createDb({
+      selectResults: [
+        [{ id: CLIENT_ID, practiceId: PRACTICE_ID }],
+        ACTIVE_PRACTICE,
+        ACTIVE_PRACTICE,
+        [{ timezone: "America/Los_Angeles" }],
+        [{ id: PATIENT_ID, name: "Juniper" }],
+        [{ id: TYPE_ID, durationMinutes: 30, requiresDoctor: 1 }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).requestAppointment({
+        token: TOKEN,
+        patientId: PATIENT_ID,
+        typeId: TYPE_ID,
+        preferredDate: "2026-07-01",
+        preferredTime: "09:00",
+        reason: "Wellness visit",
+      })
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringContaining("outside the clinic's provider coverage"),
+    });
+    expect(insert).not.toHaveBeenCalled();
   });
 
   it("rejects portal appointment requests when the practice becomes inactive before the write", async () => {

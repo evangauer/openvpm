@@ -33,7 +33,12 @@ import {
   PORTAL_BOOKING_REASON_MAX_LENGTH,
   portalBookingWindow,
 } from "@/lib/portal/booking";
-import { findOpenSlots } from "@/lib/scheduling/availability";
+import {
+  findOpenSlotsAcrossWindows,
+  intersectAvailabilityWindows,
+  slotFitsAvailability,
+} from "@/lib/scheduling/availability";
+import { providerCoverageForDate } from "@/lib/scheduling/provider-availability";
 import { billingEnforced, hasHostedFullAccess } from "@/lib/billing/plans";
 import { getChargeableStripeConnectAccountId } from "@/lib/billing/payment-accounts";
 import { clinicalDateInput } from "@/lib/records/clinical-inputs";
@@ -942,6 +947,7 @@ export const portalRouter = createRouter({
           id: appointmentTypes.id,
           name: appointmentTypes.name,
           durationMinutes: appointmentTypes.durationMinutes,
+          requiresDoctor: appointmentTypes.requiresDoctor,
         })
         .from(appointmentTypes)
         .where(
@@ -965,6 +971,7 @@ export const portalRouter = createRouter({
           .min(PORTAL_BOOKING_MIN_DURATION_MINUTES)
           .max(PORTAL_BOOKING_MAX_DURATION_MINUTES)
           .default(30),
+        typeId: z.string().uuid().optional(),
         locationId: z.string().uuid().optional()
       })
     )
@@ -992,6 +999,47 @@ export const portalRouter = createRouter({
         throw new TRPCError({ code: location.code, message: location.message });
       }
 
+      const [type] = input.typeId
+        ? await ctx.db
+            .select({
+              id: appointmentTypes.id,
+              durationMinutes: appointmentTypes.durationMinutes,
+              requiresDoctor: appointmentTypes.requiresDoctor,
+            })
+            .from(appointmentTypes)
+            .where(
+              and(
+                eq(appointmentTypes.id, input.typeId),
+                eq(appointmentTypes.practiceId, client.practiceId),
+                isNull(appointmentTypes.deletedAt)
+              )
+            )
+            .limit(1)
+        : [null];
+      if (input.typeId && !type) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Appointment type not found",
+        });
+      }
+      const durationMinutes = type?.durationMinutes ?? input.durationMinutes;
+      const coverage =
+        type?.requiresDoctor === 1
+          ? await providerCoverageForDate(ctx.db, {
+              practiceId: client.practiceId,
+              date: input.date,
+              timezone,
+              locationId: location.locationId,
+            })
+          : { configured: false as const, windows: [] };
+      const windows = coverage.configured
+        ? intersectAvailabilityWindows(coverage.windows, {
+            start: dayStart,
+            end: dayEnd,
+          })
+        : [{ start: dayStart, end: dayEnd }];
+      if (windows.length === 0) return [];
+
       const busy = await ctx.db
         .select({
           startTime: appointments.startTime,
@@ -1010,10 +1058,9 @@ export const portalRouter = createRouter({
         );
 
       return filterFutureOpenSlots(
-        findOpenSlots({
-          dayStart,
-          dayEnd,
-          slotMinutes: input.durationMinutes,
+        findOpenSlotsAcrossWindows({
+          windows,
+          slotMinutes: durationMinutes,
           busy,
         })
       ).map((s) => ({
@@ -1101,6 +1148,7 @@ export const portalRouter = createRouter({
         .select({
           id: appointmentTypes.id,
           durationMinutes: appointmentTypes.durationMinutes,
+          requiresDoctor: appointmentTypes.requiresDoctor,
         })
         .from(appointmentTypes)
         .where(
@@ -1138,6 +1186,27 @@ export const portalRouter = createRouter({
           code: "BAD_REQUEST",
           message: e instanceof Error ? e.message : "Invalid date or time",
         });
+      }
+      if (type.requiresDoctor === 1) {
+        const coverage = await providerCoverageForDate(ctx.db, {
+          practiceId: client.practiceId,
+          date: input.preferredDate,
+          timezone,
+          locationId: location.locationId,
+        });
+        if (
+          coverage.configured &&
+          !slotFitsAvailability(
+            { start: slot.startTime, end: slot.endTime },
+            coverage.windows,
+          )
+        ) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "That time is outside the clinic's provider coverage. Please choose another time.",
+          });
+        }
       }
 
       const [conflict] = await ctx.db

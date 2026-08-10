@@ -11,6 +11,12 @@ const mocks = vi.hoisted(() => ({
   dispatchWebhookEvent: vi.fn(async () => undefined),
   recordActivationAfterAppointmentCreated: vi.fn(async () => true),
   recordAuditLog: vi.fn(async () => undefined),
+  providerCoverageForDate: vi.fn(
+    async (): Promise<{
+      configured: boolean;
+      windows: Array<{ start: Date; end: Date }>;
+    }> => ({ configured: false, windows: [] })
+  ),
 }));
 
 vi.mock("@/lib/rate-limit", () => ({
@@ -33,6 +39,10 @@ vi.mock("@/lib/billing/plans", () => ({
 
 vi.mock("@/lib/audit", () => ({
   recordAuditLog: mocks.recordAuditLog,
+}));
+
+vi.mock("@/lib/scheduling/provider-availability", () => ({
+  providerCoverageForDate: mocks.providerCoverageForDate,
 }));
 
 const { bookingRouter } = await import("../routers/booking");
@@ -207,6 +217,10 @@ afterEach(() => {
   vi.clearAllMocks();
   mocks.billingEnforced.mockReturnValue(false);
   mocks.hasHostedFullAccess.mockReturnValue(true);
+  mocks.providerCoverageForDate.mockResolvedValue({
+    configured: false,
+    windows: [],
+  });
 });
 
 describe("public booking page", () => {
@@ -295,6 +309,55 @@ describe("public availability", () => {
       typeId: TYPE_A,
     });
     expect(result).toEqual([{ time: "17:30", iso: "2026-07-20T17:30:00.000Z" }]);
+  });
+
+  it("intersects doctor-required requests with configured provider coverage", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-19T12:00:00Z"));
+    mocks.providerCoverageForDate.mockResolvedValue({
+      configured: true,
+      windows: [
+        {
+          start: new Date("2026-07-20T10:00:00Z"),
+          end: new Date("2026-07-20T12:00:00Z"),
+        },
+      ],
+    });
+    const { db } = createDb({
+      selectResults: [
+        [pageRow()],
+        [
+          {
+            id: TYPE_A,
+            name: "Wellness Exam",
+            durationMinutes: 30,
+            requiresDoctor: 1,
+          },
+        ],
+        [],
+      ],
+    });
+
+    const result = await publicCaller(db).availableSlots({
+      slug: "test-clinic",
+      date: "2026-07-20",
+      typeId: TYPE_A,
+    });
+
+    expect(result.map((slot) => slot.time)).toEqual([
+      "10:00",
+      "10:30",
+      "11:00",
+      "11:30",
+    ]);
+    expect(mocks.providerCoverageForDate).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({
+        practiceId: PRACTICE_ID,
+        locationId: LOCATION_ID,
+        date: "2026-07-20",
+      }),
+    );
   });
 
   it("rejects a stale or unrequestable type before reading appointments", async () => {
@@ -460,6 +523,32 @@ describe("public booking", () => {
     });
     await expect(publicCaller(db).book(bookInput())).rejects.toMatchObject({
       code: "CONFLICT",
+    });
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it("rejects a tampered doctor-required request outside provider coverage", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-19T12:00:00Z"));
+    mocks.providerCoverageForDate.mockResolvedValue({
+      configured: true,
+      windows: [
+        {
+          start: new Date("2026-07-20T10:00:00Z"),
+          end: new Date("2026-07-20T12:00:00Z"),
+        },
+      ],
+    });
+    const { db, insert } = createDb({
+      selectResults: [
+        [pageRow()],
+        [{ id: TYPE_A, durationMinutes: 30, requiresDoctor: 1 }],
+      ],
+    });
+
+    await expect(publicCaller(db).book(bookInput())).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringContaining("outside the clinic's provider coverage"),
     });
     expect(insert).not.toHaveBeenCalled();
   });
