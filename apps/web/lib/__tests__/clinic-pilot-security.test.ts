@@ -59,6 +59,15 @@ describe("clinic pilot operating boundary", () => {
       "ALTER TABLE clinic_pilots ENABLE ROW LEVEL SECURITY",
     );
     expect(migration).toContain("clinic_pilots_require_event");
+    expect(
+      migration.indexOf(
+        'CREATE UNIQUE INDEX "clinic_pilots_id_practice_uq"',
+      ),
+    ).toBeLessThan(
+      migration.indexOf(
+        'ADD CONSTRAINT "clinic_pilot_events_pilot_practice_fk"',
+      ),
+    );
     expect(evidenceBindingMigration).toContain(
       '"first_visit_validated_closeout_id"',
     );

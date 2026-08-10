@@ -137,6 +137,7 @@ CREATE TABLE "clinic_pilots" (
         ))
 );
 --> statement-breakpoint
+CREATE UNIQUE INDEX "clinic_pilots_id_practice_uq" ON "clinic_pilots" USING btree ("id","practice_id");--> statement-breakpoint
 ALTER TABLE "clinic_pilot_events" ADD CONSTRAINT "clinic_pilot_events_clinic_pilot_id_clinic_pilots_id_fk" FOREIGN KEY ("clinic_pilot_id") REFERENCES "public"."clinic_pilots"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "clinic_pilot_events" ADD CONSTRAINT "clinic_pilot_events_practice_id_practices_id_fk" FOREIGN KEY ("practice_id") REFERENCES "public"."practices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "clinic_pilot_events" ADD CONSTRAINT "clinic_pilot_events_pilot_practice_fk" FOREIGN KEY ("clinic_pilot_id","practice_id") REFERENCES "public"."clinic_pilots"("id","practice_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -146,7 +147,6 @@ ALTER TABLE "clinic_pilots" ADD CONSTRAINT "clinic_pilots_acceptance_user_practi
 CREATE UNIQUE INDEX "clinic_pilot_events_operation_uq" ON "clinic_pilot_events" USING btree ("operation_id");--> statement-breakpoint
 CREATE INDEX "clinic_pilot_events_history_idx" ON "clinic_pilot_events" USING btree ("practice_id","created_at","id");--> statement-breakpoint
 CREATE UNIQUE INDEX "clinic_pilots_practice_uq" ON "clinic_pilots" USING btree ("practice_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "clinic_pilots_id_practice_uq" ON "clinic_pilots" USING btree ("id","practice_id");--> statement-breakpoint
 CREATE INDEX "clinic_pilots_review_idx" ON "clinic_pilots" USING btree ("stage","next_review_at","practice_id");--> statement-breakpoint
 
 -- Install system-only access in the same transaction that creates these
