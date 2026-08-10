@@ -53,6 +53,18 @@ const PATH_TOOL_MAP: Array<{ prefix: string; tool: FunnelToolId }> = [
   { prefix: "/", tool: "dashboard" },
 ];
 
+const FUNNEL_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const REGISTRATION_UTM_PARAMS = [
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+] as const;
+
+type SearchParamsReader = {
+  get(name: string): string | null;
+};
+
 export function funnelToolFromPath(pathname: string): FunnelToolId {
   const path = pathname.split("?")[0] || "/";
   for (const { prefix, tool } of PATH_TOOL_MAP) {
@@ -67,8 +79,16 @@ export function funnelToolFromPath(pathname: string): FunnelToolId {
 
 function cleanParam(value: string | null | undefined): string | undefined {
   const trimmed = value?.trim();
-  if (!trimmed || trimmed.length > ACQUISITION_VALUE_MAX_LENGTH) return undefined;
+  if (!trimmed || trimmed.length > ACQUISITION_VALUE_MAX_LENGTH)
+    return undefined;
   return /^[a-zA-Z0-9._:/-]+$/.test(trimmed) ? trimmed : undefined;
+}
+
+function cleanFunnelId(value: string | null | undefined): string | undefined {
+  const visitorId = cleanParam(value);
+  return visitorId && FUNNEL_ID_RE.test(visitorId)
+    ? visitorId.toLowerCase()
+    : undefined;
 }
 
 export type CloudSignupUrlOptions = {
@@ -98,14 +118,9 @@ export function buildCloudSignupUrl(opts: CloudSignupUrlOptions = {}): string {
   params.set("utm_source", source);
   params.set("utm_medium", medium);
   params.set("utm_campaign", campaign);
-  const visitorId = cleanParam(opts.visitorId);
-  if (
-    visitorId &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-      visitorId
-    )
-  ) {
-    params.set("funnel_id", visitorId.toLowerCase());
+  const visitorId = cleanFunnelId(opts.visitorId);
+  if (visitorId) {
+    params.set("funnel_id", visitorId);
   }
 
   const path = `/register?${params.toString()}`;
@@ -116,6 +131,47 @@ export function buildCloudSignupUrl(opts: CloudSignupUrlOptions = {}): string {
   } catch {
     return path;
   }
+}
+
+/**
+ * Carry the validated marketing journey through the public clinic-fit page.
+ * Only registration attribution fields are read, so contact data, redirect
+ * targets, and arbitrary query parameters cannot reach the signup URL.
+ */
+export function buildClinicFitSignupUrl(
+  searchParams: SearchParamsReader,
+): string {
+  const params = new URLSearchParams({ intent: "cloud" });
+  for (const [name, value] of clinicFitAttributionParams(searchParams)) {
+    params.set(name, value);
+  }
+  return `/register?${params.toString()}`;
+}
+
+/** Preserve the same safe journey fields when clinic-fit opens the demo. */
+export function buildClinicFitDemoUrl(
+  searchParams: SearchParamsReader,
+): string {
+  const params = clinicFitAttributionParams(searchParams);
+  return `https://demo.openvpm.com/login?${params.toString()}`;
+}
+
+function clinicFitAttributionParams(
+  searchParams: SearchParamsReader,
+): URLSearchParams {
+  const params = new URLSearchParams({
+    source: cleanParam(searchParams.get("source")) ?? "clinic_fit",
+  });
+
+  for (const name of REGISTRATION_UTM_PARAMS) {
+    const value = cleanParam(searchParams.get(name));
+    if (value) params.set(name, value);
+  }
+
+  const funnelId = cleanFunnelId(searchParams.get("funnel_id"));
+  if (funnelId) params.set("funnel_id", funnelId);
+
+  return params;
 }
 
 export function cloudSignupAppOrigin(): string | undefined {

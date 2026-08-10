@@ -11,7 +11,10 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PawMark } from "@/components/brand/paw-mark";
-import { buildCloudSignupUrl } from "@/lib/funnel-analytics";
+import {
+  buildClinicFitDemoUrl,
+  buildClinicFitSignupUrl,
+} from "@/lib/funnel-analytics";
 
 export const metadata: Metadata = {
   title: "Clinic fit and pilot readiness | OpenVPM",
@@ -40,13 +43,31 @@ const NOT_YET = [
   "Automated state or federal regulatory reporting",
 ];
 
-const CLINIC_FIT_SIGNUP_URL = buildCloudSignupUrl({
-  source: "clinic_fit",
-  medium: "product",
-  campaign: "clinic_fit",
-});
+type ClinicFitPageProps = {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+};
 
-export default function ClinicFitPage() {
+function toUrlSearchParams(
+  values: Record<string, string | string[] | undefined>,
+): URLSearchParams {
+  const params = new URLSearchParams();
+  for (const [name, value] of Object.entries(values)) {
+    if (Array.isArray(value)) {
+      for (const item of value) params.append(name, item);
+    } else if (value !== undefined) {
+      params.set(name, value);
+    }
+  }
+  return params;
+}
+
+export default async function ClinicFitPage({
+  searchParams,
+}: ClinicFitPageProps) {
+  const inboundAttribution = toUrlSearchParams(await searchParams);
+  const clinicFitSignupUrl = buildClinicFitSignupUrl(inboundAttribution);
+  const clinicFitDemoUrl = buildClinicFitDemoUrl(inboundAttribution);
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-950">
       <header className="border-b border-slate-200 bg-white">
@@ -62,10 +83,10 @@ export default function ClinicFitPage() {
           </Link>
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm" asChild>
-              <Link href="https://demo.openvpm.com/login">Open demo</Link>
+              <Link href={clinicFitDemoUrl}>Open demo</Link>
             </Button>
             <Button size="sm" asChild>
-              <Link href={CLINIC_FIT_SIGNUP_URL}>
+              <Link href={clinicFitSignupUrl}>
                 Start free
                 <ArrowRight className="ml-1.5 h-4 w-4" />
               </Link>
@@ -92,15 +113,13 @@ export default function ClinicFitPage() {
             </p>
             <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
               <Button size="lg" asChild>
-                <Link href={CLINIC_FIT_SIGNUP_URL}>
+                <Link href={clinicFitSignupUrl}>
                   Start a 14-day trial
                   <ArrowRight className="ml-2 h-4 w-4" />
                 </Link>
               </Button>
               <Button size="lg" variant="outline" asChild>
-                <Link href="https://demo.openvpm.com/login">
-                  Open the live demo
-                </Link>
+                <Link href={clinicFitDemoUrl}>Open the live demo</Link>
               </Button>
             </div>
             <p className="mt-3 text-xs text-slate-500">
@@ -204,7 +223,7 @@ export default function ClinicFitPage() {
               </a>
             </Button>
             <Button variant="outline" asChild>
-              <Link href={CLINIC_FIT_SIGNUP_URL}>Start with sample data</Link>
+              <Link href={clinicFitSignupUrl}>Start with sample data</Link>
             </Button>
           </div>
           <p className="mt-4 text-xs text-slate-500">

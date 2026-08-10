@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { acquisitionFromSearchParams } from "@/lib/acquisition";
 import {
+  buildClinicFitDemoUrl,
+  buildClinicFitSignupUrl,
   buildCloudSignupUrl,
   FUNNEL_EVENTS,
   funnelToolFromPath,
@@ -39,7 +42,7 @@ describe("buildCloudSignupUrl", () => {
       campaign: "demo_login",
     });
     expect(url).toBe(
-      "https://app.openvpm.com/register?intent=cloud&source=demo&utm_source=demo&utm_medium=product&utm_campaign=demo_login"
+      "https://app.openvpm.com/register?intent=cloud&source=demo&utm_source=demo&utm_medium=product&utm_campaign=demo_login",
     );
   });
 
@@ -49,7 +52,7 @@ describe("buildCloudSignupUrl", () => {
     });
     const params = new URLSearchParams(url.slice("/register?".length));
     expect(params.get("funnel_id")).toBe(
-      "123e4567-e89b-42d3-a456-426614174000"
+      "123e4567-e89b-42d3-a456-426614174000",
     );
   });
 
@@ -59,6 +62,83 @@ describe("buildCloudSignupUrl", () => {
       source: "demo",
     });
     expect(url.startsWith("/register?")).toBe(true);
+  });
+});
+
+describe("buildClinicFitSignupUrl", () => {
+  it("preserves validated attribution across clinic fit and registration", () => {
+    const url = buildClinicFitSignupUrl(
+      new URLSearchParams({
+        source: "homepage_pricing",
+        funnel_id: "123E4567-E89B-42D3-A456-426614174000",
+        utm_source: "google",
+        utm_medium: "cpc",
+        utm_campaign: "clinic_launch-2026",
+      }),
+    );
+    const params = new URL(url, "https://app.openvpm.com").searchParams;
+
+    expect(url.startsWith("/register?")).toBe(true);
+    expect(Object.fromEntries(params)).toEqual({
+      intent: "cloud",
+      source: "homepage_pricing",
+      utm_source: "google",
+      utm_medium: "cpc",
+      utm_campaign: "clinic_launch-2026",
+      funnel_id: "123e4567-e89b-42d3-a456-426614174000",
+    });
+    expect(acquisitionFromSearchParams(params)).toEqual({
+      source: "homepage_pricing",
+      medium: "cpc",
+      campaign: "clinic_launch-2026",
+      funnelId: "123e4567-e89b-42d3-a456-426614174000",
+    });
+  });
+
+  it("uses clinic fit as the source fallback and rejects unsafe input", () => {
+    const url = buildClinicFitSignupUrl(
+      new URLSearchParams({
+        source: "doctor@example.com",
+        funnel_id: "not-a-uuid",
+        utm_campaign: "contains spaces",
+        utm_term: "patient-name",
+        email: "doctor@example.com",
+        next: "https://attacker.example",
+        redirect: "/dashboard",
+      }),
+    );
+    const params = new URL(url, "https://app.openvpm.com").searchParams;
+
+    expect(Object.fromEntries(params)).toEqual({
+      intent: "cloud",
+      source: "clinic_fit",
+    });
+    expect(url).not.toContain("doctor");
+    expect(url).not.toContain("attacker");
+    expect(url).not.toContain("patient-name");
+  });
+
+  it("preserves the same safe attribution when clinic fit opens the demo", () => {
+    const url = new URL(
+      buildClinicFitDemoUrl(
+        new URLSearchParams({
+          source: "homepage_pricing",
+          funnel_id: "123E4567-E89B-42D3-A456-426614174000",
+          utm_campaign: "clinic_launch-2026",
+          email: "doctor@example.com",
+          next: "https://attacker.example",
+        }),
+      ),
+    );
+
+    expect(`${url.origin}${url.pathname}`).toBe(
+      "https://demo.openvpm.com/login",
+    );
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      source: "homepage_pricing",
+      utm_campaign: "clinic_launch-2026",
+      funnel_id: "123e4567-e89b-42d3-a456-426614174000",
+    });
   });
 });
 

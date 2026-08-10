@@ -15,8 +15,11 @@ describe("public clinic fit guidance", () => {
     expect(page).toContain("Production multi-location rollout");
     expect(page).toContain("Hosted texting");
     expect(page).toContain("Do not attach clinic exports");
-    expect(page).toContain('source: "clinic_fit"');
-    expect(page).toContain('campaign: "clinic_fit"');
+    expect(page).toContain("buildClinicFitSignupUrl");
+    expect(page).toContain("buildClinicFitDemoUrl");
+    expect(page).toContain("await searchParams");
+    expect(page.match(/href={clinicFitSignupUrl}/g)).toHaveLength(3);
+    expect(page.match(/href={clinicFitDemoUrl}/g)).toHaveLength(2);
   });
 
   it("keeps the fit check optional and reachable before signup", () => {
