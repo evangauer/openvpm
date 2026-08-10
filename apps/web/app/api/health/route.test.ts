@@ -34,6 +34,10 @@ const mocks = vi.hoisted(() => ({
     missingTables: [] as string[],
     missingColumns: [] as { table: string; column: string }[],
   })),
+  platformEmailIdentityConfigurationReady: vi.fn(async () => ({
+    ready: true,
+    initialized: true,
+  })),
 }));
 
 vi.mock("@openpims/db/client", () => ({
@@ -74,6 +78,11 @@ vi.mock("@/lib/s3", () => ({
   checkObjectStorageHealth: mocks.checkObjectStorageHealth,
 }));
 
+vi.mock("@/lib/platform-email-preferences", () => ({
+  platformEmailIdentityConfigurationReady:
+    mocks.platformEmailIdentityConfigurationReady,
+}));
+
 const { GET } = await import("./route");
 
 function stubHostedRequiredEnvs() {
@@ -94,6 +103,16 @@ function stubHostedRequiredEnvs() {
   vi.stubEnv("S3_REGION", "us-east-1");
   vi.stubEnv("RESEND_API_KEY", "re_test");
   vi.stubEnv("RESEND_WEBHOOK_SECRET", "whsec_resend");
+  vi.stubEnv(
+    "EMAIL_PREFERENCE_IDENTITY_SECRET",
+    "stable-identity-secret-at-least-32-bytes",
+  );
+  vi.stubEnv(
+    "EMAIL_PREFERENCE_SIGNING_SECRET",
+    "current-signing-secret-at-least-32-bytes",
+  );
+  vi.stubEnv("EMAIL_PREFERENCE_SIGNING_SECRET_PREVIOUS", "");
+  vi.stubEnv("EMAIL_PREFERENCE_BASE_URL", "https://app.openvpm.com");
   vi.stubEnv("EMAIL_SUPPORT_ADDRESS", "support@openvpm.com");
   vi.stubEnv("EMAIL_COMPANY_ADDRESS", "123 Cloud Lane, Boston, MA");
   vi.stubEnv("AI_MODEL", "gemini-2.5-flash");
@@ -148,6 +167,10 @@ afterEach(() => {
   mocks.findSchemaDrift.mockResolvedValue({
     missingTables: [],
     missingColumns: [],
+  });
+  mocks.platformEmailIdentityConfigurationReady.mockResolvedValue({
+    ready: true,
+    initialized: true,
   });
 });
 
@@ -261,7 +284,7 @@ describe("health route", () => {
       "1 required hosted configuration value is missing",
     );
     expect(json.checks.hostedEmail.detail).toBe(
-      "4 required hosted configuration values are missing",
+      "7 required hosted configuration values are missing",
     );
     const body = JSON.stringify(json);
     expect(body).not.toContain("NEXTAUTH_SECRET");
@@ -272,6 +295,9 @@ describe("health route", () => {
     expect(body).not.toContain("STRIPE_CONNECT_WEBHOOK_SECRET");
     expect(body).not.toContain("STRIPE_TAX_ENABLED");
     expect(body).not.toContain("RESEND_WEBHOOK_SECRET");
+    expect(body).not.toContain("EMAIL_PREFERENCE_IDENTITY_SECRET");
+    expect(body).not.toContain("EMAIL_PREFERENCE_SIGNING_SECRET");
+    expect(body).not.toContain("EMAIL_PREFERENCE_BASE_URL");
     expect(body).not.toContain("EMAIL_SUPPORT_ADDRESS");
     expect(body).not.toContain("EMAIL_COMPANY_ADDRESS");
     expect(body).not.toContain("STRIPE_PRICE_CLOUD_USER");
@@ -617,6 +643,95 @@ describe("health route", () => {
       detail: "1 required hosted configuration value is missing",
     });
     expect(JSON.stringify(json)).not.toContain("RESEND_WEBHOOK_SECRET");
+  });
+
+  it("requires a stable email preference identity secret", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    vi.stubEnv("EMAIL_PREFERENCE_IDENTITY_SECRET", " ");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedEmail).toEqual({
+      ok: false,
+      detail: "1 required hosted configuration value is missing",
+    });
+    expect(JSON.stringify(json)).not.toContain(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+    );
+  });
+
+  it("rejects an email preference signing secret shorter than 32 bytes", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    vi.stubEnv("EMAIL_PREFERENCE_SIGNING_SECRET", "too-short");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedEmail).toEqual({
+      ok: false,
+      detail: "1 required hosted configuration value is invalid",
+    });
+    expect(JSON.stringify(json)).not.toContain("too-short");
+  });
+
+  it("rejects an invalid previous email preference signing key ring", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_SIGNING_SECRET_PREVIOUS",
+      "valid-previous-signing-secret-at-least-32-bytes,short",
+    );
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedEmail).toEqual({
+      ok: false,
+      detail: "1 required hosted configuration value is invalid",
+    });
+    expect(JSON.stringify(json)).not.toContain("valid-previous-signing-secret");
+    expect(JSON.stringify(json)).not.toContain("short");
+  });
+
+  it("requires the canonical platform preference origin", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    vi.stubEnv("EMAIL_PREFERENCE_BASE_URL", "https://demo.openvpm.com");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedEmail).toEqual({
+      ok: false,
+      detail: "1 required hosted configuration value is invalid",
+    });
+    expect(JSON.stringify(json)).not.toContain("demo.openvpm.com");
+  });
+
+  it("fails readiness when the persisted email identity key does not match", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    mocks.platformEmailIdentityConfigurationReady.mockResolvedValueOnce({
+      ready: false,
+      initialized: true,
+    });
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedEmail).toEqual({
+      ok: false,
+      detail: "Hosted email identity configuration does not match",
+    });
+    expect(JSON.stringify(json)).not.toContain("identityKeyFingerprint");
   });
 
   it("requires hosted email support contact identity", async () => {

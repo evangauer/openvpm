@@ -74,6 +74,12 @@ import {
 import { isValidMigrationSource } from "@/lib/import/sources";
 import { parseBookingPageConfig } from "@/lib/booking/page-config";
 import { takeAppointmentSchedulingLock } from "@/lib/scheduling/location";
+import { billingContactEmail } from "@/lib/billing/contact";
+import {
+  marketingEmailEnabledForRecipient,
+  PlatformEmailPreferenceBlockedError,
+  setMarketingEmailPreferenceForRecipient,
+} from "@/lib/platform-email-preferences";
 
 const adminProcedure = protectedProcedure.use(requireRole("admin"));
 
@@ -525,6 +531,34 @@ export const settingsRouter = createRouter({
     return practice;
   }),
 
+  getMarketingEmailPreference: adminProcedure.query(async ({ ctx }) => {
+    const [practice] = await ctx.db
+      .select({ email: practices.email })
+      .from(practices)
+      .where(activePracticeWhere(ctx.practiceId))
+      .limit(1);
+    if (!practice) throw practiceNotFound();
+
+    const recipientEmail = billingContactEmail(practice.email);
+    if (!recipientEmail) {
+      return { enabled: true, configurable: false, recipientEmail: null };
+    }
+    let enabled: boolean;
+    try {
+      enabled = await marketingEmailEnabledForRecipient(recipientEmail);
+    } catch {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Email preferences are temporarily unavailable.",
+      });
+    }
+    return {
+      enabled,
+      configurable: true,
+      recipientEmail,
+    };
+  }),
+
   /**
    * The workspace owner keeps administrative authorization independently from
    * clinical provider status. This lets a solo veterinarian schedule and sign
@@ -742,6 +776,50 @@ export const settingsRouter = createRouter({
         return updated!;
       }),
     ),
+
+  setMarketingEmailPreference: adminProcedure
+    .input(z.object({ enabled: z.boolean() }).strict())
+    .mutation(async ({ ctx, input }) => {
+      const [practice] = await ctx.db
+        .select({ email: practices.email })
+        .from(practices)
+        .where(activePracticeWhere(ctx.practiceId))
+        .limit(1);
+      if (!practice) throw practiceNotFound();
+
+      const recipientEmail = billingContactEmail(practice.email);
+      if (!recipientEmail) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Add a valid practice email before changing this setting.",
+        });
+      }
+      try {
+        await setMarketingEmailPreferenceForRecipient({
+          email: recipientEmail,
+          enabled: input.enabled,
+          source: "settings",
+          updatedByUserId: ctx.user.id,
+        });
+      } catch (error) {
+        if (error instanceof PlatformEmailPreferenceBlockedError) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "This address cannot be re-enabled from clinic Settings after unsubscribing or a delivery suppression. Use another verified practice email.",
+          });
+        }
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Email preferences are temporarily unavailable.",
+        });
+      }
+      return {
+        enabled: input.enabled,
+        configurable: true,
+        recipientEmail,
+      };
+    }),
 
   // ── Account Lifecycle ─────────────────────────────────────
 

@@ -32,6 +32,7 @@ export function TrialEndingEmail({
       brand={brand}
       preview={`Your OpenVPM trial ends ${whenLabel}. Add a card and nothing changes.`}
       unsubscribeUrl={unsubscribeUrl}
+      recipientReason={`This address is the OpenVPM billing contact for ${practiceName}.`}
     >
       <Heading>Your trial ends {whenLabel}</Heading>
       <Paragraph>

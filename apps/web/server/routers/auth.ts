@@ -24,6 +24,7 @@ import {
   type EmailProvider,
 } from "@/lib/email";
 import { sendTrackedVerificationEmail } from "@/lib/auth-email-delivery";
+import { sendOptionalPlatformEmail } from "@/lib/email-lifecycle";
 import { appBaseUrl, exposeAuthLinksForPreview } from "@/lib/app-url";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
 import { createSubscriptionCheckoutSession } from "@/lib/stripe";
@@ -457,15 +458,23 @@ export const authRouter = createRouter({
         });
       }
 
-      // Welcome mail is external I/O as well, so it shares the same strict
-      // post-commit boundary. It remains non-fatal and untracked.
+      // Welcome/setup guidance is optional platform email. It shares the
+      // strict post-commit boundary, checks recipient consent before claiming,
+      // and records provider evidence for global complaint/bounce handling.
       if (hostedBilling && ctx.postCommitEffect) {
         ctx.postCommitEffect(async () => {
           try {
-            await sendWelcomeEmail({
+            await sendOptionalPlatformEmail({
+              practiceId: practice.id,
               to: user.email,
-              practiceName: input.practiceName.trim(),
-              trialDays: TRIAL_DAYS,
+              emailType: "welcome",
+              dedupeKey: `lc:welcome:${practice.id}:${user.id}`,
+              send: () =>
+                sendWelcomeEmail({
+                  to: user.email,
+                  practiceName: input.practiceName.trim(),
+                  trialDays: TRIAL_DAYS,
+                }),
             });
           } catch {
             console.error("[register] post-commit welcome email failed");

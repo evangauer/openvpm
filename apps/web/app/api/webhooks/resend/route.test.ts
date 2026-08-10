@@ -59,6 +59,9 @@ const mocks = vi.hoisted(() => {
       }),
     ),
     authEmailWebhookFingerprint: vi.fn(() => "f".repeat(64)),
+    recordPlatformEmailDeliverySuppression: vi.fn(async () => ({
+      duplicate: false,
+    })),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
       fn(db),
     ),
@@ -85,6 +88,10 @@ vi.mock("@/lib/tenant-db", () => ({
 vi.mock("@/lib/auth-email-delivery", () => ({
   recordAuthEmailDeliveryEvent: mocks.recordAuthEmailDeliveryEvent,
   authEmailWebhookFingerprint: mocks.authEmailWebhookFingerprint,
+}));
+vi.mock("@/lib/platform-email-preferences", () => ({
+  recordPlatformEmailDeliverySuppression:
+    mocks.recordPlatformEmailDeliverySuppression,
 }));
 
 const { POST } = await import("./route");
@@ -261,6 +268,7 @@ describe("Resend webhook", () => {
       },
     ]);
     expect(mocks.insertConflict).toHaveBeenCalledTimes(1);
+    expect(mocks.recordPlatformEmailDeliverySuppression).not.toHaveBeenCalled();
   });
 
   it("records verification evidence without polluting client suppressions", async () => {
@@ -304,6 +312,84 @@ describe("Resend webhook", () => {
     });
     expect(mocks.withTenant).not.toHaveBeenCalled();
     expect(mocks.updateSet).not.toHaveBeenCalled();
+    expect(mocks.insertValues).not.toHaveBeenCalled();
+    expect(mocks.recordPlatformEmailDeliverySuppression).toHaveBeenCalledWith({
+      email: "owner@example.com",
+      reason: "bounce",
+      providerMessageId: "email-auth-1",
+      webhookId: "msg_123",
+    });
+  });
+
+  it("projects matched platform complaints globally without polluting clinic suppressions", async () => {
+    process.env.RESEND_WEBHOOK_SECRET = "whsec_test";
+    mocks.verify.mockReturnValue({
+      type: "email.complained",
+      created_at: "2026-06-29T12:00:00Z",
+      data: {
+        email_id: "email-lifecycle-1",
+        from: "OpenVPM <noreply@mail.openvpm.com>",
+        to: [" Billing@Example.com ", "billing@example.com"],
+        subject: "Your OpenVPM trial",
+        created_at: "2026-06-29T12:00:00Z",
+      },
+    });
+    mocks.selectResults.push([
+      {
+        id: COMMUNICATION_ID,
+        practiceId: PRACTICE_ID,
+        clientId: null,
+        dedupeKey: "lc:trial-ending:practice:t-3",
+      },
+    ]);
+
+    const response = await POST(signedRequest("{}"));
+
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    expect(mocks.updateSet).toHaveBeenCalledWith({ status: "failed" });
+    expect(mocks.recordPlatformEmailDeliverySuppression).toHaveBeenCalledWith({
+      email: "billing@example.com",
+      reason: "complaint",
+      providerMessageId: "email-lifecycle-1",
+      webhookId: "msg_123",
+    });
+    expect(mocks.recordPlatformEmailDeliverySuppression).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(mocks.insertValues).not.toHaveBeenCalled();
+  });
+
+  it("maps matched provider suppressions to the global precedence reason", async () => {
+    process.env.RESEND_WEBHOOK_SECRET = "whsec_test";
+    mocks.verify.mockReturnValue({
+      type: "email.suppressed",
+      created_at: "2026-06-29T12:00:00Z",
+      data: {
+        email_id: "email-lifecycle-2",
+        from: "OpenVPM <noreply@mail.openvpm.com>",
+        to: ["billing@example.com"],
+        subject: "Your OpenVPM trial",
+        created_at: "2026-06-29T12:00:00Z",
+        suppressed: { message: "Recipient is on provider suppression list" },
+      },
+    });
+    mocks.selectResults.push([
+      {
+        id: COMMUNICATION_ID,
+        practiceId: PRACTICE_ID,
+        clientId: null,
+        dedupeKey: "lc:trial-ending:practice:t-1",
+      },
+    ]);
+
+    await POST(signedRequest("{}"));
+
+    expect(mocks.recordPlatformEmailDeliverySuppression).toHaveBeenCalledWith({
+      email: "billing@example.com",
+      reason: "provider_suppressed",
+      providerMessageId: "email-lifecycle-2",
+      webhookId: "msg_123",
+    });
     expect(mocks.insertValues).not.toHaveBeenCalled();
   });
 
@@ -357,6 +443,7 @@ describe("Resend webhook", () => {
     expect(mocks.withTenant).not.toHaveBeenCalled();
     expect(mocks.updateSet).not.toHaveBeenCalled();
     expect(mocks.insertValues).not.toHaveBeenCalled();
+    expect(mocks.recordPlatformEmailDeliverySuppression).not.toHaveBeenCalled();
   });
 
   it("matches provider email events only for active practices", () => {

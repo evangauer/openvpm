@@ -137,6 +137,7 @@ export const createRouter = t.router;
 const HOSTED_READ_ONLY_MUTATION_ALLOWLIST = new Set([
   "auth.resendVerification",
   "settings.requestAccountDeletion",
+  "settings.setMarketingEmailPreference",
   "subscription.createCheckout",
   "subscription.openBillingPortal",
   // Platform-operator tooling must keep working even when the operator's own

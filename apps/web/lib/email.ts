@@ -6,6 +6,10 @@ import {
   renderPaymentReceiptEmail,
   renderPaymentFailedEmail,
 } from "@openpims/email";
+import {
+  createEmailPreferenceLinks,
+  emailPreferenceRecipientHash,
+} from "@/lib/email-preferences";
 import { billingEnforced } from "@/lib/billing/plans";
 import {
   defaultEmailFrom,
@@ -64,7 +68,11 @@ function emailSendTimeoutMessage(): string {
 // Shared layout helpers
 // ---------------------------------------------------------------------------
 
-function emailLayout(practiceName: string, body: string, footer?: string): string {
+function emailLayout(
+  practiceName: string,
+  body: string,
+  footer?: string,
+): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -103,7 +111,11 @@ function emailLayout(practiceName: string, body: string, footer?: string): strin
 </html>`;
 }
 
-function practiceFooter(opts: { practiceName: string; practicePhone?: string; practiceAddress?: string }): string {
+function practiceFooter(opts: {
+  practiceName: string;
+  practicePhone?: string;
+  practiceAddress?: string;
+}): string {
   const lines: string[] = [];
   lines.push(opts.practiceName);
   if (opts.practicePhone) lines.push(opts.practicePhone);
@@ -585,12 +597,39 @@ export async function sendWelcomeEmail(data: {
   trialDays?: number;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   const brand = openvpmBrand();
+  const recipientHash = emailPreferenceRecipientHash(data.to);
+  if (!recipientHash) {
+    return {
+      success: false,
+      error: "Email preference signing is not configured.",
+    };
+  }
+  const preferenceLinks = createEmailPreferenceLinks({
+    kind: "recipient",
+    id: recipientHash,
+  });
+  if (!preferenceLinks) {
+    return {
+      success: false,
+      error: "Email preference signing is not configured.",
+    };
+  }
   const { subject, html } = await renderWelcomeEmail({
     brand,
     practiceName: data.practiceName,
     trialDays: data.trialDays ?? 14,
+    unsubscribeUrl: preferenceLinks.preferencesUrl,
   });
-  return sendEmail({ to: data.to, subject, html, replyTo: brand.supportEmail });
+  return sendEmail({
+    to: data.to,
+    subject,
+    html,
+    replyTo: brand.supportEmail,
+    headers: {
+      "List-Unsubscribe": `<${preferenceLinks.oneClickUrl}>`,
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    },
+  });
 }
 
 /** Trial-ending nudge (T-7 / T-3 / T-1). Promotional → carries unsubscribe. */
@@ -604,6 +643,23 @@ export async function sendTrialEndingEmail(data: {
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   const brand = openvpmBrand();
   const billingUrl = data.billingUrl ?? `${brand.appUrl}/settings?tab=billing`;
+  const recipientHash = emailPreferenceRecipientHash(data.to);
+  if (!recipientHash) {
+    return {
+      success: false,
+      error: "Email preference signing is not configured.",
+    };
+  }
+  const preferenceLinks = createEmailPreferenceLinks({
+    kind: "recipient",
+    id: recipientHash,
+  });
+  if (!preferenceLinks) {
+    return {
+      success: false,
+      error: "Email preference signing is not configured.",
+    };
+  }
   const { subject, html } = await renderTrialEndingEmail({
     brand,
     practiceName: data.practiceName,
@@ -611,14 +667,17 @@ export async function sendTrialEndingEmail(data: {
     trialEndDate: data.trialEndDate,
     monthlyPrice: data.monthlyPrice ?? "$79",
     billingUrl,
-    unsubscribeUrl: billingUrl,
+    unsubscribeUrl: preferenceLinks.preferencesUrl,
   });
   return sendEmail({
     to: data.to,
     subject,
     html,
     replyTo: brand.supportEmail,
-    headers: { "List-Unsubscribe": `<${billingUrl}>` },
+    headers: {
+      "List-Unsubscribe": `<${preferenceLinks.oneClickUrl}>`,
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    },
   });
 }
 

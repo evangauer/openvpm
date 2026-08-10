@@ -80,6 +80,10 @@ S3_REGION=...
 
 RESEND_API_KEY=...
 RESEND_WEBHOOK_SECRET=...
+EMAIL_PREFERENCE_IDENTITY_SECRET=... # stable `openssl rand -base64 32`; never rotate without migrating preference data
+EMAIL_PREFERENCE_SIGNING_SECRET=... # rotatable `openssl rand -base64 32`; do not reuse another secret
+EMAIL_PREFERENCE_SIGNING_SECRET_PREVIOUS= # comma-separated former signing keys retained for delivered links
+EMAIL_PREFERENCE_BASE_URL=https://app.openvpm.com
 EMAIL_SUPPORT_ADDRESS=support@openvpm.com
 EMAIL_COMPANY_ADDRESS=...
 MESSAGING_PROVIDER=telnyx
@@ -276,6 +280,21 @@ Resend sends transactional email and posts delivery lifecycle callbacks back to 
 `EMAIL_SUPPORT_ADDRESS` is used as lifecycle email Reply-To and footer contact
 address. `EMAIL_COMPANY_ADDRESS` is rendered in hosted email footers. Both gate
 hosted readiness so production emails do not fall back to local/dev defaults.
+`EMAIL_PREFERENCE_IDENTITY_SECRET` is the stable HMAC identity key for PII-free
+recipient hashes. Never rotate it without a coordinated migration of persisted
+preference identities. `EMAIL_PREFERENCE_SIGNING_SECRET` signs new durable
+unsubscribe links. To rotate it safely, move the former current key into the
+comma-separated `EMAIL_PREFERENCE_SIGNING_SECRET_PREVIOUS` key ring before
+installing the new key; retain former keys for as long as delivered links must
+continue working. Keep both kinds of key separate from each other and from
+`NEXTAUTH_SECRET`.
+
+`EMAIL_PREFERENCE_BASE_URL` must be the canonical HTTPS origin
+`https://app.openvpm.com` in every hosted deployment. This ensures demo and
+campaign email writes recipient choices to the canonical hosted database rather
+than a deployment-local database. Optional platform email fails closed when the
+required preference configuration is missing or invalid; security, receipt,
+and service email is unaffected.
 
 Webhook endpoint:
 

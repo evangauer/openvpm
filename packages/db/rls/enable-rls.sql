@@ -277,6 +277,38 @@ CREATE POLICY system_only ON demo_accesses
   USING (app_rls_bypass())
   WITH CHECK (app_rls_bypass());
 
+-- OpenVPM's own optional-email preferences are global recipient state. Clinic
+-- sessions may manage them only through server routes running in explicit
+-- system context; hashes and audit evidence are never tenant-readable
+-- directly. The identity key record and event history are append-only to the
+-- application role; only the current projection may be updated.
+ALTER TABLE platform_email_identity ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS system_read ON platform_email_identity;
+CREATE POLICY system_read ON platform_email_identity
+  FOR SELECT USING (app_rls_bypass());
+DROP POLICY IF EXISTS system_insert ON platform_email_identity;
+CREATE POLICY system_insert ON platform_email_identity
+  FOR INSERT WITH CHECK (app_rls_bypass());
+
+ALTER TABLE platform_email_preferences ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS system_only ON platform_email_preferences;
+CREATE POLICY system_only ON platform_email_preferences
+  USING (app_rls_bypass())
+  WITH CHECK (app_rls_bypass());
+
+ALTER TABLE platform_email_preference_events ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS system_read ON platform_email_preference_events;
+CREATE POLICY system_read ON platform_email_preference_events
+  FOR SELECT USING (app_rls_bypass());
+DROP POLICY IF EXISTS system_insert ON platform_email_preference_events;
+CREATE POLICY system_insert ON platform_email_preference_events
+  FOR INSERT WITH CHECK (app_rls_bypass());
+
+REVOKE ALL ON platform_email_identity, platform_email_preferences, platform_email_preference_events FROM openpims_app;
+GRANT SELECT, INSERT ON platform_email_identity TO openpims_app;
+GRANT SELECT, INSERT, UPDATE ON platform_email_preferences TO openpims_app;
+GRANT SELECT, INSERT ON platform_email_preference_events TO openpims_app;
+
 -- Product-funnel events are global operational telemetry. Browser writes go
 -- through the bounded ingestion route; tenant sessions never query it.
 ALTER TABLE funnel_events ENABLE ROW LEVEL SECURITY;
@@ -298,7 +330,7 @@ BEGIN
   FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format(
-        'REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_webhook_conflicts, auth_email_provider_identity_conflicts, auth_tokens, clinical_record_corrections, demo_accesses, dispense_charge_queue, funnel_events, lab_result_events, lab_result_replacements, messaging_registration_events, patient_merge_events, practice_conversion_milestones, prescription_events, sessions, sms_delivery_event_history, sms_delivery_events, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
+        'REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_webhook_conflicts, auth_email_provider_identity_conflicts, auth_tokens, clinical_record_corrections, demo_accesses, dispense_charge_queue, funnel_events, lab_result_events, lab_result_replacements, messaging_registration_events, patient_merge_events, platform_email_identity, platform_email_preference_events, platform_email_preferences, practice_conversion_milestones, prescription_events, sessions, sms_delivery_event_history, sms_delivery_events, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
       );
     END IF;
   END LOOP;

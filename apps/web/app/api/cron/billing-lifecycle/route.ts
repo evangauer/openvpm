@@ -8,7 +8,7 @@ import {
 } from "@/lib/billing/plans";
 import { cronAuthError } from "@/lib/cron-auth";
 import { sendTrialEndingEmail } from "@/lib/email";
-import { sendLifecycleEmail } from "@/lib/email-lifecycle";
+import { sendOptionalPlatformEmail } from "@/lib/email-lifecycle";
 import { alertOps } from "@/lib/alerts";
 import { withSystem } from "@/lib/tenant-db";
 import { reportCronHeartbeat } from "@/lib/cron-heartbeat";
@@ -35,6 +35,7 @@ export async function GET(request: Request) {
       metrics: {
         sent: 0,
         deduped: 0,
+        suppressed: 0,
         failed: 0,
         skipped: 0,
         disabled: true,
@@ -43,6 +44,7 @@ export async function GET(request: Request) {
     return NextResponse.json({
       sent: 0,
       deduped: 0,
+      suppressed: 0,
       failed: 0,
       skipped: 0,
       disabled: true,
@@ -52,7 +54,7 @@ export async function GET(request: Request) {
   try {
     const now = new Date();
     const latestTrialEnd = new Date(
-      now.getTime() + (Math.max(...TRIAL_REMINDER_DAYS) + 1) * DAY_MS
+      now.getTime() + (Math.max(...TRIAL_REMINDER_DAYS) + 1) * DAY_MS,
     );
 
     const trialingPractices = await withSystem(db, (tx) =>
@@ -71,13 +73,14 @@ export async function GET(request: Request) {
             isNotNull(practices.trialEndsAt),
             gte(practices.trialEndsAt, now),
             lte(practices.trialEndsAt, latestTrialEnd),
-            isNull(practices.deletedAt)
-          )
+            isNull(practices.deletedAt),
+          ),
         ),
     );
 
     let sent = 0;
     let deduped = 0;
+    let suppressed = 0;
     let failed = 0;
     let skipped = 0;
 
@@ -87,11 +90,7 @@ export async function GET(request: Request) {
         : null;
       const to = billingContactEmail(practice.email);
       const daysLeft = trialEndsAt
-        ? calendarDaysUntil(
-            trialEndsAt,
-            now,
-            practice.timezone ?? undefined
-          )
+        ? calendarDaysUntil(trialEndsAt, now, practice.timezone ?? undefined)
         : null;
 
       if (!to || !trialEndsAt || !isTrialReminderDay(daysLeft)) {
@@ -99,7 +98,7 @@ export async function GET(request: Request) {
         continue;
       }
 
-      const result = await sendLifecycleEmail({
+      const result = await sendOptionalPlatformEmail({
         practiceId: practice.id,
         to,
         emailType: "trial-ending",
@@ -117,7 +116,7 @@ export async function GET(request: Request) {
             daysLeft,
             trialEndDate: formatTrialEndDate(
               trialEndsAt,
-              practice.timezone ?? undefined
+              practice.timezone ?? undefined,
             ),
             monthlyPrice: `$${CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD}`,
           }),
@@ -125,6 +124,8 @@ export async function GET(request: Request) {
 
       if (result.sent) {
         sent++;
+      } else if (result.suppressed) {
+        suppressed++;
       } else if (result.deduped) {
         deduped++;
       } else {
@@ -135,17 +136,18 @@ export async function GET(request: Request) {
     await reportCronHeartbeat({
       job: "billing-lifecycle",
       status: failed > 0 ? "degraded" : "ok",
-      detail: `${sent} sent, ${deduped} deduped, ${failed} failed, ${skipped} skipped`,
+      detail: `${sent} sent, ${deduped} deduped, ${suppressed} suppressed, ${failed} failed, ${skipped} skipped`,
       metrics: {
         candidates: trialingPractices.length,
         sent,
         deduped,
+        suppressed,
         failed,
         skipped,
       },
     });
 
-    return NextResponse.json({ sent, deduped, failed, skipped });
+    return NextResponse.json({ sent, deduped, suppressed, failed, skipped });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     void alertOps("Billing lifecycle cron failed", message);
@@ -154,7 +156,10 @@ export async function GET(request: Request) {
       status: "failed",
       detail: message,
     });
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500 },
+    );
   }
 }
 
@@ -164,11 +169,13 @@ function calendarDaysUntil(end: Date, now: Date, timeZone?: string): number {
   return Math.round(
     (Date.UTC(endDay.year, endDay.month - 1, endDay.day) -
       Date.UTC(nowDay.year, nowDay.month - 1, nowDay.day)) /
-      DAY_MS
+      DAY_MS,
   );
 }
 
-function isTrialReminderDay(daysLeft: number | null): daysLeft is TrialReminderDay {
+function isTrialReminderDay(
+  daysLeft: number | null,
+): daysLeft is TrialReminderDay {
   return TRIAL_REMINDER_DAYS.includes(daysLeft as TrialReminderDay);
 }
 
@@ -195,7 +202,7 @@ function formatTrialEndDate(date: Date, timeZone?: string): string {
 
 function localDateParts(
   date: Date,
-  timeZone?: string
+  timeZone?: string,
 ): { year: number; month: number; day: number } {
   try {
     const parts = new Intl.DateTimeFormat("en-US", {

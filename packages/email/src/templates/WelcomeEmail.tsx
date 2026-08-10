@@ -11,6 +11,7 @@ export interface WelcomeEmailProps {
   brand: Brand;
   practiceName: string;
   trialDays: number;
+  unsubscribeUrl?: string;
 }
 
 const STEPS = [
@@ -23,11 +24,14 @@ export function WelcomeEmail({
   brand,
   practiceName,
   trialDays,
+  unsubscribeUrl,
 }: WelcomeEmailProps) {
   return (
     <EmailLayout
       brand={brand}
       preview={`Welcome to OpenVPM — your ${trialDays}-day trial is ready`}
+      unsubscribeUrl={unsubscribeUrl}
+      recipientReason="You're receiving this because you created an OpenVPM account."
     >
       <Heading>Welcome to OpenVPM 🎉</Heading>
       <Paragraph>

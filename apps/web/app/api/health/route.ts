@@ -22,6 +22,13 @@ import { normalizeAppBaseUrl } from "@/lib/app-url";
 import { platformAdminEmails } from "@/lib/platform-admin";
 import { rowsFromExecute } from "@/lib/db/execute-rows";
 import { withSystem } from "@/lib/tenant-db";
+import {
+  CANONICAL_EMAIL_PREFERENCE_BASE_URL,
+  isValidEmailPreferencePreviousSecrets,
+  isValidEmailPreferenceSecret,
+  normalizeEmailPreferenceBaseUrl,
+} from "@/lib/email-preferences";
+import { platformEmailIdentityConfigurationReady } from "@/lib/platform-email-preferences";
 
 export const dynamic = "force-dynamic";
 
@@ -67,6 +74,9 @@ const HOSTED_STORAGE_ENV_NAMES = [
 const HOSTED_EMAIL_ENV_NAMES = [
   "RESEND_API_KEY",
   "RESEND_WEBHOOK_SECRET",
+  "EMAIL_PREFERENCE_IDENTITY_SECRET",
+  "EMAIL_PREFERENCE_SIGNING_SECRET",
+  "EMAIL_PREFERENCE_BASE_URL",
   "EMAIL_SUPPORT_ADDRESS",
   "EMAIL_COMPANY_ADDRESS",
 ];
@@ -127,6 +137,65 @@ function hostedEnvCheck(
           } missing`
         : presentDetail,
   };
+}
+
+async function hostedEmailCheck(): Promise<{ ok: boolean; detail: string }> {
+  const missing = HOSTED_EMAIL_ENV_NAMES.filter((name) => !configured(name));
+  const requiredSecrets = [
+    "EMAIL_PREFERENCE_IDENTITY_SECRET",
+    "EMAIL_PREFERENCE_SIGNING_SECRET",
+  ];
+  const invalidSecrets = requiredSecrets.filter(
+    (name) =>
+      configured(name) && !isValidEmailPreferenceSecret(process.env[name]),
+  );
+  const invalidPreviousSecrets =
+    configured("EMAIL_PREFERENCE_SIGNING_SECRET_PREVIOUS") &&
+    !isValidEmailPreferencePreviousSecrets(
+      process.env.EMAIL_PREFERENCE_SIGNING_SECRET_PREVIOUS,
+    );
+  const preferenceBaseUrl = normalizeEmailPreferenceBaseUrl(
+    process.env.EMAIL_PREFERENCE_BASE_URL,
+  );
+  const invalidBaseUrl =
+    configured("EMAIL_PREFERENCE_BASE_URL") &&
+    preferenceBaseUrl !== CANONICAL_EMAIL_PREFERENCE_BASE_URL;
+  const invalid =
+    invalidSecrets.length +
+    (invalidPreviousSecrets ? 1 : 0) +
+    (invalidBaseUrl ? 1 : 0);
+  const issues = missing.length + invalid;
+  const envResult = {
+    ok: issues === 0,
+    detail:
+      issues > 0
+        ? `${issues} required hosted configuration value${
+            issues === 1 ? " is" : "s are"
+          } ${
+            invalid > 0
+              ? missing.length > 0
+                ? "missing or invalid"
+                : "invalid"
+              : "missing"
+          }`
+        : "Hosted email envs present",
+  };
+  if (!envResult.ok) return envResult;
+
+  try {
+    const identity = await platformEmailIdentityConfigurationReady();
+    return identity.ready
+      ? envResult
+      : {
+          ok: false,
+          detail: "Hosted email identity configuration does not match",
+        };
+  } catch {
+    return {
+      ok: false,
+      detail: "Hosted email identity readiness check failed",
+    };
+  }
 }
 
 function hostedOpsCheck(): { ok: boolean; detail: string } {
@@ -452,10 +521,7 @@ export async function GET() {
     checks.hostedStorage = hostedStorageEnv.ok
       ? await checkObjectStorageHealth()
       : hostedStorageEnv;
-    checks.hostedEmail = hostedEnvCheck(
-      HOSTED_EMAIL_ENV_NAMES,
-      "Hosted email envs present",
-    );
+    checks.hostedEmail = await hostedEmailCheck();
     checks.hostedAi = hostedAiCheck();
     checks.hostedOps = hostedOpsCheck();
 

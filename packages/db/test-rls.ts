@@ -165,6 +165,12 @@ const aSmsDeliveryHistory = randomUUID();
 const bSmsDeliveryHistory = randomUUID();
 const bSmsDeliveryConflictHistory = randomUUID();
 const funnelEventId = randomUUID();
+const platformEmailPreferenceId = randomUUID();
+const systemUpsertPlatformEmailPreferenceId = randomUUID();
+const platformEmailPreferenceEventId = randomUUID();
+const systemPlatformEmailPreferenceEventId = randomUUID();
+const platformEmailHash = "c".repeat(64);
+const platformEmailIdentityFingerprint = "d".repeat(64);
 const conversionEvidenceKey = `practice:${aId}`;
 const aSoapCorrectionReason =
   "Original note was documented on the wrong encounter.";
@@ -179,6 +185,7 @@ const historicalSoapReplacementSubjective =
 const historicalSoapOccurredAt = new Date(Date.now() - 3 * 60 * 60 * 1000);
 const historicalSoapDeletedAt = new Date(Date.now() - 2 * 60 * 60 * 1000);
 let failures = 0;
+let createdPlatformEmailIdentity = false;
 
 async function appTransaction<T>(
   fn: (tx: typeof app) => Promise<T>,
@@ -194,6 +201,23 @@ function check(name: string, ok: boolean) {
 try {
   // Arrange (as owner — bypasses RLS).
   await owner`insert into practices (id, name) values (${aId}, 'RLS Test A'), (${bId}, 'RLS Test B')`;
+  const insertedPlatformEmailIdentity =
+    await owner`insert into platform_email_identity
+    (key_slot, identity_key_fingerprint)
+    values (1, ${platformEmailIdentityFingerprint})
+    on conflict (key_slot) do nothing
+    returning key_slot`;
+  createdPlatformEmailIdentity = insertedPlatformEmailIdentity.length === 1;
+  await owner`insert into platform_email_preferences
+    (id, email_hash, identity_key_fingerprint, marketing_enabled, source, reason)
+    values (${platformEmailPreferenceId}, ${platformEmailHash},
+      ${platformEmailIdentityFingerprint}, false, 'unsubscribe_link', 'unsubscribe')`;
+  await owner`insert into platform_email_preference_events
+    (id, email_hash, identity_key_fingerprint, requested_marketing_enabled,
+      applied, source, reason)
+    values (${platformEmailPreferenceEventId}, ${platformEmailHash},
+      ${platformEmailIdentityFingerprint}, false, true,
+      'unsubscribe_link', 'unsubscribe')`;
   await owner`insert into clients (id, practice_id, first_name, last_name) values
     (${aClient}, ${aId}, 'Alice', 'A'), (${bClient}, ${bId}, 'Bob', 'B')`;
   await owner`insert into communications
@@ -2295,6 +2319,66 @@ try {
     "tenant context cannot read system-only conversion milestones",
     hiddenConversionRows.length === 0,
   );
+  const hiddenPlatformEmailPreferences = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id from platform_email_preferences where id = ${platformEmailPreferenceId}`;
+  });
+  check(
+    "tenant context cannot read system-only platform email preferences",
+    hiddenPlatformEmailPreferences.length === 0,
+  );
+  const hiddenPlatformEmailIdentity = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select key_slot from platform_email_identity where key_slot = 1`;
+  });
+  check(
+    "tenant context cannot read the platform email identity fingerprint",
+    hiddenPlatformEmailIdentity.length === 0,
+  );
+  const hiddenPlatformEmailPreferenceEvents = await appTransaction(
+    async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      return tx`select id from platform_email_preference_events
+        where id = ${platformEmailPreferenceEventId}`;
+    },
+  );
+  check(
+    "tenant context cannot read platform email preference audit events",
+    hiddenPlatformEmailPreferenceEvents.length === 0,
+  );
+  let tenantCannotWritePlatformEmailPreference = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into platform_email_preferences
+        (email_hash, identity_key_fingerprint, marketing_enabled, source, reason)
+        values (${"e".repeat(64)}, ${platformEmailIdentityFingerprint},
+          false, 'settings', 'settings_disabled')`;
+    });
+  } catch {
+    tenantCannotWritePlatformEmailPreference = true;
+  }
+  check(
+    "tenant context cannot write platform email preferences",
+    tenantCannotWritePlatformEmailPreference,
+  );
+  let tenantCannotForgePlatformEmailPreferenceEvent = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into platform_email_preference_events
+        (email_hash, identity_key_fingerprint, requested_marketing_enabled,
+          applied, source, reason)
+        values (${"e".repeat(64)}, ${platformEmailIdentityFingerprint},
+          false, true, 'settings', 'settings_disabled')`;
+    });
+  } catch {
+    tenantCannotForgePlatformEmailPreferenceEvent = true;
+  }
+  check(
+    "tenant context cannot forge platform email preference audit events",
+    tenantCannotForgePlatformEmailPreferenceEvent,
+  );
 
   // System bypass sees both (for cron / platform admin).
   const allRows = await appTransaction(async (tx) => {
@@ -2322,6 +2406,96 @@ try {
   check(
     "system bypass can read conversion milestones",
     systemConversionRows.length === 1,
+  );
+  const systemPlatformEmailPreferences = await appTransaction(async (tx) => {
+    await tx`select set_config('app.rls_bypass', 'on', true)`;
+    return tx`select id from platform_email_preferences where id = ${platformEmailPreferenceId}`;
+  });
+  check(
+    "system bypass can read platform email preferences",
+    systemPlatformEmailPreferences.length === 1,
+  );
+  const systemPlatformEmailIdentity = await appTransaction(async (tx) => {
+    await tx`select set_config('app.rls_bypass', 'on', true)`;
+    return tx`select key_slot from platform_email_identity where key_slot = 1`;
+  });
+  check(
+    "system bypass can read the platform email identity fingerprint",
+    systemPlatformEmailIdentity.length === 1,
+  );
+  const systemPlatformEmailPreferenceEvents = await appTransaction(
+    async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      return tx`select id from platform_email_preference_events
+        where id = ${platformEmailPreferenceEventId}`;
+    },
+  );
+  check(
+    "system bypass can read platform email preference audit events",
+    systemPlatformEmailPreferenceEvents.length === 1,
+  );
+  const systemUpsertedPlatformPreference = await appTransaction(async (tx) => {
+    await tx`select set_config('app.rls_bypass', 'on', true)`;
+    return tx`insert into platform_email_preferences
+      (id, email_hash, identity_key_fingerprint, marketing_enabled, source, reason)
+      values (${systemUpsertPlatformEmailPreferenceId}, ${platformEmailHash},
+        ${platformEmailIdentityFingerprint}, true, 'settings', 'settings_enabled')
+      on conflict (email_hash) do update set
+        marketing_enabled = excluded.marketing_enabled,
+        source = excluded.source,
+        reason = excluded.reason,
+        updated_at = now()
+      returning marketing_enabled, reason`;
+  });
+  check(
+    "system bypass can upsert the platform email preference projection",
+    systemUpsertedPlatformPreference.length === 1 &&
+      systemUpsertedPlatformPreference[0]?.marketing_enabled === true &&
+      systemUpsertedPlatformPreference[0]?.reason === "settings_enabled",
+  );
+  const systemInsertedPlatformPreferenceEvent = await appTransaction(
+    async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      return tx`insert into platform_email_preference_events
+        (id, email_hash, identity_key_fingerprint, requested_marketing_enabled,
+          applied, source, reason)
+        values (${systemPlatformEmailPreferenceEventId}, ${platformEmailHash},
+          ${platformEmailIdentityFingerprint}, true, true,
+          'settings', 'settings_enabled')
+        returning id`;
+    },
+  );
+  check(
+    "system bypass can append platform email preference audit events",
+    systemInsertedPlatformPreferenceEvent.length === 1,
+  );
+  let bypassCannotRewritePlatformPreferenceEvent = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`update platform_email_preference_events
+        set applied = false where id = ${systemPlatformEmailPreferenceEventId}`;
+    });
+  } catch {
+    bypassCannotRewritePlatformPreferenceEvent = true;
+  }
+  check(
+    "application role cannot rewrite platform email preference audit events",
+    bypassCannotRewritePlatformPreferenceEvent,
+  );
+  let bypassCannotDeletePlatformPreferenceEvent = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`delete from platform_email_preference_events
+        where id = ${systemPlatformEmailPreferenceEventId}`;
+    });
+  } catch {
+    bypassCannotDeletePlatformPreferenceEvent = true;
+  }
+  check(
+    "application role cannot delete platform email preference audit events",
+    bypassCannotDeletePlatformPreferenceEvent,
   );
   const systemAuthEmailRows = await appTransaction(async (tx) => {
     await tx`select set_config('app.rls_bypass', 'on', true)`;
@@ -2635,6 +2809,12 @@ try {
     await cleanup`delete from auth_email_provider_identity_conflicts where id = ${aAuthEmailProviderIdentityConflict}`;
     await cleanup`delete from auth_email_delivery_events where id = ${aAuthEmailDeliveryEvent}`;
     await cleanup`delete from auth_email_attempts where id in (${aAuthEmailAttempt}, ${aTransitionAuthEmailAttempt}, ${aRepairAuthEmailAttempt})`;
+    await cleanup`delete from platform_email_preference_events
+      where id in (${platformEmailPreferenceEventId}, ${systemPlatformEmailPreferenceEventId})`;
+    await cleanup`delete from platform_email_preferences where id = ${platformEmailPreferenceId}`;
+    if (createdPlatformEmailIdentity) {
+      await cleanup`delete from platform_email_identity where key_slot = 1`;
+    }
     await cleanup`delete from sms_delivery_event_history where id in (${aSmsDeliveryHistory}, ${bSmsDeliveryHistory}, ${bSmsDeliveryConflictHistory})`;
     await cleanup`delete from sms_delivery_events where id in (${aSmsDeliveryEvent}, ${bSmsDeliveryEvent}, ${unmatchedSmsDeliveryEvent})`;
     await cleanup`delete from lab_result_events where id in (${aLabResultEvent}, ${bLabResultEvent})`;

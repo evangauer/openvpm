@@ -29,6 +29,7 @@ export * from "./messaging-registration-events";
 export * from "./sms-consent-events";
 export * from "./sms-send-attempts";
 export * from "./demo-access";
+export * from "./platform-email-preferences";
 export * from "./booking";
 export * from "./funnel-events";
 export * from "./conversion-milestones";

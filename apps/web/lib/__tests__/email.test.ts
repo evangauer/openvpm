@@ -476,9 +476,81 @@ describe("openvpmBrand", () => {
 });
 
 describe("lifecycle email branding", () => {
+  it("uses a signed human link and RFC one-click headers for trial email", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_SIGNING_SECRET",
+      "stable-signing-secret-at-least-32-bytes",
+    );
+    vi.stubEnv("EMAIL_PREFERENCE_BASE_URL", "https://app.openvpm.com");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.openvpm.com");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-1" } });
+    const { sendTrialEndingEmail } = await loadEmail();
+
+    await expect(
+      sendTrialEndingEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        daysLeft: 3,
+        trialEndDate: "August 12, 2026",
+      }),
+    ).resolves.toEqual({ success: true, id: "email-1" });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload.headers).toMatchObject({
+      "List-Unsubscribe": expect.stringMatching(
+        /^<https:\/\/app\.openvpm\.com\/api\/email-preferences\/unsubscribe\?token=.+>$/,
+      ),
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    });
+    expect(payload.html).toContain("/email-preferences?token=");
+    expect(payload.html).toContain(
+      "This address is the OpenVPM billing contact for Neighborhood Veterinary.",
+    );
+    expect(payload.html).not.toContain(
+      'href="https://app.openvpm.com/settings?tab=billing">Manage email preferences',
+    );
+  });
+
+  it("does not send optional mail without a dedicated preference secret", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+    vi.stubEnv("EMAIL_PREFERENCE_SIGNING_SECRET", " ");
+    const { sendTrialEndingEmail } = await loadEmail();
+
+    await expect(
+      sendTrialEndingEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        daysLeft: 3,
+        trialEndDate: "August 12, 2026",
+      }),
+    ).resolves.toEqual({
+      success: false,
+      error: "Email preference signing is not configured.",
+    });
+    expect(mocks.resendSend).not.toHaveBeenCalled();
+  });
+
   it("uses the normalized brand support email as lifecycle reply-to", async () => {
     vi.stubEnv("RESEND_API_KEY", "re_test");
     vi.stubEnv("EMAIL_SUPPORT_ADDRESS", " support@example.com ");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_SIGNING_SECRET",
+      "stable-signing-secret-at-least-32-bytes",
+    );
+    vi.stubEnv("EMAIL_PREFERENCE_BASE_URL", "https://app.openvpm.com");
     mocks.resendSend.mockResolvedValue({ data: { id: "email-1" } });
     const { sendWelcomeEmail } = await loadEmail();
 
@@ -495,8 +567,16 @@ describe("lifecycle email branding", () => {
       expect.objectContaining({
         replyTo: "support@example.com",
         to: "owner@example.com",
+        headers: {
+          "List-Unsubscribe": expect.stringContaining(
+            "https://app.openvpm.com/api/email-preferences/unsubscribe?token=",
+          ),
+          "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        },
       }),
     );
+    expect(payload.html).toContain("/email-preferences?token=");
+    expect(payload.html).toContain("because you created an OpenVPM account");
   });
 
   it("falls back from a blank support email before lifecycle sends", async () => {

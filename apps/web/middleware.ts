@@ -10,6 +10,7 @@ const PUBLIC_PATH_PREFIXES = [
   "/api-docs",
   "/book",
   "/capture",
+  "/email-preferences",
   "/forgot-password",
   "/legal",
   "/login",

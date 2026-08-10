@@ -6,7 +6,7 @@ export default function PrivacyPage() {
   return (
     <>
       <h1>Privacy Policy</h1>
-      <p>Last updated: July 7, 2026</p>
+      <p>Last updated: August 9, 2026</p>
 
       <p>
         This policy explains what OpenVPM Cloud collects, why, and the choices
@@ -33,6 +33,12 @@ export default function PrivacyPage() {
         <li>
           <strong>Service logs:</strong> technical logs and error reports that
           help us keep the service reliable and secure.
+        </li>
+        <li>
+          <strong>Email preference data:</strong> a keyed recipient identifier,
+          optional-email choices, and delivery and audit events used to honor
+          opt-outs without placing the raw address in the global preference
+          ledger.
         </li>
         <li>
           <strong>Optional analytics:</strong> only if you choose &quot;Allow
@@ -76,6 +82,10 @@ export default function PrivacyPage() {
           data exportable for at least 60 days, then delete it from live
           systems and let backups age out.
         </li>
+        <li>
+          We retain email opt-out and delivery evidence as needed to keep
+          honoring recipient choices and prevent unwanted email.
+        </li>
       </ul>
 
       <h2>Security</h2>
@@ -91,6 +101,11 @@ export default function PrivacyPage() {
       <ul>
         <li>Export your data at any time.</li>
         <li>Request deletion of your account and data.</li>
+        <li>
+          Turn optional OpenVPM product, trial, research, and feedback email off
+          from any such email or from Practice Info in Settings. This choice
+          does not apply to required security, billing, and service notices.
+        </li>
         <li>Change the analytics cookie choice from the cookie preferences link.</li>
         <li>
           Pet owners: your vet&apos;s practice controls your records. Contact

@@ -216,6 +216,7 @@ export async function POST(req: NextRequest) {
                 to,
                 emailType: "receipt",
                 dedupeKey: `lc:receipt:${inv.id}`,
+                category: "transactional",
                 send: () =>
                   sendPaymentReceiptEmail({
                     to,
@@ -258,6 +259,7 @@ export async function POST(req: NextRequest) {
                 emailType: "dunning",
                 // One dunning email per Stripe retry attempt.
                 dedupeKey: `lc:dunning:${inv.id}:${inv.attempt_count ?? 0}`,
+                category: "transactional",
                 send: () =>
                   sendPaymentFailedEmail({
                     to,

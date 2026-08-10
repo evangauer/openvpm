@@ -27,7 +27,7 @@ async function main() {
       trialEndDate: "July 10, 2026",
       monthlyPrice: "$79",
       billingUrl,
-      unsubscribeUrl: `${brand.appUrl}/settings?tab=billing`,
+      unsubscribeUrl: `${brand.appUrl}/email-preferences?token=preview`,
     }),
     receipt: await renderPaymentReceiptEmail({
       brand,

@@ -36,8 +36,9 @@ const mocks = vi.hoisted(() => {
     deleteWhere,
     updateSet,
     alertOps: vi.fn(async () => undefined),
+    marketingEmailEnabledForRecipient: vi.fn(async () => true),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
-      fn(db)
+      fn(db),
     ),
   };
 });
@@ -54,10 +55,12 @@ vi.mock("@/lib/alerts", () => ({
   alertOps: mocks.alertOps,
 }));
 
-const {
-  LIFECYCLE_EMAIL_PENDING_RECLAIM_MS,
-  sendLifecycleEmail,
-} = await import("../email-lifecycle");
+vi.mock("@/lib/platform-email-preferences", () => ({
+  marketingEmailEnabledForRecipient: mocks.marketingEmailEnabledForRecipient,
+}));
+
+const { LIFECYCLE_EMAIL_PENDING_RECLAIM_MS, sendLifecycleEmail } =
+  await import("../email-lifecycle");
 
 const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const BASE_OPTS = {
@@ -65,16 +68,19 @@ const BASE_OPTS = {
   to: "owner@example.com",
   emailType: "trial-ending",
   dedupeKey: "lc:trial-ending:practice:t-3",
+  category: "transactional" as const,
 };
 
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-06-28T12:00:00Z"));
+  mocks.marketingEmailEnabledForRecipient.mockResolvedValue(true);
 });
 
 afterEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
+  vi.unstubAllEnvs();
   mocks.insertResults.length = 0;
   mocks.selectResults.length = 0;
   mocks.deleteResults.length = 0;
@@ -97,16 +103,62 @@ describe("sendLifecycleEmail", () => {
         direction: "outbound",
         status: "pending",
         dedupeKey: BASE_OPTS.dedupeKey,
-      })
+      }),
     );
     expect(mocks.onConflictDoNothing).toHaveBeenCalledWith(
-      expect.objectContaining({ target: expect.any(Object) })
+      expect.objectContaining({ target: expect.any(Object) }),
     );
     expect(send).toHaveBeenCalledTimes(1);
     expect(mocks.updateSet).toHaveBeenCalledWith({
       status: "sent",
       providerMessageId: "email-1",
     });
+  });
+
+  it("suppresses optional email before creating a lifecycle claim", async () => {
+    mocks.marketingEmailEnabledForRecipient.mockResolvedValueOnce(false);
+    const send = vi.fn(async () => ({ success: true, id: "email-1" }));
+
+    await expect(
+      sendLifecycleEmail({ ...BASE_OPTS, category: "marketing", send }),
+    ).resolves.toEqual({
+      sent: false,
+      deduped: false,
+      suppressed: true,
+    });
+
+    expect(mocks.insertValues).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("defaults optional email on when the recipient has no preference", async () => {
+    mocks.insertResults.push([{ id: "comm-1" }]);
+    const send = vi.fn(async () => ({ success: true, id: "email-1" }));
+
+    await expect(
+      sendLifecycleEmail({ ...BASE_OPTS, category: "marketing", send }),
+    ).resolves.toEqual({ sent: true, deduped: false });
+
+    expect(mocks.insertValues).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when optional-email preference lookup fails", async () => {
+    mocks.marketingEmailEnabledForRecipient.mockRejectedValueOnce(
+      new Error("preference unavailable"),
+    );
+    const send = vi.fn(async () => ({ success: true, id: "email-1" }));
+
+    await expect(
+      sendLifecycleEmail({ ...BASE_OPTS, category: "marketing", send }),
+    ).resolves.toEqual({ sent: false, deduped: false });
+
+    expect(mocks.alertOps).toHaveBeenCalledWith(
+      "Lifecycle email error",
+      expect.stringContaining("preference unavailable"),
+    );
+    expect(mocks.insertValues).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("marks a lifecycle email sent when the provider omits an id", async () => {
@@ -148,7 +200,9 @@ describe("sendLifecycleEmail", () => {
       {
         id: "comm-stale",
         status: "pending",
-        createdAt: new Date(Date.now() - LIFECYCLE_EMAIL_PENDING_RECLAIM_MS - 1),
+        createdAt: new Date(
+          Date.now() - LIFECYCLE_EMAIL_PENDING_RECLAIM_MS - 1,
+        ),
       },
     ]);
     mocks.deleteResults.push([{ id: "comm-stale" }]);
@@ -170,7 +224,10 @@ describe("sendLifecycleEmail", () => {
 
   it("keeps a failed non-retryable lifecycle email claimed and marked failed", async () => {
     mocks.insertResults.push([{ id: "comm-1" }]);
-    const send = vi.fn(async () => ({ success: false, error: "provider down" }));
+    const send = vi.fn(async () => ({
+      success: false,
+      error: "provider down",
+    }));
 
     await expect(sendLifecycleEmail({ ...BASE_OPTS, send })).resolves.toEqual({
       sent: false,
@@ -179,7 +236,7 @@ describe("sendLifecycleEmail", () => {
 
     expect(mocks.alertOps).toHaveBeenCalledWith(
       "Lifecycle email failed",
-      "trial-ending \u2192 owner@example.com: provider down"
+      "trial-ending \u2192 owner@example.com: provider down",
     );
     expect(mocks.deleteWhere).not.toHaveBeenCalled();
     expect(mocks.updateSet).toHaveBeenCalledWith({ status: "failed" });
@@ -187,10 +244,13 @@ describe("sendLifecycleEmail", () => {
 
   it("drops a failed retryable lifecycle email claim so cron can retry", async () => {
     mocks.insertResults.push([{ id: "comm-1" }]);
-    const send = vi.fn(async () => ({ success: false, error: "provider down" }));
+    const send = vi.fn(async () => ({
+      success: false,
+      error: "provider down",
+    }));
 
     await expect(
-      sendLifecycleEmail({ ...BASE_OPTS, send, retryOnFail: true })
+      sendLifecycleEmail({ ...BASE_OPTS, send, retryOnFail: true }),
     ).resolves.toEqual({
       sent: false,
       deduped: false,

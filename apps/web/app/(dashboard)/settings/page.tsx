@@ -415,9 +415,19 @@ function PracticeInfoTab() {
     isLoading,
     error: practiceError,
   } = trpc.settings.getPractice.useQuery();
+  const {
+    data: marketingEmailPreference,
+    isLoading: marketingEmailPreferenceLoading,
+    isFetching: marketingEmailPreferenceRefreshing,
+    error: marketingEmailPreferenceError,
+    refetch: refetchMarketingEmailPreference,
+  } = trpc.settings.getMarketingEmailPreference.useQuery();
   const updateMutation = trpc.settings.updatePractice.useMutation({
-    onSuccess: () => {
-      utils.settings.getPractice.invalidate();
+    onSuccess: async () => {
+      await Promise.all([
+        utils.settings.getPractice.invalidate(),
+        utils.settings.getMarketingEmailPreference.invalidate(),
+      ]);
       toast.success("Practice info updated");
     },
     onError: (err) => {
@@ -437,6 +447,18 @@ function PracticeInfoTab() {
       toast.error(err.message);
     },
   });
+  const marketingEmailMutation =
+    trpc.settings.setMarketingEmailPreference.useMutation({
+      onSuccess: (preference) => {
+        utils.settings.getMarketingEmailPreference.invalidate();
+        toast.success(
+          preference.enabled
+            ? "Optional OpenVPM emails turned on"
+            : "Optional OpenVPM emails turned off",
+        );
+      },
+      onError: (err) => toast.error(err.message),
+    });
 
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const logoInputRef = useRef<HTMLInputElement>(null);
@@ -749,6 +771,109 @@ function PracticeInfoTab() {
               />
             </div>
           </div>
+        </div>
+
+        {/* ── OpenVPM email preferences ── */}
+        <div className="space-y-5 rounded-lg border border-border bg-card p-6">
+          <div className="space-y-1">
+            <h3 className="text-sm font-semibold">Emails from OpenVPM</h3>
+            <p className="text-xs text-muted-foreground">
+              Controls optional email OpenVPM sends to your clinic, not messages
+              your clinic sends to pet owners.
+            </p>
+          </div>
+
+          {marketingEmailPreferenceError ? (
+            <div className="space-y-3" role="alert">
+              <p className="text-sm text-destructive">
+                We couldn&apos;t load this email preference.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void refetchMarketingEmailPreference()}
+              >
+                Try again
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <label className="flex cursor-pointer items-start gap-3 rounded-md border border-border p-3">
+                <Checkbox
+                  checked={marketingEmailPreference?.enabled ?? true}
+                  disabled={
+                    marketingEmailPreferenceLoading ||
+                    marketingEmailPreferenceRefreshing ||
+                    updateMutation.isPending ||
+                    marketingEmailMutation.isPending ||
+                    marketingEmailPreference?.configurable === false
+                  }
+                  aria-describedby="marketing-email-preference-description"
+                  onChange={(event) =>
+                    marketingEmailMutation.mutate({
+                      enabled: event.currentTarget.checked,
+                    })
+                  }
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-medium">
+                    Product guidance and feedback
+                  </span>
+                  <span
+                    id="marketing-email-preference-description"
+                    className="mt-1 block text-xs leading-5 text-muted-foreground"
+                  >
+                    Occasional setup tips, product updates, trial guidance, and
+                    requests for feedback. Turn this off to stop marketing and
+                    research email
+                    {marketingEmailPreference?.recipientEmail
+                      ? ` to ${marketingEmailPreference.recipientEmail}`
+                      : ""}
+                    .
+                  </span>
+                </span>
+                {marketingEmailPreferenceLoading ||
+                marketingEmailPreferenceRefreshing ||
+                marketingEmailMutation.isPending ? (
+                  <Loader2 className="mt-0.5 h-4 w-4 animate-spin text-muted-foreground" />
+                ) : null}
+              </label>
+
+              {marketingEmailMutation.isError ? (
+                <p className="text-xs text-destructive" role="alert">
+                  {marketingEmailMutation.error.message}
+                </p>
+              ) : marketingEmailMutation.isSuccess &&
+                marketingEmailMutation.data.recipientEmail ===
+                  marketingEmailPreference?.recipientEmail &&
+                marketingEmailMutation.data.enabled ===
+                  marketingEmailPreference?.enabled ? (
+                <p className="text-xs text-emerald-700" role="status">
+                  {marketingEmailMutation.data.enabled
+                    ? "Optional OpenVPM emails are on."
+                    : "Optional OpenVPM emails are off."}
+                </p>
+              ) : null}
+
+              <div className="rounded-md bg-muted/50 p-3">
+                <p className="text-sm font-medium">
+                  Account, security, and billing email
+                </p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  Required for sign-in, receipts, payment issues, and critical
+                  service notices. These cannot be turned off here.
+                </p>
+              </div>
+
+              {marketingEmailPreference?.configurable === false ? (
+                <p className="text-xs text-amber-700" role="status">
+                  Add a practice email above, save your changes, then manage
+                  optional email here.
+                </p>
+              ) : null}
+            </div>
+          )}
         </div>
       </div>
 

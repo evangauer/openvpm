@@ -26,6 +26,12 @@ const mocks = vi.hoisted(() => ({
     }),
   ),
   sendWelcomeEmail: vi.fn(async () => ({ success: true })),
+  sendOptionalPlatformEmail: vi.fn(
+    async (opts: { send: () => Promise<unknown> }) => {
+      await opts.send();
+      return { sent: true, deduped: false };
+    },
+  ),
   createSubscriptionCheckoutSession: vi.fn(async () => ({
     url: "https://stripe.example/signup-checkout",
   })),
@@ -52,6 +58,10 @@ vi.mock("@/lib/email", () => ({
 
 vi.mock("@/lib/auth-email-delivery", () => ({
   sendTrackedVerificationEmail: mocks.sendTrackedVerificationEmail,
+}));
+
+vi.mock("@/lib/email-lifecycle", () => ({
+  sendOptionalPlatformEmail: mocks.sendOptionalPlatformEmail,
 }));
 
 vi.mock("@/lib/onboarding/defaults", () => ({
@@ -506,10 +516,10 @@ describe("auth router input validation", () => {
         customerEmail: "owner@example.com",
       }),
     );
-    expect(mocks.seedPractice).toHaveBeenCalledWith(
-      db,
-      { practiceId: "practice-1", locationId: "location-1" },
-    );
+    expect(mocks.seedPractice).toHaveBeenCalledWith(db, {
+      practiceId: "practice-1",
+      locationId: "location-1",
+    });
     expect(mocks.seedDemoData).toHaveBeenCalledWith(db, {
       practiceId: "practice-1",
     });
@@ -640,6 +650,18 @@ describe("auth router input validation", () => {
       verifyUrl: "http://localhost:3000/verify-email?token=token-123",
       db,
     });
+    expect(mocks.sendOptionalPlatformEmail).toHaveBeenCalledWith({
+      practiceId: "practice-1",
+      to: "owner@example.com",
+      emailType: "welcome",
+      dedupeKey: "lc:welcome:practice-1:user-1",
+      send: expect.any(Function),
+    });
+    expect(mocks.sendWelcomeEmail).toHaveBeenCalledWith({
+      to: "owner@example.com",
+      practiceName: "Neighborhood Veterinary",
+      trialDays: 14,
+    });
   });
 
   it("reports a console verification preview without claiming registration email delivery", async () => {
@@ -690,10 +712,10 @@ describe("auth router input validation", () => {
 
     expect(transaction).toHaveBeenCalled();
     expect(insertValues).toHaveBeenCalledTimes(3);
-    expect(mocks.seedPractice).toHaveBeenCalledWith(
-      db,
-      { practiceId: "practice-1", locationId: "location-1" },
-    );
+    expect(mocks.seedPractice).toHaveBeenCalledWith(db, {
+      practiceId: "practice-1",
+      locationId: "location-1",
+    });
     expect(mocks.seedDemoData).toHaveBeenCalledWith(db, {
       practiceId: "practice-1",
     });

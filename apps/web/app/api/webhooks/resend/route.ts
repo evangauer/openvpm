@@ -19,6 +19,10 @@ import {
   recordAuthEmailDeliveryEvent,
   type AuthEmailWebhookEvent,
 } from "@/lib/auth-email-delivery";
+import {
+  recordPlatformEmailDeliverySuppression,
+  type DeliverySuppressionReason,
+} from "@/lib/platform-email-preferences";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -88,6 +92,15 @@ function suppressionReasonForEvent(
   return null;
 }
 
+function platformSuppressionReasonForEvent(
+  type: WebhookEventPayload["type"],
+): DeliverySuppressionReason | null {
+  if (type === "email.bounced") return "bounce";
+  if (type === "email.complained") return "complaint";
+  if (type === "email.suppressed") return "provider_suppressed";
+  return null;
+}
+
 function eventDetail(event: EmailWebhookEvent): string {
   if (event.type === "email.bounced") {
     return event.data.bounce?.message || "Resend reported a hard bounce.";
@@ -119,6 +132,23 @@ function groupByPractice(
     ]);
   }
   return grouped;
+}
+
+function isPlatformLifecycleCommunication(row: {
+  clientId: string | null;
+  dedupeKey: string | null;
+}): boolean {
+  return row.clientId === null && row.dedupeKey?.startsWith("lc:") === true;
+}
+
+function normalizedRecipients(event: EmailWebhookEvent): string[] {
+  return Array.from(
+    new Set(
+      event.data.to
+        .map((email) => normalizeEmailSuppressionAddress(email))
+        .filter((email): email is string => Boolean(email)),
+    ),
+  );
 }
 
 export async function POST(request: Request) {
@@ -153,6 +183,19 @@ export async function POST(request: Request) {
     db,
   });
   if (authDelivery.tracked) {
+    const platformSuppressionReason = platformSuppressionReasonForEvent(
+      event.type,
+    );
+    if (platformSuppressionReason) {
+      for (const email of normalizedRecipients(event)) {
+        await recordPlatformEmailDeliverySuppression({
+          email,
+          reason: platformSuppressionReason,
+          providerMessageId: event.data.email_id,
+          webhookId: request.headers.get("svix-id")!,
+        });
+      }
+    }
     // Identity conflicts are acknowledged only after the recorder durably
     // quarantines safe fingerprint/provider evidence. A database failure
     // throws above and remains retryable; a committed conflict must not cause
@@ -162,6 +205,9 @@ export async function POST(request: Request) {
 
   const status = communicationStatusForEvent(event.type);
   const suppressionReason = suppressionReasonForEvent(event.type);
+  const platformSuppressionReason = platformSuppressionReasonForEvent(
+    event.type,
+  );
   if (!status && !suppressionReason) {
     return NextResponse.json({ ok: true });
   }
@@ -171,6 +217,8 @@ export async function POST(request: Request) {
       .select({
         id: communications.id,
         practiceId: communications.practiceId,
+        clientId: communications.clientId,
+        dedupeKey: communications.dedupeKey,
       })
       .from(communications)
       .innerJoin(
@@ -191,14 +239,31 @@ export async function POST(request: Request) {
       .limit(20),
   );
 
-  const recipients = Array.from(
-    new Set(
-      event.data.to
-        .map((email) => normalizeEmailSuppressionAddress(email))
-        .filter((email): email is string => Boolean(email)),
-    ),
-  );
+  const recipients = normalizedRecipients(event);
   const detail = eventDetail(event);
+  const platformLifecycleMatched = matches.some(
+    isPlatformLifecycleCommunication,
+  );
+  const clinicSuppressionPracticeIds = new Set(
+    matches
+      .filter((match) => !isPlatformLifecycleCommunication(match))
+      .map((match) => match.practiceId),
+  );
+
+  if (
+    platformSuppressionReason &&
+    platformLifecycleMatched &&
+    recipients.length > 0
+  ) {
+    for (const email of recipients) {
+      await recordPlatformEmailDeliverySuppression({
+        email,
+        reason: platformSuppressionReason,
+        providerMessageId: event.data.email_id,
+        webhookId: request.headers.get("svix-id")!,
+      });
+    }
+  }
 
   for (const [practiceId, communicationIds] of groupByPractice(matches)) {
     await withTenant(db, practiceId, async (tx) => {
@@ -223,7 +288,11 @@ export async function POST(request: Request) {
           );
       }
 
-      if (suppressionReason && recipients.length > 0) {
+      if (
+        suppressionReason &&
+        recipients.length > 0 &&
+        clinicSuppressionPracticeIds.has(practiceId)
+      ) {
         await tx
           .insert(emailSuppressions)
           .values(

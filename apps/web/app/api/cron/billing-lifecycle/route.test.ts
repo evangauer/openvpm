@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const ROUTE_SOURCE = readFileSync(
   fileURLToPath(new URL("./route.ts", import.meta.url)),
-  "utf8"
+  "utf8",
 );
 
 const mocks = vi.hoisted(() => {
@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => {
     const afterWhere = {
       then: (
         resolve: (value: unknown[]) => unknown,
-        reject?: (error: unknown) => unknown
+        reject?: (error: unknown) => unknown,
       ) => Promise.resolve(result).then(resolve, reject),
     };
     const builder = {
@@ -32,15 +32,24 @@ const mocks = vi.hoisted(() => {
     billingEnforced: vi.fn(() => true),
     cronAuthError: vi.fn(() => null),
     reportCronHeartbeat: vi.fn(async () => undefined),
-    sendTrialEndingEmail: vi.fn(async () => ({ success: true, id: "email_123" })),
-    sendLifecycleEmail: vi.fn(
-      async (opts: { send: () => Promise<unknown> }) => {
+    sendTrialEndingEmail: vi.fn(async () => ({
+      success: true,
+      id: "email_123",
+    })),
+    sendOptionalPlatformEmail: vi.fn(
+      async (opts: {
+        send: () => Promise<unknown>;
+      }): Promise<{
+        sent: boolean;
+        deduped: boolean;
+        suppressed?: boolean;
+      }> => {
         await opts.send();
         return { sent: true, deduped: false };
-      }
+      },
     ),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
-      fn(db)
+      fn(db),
     ),
   };
 });
@@ -71,7 +80,7 @@ vi.mock("@/lib/email", () => ({
 }));
 
 vi.mock("@/lib/email-lifecycle", () => ({
-  sendLifecycleEmail: mocks.sendLifecycleEmail,
+  sendOptionalPlatformEmail: mocks.sendOptionalPlatformEmail,
 }));
 
 vi.mock("@/lib/alerts", () => ({
@@ -110,11 +119,11 @@ describe("billing lifecycle cron", () => {
       new Response(JSON.stringify({ error: "Unauthorized" }), {
         status: 401,
         headers: { "content-type": "application/json" },
-      }) as never
+      }) as never,
     );
 
     const response = await GET(
-      new Request("https://openvpm.test/api/cron/billing-lifecycle")
+      new Request("https://openvpm.test/api/cron/billing-lifecycle"),
     );
 
     expect(response.status).toBe(401);
@@ -127,18 +136,19 @@ describe("billing lifecycle cron", () => {
     mocks.billingEnforced.mockReturnValueOnce(false);
 
     const response = await GET(
-      new Request("https://openvpm.test/api/cron/billing-lifecycle")
+      new Request("https://openvpm.test/api/cron/billing-lifecycle"),
     );
 
     await expect(response.json()).resolves.toEqual({
       sent: 0,
       deduped: 0,
+      suppressed: 0,
       failed: 0,
       skipped: 0,
       disabled: true,
     });
     expect(mocks.db.select).not.toHaveBeenCalled();
-    expect(mocks.sendLifecycleEmail).not.toHaveBeenCalled();
+    expect(mocks.sendOptionalPlatformEmail).not.toHaveBeenCalled();
     expect(mocks.reportCronHeartbeat).toHaveBeenCalledWith({
       job: "billing-lifecycle",
       status: "ok",
@@ -146,6 +156,7 @@ describe("billing lifecycle cron", () => {
       metrics: {
         sent: 0,
         deduped: 0,
+        suppressed: 0,
         failed: 0,
         skipped: 0,
         disabled: true,
@@ -157,16 +168,17 @@ describe("billing lifecycle cron", () => {
     mocks.selectResults.push([practice()]);
 
     const response = await GET(
-      new Request("https://openvpm.test/api/cron/billing-lifecycle")
+      new Request("https://openvpm.test/api/cron/billing-lifecycle"),
     );
 
     await expect(response.json()).resolves.toEqual({
       sent: 1,
       deduped: 0,
+      suppressed: 0,
       failed: 0,
       skipped: 0,
     });
-    expect(mocks.sendLifecycleEmail).toHaveBeenCalledWith(
+    expect(mocks.sendOptionalPlatformEmail).toHaveBeenCalledWith(
       expect.objectContaining({
         practiceId: PRACTICE_ID,
         to: "owner@example.com",
@@ -174,7 +186,7 @@ describe("billing lifecycle cron", () => {
         dedupeKey: `lc:trial-ending:${PRACTICE_ID}:2026-07-04:t-3`,
         retryOnFail: true,
         send: expect.any(Function),
-      })
+      }),
     );
     expect(mocks.sendTrialEndingEmail).toHaveBeenCalledWith({
       to: "owner@example.com",
@@ -186,11 +198,12 @@ describe("billing lifecycle cron", () => {
     expect(mocks.reportCronHeartbeat).toHaveBeenCalledWith({
       job: "billing-lifecycle",
       status: "ok",
-      detail: "1 sent, 0 deduped, 0 failed, 0 skipped",
+      detail: "1 sent, 0 deduped, 0 suppressed, 0 failed, 0 skipped",
       metrics: {
         candidates: 1,
         sent: 1,
         deduped: 0,
+        suppressed: 0,
         failed: 0,
         skipped: 0,
       },
@@ -207,52 +220,51 @@ describe("billing lifecycle cron", () => {
     ]);
 
     const response = await GET(
-      new Request("https://openvpm.test/api/cron/billing-lifecycle")
+      new Request("https://openvpm.test/api/cron/billing-lifecycle"),
     );
 
     await expect(response.json()).resolves.toEqual({
       sent: 1,
       deduped: 0,
+      suppressed: 0,
       failed: 0,
       skipped: 0,
     });
-    expect(mocks.sendLifecycleEmail).toHaveBeenCalledWith(
+    expect(mocks.sendOptionalPlatformEmail).toHaveBeenCalledWith(
       expect.objectContaining({
         practiceId: PRACTICE_ID,
         emailType: "trial-ending",
         dedupeKey: `lc:trial-ending:${PRACTICE_ID}:2026-07-03:t-3`,
-      })
+      }),
     );
     expect(mocks.sendTrialEndingEmail).toHaveBeenCalledWith(
       expect.objectContaining({
         daysLeft: 3,
         trialEndDate: "July 3, 2026",
-      })
+      }),
     );
   });
 
   it("normalizes the billing contact email before claiming and sending", async () => {
-    mocks.selectResults.push([
-      practice({ email: " Owner@Example.COM " }),
-    ]);
+    mocks.selectResults.push([practice({ email: " Owner@Example.COM " })]);
 
     const response = await GET(
-      new Request("https://openvpm.test/api/cron/billing-lifecycle")
+      new Request("https://openvpm.test/api/cron/billing-lifecycle"),
     );
 
     await expect(response.json()).resolves.toMatchObject({
       sent: 1,
       skipped: 0,
     });
-    expect(mocks.sendLifecycleEmail).toHaveBeenCalledWith(
+    expect(mocks.sendOptionalPlatformEmail).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "owner@example.com",
-      })
+      }),
     );
     expect(mocks.sendTrialEndingEmail).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "owner@example.com",
-      })
+      }),
     );
   });
 
@@ -264,16 +276,17 @@ describe("billing lifecycle cron", () => {
     ]);
 
     const response = await GET(
-      new Request("https://openvpm.test/api/cron/billing-lifecycle")
+      new Request("https://openvpm.test/api/cron/billing-lifecycle"),
     );
 
     await expect(response.json()).resolves.toEqual({
       sent: 0,
       deduped: 0,
+      suppressed: 0,
       failed: 0,
       skipped: 3,
     });
-    expect(mocks.sendLifecycleEmail).not.toHaveBeenCalled();
+    expect(mocks.sendOptionalPlatformEmail).not.toHaveBeenCalled();
     expect(mocks.sendTrialEndingEmail).not.toHaveBeenCalled();
   });
 
@@ -283,33 +296,57 @@ describe("billing lifecycle cron", () => {
     ]);
 
     const response = await GET(
-      new Request("https://openvpm.test/api/cron/billing-lifecycle")
+      new Request("https://openvpm.test/api/cron/billing-lifecycle"),
     );
 
     await expect(response.json()).resolves.toEqual({
       sent: 0,
       deduped: 0,
+      suppressed: 0,
       failed: 0,
       skipped: 1,
     });
-    expect(mocks.sendLifecycleEmail).not.toHaveBeenCalled();
+    expect(mocks.sendOptionalPlatformEmail).not.toHaveBeenCalled();
     expect(mocks.sendTrialEndingEmail).not.toHaveBeenCalled();
   });
 
   it("reports deduped lifecycle sends separately from new sends", async () => {
     mocks.selectResults.push([practice()]);
-    mocks.sendLifecycleEmail.mockResolvedValueOnce({
+    mocks.sendOptionalPlatformEmail.mockResolvedValueOnce({
       sent: false,
       deduped: true,
     });
 
     const response = await GET(
-      new Request("https://openvpm.test/api/cron/billing-lifecycle")
+      new Request("https://openvpm.test/api/cron/billing-lifecycle"),
     );
 
     await expect(response.json()).resolves.toEqual({
       sent: 0,
       deduped: 1,
+      suppressed: 0,
+      failed: 0,
+      skipped: 0,
+    });
+    expect(mocks.sendTrialEndingEmail).not.toHaveBeenCalled();
+  });
+
+  it("reports recipient suppression without claiming or failing the send", async () => {
+    mocks.selectResults.push([practice()]);
+    mocks.sendOptionalPlatformEmail.mockResolvedValueOnce({
+      sent: false,
+      deduped: false,
+      suppressed: true,
+    });
+
+    const response = await GET(
+      new Request("https://openvpm.test/api/cron/billing-lifecycle"),
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      sent: 0,
+      deduped: 0,
+      suppressed: 1,
       failed: 0,
       skipped: 0,
     });
@@ -318,10 +355,10 @@ describe("billing lifecycle cron", () => {
 
   it("sweeps only active trialing practices", () => {
     const trialSweep = ROUTE_SOURCE.match(
-      /const trialingPractices = await withSystem[\s\S]+?\),\s*\);/
+      /const trialingPractices = await withSystem[\s\S]+?\),\s*\);/,
     )?.[0];
 
-    expect(trialSweep).toContain("eq(practices.billingStatus, \"trialing\")");
+    expect(trialSweep).toContain('eq(practices.billingStatus, "trialing")');
     expect(trialSweep).toContain("isNull(practices.deletedAt)");
   });
 });

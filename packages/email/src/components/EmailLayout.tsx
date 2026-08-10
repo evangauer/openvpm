@@ -24,11 +24,13 @@ export function EmailLayout({
   brand,
   preview,
   unsubscribeUrl,
+  recipientReason,
   children,
 }: {
   brand: Brand;
   preview: string;
   unsubscribeUrl?: string;
+  recipientReason?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -109,7 +111,11 @@ export function EmailLayout({
           </Section>
 
           {/* Footer */}
-          <Footer brand={brand} unsubscribeUrl={unsubscribeUrl} />
+          <Footer
+            brand={brand}
+            unsubscribeUrl={unsubscribeUrl}
+            recipientReason={recipientReason}
+          />
         </Container>
       </Body>
     </Html>

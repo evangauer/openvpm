@@ -21,13 +21,11 @@ const nextConfig = require("./next.config.js") as {
     }[]
   >;
 };
-const {
-  contentSecurityPolicy,
-  securityHeaders,
-} = require("./lib/security-headers.js") as {
-  contentSecurityPolicy: string;
-  securityHeaders: { key: string; value: string }[];
-};
+const { contentSecurityPolicy, securityHeaders } =
+  require("./lib/security-headers.js") as {
+    contentSecurityPolicy: string;
+    securityHeaders: { key: string; value: string }[];
+  };
 
 function request(path: string) {
   return new Request(`https://openvpm.test${path}`) as never;
@@ -57,6 +55,25 @@ describe("middleware security headers", () => {
     expectSecurityHeaders(response);
   });
 
+  it("keeps email preference links public without exposing lookalike routes", async () => {
+    mocks.getToken.mockResolvedValue(null);
+
+    const preferenceResponse = await middleware(
+      request("/email-preferences?token=signed"),
+    );
+    const lookalikeResponse = await middleware(
+      request("/email-preferences-old"),
+    );
+
+    expect(mocks.getToken).toHaveBeenCalledTimes(1);
+    expect(preferenceResponse.headers.get("location")).toBeNull();
+    expect(lookalikeResponse.headers.get("location")).toBe(
+      "https://openvpm.test/login?next=%2Femail-preferences-old",
+    );
+    expectSecurityHeaders(preferenceResponse);
+    expectSecurityHeaders(lookalikeResponse);
+  });
+
   it("adds security headers to API routes without middleware auth redirects", async () => {
     const response = await middleware(request("/api/health"));
 
@@ -74,7 +91,7 @@ describe("middleware security headers", () => {
     expect(mocks.getToken).toHaveBeenCalledTimes(1);
     expect(bookingResponse.headers.get("location")).toBeNull();
     expect(lookalikeResponse.headers.get("location")).toBe(
-      "https://openvpm.test/login?next=%2Fbookish"
+      "https://openvpm.test/login?next=%2Fbookish",
     );
     expectSecurityHeaders(bookingResponse);
     expectSecurityHeaders(lookalikeResponse);
@@ -84,14 +101,14 @@ describe("middleware security headers", () => {
     mocks.getToken.mockResolvedValue(null);
 
     const programResponse = await middleware(
-      request("/sms/00000000-0000-4000-8000-000000000000/privacy")
+      request("/sms/00000000-0000-4000-8000-000000000000/privacy"),
     );
     const lookalikeResponse = await middleware(request("/sms-settings"));
 
     expect(mocks.getToken).toHaveBeenCalledTimes(1);
     expect(programResponse.headers.get("location")).toBeNull();
     expect(lookalikeResponse.headers.get("location")).toBe(
-      "https://openvpm.test/login?next=%2Fsms-settings"
+      "https://openvpm.test/login?next=%2Fsms-settings",
     );
     expectSecurityHeaders(programResponse);
     expectSecurityHeaders(lookalikeResponse);
@@ -120,7 +137,7 @@ describe("middleware security headers", () => {
       secret: "test-secret",
     });
     expect(response.headers.get("location")).toBe(
-      "https://openvpm.test/login?next=%2Fpatients%3Fstatus%3Dactive"
+      "https://openvpm.test/login?next=%2Fpatients%3Fstatus%3Dactive",
     );
     expectSecurityHeaders(response);
   });
@@ -147,7 +164,7 @@ describe("middleware security headers", () => {
 
     expect(mocks.getToken).not.toHaveBeenCalled();
     expect(response.headers.get("location")).toBe(
-      "https://openvpm.test/login?next=%2Fsettings"
+      "https://openvpm.test/login?next=%2Fsettings",
     );
     expectSecurityHeaders(response);
   });
@@ -188,9 +205,11 @@ describe("middleware security headers", () => {
   });
 
   it("keeps the CSP compatible with accepted patient photo URLs", () => {
-    expect(contentSecurityPolicy).toContain("img-src 'self' data: blob: https:");
     expect(contentSecurityPolicy).toContain(
-      "connect-src 'self' https://app.openvpm.com"
+      "img-src 'self' data: blob: https:",
+    );
+    expect(contentSecurityPolicy).toContain(
+      "connect-src 'self' https://app.openvpm.com",
     );
     expect(contentSecurityPolicy).toContain("default-src 'self'");
     expect(contentSecurityPolicy).toContain("object-src 'none'");
@@ -206,7 +225,7 @@ describe("middleware security headers", () => {
     expect(readme).toContain("X-Frame-Options");
     expect(readme).toContain("Referrer-Policy");
     expect(readme).not.toContain(
-      "**Headers:** X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-Policy"
+      "**Headers:** X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-Policy",
     );
   });
 
@@ -217,7 +236,7 @@ describe("middleware security headers", () => {
     expect(middlewareSource).toContain('from "./lib/security-headers"');
     expect(middlewareSource).toContain("isVercelObservabilityPath");
     expect(middlewareSource).toContain(
-      'loginUrl.searchParams.set("next", nextPath)'
+      'loginUrl.searchParams.set("next", nextPath)',
     );
     expect(middlewareSource).toContain('if (nextPath !== "/")');
     expect(nextConfigSource).toContain('require("./lib/security-headers.js")');

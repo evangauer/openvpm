@@ -3,9 +3,21 @@ import { db } from "@openpims/db/client";
 import { communications } from "@openpims/db";
 import { withSystem } from "@/lib/tenant-db";
 import { alertOps } from "@/lib/alerts";
+import { marketingEmailEnabledForRecipient } from "@/lib/platform-email-preferences";
 
 type SendResult = { success: boolean; id?: string; error?: string };
 type ClaimedLifecycleEmail = { id: string };
+type LifecycleEmailCategory = "transactional" | "marketing";
+
+type LifecycleEmailOptions = {
+  practiceId: string;
+  to: string;
+  emailType: string;
+  dedupeKey: string;
+  send: () => Promise<SendResult>;
+  retryOnFail?: boolean;
+  category: LifecycleEmailCategory;
+};
 
 export const LIFECYCLE_EMAIL_PENDING_RECLAIM_MS = 30 * 60 * 1000;
 
@@ -21,17 +33,18 @@ export const LIFECYCLE_EMAIL_PENDING_RECLAIM_MS = 30 * 60 * 1000;
  * we delete the claim so the next run retries; for webhook mail we keep it
  * (Stripe redelivers the event anyway) so customers never get duplicates.
  */
-export async function sendLifecycleEmail(opts: {
-  practiceId: string;
-  to: string;
-  emailType: string;
-  dedupeKey: string;
-  send: () => Promise<SendResult>;
-  retryOnFail?: boolean;
-}): Promise<{ sent: boolean; deduped: boolean }> {
+export async function sendLifecycleEmail(
+  opts: LifecycleEmailOptions,
+): Promise<{ sent: boolean; deduped: boolean; suppressed?: boolean }> {
   // Never throw into the caller (Stripe webhook / cron). Any infra error
   // (incl. a not-yet-migrated dedupe column) degrades to "not sent" + an alert.
   try {
+    if (opts.category === "marketing") {
+      if (!(await marketingEmailEnabledForRecipient(opts.to))) {
+        return { sent: false, deduped: false, suppressed: true };
+      }
+    }
+
     // 1. Atomic claim. A fresh existing pending row means another worker is
     // sending right now; an old pending row means the previous worker likely
     // died before recording sent/failed, so it can be reclaimed.
@@ -98,6 +111,17 @@ export async function sendLifecycleEmail(opts: {
   }
 }
 
+/**
+ * The only supported boundary for optional platform lifecycle email. Keeping
+ * the category out of the caller's hands makes the preference check mandatory
+ * for every campaign that adopts this sender.
+ */
+export function sendOptionalPlatformEmail(
+  opts: Omit<LifecycleEmailOptions, "category">,
+) {
+  return sendLifecycleEmail({ ...opts, category: "marketing" });
+}
+
 async function claimLifecycleEmail(opts: {
   practiceId: string;
   emailType: string;
@@ -120,9 +144,7 @@ async function claimLifecycleEmail(opts: {
   );
   if (!existing || existing.status !== "pending") return null;
 
-  const staleBefore = new Date(
-    Date.now() - LIFECYCLE_EMAIL_PENDING_RECLAIM_MS
-  );
+  const staleBefore = new Date(Date.now() - LIFECYCLE_EMAIL_PENDING_RECLAIM_MS);
   if (new Date(existing.createdAt).getTime() > staleBefore.getTime()) {
     return null;
   }
@@ -134,8 +156,8 @@ async function claimLifecycleEmail(opts: {
         and(
           eq(communications.dedupeKey, opts.dedupeKey),
           eq(communications.status, "pending"),
-          lte(communications.createdAt, staleBefore)
-        )
+          lte(communications.createdAt, staleBefore),
+        ),
       )
       .returning({ id: communications.id }),
   );

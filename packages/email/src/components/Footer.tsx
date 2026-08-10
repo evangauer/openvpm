@@ -11,9 +11,11 @@ import type { Brand } from "../brand";
 export function Footer({
   brand,
   unsubscribeUrl,
+  recipientReason,
 }: {
   brand: Brand;
   unsubscribeUrl?: string;
+  recipientReason?: string;
 }) {
   return (
     <Section style={{ padding: "24px 8px 0" }}>
@@ -50,7 +52,8 @@ export function Footer({
           margin: "10px 0 0",
         }}
       >
-        You&apos;re receiving this because you have an OpenVPM account.
+        {recipientReason ??
+          "You're receiving this because your clinic uses OpenVPM."}
         {unsubscribeUrl ? (
           <>
             {"  "}
