@@ -7,7 +7,7 @@ describe("API reference docs", () => {
 
     expect(source).toContain("tRPC dashboard API + versioned `/api/v1` REST");
     expect(source).toContain(
-      "External integrations use the scoped, API-key authenticated `/api/v1` REST surface",
+      "External integrations use the smaller, scoped, API-key authenticated `/api/v1` REST surface",
     );
     expect(source).toContain("Versioned `/api/v1` REST API");
     expect(source).toContain("read clients/patients/appointments");
@@ -41,9 +41,11 @@ describe("API reference docs", () => {
     expect(source).toContain("Treatment templates can populate draft invoices");
     expect(source).toContain("inbound portal requests");
     expect(source).toContain(
-      "Vaccination reminders and wellness billing workflows",
+      "Appointment and vaccination reminder workflows are administrator-controlled",
     );
-    expect(source).toContain("Full communication log on every client record");
+    expect(source).toContain(
+      "Communication history across calls, texts, emails, and inbound portal requests",
+    );
     expect(source).toContain("pay online when Stripe checkout is configured");
     expect(source).toContain(
       "broader campaign APIs tracked as explicit roadmap work",

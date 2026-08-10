@@ -131,11 +131,7 @@ function RegisterPageInner() {
   }
 
   const canSubmit =
-    isRequiredAuthTextValid(
-      practiceName,
-      AUTH_PRACTICE_NAME_MAX_LENGTH,
-      2
-    ) &&
+    isRequiredAuthTextValid(practiceName, AUTH_PRACTICE_NAME_MAX_LENGTH, 2) &&
     isAuthEmailLengthValid(email) &&
     isValidEmail(email) &&
     password.length >= AUTH_PASSWORD_MIN_LENGTH &&
@@ -152,7 +148,7 @@ function RegisterPageInner() {
     setLoading(true);
     const registrationAcquisition = acquisitionWithFunnelVisitorId(
       acquisition,
-      getFunnelVisitorId()
+      getFunnelVisitorId(),
     );
     registerMutation.mutate({
       email: email.trim().toLowerCase(),
@@ -256,6 +252,16 @@ function RegisterPageInner() {
               Free for 14 days. No credit card required.
             </p>
 
+            <p className="text-center text-xs text-slate-500">
+              <Link
+                href="/clinic-fit"
+                className="font-medium text-primary underline underline-offset-2"
+              >
+                Check clinic fit and rollout limits
+              </Link>{" "}
+              before moving live work.
+            </p>
+
             <p className="text-center text-xs text-slate-400">
               By creating a workspace you agree to the{" "}
               <Link
@@ -277,7 +283,10 @@ function RegisterPageInner() {
 
           <p className="mt-8 text-center text-sm text-slate-500">
             Already have an account?{" "}
-            <Link href="/login" className="font-medium text-primary hover:underline">
+            <Link
+              href="/login"
+              className="font-medium text-primary hover:underline"
+            >
               Sign in
             </Link>
           </p>
@@ -353,7 +362,7 @@ function PlatformPreview({ practiceName }: { practiceName: string }) {
                 key={label}
                 className={cn(
                   "flex items-center gap-2.5 rounded-md px-2 py-1.5 text-xs font-medium",
-                  i === 0 ? "bg-primary/10 text-primary" : "text-slate-500"
+                  i === 0 ? "bg-primary/10 text-primary" : "text-slate-500",
                 )}
               >
                 <Icon className="h-4 w-4 shrink-0" />

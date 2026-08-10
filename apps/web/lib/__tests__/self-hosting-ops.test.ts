@@ -4,33 +4,33 @@ import { describe, expect, it } from "vitest";
 describe("self-hosting operations docs", () => {
   it("exposes root RLS verification and documents the bootstrap sequence", () => {
     const rootPackage = JSON.parse(
-      readFileSync("../../package.json", "utf8")
+      readFileSync("../../package.json", "utf8"),
     ) as { scripts: Record<string, string> };
     const compose = readFileSync("../../docker/docker-compose.yml", "utf8");
     const readme = readFileSync("../../README.md", "utf8");
     const envExample = readFileSync("../../.env.example", "utf8");
     const hostedRunbook = readFileSync(
       "../../docs/hosted-cloud-production.md",
-      "utf8"
+      "utf8",
     );
     const rlsSecurityDoc = readFileSync(
       "../../docs/security/row-level-security.md",
-      "utf8"
+      "utf8",
     );
     const applyRls = readFileSync("../../packages/db/apply-rls.ts", "utf8");
     const testRls = readFileSync("../../packages/db/test-rls.ts", "utf8");
 
     expect(rootPackage.scripts["db:rls"]).toBe(
-      "pnpm --filter @openpims/db db:rls"
+      "pnpm --filter @openpims/db db:rls",
     );
     expect(rootPackage.scripts["db:rls:test"]).toBe(
-      "pnpm --filter @openpims/db db:rls:test"
+      "pnpm --filter @openpims/db db:rls:test",
     );
 
     expect(compose).toContain("minio-bootstrap:");
     expect(compose).toContain("mc mb --ignore-existing local/openpims");
     expect(compose).toMatch(
-      /minio-bootstrap:\s*\n\s*condition: service_completed_successfully/
+      /minio-bootstrap:\s*\n\s*condition: service_completed_successfully/,
     );
 
     expect(readme).toContain("pnpm db:rls");
@@ -39,21 +39,21 @@ describe("self-hosting operations docs", () => {
     expect(readme).toContain("least-privilege `openpims_app` database role");
     expect(readme).toContain("OPENPIMS_APP_DB_PASSWORD='<strong>' pnpm db:rls");
     expect(readme).toContain(
-      "OPENPIMS_APP_DB_PASSWORD='<same>' pnpm db:rls:test"
+      "OPENPIMS_APP_DB_PASSWORD='<same>' pnpm db:rls:test",
     );
     expect(hostedRunbook).toContain(
-      "OPENPIMS_APP_DB_PASSWORD='<strong-password>' pnpm db:rls"
+      "OPENPIMS_APP_DB_PASSWORD='<strong-password>' pnpm db:rls",
     );
     expect(hostedRunbook).toContain(
-      "OPENPIMS_APP_DB_PASSWORD='<same-password>' pnpm db:rls:test"
+      "OPENPIMS_APP_DB_PASSWORD='<same-password>' pnpm db:rls:test",
     );
     expect(rlsSecurityDoc).toContain(
-      "Both scripts trim `OPENPIMS_APP_DB_PASSWORD`"
+      "Both scripts trim `OPENPIMS_APP_DB_PASSWORD`",
     );
     expect(envExample).toContain("OPENPIMS_APP_DB_PASSWORD=");
     expect(applyRls).toContain('nonBlankEnv("OPENPIMS_APP_DB_PASSWORD")');
     expect(testRls).toContain('nonBlankEnv("OPENPIMS_APP_DB_PASSWORD")');
-    expect(testRls).toContain('url.password =');
+    expect(testRls).toContain("url.password =");
     expect(testRls).not.toContain("//openpims_app:openpims_app@");
   });
 
@@ -61,24 +61,21 @@ describe("self-hosting operations docs", () => {
     const readme = readFileSync("../../README.md", "utf8");
     const hostedRunbook = readFileSync(
       "../../docs/hosted-cloud-production.md",
-      "utf8"
+      "utf8",
     );
     const envExample = readFileSync("../../.env.example", "utf8");
     const hostedEnvHeading = hostedRunbook.indexOf("## Required Hosted Env");
     const hostedEnvBlockStart = hostedRunbook.indexOf(
       "```env",
-      hostedEnvHeading
+      hostedEnvHeading,
     );
     const requiredHostedEnvBlock = hostedRunbook.slice(
       hostedEnvBlockStart,
-      hostedRunbook.indexOf(
-        "```",
-        hostedEnvBlockStart + "```env".length
-      )
+      hostedRunbook.indexOf("```", hostedEnvBlockStart + "```env".length),
     );
 
-    expect(readme).toContain(
-      "| **Email/SMS** | Resend + Telnyx SMS (Twilio fallback) |"
+    expect(readme).toMatch(
+      /\| \*\*Email\/SMS\*\*\s+\| Resend \+ Telnyx SMS \(Twilio fallback\)\s+\|/,
     );
     expect(readme).not.toContain("| **Email/SMS** | Resend + Twilio |");
 
@@ -89,22 +86,16 @@ describe("self-hosting operations docs", () => {
     expect(requiredHostedEnvBlock).toContain("EMAIL_SUPPORT_ADDRESS=");
     expect(requiredHostedEnvBlock).toContain("EMAIL_COMPANY_ADDRESS=...");
     expect(requiredHostedEnvBlock).toContain("STRIPE_TAX_ENABLED=true");
-    expect(requiredHostedEnvBlock).toContain(
-      "MESSAGING_SENDING_ENABLED=false"
-    );
-    expect(requiredHostedEnvBlock).toContain(
-      "MESSAGING_SENDING_PRACTICE_IDS="
-    );
-    expect(requiredHostedEnvBlock).toContain(
-      "MESSAGING_SENDING_LOCATION_IDS="
-    );
+    expect(requiredHostedEnvBlock).toContain("MESSAGING_SENDING_ENABLED=false");
+    expect(requiredHostedEnvBlock).toContain("MESSAGING_SENDING_PRACTICE_IDS=");
+    expect(requiredHostedEnvBlock).toContain("MESSAGING_SENDING_LOCATION_IDS=");
     expect(requiredHostedEnvBlock).not.toContain("TWILIO_");
     expect(requiredHostedEnvBlock).not.toContain("STRIPE_PRICE_CLOUD_USER");
 
     expect(hostedRunbook).toContain("Telnyx is the hosted SMS default");
     expect(hostedRunbook).toContain("Twilio fallback deployment");
     expect(hostedRunbook).toContain(
-      "`STRIPE_PRICE_CLOUD_USER` and `STRIPE_PRICE_CLOUD` are legacy-only"
+      "`STRIPE_PRICE_CLOUD_USER` and `STRIPE_PRICE_CLOUD` are legacy-only",
     );
     expect(envExample).toContain("TELNYX_PUBLIC_KEY=");
     expect(envExample).toContain("TELNYX_MESSAGING_PROFILE_ID=");
@@ -120,28 +111,25 @@ describe("self-hosting operations docs", () => {
   it("documents hosted AI provider key alternatives", () => {
     const hostedRunbook = readFileSync(
       "../../docs/hosted-cloud-production.md",
-      "utf8"
+      "utf8",
     );
     const envExample = readFileSync("../../.env.example", "utf8");
     const healthRoute = readFileSync("app/api/health/route.ts", "utf8");
     const hostedEnvHeading = hostedRunbook.indexOf("## Required Hosted Env");
     const hostedEnvBlockStart = hostedRunbook.indexOf(
       "```env",
-      hostedEnvHeading
+      hostedEnvHeading,
     );
     const requiredHostedEnvBlock = hostedRunbook.slice(
       hostedEnvBlockStart,
-      hostedRunbook.indexOf(
-        "```",
-        hostedEnvBlockStart + "```env".length
-      )
+      hostedRunbook.indexOf("```", hostedEnvBlockStart + "```env".length),
     );
 
     expect(requiredHostedEnvBlock).toContain("AI_MODEL=claude-sonnet-4-6");
     expect(requiredHostedEnvBlock).toContain("ANTHROPIC_API_KEY=...");
     expect(hostedRunbook).toContain("Hosted AI defaults to Claude");
     expect(hostedRunbook).toContain(
-      "set either `GOOGLE_API_KEY` or the legacy\n`GOOGLE_GENERATIVE_AI_API_KEY`"
+      "set either `GOOGLE_API_KEY` or the legacy\n`GOOGLE_GENERATIVE_AI_API_KEY`",
     );
     expect(envExample).toContain("GOOGLE_GENERATIVE_AI_API_KEY=");
     expect(healthRoute).toContain("HOSTED_GOOGLE_AI_ENV_NAMES");
@@ -151,27 +139,27 @@ describe("self-hosting operations docs", () => {
   it("documents Stripe Tax as a hosted production readiness gate", () => {
     const hostedRunbook = readFileSync(
       "../../docs/hosted-cloud-production.md",
-      "utf8"
+      "utf8",
     );
     const envExample = readFileSync("../../.env.example", "utf8");
     const healthRoute = readFileSync("app/api/health/route.ts", "utf8");
     const stripeSource = readFileSync("lib/stripe.ts", "utf8");
     const invoiceCheckoutBuilder = stripeSource.slice(
       stripeSource.indexOf("export function buildInvoiceCheckoutSessionParams"),
-      stripeSource.indexOf("export async function constructWebhookEvent")
+      stripeSource.indexOf("export async function constructWebhookEvent"),
     );
 
     expect(hostedRunbook).toContain("STRIPE_TAX_ENABLED=true");
     expect(hostedRunbook).toContain("Stripe Tax gates hosted readiness");
     expect(hostedRunbook).toContain(
-      "Client invoice payments stay on OpenVPM's already-totaled invoice amounts"
+      "Client invoice payments stay on OpenVPM's already-totaled invoice amounts",
     );
     expect(envExample).toContain(
-      "Required for hosted production readiness after"
+      "Required for hosted production readiness after",
     );
     expect(healthRoute).toContain("checks.hostedSubscriptionTax");
     expect(healthRoute).toContain(
-      "envFlagEnabled(HOSTED_SUBSCRIPTION_TAX_ENV_NAME)"
+      "envFlagEnabled(HOSTED_SUBSCRIPTION_TAX_ENV_NAME)",
     );
     expect(stripeSource).toContain("automatic_tax: { enabled: true }");
     expect(invoiceCheckoutBuilder).not.toContain("automatic_tax");
@@ -180,16 +168,16 @@ describe("self-hosting operations docs", () => {
   it("documents the Resend webhook required for hosted email suppressions", () => {
     const hostedRunbook = readFileSync(
       "../../docs/hosted-cloud-production.md",
-      "utf8"
+      "utf8",
     );
     const envExample = readFileSync("../../.env.example", "utf8");
     const resendWebhookRoute = readFileSync(
       "app/api/webhooks/resend/route.ts",
-      "utf8"
+      "utf8",
     );
     const emailSection = hostedRunbook.slice(
       hostedRunbook.indexOf("## Email Setup"),
-      hostedRunbook.indexOf("## Stripe Setup")
+      hostedRunbook.indexOf("## Stripe Setup"),
     );
     const resendEvents = [
       "email.delivered",
@@ -200,7 +188,7 @@ describe("self-hosting operations docs", () => {
     ];
 
     expect(emailSection).toContain(
-      "https://app.openvpm.com/api/webhooks/resend"
+      "https://app.openvpm.com/api/webhooks/resend",
     );
     expect(emailSection).toContain("RESEND_WEBHOOK_SECRET");
     expect(emailSection).toContain("EMAIL_SUPPORT_ADDRESS");
@@ -219,21 +207,21 @@ describe("self-hosting operations docs", () => {
   it("documents the Stripe webhook events required by hosted handlers", () => {
     const hostedRunbook = readFileSync(
       "../../docs/hosted-cloud-production.md",
-      "utf8"
+      "utf8",
     );
     const subscriptionWebhookRoute = readFileSync(
       "app/api/webhooks/stripe-subscription/route.ts",
-      "utf8"
+      "utf8",
     );
     const clientInvoiceSection = hostedRunbook.slice(
       hostedRunbook.indexOf("Client invoice payment webhook endpoint:"),
-      hostedRunbook.indexOf("Hosted subscription webhook endpoint:")
+      hostedRunbook.indexOf("Hosted subscription webhook endpoint:"),
     );
     const subscriptionSection = hostedRunbook.slice(
       hostedRunbook.indexOf("Hosted subscription webhook endpoint:"),
       hostedRunbook.indexOf(
-        "Store this endpoint secret as `STRIPE_SUBSCRIPTION_WEBHOOK_SECRET`."
-      )
+        "Store this endpoint secret as `STRIPE_SUBSCRIPTION_WEBHOOK_SECRET`.",
+      ),
     );
     const subscriptionEvents = [
       "checkout.session.completed",
@@ -245,12 +233,12 @@ describe("self-hosting operations docs", () => {
     ];
 
     expect(clientInvoiceSection).toContain(
-      "https://app.openvpm.com/api/webhooks/stripe"
+      "https://app.openvpm.com/api/webhooks/stripe",
     );
     expect(clientInvoiceSection).toContain("- `checkout.session.completed`");
     expect(clientInvoiceSection).not.toContain("invoice.payment_succeeded");
     expect(subscriptionSection).toContain(
-      "https://app.openvpm.com/api/webhooks/stripe-subscription"
+      "https://app.openvpm.com/api/webhooks/stripe-subscription",
     );
 
     for (const event of subscriptionEvents) {

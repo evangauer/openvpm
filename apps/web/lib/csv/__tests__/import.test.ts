@@ -33,6 +33,52 @@ describe("parseCsv", () => {
     expect(rows[0]).toEqual({ a: "1", b: "2" });
   });
 
+  it("strips a UTF-8 byte-order mark from the first header", () => {
+    const result = parseCsv("\uFEFFFirst Name,Last Name\nJane,Doe");
+
+    expect(result.errors).toEqual([]);
+    expect(result.headers).toEqual(["First Name", "Last Name"]);
+    expect(result.rows[0]).toEqual({
+      "First Name": "Jane",
+      "Last Name": "Doe",
+    });
+  });
+
+  it("rejects duplicate headers after normalization instead of overwriting a value", () => {
+    const result = parseCsv("First Name,first_name,Last Name\nJane,Janet,Doe");
+
+    expect(result.rows).toEqual([]);
+    expect(result.errors).toEqual([
+      expect.stringMatching(/duplicate columns.*First Name.*first_name/i),
+    ]);
+  });
+
+  it("rejects blank or non-alphanumeric headers", () => {
+    const result = parseCsv("First Name,,---\nJane,unused,unused");
+
+    expect(result.rows).toEqual([]);
+    expect(result.errors).toEqual([
+      "CSV header column 2 is blank or invalid.",
+      "CSV header column 3 is blank or invalid.",
+    ]);
+  });
+
+  it("rejects extra columns instead of silently discarding data", () => {
+    const result = parseCsv("a,b\n1\n2,3,4");
+
+    expect(result.rows).toEqual([]);
+    expect(result.errors).toEqual([
+      "Row 2 has 3 columns; expected at most 2. Check for an extra or unquoted comma.",
+    ]);
+  });
+
+  it("maps omitted trailing fields to empty values", () => {
+    const result = parseCsv("a,b\n1");
+
+    expect(result.errors).toEqual([]);
+    expect(result.rows).toEqual([{ a: "1", b: "" }]);
+  });
+
   it("reports unterminated quoted fields instead of returning collapsed rows", () => {
     const result = parseCsv('name,note\n"Rex,line one\nLuna,line two');
 
@@ -68,6 +114,17 @@ describe("csvToClientRecords", () => {
 
     expect(records).toEqual([]);
     expect(errors).toEqual(["CSV has an unterminated quoted field."]);
+  });
+
+  it("does not map records when a row has the wrong number of columns", () => {
+    const { records, errors } = csvToClientRecords(
+      "First Name,Last Name,Email\nJane,Doe,jane@example.com,extra",
+    );
+
+    expect(records).toEqual([]);
+    expect(errors).toEqual([
+      "Row 1 has 4 columns; expected at most 3. Check for an extra or unquoted comma.",
+    ]);
   });
 
   it("rejects an empty or header-only file before import", () => {

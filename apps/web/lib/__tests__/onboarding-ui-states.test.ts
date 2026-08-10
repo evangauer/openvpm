@@ -85,11 +85,18 @@ describe("onboarding UI states", () => {
     expect(choosePath).toContain(
       "saveIntent.mutateAsync({ intent: state.onboardingIntent })",
     );
-    expect(choosePath).toContain(
-      "onboardingIntent: state.onboardingIntent",
-    );
+    expect(choosePath).toContain("onboardingIntent: state.onboardingIntent");
     expect(choosePath).toContain("journeyDismissed: false");
     expect(settingsRouter).toContain("onboardingIntentSelectedAt");
+  });
+
+  it("shows honest hosted-pilot qualification after signup", () => {
+    expect(choosePath).toContain("HOSTED_CLINIC_PILOT");
+    expect(choosePath).toContain('state.onboardingIntent !== "self_host"');
+    expect(choosePath).toContain("Clinic pilot fit");
+    expect(choosePath).toContain("First useful day target");
+    expect(choosePath).toContain("HOSTED_CLINIC_PILOT.guardrails.map");
+    expect(choosePath).toContain('href="/clinic-fit"');
   });
 
   it("keeps imported-real-data cleanup sticky across setup resumes", () => {

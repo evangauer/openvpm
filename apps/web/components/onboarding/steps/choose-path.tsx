@@ -1,11 +1,20 @@
 "use client";
 
 import { useEffect } from "react";
-import { Check, Compass, RefreshCcw, Rocket, Server } from "lucide-react";
+import Link from "next/link";
+import {
+  Check,
+  Compass,
+  RefreshCcw,
+  Rocket,
+  Server,
+  ShieldCheck,
+} from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import {
   getOnboardingIntentOption,
+  HOSTED_CLINIC_PILOT,
   ONBOARDING_INTENT_OPTIONS,
   type OnboardingIntent,
 } from "@/lib/onboarding/intent";
@@ -70,7 +79,7 @@ export function ChoosePathStep({ register, state, setState }: StepProps) {
                 "relative rounded-xl border bg-white p-4 text-left transition-colors",
                 active
                   ? "border-emerald-400 bg-emerald-50/60 ring-1 ring-emerald-400"
-                  : "border-slate-200 hover:border-slate-300"
+                  : "border-slate-200 hover:border-slate-300",
               )}
             >
               <div className="flex items-start gap-3">
@@ -79,7 +88,7 @@ export function ChoosePathStep({ register, state, setState }: StepProps) {
                     "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg",
                     active
                       ? "bg-emerald-100 text-emerald-700"
-                      : "bg-slate-100 text-slate-600"
+                      : "bg-slate-100 text-slate-600",
                   )}
                 >
                   <Icon className="h-5 w-5" />
@@ -119,6 +128,64 @@ export function ChoosePathStep({ register, state, setState }: StepProps) {
           {selected.firstWinHint}
         </p>
       </div>
+
+      {state.onboardingIntent !== "self_host" ? (
+        <section
+          aria-labelledby="clinic-pilot-fit-heading"
+          className="rounded-xl border border-slate-200 bg-slate-50 p-4"
+        >
+          <div className="flex items-start gap-3">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white text-slate-700 shadow-sm ring-1 ring-slate-200">
+              <ShieldCheck className="h-5 w-5" aria-hidden="true" />
+            </span>
+            <div className="min-w-0">
+              <p
+                id="clinic-pilot-fit-heading"
+                className="text-sm font-semibold text-slate-950"
+              >
+                Clinic pilot fit
+              </p>
+              <p className="mt-1 text-xs leading-5 text-slate-600">
+                {HOSTED_CLINIC_PILOT.recommendedFit}
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-3 rounded-lg border border-emerald-200 bg-white p-3">
+            <p className="text-xs font-semibold text-emerald-800">
+              First useful day target
+            </p>
+            <p className="mt-1 text-xs leading-5 text-slate-600">
+              {HOSTED_CLINIC_PILOT.firstUsefulDay}
+            </p>
+          </div>
+
+          <div className="mt-3">
+            <p className="text-xs font-semibold text-slate-700">
+              Know before you pilot
+            </p>
+            <ul className="mt-2 space-y-1.5 text-xs leading-5 text-slate-600">
+              {HOSTED_CLINIC_PILOT.guardrails.map((guardrail) => (
+                <li key={guardrail} className="flex gap-2">
+                  <span
+                    aria-hidden="true"
+                    className="mt-2 h-1 w-1 shrink-0 rounded-full bg-slate-400"
+                  />
+                  <span>{guardrail}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <Link
+            href="/clinic-fit"
+            target="_blank"
+            rel="noreferrer"
+            className="mt-3 inline-flex text-xs font-semibold text-emerald-700 underline underline-offset-2"
+          >
+            Review the full capability boundary
+          </Link>
+        </section>
+      ) : null}
     </div>
   );
 }

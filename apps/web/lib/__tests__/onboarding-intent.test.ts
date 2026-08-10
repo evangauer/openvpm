@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_ONBOARDING_INTENT,
   getOnboardingIntentOption,
+  HOSTED_CLINIC_PILOT,
   isOnboardingIntent,
   onboardingIntentLabel,
   ONBOARDING_INTENT_OPTIONS,
@@ -27,5 +28,25 @@ describe("onboarding intent", () => {
     expect(isOnboardingIntent("unknown")).toBe(false);
     expect(onboardingIntentLabel("replace")).toBe("Replace current PIMS");
     expect(onboardingIntentLabel("unknown")).toBe("Not selected");
+  });
+
+  it("qualifies the hosted clinic pilot without overstating readiness", () => {
+    expect(HOSTED_CLINIC_PILOT.recommendedFit).toContain(
+      "companion-animal clinic",
+    );
+    expect(HOSTED_CLINIC_PILOT.firstUsefulDay).toContain(
+      "one real client and pet",
+    );
+    expect(HOSTED_CLINIC_PILOT.guardrails).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("current PIMS as the source of truth"),
+        expect.stringContaining("offline changes stay only in the current tab"),
+        expect.stringContaining(
+          "Texting requires separate controlled activation",
+        ),
+        expect.stringContaining("large-animal workflows"),
+        expect.stringContaining("third-party integrations"),
+      ]),
+    );
   });
 });

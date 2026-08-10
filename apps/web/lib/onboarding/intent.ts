@@ -9,6 +9,25 @@ export type OnboardingIntent = (typeof ONBOARDING_INTENTS)[number];
 
 export const DEFAULT_ONBOARDING_INTENT: OnboardingIntent = "alongside";
 
+/**
+ * Set expectations after signup, before a clinic invests time configuring the
+ * workspace. This checkpoint is intentionally not on the registration form:
+ * it qualifies the hosted clinic pilot without adding friction to account
+ * creation or overstating capabilities that still require validation.
+ */
+export const HOSTED_CLINIC_PILOT = {
+  recommendedFit:
+    "A companion-animal clinic starting with one location, a small team, and one real, low-risk visit alongside its current system.",
+  firstUsefulDay:
+    "Move one real client and pet through an appointment, clinical handoff, charges (or no-charge), and checkout.",
+  guardrails: [
+    "Keep your current PIMS as the source of truth until your team validates its workflow and export.",
+    "Plan to use OpenVPM online; offline changes stay only in the current tab and cannot be relied on after a close or reload.",
+    "Texting requires separate controlled activation and should not be assumed available.",
+    "Herd and large-animal workflows and turnkey third-party integrations are outside this clinic pilot.",
+  ],
+} as const;
+
 export type OnboardingIntentOption = {
   value: OnboardingIntent;
   label: string;
@@ -72,7 +91,7 @@ export function isOnboardingIntent(value: unknown): value is OnboardingIntent {
 }
 
 export function getOnboardingIntentOption(
-  value: unknown
+  value: unknown,
 ): OnboardingIntentOption {
   return (
     ONBOARDING_INTENT_OPTIONS.find((option) => option.value === value) ??

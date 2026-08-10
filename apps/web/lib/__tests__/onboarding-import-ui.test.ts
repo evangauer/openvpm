@@ -62,6 +62,8 @@ describe("onboarding import UI", () => {
     expect(source).toContain(
       "planned changes and every issue before you confirm",
     );
+    expect(source).toContain("Start with a small representative sample");
+    expect(source).toContain("has no one-click rollback");
     expect(source).toContain("Earlier completed stages are safe");
     expect(source).toContain("Retry the same import. It is safe");
     expect(source).toContain(

@@ -52,6 +52,7 @@ connect by API when you are ready. See
 - [Ask the AI about a pet](ask-the-ai.md)
 - [Give every client a portal](client-portal.md)
 - [See your schedule in your own calendar](calendar-feed.md)
+- [Review clinic pilot fit and launch limits](../clinic-pilot-readiness.md)
 
 Every guide here also runs inside the app with your own data: open
 **Settings** and click **Guides**.

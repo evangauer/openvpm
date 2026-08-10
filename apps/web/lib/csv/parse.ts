@@ -10,7 +10,12 @@ export interface ParsedCsv {
 }
 
 export function parseCsv(text: string): ParsedCsv {
-  const s = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  // Spreadsheet exports commonly include a UTF-8 byte-order mark. Remove it
+  // only at the beginning so the first header maps like every other header.
+  const s = text
+    .replace(/^\uFEFF/, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n");
   const records: string[][] = [];
   const errors: string[] = [];
   let field = "";
@@ -71,11 +76,44 @@ export function parseCsv(text: string): ParsedCsv {
 
   // Drop blank lines (a lone empty field).
   const nonEmpty = records.filter(
-    (r) => !(r.length === 1 && r[0].trim() === "")
+    (r) => !(r.length === 1 && r[0].trim() === ""),
   );
   if (nonEmpty.length === 0) return { headers: [], rows: [], errors };
 
   const headers = nonEmpty[0]!.map((h) => h.trim());
+  const normalizedHeaders = new Map<string, string>();
+  headers.forEach((header, index) => {
+    const normalized = normalizeKey(header);
+    if (!normalized) {
+      errors.push(`CSV header column ${index + 1} is blank or invalid.`);
+      return;
+    }
+
+    const prior = normalizedHeaders.get(normalized);
+    if (prior) {
+      errors.push(
+        `CSV has duplicate columns after header normalization: "${prior}" and "${header}". Keep only one of them.`,
+      );
+      return;
+    }
+    normalizedHeaders.set(normalized, header);
+  });
+
+  nonEmpty.slice(1).forEach((record, index) => {
+    // Missing trailing fields are unambiguous and have historically mapped to
+    // empty optional values. Extra fields would be silently discarded and can
+    // indicate an unquoted comma, so reject the whole file before mapping.
+    if (record.length > headers.length) {
+      errors.push(
+        `Row ${index + 1} has ${record.length} columns; expected at most ${headers.length}. Check for an extra or unquoted comma.`,
+      );
+    }
+  });
+
+  if (errors.length > 0) {
+    return { headers, rows: [], errors };
+  }
+
   const rows = nonEmpty.slice(1).map((r) => {
     const obj: Record<string, string> = {};
     headers.forEach((h, idx) => {
@@ -93,7 +131,9 @@ export function normalizeKey(key: string): string {
 }
 
 /** Re-key a parsed row by normalized header so "First Name" == "first_name". */
-export function normalizeRow(row: Record<string, string>): Record<string, string> {
+export function normalizeRow(
+  row: Record<string, string>,
+): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(row)) {
     out[normalizeKey(k)] = v;

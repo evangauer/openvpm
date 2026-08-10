@@ -379,6 +379,8 @@ describe("settings UI states", () => {
     expect(source).toContain("IDs to connect");
     expect(source).toContain("Confirm Import (");
     expect(source).toContain("changes)");
+    expect(source).toContain("Start with a small representative sample");
+    expect(source).toContain("has no one-click rollback");
     expect(source).toContain("const importFileReadVersionRef = useRef(0)");
     expect(source).toContain(
       "const readVersion = ++importFileReadVersionRef.current",

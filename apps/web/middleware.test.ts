@@ -74,6 +74,21 @@ describe("middleware security headers", () => {
     expectSecurityHeaders(lookalikeResponse);
   });
 
+  it("keeps clinic-fit guidance public without exposing lookalike routes", async () => {
+    mocks.getToken.mockResolvedValue(null);
+
+    const fitResponse = await middleware(request("/clinic-fit"));
+    const lookalikeResponse = await middleware(request("/clinic-fitness"));
+
+    expect(mocks.getToken).toHaveBeenCalledTimes(1);
+    expect(fitResponse.headers.get("location")).toBeNull();
+    expect(lookalikeResponse.headers.get("location")).toBe(
+      "https://openvpm.test/login?next=%2Fclinic-fitness",
+    );
+    expectSecurityHeaders(fitResponse);
+    expectSecurityHeaders(lookalikeResponse);
+  });
+
   it("adds security headers to API routes without middleware auth redirects", async () => {
     const response = await middleware(request("/api/health"));
 

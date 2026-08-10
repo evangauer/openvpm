@@ -10,6 +10,7 @@ const PUBLIC_PATH_PREFIXES = [
   "/api-docs",
   "/book",
   "/capture",
+  "/clinic-fit",
   "/email-preferences",
   "/forgot-password",
   "/legal",
@@ -29,7 +30,7 @@ function isPublicPath(pathname: string): boolean {
   return (
     PUBLIC_FILE_PATTERN.test(pathname) ||
     PUBLIC_PATH_PREFIXES.some(
-      (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
+      (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
     )
   );
 }
@@ -39,9 +40,7 @@ function isVercelObservabilityPath(pathname: string): boolean {
 
   // Vercel may proxy Web Analytics through a deployment-specific base path,
   // e.g. /5691167a7e0cfa40/view or /5691167a7e0cfa40/event.
-  return /^\/[a-f0-9]{16}\/(?:script\.js|view|event|session)$/i.test(
-    pathname
-  );
+  return /^\/[a-f0-9]{16}\/(?:script\.js|view|event|session)$/i.test(pathname);
 }
 
 export async function middleware(request: NextRequest) {
@@ -76,7 +75,5 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: [
-    "/((?!_next).*)",
-  ],
+  matcher: ["/((?!_next).*)"],
 };

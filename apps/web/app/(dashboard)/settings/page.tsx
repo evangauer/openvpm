@@ -4274,6 +4274,10 @@ function DataTab() {
                     listed changes will be saved. {importPreview.errors.length}{" "}
                     issue row(s) will be skipped.
                   </p>
+                  <p className="mt-2 text-xs font-medium text-amber-700">
+                    Start with a small representative sample. A confirmed import
+                    has no one-click rollback.
+                  </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Button
