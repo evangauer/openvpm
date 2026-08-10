@@ -76,6 +76,13 @@ END$$;
 -- append and read them, but even a future generic repository path must not
 -- gain UPDATE or DELETE through the broad table grant above.
 REVOKE UPDATE, DELETE ON clinical_record_corrections FROM openpims_app;
+GRANT SELECT, INSERT ON clinical_record_corrections TO openpims_app;
+
+-- Allergy source rows are immutable clinical safety evidence. A mistaken
+-- entry remains exactly as recorded and is retired through the append-only
+-- clinical correction ledger instead of being edited or soft-deleted.
+REVOKE ALL ON patient_allergies FROM openpims_app;
+GRANT SELECT, INSERT ON patient_allergies TO openpims_app;
 
 -- SOAP addenda are immutable, attributed extensions to a finalized note.
 REVOKE ALL ON soap_note_addenda FROM openpims_app;
@@ -424,7 +431,7 @@ BEGIN
   FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format(
-        'REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_provider_identity_conflicts, auth_email_webhook_conflicts, auth_tokens, clinic_pilot_events, clinic_pilots, clinical_record_corrections, demo_accesses, dispense_charge_queue, funnel_events, lab_result_events, lab_result_replacements, messaging_registration_events, patient_merge_events, platform_email_identity, platform_email_preference_events, platform_email_preferences, practice_conversion_milestones, prescription_events, sessions, sms_delivery_event_history, sms_delivery_events, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
+        'REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_provider_identity_conflicts, auth_email_webhook_conflicts, auth_tokens, clinic_pilot_events, clinic_pilots, clinical_record_corrections, demo_accesses, dispense_charge_queue, funnel_events, lab_result_events, lab_result_replacements, messaging_registration_events, patient_allergies, patient_merge_events, platform_email_identity, platform_email_preference_events, platform_email_preferences, practice_conversion_milestones, prescription_events, sessions, sms_delivery_event_history, sms_delivery_events, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
       );
     END IF;
   END LOOP;

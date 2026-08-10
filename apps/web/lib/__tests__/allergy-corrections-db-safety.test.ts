@@ -5,6 +5,8 @@ import { clinicalRecordCorrections, patientAllergies } from "@openpims/db";
 
 const SCHEMA_MIGRATION =
   "packages/db/drizzle/0074_hesitant_franklin_richards.sql";
+const HARDENING_MIGRATION =
+  "packages/db/drizzle/0075_immutable_patient_allergies.sql";
 const PATIENTS_ROUTER = "apps/web/server/routers/patients.ts";
 
 function readRepoFile(path: string): string {
@@ -113,5 +115,40 @@ describe("patient allergy correction database safety", () => {
 
     expect(mutation).toContain(".onConflictDoNothing()");
     expect(mutation).not.toContain('.for("update")');
+  });
+
+  it("makes allergy source evidence immutable with least-privilege grants", () => {
+    const migration = readRepoFile(HARDENING_MIGRATION);
+    const rls = readRepoFile("packages/db/rls/enable-rls.sql");
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries?: Array<{ tag?: string }> };
+
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0075_immutable_patient_allergies",
+    );
+    expect(migration).toContain(
+      "CREATE OR REPLACE FUNCTION prevent_patient_allergy_mutation()",
+    );
+    expect(migration).toContain(
+      "CREATE TRIGGER patient_allergies_immutable",
+    );
+    expect(migration).toContain(
+      "BEFORE UPDATE OR DELETE ON \"patient_allergies\"",
+    );
+    expect(migration).toContain("app.ledger_maintenance");
+    expect(migration).toContain("current_user = (");
+    expect(migration).toContain(
+      "REVOKE ALL ON patient_allergies FROM openpims_app",
+    );
+    expect(migration).toContain(
+      "GRANT SELECT, INSERT ON patient_allergies TO openpims_app",
+    );
+    expect(rls).toContain(
+      "REVOKE ALL ON patient_allergies FROM openpims_app",
+    );
+    expect(rls).toContain(
+      "GRANT SELECT, INSERT ON patient_allergies TO openpims_app",
+    );
   });
 });

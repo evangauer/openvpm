@@ -526,6 +526,13 @@
       "when": 1786363221160,
       "tag": "0074_hesitant_franklin_richards",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1786365035639,
+      "tag": "0075_immutable_patient_allergies",
+      "breakpoints": true
     }
   ]
 }

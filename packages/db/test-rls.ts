@@ -118,6 +118,11 @@ const aSoapDeletedRestoreAddendum = randomUUID();
 const aSoapDraft = randomUUID();
 const aPatient = randomUUID();
 const bPatient = randomUUID();
+const aPatientAllergy = randomUUID();
+const bPatientAllergy = randomUUID();
+const aLegacyDeletedPatientAllergy = randomUUID();
+const aPatientAllergyCorrection = randomUUID();
+const bPatientAllergyCorrection = randomUUID();
 const aMergeTargetPatient = randomUUID();
 const bMergeTargetPatient = randomUUID();
 const aLineageCandidatePatient = randomUUID();
@@ -330,6 +335,22 @@ try {
   await owner`insert into patients (id, practice_id, client_id, name, species)
     select ${bPatient}, ${bId}, id, 'RLS Pet B', 'feline'
     from clients where practice_id = ${bId}`;
+  await owner`insert into patient_allergies
+    (id, patient_id, allergen, reaction, severity, noted_by, deleted_at)
+    values
+    (${aPatientAllergy}, ${aPatient}, 'Penicillin', 'Facial swelling', 'severe', ${aUser}, null),
+    (${bPatientAllergy}, ${bPatient}, 'Latex', 'Contact reaction', 'moderate', ${bUser}, null),
+    (${aLegacyDeletedPatientAllergy}, ${aPatient}, 'Legacy food entry', null, 'mild', ${aUser}, now() - interval '1 day')`;
+  await owner`insert into clinical_record_corrections
+    (id, practice_id, record_type, patient_allergy_id, patient_id, reason,
+     corrected_by, corrected_by_name)
+    values
+    (${aPatientAllergyCorrection}, ${aId}, 'patient_allergy', ${aPatientAllergy},
+      ${aPatient}, 'Allergy was entered on the wrong patient chart.', ${aUser},
+      'RLS Admin A'),
+    (${bPatientAllergyCorrection}, ${bId}, 'patient_allergy', ${bPatientAllergy},
+      ${bPatient}, 'Allergy was entered on the wrong patient chart.', ${bUser},
+      'RLS Admin B')`;
   await owner`insert into lab_results
     (id, practice_id, patient_id, test_name, result_value, status, completed_at, ordered_by)
     values
@@ -1563,6 +1584,89 @@ try {
       aLabCorrectionRows[0]!.id === aLabCorrection &&
       aLabCorrectionRows[0]!.practice_id === aId,
   );
+  const aAllergyRows = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id, patient_id, deleted_at from patient_allergies
+      where id in (${aPatientAllergy}, ${bPatientAllergy}, ${aLegacyDeletedPatientAllergy})
+      order by id`;
+  });
+  check(
+    "tenant A sees only A's allergy sources and retains legacy soft-deleted history",
+    aAllergyRows.length === 2 &&
+      aAllergyRows.every((row) => row.patient_id === aPatient) &&
+      aAllergyRows.some(
+        (row) =>
+          row.id === aLegacyDeletedPatientAllergy && row.deleted_at !== null,
+      ),
+  );
+  const aAllergyCorrectionRows = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id, practice_id, patient_allergy_id
+      from clinical_record_corrections
+      where id in (${aPatientAllergyCorrection}, ${bPatientAllergyCorrection})`;
+  });
+  check(
+    "tenant A sees only its exact allergy correction evidence",
+    aAllergyCorrectionRows.length === 1 &&
+      aAllergyCorrectionRows[0]!.id === aPatientAllergyCorrection &&
+      aAllergyCorrectionRows[0]!.practice_id === aId &&
+      aAllergyCorrectionRows[0]!.patient_allergy_id === aPatientAllergy,
+  );
+
+  let crossTenantAllergyCorrectionBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into clinical_record_corrections
+        (practice_id, record_type, patient_allergy_id, patient_id, reason,
+         corrected_by, corrected_by_name)
+        values (${aId}, 'patient_allergy', ${bPatientAllergy}, ${bPatient},
+          'Cross-tenant allergy correction must fail.', ${aUser}, 'RLS Admin A')`;
+    });
+  } catch {
+    crossTenantAllergyCorrectionBlocked = true;
+  }
+  check(
+    "exact allergy source constraints reject cross-tenant corrections",
+    crossTenantAllergyCorrectionBlocked,
+  );
+
+  let wrongPatientAllergyCorrectionBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into clinical_record_corrections
+        (practice_id, record_type, patient_allergy_id, patient_id, reason,
+         corrected_by, corrected_by_name)
+        values (${aId}, 'patient_allergy', ${aPatientAllergy},
+          ${aMergeTargetPatient}, 'Same-practice wrong-patient correction must fail.',
+          ${aUser}, 'RLS Admin A')`;
+    });
+  } catch {
+    wrongPatientAllergyCorrectionBlocked = true;
+  }
+  check(
+    "exact allergy source constraints reject a same-practice wrong patient",
+    wrongPatientAllergyCorrectionBlocked,
+  );
+
+  let duplicateAllergyCorrectionBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into clinical_record_corrections
+        (practice_id, record_type, patient_allergy_id, patient_id, reason,
+         corrected_by, corrected_by_name)
+        values (${aId}, 'patient_allergy', ${aPatientAllergy}, ${aPatient},
+          'A second correction for one source must fail.', ${aUser}, 'RLS Admin A')`;
+    });
+  } catch {
+    duplicateAllergyCorrectionBlocked = true;
+  }
+  check(
+    "one allergy source can have only one permanent correction",
+    duplicateAllergyCorrectionBlocked,
+  );
 
   const labReplacementPrivileges = await owner`
     select
@@ -1756,6 +1860,39 @@ try {
     await maintenance`select set_config('app.ledger_maintenance', 'on', true)`;
     await maintenance`update clinical_record_corrections set reason = reason where id = ${aLabCorrection}`;
   });
+
+  let ownerAllergyMutationBlockedWithoutMaintenance = false;
+  try {
+    await owner`update patient_allergies set reaction = reaction
+      where id = ${aPatientAllergy}`;
+  } catch {
+    ownerAllergyMutationBlockedWithoutMaintenance = true;
+  }
+  check(
+    "allergy source owner mutation requires the maintenance GUC",
+    ownerAllergyMutationBlockedWithoutMaintenance,
+  );
+  await owner.begin(async (tx) => {
+    const maintenance = tx as unknown as typeof owner;
+    await maintenance`select set_config('app.ledger_maintenance', 'on', true)`;
+    await maintenance`update patient_allergies set reaction = reaction
+      where id = ${aPatientAllergy}`;
+  });
+
+  let appAllergyMutationBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`update patient_allergies set reaction = 'tampered'
+        where id = ${aPatientAllergy}`;
+    });
+  } catch {
+    appAllergyMutationBlocked = true;
+  }
+  check(
+    "application role cannot rewrite allergy source records",
+    appAllergyMutationBlocked,
+  );
 
   let ownerLabMutationBlockedWithoutMaintenance = false;
   try {
@@ -2043,6 +2180,32 @@ try {
       correctionPrivileges[0]!.can_insert === true &&
       correctionPrivileges[0]!.can_update === false &&
       correctionPrivileges[0]!.can_delete === false,
+  );
+
+  const patientAllergyRls = await owner`
+    select c.relrowsecurity as enabled
+    from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public' and c.relname = 'patient_allergies'
+  `;
+  check(
+    "patient allergy sources have RLS enabled",
+    patientAllergyRls.length === 1 && patientAllergyRls[0]!.enabled === true,
+  );
+  const patientAllergyPrivileges = await owner`
+    select
+      has_table_privilege('openpims_app', 'patient_allergies', 'SELECT') as can_select,
+      has_table_privilege('openpims_app', 'patient_allergies', 'INSERT') as can_insert,
+      has_table_privilege('openpims_app', 'patient_allergies', 'UPDATE') as can_update,
+      has_table_privilege('openpims_app', 'patient_allergies', 'DELETE') as can_delete
+  `;
+  check(
+    "app role can append/read but cannot mutate allergy sources",
+    patientAllergyPrivileges.length === 1 &&
+      patientAllergyPrivileges[0]!.can_select === true &&
+      patientAllergyPrivileges[0]!.can_insert === true &&
+      patientAllergyPrivileges[0]!.can_update === false &&
+      patientAllergyPrivileges[0]!.can_delete === false,
   );
 
   const patientMergeRls = await owner`
@@ -2898,6 +3061,20 @@ try {
     "application role cannot delete correction evidence even with bypass GUCs",
     bypassCannotDeleteClinicalCorrection,
   );
+  let bypassCannotDeletePatientAllergy = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`select set_config('app.ledger_maintenance', 'on', true)`;
+      await tx`delete from patient_allergies where id = ${aPatientAllergy}`;
+    });
+  } catch {
+    bypassCannotDeletePatientAllergy = true;
+  }
+  check(
+    "application role cannot delete allergy sources even with bypass GUCs",
+    bypassCannotDeletePatientAllergy,
+  );
 } catch (err) {
   console.error("Unexpected error:", err);
   failures++;
@@ -2922,7 +3099,8 @@ try {
     await cleanup`delete from lab_result_replacements where id in (${aLabReplacement}, ${bLabReplacement})`;
     await cleanup`delete from soap_note_replacements where id in (${aSoapReplacementEvidence}, ${bSoapReplacementEvidence}, ${aHistoricalSoapReplacementEvidence})`;
     await cleanup`delete from soap_note_addenda where practice_id in (${aId}, ${bId})`;
-    await cleanup`delete from clinical_record_corrections where id in (${aLabCorrection}, ${bLabCorrection}, ${aSoapCorrection}, ${bSoapCorrection}, ${aHistoricalSoapSourceCorrection}, ${aHistoricalSoapReplacementCorrection})`;
+    await cleanup`delete from clinical_record_corrections where id in (${aLabCorrection}, ${bLabCorrection}, ${aPatientAllergyCorrection}, ${bPatientAllergyCorrection}, ${aSoapCorrection}, ${bSoapCorrection}, ${aHistoricalSoapSourceCorrection}, ${aHistoricalSoapReplacementCorrection})`;
+    await cleanup`delete from patient_allergies where id in (${aPatientAllergy}, ${bPatientAllergy}, ${aLegacyDeletedPatientAllergy})`;
     await cleanup`delete from soap_notes where id in (${aSoapSource}, ${aSoapReplacement}, ${bSoapSource}, ${bSoapReplacement}, ${aSoapDeletedSource}, ${aSoapDraft}, ${aHistoricalSoapSource}, ${aHistoricalSoapReplacement})`;
     await cleanup`delete from lab_results where id in (${aLabResult}, ${bLabResult}, ${aReplacementLabResult}, ${bReplacementLabResult})`;
     await cleanup`delete from sms_send_attempt_events where id in (${aSmsSendAttemptEvent}, ${bSmsSendAttemptEvent}, ${aAppSmsSendAttemptEvent})`;
