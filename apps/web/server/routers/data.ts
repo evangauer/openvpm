@@ -34,6 +34,7 @@ import {
   exportPracticeData,
   restorePracticeData,
   summarizePracticeExport,
+  validatePracticeFileRestoreTarget,
   validatePracticeExportRestore,
 } from "@/lib/backup/export";
 import {
@@ -2299,13 +2300,18 @@ export const dataRouter = createRouter({
     .mutation(async ({ ctx, input }) => {
       const summary = summarizePracticeExport(input.backup);
       const validation = validatePracticeExportRestore(input.backup);
+      const targetValidation = validatePracticeFileRestoreTarget(
+        input.backup,
+        ctx.practiceId,
+      );
+      const restoreErrors = [...validation.errors, ...targetValidation.errors];
       await assertActivePractice(ctx);
 
       if (input.dryRun) {
         return {
           dryRun: true as const,
           ...summary,
-          restoreErrors: validation.errors,
+          restoreErrors,
         };
       }
 
@@ -2315,10 +2321,10 @@ export const dataRouter = createRouter({
           message: `Backup is missing required sections: ${summary.missingSections.join(", ")}`,
         });
       }
-      if (!validation.valid) {
+      if (restoreErrors.length > 0) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: `Backup contains invalid restore data: ${validation.errors.join("; ")}`,
+          message: `Backup cannot be restored here: ${restoreErrors.join("; ")}`,
         });
       }
 

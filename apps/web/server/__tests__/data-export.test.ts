@@ -23,6 +23,10 @@ const mocks = vi.hoisted(() => ({
     valid: true,
     errors: [] as string[],
   })),
+  validatePracticeFileRestoreTarget: vi.fn(() => ({
+    valid: true,
+    errors: [] as string[],
+  })),
   isPracticeBackupJsonSizeValid: vi.fn(() => true),
   recordAuditLog: vi.fn(async () => undefined),
   recordActivationAfterAppointmentCreated: vi.fn(async () => true),
@@ -32,6 +36,7 @@ vi.mock("@/lib/backup/export", () => ({
   exportPracticeData: mocks.exportPracticeData,
   restorePracticeData: mocks.restorePracticeData,
   summarizePracticeExport: mocks.summarizePracticeExport,
+  validatePracticeFileRestoreTarget: mocks.validatePracticeFileRestoreTarget,
   validatePracticeExportRestore: mocks.validatePracticeExportRestore,
 }));
 
@@ -68,7 +73,9 @@ function callerWithDb(db: Record<string, unknown>, role = "admin") {
   return dataRouter.createCaller({ db, session } as never);
 }
 
-function createDb(practiceRows: Record<string, unknown>[] = [{ id: PRACTICE_ID }]) {
+function createDb(
+  practiceRows: Record<string, unknown>[] = [{ id: PRACTICE_ID }],
+) {
   const limit = vi.fn(async () => practiceRows);
   const where = vi.fn(() => ({ limit }));
   const from = vi.fn(() => ({ where }));
@@ -83,7 +90,7 @@ function createDb(practiceRows: Record<string, unknown>[] = [{ id: PRACTICE_ID }
 
 function createRestoreDb(
   selectResults: Record<string, unknown>[][] = [[], [], [], []],
-  practiceRows: Record<string, unknown>[] = [{ id: PRACTICE_ID }]
+  practiceRows: Record<string, unknown>[] = [{ id: PRACTICE_ID }],
 ) {
   const queuedResults = [practiceRows, ...selectResults];
   const limit = vi.fn(async () => queuedResults.shift() ?? []);
@@ -124,7 +131,7 @@ describe("data full backup export", () => {
     expect(mocks.exportPracticeData).toHaveBeenCalledWith(
       db,
       PRACTICE_ID,
-      expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/)
+      expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
     );
   });
 
@@ -132,7 +139,7 @@ describe("data full backup export", () => {
     const db = createDb();
 
     await expect(
-      callerWithDb(db, "front_desk").exportFullBackup()
+      callerWithDb(db, "front_desk").exportFullBackup(),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     expect(mocks.exportPracticeData).not.toHaveBeenCalled();
@@ -156,7 +163,7 @@ describe("data full backup restore", () => {
     mocks.isPracticeBackupJsonSizeValid.mockReturnValueOnce(false);
 
     await expect(
-      callerWithDb(db).restoreBackup({ backup: { clients: [] }, dryRun: true })
+      callerWithDb(db).restoreBackup({ backup: { clients: [] }, dryRun: true }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(mocks.summarizePracticeExport).not.toHaveBeenCalled();
@@ -170,7 +177,7 @@ describe("data full backup restore", () => {
     const backup = { clients: [] };
 
     await expect(
-      callerWithDb(db).restoreBackup({ backup, dryRun: true })
+      callerWithDb(db).restoreBackup({ backup, dryRun: true }),
     ).resolves.toMatchObject({
       dryRun: true,
       totalRows: 0,
@@ -180,6 +187,10 @@ describe("data full backup restore", () => {
 
     expect(mocks.summarizePracticeExport).toHaveBeenCalledWith(backup);
     expect(mocks.validatePracticeExportRestore).toHaveBeenCalledWith(backup);
+    expect(mocks.validatePracticeFileRestoreTarget).toHaveBeenCalledWith(
+      backup,
+      PRACTICE_ID,
+    );
     expect(select).toHaveBeenCalledTimes(1);
     expect(mocks.restorePracticeData).not.toHaveBeenCalled();
   });
@@ -194,12 +205,32 @@ describe("data full backup restore", () => {
     });
 
     await expect(
-      callerWithDb(db).restoreBackup({ backup: { clients: [] }, dryRun: true })
+      callerWithDb(db).restoreBackup({ backup: { clients: [] }, dryRun: true }),
     ).resolves.toMatchObject({
       dryRun: true,
       restoreErrors: [
         'patients[patient-1].clientId references missing clients row "client-1".',
       ],
+    });
+
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(mocks.restorePracticeData).not.toHaveBeenCalled();
+  });
+
+  it("reports a file-bearing backup that cannot target this practice", async () => {
+    const { db, select } = createRestoreDb();
+    mocks.validatePracticeFileRestoreTarget.mockReturnValueOnce({
+      valid: false,
+      errors: [
+        "This database backup contains attachment manifests but not the attachment files.",
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).restoreBackup({ backup: { files: [{}] }, dryRun: true }),
+    ).resolves.toMatchObject({
+      dryRun: true,
+      restoreErrors: [expect.stringContaining("attachment manifests")],
     });
 
     expect(select).toHaveBeenCalledTimes(1);
@@ -220,7 +251,7 @@ describe("data full backup restore", () => {
         backup: { clients: [] },
         dryRun: false,
         confirmFreshPractice: true,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(select).toHaveBeenCalledTimes(1);
@@ -235,7 +266,7 @@ describe("data full backup restore", () => {
         backup: { clients: [] },
         dryRun: false,
         confirmFreshPractice: false,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(select).toHaveBeenCalledTimes(1);
@@ -247,7 +278,7 @@ describe("data full backup restore", () => {
     const { db, select } = createRestoreDb([[], [], [], []], []);
 
     await expect(
-      callerWithDb(db).restoreBackup({ backup: { clients: [] }, dryRun: true })
+      callerWithDb(db).restoreBackup({ backup: { clients: [] }, dryRun: true }),
     ).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
@@ -258,14 +289,19 @@ describe("data full backup restore", () => {
   });
 
   it("refuses to restore into practices with core records", async () => {
-    const { db, transaction } = createRestoreDb([[{ id: "client-1" }], [], [], []]);
+    const { db, transaction } = createRestoreDb([
+      [{ id: "client-1" }],
+      [],
+      [],
+      [],
+    ]);
 
     await expect(
       callerWithDb(db).restoreBackup({
         backup: { clients: [] },
         dryRun: false,
         confirmFreshPractice: true,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(transaction).toHaveBeenCalledTimes(1);
@@ -284,7 +320,7 @@ describe("data full backup restore", () => {
         backup: { clients: [] },
         dryRun: false,
         confirmFreshPractice: true,
-      })
+      }),
     ).resolves.toEqual({
       dryRun: false,
       restored: { clients: 1 },
@@ -292,15 +328,13 @@ describe("data full backup restore", () => {
     });
 
     expect(transaction).toHaveBeenCalledTimes(1);
-    expect(mocks.restorePracticeData).toHaveBeenCalledWith(
-      tx,
-      PRACTICE_ID,
-      { clients: [] }
-    );
+    expect(mocks.restorePracticeData).toHaveBeenCalledWith(tx, PRACTICE_ID, {
+      clients: [],
+    });
     expect(mocks.recordActivationAfterAppointmentCreated).toHaveBeenCalledWith(
       tx,
       PRACTICE_ID,
-      "data.restoreBackup"
+      "data.restoreBackup",
     );
   });
 });
@@ -308,26 +342,26 @@ describe("data full backup restore", () => {
 describe("data CSV export safety", () => {
   const source = readFileSync(
     new URL("../routers/data.ts", import.meta.url),
-    "utf8"
+    "utf8",
   );
 
   function scopedJoinPattern(
     joinMethod: "innerJoin" | "leftJoin",
     table: string,
-    foreignKey: string
+    foreignKey: string,
   ) {
     return new RegExp(
       `${joinMethod}\\(\\s*${table},\\s*and\\(\\s*eq\\(${foreignKey.replace(
         ".",
-        "\\."
+        "\\.",
       )}, ${table}\\.id\\),[\\s\\S]*?eq\\(${table}\\.practiceId, ctx\\.practiceId\\),[\\s\\S]*?isNull\\(${table}\\.deletedAt\\)[\\s\\S]*?\\)\\s*\\)`,
-      "s"
+      "s",
     );
   }
 
   it("scopes patient export client display rows to the active tenant", () => {
     expect(source).toMatch(
-      scopedJoinPattern("innerJoin", "clients", "patients.clientId")
+      scopedJoinPattern("innerJoin", "clients", "patients.clientId"),
     );
   });
 
@@ -337,43 +371,41 @@ describe("data CSV export safety", () => {
       ["clients", "appointments.clientId"],
       ["appointmentTypes", "appointments.typeId"],
     ]) {
-      expect(source).toMatch(
-        scopedJoinPattern("leftJoin", table, foreignKey)
-      );
+      expect(source).toMatch(scopedJoinPattern("leftJoin", table, foreignKey));
     }
   });
 
   it("preserves exported doctor attribution after staff deactivation", () => {
     expect(source).toMatch(
-      /leftJoin\(\s*users,\s*and\(\s*eq\(appointments\.doctorId, users\.id\),[\s\S]*?eq\(users\.practiceId, ctx\.practiceId\),?[\s\S]*?\)\s*\)/s
+      /leftJoin\(\s*users,\s*and\(\s*eq\(appointments\.doctorId, users\.id\),[\s\S]*?eq\(users\.practiceId, ctx\.practiceId\),?[\s\S]*?\)\s*\)/s,
     );
     expect(source).not.toMatch(
-      /eq\(appointments\.doctorId, users\.id\)[\s\S]{0,180}?isNull\(users\.deletedAt\)/s
+      /eq\(appointments\.doctorId, users\.id\)[\s\S]{0,180}?isNull\(users\.deletedAt\)/s,
     );
   });
 
   it("keeps appointment export patient names scoped to the appointment client", () => {
     const patientJoin = source.match(
-      /\.from\(appointments\)[\s\S]+?\.leftJoin\(\s*patients,[\s\S]+?\)\s*\.leftJoin\(\s*clients,/
+      /\.from\(appointments\)[\s\S]+?\.leftJoin\(\s*patients,[\s\S]+?\)\s*\.leftJoin\(\s*clients,/,
     )?.[0];
 
     expect(patientJoin).toContain(
-      "eq(patients.clientId, appointments.clientId)"
+      "eq(patients.clientId, appointments.clientId)",
     );
   });
 
   it("scopes invoice export display joins to active tenant rows", () => {
     expect(source).toMatch(
-      scopedJoinPattern("innerJoin", "clients", "invoices.clientId")
+      scopedJoinPattern("innerJoin", "clients", "invoices.clientId"),
     );
     expect(source).toMatch(
-      scopedJoinPattern("leftJoin", "patients", "invoices.patientId")
+      scopedJoinPattern("leftJoin", "patients", "invoices.patientId"),
     );
   });
 
   it("keeps invoice export patient names scoped to the invoice client", () => {
     const patientJoin = source.match(
-      /\.from\(invoices\)[\s\S]+?\.leftJoin\(\s*patients,[\s\S]+?\)\s*\.where/
+      /\.from\(invoices\)[\s\S]+?\.leftJoin\(\s*patients,[\s\S]+?\)\s*\.where/,
     )?.[0];
 
     expect(patientJoin).toContain("eq(patients.clientId, invoices.clientId)");
@@ -381,15 +413,15 @@ describe("data CSV export safety", () => {
 
   it("fetches invoice export items through the selected tenant invoices", () => {
     const itemLookup = source.match(
-      /\.from\(invoiceItems\)[\s\S]+?for \(const item of allItems\)/
+      /\.from\(invoiceItems\)[\s\S]+?for \(const item of allItems\)/,
     )?.[0];
 
     expect(itemLookup).toContain("inArray(invoiceItems.invoiceId, invoiceIds)");
     expect(itemLookup).toContain(
-      "where ${invoices.id} = ${invoiceItems.invoiceId}"
+      "where ${invoices.id} = ${invoiceItems.invoiceId}",
     );
     expect(itemLookup).toContain(
-      "and ${invoices.practiceId} = ${ctx.practiceId}"
+      "and ${invoices.practiceId} = ${ctx.practiceId}",
     );
     expect(itemLookup).toContain("and ${invoices.deletedAt} is null");
     expect(itemLookup).toContain("activePracticePredicate(ctx.practiceId)");

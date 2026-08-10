@@ -299,7 +299,7 @@ describe("lab result clinical safety contract", () => {
       "GRANT SELECT, INSERT ON lab_result_replacements TO openpims_app",
     );
     expect(rls).toContain(
-      "clinical_record_corrections, demo_accesses, dispense_charge_queue, funnel_events, lab_result_events, lab_result_replacements",
+      "clinical_record_corrections, demo_accesses, dispense_charge_queue, file_object_replicas, funnel_events, lab_result_events, lab_result_replacements",
     );
     expect(rls).toContain("FROM %I', r");
     expect(rlsTest).toContain("cross-tenant lab replacement INSERT is blocked");

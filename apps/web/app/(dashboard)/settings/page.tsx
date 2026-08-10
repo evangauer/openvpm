@@ -3705,7 +3705,7 @@ function DataTab() {
               <Download className="h-4 w-4" />
             )}
             <Database className="h-4 w-4" />
-            Export Full Backup
+            Export Database Backup
           </Button>
           {practiceSettingsError || practiceSettingsMissing ? (
             <p className="mt-2 text-xs text-destructive">
@@ -3713,6 +3713,10 @@ function DataTab() {
                 "Unable to load practice settings for backup export."}
             </p>
           ) : null}
+          <p className="mt-2 text-xs text-muted-foreground">
+            Includes structured records and attachment manifests. Uploaded
+            document and image bytes are not embedded in the JSON download.
+          </p>
         </div>
         <div className="grid grid-cols-2 gap-3 max-w-2xl">
           {(
@@ -3754,19 +3758,20 @@ function DataTab() {
         </div>
       </div>
 
-      {/* Full backup restore */}
+      {/* Database backup restore */}
       <div>
-        <h3 className="text-sm font-semibold mb-1">Restore Full Backup</h3>
+        <h3 className="text-sm font-semibold mb-1">Restore Database Backup</h3>
         <p className="text-sm text-muted-foreground mb-4">
-          Restore a full backup into a fresh practice. Existing clients,
-          patients, appointments, or invoices block the restore.
+          Restore structured data into an empty practice. Existing clients,
+          patients, appointments, or invoices block the restore. A backup with
+          attachment manifests must target its original practice.
         </p>
         <div className="max-w-2xl rounded-lg border border-amber-300 bg-amber-50 p-4 text-amber-950 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100">
           <div className="flex items-start gap-3">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
             <div className="min-w-0 flex-1 space-y-4">
               <div>
-                <p className="text-sm font-medium">Fresh-practice restore</p>
+                <p className="text-sm font-medium">Empty-practice restore</p>
                 <p className="mt-1 text-xs leading-5 text-amber-900 dark:text-amber-200">
                   OpenVPM first checks the backup sections, row counts, and
                   internal record links. Restores are non-destructive and only
@@ -3903,7 +3908,7 @@ function DataTab() {
                 ) : (
                   <Database className="h-4 w-4" />
                 )}
-                Restore into Fresh Practice
+                Restore into Empty Practice
               </Button>
             </div>
           </div>
@@ -3914,7 +3919,8 @@ function DataTab() {
       <div>
         <h3 className="text-sm font-semibold mb-1">Account Deletion</h3>
         <p className="text-sm text-muted-foreground mb-4">
-          Start a deletion review after exporting the full backup.
+          Start a deletion review after exporting the database backup. Review
+          uploaded files separately because their bytes are not in the JSON.
         </p>
         <div className="max-w-2xl rounded-lg border border-destructive/30 bg-destructive/5 p-4">
           {isDeletionStatusLoading ? (
@@ -3995,7 +4001,7 @@ function DataTab() {
                   className="mt-0.5"
                 />
                 <span>
-                  I downloaded the full backup before requesting deletion.
+                  I downloaded the database backup before requesting deletion.
                 </span>
               </label>
               <label className="flex items-start gap-2 text-sm">

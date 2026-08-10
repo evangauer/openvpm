@@ -203,6 +203,65 @@ describe("committed Drizzle migrations", () => {
     );
   });
 
+  it("adds the attachment replica foundation in a fail-closed deployment order", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries?: Array<{ tag?: string }> };
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0076_file_manifest_replica_foundation",
+    );
+
+    const sql = readRepoFile(
+      "packages/db/drizzle/0076_file_manifest_replica_foundation.sql",
+    );
+    const replicaTable = sql.indexOf('CREATE TABLE "file_object_replicas"');
+    const enableRls = sql.indexOf(
+      'ALTER TABLE "file_object_replicas" ENABLE ROW LEVEL SECURITY',
+    );
+    const tenantIdentityIndex = sql.indexOf(
+      'CREATE UNIQUE INDEX "files_practice_id_uq"',
+    );
+    const tenantIdentityFk = sql.indexOf(
+      'ADD CONSTRAINT "file_object_replicas_file_tenant_fk"',
+    );
+
+    expect(replicaTable).toBeGreaterThanOrEqual(0);
+    expect(enableRls).toBeGreaterThan(replicaTable);
+    expect(tenantIdentityIndex).toBeGreaterThan(enableRls);
+    expect(tenantIdentityFk).toBeGreaterThan(tenantIdentityIndex);
+    expect(sql).toContain('ADD COLUMN "checksum_sha256" varchar(64)');
+    expect(sql).toContain(
+      'ADD COLUMN "storage_status" "file_storage_status" DEFAULT \'unverified\' NOT NULL',
+    );
+    expect(sql).toContain('ADD COLUMN "patient_id" uuid');
+    expect(sql).toContain(
+      'ADD CONSTRAINT "files_patient_tenant_fk" FOREIGN KEY ("practice_id","patient_id")',
+    );
+    expect(sql).toContain(
+      'ADD CONSTRAINT "files_appointment_patient_tenant_fk" FOREIGN KEY ("practice_id","appointment_id","patient_id")',
+    );
+
+    const rls = readRepoFile("packages/db/rls/enable-rls.sql");
+    const genericTenantTables = rls.slice(
+      rls.indexOf("tbls text[] := array["),
+      rls.indexOf("END$$;"),
+    );
+    const replicaPolicy = rls.slice(
+      rls.indexOf("ALTER TABLE file_object_replicas ENABLE ROW LEVEL SECURITY"),
+      rls.indexOf("-- Clinical correction events"),
+    );
+    expect(genericTenantTables).not.toContain("file_object_replicas");
+    expect(replicaPolicy).toContain(
+      "CREATE POLICY system_only ON file_object_replicas",
+    );
+    expect(replicaPolicy).toContain("USING (app_rls_bypass())");
+    expect(replicaPolicy).toContain("WITH CHECK (app_rls_bypass())");
+    expect(replicaPolicy).not.toContain("app_current_practice_id");
+    expect(rls).toContain(
+      "dispense_charge_queue, file_object_replicas, funnel_events",
+    );
+  });
+
   it("captures hot-table indexes in the baseline SQL", () => {
     const sql = readRepoFile("packages/db/drizzle/0000_baseline.sql");
 

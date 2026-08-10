@@ -101,6 +101,8 @@ export const PRACTICE_EXPORT_SYSTEM_EXCLUSIONS = {
     "Global immutable verification-email provider identity conflict evidence; it is not clinic-owned restore data.",
   captureSessions:
     "Expiring QR photo-capture link tokens; restoring them would resurrect old capture URLs. The photos themselves are in the files section.",
+  fileObjectReplicas:
+    "Environment-bound object-replica verification state; rebuild it from the configured backup target instead of replaying provider keys or versions.",
   consentRequests:
     "Expiring e-sign link tokens; the signed consent PDF is in the files section and the signing event is in the audit log.",
   messagingRegistrations:
@@ -479,6 +481,8 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
   optionalRef("visitCloseouts", "invoiceId", "invoices"),
   optionalRef("visitCloseouts", "completedBy", "users"),
   requiredRef("files", "uploadedBy", "users"),
+  optionalRef("files", "patientId", "patients"),
+  optionalRef("files", "appointmentId", "appointments"),
   optionalRef("controlledSubstanceLog", "patientId", "patients"),
   requiredRef("controlledSubstanceLog", "performedBy", "users"),
   optionalRef("controlledSubstanceLog", "witnessedBy", "users"),
@@ -532,6 +536,41 @@ export function summarizePracticeExport(data: unknown): {
 
 function rowLabel(row: Row, index: number): string {
   return typeof row.id === "string" ? row.id : `#${index + 1}`;
+}
+
+function restoredFilePatientId(row: Row): unknown {
+  return row.patientId ?? (row.entityType === "patient" ? row.entityId : null);
+}
+
+function canonicalFileUrl(fileKey: unknown): string | null {
+  return typeof fileKey === "string" ? `/api/files/${fileKey}` : null;
+}
+
+/**
+ * A JSON backup contains file manifests, not binary objects. Until object
+ * staging is part of restore, inserting a source-practice key into another
+ * practice would create a broken and authorization-incompatible manifest.
+ */
+export function validatePracticeFileRestoreTarget(
+  data: unknown,
+  targetPracticeId: string,
+): { valid: boolean; errors: string[] } {
+  const record = isRecord(data) ? data : {};
+  const sourcePracticeId = record.practiceId;
+  const fileCount = rowsFor(data, "files").length;
+  const errors: string[] = [];
+
+  if (
+    fileCount > 0 &&
+    (typeof sourcePracticeId !== "string" ||
+      sourcePracticeId !== targetPracticeId)
+  ) {
+    errors.push(
+      "This database backup contains attachment manifests but not the attachment files. Restore it only to its original practice until portable attachment restore is available.",
+    );
+  }
+
+  return { valid: errors.length === 0, errors };
 }
 
 function prepareAppointmentLocationRestore(data: unknown): {
@@ -925,6 +964,93 @@ export function validatePracticeExportRestore(data: unknown): {
       if (room && room.locationId !== row.locationId) {
         pushError(`${label}.roomId must belong to the appointment location.`);
       }
+    }
+  });
+
+  const filePatientRows = rowsById("patients");
+  const fileStorageStatuses = new Set([
+    "unverified",
+    "pending_upload",
+    "available",
+    "missing",
+    "corrupt",
+    "cleanup_pending",
+  ]);
+  rowsFor(data, "files").forEach((row, index) => {
+    const label = `files[${rowLabel(row, index)}]`;
+    const patientId = restoredFilePatientId(row);
+    const patient =
+      typeof patientId === "string"
+        ? filePatientRows.get(patientId)
+        : undefined;
+    const appointment =
+      typeof row.appointmentId === "string"
+        ? appointmentRows.get(row.appointmentId)
+        : undefined;
+
+    if (
+      typeof backupPracticeId !== "string" ||
+      row.practiceId !== backupPracticeId
+    ) {
+      pushError(`${label}.practiceId must match the backup practiceId.`);
+    }
+    if (
+      typeof row.fileKey !== "string" ||
+      typeof backupPracticeId !== "string" ||
+      !row.fileKey.startsWith(`${backupPracticeId}/`)
+    ) {
+      pushError(`${label}.fileKey must use the backup practice namespace.`);
+    }
+    if (
+      row.fileSizeBytes != null &&
+      (!Number.isInteger(row.fileSizeBytes) || Number(row.fileSizeBytes) <= 0)
+    ) {
+      pushError(`${label}.fileSizeBytes must be a positive integer.`);
+    }
+    if (
+      row.checksumSha256 != null &&
+      (typeof row.checksumSha256 !== "string" ||
+        !/^[0-9a-f]{64}$/.test(row.checksumSha256))
+    ) {
+      pushError(`${label}.checksumSha256 must be a lowercase SHA-256 digest.`);
+    }
+    if (
+      row.storageStatus != null &&
+      (typeof row.storageStatus !== "string" ||
+        !fileStorageStatuses.has(row.storageStatus))
+    ) {
+      pushError(`${label}.storageStatus is invalid.`);
+    }
+    if (
+      row.idempotencyKey != null &&
+      (typeof row.idempotencyKey !== "string" ||
+        !CANONICAL_LOWER_UUID.test(row.idempotencyKey))
+    ) {
+      pushError(`${label}.idempotencyKey must be a canonical UUID.`);
+    }
+    if (
+      row.patientId != null &&
+      row.entityType === "patient" &&
+      row.entityId != null &&
+      row.patientId !== row.entityId
+    ) {
+      pushError(`${label}.patientId must match its legacy patient entityId.`);
+    }
+    if (typeof patientId === "string") {
+      if (!patient || patient.practiceId !== row.practiceId) {
+        pushError(`${label}.patientId must belong to the declared practice.`);
+      }
+    } else if (row.appointmentId != null) {
+      pushError(`${label}.patientId is required when appointmentId is set.`);
+    }
+    if (
+      appointment &&
+      (appointment.practiceId !== row.practiceId ||
+        appointment.patientId !== patientId)
+    ) {
+      pushError(
+        `${label}.appointmentId must reference the same practice and patient.`,
+      );
     }
   });
 
@@ -1995,6 +2121,41 @@ async function activeRows(db: Database, table: any, practiceId: string) {
     .where(and(eq(table.practiceId, practiceId), isNull(table.deletedAt)));
 }
 
+/**
+ * Keep phase-one application reads compatible while migration 0076 is being
+ * applied. New manifest columns are intentionally omitted until the dual-write
+ * release starts populating them. Canonicalizing here also prevents a legacy
+ * raw-storage or external URL from leaking into a newly generated backup.
+ */
+async function activeFileRows(db: Database, practiceId: string) {
+  const rows = await db
+    .select({
+      id: files.id,
+      createdAt: files.createdAt,
+      updatedAt: files.updatedAt,
+      deletedAt: files.deletedAt,
+      practiceId: files.practiceId,
+      uploadedBy: files.uploadedBy,
+      fileName: files.fileName,
+      fileKey: files.fileKey,
+      mimeType: files.mimeType,
+      fileSizeBytes: files.fileSizeBytes,
+      category: files.category,
+      entityType: files.entityType,
+      entityId: files.entityId,
+      appointmentId: files.appointmentId,
+    })
+    .from(files)
+    .where(
+      and(eq(files.practiceId, practiceId), isNull(files.deletedAt)),
+    );
+
+  return rows.map((row) => ({
+    ...row,
+    fileUrl: canonicalFileUrl(row.fileKey),
+  }));
+}
+
 async function allPracticeRows(db: Database, table: any, practiceId: string) {
   return db.select().from(table).where(eq(table.practiceId, practiceId));
 }
@@ -2184,7 +2345,7 @@ export async function exportPracticeData(
     allPracticeRows(db, prescriptionEvents, practiceId),
     allPracticeRows(db, dispenseChargeQueue, practiceId),
     activeRows(db, visitCloseouts, practiceId),
-    activeRows(db, files, practiceId),
+    activeFileRows(db, practiceId),
     activeRows(db, controlledSubstanceLog, practiceId),
     allPracticeRows(db, communications, practiceId),
   ]);
@@ -2254,6 +2415,7 @@ export async function exportPracticeData(
       ...vaccinationRows.map((vaccination) => vaccination.appointmentId),
       ...labRows.map((result) => result.appointmentId),
       ...labResultEventRows.map((event) => event.appointmentId),
+      ...fileRows.map((file) => file.appointmentId),
     ].filter((id): id is string => typeof id === "string"),
   );
   const appointmentRows = allAppointmentRows.filter(
@@ -2271,6 +2433,7 @@ export async function exportPracticeData(
       ...vaccinationRows.map((vaccination) => vaccination.patientId),
       ...labRows.map((result) => result.patientId),
       ...labResultEventRows.map((event) => event.patientId),
+      ...fileRows.map((file) => restoredFilePatientId(file)),
       ...appointmentRows.map((appointment) => appointment.patientId),
       ...patientMergeRows.flatMap((event) => [
         event.sourcePatientId,
@@ -2318,6 +2481,7 @@ export async function exportPracticeData(
       ...smsConsentEventRows.map((event) => event.actorUserId),
       ...smsSendAttemptRows.map((attempt) => attempt.requestedByUserId),
       ...smsSendAttemptEventRows.map((event) => event.actorUserId),
+      ...fileRows.map((file) => file.uploadedBy),
     ].filter((id): id is string => typeof id === "string"),
   );
   const userRows = allUserRows.filter(
@@ -2588,6 +2752,10 @@ async function restorePracticeDataRows(
     throw new Error(
       `Backup contains invalid restore data: ${validation.errors.join("; ")}`,
     );
+  }
+  const targetValidation = validatePracticeFileRestoreTarget(data, practiceId);
+  if (!targetValidation.valid) {
+    throw new Error(targetValidation.errors.join("; "));
   }
   const backupRecord = isRecord(data) ? data : {};
   const schedulingRestore = prepareAppointmentLocationRestore(data);
@@ -3017,7 +3185,16 @@ async function restorePracticeDataRows(
     }
   }
   await restorePracticeRows("visitCloseouts", visitCloseouts);
-  await restorePracticeRows("files", files);
+  restored.files = await restoreRows(
+    db,
+    files,
+    "files",
+    rowsFor(data, "files").map((row) => ({
+      ...row,
+      fileUrl: canonicalFileUrl(row.fileKey),
+    })),
+    { practiceId },
+  );
   await restorePracticeRows("controlledSubstanceLog", controlledSubstanceLog);
   await restorePracticeRows("communications", communications);
   // Provider callback evidence is exported for clinic audit/portability, but

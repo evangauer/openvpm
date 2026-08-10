@@ -1,8 +1,9 @@
 # Backup and Restore Runbook
 
-OpenVPM Cloud takes a full backup of every practice every day. This runbook
-covers what is in those backups, how to restore one, and the drill log that
-proves the whole path works.
+OpenVPM Cloud takes a structured database backup of every practice every day.
+This runbook covers what is in those JSON backups, how to restore one, and the
+drill log for the database path. Attachment-binary disaster recovery remains a
+separate launch gate until the independent replica and restore drill pass.
 
 ## What gets backed up
 
@@ -36,18 +37,22 @@ proves the whole path works.
   a placeholder (restored staff must reset their passwords), client portal
   tokens are cleared, API keys are disabled, webhook secrets are replaced and
   webhooks arrive deactivated.
-- **File binaries are not in the JSON.** The `files` section holds the
-  database rows that point at object-storage keys. Object storage is
-  independent of the database, so a database loss does not touch the file
-  binaries and restored rows point at them correctly.
+- **File binaries are not in the JSON.** The `files` section holds attachment
+  manifests only. A same-practice database recovery can reuse surviving
+  objects. A fresh-practice restore with file manifests is currently rejected
+  before writing because its source-practice keys would be unusable; portable
+  object staging and key rewriting must ship before that path is supported.
 
 Admins can also download the identical payload on demand:
-**Settings → Data → Export Full Backup**.
+**Settings → Data → Export Database Backup**.
 
-## Restore runbook (database loss)
+## Restore runbook (clinic data recovery)
 
-Scenario: the database is gone or a practice's data must be rebuilt from a
-snapshot. Wall-clock times from the 2026-07-10 drill are in brackets.
+Scenario: a practice's data must be rebuilt from a JSON snapshot. Wall-clock
+times from the 2026-07-10 database-only drill are in brackets. If the whole
+database is gone and the backup contains attachment manifests, use the
+same-install database snapshot/WAL procedure below. The JSON alone is not yet
+a complete recovery source for that incident.
 
 1. **Stand up a database with the current schema** (skip if the database is
    fine and you are only rebuilding one practice):
@@ -66,20 +71,25 @@ snapshot. Wall-clock times from the 2026-07-10 drill are in brackets.
    GET {S3_ENDPOINT}/{S3_BUCKET}/backups/{practiceId}/{YYYY-MM-DD}.json
    ```
 
-   (An admin's on-demand **Export Full Backup** file works the same way if
+   (An admin's on-demand **Export Database Backup** file works the same way if
    you have one from before the incident.)
 
-3. **Register a fresh practice** on the app and log in as its admin. [~4s]
+3. **Choose the empty target practice:**
+   - If the backup contains any `files` rows, use only its original practice.
+     Stop if that practice identity no longer exists; do not register a
+     replacement practice and do not rewrite storage keys by hand.
+   - If the backup contains no `files` rows, you may register a fresh practice
+     and log in as its admin. [~4s]
 
-4. **Remove the sample data.** New practices are seeded with sample pets so
-   the first minutes feel real, and the restore refuses any practice that
-   already has clients, patients, appointments, or invoices.
+4. **Empty the target.** New practices are seeded with sample pets so the
+   first minutes feel real, and the restore refuses any practice that already
+   has clients, patients, appointments, or invoices.
    **Settings → Data → Remove sample data.**
 
-5. **Restore:** **Settings → Data → Restore Full Backup → Choose Backup
+5. **Restore:** **Settings → Data → Restore Database Backup → Choose Backup
    JSON.** The dry run happens automatically and shows verified row counts
-   without writing anything. [~2s] Check the fresh-practice confirmation,
-   then **Restore into Fresh Practice**. [under 1s for a small clinic]
+   without writing anything. [~2s] Check the empty-practice confirmation,
+   then **Restore into Empty Practice**. [under 1s for a small clinic]
 
 6. **Verify:** client list, one patient chart (vaccinations tab), one
    invoice, and the Lab Inbox review/follow-up evidence for one completed
@@ -166,5 +176,7 @@ UI, printing phase timings at the end.
   restore error is a candidate follow-up.
 - **Known gap:** no in-product way to list or download the stored daily
   snapshots; retrieval is a manual S3 pull (step 2). Candidate follow-up.
-- **Known gap:** file binaries exist only in object storage. Fine for
-  database loss; object-storage loss is not covered by these backups.
+- **Launch-blocking gap:** file binaries currently exist only in primary
+  object storage. Object-storage loss is not covered by the JSON backups, and
+  file-bearing fresh-practice restore is intentionally fail-closed. Track the
+  independent-copy rollout and destructive primary-loss drill in OPENVPM-41.

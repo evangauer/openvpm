@@ -533,6 +533,13 @@
       "when": 1786365035639,
       "tag": "0075_immutable_patient_allergies",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1786369337252,
+      "tag": "0076_file_manifest_replica_foundation",
+      "breakpoints": true
     }
   ]
 }

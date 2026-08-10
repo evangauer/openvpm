@@ -13,6 +13,7 @@ import {
   restorePracticeData,
   sanitizePracticeExportRows,
   summarizePracticeExport,
+  validatePracticeFileRestoreTarget,
   validatePracticeExportRestore,
 } from "../export";
 import { patients } from "@openpims/db";
@@ -161,6 +162,108 @@ describe("backupKey", () => {
     const b = backupKey("b", "2026-06-07");
     expect(a).not.toBe(b);
     expect(a.startsWith("backups/a/")).toBe(true);
+  });
+});
+
+describe("attachment manifest restore safety", () => {
+  function manifestBackup() {
+    return {
+      practiceId: "source-practice",
+      ...emptyBackup(),
+      users: [
+        {
+          id: "user-1",
+          practiceId: "source-practice",
+        },
+      ],
+      files: [
+        {
+          id: "file-1",
+          practiceId: "source-practice",
+          uploadedBy: "user-1",
+          fileKey: "source-practice/documents/file-1.pdf",
+          fileUrl: "/api/files/source-practice/documents/file-1.pdf",
+          fileSizeBytes: 12,
+          checksumSha256: "a".repeat(64),
+          storageStatus: "available",
+        },
+      ],
+    };
+  }
+
+  it("uses a migration-safe explicit file manifest projection", () => {
+    const source = readFileSync("lib/backup/export.ts", "utf8");
+
+    expect(source).toContain("async function activeFileRows");
+    expect(source).toContain("activeFileRows(db, practiceId)");
+    expect(source).not.toContain("activeRows(db, files, practiceId)");
+    expect(source).toContain("fileUrl: canonicalFileUrl(row.fileKey)");
+  });
+
+  it("validates file namespace and integrity metadata", () => {
+    expect(validatePracticeExportRestore(manifestBackup())).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const invalid = manifestBackup();
+    invalid.files[0]!.fileKey = "other-practice/documents/file-1.pdf";
+    invalid.files[0]!.checksumSha256 = "not-a-digest";
+
+    expect(validatePracticeExportRestore(invalid).errors).toEqual([
+      "files[file-1].fileKey must use the backup practice namespace.",
+      "files[file-1].checksumSha256 must be a lowercase SHA-256 digest.",
+    ]);
+  });
+
+  it.each([
+    "unverified",
+    "pending_upload",
+    "available",
+    "missing",
+    "corrupt",
+    "cleanup_pending",
+  ])("accepts the %s file lifecycle state", (storageStatus) => {
+    const backup = manifestBackup();
+    backup.files[0]!.storageStatus = storageStatus;
+
+    expect(validatePracticeExportRestore(backup)).toEqual({
+      valid: true,
+      errors: [],
+    });
+  });
+
+  it("fails closed instead of creating broken cross-practice file manifests", () => {
+    expect(
+      validatePracticeFileRestoreTarget(manifestBackup(), "source-practice"),
+    ).toEqual({ valid: true, errors: [] });
+
+    expect(
+      validatePracticeFileRestoreTarget(manifestBackup(), "target-practice"),
+    ).toMatchObject({
+      valid: false,
+      errors: [expect.stringContaining("attachment manifests")],
+    });
+  });
+
+  it("canonicalizes a legacy or external file URL during same-practice restore", async () => {
+    const backup = manifestBackup();
+    backup.files[0]!.fileUrl = "https://storage.example/private-object";
+    expect(validatePracticeExportRestore(backup)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const { db, inserted } = restoreDb();
+    await restorePracticeData(db as never, "source-practice", backup);
+    const file = inserted
+      .flatMap(({ rows }) => rows)
+      .find((row) => row.id === "file-1");
+
+    expect(file).toMatchObject({
+      fileKey: "source-practice/documents/file-1.pdf",
+      fileUrl: "/api/files/source-practice/documents/file-1.pdf",
+    });
   });
 });
 
@@ -2764,13 +2867,6 @@ describe("restorePracticeData", () => {
         { id: "template-item-1", templateId: "template-1" },
       ],
       patientWeights: [{ id: "weight-1", patientId: "patient-1" }],
-      files: [
-        {
-          id: "file-1",
-          practiceId: "source-practice",
-          uploadedBy: "user-1",
-        },
-      ],
     };
     const { db, inserted } = restoreDb();
 
@@ -2781,7 +2877,7 @@ describe("restorePracticeData", () => {
     );
     const restoredRows = inserted.flatMap(({ rows }) => rows);
 
-    expect(result.totalRows).toBe(19);
+    expect(result.totalRows).toBe(18);
     expect(restoredRows.find((row) => row.id === "location-1")).toMatchObject({
       id: "location-1",
       practiceId: "target-practice",
@@ -2882,10 +2978,6 @@ describe("restorePracticeData", () => {
     expect(restoredRows.find((row) => row.id === "weight-1")).toEqual({
       id: "weight-1",
       patientId: "patient-1",
-    });
-    expect(restoredRows.find((row) => row.id === "file-1")).toMatchObject({
-      id: "file-1",
-      practiceId: "target-practice",
     });
   });
 

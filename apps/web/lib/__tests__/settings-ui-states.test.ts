@@ -228,7 +228,7 @@ describe("settings UI states", () => {
     );
   });
 
-  it("exposes full-backup restore as a dry-run gated fresh-practice flow", () => {
+  it("exposes database-backup restore as a dry-run gated empty-practice flow", () => {
     expect(PRACTICE_BACKUP_JSON_MAX_BYTES).toBe(50_000_000);
     expect(isPracticeBackupJsonSizeValid("abc", 3)).toBe(true);
     expect(isPracticeBackupJsonSizeValid("abcd", 3)).toBe(false);
@@ -236,7 +236,11 @@ describe("settings UI states", () => {
     expect(source).toContain(
       "const restoreBackup = trpc.data.restoreBackup.useMutation",
     );
-    expect(source).toContain("Restore Full Backup");
+    expect(source).toContain("Restore Database Backup");
+    expect(source).toContain("A backup with");
+    expect(source).toContain(
+      "attachment manifests must target its original practice.",
+    );
     expect(source).toContain("Choose Backup JSON");
     expect(source).toContain('from "@/lib/backup/policy"');
     expect(source).toContain("file.size > PRACTICE_BACKUP_JSON_MAX_BYTES");
@@ -247,7 +251,7 @@ describe("settings UI states", () => {
     expect(source).toContain("dryRun: true");
     expect(source).toContain("dryRun: false");
     expect(source).toContain("confirmFreshPractice: true");
-    expect(source).toContain("Restore into Fresh Practice");
+    expect(source).toContain("Restore into Empty Practice");
     expect(source).toContain("backupSummary?.missingSections.length === 0");
     expect(source).toContain("backupSummary?.restoreErrors.length === 0");
     expect(source).toContain("Invalid backup data");

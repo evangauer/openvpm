@@ -118,6 +118,12 @@ const aSoapDeletedRestoreAddendum = randomUUID();
 const aSoapDraft = randomUUID();
 const aPatient = randomUUID();
 const bPatient = randomUUID();
+const aFile = randomUUID();
+const bFile = randomUUID();
+const aReplica = randomUUID();
+const aSystemReplica = randomUUID();
+const crossTenantPatientFile = randomUUID();
+const wrongAppointmentPatientFile = randomUUID();
 const aPatientAllergy = randomUUID();
 const bPatientAllergy = randomUUID();
 const aLegacyDeletedPatientAllergy = randomUUID();
@@ -335,6 +341,20 @@ try {
   await owner`insert into patients (id, practice_id, client_id, name, species)
     select ${bPatient}, ${bId}, id, 'RLS Pet B', 'feline'
     from clients where practice_id = ${bId}`;
+  await owner`insert into files
+    (id, practice_id, uploaded_by, file_name, file_key, file_url, category,
+     patient_id, entity_type, entity_id)
+    values
+    (${aFile}, ${aId}, ${aUser}, 'rls-file-a.pdf',
+      ${`${aId}/documents/rls-file-a.pdf`},
+      ${`/api/files/${aFile}`}, 'document', ${aPatient}, 'patient', ${aPatient}),
+    (${bFile}, ${bId}, ${bUser}, 'rls-file-b.pdf',
+      ${`${bId}/documents/rls-file-b.pdf`},
+      ${`/api/files/${bFile}`}, 'document', ${bPatient}, 'patient', ${bPatient})`;
+  await owner`insert into file_object_replicas
+    (id, practice_id, file_id, replica_target, object_key, status)
+    values (${aReplica}, ${aId}, ${aFile}, 'rls_owner_fixture',
+      ${`replica/${aId}/documents/rls-file-a.pdf`}, 'available')`;
   await owner`insert into patient_allergies
     (id, patient_id, allergen, reaction, severity, noted_by, deleted_at)
     values
@@ -2517,6 +2537,30 @@ try {
     "tenant context cannot read system-only clinic pilot state",
     hiddenClinicPilots.length === 0,
   );
+  const hiddenFileReplicas = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id from file_object_replicas where id = ${aReplica}`;
+  });
+  check(
+    "tenant context cannot read system-only file replica evidence",
+    hiddenFileReplicas.length === 0,
+  );
+  let tenantCannotWriteFileReplica = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into file_object_replicas
+        (practice_id, file_id, replica_target, object_key, status)
+        values (${aId}, ${aFile}, 'rls_tenant_forgery',
+          ${`replica/${aId}/documents/forged.pdf`}, 'available')`;
+    });
+  } catch {
+    tenantCannotWriteFileReplica = true;
+  }
+  check(
+    "tenant context cannot forge file replica evidence",
+    tenantCannotWriteFileReplica,
+  );
   const hiddenClinicPilotEvents = await appTransaction(async (tx) => {
     await tx`select set_config('app.current_practice_id', ${aId}, true)`;
     return tx`select id from clinic_pilot_events where id = ${clinicPilotEventId}`;
@@ -2628,6 +2672,76 @@ try {
   check(
     "system bypass can read clinic pilot audit events",
     systemClinicPilotEvents.length === 1,
+  );
+  const systemFileReplicas = await appTransaction(async (tx) => {
+    await tx`select set_config('app.rls_bypass', 'on', true)`;
+    await tx`insert into file_object_replicas
+      (id, practice_id, file_id, replica_target, object_key, status)
+      values (${aSystemReplica}, ${aId}, ${aFile}, 'rls_system_writer',
+        ${`replica/${aId}/documents/rls-system-file-a.pdf`}, 'available')`;
+    return tx`select id from file_object_replicas
+      where id in (${aReplica}, ${aSystemReplica}) order by id`;
+  });
+  check(
+    "system bypass can write and read file replica evidence",
+    systemFileReplicas.length === 2,
+  );
+  let mismatchedReplicaOwnershipRejected = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`insert into file_object_replicas
+        (practice_id, file_id, replica_target, object_key, status)
+        values (${aId}, ${bFile}, 'rls_cross_tenant',
+          ${`replica/${aId}/documents/cross-tenant.pdf`}, 'available')`;
+    });
+  } catch {
+    mismatchedReplicaOwnershipRejected = true;
+  }
+  check(
+    "database rejects cross-tenant file replica ownership even for system jobs",
+    mismatchedReplicaOwnershipRejected,
+  );
+  let crossTenantFilePatientRejected = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`insert into files
+        (id, practice_id, uploaded_by, file_name, file_key, file_url, category,
+         patient_id, entity_type, entity_id)
+        values (${crossTenantPatientFile}, ${aId}, ${aUser},
+          'cross-tenant-patient.pdf',
+          ${`${aId}/documents/cross-tenant-patient.pdf`},
+          ${`/api/files/${aId}/documents/cross-tenant-patient.pdf`},
+          'document', ${bPatient}, 'patient', ${bPatient})`;
+    });
+  } catch {
+    crossTenantFilePatientRejected = true;
+  }
+  check(
+    "database rejects a file patient from another practice even for system jobs",
+    crossTenantFilePatientRejected,
+  );
+  let wrongAppointmentPatientRejected = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`insert into files
+        (id, practice_id, uploaded_by, file_name, file_key, file_url, category,
+         patient_id, appointment_id, entity_type, entity_id)
+        values (${wrongAppointmentPatientFile}, ${aId}, ${aUser},
+          'wrong-appointment-patient.pdf',
+          ${`${aId}/documents/wrong-appointment-patient.pdf`},
+          ${`/api/files/${aId}/documents/wrong-appointment-patient.pdf`},
+          'document', ${aMergeTargetPatient}, ${aSoapLegalAppointment},
+          'patient', ${aMergeTargetPatient})`;
+    });
+  } catch {
+    wrongAppointmentPatientRejected = true;
+  }
+  check(
+    "database rejects a file visit linked to a different patient",
+    wrongAppointmentPatientRejected,
   );
   let bypassCannotRewriteClinicPilotEvent = false;
   try {
@@ -3122,6 +3236,8 @@ try {
     await cleanup`delete from rooms where id in (${aRoom}, ${bRoom})`;
     await cleanup`delete from prescriptions where id in (${aPrescription}, ${bPrescription})`;
     await cleanup`delete from products where id in (${aProduct}, ${bProduct})`;
+    await cleanup`delete from file_object_replicas where id in (${aReplica}, ${aSystemReplica})`;
+    await cleanup`delete from files where id in (${aFile}, ${bFile})`;
     await cleanup`delete from patients where id in (${aPatient}, ${bPatient}, ${aMergeTargetPatient}, ${bMergeTargetPatient}, ${aLineageCandidatePatient})`;
     await cleanup`delete from clients where practice_id in (${aId}, ${bId})`;
     await cleanup`delete from staff_schedules where id in (${aStaffSchedule}, ${bStaffSchedule})`;
