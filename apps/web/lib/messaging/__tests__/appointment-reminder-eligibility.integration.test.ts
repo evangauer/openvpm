@@ -6,6 +6,7 @@ import {
   appointments,
   clients,
   emailSuppressions,
+  locations,
   patients,
   practices,
 } from "@openpims/db";
@@ -24,6 +25,8 @@ describeWithPostgres("appointment reminder dispatch eligibility SQL", () => {
     const disabledPracticeId = randomUUID();
     const enabledClientId = randomUUID();
     const disabledClientId = randomUUID();
+    const enabledLocationId = randomUUID();
+    const disabledLocationId = randomUUID();
     const enabledPatientId = randomUUID();
     const disabledPatientId = randomUUID();
     const soonAppointmentId = randomUUID();
@@ -47,6 +50,20 @@ describeWithPostgres("appointment reminder dispatch eligibility SQL", () => {
             name: "Reminder integration disabled",
             appointmentRemindersEnabled: false,
             appointmentReminderLeadHours: 72,
+          },
+        ]);
+        await tx.insert(locations).values([
+          {
+            id: enabledLocationId,
+            practiceId: enabledPracticeId,
+            name: "Enabled reminder location",
+            isPrimary: true,
+          },
+          {
+            id: disabledLocationId,
+            practiceId: disabledPracticeId,
+            name: "Disabled reminder location",
+            isPrimary: true,
           },
         ]);
         await tx.insert(clients).values([
@@ -83,6 +100,7 @@ describeWithPostgres("appointment reminder dispatch eligibility SQL", () => {
           {
             id: soonAppointmentId,
             practiceId: enabledPracticeId,
+            locationId: enabledLocationId,
             clientId: enabledClientId,
             patientId: enabledPatientId,
             startTime: in12Hours,
@@ -92,6 +110,7 @@ describeWithPostgres("appointment reminder dispatch eligibility SQL", () => {
           {
             id: laterAppointmentId,
             practiceId: enabledPracticeId,
+            locationId: enabledLocationId,
             clientId: enabledClientId,
             patientId: enabledPatientId,
             startTime: in48Hours,
@@ -101,6 +120,7 @@ describeWithPostgres("appointment reminder dispatch eligibility SQL", () => {
           {
             id: disabledAppointmentId,
             practiceId: disabledPracticeId,
+            locationId: disabledLocationId,
             clientId: disabledClientId,
             patientId: disabledPatientId,
             startTime: in48Hours,
@@ -224,6 +244,11 @@ describeWithPostgres("appointment reminder dispatch eligibility SQL", () => {
         await tx
           .delete(clients)
           .where(inArray(clients.id, [enabledClientId, disabledClientId]));
+        await tx
+          .delete(locations)
+          .where(
+            inArray(locations.id, [enabledLocationId, disabledLocationId]),
+          );
         await tx
           .delete(practices)
           .where(
