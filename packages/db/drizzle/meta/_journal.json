@@ -477,6 +477,20 @@
       "when": 1786325737821,
       "tag": "0067_wooden_orphan",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1786330169000,
+      "tag": "0068_flashy_thunderball",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1786330214820,
+      "tag": "0069_shocking_spitfire",
+      "breakpoints": true
     }
   ]
 }
