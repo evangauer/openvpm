@@ -2,6 +2,12 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { db } from "@openpims/db/client";
 import { captureException } from "@/lib/error-tracking";
+import {
+  CLIENT_ERROR_FAMILIES,
+  CLIENT_ERROR_SOURCES,
+  sanitizeClientErrorDigest,
+  sanitizeClientErrorPath,
+} from "@/lib/client-error-report";
 import { insertFunnelEvent } from "@/lib/funnel-events-server";
 import { rateLimit, rateLimitResponseHeaders } from "@/lib/rate-limit";
 import { clientIpFromRequest } from "@/lib/request-ip";
@@ -13,14 +19,10 @@ import { withSystem } from "@/lib/tenant-db";
 
 const ERROR_REPORT_LIMIT = 30;
 const ERROR_REPORT_WINDOW_MS = 5 * 60 * 1000;
-const UUID_PATH_SEGMENT_RE =
-  /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi;
-
 const errorReportSchema = z.object({
-  source: z.string().min(1).max(80).regex(/^[a-zA-Z0-9._:/-]+$/),
-  message: z.string().min(1).max(1000),
-  stack: z.string().max(5000).optional().nullable(),
-  digest: z.string().max(200).optional().nullable(),
+  source: z.enum(CLIENT_ERROR_SOURCES),
+  errorFamily: z.enum(CLIENT_ERROR_FAMILIES).optional().default("Error"),
+  digest: z.string().max(120).optional().nullable(),
   path: z.string().max(500).startsWith("/").optional().nullable(),
   anonymousId: z.string().uuid().optional().nullable(),
 });
@@ -36,11 +38,6 @@ function errorReportRateLimitResponse(result: {
       headers: rateLimitResponseHeaders(ERROR_REPORT_LIMIT, result),
     }
   );
-}
-
-function cleanPath(path: string | null | undefined): string | undefined {
-  if (!path) return undefined;
-  return path.split(/[?#]/, 1)[0]!.replace(UUID_PATH_SEGMENT_RE, ":id");
 }
 
 async function enforceErrorReportRateLimit(ip: string) {
@@ -85,16 +82,27 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false }, { status: 400 });
   }
 
-  const { anonymousId, ...report } = parsed.data;
-  await captureException(report);
+  const { anonymousId, source, errorFamily } = parsed.data;
+  const digest = sanitizeClientErrorDigest(parsed.data.digest);
+  const path = sanitizeClientErrorPath(parsed.data.path);
+  await captureException({
+    source,
+    message: `${errorFamily} in client renderer`,
+    stack: null,
+    digest,
+    path,
+  });
   try {
     await withSystem(db, (tx) =>
       insertFunnelEvent(tx, {
         eventName: "client_error",
         anonymousId,
-        source: parsed.data.source,
-        path: cleanPath(parsed.data.path),
-        metadata: parsed.data.digest ? { digest: parsed.data.digest } : {},
+        source,
+        path: path ?? undefined,
+        metadata: {
+          errorFamily,
+          ...(digest ? { digest } : {}),
+        },
       })
     );
   } catch (error) {

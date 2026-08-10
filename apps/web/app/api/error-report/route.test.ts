@@ -88,8 +88,9 @@ describe("POST /api/error-report", () => {
       request(
         {
           source: "app-error",
-          message: "boom",
-          stack: "stack",
+          errorFamily: "TypeError",
+          message: "Patient Daisy failed to save",
+          stack: "Patient Daisy at /patients/private-record",
           digest: "digest",
           path: "/patients/323e4567-e89b-42d3-a456-426614174000?tab=records",
           anonymousId: "123e4567-e89b-42d3-a456-426614174000",
@@ -107,10 +108,10 @@ describe("POST /api/error-report", () => {
     });
     expect(mocks.captureException).toHaveBeenCalledWith({
       source: "app-error",
-      message: "boom",
-      stack: "stack",
+      message: "TypeError in client renderer",
+      stack: null,
       digest: "digest",
-      path: "/patients/323e4567-e89b-42d3-a456-426614174000?tab=records",
+      path: "/patients/:id",
     });
     expect(mocks.insertFunnelEvent).toHaveBeenCalledWith(
       {},
@@ -119,8 +120,11 @@ describe("POST /api/error-report", () => {
         anonymousId: "123e4567-e89b-42d3-a456-426614174000",
         source: "app-error",
         path: "/patients/:id",
-        metadata: { digest: "digest" },
+        metadata: { errorFamily: "TypeError", digest: "digest" },
       }
+    );
+    expect(JSON.stringify(mocks.captureException.mock.calls)).not.toContain(
+      "Daisy"
     );
   });
 
@@ -145,6 +149,51 @@ describe("POST /api/error-report", () => {
       "2026-06-27T12:05:00.000Z"
     );
     expect(mocks.captureException).not.toHaveBeenCalled();
+  });
+
+  it("rejects unrecognized sources before forwarding the report", async () => {
+    const response = await POST(
+      request({ source: "attacker-controlled", errorFamily: "Error" })
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.captureException).not.toHaveBeenCalled();
+    expect(mocks.insertFunnelEvent).not.toHaveBeenCalled();
+  });
+
+  it("discards legacy raw error content and unsafe correlation values", async () => {
+    const response = await POST(
+      request({
+        source: "global-error",
+        errorFamily: "Error",
+        message: "Client Jane and patient Daisy",
+        stack: "private stack content",
+        digest: "Client Jane's digest",
+        path: "/unexpected/Client-Jane",
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.captureException).toHaveBeenCalledWith({
+      source: "global-error",
+      message: "Error in client renderer",
+      stack: null,
+      digest: null,
+      path: "/other",
+    });
+    expect(mocks.insertFunnelEvent).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        path: "/other",
+        metadata: { errorFamily: "Error" },
+      })
+    );
+    expect(JSON.stringify(mocks.captureException.mock.calls)).not.toContain(
+      "Jane"
+    );
+    expect(JSON.stringify(mocks.captureException.mock.calls)).not.toContain(
+      "Daisy"
+    );
   });
 
   it("fails closed if the rate limiter is unavailable", async () => {

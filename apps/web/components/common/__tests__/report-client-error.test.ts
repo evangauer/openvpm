@@ -32,10 +32,12 @@ describe("reportClientError", () => {
     const body = await (payload as Blob).text();
     expect(JSON.parse(body)).toMatchObject({
       source: "app-error",
-      message: "boom",
+      errorFamily: "Error",
       digest: "digest-1",
       path: "/patients",
     });
+    expect(body).not.toContain("boom");
+    expect(body).not.toContain("stack");
   });
 
   it("falls back to fetch when sendBeacon cannot queue the report", () => {
@@ -51,7 +53,7 @@ describe("reportClientError", () => {
       expect.objectContaining({
         method: "POST",
         keepalive: true,
-        body: expect.stringContaining("queue full"),
+        body: expect.not.stringContaining("queue full"),
       })
     );
   });
@@ -86,5 +88,28 @@ describe("reportClientError", () => {
     expect(() =>
       reportClientError("app-error", new Error("boom"))
     ).not.toThrow();
+  });
+
+  it("redacts record identifiers and drops unsafe digests before transport", async () => {
+    stubPath("/patients/323e4567-e89b-42d3-a456-426614174000/edit");
+    const sendBeacon = vi.fn((_: string, __?: BodyInit | null) => true);
+    vi.stubGlobal("navigator", { sendBeacon });
+    vi.stubGlobal("fetch", vi.fn());
+
+    reportClientError(
+      "app-error",
+      Object.assign(new Error("Patient Daisy failed to save"), {
+        digest: "Daisy's record",
+      })
+    );
+
+    const [, payload] = sendBeacon.mock.calls[0]!;
+    const body = await (payload as Blob).text();
+    expect(JSON.parse(body)).toMatchObject({
+      path: "/patients/:id/edit",
+      digest: null,
+    });
+    expect(body).not.toContain("Daisy");
+    expect(body).not.toContain("323e4567");
   });
 });

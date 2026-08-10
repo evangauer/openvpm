@@ -1,19 +1,27 @@
 "use client";
 
 import { fetchWithClientTimeout } from "@/lib/client-fetch";
+import {
+  classifyClientError,
+  sanitizeClientErrorDigest,
+  sanitizeClientErrorPath,
+  type ClientErrorSource,
+} from "@/lib/client-error-report";
 import { getFunnelVisitorId } from "@/lib/funnel-visitor";
 
 export function reportClientError(
-  source: string,
+  source: ClientErrorSource,
   error: Error & { digest?: string }
 ): void {
   const endpoint = "/api/error-report";
   const payload = JSON.stringify({
     source,
-    message: error.message || "Unknown error",
-    stack: error.stack ?? null,
-    digest: error.digest ?? null,
-    path: typeof window !== "undefined" ? window.location.pathname : null,
+    errorFamily: classifyClientError(error),
+    digest: sanitizeClientErrorDigest(error.digest),
+    path:
+      typeof window !== "undefined"
+        ? sanitizeClientErrorPath(window.location.pathname)
+        : null,
     anonymousId: getFunnelVisitorId(),
   });
 

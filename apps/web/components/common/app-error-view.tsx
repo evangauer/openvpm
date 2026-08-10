@@ -4,6 +4,7 @@ import * as React from "react";
 import { AlertTriangle, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { reportClientError } from "@/components/common/report-client-error";
+import type { ClientErrorSource } from "@/lib/client-error-report";
 
 export function AppErrorView({
   error,
@@ -12,7 +13,7 @@ export function AppErrorView({
 }: {
   error: Error & { digest?: string };
   reset: () => void;
-  source: string;
+  source: ClientErrorSource;
 }) {
   React.useEffect(() => {
     reportClientError(source, error);
