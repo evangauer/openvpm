@@ -519,6 +519,13 @@
       "when": 1786360245682,
       "tag": "0073_omniscient_phil_sheldon",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1786363221160,
+      "tag": "0074_hesitant_franklin_richards",
+      "breakpoints": true
     }
   ]
 }

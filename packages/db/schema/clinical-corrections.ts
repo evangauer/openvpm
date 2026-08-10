@@ -11,7 +11,7 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import { appointments } from "./scheduling";
-import { patients } from "./patients";
+import { patientAllergies, patients } from "./patients";
 import { practices } from "./practices";
 import {
   labResults,
@@ -23,7 +23,13 @@ import { users } from "./users";
 
 export const clinicalCorrectionRecordTypeEnum = pgEnum(
   "clinical_correction_record_type",
-  ["soap_note", "vital_sign", "vaccination_record", "lab_result"],
+  [
+    "soap_note",
+    "vital_sign",
+    "vaccination_record",
+    "lab_result",
+    "patient_allergy",
+  ],
 );
 
 export const clinicalCorrectionActionEnum = pgEnum(
@@ -55,6 +61,9 @@ export const clinicalRecordCorrections = pgTable(
       () => vaccinationRecords.id,
     ),
     labResultId: uuid("lab_result_id").references(() => labResults.id),
+    patientAllergyId: uuid("patient_allergy_id").references(
+      () => patientAllergies.id,
+    ),
     patientId: uuid("patient_id")
       .notNull()
       .references(() => patients.id),
@@ -91,6 +100,11 @@ export const clinicalRecordCorrections = pgTable(
     labResultUq: uniqueIndex("clinical_record_corrections_lab_result_uq")
       .on(table.practiceId, table.labResultId)
       .where(sql`${table.labResultId} is not null`),
+    patientAllergyUq: uniqueIndex(
+      "clinical_record_corrections_patient_allergy_uq",
+    )
+      .on(table.practiceId, table.patientAllergyId)
+      .where(sql`${table.patientAllergyId} is not null`),
     operationUq: uniqueIndex("clinical_record_corrections_operation_uq")
       .on(table.practiceId, table.operationId)
       .where(sql`${table.operationId} is not null`),
@@ -139,6 +153,11 @@ export const clinicalRecordCorrections = pgTable(
       foreignColumns: [labResults.practiceId, labResults.id],
       name: "clinical_record_corrections_lab_result_source_fk",
     }),
+    patientAllergySourceFk: foreignKey({
+      columns: [table.patientAllergyId, table.patientId],
+      foreignColumns: [patientAllergies.id, patientAllergies.patientId],
+      name: "clinical_record_corrections_patient_allergy_source_fk",
+    }),
     sourceTypeCheck: check(
       "clinical_record_corrections_source_type_check",
       sql`(
@@ -147,24 +166,36 @@ export const clinicalRecordCorrections = pgTable(
         and ${table.vitalSignId} is null
         and ${table.vaccinationRecordId} is null
         and ${table.labResultId} is null
+        and ${table.patientAllergyId} is null
       ) or (
         ${table.recordType} = 'vital_sign'
         and ${table.vitalSignId} is not null
         and ${table.soapNoteId} is null
         and ${table.vaccinationRecordId} is null
         and ${table.labResultId} is null
+        and ${table.patientAllergyId} is null
       ) or (
         ${table.recordType} = 'vaccination_record'
         and ${table.vaccinationRecordId} is not null
         and ${table.soapNoteId} is null
         and ${table.vitalSignId} is null
         and ${table.labResultId} is null
+        and ${table.patientAllergyId} is null
       ) or (
         ${table.recordType} = 'lab_result'
         and ${table.labResultId} is not null
         and ${table.soapNoteId} is null
         and ${table.vitalSignId} is null
         and ${table.vaccinationRecordId} is null
+        and ${table.patientAllergyId} is null
+      ) or (
+        ${table.recordType} = 'patient_allergy'
+        and ${table.patientAllergyId} is not null
+        and ${table.soapNoteId} is null
+        and ${table.vitalSignId} is null
+        and ${table.vaccinationRecordId} is null
+        and ${table.labResultId} is null
+        and ${table.appointmentId} is null
       )`,
     ),
     operationShapeCheck: check(
@@ -224,6 +255,10 @@ export const clinicalRecordCorrectionsRelations = relations(
     labResult: one(labResults, {
       fields: [clinicalRecordCorrections.labResultId],
       references: [labResults.id],
+    }),
+    patientAllergy: one(patientAllergies, {
+      fields: [clinicalRecordCorrections.patientAllergyId],
+      references: [patientAllergies.id],
     }),
   }),
 );

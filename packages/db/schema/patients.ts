@@ -140,6 +140,10 @@ export const patientAllergies = pgTable(
       .defaultNow(),
   },
   (table) => ({
+    idPatientUq: uniqueIndex("patient_allergies_id_patient_uq").on(
+      table.id,
+      table.patientId,
+    ),
     patientIdx: index("patient_allergies_patient_idx").on(
       table.patientId,
       table.deletedAt,
