@@ -16,6 +16,7 @@ import { trpc } from "@/lib/trpc";
 import { EmptyState } from "@/components/common/empty-state";
 import { PageLoading } from "@/components/common/loading";
 import { SmsRecoveryConsole } from "@/components/admin/sms-recovery-console";
+import { ClinicPilotConsole } from "@/components/admin/clinic-pilot-console";
 
 const EMPTY_UUID = "00000000-0000-4000-8000-000000000000";
 const MESSAGING_HISTORY_LIMIT = 50;
@@ -292,6 +293,8 @@ export default function AdminPage() {
           );
         })}
       </div>
+
+      <ClinicPilotConsole practices={data.practices} />
 
       {/* SMS operations health */}
       <div className="mt-6 rounded-lg border border-border bg-card p-5">

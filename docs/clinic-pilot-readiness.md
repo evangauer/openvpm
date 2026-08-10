@@ -1,5 +1,9 @@
 # Clinic pilot readiness
 
+Platform operators should use the
+[controlled clinic pilot operations runbook](clinic-pilot-operations.md) to
+qualify, validate, support, and graduate each clinic consistently.
+
 OpenVPM is ready for a controlled, connected-mode clinic pilot. It should not
 yet be sold as a universal replacement for every veterinary workflow. This
 page defines the boundary so a clinic can make a clear decision before moving

@@ -262,6 +262,100 @@ CREATE POLICY system_only ON practice_conversion_milestones
   USING (app_rls_bypass())
   WITH CHECK (app_rls_bypass());
 
+-- Controlled clinic-pilot state spans tenants and belongs only to platform
+-- operators. Clinics cannot inspect cohort decisions, other practices, or the
+-- immutable operator audit trail through a tenant session.
+ALTER TABLE clinic_pilots ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS system_only ON clinic_pilots;
+CREATE POLICY system_only ON clinic_pilots
+  USING (app_rls_bypass())
+  WITH CHECK (app_rls_bypass());
+
+ALTER TABLE clinic_pilot_events ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS system_read ON clinic_pilot_events;
+CREATE POLICY system_read ON clinic_pilot_events
+  FOR SELECT USING (app_rls_bypass());
+DROP POLICY IF EXISTS system_insert ON clinic_pilot_events;
+CREATE POLICY system_insert ON clinic_pilot_events
+  FOR INSERT WITH CHECK (app_rls_bypass());
+
+REVOKE ALL ON clinic_pilots, clinic_pilot_events FROM openpims_app;
+GRANT SELECT, INSERT, UPDATE ON clinic_pilots TO openpims_app;
+GRANT SELECT, INSERT ON clinic_pilot_events TO openpims_app;
+
+-- Keep the operator projection and immutable evidence ledger inseparable even
+-- if a future system-context path bypasses the application helper.
+CREATE OR REPLACE FUNCTION enforce_clinic_pilot_projection_audit()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = ''
+AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM public.clinic_pilot_events e
+    WHERE e.clinic_pilot_id = NEW.id
+      AND e.practice_id = NEW.practice_id
+      AND e.projection_version = NEW.version
+      AND e.cohort_key = NEW.cohort_key
+      AND e.workflow = NEW.workflow
+      AND e.stage = NEW.stage
+      AND e.decision = NEW.decision
+      AND e.qualification_checklist = NEW.qualification_checklist
+      AND e.readiness_checklist = NEW.readiness_checklist
+      AND e.blocker_codes = NEW.blocker_codes
+      AND e.next_action = NEW.next_action
+      AND e.support_cadence = NEW.support_cadence
+      AND e.owner_identity = NEW.owner_identity
+      AND e.communication_mode = NEW.communication_mode
+      AND e.communication_tested_at IS NOT DISTINCT FROM NEW.communication_tested_at
+      AND e.first_visit_validated_at IS NOT DISTINCT FROM NEW.first_visit_validated_at
+      AND e.first_visit_validated_closeout_id IS NOT DISTINCT FROM NEW.first_visit_validated_closeout_id
+      AND e.clinic_use_validated_at IS NOT DISTINCT FROM NEW.clinic_use_validated_at
+      AND e.clinic_use_validated_hash IS NOT DISTINCT FROM NEW.clinic_use_validated_hash
+      AND e.clinic_acceptance_at IS NOT DISTINCT FROM NEW.clinic_acceptance_at
+      AND e.clinic_acceptance_by_user_id IS NOT DISTINCT FROM NEW.clinic_acceptance_by_user_id
+      AND e.last_contact_at IS NOT DISTINCT FROM NEW.last_contact_at
+      AND e.last_contact_outcome IS NOT DISTINCT FROM NEW.last_contact_outcome
+      AND e.target_start_on IS NOT DISTINCT FROM NEW.target_start_on
+      AND e.next_review_at IS NOT DISTINCT FROM NEW.next_review_at
+  ) THEN
+    RAISE EXCEPTION 'clinic pilot projection version % requires a matching immutable event', NEW.version;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS clinic_pilots_require_event ON clinic_pilots;
+CREATE CONSTRAINT TRIGGER clinic_pilots_require_event
+AFTER INSERT OR UPDATE ON clinic_pilots
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_clinic_pilot_projection_audit();
+
+CREATE OR REPLACE FUNCTION reject_clinic_pilot_event_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = ''
+AS $$
+BEGIN
+  IF coalesce(current_setting('app.ledger_maintenance', true), '') = 'on'
+    AND current_user = (
+      SELECT pg_catalog.pg_get_userbyid(class.relowner)
+      FROM pg_catalog.pg_class class
+      JOIN pg_catalog.pg_namespace namespace ON namespace.oid = class.relnamespace
+      WHERE namespace.nspname = TG_TABLE_SCHEMA AND class.relname = TG_TABLE_NAME
+    )
+  THEN
+    IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+    RETURN NEW;
+  END IF;
+  RAISE EXCEPTION USING ERRCODE = '55000', MESSAGE = 'Clinic pilot events are immutable.';
+END;
+$$;
+DROP TRIGGER IF EXISTS clinic_pilot_events_immutable ON clinic_pilot_events;
+CREATE TRIGGER clinic_pilot_events_immutable
+BEFORE UPDATE OR DELETE ON clinic_pilot_events
+FOR EACH ROW EXECUTE FUNCTION reject_clinic_pilot_event_mutation();
+
 -- Durable rate-limit buckets are also global/system state.
 ALTER TABLE rate_limit_buckets ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS system_only ON rate_limit_buckets;
@@ -330,7 +424,7 @@ BEGIN
   FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format(
-        'REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_webhook_conflicts, auth_email_provider_identity_conflicts, auth_tokens, clinical_record_corrections, demo_accesses, dispense_charge_queue, funnel_events, lab_result_events, lab_result_replacements, messaging_registration_events, patient_merge_events, platform_email_identity, platform_email_preference_events, platform_email_preferences, practice_conversion_milestones, prescription_events, sessions, sms_delivery_event_history, sms_delivery_events, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
+        'REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_provider_identity_conflicts, auth_email_webhook_conflicts, auth_tokens, clinic_pilot_events, clinic_pilots, clinical_record_corrections, demo_accesses, dispense_charge_queue, funnel_events, lab_result_events, lab_result_replacements, messaging_registration_events, patient_merge_events, platform_email_identity, platform_email_preference_events, platform_email_preferences, practice_conversion_milestones, prescription_events, sessions, sms_delivery_event_history, sms_delivery_events, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
       );
     END IF;
   END LOOP;

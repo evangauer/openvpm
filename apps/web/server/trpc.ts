@@ -144,6 +144,7 @@ const HOSTED_READ_ONLY_MUTATION_ALLOWLIST = new Set([
   // practice trial has lapsed; the procedure itself gates on the
   // PLATFORM_ADMIN_EMAILS allowlist.
   "admin.extendTrial",
+  "admin.saveClinicPilot",
   "admin.submitMessagingBrand",
   "admin.submitMessagingCampaign",
   "admin.assignMessagingNumbers",
@@ -166,27 +167,29 @@ function practiceNotFound(): TRPCError {
  * They have no tenant session and do their own scoping (tokens, email, rate
  * limits), so they run in a system DB context that bypasses tenant RLS.
  */
-export const publicProcedure = t.procedure.use(async ({ ctx, next, type, path }) => {
-  const effects: PostCommitEffect[] = [];
-  const result = await withSystem(ctx.db, (tx) =>
-    next({
-      ctx: {
-        ...ctx,
-        db: tx,
-        postCommitEffect: (effect: PostCommitEffect) => {
-          if (type !== "mutation") {
-            throw new Error("Post-commit effects are mutation-only.");
-          }
-          effects.push(effect);
+export const publicProcedure = t.procedure.use(
+  async ({ ctx, next, type, path }) => {
+    const effects: PostCommitEffect[] = [];
+    const result = await withSystem(ctx.db, (tx) =>
+      next({
+        ctx: {
+          ...ctx,
+          db: tx,
+          postCommitEffect: (effect: PostCommitEffect) => {
+            if (type !== "mutation") {
+              throw new Error("Post-commit effects are mutation-only.");
+            }
+            effects.push(effect);
+          },
         },
-      },
-    }),
-  );
-  if (result.ok) {
-    await runPostCommitEffects(ctx.db, effects, path);
-  }
-  return result;
-});
+      }),
+    );
+    if (result.ok) {
+      await runPostCommitEffects(ctx.db, effects, path);
+    }
+    return result;
+  },
+);
 
 /** Requires an authenticated session */
 export const protectedProcedure = t.procedure.use(

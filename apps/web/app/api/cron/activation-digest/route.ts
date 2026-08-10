@@ -13,6 +13,7 @@ import {
   computeJourneyFunnel,
   type JourneyFunnel,
 } from "@/lib/admin/journey-funnel";
+import { loadClinicPilotQueue } from "@/lib/admin/clinic-pilots";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -38,15 +39,16 @@ export async function GET(request: Request) {
       return NextResponse.json({ recipients: 0, sent: 0, failed: 0 });
     }
 
-    const [week, month, journeyWeek, journeyMonth] = await Promise.all([
+    const [week, month, journeyWeek, journeyMonth, pilots] = await Promise.all([
       computeActivationFunnel(db, 7),
       computeActivationFunnel(db, 30),
       computeJourneyFunnel(db, 7),
       computeJourneyFunnel(db, 30),
+      loadClinicPilotQueue(db),
     ]);
 
     const subject = `OpenVPM trial funnel: ${week.totals.signups} signups, ${week.totals.activated} activated this week`;
-    const html = digestHtml(week, month, journeyWeek, journeyMonth);
+    const html = digestHtml(week, month, journeyWeek, journeyMonth, pilots);
 
     let sent = 0;
     let failed = 0;
@@ -62,7 +64,7 @@ export async function GET(request: Request) {
     if (failed > 0) {
       void alertOps(
         "Activation digest had send failures",
-        `${failed} of ${recipients.length} digest emails failed to send.`
+        `${failed} of ${recipients.length} digest emails failed to send.`,
       );
     }
 
@@ -172,11 +174,27 @@ function journeySection(title: string, funnel: JourneyFunnel): string {
 <p style="margin:4px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Attribution quality: ${funnel.totals.historicalUnattributedRegistrations} historical/unknown registration(s) · ${funnel.totals.repairableAttributionGaps} captured-ID telemetry gap(s).</p>`;
 }
 
+type ClinicPilotQueue = Awaited<ReturnType<typeof loadClinicPilotQueue>>;
+
+function pilotSection(pilots: ClinicPilotQueue, now = new Date()): string {
+  const active = pilots.filter(
+    (pilot) => !["completed", "closed"].includes(pilot.stage),
+  );
+  const overdue = active.filter(
+    (pilot) =>
+      pilot.nextReviewAt && pilot.nextReviewAt.getTime() < now.getTime(),
+  );
+  return `<h2 style="margin:24px 0 8px;font-size:16px;color:#111827;">Supported clinic cohort</h2>
+<p style="margin:0 0 8px;color:#6b7280;font-size:13px;line-height:1.5;">${pilots.length} enrolled · ${pilots.filter((pilot) => pilot.decision === "eligible").length} eligible · ${pilots.filter((pilot) => pilot.decision === "approved").length} approved · ${active.length} active · ${pilots.filter((pilot) => pilot.evidence.firstVisitCompletedAt).length} first visit observed · ${pilots.filter((pilot) => pilot.evidence.distinctClinicDays >= 5).length} five clinic days observed · ${pilots.filter((pilot) => pilot.evidence.paymentMethodCollectedAt).length} payment method · ${pilots.filter((pilot) => pilot.evidence.firstPositivePaymentAt).length} first positive payment · ${overdue.length} overdue review(s) · ${pilots.reduce((sum, pilot) => sum + pilot.blockerCodes.length, 0)} open blocker code(s).</p>
+<p style="margin:8px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Open Platform Admin for the restricted clinic-level queue. Operator stages do not replace canonical product or payment evidence. This digest is aggregate-only: it contains no clinic names, contact addresses, participant messages, free-form notes, or blocker detail.</p>`;
+}
+
 function digestHtml(
   week: ActivationFunnel,
   month: ActivationFunnel,
   journeyWeek: JourneyFunnel,
-  journeyMonth: JourneyFunnel
+  journeyMonth: JourneyFunnel,
+  pilots: ClinicPilotQueue,
 ): string {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -201,6 +219,7 @@ function digestHtml(
               ${journeySection("Production journey · past 30 days", journeyMonth)}
               ${funnelSection("Past 7 days", week)}
               ${funnelSection("Past 30 days", month)}
+              ${pilotSection(pilots)}
               <p style="margin:24px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Activated = added a real client and booked a real visit. First visit done = completed the clinical and billing closeout; its rate is measured from activated clinics. Payment method = signed subscription Checkout completion with collection required. First positive payment = signed positive subscription invoice payment. Currently active is current billing state, not a historical milestone. Legacy business-stage rows are excluded; demo data never counts.</p>
             </td>
           </tr>

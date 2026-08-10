@@ -172,6 +172,9 @@ const systemPlatformEmailPreferenceEventId = randomUUID();
 const platformEmailHash = "c".repeat(64);
 const platformEmailIdentityFingerprint = "d".repeat(64);
 const conversionEvidenceKey = `practice:${aId}`;
+const clinicPilotId = randomUUID();
+const clinicPilotEventId = randomUUID();
+const clinicPilotOperationId = randomUUID();
 const aSoapCorrectionReason =
   "Original note was documented on the wrong encounter.";
 const bSoapCorrectionReason =
@@ -420,6 +423,30 @@ try {
   await owner`insert into practice_conversion_milestones
     (practice_id, milestone, occurred_at, evidence_source, evidence_key)
     values (${aId}, 'registered', now(), 'practice_created', ${conversionEvidenceKey})`;
+  await owner.begin(async (tx) => {
+    const seed = tx as unknown as typeof owner;
+    await seed`insert into clinic_pilots
+      (id, practice_id, cohort_key, workflow, stage, decision, next_action,
+        owner_identity, next_review_at)
+      values (${clinicPilotId}, ${aId}, 'pilot-2026-08', 'general_practice',
+        'candidate', 'pending', 'confirm_fit', 'rls-operator@example.com',
+        now() + interval '1 day')`;
+    await seed`insert into clinic_pilot_events
+      (id, clinic_pilot_id, practice_id, operation_id, payload_hash, event_type,
+        reason, cohort_key, workflow, stage, decision, qualification_checklist,
+        readiness_checklist, blocker_codes, next_action, support_cadence,
+        owner_identity, communication_mode, next_review_at, projection_version,
+        actor_identity, evidence_snapshot)
+      values (${clinicPilotEventId}, ${clinicPilotId}, ${aId},
+        ${clinicPilotOperationId}, ${"a".repeat(64)}, 'enrolled',
+        'initial_review', 'pilot-2026-08', 'general_practice', 'candidate',
+        'pending',
+        '{"supportedClinicType":false,"supportedJurisdictionConfirmed":false,"singleLocation":false,"connectedModeAccepted":false,"parallelRunAccepted":false,"championConfirmed":false,"supportedWorkflowConfirmed":false,"noUnsupportedMustHave":false}'::jsonb,
+        '{"rolesAndDevicesValidated":false,"migrationPlanAccepted":false,"sampleValidationAccepted":false,"firstVisitScheduled":false,"exportAndRollbackConfirmed":false,"supportCadenceConfirmed":false}'::jsonb,
+        ARRAY[]::text[], 'confirm_fit', 'daily',
+        'rls-operator@example.com', 'email_only', now() + interval '1 day', 1,
+        'rls-operator@example.com', '{}'::jsonb)`;
+  });
   await owner`insert into appointments (id, practice_id, location_id, room_id, client_id, start_time, end_time)
     select ${aAppointment}::uuid, ${aId}::uuid, ${aLocation}::uuid, ${aRoom}::uuid, id, now(), now() + interval '30 minutes'
     from clients where practice_id = ${aId}
@@ -2319,6 +2346,22 @@ try {
     "tenant context cannot read system-only conversion milestones",
     hiddenConversionRows.length === 0,
   );
+  const hiddenClinicPilots = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id from clinic_pilots where id = ${clinicPilotId}`;
+  });
+  check(
+    "tenant context cannot read system-only clinic pilot state",
+    hiddenClinicPilots.length === 0,
+  );
+  const hiddenClinicPilotEvents = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id from clinic_pilot_events where id = ${clinicPilotEventId}`;
+  });
+  check(
+    "tenant context cannot read clinic pilot audit events",
+    hiddenClinicPilotEvents.length === 0,
+  );
   const hiddenPlatformEmailPreferences = await appTransaction(async (tx) => {
     await tx`select set_config('app.current_practice_id', ${aId}, true)`;
     return tx`select id from platform_email_preferences where id = ${platformEmailPreferenceId}`;
@@ -2406,6 +2449,64 @@ try {
   check(
     "system bypass can read conversion milestones",
     systemConversionRows.length === 1,
+  );
+  const systemClinicPilots = await appTransaction(async (tx) => {
+    await tx`select set_config('app.rls_bypass', 'on', true)`;
+    return tx`select id from clinic_pilots where id = ${clinicPilotId}`;
+  });
+  check(
+    "system bypass can read clinic pilot state",
+    systemClinicPilots.length === 1,
+  );
+  const systemClinicPilotEvents = await appTransaction(async (tx) => {
+    await tx`select set_config('app.rls_bypass', 'on', true)`;
+    return tx`select id from clinic_pilot_events where id = ${clinicPilotEventId}`;
+  });
+  check(
+    "system bypass can read clinic pilot audit events",
+    systemClinicPilotEvents.length === 1,
+  );
+  let bypassCannotRewriteClinicPilotEvent = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`update clinic_pilot_events set reason = 'support_review'
+        where id = ${clinicPilotEventId}`;
+    });
+  } catch {
+    bypassCannotRewriteClinicPilotEvent = true;
+  }
+  check(
+    "application role cannot rewrite clinic pilot audit events",
+    bypassCannotRewriteClinicPilotEvent,
+  );
+  let bypassCannotDeleteClinicPilotEvent = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`delete from clinic_pilot_events where id = ${clinicPilotEventId}`;
+    });
+  } catch {
+    bypassCannotDeleteClinicPilotEvent = true;
+  }
+  check(
+    "application role cannot delete clinic pilot audit events",
+    bypassCannotDeleteClinicPilotEvent,
+  );
+  let bypassCannotRewritePilotWithoutEvidence = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`update clinic_pilots
+        set version = version + 1, updated_at = now()
+        where id = ${clinicPilotId}`;
+    });
+  } catch {
+    bypassCannotRewritePilotWithoutEvidence = true;
+  }
+  check(
+    "application role cannot rewrite clinic pilot state without a matching event",
+    bypassCannotRewritePilotWithoutEvidence,
   );
   const systemPlatformEmailPreferences = await appTransaction(async (tx) => {
     await tx`select set_config('app.rls_bypass', 'on', true)`;
@@ -2835,6 +2936,8 @@ try {
     await cleanup`delete from visit_closeouts where id in (${aCloseout}, ${bCloseout})`;
     await cleanup`delete from funnel_events where id = ${funnelEventId}`;
     await cleanup`delete from practice_conversion_milestones where practice_id = ${aId}`;
+    await cleanup`delete from clinic_pilot_events where id = ${clinicPilotEventId}`;
+    await cleanup`delete from clinic_pilots where id = ${clinicPilotId}`;
     await cleanup`delete from invoices where id in (${aInvoice}, ${bInvoice})`;
     await cleanup`delete from migration_runs where id in (${aMigrationRun}, ${bMigrationRun})`;
     await cleanup`delete from appointments where id in (${aAppointment}, ${bAppointment}, ${aSoapLegalAppointment}, ${bSoapLegalAppointment}, ${aSoapDraftFinalAppointment}, ${aSoapDoubleFinalAppointment}, ${aSoapDiscardAppointment})`;

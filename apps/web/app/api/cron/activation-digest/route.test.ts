@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   sendEmail: vi.fn(async () => ({ success: true, id: "email_123" })),
   computeActivationFunnel: vi.fn(),
   computeJourneyFunnel: vi.fn(),
+  loadClinicPilotQueue: vi.fn(async () => []),
 }));
 
 vi.mock("@openpims/db/client", () => ({
@@ -40,9 +41,16 @@ vi.mock("@/lib/admin/journey-funnel", () => ({
   computeJourneyFunnel: mocks.computeJourneyFunnel,
 }));
 
+vi.mock("@/lib/admin/clinic-pilots", () => ({
+  loadClinicPilotQueue: mocks.loadClinicPilotQueue,
+}));
+
 const { GET } = await import("./route");
 
-function funnel(days: number, totals: Partial<ActivationFunnel["totals"]> = {}): ActivationFunnel {
+function funnel(
+  days: number,
+  totals: Partial<ActivationFunnel["totals"]> = {},
+): ActivationFunnel {
   return {
     days,
     weeks: [],
@@ -108,6 +116,7 @@ function journey(days: number): JourneyFunnel {
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.clearAllMocks();
+  mocks.loadClinicPilotQueue.mockResolvedValue([]);
 });
 
 describe("activation digest cron", () => {
@@ -116,11 +125,11 @@ describe("activation digest cron", () => {
       new Response(JSON.stringify({ error: "Unauthorized" }), {
         status: 401,
         headers: { "content-type": "application/json" },
-      }) as never
+      }) as never,
     );
 
     const response = await GET(
-      new Request("https://openvpm.test/api/cron/activation-digest")
+      new Request("https://openvpm.test/api/cron/activation-digest"),
     );
 
     expect(response.status).toBe(401);
@@ -133,7 +142,7 @@ describe("activation digest cron", () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "");
 
     const response = await GET(
-      new Request("https://openvpm.test/api/cron/activation-digest")
+      new Request("https://openvpm.test/api/cron/activation-digest"),
     );
 
     await expect(response.json()).resolves.toEqual({
@@ -152,19 +161,32 @@ describe("activation digest cron", () => {
   });
 
   it("emails the 7-day and 30-day funnel to every platform admin", async () => {
-    vi.stubEnv(
-      "PLATFORM_ADMIN_EMAILS",
-      "founder@openvpm.com, ops@openvpm.com"
-    );
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "founder@openvpm.com, ops@openvpm.com");
     mocks.computeActivationFunnel.mockImplementation(
-      async (_db: unknown, days: number) => funnel(days)
+      async (_db: unknown, days: number) => funnel(days),
     );
     mocks.computeJourneyFunnel.mockImplementation(
-      async (_db: unknown, days: number) => journey(days)
+      async (_db: unknown, days: number) => journey(days),
     );
+    mocks.loadClinicPilotQueue.mockResolvedValueOnce([
+      {
+        practiceName: "North <Clinic>",
+        stage: "visit_validation",
+        decision: "approved",
+        nextAction: "complete_first_visit",
+        nextReviewAt: new Date("2026-08-11T12:00:00.000Z"),
+        blockerCodes: [],
+        evidence: {
+          firstVisitCompletedAt: new Date("2026-08-10T12:00:00.000Z"),
+          distinctClinicDays: 1,
+          paymentMethodCollectedAt: null,
+          firstPositivePaymentAt: null,
+        },
+      },
+    ] as never);
 
     const response = await GET(
-      new Request("https://openvpm.test/api/cron/activation-digest")
+      new Request("https://openvpm.test/api/cron/activation-digest"),
     );
 
     await expect(response.json()).resolves.toEqual({
@@ -176,38 +198,51 @@ describe("activation digest cron", () => {
     expect(mocks.computeActivationFunnel).toHaveBeenCalledWith(mocks.db, 30);
     expect(mocks.computeJourneyFunnel).toHaveBeenCalledWith(mocks.db, 7);
     expect(mocks.computeJourneyFunnel).toHaveBeenCalledWith(mocks.db, 30);
+    expect(mocks.loadClinicPilotQueue).toHaveBeenCalledWith(mocks.db);
     expect(mocks.sendEmail).toHaveBeenCalledTimes(2);
     expect(mocks.sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "founder@openvpm.com",
         subject: "OpenVPM trial funnel: 5 signups, 2 activated this week",
         html: expect.stringContaining("Past 30 days"),
-      })
+      }),
     );
     expect(mocks.sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({
         html: expect.stringContaining("Payment method"),
-      })
+      }),
     );
     expect(mocks.sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({
         html: expect.stringContaining("First visit done"),
-      })
+      }),
     );
     expect(mocks.sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({
         html: expect.stringContaining(
-          "its rate is measured from activated clinics"
+          "its rate is measured from activated clinics",
         ),
-      })
+      }),
     );
     expect(mocks.sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({
         html: expect.stringContaining("Production journey · past 30 days"),
-      })
+      }),
     );
     expect(mocks.sendEmail).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "ops@openvpm.com" })
+      expect.objectContaining({
+        html: expect.stringContaining("Supported clinic cohort"),
+      }),
+    );
+    const html =
+      (
+        mocks.sendEmail.mock.calls as unknown as Array<[{ html: string }]>
+      )[0]?.[0].html ?? "";
+    expect(html).not.toContain("North &lt;Clinic&gt;");
+    expect(html).not.toContain("North <Clinic>");
+    expect(html).toContain("aggregate-only");
+    expect(mocks.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "ops@openvpm.com" }),
     );
     expect(mocks.reportCronHeartbeat).toHaveBeenCalledWith({
       job: "activation-digest",
@@ -221,10 +256,10 @@ describe("activation digest cron", () => {
   it("counts send failures, alerts ops, and reports a degraded heartbeat", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "founder@openvpm.com");
     mocks.computeActivationFunnel.mockImplementation(
-      async (_db: unknown, days: number) => funnel(days)
+      async (_db: unknown, days: number) => funnel(days),
     );
     mocks.computeJourneyFunnel.mockImplementation(
-      async (_db: unknown, days: number) => journey(days)
+      async (_db: unknown, days: number) => journey(days),
     );
     mocks.sendEmail.mockResolvedValueOnce({
       success: false,
@@ -232,7 +267,7 @@ describe("activation digest cron", () => {
     } as never);
 
     const response = await GET(
-      new Request("https://openvpm.test/api/cron/activation-digest")
+      new Request("https://openvpm.test/api/cron/activation-digest"),
     );
 
     await expect(response.json()).resolves.toEqual({
@@ -242,7 +277,7 @@ describe("activation digest cron", () => {
     });
     expect(mocks.alertOps).toHaveBeenCalledWith(
       "Activation digest had send failures",
-      "1 of 1 digest emails failed to send."
+      "1 of 1 digest emails failed to send.",
     );
     expect(mocks.reportCronHeartbeat).toHaveBeenCalledWith({
       job: "activation-digest",
@@ -255,11 +290,11 @@ describe("activation digest cron", () => {
   it("never throws when the funnel query fails; it alerts ops instead", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "founder@openvpm.com");
     mocks.computeActivationFunnel.mockRejectedValue(
-      new Error("relation practices does not exist")
+      new Error("relation practices does not exist"),
     );
 
     const response = await GET(
-      new Request("https://openvpm.test/api/cron/activation-digest")
+      new Request("https://openvpm.test/api/cron/activation-digest"),
     );
 
     expect(response.status).toBe(200);
@@ -270,7 +305,7 @@ describe("activation digest cron", () => {
     expect(mocks.sendEmail).not.toHaveBeenCalled();
     expect(mocks.alertOps).toHaveBeenCalledWith(
       "Activation digest cron failed",
-      "relation practices does not exist"
+      "relation practices does not exist",
     );
     expect(mocks.reportCronHeartbeat).toHaveBeenCalledWith({
       job: "activation-digest",

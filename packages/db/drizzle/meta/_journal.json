@@ -505,6 +505,20 @@
       "when": 1786343344347,
       "tag": "0071_boring_devos",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1786359466768,
+      "tag": "0072_lucky_kate_bishop",
+      "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1786360245682,
+      "tag": "0073_omniscient_phil_sheldon",
+      "breakpoints": true
     }
   ]
 }

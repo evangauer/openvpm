@@ -24,6 +24,22 @@ import { computeActivationFunnel } from "@/lib/admin/activation-funnel";
 import { computeJourneyFunnel } from "@/lib/admin/journey-funnel";
 import { computeActivationRecovery } from "@/lib/admin/activation-recovery";
 import {
+  CLINIC_PILOT_BLOCKERS,
+  CLINIC_PILOT_COMMUNICATION_MODES,
+  CLINIC_PILOT_CONTACT_OUTCOMES,
+  CLINIC_PILOT_DECISIONS,
+  CLINIC_PILOT_NEXT_ACTIONS,
+  CLINIC_PILOT_REASONS,
+  CLINIC_PILOT_STAGES,
+  CLINIC_PILOT_SUPPORT_CADENCES,
+  CLINIC_PILOT_WORKFLOWS,
+  ClinicPilotConflictError,
+  ClinicPilotEligibilityError,
+  ClinicPilotNotFoundError,
+  loadClinicPilotQueue,
+  saveClinicPilot,
+} from "@/lib/admin/clinic-pilots";
+import {
   CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD,
   CLOUD_SEAT_UNIT_PRICE_MONTHLY_USD,
   getPlan,
@@ -92,6 +108,61 @@ const platformAdminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
 const MESSAGING_SUBMISSION_LOCK_STALE_MS = 15 * 60 * 1000;
 const MESSAGING_PROVIDER_PROFILE_ATTESTATION_MAX_AGE_MS = 15 * 60 * 1000;
 const WITHHELD_PHONE_LIKE_OPERATIONAL_ID = "[withheld: phone-like identifier]";
+
+const clinicPilotQualificationInput = z
+  .object({
+    supportedClinicType: z.boolean(),
+    supportedJurisdictionConfirmed: z.boolean(),
+    singleLocation: z.boolean(),
+    connectedModeAccepted: z.boolean(),
+    parallelRunAccepted: z.boolean(),
+    championConfirmed: z.boolean(),
+    supportedWorkflowConfirmed: z.boolean(),
+    noUnsupportedMustHave: z.boolean(),
+  })
+  .strict();
+
+const clinicPilotReadinessInput = z
+  .object({
+    rolesAndDevicesValidated: z.boolean(),
+    migrationPlanAccepted: z.boolean(),
+    sampleValidationAccepted: z.boolean(),
+    firstVisitScheduled: z.boolean(),
+    exportAndRollbackConfirmed: z.boolean(),
+    supportCadenceConfirmed: z.boolean(),
+  })
+  .strict();
+
+const clinicPilotSaveInput = z
+  .object({
+    practiceId: z.string().uuid(),
+    operationId: z.string().uuid(),
+    expectedVersion: z.number().int().positive().nullable(),
+    cohortKey: z.string().regex(/^pilot-[0-9]{4}-[0-9]{2}$/),
+    workflow: z.enum(CLINIC_PILOT_WORKFLOWS),
+    stage: z.enum(CLINIC_PILOT_STAGES),
+    decision: z.enum(CLINIC_PILOT_DECISIONS),
+    qualificationChecklist: clinicPilotQualificationInput,
+    readinessChecklist: clinicPilotReadinessInput,
+    blockerCodes: z.array(z.enum(CLINIC_PILOT_BLOCKERS)).max(12),
+    nextAction: z.enum(CLINIC_PILOT_NEXT_ACTIONS),
+    supportCadence: z.enum(CLINIC_PILOT_SUPPORT_CADENCES),
+    communicationMode: z.enum(CLINIC_PILOT_COMMUNICATION_MODES),
+    communicationTested: z.boolean(),
+    firstVisitValidated: z.boolean(),
+    clinicUseValidated: z.boolean(),
+    clinicAcceptanceConfirmed: z.boolean(),
+    clinicAcceptanceByUserId: z.string().uuid().nullable(),
+    lastContactAt: z.string().datetime({ offset: true }).nullable(),
+    lastContactOutcome: z.enum(CLINIC_PILOT_CONTACT_OUTCOMES).nullable(),
+    targetStartOn: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .nullable(),
+    nextReviewAt: z.string().datetime({ offset: true }).nullable(),
+    reason: z.enum(CLINIC_PILOT_REASONS),
+  })
+  .strict();
 
 function safeOperationalProviderId(value: string | null): string | null {
   if (!value) return null;
@@ -2632,6 +2703,46 @@ export const adminRouter = createRouter({
   activationRecovery: platformAdminProcedure.query(() =>
     computeActivationRecovery(db, new Date()),
   ),
+
+  /** Audited operating queue for the deliberately bounded clinic pilot. */
+  clinicPilotQueue: platformAdminProcedure.query(() => {
+    noStore();
+    return loadClinicPilotQueue(db);
+  }),
+
+  /**
+   * Save one bounded pilot decision and its immutable snapshot atomically.
+   * This never sends a message, enables SMS, changes billing, or calls an
+   * external provider.
+   */
+  saveClinicPilot: platformAdminProcedure
+    .input(clinicPilotSaveInput)
+    .mutation(async ({ ctx, input }) => {
+      const actorIdentity = ctx.session?.user?.email?.trim();
+      if (!actorIdentity) {
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: "A verified platform operator identity is required.",
+        });
+      }
+      try {
+        return await saveClinicPilot(db, input, actorIdentity);
+      } catch (error) {
+        if (error instanceof ClinicPilotConflictError) {
+          throw new TRPCError({ code: "CONFLICT", message: error.message });
+        }
+        if (error instanceof ClinicPilotEligibilityError) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: error.message,
+          });
+        }
+        if (error instanceof ClinicPilotNotFoundError) {
+          throw new TRPCError({ code: "NOT_FOUND", message: error.message });
+        }
+        throw error;
+      }
+    }),
 
   /** Privacy-safe first-touch cohorts spanning visit through paid. */
   journeyFunnel: platformAdminProcedure

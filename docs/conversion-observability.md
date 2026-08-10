@@ -5,14 +5,18 @@ canonical repairable projection is `practice_conversion_milestones`; browser
 journey telemetry remains in `funnel_events` and is not a business-stage source
 of truth.
 
+The [controlled clinic pilot operations runbook](clinic-pilot-operations.md)
+adds a separate, audited operating layer for qualified clinics. Pilot stages
+and decisions never replace the canonical conversion evidence below.
+
 ## Canonical definitions
 
-| Milestone | Exact source | Occurrence time |
-| --- | --- | --- |
-| Registered | committed `practices` row | `practices.created_at` |
-| Activated | earliest non-demo client plus earliest non-demo appointment | later of practice, client, and appointment creation |
-| Payment method collected | signed subscription `checkout.session.completed` with `mode=subscription`, `payment_method_collection=always`, and a subscription id | signed Stripe `event.created` |
-| First positive payment | signed subscription `invoice.payment_succeeded` with `amount_paid > 0`, valid currency, and a subscription id | signed Stripe `event.created` |
+| Milestone                | Exact source                                                                                                                         | Occurrence time                                     |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------- |
+| Registered               | committed `practices` row                                                                                                            | `practices.created_at`                              |
+| Activated                | earliest non-demo client plus earliest non-demo appointment                                                                          | later of practice, client, and appointment creation |
+| Payment method collected | signed subscription `checkout.session.completed` with `mode=subscription`, `payment_method_collection=always`, and a subscription id | signed Stripe `event.created`                       |
+| First positive payment   | signed subscription `invoice.payment_succeeded` with `amount_paid > 0`, valid currency, and a subscription id                        | signed Stripe `event.created`                       |
 
 `observed_at` is when the projection first saw evidence. It is never used as a
 conversion timestamp. Reconciliation may repair `occurred_at` to an earlier

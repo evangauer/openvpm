@@ -36,3 +36,4 @@ export * from "./conversion-milestones";
 export * from "./migrations";
 export * from "./visit-closeouts";
 export * from "./visit-work-items";
+export * from "./clinic-pilots";

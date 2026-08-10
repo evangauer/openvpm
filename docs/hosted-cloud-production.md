@@ -1,5 +1,9 @@
 # OpenVPM Cloud Production Runbook
 
+Clinic onboarding and graduation are governed by the
+[controlled clinic pilot operations runbook](clinic-pilot-operations.md) and
+the [clinic readiness boundary](clinic-pilot-readiness.md).
+
 OpenVPM has two operating modes:
 
 - **Self-host / OSS:** leave `HOSTED_BILLING_ENABLED` unset. Hosted billing gates and usage metering are disabled, and Stripe subscription envs are optional.
