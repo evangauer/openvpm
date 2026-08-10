@@ -82,16 +82,33 @@ describe("detectConflicts", () => {
     expect(r.doctor).toHaveLength(0);
     expect(r.room).toHaveLength(1);
   });
+
+  it("treats an unassigned location as a conservative single resource", () => {
+    const r = detectConflicts(
+      {
+        startTime: d("2026-06-01T09:30Z"),
+        endTime: d("2026-06-01T10:30Z"),
+        locationId: "location-1",
+      },
+      [booking({ doctorId: null, roomId: null, locationId: "location-1" })]
+    );
+    expect(r.location).toHaveLength(1);
+    expect(conflictMessage(r)).toMatch(/clinic location/i);
+  });
 });
 
 describe("conflictMessage", () => {
   it("returns null when clear", () => {
-    expect(conflictMessage({ doctor: [], room: [] })).toBeNull();
+    expect(conflictMessage({ doctor: [], room: [], location: [] })).toBeNull();
   });
   it("mentions the room when only the room conflicts", () => {
-    expect(conflictMessage({ doctor: [], room: [booking()] })).toMatch(/room/i);
+    expect(
+      conflictMessage({ doctor: [], room: [booking()], location: [] })
+    ).toMatch(/room/i);
   });
   it("mentions both when both conflict", () => {
-    expect(conflictMessage({ doctor: [booking()], room: [booking()] })).toMatch(/both/i);
+    expect(
+      conflictMessage({ doctor: [booking()], room: [booking()], location: [] })
+    ).toMatch(/both/i);
   });
 });

@@ -46,6 +46,7 @@ const CLIENT_ID = "00000000-0000-0000-0000-0000000000bb";
 const PATIENT_ID = "00000000-0000-0000-0000-000000000001";
 const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000002";
 const TYPE_ID = "00000000-0000-0000-0000-000000000003";
+const LOCATION_ID = "00000000-0000-0000-0000-000000000004";
 const ACTIVE_PRACTICE = [{ id: PRACTICE_ID }];
 
 function callerWithDb(db: Record<string, unknown>, ip?: string) {
@@ -58,10 +59,25 @@ function createDb(opts?: {
 }) {
   const selectResults = [...(opts?.selectResults ?? [])];
   const operations: string[] = [];
-  const select = vi.fn(() => {
-    const result = selectResults.shift() ?? [];
+  const select = vi.fn((fields?: Record<string, unknown>) => {
+    const fieldNames = Object.keys(fields ?? {})
+      .sort()
+      .join(",");
+    const result =
+      fieldNames === "address,id,isPrimary,name,phone"
+        ? [
+            {
+              id: LOCATION_ID,
+              name: "Main Clinic",
+              address: "1 Main St",
+              phone: null,
+              isPrimary: true,
+            },
+          ]
+        : (selectResults.shift() ?? []);
     const afterWhere = {
       limit: vi.fn(async () => result),
+      orderBy: vi.fn(async () => result),
       for: vi.fn(async () => {
         operations.push("type-lock");
         return result;
@@ -768,6 +784,7 @@ describe("portal booking input validation", () => {
         clientId: CLIENT_ID,
         patientId: PATIENT_ID,
         typeId: TYPE_ID,
+        locationId: LOCATION_ID,
         startTime: new Date("2026-07-01T16:00:00.000Z"),
         endTime: new Date("2026-07-01T16:30:00.000Z"),
       })

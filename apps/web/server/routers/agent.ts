@@ -93,6 +93,7 @@ export const agentRouter = createRouter({
             db: ctx.db,
             practiceId: ctx.practiceId,
             userId: ctx.user.id,
+            postCommitEffect: ctx.postCommitEffect,
           },
         });
       } catch (e) {

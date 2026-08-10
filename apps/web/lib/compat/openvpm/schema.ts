@@ -84,6 +84,7 @@ export const ApiAppointmentSchema = z.object({
   doctor_id: z.string().uuid().nullable(),
   type_id: z.string().uuid().nullable(),
   room_id: z.string().uuid().nullable(),
+  location_id: z.string().uuid().nullable(),
   notes: z.string().nullable(),
   created_at: z.string(),
   updated_at: z.string(),
@@ -117,6 +118,7 @@ export const AppointmentCreateSchema = z
     doctor_id: z.string().uuid().optional(),
     type_id: z.string().uuid().optional(),
     room_id: z.string().uuid().optional(),
+    location_id: z.string().uuid().optional(),
     notes: z.string().max(APPOINTMENT_NOTES_MAX_LENGTH).optional(),
   })
   .refine((b) => new Date(b.end_time) > new Date(b.start_time), {

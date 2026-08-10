@@ -73,6 +73,7 @@ import {
 } from "@/lib/onboarding/intent";
 import { isValidMigrationSource } from "@/lib/import/sources";
 import { parseBookingPageConfig } from "@/lib/booking/page-config";
+import { takeAppointmentSchedulingLock } from "@/lib/scheduling/location";
 
 const adminProcedure = protectedProcedure.use(requireRole("admin"));
 
@@ -1006,6 +1007,10 @@ export const settingsRouter = createRouter({
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
       await ctx.db.transaction(async (tx) => {
+        await takeAppointmentSchedulingLock(
+          tx as unknown as Database,
+          ctx.practiceId,
+        );
         await tx.execute(
           sql`select pg_advisory_xact_lock(hashtext(${staffAdminRosterLockKey(
             ctx.practiceId,
@@ -1109,6 +1114,26 @@ export const settingsRouter = createRouter({
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: "Cannot delete a location with active staff schedules.",
+          });
+        }
+
+        const [activeAppointment] = await tx
+          .select({ id: appointments.id })
+          .from(appointments)
+          .where(
+            and(
+              eq(appointments.locationId, input.id),
+              eq(appointments.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(appointments.deletedAt),
+              inArray(appointments.status, activeSchedulingStatuses),
+            ),
+          )
+          .limit(1);
+        if (activeAppointment) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Cannot delete a location used by active appointments.",
           });
         }
 
@@ -2660,21 +2685,46 @@ export const settingsRouter = createRouter({
       z.object({
         name: roomNameInput,
         type: z.enum(["exam", "surgery", "treatment", "boarding"]),
+        locationId: z.string().uuid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      await assertActivePractice(ctx);
-      const [room] = await ctx.db
-        .insert(rooms)
-        .values({ ...input, practiceId: ctx.practiceId })
-        .returning();
-      return room!;
+      return ctx.db.transaction(async (tx) => {
+        await assertActivePractice({ db: tx, practiceId: ctx.practiceId });
+        const [location] = await tx
+          .select({ id: locations.id })
+          .from(locations)
+          .where(
+            and(
+              eq(locations.id, input.locationId),
+              eq(locations.practiceId, ctx.practiceId),
+              isNull(locations.deletedAt),
+            ),
+          )
+          .limit(1)
+          .for("share");
+        if (!location) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Location not found",
+          });
+        }
+        const [room] = await tx
+          .insert(rooms)
+          .values({ ...input, practiceId: ctx.practiceId })
+          .returning();
+        return room!;
+      });
     }),
 
   deleteRoom: adminProcedure
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
       await ctx.db.transaction(async (tx) => {
+        await takeAppointmentSchedulingLock(
+          tx as unknown as Database,
+          ctx.practiceId,
+        );
         const [room] = await tx
           .select({ id: rooms.id })
           .from(rooms)

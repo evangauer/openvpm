@@ -99,6 +99,12 @@ describe("committed Drizzle migrations", () => {
     expect(journal.entries?.map((entry) => entry.tag)).toContain(
       "0067_wooden_orphan",
     );
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0068_flashy_thunderball",
+    );
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0069_shocking_spitfire",
+    );
   });
 
   it("backfills clinical provider capability before indexing it", () => {
@@ -141,6 +147,60 @@ describe("committed Drizzle migrations", () => {
     expect(sql).toContain("start_time >= end_time");
     expect(sql).toContain('"location_id" is not null');
     expect(sql).toContain('"location_id" is null');
+  });
+
+  it("expands appointments to location-aware scheduling without guessing", () => {
+    const sql = readRepoFile("packages/db/drizzle/0068_flashy_thunderball.sql");
+
+    const addColumn = sql.indexOf(
+      'ALTER TABLE "appointments" ADD COLUMN "location_id" uuid',
+    );
+    const roomBackfill = sql.indexOf("UPDATE rooms r");
+    const appointmentBackfill = sql.indexOf("UPDATE appointments a");
+    const postflight = sql.indexOf("unresolved appointment location remains");
+    const roomCompatibilityTrigger = sql.indexOf(
+      "rooms_assign_scheduling_location",
+    );
+    const appointmentCompatibilityTrigger = sql.indexOf(
+      "appointments_assign_scheduling_location",
+    );
+    const tenantFk = sql.indexOf("appointments_location_tenant_fk");
+    const roomLocationFk = sql.indexOf("appointments_room_location_tenant_fk");
+    const locationIndex = sql.indexOf("appointments_location_time_idx");
+
+    expect(addColumn).toBeGreaterThanOrEqual(0);
+    expect(roomBackfill).toBeGreaterThan(addColumn);
+    expect(appointmentBackfill).toBeGreaterThan(roomBackfill);
+    expect(postflight).toBeGreaterThan(appointmentBackfill);
+    expect(roomCompatibilityTrigger).toBeGreaterThan(postflight);
+    expect(appointmentCompatibilityTrigger).toBeGreaterThan(
+      roomCompatibilityTrigger,
+    );
+    expect(tenantFk).toBeGreaterThan(postflight);
+    expect(roomLocationFk).toBeGreaterThan(postflight);
+    expect(locationIndex).toBeGreaterThan(roomLocationFk);
+    expect(sql).toContain("a room has no unambiguous active location");
+    expect(sql).toContain("appointment and room locations disagree");
+    expect(sql).toContain("SELECT count(*)\n          FROM locations sole");
+    expect(sql).toContain("NOT VALID");
+    expect(sql).toContain("VALIDATE CONSTRAINT");
+    expect(sql).toContain("SET search_path = ''");
+    expect(sql).toContain("A clinic location is required before creating this room.");
+    expect(sql).toContain(
+      "Choose a clinic location before scheduling this appointment.",
+    );
+  });
+
+  it("rejects invalid appointment time ranges at the database boundary", () => {
+    const sql = readRepoFile("packages/db/drizzle/0069_shocking_spitfire.sql");
+
+    const preflight = sql.indexOf("start_time >= end_time");
+    const check = sql.indexOf("appointments_time_range_check");
+    expect(preflight).toBeGreaterThanOrEqual(0);
+    expect(check).toBeGreaterThan(preflight);
+    expect(sql).toContain(
+      '"appointments"."start_time" < "appointments"."end_time"',
+    );
   });
 
   it("captures hot-table indexes in the baseline SQL", () => {

@@ -80,7 +80,10 @@ const bInvoice = randomUUID();
 const aUser = randomUUID();
 const bUser = randomUUID();
 const aLocation = randomUUID();
+const aAltLocation = randomUUID();
 const bLocation = randomUUID();
+const aRoom = randomUUID();
+const bRoom = randomUUID();
 const aStaffSchedule = randomUUID();
 const bStaffSchedule = randomUUID();
 const aMigrationRun = randomUUID();
@@ -203,7 +206,11 @@ try {
     (${bUser}, ${`rls-${bUser}@example.com`}, 'not-a-real-hash', 'RLS Admin B', 'admin', ${bId})`;
   await owner`insert into locations (id, practice_id, name, is_primary) values
     (${aLocation}, ${aId}, 'RLS Location A', true),
+    (${aAltLocation}, ${aId}, 'RLS Location A North', false),
     (${bLocation}, ${bId}, 'RLS Location B', true)`;
+  await owner`insert into rooms (id, practice_id, location_id, name) values
+    (${aRoom}, ${aId}, ${aLocation}, 'RLS Exam A'),
+    (${bRoom}, ${bId}, ${bLocation}, 'RLS Exam B')`;
   await owner`insert into staff_schedules
     (id, practice_id, user_id, location_id, day_of_week, start_time, end_time)
     values
@@ -389,22 +396,22 @@ try {
   await owner`insert into practice_conversion_milestones
     (practice_id, milestone, occurred_at, evidence_source, evidence_key)
     values (${aId}, 'registered', now(), 'practice_created', ${conversionEvidenceKey})`;
-  await owner`insert into appointments (id, practice_id, client_id, start_time, end_time)
-    select ${aAppointment}::uuid, ${aId}::uuid, id, now(), now() + interval '30 minutes'
+  await owner`insert into appointments (id, practice_id, location_id, room_id, client_id, start_time, end_time)
+    select ${aAppointment}::uuid, ${aId}::uuid, ${aLocation}::uuid, ${aRoom}::uuid, id, now(), now() + interval '30 minutes'
     from clients where practice_id = ${aId}
     union all
-    select ${bAppointment}::uuid, ${bId}::uuid, id, now(), now() + interval '30 minutes'
+    select ${bAppointment}::uuid, ${bId}::uuid, ${bLocation}::uuid, ${bRoom}::uuid, id, now(), now() + interval '30 minutes'
     from clients where practice_id = ${bId}`;
   await owner`insert into visit_closeouts (id, practice_id, appointment_id)
     values (${aCloseout}, ${aId}, ${aAppointment}), (${bCloseout}, ${bId}, ${bAppointment})`;
   await owner`insert into appointments
-    (id, practice_id, client_id, patient_id, start_time, end_time, status)
+    (id, practice_id, location_id, client_id, patient_id, start_time, end_time, status)
     values
-    (${aSoapLegalAppointment}, ${aId}, ${aClient}, ${aPatient}, now(), now() + interval '30 minutes', 'in_exam'),
-    (${bSoapLegalAppointment}, ${bId}, ${bClient}, ${bPatient}, now(), now() + interval '30 minutes', 'in_exam'),
-    (${aSoapDraftFinalAppointment}, ${aId}, ${aClient}, ${aPatient}, now(), now() + interval '30 minutes', 'in_exam'),
-    (${aSoapDoubleFinalAppointment}, ${aId}, ${aClient}, ${aPatient}, now(), now() + interval '30 minutes', 'in_exam'),
-    (${aSoapDiscardAppointment}, ${aId}, ${aClient}, ${aPatient}, now(), now() + interval '30 minutes', 'in_exam')`;
+    (${aSoapLegalAppointment}, ${aId}, ${aLocation}, ${aClient}, ${aPatient}, now(), now() + interval '30 minutes', 'in_exam'),
+    (${bSoapLegalAppointment}, ${bId}, ${bLocation}, ${bClient}, ${bPatient}, now(), now() + interval '30 minutes', 'in_exam'),
+    (${aSoapDraftFinalAppointment}, ${aId}, ${aLocation}, ${aClient}, ${aPatient}, now(), now() + interval '30 minutes', 'in_exam'),
+    (${aSoapDoubleFinalAppointment}, ${aId}, ${aLocation}, ${aClient}, ${aPatient}, now(), now() + interval '30 minutes', 'in_exam'),
+    (${aSoapDiscardAppointment}, ${aId}, ${aLocation}, ${aClient}, ${aPatient}, now(), now() + interval '30 minutes', 'in_exam')`;
 
   let correctedReplacementTransactionAllowed = false;
   try {
@@ -2148,6 +2155,81 @@ try {
     invalidScheduleRangeBlocked,
   );
 
+  const visibleAppointments = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id, location_id, room_id from appointments where id in (${aAppointment}, ${bAppointment})`;
+  });
+  check(
+    "tenant A sees only A's location-aware appointment",
+    visibleAppointments.length === 1 &&
+      visibleAppointments[0]!.id === aAppointment &&
+      visibleAppointments[0]!.location_id === aLocation &&
+      visibleAppointments[0]!.room_id === aRoom,
+  );
+
+  let crossTenantRoomLocationBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into rooms (practice_id, location_id, name)
+        values (${aId}, ${bLocation}, 'Cross-tenant room')`;
+    });
+  } catch {
+    crossTenantRoomLocationBlocked = true;
+  }
+  check(
+    "room composite FK rejects a cross-tenant location",
+    crossTenantRoomLocationBlocked,
+  );
+
+  let crossTenantAppointmentLocationBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into appointments
+        (practice_id, location_id, start_time, end_time)
+        values (${aId}, ${bLocation}, now(), now() + interval '30 minutes')`;
+    });
+  } catch {
+    crossTenantAppointmentLocationBlocked = true;
+  }
+  check(
+    "appointment composite FK rejects a cross-tenant location",
+    crossTenantAppointmentLocationBlocked,
+  );
+
+  let appointmentRoomLocationMismatchBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into appointments
+        (practice_id, location_id, room_id, start_time, end_time)
+        values (${aId}, ${aAltLocation}, ${aRoom}, now(), now() + interval '30 minutes')`;
+    });
+  } catch {
+    appointmentRoomLocationMismatchBlocked = true;
+  }
+  check(
+    "appointment room/location composite FK rejects mismatched clinic resources",
+    appointmentRoomLocationMismatchBlocked,
+  );
+
+  let invalidAppointmentRangeBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into appointments
+        (practice_id, location_id, start_time, end_time)
+        values (${aId}, ${aLocation}, now(), now())`;
+    });
+  } catch {
+    invalidAppointmentRangeBlocked = true;
+  }
+  check(
+    "appointment check rejects a non-positive time range",
+    invalidAppointmentRangeBlocked,
+  );
+
   // Child tables without practice_id isolate via the parent join policy.
   // invoice_adjustments is the representative (regression: it was missing
   // from enable-rls.sql entirely, leaving it readable across tenants).
@@ -2576,12 +2658,13 @@ try {
     await cleanup`delete from invoices where id in (${aInvoice}, ${bInvoice})`;
     await cleanup`delete from migration_runs where id in (${aMigrationRun}, ${bMigrationRun})`;
     await cleanup`delete from appointments where id in (${aAppointment}, ${bAppointment}, ${aSoapLegalAppointment}, ${bSoapLegalAppointment}, ${aSoapDraftFinalAppointment}, ${aSoapDoubleFinalAppointment}, ${aSoapDiscardAppointment})`;
+    await cleanup`delete from rooms where id in (${aRoom}, ${bRoom})`;
     await cleanup`delete from prescriptions where id in (${aPrescription}, ${bPrescription})`;
     await cleanup`delete from products where id in (${aProduct}, ${bProduct})`;
     await cleanup`delete from patients where id in (${aPatient}, ${bPatient}, ${aMergeTargetPatient}, ${bMergeTargetPatient}, ${aLineageCandidatePatient})`;
     await cleanup`delete from clients where practice_id in (${aId}, ${bId})`;
     await cleanup`delete from staff_schedules where id in (${aStaffSchedule}, ${bStaffSchedule})`;
-    await cleanup`delete from locations where id in (${aLocation}, ${bLocation})`;
+    await cleanup`delete from locations where id in (${aLocation}, ${aAltLocation}, ${bLocation})`;
     await cleanup`delete from users where id in (${aUser}, ${bUser})`;
     await cleanup`delete from practices where id in (${aId}, ${bId})`;
   });

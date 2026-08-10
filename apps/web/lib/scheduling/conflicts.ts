@@ -13,6 +13,7 @@ export interface CandidateSlot {
   endTime: Date;
   doctorId?: string | null;
   roomId?: string | null;
+  locationId?: string | null;
   /** Exclude this booking from the check (when rescheduling it). */
   excludeId?: string;
 }
@@ -23,12 +24,14 @@ export interface ExistingBooking {
   endTime: Date;
   doctorId: string | null;
   roomId: string | null;
+  locationId?: string | null;
   status: string;
 }
 
 export interface ConflictResult {
   doctor: ExistingBooking[];
   room: ExistingBooking[];
+  location: ExistingBooking[];
 }
 
 const NON_BLOCKING = new Set(["cancelled", "no_show"]);
@@ -42,7 +45,7 @@ export function detectConflicts(
   candidate: CandidateSlot,
   existing: ExistingBooking[]
 ): ConflictResult {
-  const result: ConflictResult = { doctor: [], room: [] };
+  const result: ConflictResult = { doctor: [], room: [], location: [] };
   for (const booking of existing) {
     if (candidate.excludeId && booking.id === candidate.excludeId) continue;
     if (NON_BLOCKING.has(booking.status)) continue;
@@ -55,12 +58,24 @@ export function detectConflicts(
     if (candidate.roomId && booking.roomId === candidate.roomId) {
       result.room.push(booking);
     }
+    if (
+      !candidate.doctorId &&
+      !candidate.roomId &&
+      candidate.locationId &&
+      booking.locationId === candidate.locationId
+    ) {
+      result.location.push(booking);
+    }
   }
   return result;
 }
 
 export function hasConflict(result: ConflictResult): boolean {
-  return result.doctor.length > 0 || result.room.length > 0;
+  return (
+    result.doctor.length > 0 ||
+    result.room.length > 0 ||
+    result.location.length > 0
+  );
 }
 
 /** Human-readable conflict message, or null if there's no conflict. */
@@ -73,6 +88,9 @@ export function conflictMessage(result: ConflictResult): string | null {
   }
   if (result.room.length > 0) {
     return "This room is already booked for an overlapping appointment.";
+  }
+  if (result.location.length > 0) {
+    return "This clinic location already has an overlapping unassigned appointment.";
   }
   return null;
 }

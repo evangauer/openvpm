@@ -6,6 +6,7 @@ import {
   patients,
   practices,
   rooms,
+  locations,
   users,
 } from "@openpims/db";
 import { db } from "@openpims/db/client";
@@ -125,12 +126,20 @@ export async function GET(
         patientName: patients.name,
         typeName: appointmentTypes.name,
         roomName: rooms.name,
+        locationName: locations.name,
         doctorName: users.name,
       })
       .from(appointments)
       .leftJoin(patients, eq(appointments.patientId, patients.id))
       .leftJoin(appointmentTypes, eq(appointments.typeId, appointmentTypes.id))
       .leftJoin(rooms, eq(appointments.roomId, rooms.id))
+      .leftJoin(
+        locations,
+        and(
+          eq(appointments.locationId, locations.id),
+          eq(locations.practiceId, practice.id),
+        ),
+      )
       .leftJoin(users, eq(appointments.doctorId, users.id))
       .where(
         and(

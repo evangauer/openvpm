@@ -52,6 +52,10 @@ import {
 } from "@/lib/scheduling/conflicts";
 import { assertActivePractice } from "@/lib/compat/shared/active-practice";
 import { isValidClinicalDateInput } from "@/lib/records/date-input";
+import {
+  resolveAppointmentLocation,
+  takeAppointmentSchedulingLock,
+} from "@/lib/scheduling/location";
 
 export const dynamic = "force-dynamic";
 
@@ -254,6 +258,7 @@ async function fetchOverlappingAppointments(
       endTime: appointments.endTime,
       doctorId: appointments.doctorId,
       roomId: appointments.roomId,
+      locationId: appointments.locationId,
       status: appointments.status,
     })
     .from(appointments)
@@ -278,12 +283,16 @@ export async function GET(req: Request) {
     const { limit, offset } = parsePagination(searchParams);
     const clientId = searchParams.get("client_id");
     const patientId = searchParams.get("patient_id");
+    const locationId = searchParams.get("location_id");
 
     if (clientId && !isUuid(clientId)) {
       return apiError("client_id must be a valid UUID", 400);
     }
     if (patientId && !isUuid(patientId)) {
       return apiError("patient_id must be a valid UUID", 400);
+    }
+    if (locationId && !isUuid(locationId)) {
+      return apiError("location_id must be a valid UUID", 400);
     }
 
     const from = parseAppointmentDateParam(searchParams, "from", "start");
@@ -306,6 +315,7 @@ export async function GET(req: Request) {
       ];
       if (clientId) conditions.push(eq(appointments.clientId, clientId));
       if (patientId) conditions.push(eq(appointments.patientId, patientId));
+      if (locationId) conditions.push(eq(appointments.locationId, locationId));
       if (status.status) {
         conditions.push(eq(appointments.status, status.status));
       }
@@ -358,6 +368,8 @@ export async function POST(req: Request) {
         return { ok: false as const, response: activePractice.response };
       }
 
+      await takeAppointmentSchedulingLock(tx, auth.ctx.practiceId);
+
       const targets = await validateAppointmentTargets(
         tx,
         auth.ctx.practiceId,
@@ -366,30 +378,44 @@ export async function POST(req: Request) {
       if (!targets.ok) {
         return { ok: false as const, response: targets.response };
       }
+      const location = await resolveAppointmentLocation(tx, {
+        practiceId: auth.ctx.practiceId,
+        locationId: parsed.data.location_id,
+        doctorId: parsed.data.doctor_id,
+        roomId: parsed.data.room_id,
+      });
+      if (!location.ok) {
+        return {
+          ok: false as const,
+          response: apiError(
+            location.message,
+            location.code === "NOT_FOUND" ? 404 : 409,
+          ),
+        };
+      }
 
       const startTime = new Date(parsed.data.start_time);
       const endTime = new Date(parsed.data.end_time);
-      if (parsed.data.doctor_id || parsed.data.room_id) {
-        const existing = await fetchOverlappingAppointments(
-          tx,
-          auth.ctx.practiceId,
-          startTime,
-          endTime
-        );
-        const message = conflictMessage(
-          detectConflicts(
-            {
-              startTime,
-              endTime,
-              doctorId: parsed.data.doctor_id,
-              roomId: parsed.data.room_id,
-            },
-            existing
-          )
-        );
-        if (message) {
-          return { ok: false as const, response: apiError(message, 409) };
-        }
+      const existing = await fetchOverlappingAppointments(
+        tx,
+        auth.ctx.practiceId,
+        startTime,
+        endTime
+      );
+      const message = conflictMessage(
+        detectConflicts(
+          {
+            startTime,
+            endTime,
+            doctorId: parsed.data.doctor_id,
+            roomId: parsed.data.room_id,
+            locationId: location.locationId,
+          },
+          existing
+        )
+      );
+      if (message) {
+        return { ok: false as const, response: apiError(message, 409) };
       }
 
       const [row] = await tx
@@ -397,6 +423,7 @@ export async function POST(req: Request) {
         .values({
           ...fromApiAppointmentCreate(parsed.data),
           clientId: targets.clientId,
+          locationId: location.locationId,
           practiceId: auth.ctx.practiceId,
         })
         .returning();

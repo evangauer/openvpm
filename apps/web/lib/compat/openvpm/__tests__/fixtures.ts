@@ -69,6 +69,7 @@ export function appointmentRow(
     clientId: "11111111-1111-1111-1111-111111111111",
     doctorId: null,
     roomId: null,
+    locationId: null,
     status: "scheduled",
     notes: null,
     recurringSeriesId: null,

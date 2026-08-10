@@ -58,6 +58,9 @@ export async function POST(req: Request) {
     }
 
     try {
+      const postCommitEffects: Array<
+        (rootDb: typeof db) => Promise<void>
+      > = [];
       const result = await withTenant(db, auth.ctx.practiceId, async (tx) => {
         const activePractice = await assertActivePractice(
           tx,
@@ -74,10 +77,18 @@ export async function POST(req: Request) {
             practiceId: auth.ctx.practiceId,
             // No human user on an API call; identify the actor by key.
             userId: `apikey:${auth.ctx.apiKeyId}`,
+            postCommitEffect: (effect) => postCommitEffects.push(effect),
           },
         });
       });
       if (result instanceof NextResponse) return result;
+      for (const effect of postCommitEffects) {
+        try {
+          await effect(db);
+        } catch {
+          console.error("[agent api] post-commit effect failed");
+        }
+      }
       return NextResponse.json({ data: result });
     } catch (e) {
       if (e instanceof AgentNotConfiguredError) {

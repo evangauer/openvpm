@@ -27,11 +27,14 @@ import {
   treatmentPlanItems,
   users,
   rooms,
+  locations,
   practices,
   clinicalRecordCorrections,
 } from "@openpims/db";
-import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
-import { appointmentCreatedWebhookPayload } from "@/lib/appointment-webhooks";
+import {
+  appointmentCreatedWebhookPayload,
+  dispatchAppointmentWebhookAfterCommit,
+} from "@/lib/appointment-webhooks";
 import { recordActivationAfterAppointmentCreated } from "@/lib/funnel-events-server";
 import {
   dateInputTimeUtcInstant,
@@ -58,6 +61,11 @@ import {
   clinicalDecimalInput,
   optionalClinicalTextInput,
 } from "@/lib/records/clinical-inputs";
+import {
+  listActiveAppointmentLocations,
+  resolveAppointmentLocation,
+  takeAppointmentSchedulingLock,
+} from "@/lib/scheduling/location";
 
 /**
  * The agent's "hands": typed tools that operate the practice's data, always
@@ -69,6 +77,7 @@ export interface AgentToolContext {
   db: Database;
   practiceId: string;
   userId: string;
+  postCommitEffect?: (effect: (rootDb: Database) => Promise<void>) => void;
 }
 
 export interface AgentTool {
@@ -281,6 +290,7 @@ async function fetchOverlappingAppointments(
       endTime: appointments.endTime,
       doctorId: appointments.doctorId,
       roomId: appointments.roomId,
+      locationId: appointments.locationId,
       status: appointments.status,
     })
     .from(appointments)
@@ -425,6 +435,18 @@ const getPatientSummary: AgentTool = {
   },
 };
 
+const listLocations: AgentTool = {
+  name: "list_locations",
+  description:
+    "List active clinic locations. Use the location id when finding slots or booking in a multi-location practice.",
+  inputSchema: { type: "object", properties: {} },
+  zod: z.object({}),
+  readOnly: true,
+  async execute(_args, ctx) {
+    return listActiveAppointmentLocations(ctx.db, ctx.practiceId);
+  },
+};
+
 const listAppointments: AgentTool = {
   name: "list_appointments",
   description: "List appointments within a date range (inclusive). Dates are ISO-8601.",
@@ -452,11 +474,20 @@ const listAppointments: AgentTool = {
         startTime: appointments.startTime,
         endTime: appointments.endTime,
         status: appointments.status,
+        locationId: appointments.locationId,
+        locationName: locations.name,
         patientName: patients.name,
         clientFirst: clients.firstName,
         clientLast: clients.lastName,
       })
       .from(appointments)
+      .leftJoin(
+        locations,
+        and(
+          eq(appointments.locationId, locations.id),
+          eq(locations.practiceId, ctx.practiceId),
+        ),
+      )
       .leftJoin(
         patients,
         and(
@@ -488,6 +519,8 @@ const listAppointments: AgentTool = {
       startTime: r.startTime,
       endTime: r.endTime,
       status: r.status,
+      locationId: r.locationId,
+      location: r.locationName,
       patient: r.patientName,
       client: clientName(r.clientFirst, r.clientLast),
     }));
@@ -506,6 +539,8 @@ const bookAppointment: AgentTool = {
       clientId: { type: "string" },
       patientId: { type: "string" },
       doctorId: { type: "string" },
+      roomId: { type: "string" },
+      locationId: { type: "string" },
       notes: { type: "string" },
     },
     required: ["startTime", "endTime"],
@@ -517,6 +552,8 @@ const bookAppointment: AgentTool = {
       clientId: z.string().uuid().optional(),
       patientId: z.string().uuid().optional(),
       doctorId: z.string().uuid().optional(),
+      roomId: z.string().uuid().optional(),
+      locationId: z.string().uuid().optional(),
       notes: agentOptionalNotesInput,
     })
     .refine((b) => new Date(b.endTime) > new Date(b.startTime), {
@@ -531,22 +568,36 @@ const bookAppointment: AgentTool = {
       clientId?: string;
       patientId?: string;
       doctorId?: string;
+      roomId?: string;
+      locationId?: string;
       notes?: string;
     };
+    await takeAppointmentSchedulingLock(ctx.db, ctx.practiceId);
     const targets = await validateAppointmentTargets(ctx, input);
     if (!targets.ok) return { error: targets.error };
+    const location = await resolveAppointmentLocation(ctx.db, {
+      practiceId: ctx.practiceId,
+      locationId: input.locationId,
+      doctorId: input.doctorId,
+      roomId: input.roomId,
+    });
+    if (!location.ok) return { error: location.message };
 
     const startTime = new Date(input.startTime);
     const endTime = new Date(input.endTime);
-    if (input.doctorId) {
-      const message = conflictMessage(
-        detectConflicts(
-          { startTime, endTime, doctorId: input.doctorId },
-          await fetchOverlappingAppointments(ctx, startTime, endTime)
-        )
-      );
-      if (message) return { error: message };
-    }
+    const message = conflictMessage(
+      detectConflicts(
+        {
+          startTime,
+          endTime,
+          doctorId: input.doctorId,
+          roomId: input.roomId,
+          locationId: location.locationId,
+        },
+        await fetchOverlappingAppointments(ctx, startTime, endTime)
+      )
+    );
+    if (message) return { error: message };
 
     const [created] = await ctx.db
       .insert(appointments)
@@ -557,6 +608,8 @@ const bookAppointment: AgentTool = {
         clientId: targets.clientId,
         patientId: input.patientId ?? null,
         doctorId: input.doctorId ?? null,
+        roomId: input.roomId ?? null,
+        locationId: location.locationId,
         notes: input.notes ?? null,
       })
       .returning();
@@ -565,7 +618,8 @@ const bookAppointment: AgentTool = {
       ctx.practiceId,
       "agent.book_appointment"
     );
-    await dispatchWebhookEvent(
+    await dispatchAppointmentWebhookAfterCommit(
+      ctx,
       ctx.practiceId,
       "appointment.created",
       appointmentCreatedWebhookPayload(created!, "agent")
@@ -834,6 +888,7 @@ const findOpenSlotsTool: AgentTool = {
       durationMinutes: { type: "number" },
       doctorId: { type: "string" },
       roomId: { type: "string" },
+      locationId: { type: "string" },
     },
     required: ["date"],
   },
@@ -842,6 +897,7 @@ const findOpenSlotsTool: AgentTool = {
     durationMinutes: z.number().int().min(10).max(240).optional(),
     doctorId: z.string().uuid().optional(),
     roomId: z.string().uuid().optional(),
+    locationId: z.string().uuid().optional(),
   }),
   readOnly: true,
   async execute(args, ctx) {
@@ -850,9 +906,17 @@ const findOpenSlotsTool: AgentTool = {
       durationMinutes?: number;
       doctorId?: string;
       roomId?: string;
+      locationId?: string;
     };
     const resources = await validateScheduleResources(ctx, input);
     if (!resources.ok) return { error: resources.error };
+    const location = await resolveAppointmentLocation(ctx.db, {
+      practiceId: ctx.practiceId,
+      locationId: input.locationId,
+      doctorId: input.doctorId,
+      roomId: input.roomId,
+    });
+    if (!location.ok) return { error: location.message };
 
     const timezone = await practiceTimeZone(ctx);
     const dayStart = dateInputTimeUtcInstant(
@@ -872,6 +936,7 @@ const findOpenSlotsTool: AgentTool = {
         endTime: appointments.endTime,
         doctorId: appointments.doctorId,
         roomId: appointments.roomId,
+        locationId: appointments.locationId,
       })
       .from(appointments)
       .where(
@@ -887,7 +952,9 @@ const findOpenSlotsTool: AgentTool = {
     const busy = rows.filter((r) => {
       if (input.doctorId && r.doctorId === input.doctorId) return true;
       if (input.roomId && r.roomId === input.roomId) return true;
-      return !input.doctorId && !input.roomId;
+      return (
+        !input.doctorId && !input.roomId && r.locationId === location.locationId
+      );
     });
 
     return findOpenSlots({
@@ -902,6 +969,7 @@ const findOpenSlotsTool: AgentTool = {
 export const AGENT_TOOLS: AgentTool[] = [
   findClient,
   getPatientSummary,
+  listLocations,
   listAppointments,
   findOpenSlotsTool,
   bookAppointment,

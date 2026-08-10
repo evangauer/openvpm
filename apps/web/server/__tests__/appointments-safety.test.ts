@@ -43,6 +43,7 @@ const ROOM_ID = "00000000-0000-0000-0000-000000000006";
 const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000007";
 const SERIES_ID = "00000000-0000-0000-0000-000000000008";
 const FUTURE_APPOINTMENT_ID = "00000000-0000-0000-0000-000000000009";
+const LOCATION_ID = "00000000-0000-0000-0000-00000000000a";
 
 function callerWithDb(db: Record<string, unknown>) {
   const session = {
@@ -64,8 +65,26 @@ function createDb(opts?: {
   updateResults?: unknown[][];
 }) {
   const selectResults = [...(opts?.selectResults ?? [])];
-  const select = vi.fn(() => {
-    const result = selectResults.shift() ?? [];
+  const select = vi.fn((fields?: Record<string, unknown>) => {
+    const fieldNames = Object.keys(fields ?? {})
+      .sort()
+      .join(",");
+    const result =
+      fieldNames === "address,id,isPrimary,name,phone"
+        ? [
+            {
+              id: LOCATION_ID,
+              name: "Main Clinic",
+              address: "1 Main St",
+              phone: null,
+              isPrimary: true,
+            },
+          ]
+        : fieldNames === "id,locationId"
+          ? [{ id: ROOM_ID, locationId: LOCATION_ID }]
+          : fieldNames === "locationId"
+            ? [{ locationId: LOCATION_ID }]
+            : (selectResults.shift() ?? []);
     const afterWhere = {
       limit: vi.fn(async () => result),
       orderBy: vi.fn(async () => result),
@@ -463,6 +482,44 @@ describe("appointments target safety", () => {
         status: "scheduled",
       })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("refuses to restore a cancelled appointment into an occupied resource", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [
+          {
+            id: APPOINTMENT_ID,
+            status: "cancelled",
+            doctorId: DOCTOR_ID,
+            roomId: ROOM_ID,
+            locationId: LOCATION_ID,
+            startTime: new Date(startTime),
+            endTime: new Date(endTime),
+          },
+        ],
+        [
+          {
+            id: FUTURE_APPOINTMENT_ID,
+            status: "confirmed",
+            doctorId: DOCTOR_ID,
+            roomId: null,
+            locationId: LOCATION_ID,
+            startTime: new Date(startTime),
+            endTime: new Date(endTime),
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).updateStatus({
+        id: APPOINTMENT_ID,
+        status: "scheduled",
+      })
+    ).rejects.toMatchObject({ code: "CONFLICT" });
 
     expect(updateSet).not.toHaveBeenCalled();
   });
@@ -1117,6 +1174,7 @@ describe("appointments target safety", () => {
       endTime: expect.any(Date),
       doctorId: null,
       roomId: null,
+      locationId: LOCATION_ID,
       status: "scheduled",
     });
     expect(mocks.dispatchWebhookEvent).toHaveBeenCalledWith(
@@ -1222,6 +1280,7 @@ describe("appointments target safety", () => {
       endTime: expect.any(Date),
       doctorId: DOCTOR_ID,
       roomId: ROOM_ID,
+      locationId: LOCATION_ID,
       status: "scheduled",
     });
   });
@@ -1303,6 +1362,60 @@ describe("appointments target safety", () => {
     });
     expect(updateSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: "scheduled" })
+    );
+  });
+
+  it("requires fresh confirmation when a confirmed visit changes clinic location", async () => {
+    const previousLocationId = "00000000-0000-0000-0000-00000000000b";
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [
+          {
+            id: APPOINTMENT_ID,
+            status: "confirmed",
+            startTime: new Date(startTime),
+            endTime: new Date(endTime),
+            locationId: previousLocationId,
+            patientId: PATIENT_ID,
+            clientId: CLIENT_ID,
+            doctorId: DOCTOR_ID,
+            roomId: null,
+            typeId: TYPE_ID,
+            typeRequiresDoctor: 1,
+          },
+        ],
+        [],
+      ],
+      updatedRows: [
+        {
+          id: APPOINTMENT_ID,
+          status: "scheduled",
+          startTime: new Date(startTime),
+          endTime: new Date(endTime),
+          locationId: LOCATION_ID,
+          doctorId: DOCTOR_ID,
+          roomId: null,
+        },
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).reschedule({
+        id: APPOINTMENT_ID,
+        locationId: LOCATION_ID,
+        startTime,
+        endTime,
+      })
+    ).resolves.toMatchObject({
+      status: "scheduled",
+      locationId: LOCATION_ID,
+      confirmationRequired: true,
+    });
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "scheduled",
+        locationId: LOCATION_ID,
+      })
     );
   });
 
@@ -1413,6 +1526,7 @@ describe("appointments target safety", () => {
       endTime: expect.any(Date),
       doctorId: null,
       roomId: null,
+      locationId: LOCATION_ID,
       status: "scheduled",
     });
   });

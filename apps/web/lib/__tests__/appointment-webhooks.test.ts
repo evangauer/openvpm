@@ -18,6 +18,7 @@ describe("appointment webhook payloads", () => {
           doctorId: "doctor-1",
           typeId: "type-1",
           roomId: "room-1",
+          locationId: "location-1",
         },
         "api"
       )
@@ -31,6 +32,7 @@ describe("appointment webhook payloads", () => {
       doctorId: "doctor-1",
       typeId: "type-1",
       roomId: "room-1",
+      locationId: "location-1",
       source: "api",
     });
   });
@@ -55,6 +57,7 @@ describe("appointment webhook payloads", () => {
       doctorId: null,
       typeId: null,
       roomId: null,
+      locationId: null,
       source: "agent",
     });
   });

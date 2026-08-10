@@ -23,7 +23,9 @@ describe("portal public read scoping", () => {
     expect(timezoneHelper).toContain("where(activePracticeWhere(practiceId))");
     expect(timezoneHelper).toContain("throw invalidPortalLink()");
     expect(timezoneHelper).not.toContain("practice?.timezone");
-    expect(src).toContain("timezone,\n        patients: clientPatients");
+    expect(src).toContain(
+      "timezone,\n        locations: appointmentLocations,\n        patients: clientPatients",
+    );
   });
 
   it("requires portal tokens to belong to an active practice", () => {

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { eq, and, isNull, gte, lt, inArray, sql } from "drizzle-orm";
+import { eq, and, isNull, gte, gt, lt, inArray, not, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import {
@@ -10,6 +10,7 @@ import {
   users,
   appointmentTypes,
   rooms,
+  locations,
   visitCloseouts,
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
@@ -18,8 +19,13 @@ import {
   appointmentStatusValues,
   canTransitionAppointmentStatus,
 } from "@/lib/scheduling/appointment-status";
-import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
+import { dispatchAppointmentWebhookAfterCommit } from "@/lib/appointment-webhooks";
 import { CLOSEOUT_BYPASS_MESSAGE } from "@/lib/encounters/closeout-policy";
+import { conflictMessage, detectConflicts } from "@/lib/scheduling/conflicts";
+import {
+  resolveAppointmentLocation,
+  takeAppointmentSchedulingLock,
+} from "@/lib/scheduling/location";
 
 type WhiteboardContext = {
   db: Database;
@@ -96,6 +102,8 @@ export const whiteboardRouter = createRouter({
         clientLastName: clients.lastName,
         doctorName: users.name,
         roomName: rooms.name,
+        locationName: locations.name,
+        locationId: appointments.locationId,
         typeName: appointmentTypes.name,
         typeColor: appointmentTypes.color,
       })
@@ -147,6 +155,13 @@ export const whiteboardRouter = createRouter({
           isNull(rooms.deletedAt)
         )
       )
+      .leftJoin(
+        locations,
+        and(
+          eq(appointments.locationId, locations.id),
+          eq(locations.practiceId, ctx.practiceId),
+        ),
+      )
       .where(
         and(
           eq(appointments.practiceId, ctx.practiceId),
@@ -175,14 +190,23 @@ export const whiteboardRouter = createRouter({
     )
     .mutation(async ({ ctx, input }) => {
       const { current, appt } = await ctx.db.transaction(async (tx) => {
+        await takeAppointmentSchedulingLock(
+          tx as unknown as Database,
+          ctx.practiceId,
+        );
         const [current] = await tx
           .select({
             id: appointments.id,
             status: appointments.status,
+            doctorId: appointments.doctorId,
+            roomId: appointments.roomId,
+            locationId: appointments.locationId,
             patientId: appointments.patientId,
             clientId: appointments.clientId,
             activePatientId: patients.id,
             activeClientId: clients.id,
+            startTime: appointments.startTime,
+            endTime: appointments.endTime,
           })
           .from(appointments)
           .leftJoin(
@@ -245,6 +269,66 @@ export const whiteboardRouter = createRouter({
               "Attach an active patient and matching client before starting the exam.",
           });
         }
+        let restoredLocationId: string | undefined;
+        if (
+          (current.status === "cancelled" || current.status === "no_show") &&
+          input.status !== "cancelled" &&
+          input.status !== "no_show"
+        ) {
+          const resolution = await resolveAppointmentLocation(
+            tx as unknown as Database,
+            {
+              practiceId: ctx.practiceId,
+              locationId: current.locationId,
+              doctorId: current.doctorId,
+              roomId: current.roomId,
+            },
+          );
+          if (!resolution.ok) {
+            throw new TRPCError({
+              code: resolution.code,
+              message: resolution.message,
+            });
+          }
+          restoredLocationId = resolution.locationId;
+          const existing = await tx
+            .select({
+              id: appointments.id,
+              startTime: appointments.startTime,
+              endTime: appointments.endTime,
+              doctorId: appointments.doctorId,
+              roomId: appointments.roomId,
+              locationId: appointments.locationId,
+              status: appointments.status,
+            })
+            .from(appointments)
+            .where(
+              and(
+                eq(appointments.practiceId, ctx.practiceId),
+                activePracticePredicate(ctx.practiceId),
+                isNull(appointments.deletedAt),
+                not(inArray(appointments.status, ["cancelled", "no_show"])),
+                lt(appointments.startTime, current.endTime),
+                gt(appointments.endTime, current.startTime),
+              ),
+            );
+          const message = conflictMessage(
+            detectConflicts(
+              {
+                startTime: current.startTime,
+                endTime: current.endTime,
+                doctorId: current.doctorId,
+                roomId: current.roomId,
+                locationId: restoredLocationId,
+                excludeId: current.id,
+              },
+              existing,
+            ),
+          );
+          if (message) {
+            throw new TRPCError({ code: "CONFLICT", message });
+          }
+        }
 
         const [closeout] = await tx
           .select({ id: visitCloseouts.id, status: visitCloseouts.status })
@@ -270,7 +354,10 @@ export const whiteboardRouter = createRouter({
 
         const [appt] = await tx
           .update(appointments)
-          .set({ status: input.status })
+          .set({
+            status: input.status,
+            ...(restoredLocationId ? { locationId: restoredLocationId } : {}),
+          })
           .where(
             and(
               eq(appointments.id, input.id),
@@ -307,7 +394,7 @@ export const whiteboardRouter = createRouter({
         return { current, appt };
       });
       if (appt.status === "checked_in") {
-        await dispatchWebhookEvent(ctx.practiceId, "appointment.checked_in", {
+        await dispatchAppointmentWebhookAfterCommit(ctx, ctx.practiceId, "appointment.checked_in", {
           id: appt.id,
           appointmentId: appt.id,
           startTime: appt.startTime,
@@ -317,12 +404,14 @@ export const whiteboardRouter = createRouter({
           patientId: appt.patientId,
           clientId: appt.clientId,
           doctorId: appt.doctorId,
+          roomId: appt.roomId,
+          locationId: appt.locationId,
           typeId: appt.typeId,
           source: "dashboard",
         });
       }
       if (appt.status === "cancelled") {
-        await dispatchWebhookEvent(ctx.practiceId, "appointment.cancelled", {
+        await dispatchAppointmentWebhookAfterCommit(ctx, ctx.practiceId, "appointment.cancelled", {
           id: appt.id,
           appointmentId: appt.id,
           startTime: appt.startTime,
@@ -332,6 +421,8 @@ export const whiteboardRouter = createRouter({
           patientId: appt.patientId,
           clientId: appt.clientId,
           doctorId: appt.doctorId,
+          roomId: appt.roomId,
+          locationId: appt.locationId,
           typeId: appt.typeId,
           source: "dashboard",
         });

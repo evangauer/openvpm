@@ -369,6 +369,7 @@ async function seed() {
   // =========================================================================
   const appointmentValues: {
     practiceId: string;
+    locationId: string;
     startTime: Date;
     endTime: Date;
     typeId: string;
@@ -467,6 +468,7 @@ async function seed() {
 
         appointmentValues.push({
           practiceId,
+          locationId,
           startTime,
           endTime,
           typeId: apptType.id,

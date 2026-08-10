@@ -21,6 +21,7 @@ export interface CalendarFeedAppointment {
   patientName: string | null;
   typeName: string | null;
   roomName: string | null;
+  locationName: string | null;
   doctorName: string | null;
 }
 
@@ -111,9 +112,10 @@ export function buildPracticeCalendarIcs(input: CalendarFeedInput): string {
         ? `${appt.patientName} - ${appt.typeName}`
         : appt.patientName
       : appt.typeName ?? "Appointment";
+    const clinicLocation = appt.locationName ?? input.practiceName;
     const location = appt.roomName
-      ? `${input.practiceName}, ${appt.roomName}`
-      : input.practiceName;
+      ? `${clinicLocation}, ${appt.roomName}`
+      : clinicLocation;
 
     lines.push(
       "BEGIN:VEVENT",

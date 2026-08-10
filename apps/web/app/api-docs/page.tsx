@@ -269,7 +269,8 @@ const sections: Section[] = [
         input: `{
   startDate: string,  // ISO date
   endDate: string,    // ISO date
-  doctorId?: string
+  doctorId?: string,
+  locationId?: string
 }`,
         response: `Appointment[]`,
       },
@@ -289,6 +290,7 @@ const sections: Section[] = [
   clientId: string,
   typeId: string,
   doctorId: string,
+  locationId?: string, // required when the clinic has multiple locations unless room/provider identifies one
   roomId?: string,
   startTime: string,    // ISO datetime
   endTime: string,      // ISO datetime
@@ -321,9 +323,16 @@ const sections: Section[] = [
         response: `Doctor[]`,
       },
       {
+        name: "appointments.listLocations",
+        method: "GET",
+        description: "List active clinic locations available for scheduling.",
+        response: `Array<{ id: string, name: string, address: string | null, phone: string | null, isPrimary: boolean }>`,
+      },
+      {
         name: "appointments.listRooms",
         method: "GET",
-        description: "List exam rooms.",
+        description: "List exam rooms, optionally for one clinic location.",
+        input: `{ locationId?: string }`,
         response: `Room[]`,
       },
     ],
@@ -668,7 +677,8 @@ const sections: Section[] = [
         input: `{ token: string }`,
         response: `{
   client: Client,
-  pets: Patient[]
+  pets: Patient[],
+  locations: Array<{ id: string, name: string, address: string | null, phone: string | null, isPrimary: boolean }>
 }`,
         auth: "Portal token",
       },
@@ -760,6 +770,7 @@ const sections: Section[] = [
         input: `{
   token: string,
   date: string, // YYYY-MM-DD
+  locationId?: string, // required when the clinic has multiple locations
   durationMinutes?: number // 5-480 minutes, defaults to 30
 }`,
         response: `Array<{ time: string, iso: string }>`,
@@ -774,6 +785,7 @@ const sections: Section[] = [
   token: string,
   patientId: string,
   typeId?: string,
+  locationId?: string, // required when the clinic has multiple locations
   reason: string,
   preferredDate: string, // YYYY-MM-DD
   preferredTime: string // 24-hour HH:MM
@@ -865,8 +877,8 @@ const sections: Section[] = [
         name: "GET /api/v1/appointments",
         method: "GET",
         description:
-          "List appointments, optionally filtered by client, patient, status, or start-time window. Date-only filters use UTC day bounds.",
-        input: `?client_id=uuid&patient_id=uuid&status=scheduled&from=YYYY-MM-DD-or-ISO-timestamp&to=YYYY-MM-DD-or-ISO-timestamp&limit=25&offset=0`,
+          "List appointments, optionally filtered by client, patient, clinic location, status, or start-time window. Date-only filters use UTC day bounds.",
+        input: `?client_id=uuid&patient_id=uuid&location_id=uuid&status=scheduled&from=YYYY-MM-DD-or-ISO-timestamp&to=YYYY-MM-DD-or-ISO-timestamp&limit=25&offset=0`,
         response: `{ data: Appointment[], pagination: Pagination }`,
         auth: "API key: appointments:read",
       },
@@ -887,6 +899,7 @@ const sections: Section[] = [
   patient_id?: string,
   doctor_id?: string,
   type_id?: string,
+  location_id?: string, // required when multiple locations and no room/provider resolves one
   room_id?: string,
   start_time: string, // timezone-qualified ISO timestamp
   end_time: string,   // timezone-qualified ISO timestamp
@@ -1578,6 +1591,7 @@ X-Webhook-Signature: <hmac-sha256-hex>
     "id": "uuid",
     "patientId": "uuid",
     "clientId": "uuid",
+    "locationId": "uuid",
     "startTime": "2026-03-18T09:00:00Z",
     "status": "scheduled"
   }

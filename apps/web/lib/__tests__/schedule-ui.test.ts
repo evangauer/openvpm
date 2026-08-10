@@ -114,9 +114,12 @@ describe("schedule appointment form UX", () => {
   it("gates timezone-sensitive schedule rendering on calendar settings", () => {
     const source = readFileSync("app/(dashboard)/schedule/page.tsx", "utf8");
 
-    expect(source).toContain("const scheduleError = calendarSettingsQuery.error ?? error");
+    expect(source).toContain("const scheduleError =");
     expect(source).toContain(
-      "const isScheduleLoading = calendarSettingsQuery.isLoading || isLoading"
+      "calendarSettingsQuery.error ?? scheduleLocationsQuery.error ?? error"
+    );
+    expect(source).toMatch(
+      /calendarSettingsQuery\.isLoading\s*\|\|\s*scheduleLocationsQuery\.isLoading\s*\|\|\s*isLoading/
     );
     expect(source).toContain("const calendarSettingsMissing =");
     expect(source).toContain("const appointmentsMissing =");
@@ -244,14 +247,19 @@ describe("schedule appointment form UX", () => {
       "const doctorsQuery = trpc.appointments.listDoctors.useQuery()"
     );
     expect(source).toContain(
-      "const roomsQuery = trpc.appointments.listRooms.useQuery()"
+      "const locationsQuery = trpc.appointments.listLocations.useQuery()"
+    );
+    expect(source).toContain(
+      "const roomsQuery = trpc.appointments.listRooms.useQuery("
     );
     expect(source).toContain("const appointmentTypesMissing =");
     expect(source).toContain("const doctorsMissing =");
     expect(source).toContain("const roomsMissing =");
+    expect(source).toContain("const locationsMissing =");
     expect(source).toContain("const appointmentTypesUnavailable =");
     expect(source).toContain("const doctorsUnavailable =");
     expect(source).toContain("const roomsUnavailable =");
+    expect(source).toContain("const locationsUnavailable =");
     expect(source).toContain("disabled={appointmentTypesUnavailable}");
     expect(source).toContain("disabled={doctorsUnavailable}");
     expect(source).toContain("disabled={roomsUnavailable}");
@@ -308,13 +316,14 @@ describe("schedule appointment form UX", () => {
     expect(source).toContain("doctorRequiredForAdvance");
     expect(source).toContain("setRescheduleDoctorId");
     expect(source).toContain("setRescheduleRoomId");
+    expect(source).toContain("setRescheduleLocationId");
     expect(source).toContain(
       "Assign a doctor before confirming or checking in this appointment"
     );
     expect(source).toContain('disabled: doctorRequiredForAdvance');
     expect(source).toContain('current === "confirmed" && (');
     expect(source).toContain(
-      "Changing the date, time, or duration returns this appointment to"
+      "Changing the date, time, duration, or clinic location returns"
     );
     expect(source).toContain(
       "Appointment moved; contact the client and confirm the new time"
@@ -325,6 +334,9 @@ describe("schedule appointment form UX", () => {
     expect(source).toContain("overflow-y-auto");
     expect(source).toContain("htmlFor={rescheduleDoctorFieldId}");
     expect(source).toContain("id={rescheduleDoctorFieldId}");
+    expect(source).toContain("htmlFor={rescheduleLocationFieldId}");
+    expect(source).toContain("id={rescheduleLocationFieldId}");
+    expect(source).toContain('aria-label="Filter schedule by clinic location"');
     expect(source).toContain("htmlFor={rescheduleRoomFieldId}");
     expect(source).toContain("id={rescheduleRoomFieldId}");
     expect(source).toContain('label: "Reopen", status: "scheduled"');

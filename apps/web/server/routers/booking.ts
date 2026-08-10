@@ -10,11 +10,14 @@ import {
   clients,
   patients,
   communications,
+  locations,
 } from "@openpims/db";
 import { rateLimit } from "@/lib/rate-limit";
 import { dateInputTimeUtcInstant } from "@/lib/date-input";
-import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
-import { appointmentCreatedWebhookPayload } from "@/lib/appointment-webhooks";
+import {
+  appointmentCreatedWebhookPayload,
+  dispatchAppointmentWebhookAfterCommit,
+} from "@/lib/appointment-webhooks";
 import { recordActivationAfterAppointmentCreated } from "@/lib/funnel-events-server";
 import { findOpenSlots } from "@/lib/scheduling/availability";
 import { billingEnforced, hasHostedFullAccess } from "@/lib/billing/plans";
@@ -32,6 +35,11 @@ import {
   BOOKING_REASON_MAX_LENGTH,
   BOOKING_SLUG_MAX_LENGTH,
 } from "@/lib/booking/page-config";
+import {
+  listActiveAppointmentLocations,
+  resolveAppointmentLocation,
+  takeAppointmentSchedulingLock,
+} from "@/lib/scheduling/location";
 
 const bookingSlugInput = z
   .string()
@@ -289,6 +297,11 @@ export const bookingRouter = createRouter({
         config.bookableTypeIds
       );
       if (types.length === 0) throw pageNotFound();
+      const bookingLocations = await listActiveAppointmentLocations(
+        ctx.db,
+        practice.id,
+      );
+      if (bookingLocations.length === 0) throw pageNotFound();
 
       return {
         practice: {
@@ -305,6 +318,7 @@ export const bookingRouter = createRouter({
         leadTimeMinutes: config.leadTimeMinutes,
         bookingWindowDays: config.bookingWindowDays,
         types,
+        locations: bookingLocations,
       };
     }),
 
@@ -314,6 +328,7 @@ export const bookingRouter = createRouter({
         slug: bookingSlugInput,
         date: bookingDateInput,
         typeId: z.string().uuid(),
+        locationId: z.string().uuid().optional()
       })
     )
     .query(async ({ ctx, input }) => {
@@ -343,6 +358,16 @@ export const bookingRouter = createRouter({
         });
       }
       const durationMinutes = type.durationMinutes;
+      const location = await resolveAppointmentLocation(ctx.db, {
+        practiceId: practice.id,
+        locationId: input.locationId,
+      });
+      if (!location.ok) {
+        throw new TRPCError({
+          code: location.code,
+          message: location.message,
+        });
+      }
 
       const busy = await ctx.db
         .select({
@@ -353,6 +378,7 @@ export const bookingRouter = createRouter({
         .where(
           and(
             eq(appointments.practiceId, practice.id),
+            eq(appointments.locationId, location.locationId),
             isNull(appointments.deletedAt),
             not(inArray(appointments.status, ["cancelled", "no_show"])),
             lt(appointments.startTime, window.dayEnd),
@@ -384,6 +410,7 @@ export const bookingRouter = createRouter({
       z.object({
         slug: bookingSlugInput,
         typeId: z.string().uuid(),
+        locationId: z.string().uuid().optional(),
         date: bookingDateInput,
         time: bookingTimeInput,
         contact: contactInput,
@@ -417,9 +444,30 @@ export const bookingRouter = createRouter({
       // Public and portal requests for one practice share a transaction lock,
       // so neither path can pass the conflict check concurrently. Take it
       // before the type row lock to keep request lock ordering consistent.
-      await ctx.db.execute(
-        sql`select pg_advisory_xact_lock(hashtext(${`public-booking:${practice.id}`}::text))`
-      );
+      await takeAppointmentSchedulingLock(ctx.db, practice.id);
+
+      const location = await resolveAppointmentLocation(ctx.db, {
+        practiceId: practice.id,
+        locationId: input.locationId,
+      });
+      if (!location.ok) {
+        throw new TRPCError({
+          code: location.code,
+          message: location.message,
+        });
+      }
+      const [selectedLocation] = await ctx.db
+        .select({ name: locations.name })
+        .from(locations)
+        .where(
+          and(
+            eq(locations.id, location.locationId),
+            eq(locations.practiceId, practice.id),
+            isNull(locations.deletedAt)
+          )
+        )
+        .limit(1);
+      if (!selectedLocation) throw pageNotFound();
 
       // Resolve and hold the type through appointment creation; only types
       // explicitly offered on this page count.
@@ -480,6 +528,7 @@ export const bookingRouter = createRouter({
         .where(
           and(
             eq(appointments.practiceId, practice.id),
+            eq(appointments.locationId, location.locationId),
             isNull(appointments.deletedAt),
             not(inArray(appointments.status, ["cancelled", "no_show"])),
             lt(appointments.startTime, slotEnd),
@@ -577,6 +626,7 @@ export const bookingRouter = createRouter({
           clientId,
           patientId,
           typeId,
+          locationId: location.locationId,
           startTime: slotStart,
           endTime: slotEnd,
           // Public booking is deliberately request-only. Keep this invariant
@@ -603,13 +653,15 @@ export const bookingRouter = createRouter({
           `Client: ${input.contact.firstName} ${input.contact.lastName}${isNewClient ? " (new client)" : ""}`,
           `Pet: ${petName}`,
           `Requested: ${input.date} ${input.time}`,
+          `Location: ${selectedLocation.name}`,
           `Reason: ${input.reason}`,
         ].join("\n"),
         status: "pending",
         assignedTo: latestAssignedToForClient(practice.id, clientId),
       });
 
-      await dispatchWebhookEvent(
+      await dispatchAppointmentWebhookAfterCommit(
+        ctx,
         practice.id,
         "appointment.created",
         appointmentCreatedWebhookPayload(appt!, "booking_page")

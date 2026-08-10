@@ -41,6 +41,7 @@ const ROOM_ID = "00000000-0000-0000-0000-000000000004";
 const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000005";
 const WAITLIST_ID = "00000000-0000-0000-0000-000000000006";
 const SCHEDULE_ID = "00000000-0000-0000-0000-000000000007";
+const LOCATION_ID = "00000000-0000-0000-0000-000000000008";
 
 function callerWithDb(db: Record<string, unknown>) {
   const session = {
@@ -142,7 +143,11 @@ describe("settings admin stale target safety", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
-      callerWithDb(db).createRoom({ name: "A".repeat(129), type: "exam" })
+      callerWithDb(db).createRoom({
+        name: "A".repeat(129),
+        type: "exam",
+        locationId: LOCATION_ID
+      })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -624,6 +629,7 @@ describe("settings admin stale target safety", () => {
       callerWithDb(db).createRoom({
         name: "Exam 1",
         type: "exam",
+        locationId: LOCATION_ID
       })
     ).rejects.toMatchObject({
       code: "NOT_FOUND",

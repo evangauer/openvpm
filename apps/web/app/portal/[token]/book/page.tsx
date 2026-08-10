@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { AlertCircle, PawPrint } from "lucide-react";
@@ -20,6 +20,7 @@ export default function BookAppointmentPage() {
   const formId = useId();
   const patientFieldId = `${formId}-patient`;
   const typeFieldId = `${formId}-type`;
+  const locationFieldId = `${formId}-location`;
   const dateFieldId = `${formId}-date`;
   const timeFieldId = `${formId}-time`;
   const timeHelpId = `${formId}-time-help`;
@@ -31,6 +32,7 @@ export default function BookAppointmentPage() {
 
   const [patientId, setPatientId] = useState("");
   const [typeId, setTypeId] = useState("");
+  const [locationId, setLocationId] = useState("");
   const [preferredDate, setPreferredDate] = useState("");
   const [preferredTime, setPreferredTime] = useState("");
   const [reason, setReason] = useState("");
@@ -55,11 +57,22 @@ export default function BookAppointmentPage() {
   const showTimeBoundsError =
     preferredTime !== "" && hasValidBookingWindow && !hasValidPreferredTime;
 
-  // Suggested open times for the chosen date.
+  // Suggested request times for the chosen date.
   const slots = trpc.portal.availableSlots.useQuery(
-    { token, date: preferredDate, durationMinutes: selectedDurationMinutes },
-    { enabled: !!preferredDate && hasValidAppointmentType }
+    {
+      token,
+      date: preferredDate,
+      durationMinutes: selectedDurationMinutes,
+      locationId: locationId || undefined
+    },
+    { enabled: !!preferredDate && hasValidAppointmentType && !!locationId }
   );
+
+  useEffect(() => {
+    if (client.data?.locations.length === 1 && !locationId) {
+      setLocationId(client.data.locations[0]!.id);
+    }
+  }, [client.data, locationId]);
   const slotsUnavailable = Boolean(
     preferredDate &&
       !slots.isLoading &&
@@ -87,6 +100,20 @@ export default function BookAppointmentPage() {
     );
   }
 
+  const clientData = client.data;
+  if (clientData.locations.length === 0) {
+    return (
+      <div className="max-w-xl">
+        <EmptyState
+          className="py-12"
+          icon={AlertCircle}
+          title="Appointment requests are unavailable"
+          description="The clinic has not configured an active scheduling location. Please contact the clinic directly."
+        />
+      </div>
+    );
+  }
+
   if (types.isLoading) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -108,16 +135,20 @@ export default function BookAppointmentPage() {
     );
   }
 
-  const clientData = client.data;
+  const selectedLocation = clientData.locations.find(
+    (location) => location.id === locationId,
+  );
   const today = formatPortalDateInput(new Date(), clientData.timezone);
   const pets = clientData.patients;
+  const selectedPet = pets.find((pet) => pet.id === patientId);
   const canSubmit = Boolean(
     patientId &&
-      preferredDate &&
-      hasValidAppointmentType &&
-      hasValidPreferredTime &&
-      hasValidReason &&
-      !request.isPending
+    selectedLocation &&
+    preferredDate &&
+    hasValidAppointmentType &&
+    hasValidPreferredTime &&
+    hasValidReason &&
+    !request.isPending
   );
 
   function submit(e: React.FormEvent) {
@@ -127,6 +158,7 @@ export default function BookAppointmentPage() {
       token,
       patientId,
       typeId,
+      locationId,
       preferredDate,
       preferredTime,
       reason: reason.trim(),
@@ -143,6 +175,37 @@ export default function BookAppointmentPage() {
         </div>
         <h1 className="text-xl font-bold text-gray-900 mb-2">Request sent!</h1>
         <p className="text-gray-600 max-w-sm mx-auto mb-6">{request.data.message}</p>
+        <div className="mx-auto mb-6 max-w-sm rounded-xl border border-gray-200 bg-gray-50 p-4 text-left text-sm">
+          <p className="mb-3 font-semibold text-gray-900">
+            Requested — not yet confirmed
+          </p>
+          <dl className="space-y-2 text-gray-600">
+            <div className="flex justify-between gap-4">
+              <dt>Pet</dt>
+              <dd className="font-medium text-gray-900">
+                {selectedPet?.name ?? "Patient"}
+              </dd>
+            </div>
+            <div className="flex justify-between gap-4">
+              <dt>Visit</dt>
+              <dd className="font-medium text-gray-900">
+                {selectedType?.name ?? "Appointment"}
+              </dd>
+            </div>
+            <div className="flex justify-between gap-4">
+              <dt>Preferred time</dt>
+              <dd className="font-medium text-gray-900">
+                {preferredDate} at {preferredTime}
+              </dd>
+            </div>
+            <div className="flex justify-between gap-4">
+              <dt>Clinic</dt>
+              <dd className="text-right font-medium text-gray-900">
+                {selectedLocation?.name ?? "Clinic"}
+              </dd>
+            </div>
+          </dl>
+        </div>
         <Link
           href={`/portal/${token}/appointments`}
           className="inline-flex items-center gap-1 text-sm font-medium text-teal-600 hover:text-teal-700"
@@ -179,6 +242,50 @@ export default function BookAppointmentPage() {
         />
       ) : (
         <form onSubmit={submit} className="space-y-5">
+          {clientData.locations.length > 1 ? (
+            <div>
+              <label
+                htmlFor={locationFieldId}
+                className="block text-sm font-medium text-gray-700 mb-1.5"
+              >
+                Clinic location
+              </label>
+              <select
+                id={locationFieldId}
+                value={locationId}
+                onChange={(event) => {
+                  setLocationId(event.target.value);
+                  setPreferredTime("");
+                }}
+                required
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+              >
+                <option value="" disabled>
+                  Choose a location…
+                </option>
+                {clientData.locations.map((location) => (
+                  <option key={location.id} value={location.id}>
+                    {location.name}
+                  </option>
+                ))}
+              </select>
+              {selectedLocation?.address ? (
+                <p className="mt-1.5 text-xs text-gray-500">
+                  {selectedLocation.address}
+                </p>
+              ) : null}
+            </div>
+          ) : clientData.locations[0] ? (
+            <p className="rounded-lg bg-gray-50 px-3 py-2 text-sm text-gray-600">
+              <span className="font-medium text-gray-800">
+                {clientData.locations[0].name}
+              </span>
+              {clientData.locations[0].address
+                ? ` · ${clientData.locations[0].address}`
+                : ""}
+            </p>
+          ) : null}
+
           <div>
             <label
               htmlFor={patientFieldId}
@@ -287,12 +394,12 @@ export default function BookAppointmentPage() {
           </div>
 
           {preferredDate && slots.isLoading && (
-            <p className="text-xs text-gray-500">Checking open times…</p>
+            <p className="text-xs text-gray-500">Checking suggested times…</p>
           )}
 
           {slotsUnavailable && (
             <p className="text-xs text-red-600">
-              Open times could not be loaded. You can still enter a preferred time.
+              Suggested times could not be loaded. You can still enter a preferred time.
             </p>
           )}
 
@@ -302,7 +409,7 @@ export default function BookAppointmentPage() {
             slots.data &&
             slots.data.length === 0 && (
               <p className="text-xs text-gray-500">
-                No suggested open times are available for this date.
+                No suggested request times are available for this date.
               </p>
             )}
 
@@ -313,7 +420,7 @@ export default function BookAppointmentPage() {
             slots.data.length > 0 && (
               <div>
                 <p className="text-xs font-medium text-gray-500 mb-2">
-                  Open times on {preferredDate} (tap to pick)
+                  Suggested request times on {preferredDate} (tap to pick)
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {slots.data.map((s) => (

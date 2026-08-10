@@ -14,6 +14,10 @@ describe("portal booking UI", () => {
     expect(source).toContain("if (client.error || !client.data)");
     expect(source).toContain('title="Unable to load booking form"');
     expect(source).toContain('title="No pets on file yet"');
+    expect(source).toContain("clientData.locations.length === 0");
+    expect(source).toContain(
+      "has not configured an active scheduling location",
+    );
     expect(source).not.toContain("if (!client.data) return null");
   });
 
@@ -41,7 +45,7 @@ describe("portal booking UI", () => {
       "const hasValidPreferredTime = isPortalBookingStartWithinBounds("
     );
     expect(source).toContain(
-      "{ token, date: preferredDate, durationMinutes: selectedDurationMinutes }"
+      "durationMinutes: selectedDurationMinutes,\n      locationId: locationId || undefined"
     );
     expect(source).not.toContain("const appointmentTypes = types.data ?? []");
     expect(source).not.toContain(
@@ -90,17 +94,19 @@ describe("portal booking UI", () => {
       "const hasValidAppointmentType = Boolean(typeId && selectedType)"
     );
     expect(source).toContain(
-      "{ enabled: !!preferredDate && hasValidAppointmentType }"
+      "{ enabled: !!preferredDate && hasValidAppointmentType && !!locationId }"
     );
     expect(source).toContain(
-      "patientId,\n      typeId,\n      preferredDate,"
+      "patientId,\n      typeId,\n      locationId,\n      preferredDate,"
     );
     expect(source).toContain("slots.isLoading");
-    expect(source).toContain("Checking open times");
+    expect(source).toContain("Checking suggested times");
     expect(source).toContain("const slotsUnavailable = Boolean(");
     expect(source).toContain("Boolean(slots.error) || !slots.data");
-    expect(source).toContain("Open times could not be loaded");
-    expect(source).toContain("No suggested open times are available for this date");
+    expect(source).toContain("Suggested times could not be loaded");
+    expect(source).toContain(
+      "No suggested request times are available for this date"
+    );
     expect(source).toContain("slots.data.length === 0");
     expect(source).toContain("slots.data.length > 0");
     expect(source).not.toContain("(slots.data?.length ?? 0)");
@@ -118,6 +124,7 @@ describe("portal booking UI", () => {
   });
 
   it("does not present an unconfirmed request as a scheduled appointment", () => {
+    expect(source).toContain("Requested — not yet confirmed");
     expect(appointmentsSource).toContain(
       'if (status === "scheduled") return "Requested — awaiting confirmation"'
     );

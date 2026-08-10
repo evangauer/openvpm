@@ -21,6 +21,7 @@ function appt(
     patientName: "Biscuit",
     typeName: "Wellness Exam",
     roomName: "Exam 1",
+    locationName: "Main Clinic",
     doctorName: "Sarah Chen",
     ...overrides,
   };
@@ -50,11 +51,11 @@ describe("ICS calendar feed builder", () => {
     expect(ics).toContain("LAST-MODIFIED:20260707T091500Z");
   });
 
-  it("minimizes PHI: patient + type + room + doctor only", () => {
+  it("minimizes PHI: patient + type + clinic location + room + doctor only", () => {
     const ics = build([appt()]);
     expect(ics).toContain("SUMMARY:Biscuit - Wellness Exam");
     expect(ics).toContain(
-      foldIcsLine("LOCATION:Aspen Creek Animal Hospital\\, Exam 1")
+      foldIcsLine("LOCATION:Main Clinic\\, Exam 1")
     );
     expect(ics).toContain("DESCRIPTION:With Dr. Sarah Chen");
   });
@@ -84,7 +85,7 @@ describe("ICS calendar feed builder", () => {
     ]);
     expect(ics).toContain("SUMMARY:Appointment");
     expect(ics).not.toContain("DESCRIPTION:");
-    expect(ics).toContain("LOCATION:Aspen Creek Animal Hospital");
+    expect(ics).toContain("LOCATION:Main Clinic");
   });
 
   it("escapes RFC 5545 special characters", () => {

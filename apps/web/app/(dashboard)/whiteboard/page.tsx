@@ -44,6 +44,8 @@ type WhiteboardAppointment = {
   clientLastName: string | null;
   doctorName: string | null;
   roomName: string | null;
+  locationName: string | null;
+  locationId: string | null;
   typeName: string | null;
   typeColor: string | null;
 };
@@ -280,10 +282,12 @@ function WhiteboardCard({
             Dr. {appointment.doctorName}
           </span>
         )}
-        {appointment.roomName && (
+        {(appointment.locationName || appointment.roomName) && (
           <span className="inline-flex items-center gap-1">
             <MapPin className="h-3 w-3" />
-            {appointment.roomName}
+            {[appointment.locationName, appointment.roomName]
+              .filter(Boolean)
+              .join(" · ")}
           </span>
         )}
       </div>
@@ -503,10 +507,14 @@ function AppointmentDetailModal({
                 <span>{appointment.typeName}</span>
               </div>
             )}
-            {appointment.roomName && (
+            {(appointment.locationName || appointment.roomName) && (
               <div className="flex items-center gap-2 text-muted-foreground">
                 <MapPin className="h-3.5 w-3.5" />
-                <span>{appointment.roomName}</span>
+                <span>
+                  {[appointment.locationName, appointment.roomName]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </span>
               </div>
             )}
             {appointment.notes && (

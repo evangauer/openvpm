@@ -65,12 +65,18 @@ function createStatusDb(opts?: {
     const result = selectResults.shift() ?? [];
     const afterWhere = {
       limit: vi.fn(async () => result),
+      orderBy: vi.fn(async () => result),
       for: vi.fn(async () => result),
+      then: (
+        resolve: (value: unknown[]) => unknown,
+        reject?: (error: unknown) => unknown
+      ) => Promise.resolve(result).then(resolve, reject),
     };
     const builder = {
       from: vi.fn(() => builder),
       leftJoin: vi.fn(() => builder),
       where: vi.fn(() => afterWhere),
+      orderBy: vi.fn(async () => result),
     };
     return builder;
   });
@@ -343,6 +349,58 @@ describe("whiteboard workflows", () => {
       code: "BAD_REQUEST",
       message: "Cannot change appointment status from checked_out to scheduled.",
     });
+
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("refuses to restore a cancelled appointment into an occupied resource", async () => {
+    const doctorId = "00000000-0000-0000-0000-000000000005";
+    const roomId = "00000000-0000-0000-0000-000000000006";
+    const locationId = "00000000-0000-0000-0000-000000000007";
+    const { db, updateSet } = createStatusDb({
+      selectResults: [
+        [
+          {
+            id: APPOINTMENT_ID,
+            status: "cancelled",
+            doctorId,
+            roomId,
+            locationId,
+            startTime: new Date(startTime),
+            endTime: new Date(endTime),
+          },
+        ],
+        [
+          {
+            id: locationId,
+            name: "Main Clinic",
+            address: null,
+            phone: null,
+            isPrimary: true,
+          },
+        ],
+        [{ id: roomId, locationId }],
+        [{ locationId }],
+        [
+          {
+            id: "00000000-0000-0000-0000-000000000099",
+            status: "confirmed",
+            doctorId,
+            roomId: null,
+            locationId,
+            startTime: new Date(startTime),
+            endTime: new Date(endTime),
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).updateStatus({
+        id: APPOINTMENT_ID,
+        status: "scheduled",
+      })
+    ).rejects.toMatchObject({ code: "CONFLICT" });
 
     expect(updateSet).not.toHaveBeenCalled();
   });

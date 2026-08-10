@@ -16,6 +16,7 @@ import {
   Mail,
   Repeat2,
   Stethoscope,
+  MapPin,
 } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
@@ -217,6 +218,19 @@ function getAppointmentColor(appointment: Appointment): string {
   return appointment.typeColor || DEFAULT_APPOINTMENT_COLOR;
 }
 
+function appointmentStatusLabel(appointment: Appointment): string {
+  if (
+    appointment.status === "scheduled" &&
+    (appointment.notes?.startsWith("[Online request]") ||
+      appointment.notes?.startsWith("[Portal request]"))
+  ) {
+    return "Needs confirmation";
+  }
+  return (
+    STATUS_LABELS[appointment.status as AppointmentStatus] || appointment.status
+  );
+}
+
 function sortAppointments(appointments: Appointment[]): Appointment[] {
   return [...appointments].sort(
     (a, b) =>
@@ -354,6 +368,8 @@ type Appointment = {
   typeRequiresDoctor: number | null;
   roomName: string | null;
   roomId: string | null;
+  locationName: string | null;
+  locationId: string | null;
 };
 
 // --- Components ---
@@ -465,6 +481,7 @@ function AppointmentBlock({
         <div className="text-muted-foreground truncate mt-0.5">
           {appointment.typeName || "Appointment"} &middot;{" "}
           {formatTime(start, timeZone)} - {formatTime(end, timeZone)}
+          {appointment.locationName ? ` · ${appointment.locationName}` : ""}
         </div>
       )}
     </button>
@@ -756,6 +773,7 @@ function AppointmentChip({
       />
       <span className="min-w-0 flex-1 truncate">
         {formatTime(start, timeZone)} {appointment.patientName || "Unknown"}
+        {appointment.locationName ? ` · ${appointment.locationName}` : ""}
       </span>
     </button>
   );
@@ -896,6 +914,7 @@ function AppointmentDetailPopover({
     id: string;
     startTime: string;
     endTime: string;
+    locationId: string;
     doctorId: string | null;
     roomId: string | null;
   }) => void;
@@ -914,6 +933,7 @@ function AppointmentDetailPopover({
   const rescheduleDateId = `${dialogTitleId}-date`;
   const rescheduleTimeId = `${dialogTitleId}-time`;
   const rescheduleDurationId = `${dialogTitleId}-duration`;
+  const rescheduleLocationFieldId = `${dialogTitleId}-location`;
   const rescheduleDoctorFieldId = `${dialogTitleId}-doctor`;
   const rescheduleRoomFieldId = `${dialogTitleId}-room`;
   const confirmationPhoneFieldId = `${dialogTitleId}-confirmation-phone`;
@@ -933,6 +953,9 @@ function AppointmentDetailPopover({
   const [rescheduleDuration, setRescheduleDuration] = useState(() =>
     appointmentDurationMinutes(start, end)
   );
+  const [rescheduleLocationId, setRescheduleLocationId] = useState(
+    appointment.locationId ?? ""
+  );
   const [rescheduleDoctorId, setRescheduleDoctorId] = useState(
     appointment.doctorId ?? ""
   );
@@ -942,9 +965,19 @@ function AppointmentDetailPopover({
   const doctorsQuery = trpc.appointments.listDoctors.useQuery(undefined, {
     enabled: canManageSchedule && showRescheduleForm,
   });
-  const roomsQuery = trpc.appointments.listRooms.useQuery(undefined, {
+  const locationsQuery = trpc.appointments.listLocations.useQuery(undefined, {
     enabled: canManageSchedule && showRescheduleForm,
   });
+  const roomsQuery = trpc.appointments.listRooms.useQuery(
+    { locationId: rescheduleLocationId || undefined },
+    {
+      enabled:
+        canManageSchedule &&
+        showRescheduleForm &&
+        Boolean(rescheduleLocationId),
+    },
+  );
+  const eligibleRescheduleDoctors = doctorsQuery.data ?? [];
 
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -1024,12 +1057,14 @@ function AppointmentDetailPopover({
     setRescheduleDate(toISODate(start, timeZone));
     setRescheduleTime(formatTimeInput(start, timeZone));
     setRescheduleDuration(appointmentDurationMinutes(start, end));
+    setRescheduleLocationId(appointment.locationId ?? "");
     setRescheduleDoctorId(appointment.doctorId ?? "");
     setRescheduleRoomId(appointment.roomId ?? "");
   }, [
     appointment.id,
     appointment.startTime,
     appointment.endTime,
+    appointment.locationId,
     appointment.doctorId,
     appointment.roomId,
     timeZone,
@@ -1053,9 +1088,11 @@ function AppointmentDetailPopover({
     appointment.typeRequiresDoctor === 1 &&
     !appointment.doctorId;
   const resourceOptionsUnavailable =
+    !rescheduleLocationId ||
+    locationsQuery.isLoading ||
     doctorsQuery.isLoading ||
     roomsQuery.isLoading ||
-    Boolean(doctorsQuery.error || roomsQuery.error);
+    Boolean(locationsQuery.error || doctorsQuery.error || roomsQuery.error);
 
   if (current === "scheduled") {
     statusActions.push({
@@ -1117,6 +1154,7 @@ function AppointmentDetailPopover({
       id: appointment.id,
       startTime: startDt.toISOString(),
       endTime: endDt.toISOString(),
+      locationId: rescheduleLocationId,
       doctorId: rescheduleDoctorId || null,
       roomId: rescheduleRoomId || null,
     });
@@ -1137,7 +1175,7 @@ function AppointmentDetailPopover({
           <div className="flex items-center gap-2">
             <StatusDot status={appointment.status} />
             <span className="text-sm font-medium">
-              {STATUS_LABELS[current] || appointment.status}
+              {appointmentStatusLabel(appointment)}
             </span>
           </div>
           <button
@@ -1176,6 +1214,12 @@ function AppointmentDetailPopover({
               <div className="flex items-center gap-2 text-muted-foreground">
                 <User className="h-3.5 w-3.5" />
                 <span>Dr. {appointment.doctorName}</span>
+              </div>
+            )}
+            {appointment.locationName && (
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <MapPin className="h-3.5 w-3.5" />
+                <span>{appointment.locationName}</span>
               </div>
             )}
             {appointment.typeName && (
@@ -1271,11 +1315,36 @@ function AppointmentDetailPopover({
             </div>
             {current === "confirmed" ? (
               <p className="mt-2 rounded-md bg-amber-50 px-2.5 py-2 text-xs text-amber-900">
-                Changing the date, time, or duration returns this appointment to
-                requested status. Contact the client and record confirmation
-                again before reminders can be sent.
+                Changing the date, time, duration, or clinic location returns
+                this appointment to requested status. Contact the client and
+                record confirmation again before reminders can be sent.
               </p>
             ) : null}
+            <div className="mt-3">
+              <label
+                htmlFor={rescheduleLocationFieldId}
+                className="text-xs font-medium text-muted-foreground"
+              >
+                Clinic Location
+              </label>
+              <select
+                id={rescheduleLocationFieldId}
+                value={rescheduleLocationId}
+                onChange={(event) => {
+                  setRescheduleLocationId(event.target.value);
+                  setRescheduleRoomId("");
+                }}
+                disabled={locationsQuery.isLoading || Boolean(locationsQuery.error)}
+                className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+              >
+                <option value="">Select location...</option>
+                {(locationsQuery.data ?? []).map((location) => (
+                  <option key={location.id} value={location.id}>
+                    {location.name}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
               <div>
                 <label
@@ -1292,7 +1361,7 @@ function AppointmentDetailPopover({
                   className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
                 >
                   <option value="">Unassigned</option>
-                  {(doctorsQuery.data ?? []).map((doctor) => (
+                  {eligibleRescheduleDoctors.map((doctor) => (
                     <option key={doctor.id} value={doctor.id}>
                       Dr. {doctor.name}
                     </option>
@@ -1322,10 +1391,10 @@ function AppointmentDetailPopover({
                 </select>
               </div>
             </div>
-            {(doctorsQuery.error || roomsQuery.error) && (
+            {(locationsQuery.error || doctorsQuery.error || roomsQuery.error) && (
               <div className="mt-2 flex items-center justify-between gap-2 rounded-md bg-destructive/10 px-2.5 py-2">
                 <p className="text-xs text-destructive">
-                  Doctor or room options could not be loaded. Retry before
+                  Location, doctor, or room options could not be loaded. Retry before
                   changing this appointment.
                 </p>
                 <Button
@@ -1334,6 +1403,7 @@ function AppointmentDetailPopover({
                   variant="outline"
                   onClick={() => {
                     void Promise.all([
+                      locationsQuery.refetch(),
                       doctorsQuery.refetch(),
                       roomsQuery.refetch(),
                     ]);
@@ -1616,11 +1686,13 @@ function BookingForm({
   onClose,
   defaultDate,
   defaultTime,
+  defaultLocationId,
   timeZone,
 }: {
   onClose: () => void;
   defaultDate: Date;
   defaultTime?: string;
+  defaultLocationId?: string;
   timeZone?: string | null;
 }) {
   const modalRef = useRef<HTMLDivElement>(null);
@@ -1639,6 +1711,7 @@ function BookingForm({
   const [typeId, setTypeId] = useState("");
   const [doctorId, setDoctorId] = useState("");
   const [roomId, setRoomId] = useState("");
+  const [locationId, setLocationId] = useState(defaultLocationId ?? "");
   const [date, setDate] = useState(toISODate(defaultDate));
   const [startTime, setStartTime] = useState(defaultTime || "09:00");
   const [duration, setDuration] = useState(30);
@@ -1682,11 +1755,19 @@ function BookingForm({
     !patientSearchError &&
     !searchResults;
   const appointmentTypesQuery = trpc.appointments.listTypes.useQuery();
+  const locationsQuery = trpc.appointments.listLocations.useQuery();
   const doctorsQuery = trpc.appointments.listDoctors.useQuery();
-  const roomsQuery = trpc.appointments.listRooms.useQuery();
+  const roomsQuery = trpc.appointments.listRooms.useQuery(
+    { locationId: locationId || undefined },
+    { enabled: Boolean(locationId) },
+  );
   const appointmentTypes = appointmentTypesQuery.data;
   const doctors = doctorsQuery.data;
   const roomsList = roomsQuery.data;
+  const locations = locationsQuery.data;
+  // A provider's saved location is their home base, not a prohibition on
+  // covering another clinic location.
+  const eligibleDoctors = doctors;
   const appointmentTypesMissing =
     !appointmentTypesQuery.isLoading &&
     !appointmentTypesQuery.error &&
@@ -1701,7 +1782,16 @@ function BookingForm({
   const doctorsUnavailable =
     doctorsQuery.isLoading || Boolean(doctorsQuery.error) || doctorsMissing;
   const roomsUnavailable =
-    roomsQuery.isLoading || Boolean(roomsQuery.error) || roomsMissing;
+    !locationId ||
+    roomsQuery.isLoading ||
+    Boolean(roomsQuery.error) ||
+    roomsMissing;
+  const locationsMissing =
+    !locationsQuery.isLoading && !locationsQuery.error && !locations;
+  const locationsUnavailable =
+    locationsQuery.isLoading ||
+    Boolean(locationsQuery.error) ||
+    locationsMissing;
 
   const createAppointment = trpc.appointments.create.useMutation({
     onSuccess: (appointment) => {
@@ -1736,6 +1826,7 @@ function BookingForm({
   });
 
   const canSaveAppointment =
+    Boolean(locationId) &&
     hasValidDate &&
     hasValidDuration &&
     hasValidNotes &&
@@ -1744,6 +1835,12 @@ function BookingForm({
       (hasValidRecurrenceInterval && hasValidRecurrenceOccurrences)) &&
     !createAppointment.isPending &&
     !createRecurringAppointment.isPending;
+
+  useEffect(() => {
+    if (!locationId && locations?.length === 1) {
+      setLocationId(locations[0]!.id);
+    }
+  }, [locationId, locations]);
 
   // When appointment type changes, update duration
   useEffect(() => {
@@ -1791,6 +1888,7 @@ function BookingForm({
         frequency: recurrenceFrequency,
         interval: recurrenceInterval,
         occurrences: recurrenceOccurrences,
+        locationId,
         typeId: typeId || undefined,
         doctorId: doctorId || undefined,
         roomId: roomId || undefined,
@@ -1806,6 +1904,7 @@ function BookingForm({
       typeId: typeId || undefined,
       doctorId: doctorId || undefined,
       roomId: roomId || undefined,
+      locationId,
       notes: notes.trim() || undefined,
     });
   };
@@ -1836,6 +1935,43 @@ function BookingForm({
 
         {/* Body */}
         <div className="px-4 py-3 space-y-4">
+          <div>
+            <label
+              htmlFor="new-appointment-location"
+              className="text-xs font-medium text-muted-foreground"
+            >
+              Clinic Location
+            </label>
+            <select
+              id="new-appointment-location"
+              value={locationId}
+              onChange={(event) => {
+                setLocationId(event.target.value);
+                setDoctorId("");
+                setRoomId("");
+              }}
+              disabled={locationsUnavailable}
+              className="mt-1 h-9 w-full appearance-none rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              <option value="">
+                {locationsUnavailable
+                  ? "Locations unavailable"
+                  : "Select location..."}
+              </option>
+              {locations?.map((location) => (
+                <option key={location.id} value={location.id}>
+                  {location.name}
+                </option>
+              ))}
+            </select>
+            {locationsQuery.error || locationsMissing ? (
+              <p className="mt-1 text-xs text-destructive">
+                {locationsQuery.error?.message ??
+                  "Unable to load clinic locations. Please retry."}
+              </p>
+            ) : null}
+          </div>
+
           {/* Patient search */}
           <div>
             <label className="text-xs font-medium text-muted-foreground">Patient</label>
@@ -1968,7 +2104,7 @@ function BookingForm({
               <option value="">
                 {doctorsUnavailable ? "Doctors unavailable" : "Select doctor..."}
               </option>
-              {doctors?.map((doc) => (
+              {eligibleDoctors?.map((doc) => (
                 <option key={doc.id} value={doc.id}>
                   Dr. {doc.name}
                 </option>
@@ -2179,6 +2315,7 @@ export default function SchedulePage() {
   );
   const [view, setView] = useState<CalendarView>("day");
   const [doctorFilter, setDoctorFilter] = useState<string>("all");
+  const [locationFilter, setLocationFilter] = useState<string>("all");
   const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null);
   const [showBookingForm, setShowBookingForm] = useState(false);
   const [bookingDefaultDate, setBookingDefaultDate] = useState(() =>
@@ -2189,6 +2326,7 @@ export default function SchedulePage() {
   const weekDays = useMemo(() => buildWeekDays(currentDate), [currentDate]);
   const monthDays = useMemo(() => buildMonthGrid(currentDate), [currentDate]);
   const calendarSettingsQuery = trpc.appointments.calendarSettings.useQuery();
+  const scheduleLocationsQuery = trpc.appointments.listLocations.useQuery();
   const calendarSettings = calendarSettingsQuery.data;
   const calendarSettingsMissing =
     !calendarSettingsQuery.isLoading &&
@@ -2226,23 +2364,34 @@ export default function SchedulePage() {
         startDate: queryRangeInput.startDate,
         endDate: queryRangeInput.endDate,
         doctorId: doctorFilter !== "all" ? doctorFilter : undefined,
+        locationId: locationFilter !== "all" ? locationFilter : undefined,
       },
       {
         enabled: verifiedCalendarSettings !== null,
       }
     );
-  const scheduleError = calendarSettingsQuery.error ?? error;
-  const isScheduleLoading = calendarSettingsQuery.isLoading || isLoading;
+  const scheduleError =
+    calendarSettingsQuery.error ?? scheduleLocationsQuery.error ?? error;
+  const isScheduleLoading =
+    calendarSettingsQuery.isLoading ||
+    scheduleLocationsQuery.isLoading ||
+    isLoading;
   const appointmentsMissing =
     verifiedCalendarSettings !== null &&
     !isLoading &&
     !error &&
     !appointmentsData;
-  const scheduleMissing = calendarSettingsMissing || appointmentsMissing;
+  const scheduleLocationsMissing =
+    !scheduleLocationsQuery.isLoading &&
+    !scheduleLocationsQuery.error &&
+    !scheduleLocationsQuery.data;
+  const scheduleMissing =
+    calendarSettingsMissing || appointmentsMissing || scheduleLocationsMissing;
   const verifiedAppointmentsData =
     error || appointmentsMissing || !appointmentsData ? null : appointmentsData;
 
   const { data: doctors } = trpc.appointments.listDoctors.useQuery();
+  const scheduleLocations = scheduleLocationsQuery.data ?? [];
   const appointments = useMemo(
     () => sortAppointments(verifiedAppointmentsData ?? []),
     [verifiedAppointmentsData]
@@ -2330,6 +2479,7 @@ export default function SchedulePage() {
     id: string;
     startTime: string;
     endTime: string;
+    locationId: string;
     doctorId: string | null;
     roomId: string | null;
   }) => {
@@ -2462,6 +2612,28 @@ export default function SchedulePage() {
           </div>
 
           {/* Doctor filter */}
+          {scheduleLocations.length > 1 && (
+            <div className="relative">
+              <MapPin className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+              <select
+                aria-label="Filter schedule by clinic location"
+                value={locationFilter}
+                onChange={(event) => {
+                  setLocationFilter(event.target.value);
+                  setSelectedAppointment(null);
+                }}
+                className="h-9 appearance-none rounded-md border border-input bg-background pl-8 pr-8 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+              >
+                <option value="all">All Locations</option>
+                {scheduleLocations.map((location) => (
+                  <option key={location.id} value={location.id}>
+                    {location.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           <div className="relative">
             <Filter className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground pointer-events-none" />
             <select
@@ -2630,6 +2802,13 @@ export default function SchedulePage() {
             onClose={() => setShowBookingForm(false)}
             defaultDate={bookingDefaultDate}
             defaultTime={bookingDefaultTime}
+            defaultLocationId={
+              locationFilter !== "all"
+                ? locationFilter
+                : scheduleLocations.length === 1
+                  ? scheduleLocations[0]!.id
+                  : undefined
+            }
             timeZone={verifiedCalendarSettings.timezone}
           />
         )}

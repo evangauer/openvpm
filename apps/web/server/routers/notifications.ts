@@ -267,7 +267,7 @@ export const notificationsRouter = createRouter({
           practiceName: practices.name,
           practicePhone: practices.phone,
           practiceTimezone: practices.timezone,
-          locationId: rooms.locationId,
+          locationId: sql<string | null>`coalesce(${appointments.locationId}, ${rooms.locationId})`,
         })
         .from(appointments)
         .leftJoin(
@@ -801,7 +801,7 @@ export const notificationsRouter = createRouter({
           practiceName: practices.name,
           practicePhone: practices.phone,
           practiceTimezone: practices.timezone,
-          locationId: rooms.locationId,
+          locationId: sql<string | null>`coalesce(${appointments.locationId}, ${rooms.locationId})`,
         })
         .from(appointments)
         .leftJoin(

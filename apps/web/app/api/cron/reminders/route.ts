@@ -161,7 +161,7 @@ export async function GET(request: Request) {
           practiceName: practices.name,
           practicePhone: practices.phone,
           practiceTimezone: practices.timezone,
-          locationId: rooms.locationId,
+          locationId: sql<string | null>`coalesce(${appointments.locationId}, ${rooms.locationId})`,
           isSeededDemoClient: sql<boolean>`
             coalesce(${practices.settings} -> 'demoData' -> 'clientIds', '[]'::jsonb)
               @> to_jsonb(${appointments.clientId}::text)

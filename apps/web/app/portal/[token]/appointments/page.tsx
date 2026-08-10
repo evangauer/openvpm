@@ -7,6 +7,7 @@ import {
   CalendarClock,
   CalendarPlus,
   History,
+  MapPin,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { EmptyState } from "@/components/common/empty-state";
@@ -144,6 +145,12 @@ export default function AppointmentsPage() {
                         with {appt.doctorName}
                       </p>
                     )}
+                    {appt.locationName && (
+                      <p className="mt-0.5 flex items-center gap-1 text-sm text-gray-400">
+                        <MapPin className="h-3.5 w-3.5" />
+                        {appt.locationName}
+                      </p>
+                    )}
                   </div>
                   <span
                     className={`rounded-full px-2.5 py-0.5 text-xs font-medium flex-shrink-0 ${
@@ -195,6 +202,12 @@ export default function AppointmentsPage() {
                     {appt.doctorName && (
                       <p className="text-sm text-gray-400 mt-0.5">
                         with {appt.doctorName}
+                      </p>
+                    )}
+                    {appt.locationName && (
+                      <p className="mt-0.5 flex items-center gap-1 text-sm text-gray-400">
+                        <MapPin className="h-3.5 w-3.5" />
+                        {appt.locationName}
                       </p>
                     )}
                   </div>

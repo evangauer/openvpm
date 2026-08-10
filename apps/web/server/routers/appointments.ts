@@ -11,6 +11,7 @@ import {
   practices,
   users,
   rooms,
+  locations,
   recurringSeries,
   visitCloseouts,
   communications,
@@ -27,8 +28,10 @@ import {
   formatDateInputForTimeZone,
   dateInputTimeUtcInstant,
 } from "@/lib/date-input";
-import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
-import { appointmentCreatedWebhookPayload } from "@/lib/appointment-webhooks";
+import {
+  appointmentCreatedWebhookPayload,
+  dispatchAppointmentWebhookAfterCommit,
+} from "@/lib/appointment-webhooks";
 import {
   clinicalDateInput,
   isValidClinicalDateInput,
@@ -51,6 +54,12 @@ import { generateCalendarFeedToken } from "@/lib/calendar/tokens";
 import { appBaseUrl } from "@/lib/app-url";
 import { recordActivationAfterAppointmentCreated } from "@/lib/funnel-events-server";
 import { CLOSEOUT_BYPASS_MESSAGE } from "@/lib/encounters/closeout-policy";
+import {
+  listActiveAppointmentLocations,
+  resolveAppointmentLocation,
+  takeAppointmentSchedulingLock,
+  type AppointmentLocationFailure,
+} from "@/lib/scheduling/location";
 
 type AppointmentsContext = {
   db: Database;
@@ -81,6 +90,7 @@ const listAppointmentsInput = z
     startDate: appointmentRangeInput,
     endDate: appointmentRangeInput,
     doctorId: z.string().uuid().optional(),
+    locationId: z.string().uuid().optional(),
   })
   .superRefine((input, ctx) => {
     if (appointmentRangeEnd(input.endDate) < appointmentRangeStart(input.startDate)) {
@@ -101,6 +111,7 @@ const createAppointmentInput = z
     clientId: z.string().uuid().optional(),
     doctorId: z.string().uuid().optional(),
     roomId: z.string().uuid().optional(),
+    locationId: z.string().uuid().optional(),
     notes: appointmentNotesInput,
   })
   .superRefine((input, ctx) => {
@@ -120,6 +131,7 @@ const rescheduleAppointmentInput = z
     endTime: appointmentDateTimeInput,
     doctorId: z.string().uuid().nullable().optional(),
     roomId: z.string().uuid().nullable().optional(),
+    locationId: z.string().uuid().optional(),
   })
   .superRefine((input, ctx) => {
     if (!isAppointmentDateTimeRangeValid(input.startTime, input.endTime)) {
@@ -143,6 +155,7 @@ const availableSlotsInput = z
     stepMinutes: z.number().int().min(5).max(240).optional(),
     doctorId: z.string().uuid().optional(),
     roomId: z.string().uuid().optional(),
+    locationId: z.string().uuid().optional(),
     dayStartHour: z.number().int().min(0).max(23).default(8),
     dayEndHour: z.number().int().min(1).max(24).default(18),
   })
@@ -163,6 +176,7 @@ const createRecurringInput = z
     doctorId: z.string().uuid().optional(),
     typeId: z.string().uuid().optional(),
     roomId: z.string().uuid().optional(),
+    locationId: z.string().uuid().optional(),
     startTime: appointmentDateTimeInput,
     endTime: appointmentDateTimeInput,
     frequency: z.enum(["weekly", "monthly", "annual"]),
@@ -435,6 +449,28 @@ async function assertAppointmentTargets(
   return { clientId };
 }
 
+function throwAppointmentLocationFailure(
+  failure: AppointmentLocationFailure,
+): never {
+  throw new TRPCError({ code: failure.code, message: failure.message });
+}
+
+async function appointmentLocationOrThrow(
+  ctx: AppointmentsContext,
+  input: {
+    locationId?: string | null;
+    doctorId?: string | null;
+    roomId?: string | null;
+  },
+): Promise<string> {
+  const resolution = await resolveAppointmentLocation(ctx.db, {
+    practiceId: ctx.practiceId,
+    ...input,
+  });
+  if (!resolution.ok) throwAppointmentLocationFailure(resolution);
+  return resolution.locationId;
+}
+
 /** Fetch blocking appointments overlapping [start, end) for conflict checks. */
 async function fetchOverlapping(
   db: Database,
@@ -450,9 +486,17 @@ async function fetchOverlapping(
       endTime: appointments.endTime,
       doctorId: appointments.doctorId,
       roomId: appointments.roomId,
+      locationId: sql<string | null>`coalesce(${appointments.locationId}, ${rooms.locationId})`,
       status: appointments.status,
     })
     .from(appointments)
+    .leftJoin(
+      rooms,
+      and(
+        eq(appointments.roomId, rooms.id),
+        eq(rooms.practiceId, practiceId),
+      ),
+    )
     .where(
       and(
         eq(appointments.practiceId, practiceId),
@@ -483,6 +527,9 @@ export const appointmentsRouter = createRouter({
       if (input.doctorId) {
         conditions.push(eq(appointments.doctorId, input.doctorId));
       }
+      if (input.locationId) {
+        conditions.push(eq(appointments.locationId, input.locationId));
+      }
 
       return ctx.db
         .select({
@@ -508,6 +555,8 @@ export const appointmentsRouter = createRouter({
           typeRequiresDoctor: appointmentTypes.requiresDoctor,
           roomName: rooms.name,
           roomId: appointments.roomId,
+          locationName: locations.name,
+          locationId: appointments.locationId,
         })
         .from(appointments)
         .leftJoin(
@@ -549,6 +598,13 @@ export const appointmentsRouter = createRouter({
             eq(rooms.practiceId, ctx.practiceId),
             isNull(rooms.deletedAt)
           )
+        )
+        .leftJoin(
+          locations,
+          and(
+            eq(appointments.locationId, locations.id),
+            eq(locations.practiceId, ctx.practiceId),
+          ),
         )
         .where(and(...conditions))
         .orderBy(appointments.startTime);
@@ -625,6 +681,9 @@ export const appointmentsRouter = createRouter({
           typeColor: appointmentTypes.color,
           typeRequiresDoctor: appointmentTypes.requiresDoctor,
           roomName: rooms.name,
+          roomId: appointments.roomId,
+          locationName: locations.name,
+          locationId: appointments.locationId,
         })
         .from(appointments)
         .leftJoin(
@@ -667,6 +726,13 @@ export const appointmentsRouter = createRouter({
             isNull(rooms.deletedAt)
           )
         )
+        .leftJoin(
+          locations,
+          and(
+            eq(appointments.locationId, locations.id),
+            eq(locations.practiceId, ctx.practiceId),
+          ),
+        )
         .where(
           and(
             eq(appointments.id, input.id),
@@ -699,7 +765,9 @@ export const appointmentsRouter = createRouter({
         });
       }
 
+      await takeAppointmentSchedulingLock(ctx.db, ctx.practiceId);
       const targets = await assertAppointmentTargets(ctx, input);
+      const locationId = await appointmentLocationOrThrow(ctx, input);
       if (
         !input.patientId &&
         !input.clientId &&
@@ -710,27 +778,33 @@ export const appointmentsRouter = createRouter({
         await assertActivePractice(ctx);
       }
 
-      // Conflict check across both the doctor and the room.
-      if (input.doctorId || input.roomId) {
-        const existing = await fetchOverlapping(
-          ctx.db,
-          ctx.practiceId,
+      // When no resource is assigned, preserve the same conservative
+      // one-at-a-time location capacity promised by availableSlots.
+      const existing = await fetchOverlapping(
+        ctx.db,
+        ctx.practiceId,
+        startTime,
+        endTime
+      );
+      const result = detectConflicts(
+        {
           startTime,
-          endTime
-        );
-        const result = detectConflicts(
-          { startTime, endTime, doctorId: input.doctorId, roomId: input.roomId },
-          existing
-        );
-        const message = conflictMessage(result);
-        if (message) throw new TRPCError({ code: "CONFLICT", message });
-      }
+          endTime,
+          doctorId: input.doctorId,
+          roomId: input.roomId,
+          locationId,
+        },
+        existing
+      );
+      const message = conflictMessage(result);
+      if (message) throw new TRPCError({ code: "CONFLICT", message });
 
       const [appt] = await ctx.db
         .insert(appointments)
         .values({
           ...input,
           clientId: targets.clientId,
+          locationId,
           startTime,
           endTime,
           practiceId: ctx.practiceId,
@@ -741,7 +815,8 @@ export const appointmentsRouter = createRouter({
         ctx.practiceId,
         "appointments.create"
       );
-      await dispatchWebhookEvent(
+      await dispatchAppointmentWebhookAfterCommit(
+        ctx,
         ctx.practiceId,
         "appointment.created",
         appointmentCreatedWebhookPayload(appt!, "dashboard")
@@ -760,16 +835,23 @@ export const appointmentsRouter = createRouter({
     )
     .mutation(async ({ ctx, input }) => {
       const { current, appt } = await ctx.db.transaction(async (tx) => {
+        await takeAppointmentSchedulingLock(
+          tx as unknown as Database,
+          ctx.practiceId,
+        );
         const [current] = await tx
           .select({
             id: appointments.id,
             status: appointments.status,
             doctorId: appointments.doctorId,
+            roomId: appointments.roomId,
+            locationId: appointments.locationId,
             patientId: appointments.patientId,
             clientId: appointments.clientId,
             activePatientId: patients.id,
             activeClientId: clients.id,
             startTime: appointments.startTime,
+            endTime: appointments.endTime,
             updatedAt: appointments.updatedAt,
             typeRequiresDoctor: appointmentTypes.requiresDoctor,
           })
@@ -856,6 +938,40 @@ export const appointmentsRouter = createRouter({
             message:
               "Attach an active patient and matching client before starting the exam.",
           });
+        }
+        let restoredLocationId: string | undefined;
+        if (
+          (current.status === "cancelled" || current.status === "no_show") &&
+          input.status !== "cancelled" &&
+          input.status !== "no_show"
+        ) {
+          restoredLocationId = await appointmentLocationOrThrow(
+            { db: tx as unknown as Database, practiceId: ctx.practiceId },
+            current,
+          );
+          const existing = await fetchOverlapping(
+            tx as unknown as Database,
+            ctx.practiceId,
+            current.startTime,
+            current.endTime,
+            current.id,
+          );
+          const message = conflictMessage(
+            detectConflicts(
+              {
+                startTime: current.startTime,
+                endTime: current.endTime,
+                doctorId: current.doctorId,
+                roomId: current.roomId,
+                locationId: restoredLocationId,
+                excludeId: current.id,
+              },
+              existing,
+            ),
+          );
+          if (message) {
+            throw new TRPCError({ code: "CONFLICT", message });
+          }
         }
         const isNewConfirmation =
           current.status !== "confirmed" && input.status === "confirmed";
@@ -966,7 +1082,10 @@ export const appointmentsRouter = createRouter({
 
         const [appt] = await tx
           .update(appointments)
-          .set({ status: input.status })
+          .set({
+            status: input.status,
+            ...(restoredLocationId ? { locationId: restoredLocationId } : {}),
+          })
           .where(
             and(
               eq(appointments.id, input.id),
@@ -1003,7 +1122,7 @@ export const appointmentsRouter = createRouter({
         return { current, appt };
       });
       if (appt.status === "checked_in") {
-        await dispatchWebhookEvent(ctx.practiceId, "appointment.checked_in", {
+        await dispatchAppointmentWebhookAfterCommit(ctx, ctx.practiceId, "appointment.checked_in", {
           id: appt.id,
           appointmentId: appt.id,
           startTime: appt.startTime,
@@ -1013,12 +1132,14 @@ export const appointmentsRouter = createRouter({
           patientId: appt.patientId,
           clientId: appt.clientId,
           doctorId: appt.doctorId,
+          roomId: appt.roomId,
+          locationId: appt.locationId,
           typeId: appt.typeId,
           source: "dashboard",
         });
       }
       if (appt.status === "cancelled") {
-        await dispatchWebhookEvent(ctx.practiceId, "appointment.cancelled", {
+        await dispatchAppointmentWebhookAfterCommit(ctx, ctx.practiceId, "appointment.cancelled", {
           id: appt.id,
           appointmentId: appt.id,
           startTime: appt.startTime,
@@ -1028,6 +1149,8 @@ export const appointmentsRouter = createRouter({
           patientId: appt.patientId,
           clientId: appt.clientId,
           doctorId: appt.doctorId,
+          roomId: appt.roomId,
+          locationId: appt.locationId,
           typeId: appt.typeId,
           source: "dashboard",
         });
@@ -1215,6 +1338,8 @@ export const appointmentsRouter = createRouter({
             patientId: appointments.patientId,
             clientId: appointments.clientId,
             doctorId: appointments.doctorId,
+            roomId: appointments.roomId,
+            locationId: appointments.locationId,
             typeId: appointments.typeId,
             recurringSeriesId: appointments.recurringSeriesId,
           });
@@ -1224,7 +1349,7 @@ export const appointmentsRouter = createRouter({
 
       await Promise.all(
         result.cancelled.map((appt) =>
-          dispatchWebhookEvent(ctx.practiceId, "appointment.cancelled", {
+          dispatchAppointmentWebhookAfterCommit(ctx, ctx.practiceId, "appointment.cancelled", {
             id: appt.id,
             appointmentId: appt.id,
             startTime: appt.startTime,
@@ -1233,6 +1358,8 @@ export const appointmentsRouter = createRouter({
             patientId: appt.patientId,
             clientId: appt.clientId,
             doctorId: appt.doctorId,
+            roomId: appt.roomId,
+            locationId: appt.locationId,
             typeId: appt.typeId,
             recurringSeriesId: appt.recurringSeriesId,
             source: "recurring_series",
@@ -1259,6 +1386,7 @@ export const appointmentsRouter = createRouter({
         });
       }
 
+      await takeAppointmentSchedulingLock(ctx.db, ctx.practiceId);
       const [current] = await ctx.db
         .select({
           id: appointments.id,
@@ -1269,6 +1397,7 @@ export const appointmentsRouter = createRouter({
           clientId: appointments.clientId,
           doctorId: appointments.doctorId,
           roomId: appointments.roomId,
+          locationId: appointments.locationId,
           typeId: appointments.typeId,
           typeRequiresDoctor: appointmentTypes.requiresDoctor,
         })
@@ -1307,11 +1436,21 @@ export const appointmentsRouter = createRouter({
       const doctorId =
         input.doctorId === undefined ? current.doctorId : input.doctorId;
       const roomId = input.roomId === undefined ? current.roomId : input.roomId;
+      const locationId = await appointmentLocationOrThrow(ctx, {
+        locationId:
+          input.locationId === undefined
+            ? current.locationId
+            : input.locationId,
+        doctorId,
+        roomId,
+      });
       const timeChanged =
         current.startTime.getTime() !== startTime.getTime() ||
         current.endTime.getTime() !== endTime.getTime();
+      const locationChanged =
+        input.locationId !== undefined && current.locationId !== locationId;
       const confirmationRequired =
-        current.status === "confirmed" && timeChanged;
+        current.status === "confirmed" && (timeChanged || locationChanged);
       await assertAppointmentTargets(ctx, {
         doctorId: input.doctorId,
         roomId: input.roomId,
@@ -1328,21 +1467,26 @@ export const appointmentsRouter = createRouter({
         });
       }
 
-      if (doctorId || roomId) {
-        const existing = await fetchOverlapping(
-          ctx.db,
-          ctx.practiceId,
+      const existing = await fetchOverlapping(
+        ctx.db,
+        ctx.practiceId,
+        startTime,
+        endTime,
+        input.id // exclude the appointment being moved
+      );
+      const result = detectConflicts(
+        {
           startTime,
           endTime,
-          input.id // exclude the appointment being moved
-        );
-        const result = detectConflicts(
-          { startTime, endTime, doctorId, roomId, excludeId: input.id },
-          existing
-        );
-        const message = conflictMessage(result);
-        if (message) throw new TRPCError({ code: "CONFLICT", message });
-      }
+          doctorId,
+          roomId,
+          locationId,
+          excludeId: input.id,
+        },
+        existing
+      );
+      const message = conflictMessage(result);
+      if (message) throw new TRPCError({ code: "CONFLICT", message });
 
       const [updated] = await ctx.db
         .update(appointments)
@@ -1351,6 +1495,7 @@ export const appointmentsRouter = createRouter({
           endTime,
           doctorId: doctorId ?? null,
           roomId: roomId ?? null,
+          locationId,
           status: confirmationRequired ? "scheduled" : current.status,
         })
         .where(
@@ -1369,7 +1514,7 @@ export const appointmentsRouter = createRouter({
           message: "Appointment changed while rescheduling. Refresh and try again.",
         });
       }
-      await dispatchWebhookEvent(ctx.practiceId, "appointment.rescheduled", {
+      await dispatchAppointmentWebhookAfterCommit(ctx, ctx.practiceId, "appointment.rescheduled", {
         id: updated.id,
         appointmentId: updated.id,
         previousStartTime: current.startTime,
@@ -1381,6 +1526,7 @@ export const appointmentsRouter = createRouter({
         clientId: updated.clientId,
         doctorId: updated.doctorId,
         roomId: updated.roomId,
+        locationId: updated.locationId,
         typeId: updated.typeId,
         source: "dashboard",
       });
@@ -1407,6 +1553,7 @@ export const appointmentsRouter = createRouter({
         doctorId: input.doctorId,
         roomId: input.roomId,
       });
+      const locationId = await appointmentLocationOrThrow(ctx, input);
 
       const existing = await fetchOverlapping(ctx.db, ctx.practiceId, dayStart, dayEnd);
       // Only the chosen doctor/room blocks availability; if neither given, any
@@ -1414,7 +1561,7 @@ export const appointmentsRouter = createRouter({
       const busy = existing.filter((b) => {
         if (input.doctorId && b.doctorId === input.doctorId) return true;
         if (input.roomId && b.roomId === input.roomId) return true;
-        return !input.doctorId && !input.roomId;
+        return !input.doctorId && !input.roomId && b.locationId === locationId;
       });
 
       return findOpenSlots({
@@ -1425,6 +1572,10 @@ export const appointmentsRouter = createRouter({
         busy,
       });
     }),
+
+  listLocations: protectedProcedure.query(async ({ ctx }) =>
+    listActiveAppointmentLocations(ctx.db, ctx.practiceId),
+  ),
 
   listTypes: protectedProcedure.query(async ({ ctx }) => {
     return ctx.db
@@ -1444,6 +1595,7 @@ export const appointmentsRouter = createRouter({
       .select({
         id: users.id,
         name: users.name,
+        locationId: users.locationId,
       })
       .from(users)
       .where(
@@ -1456,18 +1608,21 @@ export const appointmentsRouter = createRouter({
       );
   }),
 
-  listRooms: protectedProcedure.query(async ({ ctx }) => {
-    return ctx.db
-      .select()
-      .from(rooms)
-      .where(
-        and(
-          eq(rooms.practiceId, ctx.practiceId),
-          activePracticePredicate(ctx.practiceId),
-          isNull(rooms.deletedAt)
-        )
-      );
-  }),
+  listRooms: protectedProcedure
+    .input(z.object({ locationId: z.string().uuid().optional() }).optional())
+    .query(async ({ ctx, input }) => {
+      const conditions = [
+        eq(rooms.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(rooms.deletedAt)
+      ];
+      if (input?.locationId)
+        conditions.push(eq(rooms.locationId, input.locationId));
+      return ctx.db
+        .select()
+        .from(rooms)
+        .where(and(...conditions));
+    }),
 
   calendarSettings: protectedProcedure.query(async ({ ctx }) => ({
     timezone: await practiceTimeZone(ctx),
@@ -1491,7 +1646,9 @@ export const appointmentsRouter = createRouter({
 
       const result = await ctx.db.transaction(async (tx) => {
         const txCtx = { ...ctx, db: tx as unknown as Database };
+        await takeAppointmentSchedulingLock(txCtx.db, ctx.practiceId);
         const targets = await assertAppointmentTargets(txCtx, input);
+        const locationId = await appointmentLocationOrThrow(txCtx, input);
         const timezone = await practiceTimeZone(txCtx);
 
         // Create the recurring series record and its appointments atomically so
@@ -1530,33 +1687,34 @@ export const appointmentsRouter = createRouter({
           );
           const occEnd = new Date(occStart.getTime() + durationMs);
 
-          // Skip an occurrence that conflicts on either the doctor or the room.
-          if (input.doctorId || input.roomId) {
-            const existing = await fetchOverlapping(
-              txCtx.db,
-              ctx.practiceId,
-              occStart,
-              occEnd
-            );
-            const result = detectConflicts(
-              {
-                startTime: occStart,
-                endTime: occEnd,
-                doctorId: input.doctorId,
-                roomId: input.roomId,
-              },
-              existing
-            );
-            if (hasConflict(result)) {
-              skipped++;
-              continue;
-            }
+          // Keep resource and conservative unassigned-location capacity aligned
+          // with every other appointment writer.
+          const existing = await fetchOverlapping(
+            txCtx.db,
+            ctx.practiceId,
+            occStart,
+            occEnd
+          );
+          const result = detectConflicts(
+            {
+              startTime: occStart,
+              endTime: occEnd,
+              doctorId: input.doctorId,
+              roomId: input.roomId,
+              locationId,
+            },
+            existing
+          );
+          if (hasConflict(result)) {
+            skipped++;
+            continue;
           }
 
           await tx.insert(appointments).values({
             practiceId: ctx.practiceId,
             patientId: input.patientId,
             clientId: targets.clientId,
+            locationId,
             doctorId: input.doctorId,
             typeId: input.typeId,
             roomId: input.roomId,

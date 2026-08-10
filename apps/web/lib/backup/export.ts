@@ -224,7 +224,7 @@ export type PracticeExport = {
   counts: Record<PracticeExportSection, number>;
 } & Record<PracticeExportSection, unknown[]>;
 
-export const PRACTICE_EXPORT_FORMAT_VERSION = 4;
+export const PRACTICE_EXPORT_FORMAT_VERSION = 5;
 
 type Row = Record<string, unknown>;
 
@@ -355,6 +355,7 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
   optionalRef("appointments", "clientId", "clients"),
   optionalRef("appointments", "doctorId", "users"),
   optionalRef("appointments", "roomId", "rooms"),
+  optionalRef("appointments", "locationId", "locations"),
   optionalRef("appointments", "recurringSeriesId", "recurringSeries"),
   requiredRef("appointmentWaitlist", "clientId", "clients"),
   optionalRef("appointmentWaitlist", "patientId", "patients"),
@@ -526,6 +527,52 @@ export function summarizePracticeExport(data: unknown): {
 
 function rowLabel(row: Row, index: number): string {
   return typeof row.id === "string" ? row.id : `#${index + 1}`;
+}
+
+function prepareAppointmentLocationRestore(data: unknown): {
+  rooms: Row[];
+  appointments: Row[];
+} {
+  const locationRows = rowsFor(data, "locations");
+  const activeLocations = locationRows.filter((row) => row.deletedAt == null);
+  const primaryLocations = activeLocations.filter(
+    (row) => row.isPrimary === true,
+  );
+  const fallbackLocationId =
+    primaryLocations.length === 1 && typeof primaryLocations[0]!.id === "string"
+      ? primaryLocations[0]!.id
+      : activeLocations.length === 1 &&
+          typeof activeLocations[0]!.id === "string"
+        ? activeLocations[0]!.id
+        : null;
+  const userRows = new Map(
+    rowsFor(data, "users")
+      .filter((row): row is Row & { id: string } => typeof row.id === "string")
+      .map((row) => [row.id, row]),
+  );
+  const normalizedRooms: Row[] = rowsFor(data, "rooms").map((row) => ({
+    ...row,
+    locationId: row.locationId ?? fallbackLocationId,
+  }));
+  const roomRows = new Map<string, Row>();
+  for (const row of normalizedRooms) {
+    if (typeof row.id === "string") roomRows.set(row.id, row);
+  }
+  const normalizedAppointments = rowsFor(data, "appointments").map((row) => {
+    const room =
+      typeof row.roomId === "string" ? roomRows.get(row.roomId) : undefined;
+    const doctor =
+      typeof row.doctorId === "string" ? userRows.get(row.doctorId) : undefined;
+    return {
+      ...row,
+      locationId:
+        row.locationId ??
+        room?.locationId ??
+        doctor?.locationId ??
+        fallbackLocationId,
+    };
+  });
+  return { rooms: normalizedRooms, appointments: normalizedAppointments };
 }
 
 const PATIENT_IDENTITY_SPECIES = new Set([
@@ -708,6 +755,12 @@ export function validatePracticeExportRestore(data: unknown): {
   const backupPracticeId = isRecord(data) ? data.practiceId : undefined;
   const userRows = rowsById("users");
   const locationRows = rowsById("locations");
+  const activePrimaryLocations = rowsFor(data, "locations").filter(
+    (row) => row.deletedAt == null && row.isPrimary === true,
+  );
+  if (activePrimaryLocations.length > 1) {
+    pushError("locations must contain at most one active primary location.");
+  }
   const scheduleWindows = new Map<
     string,
     Array<{ startMinutes: number; endMinutes: number; label: string }>
@@ -801,6 +854,74 @@ export function validatePracticeExportRestore(data: unknown): {
     }
   }
   const appointmentRows = rowsById("appointments");
+  const normalizedScheduling = prepareAppointmentLocationRestore(data);
+  const backupFormatVersion =
+    isRecord(data) && typeof data.formatVersion === "number"
+      ? data.formatVersion
+      : 0;
+  const normalizedRoomsById = new Map(
+    normalizedScheduling.rooms
+      .filter((row): row is Row & { id: string } => typeof row.id === "string")
+      .map((row) => [row.id, row]),
+  );
+
+  normalizedScheduling.rooms.forEach((row, index) => {
+    const label = `rooms[${rowLabel(row, index)}]`;
+    const location =
+      typeof row.locationId === "string"
+        ? locationRows.get(row.locationId)
+        : undefined;
+    const original = rowsFor(data, "rooms")[index];
+    if (backupFormatVersion >= 5 && original?.locationId == null) {
+      pushError(`${label}.locationId is required in backup format v5.`);
+    }
+    if (row.locationId == null && locationRows.size > 0) {
+      pushError(
+        `${label}.locationId could not be derived; assign the room to a clinic location before restoring.`,
+      );
+    }
+    if (
+      row.locationId != null &&
+      (!location || location.practiceId !== row.practiceId)
+    ) {
+      pushError(`${label}.locationId must resolve to the same practice.`);
+    } else if (
+      location &&
+      row.deletedAt == null &&
+      location.deletedAt != null
+    ) {
+      pushError(`${label}.locationId must be active for an active room.`);
+    }
+  });
+
+  normalizedScheduling.appointments.forEach((row, index) => {
+    const label = `appointments[${rowLabel(row, index)}]`;
+    const location =
+      typeof row.locationId === "string"
+        ? locationRows.get(row.locationId)
+        : undefined;
+    const original = rowsFor(data, "appointments")[index];
+    if (backupFormatVersion >= 5 && original?.locationId == null) {
+      pushError(`${label}.locationId is required in backup format v5.`);
+    }
+    if (row.locationId == null && locationRows.size > 0) {
+      pushError(
+        `${label}.locationId could not be derived; assign the appointment to a clinic location before restoring.`,
+      );
+    }
+    if (
+      row.locationId != null &&
+      (!location || location.practiceId !== row.practiceId)
+    ) {
+      pushError(`${label}.locationId must resolve to the same practice.`);
+    }
+    if (typeof row.roomId === "string") {
+      const room = normalizedRoomsById.get(row.roomId);
+      if (room && room.locationId !== row.locationId) {
+        pushError(`${label}.roomId must belong to the appointment location.`);
+      }
+    }
+  });
 
   for (const section of [
     "soapNotes",
@@ -2175,6 +2296,7 @@ export async function exportPracticeData(
     [
       ...productRows.map((product) => product.locationId),
       ...userRows.map((user) => user.locationId),
+      ...appointmentRows.map((appointment) => appointment.locationId),
       ...smsConsentEventRows.map((event) => event.locationId),
       ...smsSendAttemptRows.map((attempt) => attempt.locationId),
       ...allRoomRows.map((room) =>
@@ -2425,6 +2547,7 @@ async function restorePracticeDataRows(
     );
   }
   const backupRecord = isRecord(data) ? data : {};
+  const schedulingRestore = prepareAppointmentLocationRestore(data);
   const hasDispenseChargeQueue = Object.prototype.hasOwnProperty.call(
     backupRecord,
     "dispenseChargeQueue",
@@ -2599,7 +2722,13 @@ async function restorePracticeDataRows(
   );
   await restorePracticeRows("auditLog", auditLog);
   await restorePracticeRows("appointmentTypes", appointmentTypes);
-  await restorePracticeRows("rooms", rooms);
+  restored.rooms = await restoreRows(
+    db,
+    rooms,
+    "rooms",
+    schedulingRestore.rooms,
+    { practiceId },
+  );
   await restorePracticeRows("recurringSeries", recurringSeries);
   restored.clients = await restoreRows(
     db,
@@ -2622,7 +2751,13 @@ async function restorePracticeDataRows(
   await restorePracticeRows("wellnessEnrollments", wellnessEnrollments);
   await restoreChildRows("patientWeights", patientWeights);
   await restoreChildRows("patientAllergies", patientAllergies);
-  await restorePracticeRows("appointments", appointments);
+  restored.appointments = await restoreRows(
+    db,
+    appointments,
+    "appointments",
+    schedulingRestore.appointments,
+    { practiceId },
+  );
   await restorePracticeRows("appointmentWaitlist", appointmentWaitlist);
   await restorePracticeRows("staffSchedules", staffSchedules);
   await restorePracticeRows("services", services);

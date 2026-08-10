@@ -6,6 +6,7 @@ import {
   coerceRowDates,
   PRACTICE_EXPORT_SECRET_REPLACEMENTS,
   PRACTICE_EXPORT_AUDIT_ONLY_SECTIONS,
+  PRACTICE_EXPORT_FORMAT_VERSION,
   PRACTICE_EXPORT_SYSTEM_EXCLUSIONS,
   PRACTICE_EXPORT_SECTIONS,
   prepareLegacySmsConsentRestore,
@@ -383,7 +384,7 @@ describe("summarizePracticeExport", () => {
 
   it("requires replacement lineage in current backups but accepts its legacy absence", () => {
     const currentMissing: Record<string, unknown> = {
-      formatVersion: 4,
+      formatVersion: 5,
       ...emptyBackup(),
     };
     delete currentMissing["labResultReplacements"];
@@ -391,7 +392,7 @@ describe("summarizePracticeExport", () => {
       "labResultReplacements",
     );
     const currentSoapMissing: Record<string, unknown> = {
-      formatVersion: 4,
+      formatVersion: 5,
       ...emptyBackup(),
     };
     delete currentSoapMissing["soapNoteReplacements"];
@@ -644,6 +645,145 @@ describe("summarizePracticeExport", () => {
   });
 });
 
+describe("location-aware scheduling backup compatibility", () => {
+  const practiceId = "practice-location-backup";
+  const locationId = "location-1";
+  const otherLocationId = "location-2";
+  const roomId = "room-1";
+  const appointmentId = "appointment-1";
+
+  function schedulingBackup() {
+    return {
+      formatVersion: PRACTICE_EXPORT_FORMAT_VERSION,
+      practiceId,
+      ...emptyBackup(),
+      locations: [
+        {
+          id: locationId,
+          practiceId,
+          name: "Main Clinic",
+          isPrimary: true,
+          deletedAt: null,
+        },
+      ],
+      rooms: [
+        {
+          id: roomId,
+          practiceId,
+          locationId,
+          name: "Exam 1",
+          deletedAt: null,
+        },
+      ],
+      appointments: [
+        {
+          id: appointmentId,
+          practiceId,
+          locationId,
+          roomId,
+        },
+      ],
+    };
+  }
+
+  it("requires explicit room and appointment locations in v5 backups", () => {
+    const missingRoomLocation = schedulingBackup();
+    delete (missingRoomLocation.rooms[0] as Record<string, unknown>).locationId;
+    expect(validatePracticeExportRestore(missingRoomLocation).errors).toContain(
+      "rooms[room-1].locationId is required in backup format v5.",
+    );
+
+    const missingAppointmentLocation = schedulingBackup();
+    delete (
+      missingAppointmentLocation.appointments[0] as Record<string, unknown>
+    ).locationId;
+    expect(
+      validatePracticeExportRestore(missingAppointmentLocation).errors,
+    ).toContain(
+      "appointments[appointment-1].locationId is required in backup format v5.",
+    );
+  });
+
+  it("rejects appointment rooms from another clinic location", () => {
+    const backup = schedulingBackup();
+    backup.locations.push({
+      id: otherLocationId,
+      practiceId,
+      name: "North Clinic",
+      isPrimary: false,
+      deletedAt: null,
+    });
+    backup.appointments[0]!.locationId = otherLocationId;
+
+    expect(validatePracticeExportRestore(backup).errors).toContain(
+      "appointments[appointment-1].roomId must belong to the appointment location.",
+    );
+  });
+
+  it("rejects more than one active primary clinic location", () => {
+    const backup = schedulingBackup();
+    backup.locations.push({
+      id: otherLocationId,
+      practiceId,
+      name: "North Clinic",
+      isPrimary: true,
+      deletedAt: null,
+    });
+
+    expect(validatePracticeExportRestore(backup).errors).toContain(
+      "locations must contain at most one active primary location.",
+    );
+  });
+
+  it("derives sole-location room and appointment links for legacy backups", async () => {
+    const backup = schedulingBackup();
+    backup.formatVersion = 4;
+    delete (backup.rooms[0] as Record<string, unknown>).locationId;
+    delete (backup.appointments[0] as Record<string, unknown>).locationId;
+
+    expect(validatePracticeExportRestore(backup)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const { db, inserted } = restoreDb();
+    await restorePracticeData(db as never, "target-practice", backup);
+    const restoredRows = inserted.flatMap(({ rows }) => rows);
+    expect(restoredRows.find((row) => row.id === roomId)).toMatchObject({
+      practiceId: "target-practice",
+      locationId,
+    });
+    expect(restoredRows.find((row) => row.id === appointmentId)).toMatchObject({
+      practiceId: "target-practice",
+      locationId,
+      roomId,
+    });
+  });
+
+  it("rejects legacy scheduling rows when their location is ambiguous", () => {
+    const backup = schedulingBackup();
+    backup.formatVersion = 4;
+    backup.locations.push({
+      id: otherLocationId,
+      practiceId,
+      name: "North Clinic",
+      isPrimary: false,
+      deletedAt: null,
+    });
+    backup.locations[0]!.isPrimary = false;
+    delete (backup.rooms[0] as Record<string, unknown>).locationId;
+    delete (backup.appointments[0] as Record<string, unknown>).locationId;
+
+    const { errors } = validatePracticeExportRestore(backup);
+    expect(errors).toContain(
+      "rooms[room-1].locationId could not be derived; assign the room to a clinic location before restoring.",
+    );
+    expect(errors).toContain(
+      "appointments[appointment-1].locationId could not be derived; assign the appointment to a clinic location before restoring.",
+    );
+  });
+});
+
 describe("exportPracticeData query scoping", () => {
   const source = readFileSync(new URL("../export.ts", import.meta.url), "utf8");
 
@@ -714,6 +854,9 @@ describe("exportPracticeData query scoping", () => {
     );
     expect(source).toContain(
       "...smsConsentEventRows.map((event) => event.locationId)",
+    );
+    expect(source).toContain(
+      "...appointmentRows.map((appointment) => appointment.locationId)",
     );
     expect(source).toContain("smsConsentEvents: smsConsentEventRows");
     expect(source).toContain(".onConflictDoNothing()");

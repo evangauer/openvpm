@@ -15,11 +15,14 @@ import {
   invoices,
   communications,
   practices,
+  locations,
 } from "@openpims/db";
 import { users } from "@openpims/db";
 import { rateLimit } from "@/lib/rate-limit";
-import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
-import { appointmentCreatedWebhookPayload } from "@/lib/appointment-webhooks";
+import {
+  appointmentCreatedWebhookPayload,
+  dispatchAppointmentWebhookAfterCommit,
+} from "@/lib/appointment-webhooks";
 import { recordActivationAfterAppointmentCreated } from "@/lib/funnel-events-server";
 import {
   assertSlotWithinPortalBookingHours,
@@ -49,6 +52,11 @@ import { stripeConfigured } from "@/lib/stripe-config";
 import { not, inArray, lt, gt } from "drizzle-orm";
 import { gte, or } from "drizzle-orm";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
+import {
+  listActiveAppointmentLocations,
+  resolveAppointmentLocation,
+  takeAppointmentSchedulingLock,
+} from "@/lib/scheduling/location";
 
 const portalBookingDateInput = clinicalDateInput("Booking date");
 const portalBookingTimeInput = z
@@ -305,6 +313,10 @@ export const portalRouter = createRouter({
       await assertPortalReadRateLimit(input.token);
       const client = await getClientByToken(ctx.db, input.token);
       const timezone = await practiceTimeZone(ctx.db, client.practiceId);
+      const appointmentLocations = await listActiveAppointmentLocations(
+        ctx.db,
+        client.practiceId,
+      );
 
       const clientPatients = await ctx.db
         .select({
@@ -335,6 +347,7 @@ export const portalRouter = createRouter({
         email: client.email,
         phone: client.phone,
         timezone,
+        locations: appointmentLocations,
         patients: clientPatients,
       };
     }),
@@ -631,6 +644,8 @@ export const portalRouter = createRouter({
           patientSpecies: patients.species,
           doctorName: users.name,
           typeName: appointmentTypes.name,
+          locationName: locations.name,
+          locationId: appointments.locationId,
         })
         .from(appointments)
         .leftJoin(
@@ -656,6 +671,13 @@ export const portalRouter = createRouter({
             eq(appointmentTypes.practiceId, client.practiceId),
             isNull(appointmentTypes.deletedAt)
           )
+        )
+        .leftJoin(
+          locations,
+          and(
+            eq(appointments.locationId, locations.id),
+            eq(locations.practiceId, client.practiceId),
+          ),
         )
         .where(
           and(
@@ -943,6 +965,7 @@ export const portalRouter = createRouter({
           .min(PORTAL_BOOKING_MIN_DURATION_MINUTES)
           .max(PORTAL_BOOKING_MAX_DURATION_MINUTES)
           .default(30),
+        locationId: z.string().uuid().optional()
       })
     )
     .query(async ({ ctx, input }) => {
@@ -961,6 +984,13 @@ export const portalRouter = createRouter({
       const client = await getClientByToken(ctx.db, input.token);
       const timezone = await practiceTimeZone(ctx.db, client.practiceId);
       const { dayStart, dayEnd } = portalBookingWindow(input.date, timezone);
+      const location = await resolveAppointmentLocation(ctx.db, {
+        practiceId: client.practiceId,
+        locationId: input.locationId,
+      });
+      if (!location.ok) {
+        throw new TRPCError({ code: location.code, message: location.message });
+      }
 
       const busy = await ctx.db
         .select({
@@ -971,6 +1001,7 @@ export const portalRouter = createRouter({
         .where(
           and(
             eq(appointments.practiceId, client.practiceId),
+            eq(appointments.locationId, location.locationId),
             isNull(appointments.deletedAt),
             not(inArray(appointments.status, ["cancelled", "no_show"])),
             lt(appointments.startTime, dayEnd),
@@ -998,6 +1029,7 @@ export const portalRouter = createRouter({
         token: portalTokenInput,
         patientId: z.string().uuid(),
         typeId: z.string().uuid(),
+        locationId: z.string().uuid().optional(),
         preferredDate: portalBookingDateInput,
         preferredTime: portalBookingTimeInput,
         reason: z.string().trim().min(1).max(PORTAL_BOOKING_REASON_MAX_LENGTH),
@@ -1042,9 +1074,27 @@ export const portalRouter = createRouter({
       // Serialize portal and public requests for this practice before taking
       // the type row lock. The public procedure transaction holds both locks
       // through the conflict check and appointment insert.
-      await ctx.db.execute(
-        sql`select pg_advisory_xact_lock(hashtext(${`public-booking:${client.practiceId}`}::text))`
+      await takeAppointmentSchedulingLock(ctx.db, client.practiceId);
+      const location = await resolveAppointmentLocation(ctx.db, {
+        practiceId: client.practiceId,
+        locationId: input.locationId,
+      });
+      if (!location.ok) {
+        throw new TRPCError({ code: location.code, message: location.message });
+      }
+      const activeLocations = await listActiveAppointmentLocations(
+        ctx.db,
+        client.practiceId
       );
+      const selectedLocation = activeLocations.find(
+        (candidate) => candidate.id === location.locationId
+      );
+      if (!selectedLocation) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Location not found",
+        });
+      }
 
       // Every request must reference a verified active type in this practice.
       const [type] = await ctx.db
@@ -1096,6 +1146,7 @@ export const portalRouter = createRouter({
         .where(
           and(
             eq(appointments.practiceId, client.practiceId),
+            eq(appointments.locationId, location.locationId),
             isNull(appointments.deletedAt),
             not(inArray(appointments.status, ["cancelled", "no_show"])),
             lt(appointments.startTime, slot.endTime),
@@ -1121,6 +1172,7 @@ export const portalRouter = createRouter({
           clientId: client.id,
           patientId: patient.id,
           typeId,
+          locationId: location.locationId,
           startTime: slot.startTime,
           endTime: slot.endTime,
           status: "scheduled",
@@ -1147,13 +1199,15 @@ export const portalRouter = createRouter({
             input.preferredTime,
             timezone
           )}`,
+          `Location: ${selectedLocation.name}`,
           `Reason: ${input.reason}`,
         ].join("\n"),
         status: "pending",
         assignedTo: latestAssignedToForClient(client.practiceId, client.id),
       });
 
-      await dispatchWebhookEvent(
+      await dispatchAppointmentWebhookAfterCommit(
+        ctx,
         client.practiceId,
         "appointment.created",
         appointmentCreatedWebhookPayload(appt!, "portal")

@@ -36,12 +36,31 @@ const CLIENT_ID = "00000000-0000-0000-0000-000000000002";
 const PATIENT_ID = "00000000-0000-0000-0000-000000000003";
 const DOCTOR_ID = "00000000-0000-0000-0000-000000000004";
 const ROOM_ID = "00000000-0000-0000-0000-000000000006";
+const LOCATION_ID = "00000000-0000-0000-0000-000000000007";
 const OTHER_CLIENT_ID = "00000000-0000-0000-0000-000000000099";
 
 function toolDb(selectResults: unknown[][], insertRow: Record<string, unknown>) {
   const results = [...selectResults];
-  const select = vi.fn(() => {
-    const result = results.shift() ?? [];
+  const select = vi.fn((fields?: Record<string, unknown>) => {
+    const fieldNames = Object.keys(fields ?? {})
+      .sort()
+      .join(",");
+    const result =
+      fieldNames === "address,id,isPrimary,name,phone"
+        ? [
+            {
+              id: LOCATION_ID,
+              name: "Main Clinic",
+              address: "1 Main St",
+              phone: null,
+              isPrimary: true,
+            },
+          ]
+        : fieldNames === "id,locationId"
+          ? [{ id: ROOM_ID, locationId: LOCATION_ID }]
+          : fieldNames === "locationId"
+            ? [{ locationId: LOCATION_ID }]
+            : (results.shift() ?? []);
     const builder = {
       from: vi.fn(() => builder),
       innerJoin: vi.fn(() => builder),
@@ -62,7 +81,7 @@ function toolDb(selectResults: unknown[][], insertRow: Record<string, unknown>) 
   const ctx = {
     practiceId: PRACTICE_ID,
     userId: "agent-user",
-    db: { select, insert },
+    db: { select, insert, execute: vi.fn(async () => undefined) },
   } as unknown as AgentToolContext;
 
   return { ctx, insert, insertValues, select };
@@ -352,6 +371,7 @@ describe("book_appointment validation", () => {
         practiceId: PRACTICE_ID,
         clientId: CLIENT_ID,
         patientId: PATIENT_ID,
+        locationId: LOCATION_ID,
         notes: "Follow-up call",
       })
     );

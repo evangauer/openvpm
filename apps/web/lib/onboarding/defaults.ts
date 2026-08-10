@@ -83,7 +83,7 @@ export const DEFAULT_SERVICES: DefaultService[] = [
  */
 export async function seedPractice(
   db: Database,
-  opts: { practiceId: string; locationId?: string | null }
+  opts: { practiceId: string; locationId: string }
 ): Promise<void> {
   await db.insert(appointmentTypes).values(
     DEFAULT_APPOINTMENT_TYPES.map((t) => ({
@@ -99,7 +99,7 @@ export async function seedPractice(
   await db.insert(rooms).values(
     DEFAULT_ROOMS.map((r) => ({
       practiceId: opts.practiceId,
-      locationId: opts.locationId ?? null,
+      locationId: opts.locationId,
       name: r.name,
       type: r.type,
     }))
@@ -164,7 +164,7 @@ export async function seedDemoData(
     .from(appointmentTypes)
     .where(eq(appointmentTypes.practiceId, opts.practiceId));
   const seededRooms = await db
-    .select({ id: rooms.id })
+    .select({ id: rooms.id, locationId: rooms.locationId })
     .from(rooms)
     .where(eq(rooms.practiceId, opts.practiceId));
   const seededServices = await db
@@ -198,6 +198,10 @@ export async function seedDemoData(
   const doctorId = owner?.id ?? null;
   const room1 = seededRooms[0]?.id ?? null;
   const room2 = seededRooms[1]?.id ?? room1;
+  const locationId = seededRooms[0]?.locationId;
+  if (!locationId) {
+    throw new Error("Demo data requires a location-bound starter room.");
+  }
 
   // Build a day of appointments inside business hours (clinic local time),
   // plus one in the future. Hours render 8-18 on the Schedule. The shape
@@ -224,6 +228,7 @@ export async function seedDemoData(
     notes?: string;
   }) => ({
     practiceId: opts.practiceId,
+    locationId,
     clientId: insertedClients[opts2.clientIdx]!.id,
     patientId: insertedPatients[opts2.patientIdx]!.id,
     startTime: opts2.start,

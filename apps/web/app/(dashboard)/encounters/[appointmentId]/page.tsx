@@ -32,6 +32,7 @@ import {
   Syringe,
   Trash2,
   UserRound,
+  MapPin,
 } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
@@ -489,8 +490,13 @@ export default function EncounterWorkspacePage() {
                   ? `Dr. ${appointment.doctorName}`
                   : "Unassigned provider"}
               </span>
-              {appointment.roomName ? (
-                <span>{appointment.roomName}</span>
+              {appointment.locationName || appointment.roomName ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <MapPin className="h-4 w-4" />
+                  {[appointment.locationName, appointment.roomName]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </span>
               ) : null}
             </div>
           </div>

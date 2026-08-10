@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef, Suspense } from "react";
+import { useState, useCallback, useEffect, useRef, Suspense } from "react";
 import { useSession } from "next-auth/react";
 import { useSearchParams } from "next/navigation";
 import {
@@ -4245,6 +4245,7 @@ function ImportStat({ label, value }: { label: string; value: number }) {
 // ── Rooms ───────────────────────────────────────────────────
 function RoomsTab() {
   const utils = trpc.useUtils();
+  const locationsQuery = trpc.settings.listLocations.useQuery();
   const {
     data: roomList,
     isLoading,
@@ -4255,7 +4256,14 @@ function RoomsTab() {
     onSuccess: () => {
       utils.settings.listRooms.invalidate();
       setShowAdd(false);
-      setAddForm({ name: "", type: "exam" });
+      setAddForm({
+        name: "",
+        type: "exam",
+        locationId:
+          locationsQuery.data?.find((location) => location.isPrimary)?.id ??
+          locationsQuery.data?.[0]?.id ??
+          "",
+      });
       toast.success("Room created");
     },
     onError: (err) => {
@@ -4276,10 +4284,23 @@ function RoomsTab() {
   const [addForm, setAddForm] = useState({
     name: "",
     type: "exam" as "exam" | "surgery" | "treatment" | "boarding",
+    locationId: "",
   });
   const isRoomNameValid = (name: string) =>
     name.trim().length > 0 && name.trim().length <= ROOM_NAME_MAX_LENGTH;
   const roomsMissing = !isLoading && !roomsError && !roomList;
+  const roomLocations = locationsQuery.data ?? [];
+
+  useEffect(() => {
+    if (!addForm.locationId && roomLocations.length > 0) {
+      setAddForm((current) => ({
+        ...current,
+        locationId:
+          roomLocations.find((location) => location.isPrimary)?.id ??
+          roomLocations[0]!.id,
+      }));
+    }
+  }, [addForm.locationId, roomLocations]);
 
   if (isLoading) {
     return (
@@ -4313,7 +4334,7 @@ function RoomsTab() {
       {showAdd && (
         <div className="rounded-lg border border-border bg-card p-4 space-y-3">
           <h3 className="text-sm font-semibold">New Room</h3>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <Input
               placeholder="Room name"
               maxLength={ROOM_NAME_MAX_LENGTH}
@@ -4336,12 +4357,30 @@ function RoomsTab() {
                 </option>
               ))}
             </select>
+            <select
+              aria-label="Clinic location"
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              value={addForm.locationId}
+              onChange={(event) =>
+                setAddForm({ ...addForm, locationId: event.target.value })
+              }
+              disabled={locationsQuery.isLoading || roomLocations.length === 0}
+            >
+              <option value="">Select location</option>
+              {roomLocations.map((location) => (
+                <option key={location.id} value={location.id}>
+                  {location.name}
+                </option>
+              ))}
+            </select>
           </div>
           <div className="flex gap-2">
             <Button
               size="sm"
               disabled={
-                !isRoomNameValid(addForm.name) || createMutation.isPending
+                !isRoomNameValid(addForm.name) ||
+                !addForm.locationId ||
+                createMutation.isPending
               }
               onClick={() => createMutation.mutate(addForm)}
             >
@@ -4363,6 +4402,7 @@ function RoomsTab() {
             <tr className="border-b border-border bg-muted/50">
               <th className="px-4 py-3 text-left font-medium">Name</th>
               <th className="px-4 py-3 text-left font-medium">Type</th>
+              <th className="px-4 py-3 text-left font-medium">Location</th>
               <th className="px-4 py-3 text-right font-medium">Actions</th>
             </tr>
           </thead>
@@ -4375,6 +4415,11 @@ function RoomsTab() {
                 <td className="px-4 py-3 font-medium">{room.name}</td>
                 <td className="px-4 py-3 text-muted-foreground capitalize">
                   {room.type}
+                </td>
+                <td className="px-4 py-3 text-muted-foreground">
+                  {roomLocations.find(
+                    (location) => location.id === room.locationId,
+                  )?.name ?? "Unassigned"}
                 </td>
                 <td className="px-4 py-3 text-right">
                   <Button
@@ -4389,7 +4434,7 @@ function RoomsTab() {
             ))}
             {roomList?.length === 0 && (
               <tr>
-                <td colSpan={3} className="p-0">
+                <td colSpan={4} className="p-0">
                   <EmptyState
                     className="border-0 bg-transparent p-8"
                     icon={DoorOpen}

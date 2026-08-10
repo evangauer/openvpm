@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { AlertCircle, CalendarX2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
@@ -28,6 +28,7 @@ export default function PublicBookingPage() {
   const slug = (params.slug as string) ?? "";
   const formId = useId();
   const typeFieldId = `${formId}-type`;
+  const locationFieldId = `${formId}-location`;
   const dateFieldId = `${formId}-date`;
   const firstNameFieldId = `${formId}-first-name`;
   const lastNameFieldId = `${formId}-last-name`;
@@ -42,6 +43,7 @@ export default function PublicBookingPage() {
   const book = trpc.booking.book.useMutation();
 
   const [typeId, setTypeId] = useState("");
+  const [locationId, setLocationId] = useState("");
   const [date, setDate] = useState("");
   const [time, setTime] = useState("");
   const [firstName, setFirstName] = useState("");
@@ -55,9 +57,15 @@ export default function PublicBookingPage() {
   const [website, setWebsite] = useState("");
 
   const slots = trpc.booking.availableSlots.useQuery(
-    { slug, date, typeId },
-    { enabled: !!slug && !!date && !!typeId }
+    { slug, date, typeId, locationId: locationId || undefined },
+    { enabled: !!slug && !!date && !!typeId && !!locationId }
   );
+
+  useEffect(() => {
+    if (page.data?.locations.length === 1 && !locationId) {
+      setLocationId(page.data.locations[0]!.id);
+    }
+  }, [locationId, page.data]);
 
   const dateBounds = useMemo(() => {
     if (!page.data) return null;
@@ -90,16 +98,20 @@ export default function PublicBookingPage() {
   const data = page.data;
   const accent = data.accentColor;
   const selectedType = data.types.find((t) => t.id === typeId);
+  const selectedLocation = data.locations.find(
+    (item) => item.id === locationId,
+  );
   const canSubmit = Boolean(
     date &&
-      time &&
-      typeId &&
-      firstName.trim() &&
-      lastName.trim() &&
-      email.trim() &&
-      petName.trim() &&
-      reason.trim() &&
-      !book.isPending
+    time &&
+    typeId &&
+    selectedLocation &&
+    firstName.trim() &&
+    lastName.trim() &&
+    email.trim() &&
+    petName.trim() &&
+    reason.trim() &&
+    !book.isPending
   );
 
   function submit(e: React.FormEvent) {
@@ -108,6 +120,7 @@ export default function PublicBookingPage() {
     book.mutate({
       slug,
       typeId,
+      locationId,
       date,
       time,
       contact: {
@@ -141,6 +154,33 @@ export default function PublicBookingPage() {
         </div>
         <h1 className="text-xl font-bold text-gray-900 mb-2">Request sent!</h1>
         <p className="text-gray-600 max-w-sm mx-auto">{book.data.message}</p>
+        <div className="mx-auto mt-5 max-w-sm rounded-xl border border-gray-200 bg-gray-50 p-4 text-left text-sm">
+          <p className="mb-3 font-semibold text-gray-900">
+            Requested — not yet confirmed
+          </p>
+          <dl className="space-y-2 text-gray-600">
+            <div className="flex justify-between gap-4">
+              <dt>Pet</dt>
+              <dd className="font-medium text-gray-900">{petName}</dd>
+            </div>
+            <div className="flex justify-between gap-4">
+              <dt>Visit</dt>
+              <dd className="font-medium text-gray-900">
+                {selectedType?.name ?? "Appointment"}
+              </dd>
+            </div>
+            <div className="flex justify-between gap-4">
+              <dt>Preferred time</dt>
+              <dd className="font-medium text-gray-900">{date} at {time}</dd>
+            </div>
+            <div className="flex justify-between gap-4">
+              <dt>Clinic</dt>
+              <dd className="text-right font-medium text-gray-900">
+                {selectedLocation?.name ?? data.practice.name}
+              </dd>
+            </div>
+          </dl>
+        </div>
         <p className="text-gray-500 text-sm mt-4">
           We sent the details to the clinic. Questions?{" "}
           {data.practice.phone ? `Call ${data.practice.phone}.` : "Contact the clinic."}
@@ -171,7 +211,10 @@ export default function PublicBookingPage() {
           <div>
             <h1 className="text-xl font-bold text-gray-900">{data.practice.name}</h1>
             <p className="text-sm text-gray-500">
-              {[data.practice.address, data.practice.phone]
+              {[
+                selectedLocation?.address ?? data.practice.address,
+                data.practice.phone,
+              ]
                 .filter(Boolean)
                 .join(" · ")}
             </p>
@@ -192,6 +235,48 @@ export default function PublicBookingPage() {
             confirm the appointment with you.
           </p>
         </div>
+
+        {data.locations.length > 1 ? (
+          <div>
+            <label
+              htmlFor={locationFieldId}
+              className="block text-sm font-medium text-gray-700 mb-1.5"
+            >
+              Clinic location
+            </label>
+            <select
+              id={locationFieldId}
+              value={locationId}
+              onChange={(event) => {
+                setLocationId(event.target.value);
+                setTime("");
+              }}
+              required
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+            >
+              <option value="" disabled>
+                Choose a location
+              </option>
+              {data.locations.map((location) => (
+                <option key={location.id} value={location.id}>
+                  {location.name}
+                </option>
+              ))}
+            </select>
+            {selectedLocation?.address ? (
+              <p className="mt-1 text-xs text-gray-500">
+                {selectedLocation.address}
+              </p>
+            ) : null}
+          </div>
+        ) : data.locations[0] ? (
+          <p className="rounded-lg bg-gray-50 px-3 py-2 text-sm text-gray-600">
+            <span className="font-medium text-gray-800">
+              {data.locations[0].name}
+            </span>
+            {data.locations[0].address ? ` · ${data.locations[0].address}` : ""}
+          </p>
+        ) : null}
 
         <div>
           <label
@@ -243,23 +328,23 @@ export default function PublicBookingPage() {
           />
         </div>
 
-        {date && typeId && (
+        {date && typeId && locationId && (
           <fieldset>
             <legend className="text-sm font-medium text-gray-700 mb-2">
               Pick a time
             </legend>
             {slots.isLoading && (
-              <p className="text-xs text-gray-500">Checking open times…</p>
+              <p className="text-xs text-gray-500">Checking suggested times…</p>
             )}
             {!slots.isLoading && slots.error && (
               <p className="text-xs text-red-600">
-                Open times could not be loaded. Please try again.
+                Suggested times could not be loaded. Please try again.
               </p>
             )}
             {!slots.isLoading && !slots.error && slots.data && slots.data.length === 0 && (
               <div className="flex items-center gap-2 text-xs text-gray-500">
                 <CalendarX2 className="h-4 w-4" />
-                No open times that day. Try another date.
+                No suggested request times that day. Try another date.
               </div>
             )}
             {!slots.isLoading && !slots.error && slots.data && slots.data.length > 0 && (

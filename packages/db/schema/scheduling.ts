@@ -94,6 +94,16 @@ export const rooms = pgTable(
       table.locationId,
       table.deletedAt,
     ),
+    practiceLocationIdUq: uniqueIndex("rooms_practice_location_id_uq").on(
+      table.practiceId,
+      table.locationId,
+      table.id,
+    ),
+    locationTenantFk: foreignKey({
+      columns: [table.practiceId, table.locationId],
+      foreignColumns: [locations.practiceId, locations.id],
+      name: "rooms_location_tenant_fk",
+    }),
   }),
 );
 
@@ -114,6 +124,7 @@ export const appointments = pgTable(
     practiceId: uuid("practice_id")
       .notNull()
       .references(() => practices.id),
+    locationId: uuid("location_id").references(() => locations.id),
     startTime: timestamp("start_time", { withTimezone: true }).notNull(),
     endTime: timestamp("end_time", { withTimezone: true }).notNull(),
     typeId: uuid("type_id").references(() => appointmentTypes.id),
@@ -181,6 +192,26 @@ export const appointments = pgTable(
       table.roomId,
       table.status,
       table.deletedAt,
+    ),
+    locationTimeIdx: index("appointments_location_time_idx").on(
+      table.practiceId,
+      table.locationId,
+      table.startTime,
+      table.deletedAt,
+    ),
+    locationTenantFk: foreignKey({
+      columns: [table.practiceId, table.locationId],
+      foreignColumns: [locations.practiceId, locations.id],
+      name: "appointments_location_tenant_fk",
+    }),
+    roomLocationTenantFk: foreignKey({
+      columns: [table.practiceId, table.locationId, table.roomId],
+      foreignColumns: [rooms.practiceId, rooms.locationId, rooms.id],
+      name: "appointments_room_location_tenant_fk",
+    }),
+    timeRangeCheck: check(
+      "appointments_time_range_check",
+      sql`${table.startTime} < ${table.endTime}`,
     ),
   }),
 );
@@ -323,6 +354,10 @@ export const appointmentsRelations = relations(appointments, ({ one }) => ({
   practice: one(practices, {
     fields: [appointments.practiceId],
     references: [practices.id],
+  }),
+  location: one(locations, {
+    fields: [appointments.locationId],
+    references: [locations.id],
   }),
   type: one(appointmentTypes, {
     fields: [appointments.typeId],

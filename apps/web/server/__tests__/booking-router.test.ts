@@ -45,6 +45,7 @@ const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000002";
 const TYPE_A = "00000000-0000-0000-0000-00000000000a";
 const TYPE_B = "00000000-0000-0000-0000-00000000000b";
 const USER_ID = "00000000-0000-0000-0000-000000000099";
+const LOCATION_ID = "00000000-0000-0000-0000-000000000088";
 
 const ALL_DAYS_OPEN = Array(7).fill({ open: "08:00", close: "18:00" });
 
@@ -113,8 +114,24 @@ function createDb(opts?: {
   const insertedValues: unknown[] = [];
   const operations: string[] = [];
 
-  const select = vi.fn(() => {
-    const result = selectResults.shift() ?? [];
+  const select = vi.fn((fields?: Record<string, unknown>) => {
+    const fieldNames = Object.keys(fields ?? {})
+      .sort()
+      .join(",");
+    const result =
+      fieldNames === "address,id,isPrimary,name,phone"
+        ? [
+            {
+              id: LOCATION_ID,
+              name: "Main Clinic",
+              address: "1 Main St",
+              phone: "555-0100",
+              isPrimary: true,
+            },
+          ]
+        : fieldNames === "name"
+          ? [{ name: "Main Clinic" }]
+          : (selectResults.shift() ?? []);
     const afterWhere = {
       limit: vi.fn(async () => result),
       orderBy: vi.fn(async () => result),
@@ -384,6 +401,7 @@ describe("public booking", () => {
     });
     expect(apptValues).toMatchObject({
       practiceId: PRACTICE_ID,
+      locationId: LOCATION_ID,
       clientId: CLIENT_ID,
       patientId: PATIENT_ID,
       typeId: TYPE_A,

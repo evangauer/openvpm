@@ -104,6 +104,7 @@ export function toApiAppointment(row: AppointmentRow): ApiAppointment {
     doctor_id: row.doctorId,
     type_id: row.typeId,
     room_id: row.roomId,
+    location_id: row.locationId,
     notes: row.notes,
     created_at: iso(row.createdAt),
     updated_at: iso(row.updatedAt),
@@ -143,6 +144,7 @@ export function fromApiAppointmentCreate(
     doctorId: body.doctor_id ?? null,
     typeId: body.type_id ?? null,
     roomId: body.room_id ?? null,
+    locationId: body.location_id ?? null,
     notes: body.notes ?? null,
   };
 }

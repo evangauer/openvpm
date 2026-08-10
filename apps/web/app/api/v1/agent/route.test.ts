@@ -211,8 +211,45 @@ describe("POST /api/v1/agent", () => {
         db: mocks.tx,
         practiceId: PRACTICE_ID,
         userId: `apikey:${API_KEY_ID}`,
+        postCommitEffect: expect.any(Function),
       },
     });
+  });
+
+  it("runs queued effects only after the tenant transaction completes", async () => {
+    const order: string[] = [];
+    const effect = vi.fn(async () => {
+      order.push("effect");
+    });
+    mocks.withTenant.mockImplementationOnce(
+      async (
+        _db: unknown,
+        _practiceId: string,
+        fn: (tx: unknown) => Promise<unknown>
+      ) => {
+        const result = await fn(mocks.tx);
+        order.push("commit");
+        return result;
+      }
+    );
+    mocks.runAgent.mockImplementationOnce(async ({ context }) => {
+      order.push("agent");
+      context.postCommitEffect?.(effect);
+      return {
+        text: "Done",
+        toolCalls: [],
+        iterations: 1,
+        stopReason: "stop" as const,
+      };
+    });
+
+    const response = await POST(
+      request({ instruction: "Book an appointment for tomorrow" })
+    );
+
+    expect(response.status).toBe(200);
+    expect(effect).toHaveBeenCalledWith({});
+    expect(order).toEqual(["agent", "commit", "effect"]);
   });
 
   it("rejects write-enabled agent runs without the agent:write scope", async () => {
@@ -267,6 +304,7 @@ describe("POST /api/v1/agent", () => {
         db: mocks.tx,
         practiceId: PRACTICE_ID,
         userId: `apikey:${API_KEY_ID}`,
+        postCommitEffect: expect.any(Function),
       },
     });
   });
@@ -320,6 +358,7 @@ describe("POST /api/v1/agent", () => {
         db: mocks.tx,
         practiceId: PRACTICE_ID,
         userId: `apikey:${API_KEY_ID}`,
+        postCommitEffect: expect.any(Function),
       },
     });
   });

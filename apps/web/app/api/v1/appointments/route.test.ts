@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => {
     doctorId: "00000000-0000-0000-0000-000000000004",
     typeId: "00000000-0000-0000-0000-000000000005",
     roomId: "00000000-0000-0000-0000-000000000006",
+    locationId: "00000000-0000-0000-0000-000000000007",
     notes: "Annual wellness",
     recurringSeriesId: null,
     createdAt: new Date("2026-07-01T14:00:00.000Z"),
@@ -27,8 +28,35 @@ const mocks = vi.hoisted(() => {
   const insertReturning = vi.fn(async () => [insertRow]);
   const insertValues = vi.fn(() => ({ returning: insertReturning }));
   const db = {
-    select: vi.fn(() => {
-      const result = selectResults.shift() ?? [];
+    select: vi.fn((fields?: Record<string, unknown>) => {
+      const fieldNames = Object.keys(fields ?? {})
+        .sort()
+        .join(",");
+      const result =
+        fieldNames === "address,id,isPrimary,name,phone"
+          ? [
+              {
+                id: "00000000-0000-0000-0000-000000000007",
+                name: "Main Clinic",
+                address: "1 Main St",
+                phone: null,
+                isPrimary: true,
+              },
+            ]
+          : fieldNames === "id,locationId"
+            ? [
+                {
+                  id: "00000000-0000-0000-0000-000000000006",
+                  locationId: "00000000-0000-0000-0000-000000000007",
+                },
+              ]
+            : fieldNames === "locationId"
+              ? [
+                  {
+                    locationId: "00000000-0000-0000-0000-000000000007",
+                  },
+                ]
+              : (selectResults.shift() ?? []);
       const afterLimit = {
         offset: vi.fn(async () => result),
         then: (
@@ -50,6 +78,7 @@ const mocks = vi.hoisted(() => {
       return builder;
     }),
     insert: vi.fn(() => ({ values: insertValues })),
+    execute: vi.fn(async () => undefined),
   };
 
   return {
@@ -112,6 +141,7 @@ const PATIENT_ID = "00000000-0000-0000-0000-000000000003";
 const DOCTOR_ID = "00000000-0000-0000-0000-000000000004";
 const TYPE_ID = "00000000-0000-0000-0000-000000000005";
 const ROOM_ID = "00000000-0000-0000-0000-000000000006";
+const LOCATION_ID = "00000000-0000-0000-0000-000000000007";
 const OTHER_CLIENT_ID = "00000000-0000-0000-0000-000000000099";
 const ACTIVE_PRACTICE = [{ id: PRACTICE_ID }];
 
@@ -553,6 +583,7 @@ describe("/api/v1/appointments", () => {
       doctor_id: DOCTOR_ID,
       type_id: TYPE_ID,
       room_id: ROOM_ID,
+      location_id: LOCATION_ID,
       notes: "Annual wellness",
     });
     expect(mocks.insertValues).toHaveBeenCalledWith(
@@ -563,6 +594,7 @@ describe("/api/v1/appointments", () => {
         doctorId: DOCTOR_ID,
         typeId: TYPE_ID,
         roomId: ROOM_ID,
+        locationId: LOCATION_ID,
       })
     );
     expect(mocks.dispatchWebhookEvent).toHaveBeenCalledWith(
@@ -578,6 +610,7 @@ describe("/api/v1/appointments", () => {
         doctorId: DOCTOR_ID,
         typeId: TYPE_ID,
         roomId: ROOM_ID,
+        locationId: LOCATION_ID,
         source: "api",
       })
     );

@@ -37,7 +37,9 @@ describe("request-only booking UI", () => {
 
   it("requires an explicitly selected requestable type on both public forms", () => {
     expect(publicPage).toContain("typeId &&");
-    expect(publicPage).toContain("{ enabled: !!slug && !!date && !!typeId }");
+    expect(publicPage).toContain(
+      "{ enabled: !!slug && !!date && !!typeId && !!locationId }",
+    );
     expect(publicPage).toContain("Choose a visit type");
     expect(publicPage).not.toContain("General visit");
 
@@ -51,6 +53,7 @@ describe("request-only booking UI", () => {
   it("associates public form labels and exposes time choices as radios", () => {
     for (const field of [
       "typeFieldId",
+      "locationFieldId",
       "dateFieldId",
       "firstNameFieldId",
       "lastNameFieldId",
@@ -71,6 +74,7 @@ describe("request-only booking UI", () => {
     for (const field of [
       "patientFieldId",
       "typeFieldId",
+      "locationFieldId",
       "dateFieldId",
       "timeFieldId",
       "reasonFieldId",
@@ -78,6 +82,13 @@ describe("request-only booking UI", () => {
       expect(portalPage).toContain(`htmlFor={${field}}`);
       expect(portalPage).toContain(`id={${field}}`);
     }
+  });
+
+  it("shows an explicit unconfirmed request receipt", () => {
+    expect(publicPage).toContain("Requested — not yet confirmed");
+    expect(portalPage).toContain("Requested — not yet confirmed");
+    expect(publicPage).toContain("Preferred time");
+    expect(portalPage).toContain("Preferred time");
   });
 
   it("associates booking settings labels with their controls", () => {

@@ -1,3 +1,6 @@
+import type { Database } from "@openpims/db/client";
+import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
+
 export type AppointmentCreatedWebhookSource =
   | "agent"
   | "api"
@@ -15,6 +18,7 @@ type AppointmentCreatedWebhookRow = {
   doctorId?: string | null;
   typeId?: string | null;
   roomId?: string | null;
+  locationId?: string | null;
 };
 
 export function appointmentCreatedWebhookPayload(
@@ -31,6 +35,25 @@ export function appointmentCreatedWebhookPayload(
     doctorId: appointment.doctorId ?? null,
     typeId: appointment.typeId ?? null,
     roomId: appointment.roomId ?? null,
+    locationId: appointment.locationId ?? null,
     source,
   };
+}
+
+/** Keep external delivery outside appointment scheduling transactions/locks. */
+export async function dispatchAppointmentWebhookAfterCommit(
+  ctx: {
+    postCommitEffect?: (effect: (rootDb: Database) => Promise<void>) => void;
+  },
+  practiceId: string,
+  event: string,
+  payload: Record<string, any>,
+): Promise<void> {
+  if (ctx.postCommitEffect) {
+    ctx.postCommitEffect(async () => {
+      await dispatchWebhookEvent(practiceId, event, payload);
+    });
+    return;
+  }
+  await dispatchWebhookEvent(practiceId, event, payload);
 }
