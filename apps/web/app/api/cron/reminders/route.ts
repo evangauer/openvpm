@@ -266,7 +266,7 @@ export async function GET(request: Request) {
             gte(appointments.startTime, now),
             lte(
               appointments.startTime,
-              sql`${now} + (${practices.appointmentReminderLeadHours} * interval '1 hour')`,
+              sql`${now.toISOString()}::timestamptz + (${practices.appointmentReminderLeadHours} * interval '1 hour')`,
             ),
             eq(appointments.status, "confirmed"),
           ),

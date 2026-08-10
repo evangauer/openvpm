@@ -81,7 +81,7 @@ export async function appointmentReminderDispatchEligible(
         gte(appointments.startTime, options.now),
         lte(
           appointments.startTime,
-          sql`${options.now} + (${practices.appointmentReminderLeadHours} * interval '1 hour')`,
+          sql`${options.now.toISOString()}::timestamptz + (${practices.appointmentReminderLeadHours} * interval '1 hour')`,
         ),
       ),
     )
@@ -167,7 +167,7 @@ export async function currentAppointmentReminderEmailRecipient(
         gte(appointments.startTime, options.now),
         lte(
           appointments.startTime,
-          sql`${options.now} + (${practices.appointmentReminderLeadHours} * interval '1 hour')`,
+          sql`${options.now.toISOString()}::timestamptz + (${practices.appointmentReminderLeadHours} * interval '1 hour')`,
         ),
       ),
     )

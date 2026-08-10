@@ -786,6 +786,8 @@ describe("appointment reminder cron query scoping", () => {
     expect(source).toContain("eq(practices.appointmentRemindersEnabled, true)");
     expect(source).toContain("practices.appointmentReminderLeadHours");
     expect(source).toContain("interval '1 hour'");
+    expect(source).toContain("now.toISOString()}::timestamptz");
+    expect(source).not.toContain("sql`${now} +");
     expect(source).not.toContain(
       'inArray(appointments.status, ["scheduled", "confirmed"])',
     );
@@ -801,6 +803,8 @@ describe("appointment reminder cron query scoping", () => {
       "eq(appointments.startTime, options.startTime)",
     );
     expect(claimSource).toContain("practices.appointmentReminderLeadHours");
+    expect(claimSource).toContain("options.now.toISOString()}::timestamptz");
+    expect(claimSource).not.toContain("sql`${options.now} +");
     expect(claimSource).toContain("isNull(appointments.deletedAt)");
     expect(source).toContain("currentAppointmentReminderEmailRecipient(tx");
     expect(claimSource).toContain(
