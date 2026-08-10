@@ -860,8 +860,25 @@ export const patientsRouter = createRouter({
     }),
 
   search: protectedProcedure
-    .input(z.object({ query: patientSearchQueryInput }))
+    .input(
+      z.object({
+        query: patientSearchQueryInput,
+        status: patientStatusInput.optional(),
+      })
+    )
     .query(async ({ ctx, input }) => {
+      const conditions = [
+        eq(patients.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(patients.deletedAt),
+        or(
+          ilike(patients.name, `%${input.query}%`),
+          ilike(patients.breed, `%${input.query}%`)
+        )!,
+      ];
+      if (input.status) {
+        conditions.push(eq(patients.status, input.status));
+      }
       return ctx.db
         .select({
           id: patients.id,
@@ -880,17 +897,7 @@ export const patientsRouter = createRouter({
             isNull(clients.deletedAt)
           )
         )
-        .where(
-          and(
-            eq(patients.practiceId, ctx.practiceId),
-            activePracticePredicate(ctx.practiceId),
-            isNull(patients.deletedAt),
-            or(
-              ilike(patients.name, `%${input.query}%`),
-              ilike(patients.breed, `%${input.query}%`)
-            )
-          )
-        )
+        .where(and(...conditions))
         .limit(10);
     }),
 

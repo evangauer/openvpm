@@ -87,6 +87,8 @@ export const whiteboardRouter = createRouter({
         status: appointments.status,
         startTime: appointments.startTime,
         notes: appointments.notes,
+        patientId: patients.id,
+        clientId: clients.id,
         patientName: patients.name,
         patientSpecies: patients.species,
         patientPhotoUrl: patients.photoUrl,
@@ -104,6 +106,7 @@ export const whiteboardRouter = createRouter({
           eq(appointments.patientId, patients.id),
           eq(patients.clientId, appointments.clientId),
           eq(patients.practiceId, ctx.practiceId),
+          eq(patients.status, "active"),
           activePracticePredicate(ctx.practiceId),
           isNull(patients.deletedAt)
         )
@@ -173,8 +176,33 @@ export const whiteboardRouter = createRouter({
     .mutation(async ({ ctx, input }) => {
       const { current, appt } = await ctx.db.transaction(async (tx) => {
         const [current] = await tx
-          .select({ id: appointments.id, status: appointments.status })
+          .select({
+            id: appointments.id,
+            status: appointments.status,
+            patientId: appointments.patientId,
+            clientId: appointments.clientId,
+            activePatientId: patients.id,
+            activeClientId: clients.id,
+          })
           .from(appointments)
+          .leftJoin(
+            patients,
+            and(
+              eq(appointments.patientId, patients.id),
+              eq(patients.clientId, appointments.clientId),
+              eq(patients.practiceId, ctx.practiceId),
+              eq(patients.status, "active"),
+              isNull(patients.deletedAt)
+            )
+          )
+          .leftJoin(
+            clients,
+            and(
+              eq(appointments.clientId, clients.id),
+              eq(clients.practiceId, ctx.practiceId),
+              isNull(clients.deletedAt)
+            )
+          )
           .where(
             and(
               eq(appointments.id, input.id),
@@ -183,7 +211,9 @@ export const whiteboardRouter = createRouter({
               isNull(appointments.deletedAt)
             )
           )
-          .for("update");
+          // Lock only the appointment owner row; PostgreSQL cannot apply
+          // FOR UPDATE to the nullable side of these validation LEFT JOINs.
+          .for("update", { of: appointments });
         if (!current) {
           throw new TRPCError({
             code: "NOT_FOUND",
@@ -200,6 +230,19 @@ export const whiteboardRouter = createRouter({
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: `Cannot change appointment status from ${current.status} to ${input.status}.`,
+          });
+        }
+        if (
+          input.status === "in_exam" &&
+          (!current.patientId ||
+            !current.clientId ||
+            current.activePatientId !== current.patientId ||
+            current.activeClientId !== current.clientId)
+        ) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Attach an active patient and matching client before starting the exam.",
           });
         }
 

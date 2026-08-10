@@ -69,6 +69,7 @@ function createStatusDb(opts?: {
     };
     const builder = {
       from: vi.fn(() => builder),
+      leftJoin: vi.fn(() => builder),
       where: vi.fn(() => afterWhere),
     };
     return builder;
@@ -264,8 +265,17 @@ describe("whiteboard workflows", () => {
   });
 
   it("does not dispatch checked-in webhooks after the check-in transition", async () => {
+    const patientId = "00000000-0000-0000-0000-000000000003";
+    const clientId = "00000000-0000-0000-0000-000000000004";
     const { db, updateSet } = createStatusDb({
-      selectResults: [[{ id: APPOINTMENT_ID, status: "checked_in" }]],
+      selectResults: [[{
+        id: APPOINTMENT_ID,
+        status: "checked_in",
+        patientId,
+        clientId,
+        activePatientId: patientId,
+        activeClientId: clientId,
+      }]],
       updatedRows: [{ id: APPOINTMENT_ID, status: "in_exam" }],
     });
 
@@ -278,6 +288,32 @@ describe("whiteboard workflows", () => {
 
     expect(updateSet).toHaveBeenCalledWith({ status: "in_exam" });
     expect(mocks.dispatchWebhookEvent).not.toHaveBeenCalled();
+  });
+
+  it("blocks exam entry without an active patient and matching client", async () => {
+    const { db, updateSet } = createStatusDb({
+      selectResults: [[{
+        id: APPOINTMENT_ID,
+        status: "checked_in",
+        patientId: "00000000-0000-0000-0000-000000000003",
+        clientId: "00000000-0000-0000-0000-000000000004",
+        activePatientId: null,
+        activeClientId: "00000000-0000-0000-0000-000000000004",
+      }]],
+    });
+
+    await expect(
+      callerWithDb(db).updateStatus({
+        id: APPOINTMENT_ID,
+        status: "in_exam",
+      })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Attach an active patient and matching client before starting the exam.",
+    });
+
+    expect(updateSet).not.toHaveBeenCalled();
   });
 
   it("rejects missing, deleted, or cross-tenant appointments", async () => {
@@ -385,7 +421,7 @@ describe("whiteboard query scoping", () => {
 
   it("keeps displayed patients tied to the appointment client", () => {
     expect(source).toMatch(
-      /leftJoin\(\s*patients,\s*and\(\s*eq\(appointments\.patientId, patients\.id\),\s*eq\(patients\.clientId, appointments\.clientId\),\s*eq\(patients\.practiceId, ctx\.practiceId\),\s*activePracticePredicate\(ctx\.practiceId\),\s*isNull\(patients\.deletedAt\)\s*\)\s*\)/s
+      /leftJoin\(\s*patients,\s*and\(\s*eq\(appointments\.patientId, patients\.id\),\s*eq\(patients\.clientId, appointments\.clientId\),\s*eq\(patients\.practiceId, ctx\.practiceId\),\s*eq\(patients\.status, "active"\),\s*activePracticePredicate\(ctx\.practiceId\),\s*isNull\(patients\.deletedAt\)\s*\)\s*\)/s
     );
   });
 
@@ -397,6 +433,7 @@ describe("whiteboard query scoping", () => {
 
   it("uses the shared appointment status workflow guard for updates", () => {
     expect(source).toContain("canTransitionAppointmentStatus");
+    expect(source).toContain('.for("update", { of: appointments })');
     expect(source).toContain("eq(appointments.status, current.status)");
     expect(source).toMatch(
       /eq\(appointments\.practiceId, ctx\.practiceId\),\s*activePracticePredicate\(ctx\.practiceId\),\s*isNull\(appointments\.deletedAt\)/

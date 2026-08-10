@@ -104,6 +104,10 @@ const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: "procedures", label: "Procedures", icon: Scissors },
 ];
 
+function isTab(value: string | null): value is Tab {
+  return tabs.some((tab) => tab.id === value);
+}
+
 function RecordsChartChunkLoading() {
   return (
     <div className="rounded-lg border border-border bg-card p-4">
@@ -597,11 +601,11 @@ function RecordsPageContent() {
   const { data: session } = useSession();
   const linkedPatientId = searchParams.get("patientId") ?? "";
   const linkedAppointmentId = searchParams.get("appointmentId") ?? "";
-  const shouldOpenPrescription =
-    searchParams.get("tab") === "prescriptions" &&
-    searchParams.get("new") === "1";
+  const requestedTab = searchParams.get("tab");
+  const shouldOpenNewRecord = searchParams.get("new") === "1";
   const requestedAmendLabResultId = searchParams.get("amendLabResultId");
-  const appliedVisitLink = useRef(false);
+  const visitContextKey = linkedPatientId ? searchParams.toString() : "";
+  const appliedVisitLink = useRef<string | null>(null);
   const appliedSoapHash = useRef<string | null>(null);
   const appliedLabAmendLink = useRef<string | null>(null);
   const prescriptionOperationId = useRef<string | null>(null);
@@ -658,7 +662,14 @@ function RecordsPageContent() {
   );
 
   useEffect(() => {
-    if (appliedVisitLink.current || !linkedPatientQuery.data) return;
+    if (
+      !visitContextKey ||
+      appliedVisitLink.current === visitContextKey ||
+      !linkedPatientQuery.data ||
+      linkedPatientQuery.data.id !== linkedPatientId
+    ) {
+      return;
+    }
     const linkedPatient = linkedPatientQuery.data;
     setSelectedPatient({
       id: linkedPatient.id,
@@ -669,15 +680,36 @@ function RecordsPageContent() {
       clientLastName: linkedPatient.clientLastName,
     });
     setSearchQuery(linkedPatient.name);
-    const linkedTab = searchParams.get("tab");
-    if (linkedTab === "prescriptions" || linkedTab === "labResults") {
+    const linkedTab = requestedTab;
+    if (isTab(linkedTab)) {
       setActiveTab(linkedTab);
     }
-    if (shouldOpenPrescription) {
-      setShowPrescriptionForm(true);
+    setShowVaccinationForm(false);
+    setVaccinationForm(initialVaccinationForm());
+    setShowLabForm(false);
+    setLabForm(initialLabResultForm());
+    setReplacesLabResultId(null);
+    setReplacementPatient(null);
+    setReplacementPatientSearch("");
+    setShowProcedureForm(false);
+    setProcedureForm(initialProcedureForm());
+    setShowPrescriptionForm(false);
+    setPrescriptionForm(initialPrescriptionForm());
+    if (shouldOpenNewRecord) {
+      if (linkedTab === "vaccinations") setShowVaccinationForm(true);
+      if (linkedTab === "prescriptions") setShowPrescriptionForm(true);
+      if (linkedTab === "labResults") setShowLabForm(true);
+      if (linkedTab === "procedures") setShowProcedureForm(true);
     }
-    appliedVisitLink.current = true;
-  }, [linkedPatientQuery.data, searchParams, shouldOpenPrescription]);
+    appliedVisitLink.current = visitContextKey;
+  }, [
+    linkedAppointmentId,
+    linkedPatientId,
+    linkedPatientQuery.data,
+    requestedTab,
+    shouldOpenNewRecord,
+    visitContextKey,
+  ]);
 
   const {
     data: searchResults,
@@ -699,6 +731,9 @@ function RecordsPageContent() {
   );
 
   const patientId = selectedPatient?.id ?? "";
+  const visitContextMatchesPatient =
+    !linkedAppointmentId ||
+    (Boolean(linkedPatientId) && linkedPatientId === patientId);
   const recordsSettings = trpc.records.settings.useQuery(undefined, {
     staleTime: 5 * 60 * 1000,
   });
@@ -980,10 +1015,22 @@ function RecordsPageContent() {
     ? activeTab
     : visibleTabs[0]?.id;
 
+  async function refreshLinkedVisit() {
+    if (!linkedAppointmentId) return;
+    await Promise.all([
+      utils.encounters.getCloseout.invalidate({
+        appointmentId: linkedAppointmentId,
+      }),
+      utils.encounters.getVisitReconciliation.invalidate({
+        appointmentId: linkedAppointmentId,
+      }),
+    ]);
+  }
+
   const createVaccination = trpc.records.createVaccination.useMutation({
-    onSuccess: () => {
+    onSuccess: async () => {
       toast.success("Vaccination recorded");
-      refetchVaccinations();
+      await Promise.all([refetchVaccinations(), refreshLinkedVisit()]);
       setShowVaccinationForm(false);
       setVaccinationForm(initialVaccinationForm());
     },
@@ -1021,6 +1068,7 @@ function RecordsPageContent() {
       await Promise.all([
         refetchLabResults(),
         utils.records.listLabReviewInbox.invalidate(),
+        refreshLinkedVisit(),
       ]);
       setShowLabForm(false);
       setLabForm(initialLabResultForm());
@@ -1067,9 +1115,9 @@ function RecordsPageContent() {
     },
   });
   const createProcedure = trpc.records.createProcedure.useMutation({
-    onSuccess: () => {
+    onSuccess: async () => {
       toast.success("Procedure recorded");
-      refetchProcedures();
+      await Promise.all([refetchProcedures(), refreshLinkedVisit()]);
       setShowProcedureForm(false);
       setProcedureForm(initialProcedureForm());
     },
@@ -1078,14 +1126,9 @@ function RecordsPageContent() {
     },
   });
   const createPrescription = trpc.records.createPrescription.useMutation({
-    onSuccess: () => {
+    onSuccess: async () => {
       toast.success("Prescription created");
-      refetchPrescriptions();
-      if (linkedAppointmentId) {
-        utils.encounters.getCloseout.invalidate({
-          appointmentId: linkedAppointmentId,
-        });
-      }
+      await Promise.all([refetchPrescriptions(), refreshLinkedVisit()]);
       setShowPrescriptionForm(false);
       setPrescriptionForm(initialPrescriptionForm(recordsTimeZone));
       prescriptionOperationId.current = null;
@@ -1096,6 +1139,7 @@ function RecordsPageContent() {
   });
   const canSubmitVaccination =
     Boolean(patientId) &&
+    visitContextMatchesPatient &&
     isVaccinationRequiredTextInputValid(
       vaccinationForm.vaccineName,
       VACCINATION_NAME_MAX_LENGTH
@@ -1121,6 +1165,8 @@ function RecordsPageContent() {
     !createProblem.isPending;
   const canSubmitLabResult =
     Boolean(patientId) &&
+    visitContextMatchesPatient &&
+    (!linkedAppointmentId || !replacesLabResultId) &&
     (!replacesLabResultId || Boolean(replacementPatient)) &&
     (!replacesLabResultId || Boolean(labForm.resultValue.trim())) &&
     isLabRequiredTextInputValid(labForm.testName, LAB_TEST_NAME_MAX_LENGTH) &&
@@ -1138,6 +1184,7 @@ function RecordsPageContent() {
     !createLabResult.isPending;
   const canSubmitProcedure =
     Boolean(patientId) &&
+    visitContextMatchesPatient &&
     isProcedureRequiredTextInputValid(
       procedureForm.name,
       PROCEDURE_NAME_MAX_LENGTH
@@ -1157,6 +1204,8 @@ function RecordsPageContent() {
     ) &&
     !createProcedure.isPending;
   const canSubmitPrescription =
+    Boolean(patientId) &&
+    visitContextMatchesPatient &&
     isPrescriptionRequiredTextInputValid(
       prescriptionForm.medicationName,
       PRESCRIPTION_MEDICATION_NAME_MAX_LENGTH
@@ -1301,28 +1350,58 @@ function RecordsPageContent() {
               </span>
             )}
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              setSelectedPatient(null);
-              setSearchQuery("");
-              setShowVaccinationForm(false);
-              setVaccinationForm(initialVaccinationForm());
-              setShowProblemForm(false);
-              setProblemForm(initialProblemForm());
-              setShowLabForm(false);
-              setLabForm(initialLabResultForm());
-              setShowProcedureForm(false);
-              setProcedureForm(initialProcedureForm());
-              setShowPrescriptionForm(false);
-              setPrescriptionForm(initialPrescriptionForm());
-            }}
-          >
-            Change Patient
-          </Button>
+          {!linkedAppointmentId ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setSelectedPatient(null);
+                setSearchQuery("");
+                setShowVaccinationForm(false);
+                setVaccinationForm(initialVaccinationForm());
+                setShowProblemForm(false);
+                setProblemForm(initialProblemForm());
+                setShowLabForm(false);
+                setLabForm(initialLabResultForm());
+                setShowProcedureForm(false);
+                setProcedureForm(initialProcedureForm());
+                setShowPrescriptionForm(false);
+                setPrescriptionForm(initialPrescriptionForm());
+              }}
+            >
+              Change Patient
+            </Button>
+          ) : null}
         </div>
       )}
+
+      {selectedPatient &&
+      linkedAppointmentId &&
+      linkedPatientId === selectedPatient.id ? (
+        <div className="mt-3 flex flex-col gap-2 rounded-lg border border-teal-300 bg-teal-50 px-4 py-3 text-sm text-teal-950 dark:border-teal-900 dark:bg-teal-950/30 dark:text-teal-100 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="font-medium">Recording for this visit</p>
+            <p className="mt-0.5 text-xs">
+              New clinical work created here will stay attached to the active
+              appointment and appear in checkout reconciliation.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" asChild>
+              <Link href={`/encounters/${linkedAppointmentId}`}>
+                Back to visit
+              </Link>
+            </Button>
+            <Button size="sm" variant="ghost" asChild>
+              <Link
+                href={`/records?patientId=${encodeURIComponent(linkedPatientId)}&tab=${encodeURIComponent(requestedTab ?? "soap")}`}
+              >
+                Leave visit context
+              </Link>
+            </Button>
+          </div>
+        </div>
+      ) : null}
 
       {/* Tabs */}
       {selectedPatient && (
@@ -1769,10 +1848,7 @@ function RecordsPageContent() {
                       if (!canSubmitVaccination) return;
                       createVaccination.mutate({
                         patientId,
-                        appointmentId:
-                          linkedAppointmentId && linkedPatientId === patientId
-                            ? linkedAppointmentId
-                            : undefined,
+                        appointmentId: linkedAppointmentId || undefined,
                         vaccineName: vaccinationForm.vaccineName.trim(),
                         lotNumber:
                           vaccinationForm.lotNumber.trim() || undefined,
@@ -2065,10 +2141,7 @@ function RecordsPageContent() {
                       createPrescription.mutate({
                         patientId,
                         operationId: prescriptionOperationId.current,
-                        appointmentId:
-                          linkedAppointmentId && linkedPatientId === patientId
-                            ? linkedAppointmentId
-                            : undefined,
+                        appointmentId: linkedAppointmentId || undefined,
                         medicationName:
                           prescriptionForm.medicationName.trim(),
                         productId: prescriptionForm.productId || undefined,
@@ -2806,11 +2879,7 @@ function RecordsPageContent() {
                           replacementPatient?.id === selectedPatient?.id
                             ? replacementSourceLabResult?.appointmentId ??
                               undefined
-                            : !replacesLabResultId &&
-                                linkedAppointmentId &&
-                                linkedPatientId === patientId
-                              ? linkedAppointmentId
-                              : undefined,
+                            : linkedAppointmentId || undefined,
                         testName: labForm.testName.trim(),
                         resultValue: labForm.resultValue.trim() || undefined,
                         unit: labForm.unit.trim() || undefined,
@@ -3420,10 +3489,7 @@ function RecordsPageContent() {
                         procedureForm.durationMinutes.trim();
                       createProcedure.mutate({
                         patientId,
-                        appointmentId:
-                          linkedAppointmentId && linkedPatientId === patientId
-                            ? linkedAppointmentId
-                            : undefined,
+                        appointmentId: linkedAppointmentId || undefined,
                         name: procedureForm.name.trim(),
                         description:
                           procedureForm.description.trim() || undefined,

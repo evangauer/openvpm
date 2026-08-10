@@ -14,6 +14,13 @@ describe("whiteboard appointment workflow UI", () => {
     expect(source).not.toContain(
       'statusActions.push({ label: "Back to Exam", status: "in_exam"'
     );
+    expect(source).toContain("const missingClinicalTarget");
+    expect(source).toContain(
+      'action.status === "in_exam" && missingClinicalTarget'
+    );
+    expect(source).toContain(
+      "Open the visit and attach an active patient before starting the exam."
+    );
   });
 
   it("keeps status updates hidden for read-only viewer access", () => {

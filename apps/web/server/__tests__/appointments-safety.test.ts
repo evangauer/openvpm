@@ -78,6 +78,7 @@ function createDb(opts?: {
     const builder = {
       from: vi.fn(() => builder),
       leftJoin: vi.fn(() => builder),
+      innerJoin: vi.fn(() => builder),
       where: vi.fn(() => afterWhere),
       orderBy: vi.fn(() => builder),
       limit: vi.fn(async () => result),
@@ -763,7 +764,18 @@ describe("appointments target safety", () => {
 
   it("does not dispatch checked-in webhooks for later workflow transitions", async () => {
     const { db, updateSet } = createDb({
-      selectResults: [[{ id: APPOINTMENT_ID, status: "checked_in" }]],
+      selectResults: [
+        [
+          {
+            id: APPOINTMENT_ID,
+            status: "checked_in",
+            patientId: PATIENT_ID,
+            clientId: CLIENT_ID,
+            activePatientId: PATIENT_ID,
+            activeClientId: CLIENT_ID,
+          },
+        ],
+      ],
       updatedRows: [{ id: APPOINTMENT_ID, status: "in_exam" }],
     });
 
@@ -779,6 +791,178 @@ describe("appointments target safety", () => {
 
     expect(updateSet).toHaveBeenCalledWith({ status: "in_exam" });
     expect(mocks.dispatchWebhookEvent).not.toHaveBeenCalled();
+  });
+
+  it("blocks an exam from starting without an active matched patient and client", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [
+          {
+            id: APPOINTMENT_ID,
+            status: "checked_in",
+            patientId: null,
+            clientId: CLIENT_ID,
+            activePatientId: null,
+            activeClientId: CLIENT_ID,
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).updateStatus({
+        id: APPOINTMENT_ID,
+        status: "in_exam",
+      })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Attach an active patient and matching client before starting the exam.",
+    });
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("attaches an active patient and its matching client under the appointment lock", async () => {
+    const updated = {
+      id: APPOINTMENT_ID,
+      status: "checked_in",
+      patientId: PATIENT_ID,
+      clientId: CLIENT_ID,
+    };
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [
+          {
+            id: APPOINTMENT_ID,
+            status: "checked_in",
+            patientId: null,
+            clientId: CLIENT_ID,
+          },
+        ],
+        [{ id: PATIENT_ID, clientId: CLIENT_ID }],
+      ],
+      updatedRows: [updated],
+    });
+
+    await expect(
+      callerWithDb(db).attachPatient({
+        id: APPOINTMENT_ID,
+        patientId: PATIENT_ID,
+      })
+    ).resolves.toEqual(updated);
+    expect(updateSet).toHaveBeenCalledWith({
+      patientId: PATIENT_ID,
+      clientId: CLIENT_ID,
+    });
+  });
+
+  it("does not attach a patient owned by a different appointment client", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [
+          {
+            id: APPOINTMENT_ID,
+            status: "checked_in",
+            patientId: null,
+            clientId: CLIENT_ID,
+          },
+        ],
+        [{ id: PATIENT_ID, clientId: OTHER_CLIENT_ID }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).attachPatient({
+        id: APPOINTMENT_ID,
+        patientId: PATIENT_ID,
+      })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Choose a patient belonging to the client already attached to this appointment.",
+    });
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("does not silently retarget an appointment that already has a patient", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [
+          {
+            id: APPOINTMENT_ID,
+            status: "checked_in",
+            patientId: "00000000-0000-0000-0000-000000000044",
+            clientId: CLIENT_ID,
+          },
+        ],
+        [{ id: PATIENT_ID, clientId: CLIENT_ID }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).attachPatient({
+        id: APPOINTMENT_ID,
+        patientId: PATIENT_ID,
+      })
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message:
+        "This appointment already has a patient. Do not silently retarget a clinical visit.",
+    });
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("does not attach a patient to a terminal appointment", async () => {
+    const { db, select, updateSet } = createDb({
+      selectResults: [
+        [
+          {
+            id: APPOINTMENT_ID,
+            status: "cancelled",
+            patientId: null,
+            clientId: CLIENT_ID,
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).attachPatient({
+        id: APPOINTMENT_ID,
+        patientId: PATIENT_ID,
+      })
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("fails closed if the appointment changes while attaching a patient", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [
+          {
+            id: APPOINTMENT_ID,
+            status: "checked_in",
+            patientId: null,
+            clientId: CLIENT_ID,
+          },
+        ],
+        [{ id: PATIENT_ID, clientId: CLIENT_ID }],
+      ],
+      updatedRows: [],
+    });
+
+    await expect(
+      callerWithDb(db).attachPatient({
+        id: APPOINTMENT_ID,
+        patientId: PATIENT_ID,
+      })
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message:
+        "Appointment changed while attaching the patient. Refresh and retry.",
+    });
+    expect(updateSet).toHaveBeenCalledTimes(1);
   });
 
   it("rejects appointment status races after transition validation", async () => {

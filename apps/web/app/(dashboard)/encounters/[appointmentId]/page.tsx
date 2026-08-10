@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useSession } from "next-auth/react";
@@ -14,6 +20,7 @@ import {
   ClipboardList,
   Download,
   FileText,
+  FlaskConical,
   Loader2,
   Package,
   Pill,
@@ -21,6 +28,8 @@ import {
   Receipt,
   Stethoscope,
   Save,
+  Scissors,
+  Syringe,
   Trash2,
   UserRound,
 } from "lucide-react";
@@ -35,6 +44,10 @@ import {
 import { centsToMoney, moneyToCents } from "@/lib/billing/invoice-balance";
 import { tryCalculateInvoiceTaxTotals } from "@/lib/billing/invoice-tax";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
+import {
+  APPOINTMENT_PATIENT_SEARCH_MAX_LENGTH,
+  isAppointmentPatientSearchInputValid,
+} from "@/lib/scheduling/appointment-policy";
 import { ServicePicker } from "@/components/billing/service-picker";
 import { CapturePhotos } from "@/components/records/capture-photos";
 import { ConsentSign } from "@/components/records/consent-sign";
@@ -104,6 +117,14 @@ function canRecordVitals(role?: string | null): boolean {
   return role === "admin" || role === "veterinarian" || role === "technician";
 }
 
+function canRecordVisitWork(role?: string | null): boolean {
+  return role === "admin" || role === "veterinarian" || role === "technician";
+}
+
+function canRecordProcedure(role?: string | null): boolean {
+  return role === "admin" || role === "veterinarian";
+}
+
 function canManageBilling(role?: string | null): boolean {
   return role === "admin" || role === "front_desk";
 }
@@ -119,6 +140,166 @@ function nextVisitAction(status: string): {
     return { label: "Start exam", status: "in_exam" };
   }
   return null;
+}
+
+function PatientAssignmentPanel({
+  appointmentId,
+  clientName,
+}: {
+  appointmentId: string;
+  clientName: string;
+}) {
+  const utils = trpc.useUtils();
+  const [search, setSearch] = useState("");
+  const [selectedPatient, setSelectedPatient] = useState<{
+    id: string;
+    name: string;
+    species: string | null;
+    breed: string | null;
+    clientFirstName: string | null;
+    clientLastName: string | null;
+  } | null>(null);
+  const deferredSearch = useDeferredValue(search.trim());
+  const searchIsValid = isAppointmentPatientSearchInputValid(search);
+  const canSearch = deferredSearch.length > 0 && searchIsValid;
+  const patientSearch = trpc.patients.search.useQuery(
+    { query: deferredSearch, status: "active" },
+    { enabled: canSearch },
+  );
+  const attachPatient = trpc.appointments.attachPatient.useMutation({
+    onSuccess: async () => {
+      toast.success("Patient attached to visit");
+      await Promise.all([
+        utils.appointments.getById.invalidate({ id: appointmentId }),
+        utils.appointments.list.invalidate(),
+        utils.encounters.getCloseout.invalidate({ appointmentId }),
+      ]);
+    },
+    onError: (error) => toast.error(error.message),
+  });
+
+  return (
+    <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-amber-950 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+      <div className="flex items-start gap-3">
+        <UserRound className="mt-0.5 h-5 w-5 shrink-0" />
+        <div>
+          <p className="font-medium">Attach a patient before clinical care</p>
+          <p className="mt-1 text-sm">
+            {clientName
+              ? "Choose a patient belonging to " + clientName + "."
+              : "Choose the patient and OpenVPM will attach the matching client."}{" "}
+            The exam cannot start until both records are active and matched.
+          </p>
+        </div>
+      </div>
+
+      {selectedPatient ? (
+        <div className="mt-4 rounded-md border border-amber-300 bg-background/80 p-3 text-sm text-foreground dark:border-amber-800">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="font-medium">{selectedPatient.name}</p>
+              <p className="text-xs text-muted-foreground">
+                {[selectedPatient.species, selectedPatient.breed]
+                  .filter(Boolean)
+                  .join(" · ") || "Patient details unavailable"}
+                {selectedPatient.clientFirstName
+                  ? " · " +
+                    selectedPatient.clientFirstName +
+                    " " +
+                    (selectedPatient.clientLastName ?? "")
+                  : ""}
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={attachPatient.isPending}
+                onClick={() => setSelectedPatient(null)}
+              >
+                Change
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={attachPatient.isPending}
+                onClick={() =>
+                  attachPatient.mutate({
+                    id: appointmentId,
+                    patientId: selectedPatient.id,
+                  })
+                }
+              >
+                {attachPatient.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : null}
+                Attach patient
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-4">
+          <Input
+            value={search}
+            maxLength={APPOINTMENT_PATIENT_SEARCH_MAX_LENGTH}
+            aria-label="Search patient to attach"
+            aria-invalid={!searchIsValid}
+            placeholder="Search patient name or breed"
+            onChange={(event) => setSearch(event.target.value)}
+          />
+          {!searchIsValid ? (
+            <p className="mt-2 text-xs text-destructive">
+              Patient search is too long.
+            </p>
+          ) : patientSearch.error ? (
+            <p className="mt-2 text-xs text-destructive">
+              Patient search failed. Retry before attaching a record.
+            </p>
+          ) : canSearch && patientSearch.isLoading ? (
+            <p className="mt-2 inline-flex items-center gap-2 text-xs">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              Searching patients...
+            </p>
+          ) : canSearch && patientSearch.data?.length === 0 ? (
+            <p className="mt-2 text-xs">
+              No active patient matched.{" "}
+              <Link className="font-medium underline" href="/patients/new">
+                Create the patient record
+              </Link>{" "}
+              and then return to this visit.
+            </p>
+          ) : patientSearch.data?.length ? (
+            <div className="mt-2 overflow-hidden rounded-md border border-amber-300 bg-background text-foreground dark:border-amber-800">
+              {patientSearch.data.map((patient) => (
+                <button
+                  type="button"
+                  key={patient.id}
+                  className="flex w-full items-center justify-between gap-3 border-b border-border px-3 py-2 text-left text-sm last:border-0 hover:bg-muted"
+                  onClick={() => setSelectedPatient(patient)}
+                >
+                  <span>
+                    <span className="font-medium">{patient.name}</span>
+                    <span className="ml-2 text-xs text-muted-foreground">
+                      {[patient.species, patient.breed]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </span>
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {[patient.clientFirstName, patient.clientLastName]
+                      .filter(Boolean)
+                      .join(" ") || "No active client"}
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function formatAppointmentTime(
@@ -256,6 +437,8 @@ export default function EncounterWorkspacePage() {
     appointment.status === "in_exam" &&
     closeoutQuery.data?.closeout?.status !== "clinical_finalized" &&
     closeoutQuery.data?.closeout?.status !== "completed";
+  const missingClinicalTarget =
+    !appointment.patientId || !appointment.clientId;
   const activeInvoices =
     invoicesQuery.data?.items.filter(
       (invoice) => !invoice.isEstimate && invoice.status !== "void",
@@ -314,7 +497,15 @@ export default function EncounterWorkspacePage() {
         </div>
         {nextAction && canManageVisit(role) ? (
           <Button
-            disabled={updateStatus.isPending}
+            disabled={
+              updateStatus.isPending ||
+              (nextAction.status === "in_exam" && missingClinicalTarget)
+            }
+            title={
+              nextAction.status === "in_exam" && missingClinicalTarget
+                ? "Attach a patient before starting the exam."
+                : undefined
+            }
             onClick={() =>
               updateStatus.mutate({
                 id: appointmentId,
@@ -360,12 +551,19 @@ export default function EncounterWorkspacePage() {
             </CardHeader>
             <CardContent>
               {!appointment.patientId ? (
-                <EmptyState
-                  icon={UserRound}
-                  title="Attach a patient first"
-                  description="Clinical documentation and billing need a patient and client on the appointment."
-                  className="p-8"
-                />
+                canManageVisit(role) ? (
+                  <PatientAssignmentPanel
+                    appointmentId={appointmentId}
+                    clientName={clientName}
+                  />
+                ) : (
+                  <EmptyState
+                    icon={UserRound}
+                    title="Patient assignment required"
+                    description="A teammate with visit access must attach the active patient and matching client before clinical care begins."
+                    className="p-8"
+                  />
+                )
               ) : patientQuery.error ||
                 (!patientQuery.isLoading && !patient) ? (
                 <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
@@ -431,17 +629,43 @@ export default function EncounterWorkspacePage() {
                         </a>
                       </Button>
                     ) : null}
-                    {canCreateSoap(role) &&
-                    appointment.status === "in_exam" &&
-                    closeoutQuery.data?.closeout?.status !==
-                      "clinical_finalized" &&
-                    closeoutQuery.data?.closeout?.status !== "completed" ? (
+                    {canCreateSoap(role) && visitOpenForClinicalEntry ? (
                       <Button size="sm" variant="outline" asChild>
                         <Link
                           href={`/records?patientId=${appointment.patientId}&appointmentId=${appointmentId}&tab=prescriptions&new=1`}
                         >
                           <Pill className="mr-2 h-4 w-4" />
                           Prescribe
+                        </Link>
+                      </Button>
+                    ) : null}
+                    {canRecordVisitWork(role) && visitOpenForClinicalEntry ? (
+                      <>
+                        <Button size="sm" variant="outline" asChild>
+                          <Link
+                            href={`/records?patientId=${appointment.patientId}&appointmentId=${appointmentId}&tab=vaccinations&new=1`}
+                          >
+                            <Syringe className="mr-2 h-4 w-4" />
+                            Vaccination
+                          </Link>
+                        </Button>
+                        <Button size="sm" variant="outline" asChild>
+                          <Link
+                            href={`/records?patientId=${appointment.patientId}&appointmentId=${appointmentId}&tab=labResults&new=1`}
+                          >
+                            <FlaskConical className="mr-2 h-4 w-4" />
+                            Lab result
+                          </Link>
+                        </Button>
+                      </>
+                    ) : null}
+                    {canRecordProcedure(role) && visitOpenForClinicalEntry ? (
+                      <Button size="sm" variant="outline" asChild>
+                        <Link
+                          href={`/records?patientId=${appointment.patientId}&appointmentId=${appointmentId}&tab=procedures&new=1`}
+                        >
+                          <Scissors className="mr-2 h-4 w-4" />
+                          Procedure
                         </Link>
                       </Button>
                     ) : null}
@@ -466,9 +690,10 @@ export default function EncounterWorkspacePage() {
                   </div>
 
                   <p className="text-xs text-muted-foreground">
-                    SOAP notes created here are linked to this appointment.
-                    Photos and signatures captured during an open visit attach
-                    to the active visit automatically.
+                    Use these visit actions so SOAP notes, prescriptions,
+                    vaccinations, lab results, procedures, photos, and
+                    signatures stay linked to this appointment and its charge
+                    reconciliation.
                   </p>
                 </div>
               )}

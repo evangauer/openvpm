@@ -765,7 +765,10 @@ export const appointmentsRouter = createRouter({
             id: appointments.id,
             status: appointments.status,
             doctorId: appointments.doctorId,
+            patientId: appointments.patientId,
             clientId: appointments.clientId,
+            activePatientId: patients.id,
+            activeClientId: clients.id,
             startTime: appointments.startTime,
             updatedAt: appointments.updatedAt,
             typeRequiresDoctor: appointmentTypes.requiresDoctor,
@@ -777,6 +780,24 @@ export const appointmentsRouter = createRouter({
               eq(appointments.typeId, appointmentTypes.id),
               eq(appointmentTypes.practiceId, ctx.practiceId),
               isNull(appointmentTypes.deletedAt)
+            )
+          )
+          .leftJoin(
+            patients,
+            and(
+              eq(appointments.patientId, patients.id),
+              eq(patients.clientId, appointments.clientId),
+              eq(patients.practiceId, ctx.practiceId),
+              eq(patients.status, "active"),
+              isNull(patients.deletedAt)
+            )
+          )
+          .leftJoin(
+            clients,
+            and(
+              eq(appointments.clientId, clients.id),
+              eq(clients.practiceId, ctx.practiceId),
+              isNull(clients.deletedAt)
             )
           )
           .where(
@@ -821,6 +842,19 @@ export const appointmentsRouter = createRouter({
               input.status === "confirmed"
                 ? "Assign a doctor before confirming this appointment."
                 : "Assign a doctor before checking in this appointment.",
+          });
+        }
+        if (
+          input.status === "in_exam" &&
+          (!current.patientId ||
+            !current.clientId ||
+            current.activePatientId !== current.patientId ||
+            current.activeClientId !== current.clientId)
+        ) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Attach an active patient and matching client before starting the exam.",
           });
         }
         const isNewConfirmation =
@@ -1000,6 +1034,138 @@ export const appointmentsRouter = createRouter({
       }
       return appt;
     }),
+
+  attachPatient: protectedProcedure
+    .use(requireRole("admin", "veterinarian", "technician", "front_desk"))
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        patientId: z.string().uuid(),
+      })
+    )
+    .mutation(async ({ ctx, input }) =>
+      ctx.db.transaction(async (tx) => {
+        const [current] = await tx
+          .select({
+            id: appointments.id,
+            status: appointments.status,
+            patientId: appointments.patientId,
+            clientId: appointments.clientId,
+          })
+          .from(appointments)
+          .where(
+            and(
+              eq(appointments.id, input.id),
+              eq(appointments.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(appointments.deletedAt)
+            )
+          )
+          .for("update");
+
+        if (!current) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Appointment not found",
+          });
+        }
+        if (
+          !["scheduled", "confirmed", "checked_in", "in_exam"].includes(
+            current.status
+          )
+        ) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "A patient can only be attached before the appointment is closed, cancelled, or marked no-show.",
+          });
+        }
+
+        const [target] = await tx
+          .select({
+            id: patients.id,
+            clientId: patients.clientId,
+          })
+          .from(patients)
+          .innerJoin(
+            clients,
+            and(
+              eq(patients.clientId, clients.id),
+              eq(clients.practiceId, ctx.practiceId),
+              isNull(clients.deletedAt)
+            )
+          )
+          .where(
+            and(
+              eq(patients.id, input.patientId),
+              eq(patients.practiceId, ctx.practiceId),
+              eq(patients.status, "active"),
+              isNull(patients.deletedAt)
+            )
+          )
+          .for("share");
+
+        if (!target) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Patient not found",
+          });
+        }
+        if (current.patientId) {
+          if (
+            current.patientId === target.id &&
+            current.clientId === target.clientId
+          ) {
+            return current;
+          }
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "This appointment already has a patient. Do not silently retarget a clinical visit.",
+          });
+        }
+        if (current.clientId && current.clientId !== target.clientId) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Choose a patient belonging to the client already attached to this appointment.",
+          });
+        }
+
+        const [updated] = await tx
+          .update(appointments)
+          .set({
+            patientId: target.id,
+            clientId: target.clientId,
+          })
+          .where(
+            and(
+              eq(appointments.id, current.id),
+              eq(appointments.practiceId, ctx.practiceId),
+              eq(appointments.status, current.status),
+              isNull(appointments.patientId),
+              current.clientId
+                ? eq(appointments.clientId, current.clientId)
+                : isNull(appointments.clientId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(appointments.deletedAt)
+            )
+          )
+          .returning({
+            id: appointments.id,
+            status: appointments.status,
+            patientId: appointments.patientId,
+            clientId: appointments.clientId,
+          });
+        if (!updated) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Appointment changed while attaching the patient. Refresh and retry.",
+          });
+        }
+        return updated;
+      })
+    ),
 
   cancelRecurringSeries: protectedProcedure
     .use(requireRole("admin", "veterinarian", "front_desk"))

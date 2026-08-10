@@ -1083,7 +1083,17 @@ function AppointmentDetailPopover({
     statusActions.push({ label: "No Show", status: "no_show", variant: "outline" });
     statusActions.push({ label: "Cancel", status: "cancelled", variant: "destructive" });
   } else if (current === "checked_in") {
-    statusActions.push({ label: "In Exam", status: "in_exam", variant: "default" });
+    const missingClinicalTarget =
+      !appointment.patientId || !appointment.clientId;
+    statusActions.push({
+      label: "In Exam",
+      status: "in_exam",
+      variant: "default",
+      disabled: missingClinicalTarget,
+      disabledReason: missingClinicalTarget
+        ? "Open the visit and attach a patient before starting the exam."
+        : undefined,
+    });
     statusActions.push({ label: "No Show", status: "no_show", variant: "outline" });
   } else if (current === "no_show" || current === "cancelled") {
     statusActions.push({ label: "Reopen", status: "scheduled", variant: "outline" });

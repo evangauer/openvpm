@@ -35,6 +35,8 @@ type WhiteboardAppointment = {
   status: string;
   startTime: Date | string;
   notes: string | null;
+  patientId: string | null;
+  clientId: string | null;
   patientName: string | null;
   patientSpecies: string | null;
   patientPhotoUrl: string | null;
@@ -408,6 +410,8 @@ function AppointmentDetailModal({
       .join(" ") || "Unknown Client";
 
   const current = appointment.status as AppointmentStatus;
+  const missingClinicalTarget =
+    !appointment.patientId || !appointment.clientId;
 
   const statusActions: {
     label: string;
@@ -540,7 +544,15 @@ function AppointmentDetailModal({
                 key={action.status}
                 size="sm"
                 variant={action.variant}
-                disabled={isUpdating}
+                disabled={
+                  isUpdating ||
+                  (action.status === "in_exam" && missingClinicalTarget)
+                }
+                title={
+                  action.status === "in_exam" && missingClinicalTarget
+                    ? "Open the visit and attach an active patient before starting the exam."
+                    : undefined
+                }
                 onClick={() => onStatusChange(appointment.id, action.status)}
               >
                 {isUpdating ? (

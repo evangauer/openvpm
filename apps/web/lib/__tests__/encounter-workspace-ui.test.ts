@@ -40,6 +40,59 @@ describe("clinic encounter workspace", () => {
     expect(workspaceSource).toContain("Charge capture");
   });
 
+  it("repairs patientless appointments before allowing an exam to start", () => {
+    expect(workspaceSource).toContain(
+      "trpc.appointments.attachPatient.useMutation",
+    );
+    expect(workspaceSource).toContain("Attach a patient before clinical care");
+    expect(workspaceSource).toContain("Search patient to attach");
+    expect(workspaceSource).toContain("Patient attached to visit");
+    expect(workspaceSource).toContain(
+      'nextAction.status === "in_exam" && missingClinicalTarget',
+    );
+    expect(scheduleSource).toContain(
+      "Open the visit and attach a patient before starting the exam.",
+    );
+  });
+
+  it("keeps every visit work action appointment-bound through records", () => {
+    for (const tab of [
+      "vaccinations",
+      "prescriptions",
+      "labResults",
+      "procedures",
+    ]) {
+      expect(workspaceSource).toContain(`tab=${tab}&new=1`);
+    }
+    expect(recordsSource).toContain("const shouldOpenNewRecord");
+    expect(recordsSource).toContain("const visitContextKey");
+    expect(recordsSource).toContain(
+      "appliedVisitLink.current === visitContextKey",
+    );
+    expect(recordsSource).toContain(
+      "linkedPatientQuery.data.id !== linkedPatientId",
+    );
+    expect(recordsSource).toContain(
+      'if (linkedTab === "vaccinations") setShowVaccinationForm(true)',
+    );
+    expect(recordsSource).toContain(
+      'if (linkedTab === "labResults") setShowLabForm(true)',
+    );
+    expect(recordsSource).toContain(
+      'if (linkedTab === "procedures") setShowProcedureForm(true)',
+    );
+    expect(recordsSource).toContain("Recording for this visit");
+    expect(recordsSource).toContain("Leave visit context");
+    expect(recordsSource).toContain("visitContextMatchesPatient");
+    expect(recordsSource).toContain(
+      "appointmentId: linkedAppointmentId || undefined",
+    );
+    expect(recordsSource).toContain("{!linkedAppointmentId ? (");
+    expect(recordsSource).toContain(
+      "utils.encounters.getVisitReconciliation.invalidate",
+    );
+  });
+
   it("links SOAP documentation to the appointment and returns to the visit", () => {
     expect(workspaceSource).toContain("?appointmentId=${appointmentId}");
     expect(soapSource).toContain(
