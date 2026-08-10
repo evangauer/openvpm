@@ -128,11 +128,68 @@ export function OnboardingJourneyProvider({
   const [index, setIndex] = useState<number | null>(null);
   // Opens at most once per mount, so finishing/dismissing never reopens it.
   const opened = useRef(false);
+  // A manual CTA can be clicked before the subscription query settles. Queue
+  // that intent so the click is never lost and resolve it against stable steps.
+  const pendingManualOpen = useRef(false);
+  const pendingOpenRetryAttempted = useRef(false);
+
+  const retryPendingManualOpen = useCallback(() => {
+    if (pendingOpenRetryAttempted.current) return;
+    pendingOpenRetryAttempted.current = true;
+    toast.error("Guided setup is still loading. Retrying now.");
+    void subscription.refetch().then((result) => {
+      if (result.error && pendingManualOpen.current) {
+        pendingManualOpen.current = false;
+        pendingOpenRetryAttempted.current = false;
+        toast.error("Guided setup could not load. Please try again.");
+      }
+    });
+  }, [subscription.refetch]);
 
   const openJourney = useCallback(() => {
+    // `billingEnforced` changes the step positions. Never open against the
+    // temporary self-host step list while subscription context is loading.
     if (!isAdmin) return;
+    if (!subscription.data) {
+      pendingManualOpen.current = true;
+      if (subscription.error) {
+        retryPendingManualOpen();
+      }
+      return;
+    }
+    pendingManualOpen.current = false;
+    pendingOpenRetryAttempted.current = false;
     setIndex(resumeIndex);
-  }, [isAdmin, resumeIndex]);
+  }, [
+    isAdmin,
+    resumeIndex,
+    subscription.data,
+    subscription.error,
+    retryPendingManualOpen,
+  ]);
+
+  useEffect(() => {
+    if (!isAdmin) {
+      pendingManualOpen.current = false;
+      pendingOpenRetryAttempted.current = false;
+      return;
+    }
+    if (!pendingManualOpen.current || index !== null) return;
+    if (!subscription.data) {
+      if (subscription.error) retryPendingManualOpen();
+      return;
+    }
+    pendingManualOpen.current = false;
+    pendingOpenRetryAttempted.current = false;
+    setIndex(resumeIndex);
+  }, [
+    isAdmin,
+    index,
+    resumeIndex,
+    retryPendingManualOpen,
+    subscription.data,
+    subscription.error,
+  ]);
 
   // Returning from Stripe Checkout during setup: ?setup=resume reopens the
   // journey at the saved step (the card step persisted "allSet" before the
@@ -142,7 +199,10 @@ export function OnboardingJourneyProvider({
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
     if (params.get("setup") !== "resume") return;
-    if (!onboardingState.data) return; // wait for the saved cursor
+    // Wait for both the saved cursor and the hosted/self-host step list. A
+    // numeric index resolved against the temporary list can otherwise shift
+    // from `allSet` back to `billing` once subscription data arrives.
+    if (!onboardingState.data || !subscription.data) return;
     opened.current = true;
     params.delete("setup");
     const rest = params.toString();
@@ -152,7 +212,13 @@ export function OnboardingJourneyProvider({
       window.location.pathname + (rest ? `?${rest}` : ""),
     );
     setIndex(resumeIndex);
-  }, [isAdmin, index, onboardingState.data, resumeIndex]);
+  }, [
+    isAdmin,
+    index,
+    onboardingState.data,
+    subscription.data,
+    resumeIndex,
+  ]);
 
   useEffect(() => {
     if (opened.current || index !== null || !isAdmin) return;
@@ -274,13 +340,22 @@ function JourneyShell({
   const step = steps[index]!;
   const isLast = index >= total - 1;
 
-  // Persist the resume cursor (durable + optimistic) so a reload resumes here.
+  // Do not advance or close until the server accepts the cursor. A local-only
+  // optimistic cursor can strand a clinic at an earlier step after a reload.
   const persistCursor = useCallback(
-    (stepId: string) => {
+    async (stepId: string, dismissed?: boolean) => {
+      await setJourneyProgress.mutateAsync({ stepId, dismissed });
       utils.settings.getOnboardingState.setData(undefined, (prev) =>
-        prev ? { ...prev, journeyStepId: stepId } : prev,
+        prev
+          ? {
+              ...prev,
+              journeyStepId: stepId,
+              ...(dismissed === undefined
+                ? {}
+                : { journeyDismissed: dismissed }),
+            }
+          : prev,
       );
-      setJourneyProgress.mutate({ stepId });
     },
     [utils, setJourneyProgress],
   );
@@ -328,7 +403,7 @@ function JourneyShell({
         setContinueLabel(null);
         setContinueDisabled(false);
         const next = index + 1;
-        persistCursor(steps[next]!.id);
+        await persistCursor(steps[next]!.id, false);
         setIndex(next);
       }
     } catch (err) {
@@ -349,15 +424,24 @@ function JourneyShell({
     setIndex,
   ]);
 
-  const handleBack = useCallback(() => {
+  const handleBack = useCallback(async () => {
     if (busy || continueDisabled || state.hasPartialImport || index === 0)
       return;
-    handleRef.current = null;
-    setContinueLabel(null);
-    setContinueDisabled(false);
-    const prev = index - 1;
-    persistCursor(steps[prev]!.id);
-    setIndex(prev);
+    setBusy(true);
+    try {
+      const prev = index - 1;
+      await persistCursor(steps[prev]!.id, false);
+      handleRef.current = null;
+      setContinueLabel(null);
+      setContinueDisabled(false);
+      setIndex(prev);
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Progress could not be saved.",
+      );
+    } finally {
+      setBusy(false);
+    }
   }, [
     busy,
     continueDisabled,
@@ -368,28 +452,33 @@ function JourneyShell({
     setIndex,
   ]);
 
-  const handleFinishLater = useCallback(() => {
+  const handleFinishLater = useCallback(async () => {
     if (busy || continueDisabled) return;
     // Not the same as finishing: record where we are and that it was dismissed,
     // WITHOUT marking onboarding complete. The checklist keeps nudging and the
     // user can resume from here later.
-    utils.settings.getOnboardingState.setData(undefined, (prev) =>
-      prev ? { ...prev, journeyStepId: step.id, journeyDismissed: true } : prev,
-    );
-    setJourneyProgress.mutate({ stepId: step.id, dismissed: true });
-    setIndex(null);
-    if (state.hasPartialImport) {
-      toast.success(
-        "Completed records are saved. Reopen setup or use Settings, then Data, to finish the remaining files.",
+    setBusy(true);
+    try {
+      await persistCursor(step.id, true);
+      setIndex(null);
+      if (state.hasPartialImport) {
+        toast.success(
+          "Completed records are saved. Reopen setup or use Settings, then Data, to finish the remaining files.",
+        );
+      }
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Progress could not be saved.",
       );
+    } finally {
+      setBusy(false);
     }
   }, [
     busy,
     continueDisabled,
     step.id,
     state.hasPartialImport,
-    utils,
-    setJourneyProgress,
+    persistCursor,
     setIndex,
   ]);
 
@@ -397,7 +486,7 @@ function JourneyShell({
     <DialogPrimitive.Root
       open
       onOpenChange={(open) => {
-        if (!open) handleFinishLater();
+        if (!open) void handleFinishLater();
       }}
     >
       <DialogPrimitive.Portal>

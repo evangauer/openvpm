@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { useTour } from "@/components/tour/tour-provider";
+import { useOnboardingJourney } from "@/components/onboarding/journey-overlay";
 import { toast } from "sonner";
 import {
   DEFAULT_ONBOARDING_INTENT,
@@ -31,6 +32,18 @@ type Milestone = {
   done: boolean;
 } & ({ href: string; onClick?: never } | { onClick: () => void; href?: never });
 
+const JOURNEY_STEP_LABELS: Record<string, string> = {
+  intent: "your starting path",
+  basics: "clinic basics",
+  branding: "branding",
+  team: "your team",
+  data: "data import",
+  agent: "the AI helper",
+  phone: "texting",
+  billing: "billing",
+  allSet: "the final review",
+};
+
 /**
  * Persistent activation checklist shown on the dashboard through the whole
  * trial. Unlike the old finish-setup card (which only appeared after onboarding
@@ -40,6 +53,7 @@ type Milestone = {
  */
 export function ActivationChecklist() {
   const { start } = useTour();
+  const { openJourney } = useOnboardingJourney();
   const [hidden, setHidden] = useState(false);
   const { data: session, status } = useSession();
   const isAdmin =
@@ -304,6 +318,13 @@ export function ActivationChecklist() {
   const pct = total === 0 ? 100 : (doneCount / total) * 100;
   const allDone = doneCount === total;
   const setupHelpRequestedAt = checklistState.setupHelpRequestedAt ?? null;
+  const guidedSetupIncomplete = onboardingData.completedAt == null;
+  const guidedSetupStarted = Boolean(
+    checklistState.onboardingIntentSelectedAt || checklistState.journeyStepId,
+  );
+  const guidedSetupStage = checklistState.journeyStepId
+    ? JOURNEY_STEP_LABELS[checklistState.journeyStepId]
+    : null;
 
   // The corner X just hides the checklist for this session — it comes back next
   // visit ("show later"). "Don't show this again" dismisses it for good.
@@ -315,7 +336,7 @@ export function ActivationChecklist() {
     dismiss.mutate();
   }
 
-  if (allDone) {
+  if (allDone && !guidedSetupIncomplete) {
     return (
       <div className="relative z-20 w-full sm:fixed sm:bottom-4 sm:right-4 sm:z-[70] sm:w-[340px]">
         <div className="flex items-center gap-3 rounded-2xl border border-zinc-800 bg-zinc-900 p-4 text-zinc-50 shadow-2xl shadow-black/30">
@@ -376,6 +397,29 @@ export function ActivationChecklist() {
           value={pct}
           className="mt-3 h-1.5 bg-zinc-800 [&>div]:bg-emerald-500"
         />
+
+        {guidedSetupIncomplete ? (
+          <button
+            type="button"
+            onClick={openJourney}
+            className="mt-3 flex w-full items-center gap-3 rounded-xl bg-emerald-500 px-3 py-2.5 text-left text-zinc-950 transition-colors hover:bg-emerald-400"
+          >
+            <Sparkles className="h-4 w-4 shrink-0" />
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-semibold">
+                {guidedSetupStarted
+                  ? "Resume guided setup"
+                  : "Start guided setup"}
+              </span>
+              <span className="block truncate text-xs text-emerald-950/75">
+                {guidedSetupStage
+                  ? `Continue at ${guidedSetupStage}`
+                  : "Choose your path and save progress as you go"}
+              </span>
+            </span>
+            <ArrowRight className="h-4 w-4 shrink-0" />
+          </button>
+        ) : null}
 
         <div className="mt-3 max-h-[45vh] space-y-1 overflow-y-auto">
           {milestones.map((m) => {

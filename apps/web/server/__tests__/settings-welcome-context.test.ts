@@ -108,6 +108,29 @@ describe("settings.welcomeContext", () => {
     expect(result.hasDemoData).toBe(true);
   });
 
+  it("treats a cleared sample marker as provenance rather than live data", async () => {
+    const clearedSettings = {
+      demoData: {
+        ...demoSettings.demoData,
+        clearedAt: "2026-08-09T12:00:00.000Z",
+      },
+    };
+    const { db } = createDb([
+      [practiceRow(clearedSettings)],
+      [], // historical demo client is soft-deleted
+      [{ id: "real-1", firstName: "Riley", lastName: "Bennett" }],
+      [], // historical demo patient is soft-deleted
+    ]);
+
+    await expect(
+      callerWithRole(db, "front_desk").welcomeContext(),
+    ).resolves.toMatchObject({
+      hasDemoData: false,
+      portalClient: { id: "real-1" },
+      demoPatientId: null,
+    });
+  });
+
   it("returns nulls for an empty practice with no demo data", async () => {
     const { db } = createDb([
       [practiceRow({})],

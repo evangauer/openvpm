@@ -187,6 +187,45 @@ function onboardingStateMergePatch(patch: Record<string, unknown>) {
   )`;
 }
 
+/**
+ * Selects (and may later change) the clinic's setup path without rewriting the
+ * first time setup actually began. That timestamp is cohort evidence, not a
+ * last-updated field.
+ */
+function onboardingIntentStatePatch(intent: OnboardingIntent, now: string) {
+  return sql`jsonb_set(
+    coalesce(${practices.settings}, '{}'::jsonb),
+    '{onboardingState}',
+    coalesce(${practices.settings}->'onboardingState', '{}'::jsonb) ||
+      jsonb_build_object(
+        'onboardingIntent', ${intent},
+        'onboardingIntentSelectedAt', coalesce(
+          nullif(${practices.settings}->'onboardingState'->>'onboardingIntentSelectedAt', ''),
+          ${now}
+        ),
+        'journeyLastProgressAt', ${now},
+        'journeyDismissed', false
+      )
+  )`;
+}
+
+/** Keep setup completion first-write-wins while recording fresh activity. */
+function onboardingCompletionPatch(now: string) {
+  return sql`jsonb_set(
+    jsonb_set(
+      coalesce(${practices.settings}, '{}'::jsonb),
+      '{onboardingCompletedAt}',
+      to_jsonb(coalesce(
+        nullif(${practices.settings}->>'onboardingCompletedAt', ''),
+        ${now}
+      )::text)
+    ),
+    '{onboardingState}',
+    coalesce(${practices.settings}->'onboardingState', '{}'::jsonb) ||
+      jsonb_build_object('journeyLastProgressAt', ${now})
+  )`;
+}
+
 function staffAdminRosterLockKey(practiceId: string) {
   return `settings:staff-admin-roster:${practiceId}`;
 }
@@ -303,6 +342,8 @@ interface PracticeSettings {
     onboardingIntentSelectedAt?: string;
     /** Resume cursor for the "Make it yours" setup wizard (step id, not index). */
     journeyStepId?: string | null;
+    /** Last successfully persisted journey action, used for stall recovery. */
+    journeyLastProgressAt?: string;
     /** "I'll finish later" — suppresses auto-open without completing onboarding. */
     journeyDismissed?: boolean;
     /** Sticky marker: a reviewed migration committed real clinic data. */
@@ -1169,7 +1210,7 @@ export const settingsRouter = createRouter({
 
     return {
       practiceName: practice.name,
-      hasDemoData: !!demo,
+      hasDemoData: hasLiveDemoData(demo),
       portalClient,
       demoPatientName,
       demoPatientId,
@@ -1179,12 +1220,11 @@ export const settingsRouter = createRouter({
 
   /** Mark onboarding complete. */
   completeOnboarding: adminProcedure.mutation(async ({ ctx }) => {
+    const completedAt = new Date().toISOString();
     const [updated] = await ctx.db
       .update(practices)
       .set({
-        settings: settingsMergePatch({
-          onboardingCompletedAt: new Date().toISOString(),
-        }),
+        settings: onboardingCompletionPatch(completedAt),
       })
       .where(activePracticeWhere(ctx.practiceId))
       .returning({ id: practices.id });
@@ -1256,6 +1296,7 @@ export const settingsRouter = createRouter({
       onboardingIntent: null,
       onboardingIntentSelectedAt: null,
       journeyStepId: null,
+      journeyLastProgressAt: null,
       journeyDismissed: false,
       migrationHasCommittedChanges: false,
       migrationLastCommittedAt: null,
@@ -1311,14 +1352,11 @@ export const settingsRouter = createRouter({
   setOnboardingIntent: adminProcedure
     .input(z.object({ intent: onboardingIntentInput }))
     .mutation(async ({ ctx, input }) => {
+      const now = new Date().toISOString();
       const [updated] = await ctx.db
         .update(practices)
         .set({
-          settings: onboardingStateMergePatch({
-            onboardingIntent: input.intent,
-            onboardingIntentSelectedAt: new Date().toISOString(),
-            journeyDismissed: false,
-          }),
+          settings: onboardingIntentStatePatch(input.intent, now),
         })
         .where(activePracticeWhere(ctx.practiceId))
         .returning({ id: practices.id });
@@ -1341,11 +1379,12 @@ export const settingsRouter = createRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const patch: Record<string, unknown> = {};
+      const patch: Record<string, unknown> = {
+        journeyLastProgressAt: new Date().toISOString(),
+      };
       if (input.stepId != null) patch.journeyStepId = input.stepId;
       if (input.dismissed !== undefined)
         patch.journeyDismissed = input.dismissed;
-      if (Object.keys(patch).length === 0) return { ok: true };
 
       const [updated] = await ctx.db
         .update(practices)

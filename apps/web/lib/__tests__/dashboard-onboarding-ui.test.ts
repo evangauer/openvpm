@@ -127,6 +127,21 @@ describe("dashboard onboarding UI states", () => {
     );
     expect(journeyProviderSource).toContain("const openJourney = useCallback(() => {");
     expect(journeyProviderSource).toContain("if (!isAdmin) return;");
+    expect(journeyProviderSource).toContain(
+      "pendingManualOpen.current = true"
+    );
+    expect(journeyProviderSource).toContain(
+      "!pendingManualOpen.current ||"
+    );
+    expect(journeyProviderSource).toContain(
+      "pendingManualOpen.current = false"
+    );
+    expect(journeyProviderSource).toContain(
+      "if (subscription.error) retryPendingManualOpen();"
+    );
+    expect(journeyProviderSource).toContain(
+      "if (result.error && pendingManualOpen.current)"
+    );
     expect(journeyProviderSource).toContain("const isOpen = isAdmin && index !== null");
     expect(journeyProviderSource).toContain("value={{ openJourney, isOpen }}");
     expect(journeyProviderSource).toMatch(/<JourneyShell\s+steps=\{steps\}/);
@@ -167,6 +182,10 @@ describe("dashboard onboarding UI states", () => {
       "requestOnboardingHelp: adminProcedure.mutation"
     );
     expect(settingsRouter).toContain('"Hands-on onboarding requested"');
+    expect(activationSource).toContain("useOnboardingJourney");
+    expect(activationSource).toContain("Resume guided setup");
+    expect(activationSource).toContain("Start guided setup");
+    expect(activationSource).toContain("onClick={openJourney}");
   });
 
   it("auto-opens the wizard for unfinished, non-dismissed onboarding and resumes durably", () => {
@@ -207,7 +226,19 @@ describe("dashboard onboarding UI states", () => {
     expect(journeyProviderSource).toContain("setIndex(resumeIndex)");
     // "I'll finish later" records dismissal WITHOUT completing onboarding.
     expect(journeyProviderSource).toContain(
-      "setJourneyProgress.mutate({ stepId: step.id, dismissed: true })"
+      "await persistCursor(step.id, true)"
+    );
+    expect(journeyProviderSource).toContain(
+      "await setJourneyProgress.mutateAsync({ stepId, dismissed })"
+    );
+    expect(journeyProviderSource).toContain(
+      "await persistCursor(steps[next]!.id, false)"
+    );
+    expect(journeyProviderSource).toContain(
+      "await persistCursor(steps[prev]!.id, false)"
+    );
+    expect(journeyProviderSource).toContain(
+      "if (!onboardingState.data || !subscription.data) return;"
     );
     expect(settingsRouter).toContain("setJourneyProgress: adminProcedure");
   });

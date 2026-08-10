@@ -157,7 +157,11 @@ export async function computeActivationFunnel(
         count(*) filter (
           where mt.registered_at is not null
             and (
-              nullif(s.settings -> 'onboardingState' ->> 'journeyStepId', '')
+              nullif(
+                s.settings -> 'onboardingState' ->> 'onboardingIntentSelectedAt',
+                ''
+              ) is not null
+              or nullif(s.settings -> 'onboardingState' ->> 'journeyStepId', '')
                 is not null
               or nullif(s.settings ->> 'onboardingCompletedAt', '') is not null
             )

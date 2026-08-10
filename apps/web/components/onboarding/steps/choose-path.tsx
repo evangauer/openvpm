@@ -24,6 +24,7 @@ const intentIcons = {
  * checklist and platform funnel can keep the same pathway context.
  */
 export function ChoosePathStep({ register, state, setState }: StepProps) {
+  const utils = trpc.useUtils();
   const saveIntent = trpc.settings.setOnboardingIntent.useMutation();
   const selected = getOnboardingIntentOption(state.onboardingIntent);
 
@@ -31,10 +32,22 @@ export function ChoosePathStep({ register, state, setState }: StepProps) {
     register({
       async onContinue() {
         await saveIntent.mutateAsync({ intent: state.onboardingIntent });
+        // The journey provider derives its same-session resume point from this
+        // cache. Keep it aligned with the successful server write so pausing
+        // and reopening does not return to the path question.
+        utils.settings.getOnboardingState.setData(undefined, (prev) =>
+          prev
+            ? {
+                ...prev,
+                onboardingIntent: state.onboardingIntent,
+                journeyDismissed: false,
+              }
+            : prev,
+        );
         return true;
       },
     });
-  }, [register, saveIntent, state.onboardingIntent]);
+  }, [register, saveIntent, state.onboardingIntent, utils]);
 
   return (
     <div className="space-y-5">

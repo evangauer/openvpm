@@ -59,6 +59,21 @@ re-cohorted. Abandonment ages from the exact stage event: first touch before a
 demo, demo submission before registration, and each canonical milestone after
 registration.
 
+Clinic setup reporting is similarly durable. Setup starts at the first saved
+`onboardingIntentSelectedAt` (with the legacy step cursor or completion marker
+as fallbacks), and that first timestamp never changes when a clinic revisits its
+path. `journeyLastProgressAt` advances only after a setup action is persisted
+successfully and is used to age stalled setup in the recovery queue. Completion
+is also first-write-wins, so reopening or replaying the finish action cannot
+move a clinic into a newer cohort.
+
+Sample clinic IDs are cumulative provenance. Clearing sample data soft-deletes
+the rows but retains every ID with a `clearedAt` marker; reseeding merges new IDs
+into that history and clears the marker. This prevents old sample rows from
+becoming apparent real activation evidence. Account creation, starter catalog
+seeding, sample seeding, and initial provenance commit together, while clear and
+reseed operations are serialized per practice.
+
 Investigate non-zero projection drift if it persists beyond one hourly run.
 Unmapped Stripe evidence needs an operator to correct the authoritative Stripe
 customer/subscription-to-practice mapping; do not edit evidence timestamps or

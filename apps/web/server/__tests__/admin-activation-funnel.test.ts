@@ -184,6 +184,7 @@ describe("admin activation funnel", () => {
     expect(source).toContain("pcm.milestone = 'activated'");
     expect(source).toContain("pcm.milestone = 'payment_method_collected'");
     expect(source).toContain("pcm.milestone = 'first_positive_payment'");
+    expect(source).toContain("onboardingIntentSelectedAt");
 
     // First-visit completion requires a completed, tenant-owned closeout for a
     // real appointment and uses the same post-signup/demo exclusions.

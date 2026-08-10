@@ -210,9 +210,26 @@ describe("settings admin stale target safety", () => {
     ).resolves.toEqual({ ok: true });
 
     expect(updateSet).toHaveBeenCalledTimes(1);
-    expect(SETTINGS_SOURCE).toContain("onboardingStateMergePatch({");
-    expect(SETTINGS_SOURCE).toContain("onboardingIntent: input.intent");
+    expect(SETTINGS_SOURCE).toContain(
+      "onboardingIntentStatePatch(input.intent, now)",
+    );
+    expect(SETTINGS_SOURCE).toContain("'onboardingIntent', ${intent}");
     expect(SETTINGS_SOURCE).toContain("onboardingIntentSelectedAt");
+    expect(SETTINGS_SOURCE).toContain("journeyLastProgressAt");
+  });
+
+  it("keeps setup start and completion cohort timestamps first-write-wins", () => {
+    expect(SETTINGS_SOURCE).toContain("function onboardingIntentStatePatch");
+    expect(SETTINGS_SOURCE).toContain(
+      "nullif(${practices.settings}->'onboardingState'->>'onboardingIntentSelectedAt', '')",
+    );
+    expect(SETTINGS_SOURCE).toContain("function onboardingCompletionPatch");
+    expect(SETTINGS_SOURCE).toContain(
+      "nullif(${practices.settings}->>'onboardingCompletedAt', '')",
+    );
+    expect(SETTINGS_SOURCE).toContain(
+      "settings: onboardingCompletionPatch(completedAt)",
+    );
   });
 
   it("lets the clinic owner become a veterinarian provider on the primary location", async () => {

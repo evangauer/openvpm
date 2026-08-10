@@ -72,7 +72,9 @@ interface RecoveryRow {
 type RecoverySettings = {
   onboardingCompletedAt?: string | null;
   onboardingState?: {
+    onboardingIntentSelectedAt?: string | null;
     journeyStepId?: string | null;
+    journeyLastProgressAt?: string | null;
     journeyDismissed?: boolean;
     setupHelpRequestedAt?: string | null;
   };
@@ -122,10 +124,14 @@ export function recoverySetupState(settingsValue: unknown): {
   started: boolean;
   stage: string;
   helpRequestedAt: Date | null;
+  lastProgressAt: Date | null;
 } {
   const settings = (settingsValue ?? {}) as RecoverySettings;
   const state = settings.onboardingState;
   const helpRequestedAt = validDate(state?.setupHelpRequestedAt);
+  const intentSelectedAt = validDate(state?.onboardingIntentSelectedAt);
+  const lastProgressAt =
+    validDate(state?.journeyLastProgressAt) ?? intentSelectedAt;
   const completedAt = validDate(settings.onboardingCompletedAt);
   if (completedAt) {
     return {
@@ -134,6 +140,7 @@ export function recoverySetupState(settingsValue: unknown): {
       started: true,
       stage: "Complete",
       helpRequestedAt,
+      lastProgressAt,
     };
   }
   const step = state?.journeyStepId?.trim();
@@ -145,6 +152,17 @@ export function recoverySetupState(settingsValue: unknown): {
       started: true,
       stage: state?.journeyDismissed ? `Paused at ${label}` : label,
       helpRequestedAt,
+      lastProgressAt,
+    };
+  }
+  if (intentSelectedAt) {
+    return {
+      completed: false,
+      completedAt: null,
+      started: true,
+      stage: "Starting path",
+      helpRequestedAt,
+      lastProgressAt,
     };
   }
   return {
@@ -153,6 +171,7 @@ export function recoverySetupState(settingsValue: unknown): {
     started: false,
     stage: "Not started",
     helpRequestedAt,
+    lastProgressAt,
   };
 }
 
@@ -374,6 +393,7 @@ export async function computeActivationRecovery(
       validDate(row.lastMeaningfulActivityAt),
       setup.completedAt,
       setup.helpRequestedAt,
+      setup.lastProgressAt,
     ].reduce<Date>(
       (latest, candidate) =>
         candidate && candidate.getTime() > latest.getTime()

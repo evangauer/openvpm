@@ -23,6 +23,7 @@ const {
   computeActivationRecovery,
   deriveRecoveryNextAction,
   deriveRecoveryStage,
+  recoverySetupState,
 } = await import("@/lib/admin/activation-recovery");
 
 afterEach(() => {
@@ -93,6 +94,36 @@ describe("activation recovery", () => {
     expect(deriveRecoveryStage({ ...base, firstPositivePayment: true })).toBe(
       "first_positive_payment",
     );
+  });
+
+  it("recognizes the first path choice and retains the latest saved progress", () => {
+    const intentSelectedAt = "2026-08-07T10:00:00.000Z";
+    const journeyLastProgressAt = "2026-08-08T11:00:00.000Z";
+
+    expect(
+      recoverySetupState({
+        onboardingState: { onboardingIntentSelectedAt: intentSelectedAt },
+      }),
+    ).toMatchObject({
+      started: true,
+      completed: false,
+      stage: "Starting path",
+      lastProgressAt: new Date(intentSelectedAt),
+    });
+    expect(
+      recoverySetupState({
+        onboardingState: {
+          onboardingIntentSelectedAt: intentSelectedAt,
+          journeyStepId: "data",
+          journeyLastProgressAt,
+          journeyDismissed: false,
+        },
+      }),
+    ).toMatchObject({
+      started: true,
+      stage: "Data import",
+      lastProgressAt: new Date(journeyLastProgressAt),
+    });
   });
 
   it("covers help, contact, access, setup, activation, card, and paid actions", () => {
@@ -286,6 +317,7 @@ describe("activation recovery", () => {
     expect(source).toContain("from practice_conversion_milestones pcm");
     expect(source).toContain("pcm.milestone = 'payment_method_collected'");
     expect(source).toContain("pcm.milestone = 'first_positive_payment'");
+    expect(source).toContain("journeyLastProgressAt");
     expect(source).not.toContain("from funnel_events fe");
   });
 });

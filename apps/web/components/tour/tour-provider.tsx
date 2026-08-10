@@ -108,6 +108,7 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
       // re-reads a stale "not_started" after a terminal status.
       utils.settings.getOnboardingState.setData(undefined, (prev) => ({
         journeyStepId: prev?.journeyStepId ?? null,
+        journeyLastProgressAt: prev?.journeyLastProgressAt ?? null,
         journeyDismissed: prev?.journeyDismissed ?? false,
         ...prev,
         onboardingIntent: prev?.onboardingIntent ?? null,
