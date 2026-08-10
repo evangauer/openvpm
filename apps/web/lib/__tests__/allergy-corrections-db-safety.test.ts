@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import { getTableConfig } from "drizzle-orm/pg-core";
 import { clinicalRecordCorrections, patientAllergies } from "@openpims/db";
 
-const MIGRATION = "packages/db/drizzle/0074_hesitant_franklin_richards.sql";
+const SCHEMA_MIGRATION =
+  "packages/db/drizzle/0074_hesitant_franklin_richards.sql";
+const PATIENTS_ROUTER = "apps/web/server/routers/patients.ts";
 
 function readRepoFile(path: string): string {
   return readFileSync(new URL(`../../../../${path}`, import.meta.url), "utf8");
@@ -50,7 +52,7 @@ describe("patient allergy correction database safety", () => {
   });
 
   it("ships a transaction-safe migration with ordered constraints", () => {
-    const migration = readRepoFile(MIGRATION);
+    const migration = readRepoFile(SCHEMA_MIGRATION);
     const journal = JSON.parse(
       readRepoFile("packages/db/drizzle/meta/_journal.json"),
     ) as { entries?: Array<{ tag?: string }> };
@@ -102,4 +104,14 @@ describe("patient allergy correction database safety", () => {
     expect(migration).toContain('"appointment_id" is null');
   });
 
+  it("does not require an UPDATE row lock to append a correction", () => {
+    const router = readRepoFile(PATIENTS_ROUTER);
+    const mutation = router.slice(
+      router.indexOf("markAllergyEnteredInError:"),
+      router.indexOf("previewMerge:"),
+    );
+
+    expect(mutation).toContain(".onConflictDoNothing()");
+    expect(mutation).not.toContain('.for("update")');
+  });
 });

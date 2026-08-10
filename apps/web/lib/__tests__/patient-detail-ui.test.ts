@@ -321,19 +321,20 @@ describe("patient detail UI states", () => {
     expect(source).toContain('toast.success("Weight recorded")');
   });
 
-  it("lets staff manage allergies from the alert bar, gated and confirmed", () => {
+  it("keeps allergy reactions visible and uses permanent clinician corrections", () => {
     const source = readFileSync("app/(dashboard)/patients/[id]/page.tsx", "utf8");
-    // Add + remove both refresh the same getById payload the bar renders from.
+    // Add + correction both refresh the same getById payload the bar renders from.
     expect(source).toContain("trpc.patients.addAllergy.useMutation");
-    expect(source).toContain("trpc.patients.removeAllergy.useMutation");
+    expect(source).toContain(
+      "trpc.patients.markAllergyEnteredInError.useMutation"
+    );
     const refreshes = source.match(/void refreshPatientDetail\(\)/g);
     expect(refreshes && refreshes.length).toBeGreaterThanOrEqual(4);
-    // Removal is destructive to safety checks; it must be confirmed and
-    // both controls stay behind the same role gate as the server.
-    expect(source).toContain("window.confirm(");
-    expect(source).toContain(
-      "Prescription safety checks will stop warning about it."
-    );
+    expect(source).toContain('triggerLabel="Mark allergy entered in error"');
+    expect(source).toContain("canCorrect={canCorrectClinicalRecords}");
+    expect(source).toContain("Reaction: {allergy.reaction || \"Not documented\"}");
+    expect(source).toContain("Allergy correction history");
+    expect(source).toContain("Legacy removal retained.");
     expect(source).toContain("{canManagePatientDetail && !showAllergyForm ?");
     expect(source).toContain("allergen: allergyName.trim()");
     // Read-only roles still see the alert bar but never the empty-state

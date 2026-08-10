@@ -206,13 +206,15 @@ describe("clinical correction schema and migration", () => {
       'ALTER TYPE "public"."clinical_correction_record_type" RENAME TO "clinical_correction_record_type_old"',
     );
     expect(migration).toContain(
-      'CREATE TYPE "public"."clinical_correction_record_type" AS ENUM(\'soap_note\', \'vital_sign\', \'vaccination_record\')',
+      "CREATE TYPE \"public\".\"clinical_correction_record_type\" AS ENUM('soap_note', 'vital_sign', 'vaccination_record')",
     );
     expect(migration).toContain(
       'USING "record_type"::text::"public"."clinical_correction_record_type"',
     );
     expect(migration).not.toContain("ADD VALUE 'vaccination_record'");
-    expect(migration.indexOf("vaccination_records_practice_record_uq")).toBeLessThan(
+    expect(
+      migration.indexOf("vaccination_records_practice_record_uq"),
+    ).toBeLessThan(
       migration.indexOf("clinical_record_corrections_vaccination_source_fk"),
     );
     expect(migration).toContain(
@@ -227,9 +229,7 @@ describe("clinical correction schema and migration", () => {
     expect(migration).toContain(
       'and "clinical_record_corrections"."vital_sign_id" is null',
     );
-    expect(migration).toContain(
-      "ELSIF NEW.record_type = 'vaccination_record'",
-    );
+    expect(migration).toContain("ELSIF NEW.record_type = 'vaccination_record'");
     expect(migration).toContain("FROM public.vaccination_records source");
     expect(migration).toContain(
       "source.appointment_id IS NOT DISTINCT FROM NEW.appointment_id",
@@ -491,6 +491,40 @@ describe("clinical correction consumers", () => {
       expect(source).toContain("newer_correction.vaccination_record_id");
       expect(source).toContain("newer_vaccination.administered_at");
     }
+  });
+
+  it("retains corrected allergies while excluding them from current safety consumers", () => {
+    const patientsRouter = readRepoFile("apps/web/server/routers/patients.ts");
+    const records = readRepoFile("apps/web/server/routers/records.ts");
+    const ai = readRepoFile("apps/web/server/routers/ai.ts");
+    const portal = readRepoFile("apps/web/server/routers/portal.ts");
+    const patientPage = readRepoFile(
+      "apps/web/app/(dashboard)/patients/[id]/page.tsx",
+    );
+    const encounterPage = readRepoFile(
+      "apps/web/app/(dashboard)/encounters/[appointmentId]/page.tsx",
+    );
+    const backup = readRepoFile("apps/web/lib/backup/export.ts");
+
+    expect(patientsRouter).toContain("markAllergyEnteredInError");
+    expect(patientsRouter).toContain('recordType: "patient_allergy"');
+    expect(patientsRouter).toContain("allergyHistory");
+    for (const source of [records, ai, portal]) {
+      expect(source).toContain(
+        "allergy_correction.patient_allergy_id = ${patientAllergies.id}",
+      );
+    }
+    expect(patientPage).toContain("Allergy correction history");
+    expect(patientPage).toContain(
+      'triggerLabel="Mark allergy entered in error"',
+    );
+    for (const source of [patientPage, encounterPage]) {
+      expect(source).toContain(
+        'Reaction: {allergy.reaction || "Not documented"}',
+      );
+    }
+    expect(backup).toContain('"patientAllergyId"');
+    expect(backup).toContain('row.recordType === "patient_allergy"');
   });
 
   it("uses an accessible, explicit confirmation dialog for permanent corrections", () => {

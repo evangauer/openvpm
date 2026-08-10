@@ -51,8 +51,15 @@ describe("patients query scoping", () => {
     expect(weightsRead).toContain("activePracticePredicate(ctx.practiceId)");
 
     const allergiesRead = source.match(
-      /\.from\(patientAllergies\)[\s\S]+?eq\(patientAllergies\.patientId, patient\.id\)[\s\S]+?isNull\(patientAllergies\.deletedAt\)/
+      /\.from\(patientAllergies\)[\s\S]+?eq\(patientAllergies\.patientId, patient\.id\)[\s\S]+?\.orderBy\(desc\(patientAllergies\.notedAt\)/
     )?.[0];
+    expect(allergiesRead).toContain(".leftJoin(");
+    expect(allergiesRead).toContain(
+      "clinicalRecordCorrections.patientAllergyId"
+    );
+    expect(allergiesRead).toContain(
+      "eq(clinicalRecordCorrections.practiceId, ctx.practiceId)"
+    );
     expect(allergiesRead).toContain("from ${patients}");
     expect(allergiesRead).toContain(
       "${patients.id} = ${patientAllergies.patientId}"

@@ -427,7 +427,11 @@ export interface MedicalSummaryData {
   clientName: string;
   clientPhone?: string;
   clientEmail?: string;
-  allergies: Array<{ allergen: string; severity: string }>;
+  allergies: Array<{
+    allergen: string;
+    severity: string;
+    reaction?: string;
+  }>;
   problems: Array<{ description: string; status: string; onsetDate?: string }>;
   vaccinations: Array<{ name: string; date: string; nextDue?: string }>;
   recentNotes: Array<{
@@ -618,7 +622,18 @@ export function generateMedicalSummaryPdf(data: MedicalSummaryData): jsPDF {
       doc.setFont(FONT, "normal");
       setColor(doc, COLOR_GRAY);
       doc.text(`(${allergy.severity})`, PAGE_MARGIN + 2 + doc.getTextWidth(allergy.allergen + " "), y);
-      y += 8;
+      y += 5;
+      if (allergy.reaction) {
+        doc.setFontSize(8);
+        writeWrappedText(
+          `Reaction: ${allergy.reaction}`,
+          PAGE_MARGIN + 2,
+          CONTENT_WIDTH - 4,
+          3.5,
+        );
+        doc.setFontSize(10);
+      }
+      y += 3;
     }
   }
 

@@ -16,6 +16,7 @@ import {
   communications,
   practices,
   locations,
+  clinicalRecordCorrections,
 } from "@openpims/db";
 import { users } from "@openpims/db";
 import { rateLimit } from "@/lib/rate-limit";
@@ -447,6 +448,12 @@ export const portalRouter = createRouter({
           .where(
             and(
               eq(patientAllergies.patientId, input.patientId),
+              sql`not exists (
+                select 1
+                from ${clinicalRecordCorrections} as allergy_correction
+                where allergy_correction.practice_id = ${client.practiceId}
+                  and allergy_correction.patient_allergy_id = ${patientAllergies.id}
+              )`,
               isNull(patientAllergies.deletedAt)
             )
           ),

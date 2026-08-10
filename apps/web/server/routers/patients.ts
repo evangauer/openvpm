@@ -50,6 +50,10 @@ import type { Database } from "@openpims/db/client";
 import { alias } from "drizzle-orm/pg-core";
 import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
 import {
+  CLINICAL_CORRECTION_REASON_MAX_LENGTH,
+  CLINICAL_CORRECTION_REASON_MIN_LENGTH,
+} from "@/lib/records/clinical-correction-policy";
+import {
   clinicalDateInput,
   clinicalTextInput,
 } from "@/lib/records/clinical-inputs";
@@ -914,7 +918,7 @@ export const patientsRouter = createRouter({
       }
       const { patient, mergeMetadata } = resolved;
 
-      const [weights, allergies] = await Promise.all([
+      const [weights, allergyHistory] = await Promise.all([
         ctx.db
           .select()
           .from(patientWeights)
@@ -934,8 +938,34 @@ export const patientsRouter = createRouter({
           )
           .orderBy(desc(patientWeights.recordedAt)),
         ctx.db
-          .select()
+          .select({
+            id: patientAllergies.id,
+            createdAt: patientAllergies.createdAt,
+            updatedAt: patientAllergies.updatedAt,
+            deletedAt: patientAllergies.deletedAt,
+            patientId: patientAllergies.patientId,
+            allergen: patientAllergies.allergen,
+            reaction: patientAllergies.reaction,
+            severity: patientAllergies.severity,
+            notedBy: patientAllergies.notedBy,
+            notedAt: patientAllergies.notedAt,
+            correctionId: clinicalRecordCorrections.id,
+            correctionReason: clinicalRecordCorrections.reason,
+            correctedAt: clinicalRecordCorrections.createdAt,
+            correctedBy: clinicalRecordCorrections.correctedBy,
+            correctedByName: clinicalRecordCorrections.correctedByName,
+          })
           .from(patientAllergies)
+          .leftJoin(
+            clinicalRecordCorrections,
+            and(
+              eq(
+                clinicalRecordCorrections.patientAllergyId,
+                patientAllergies.id,
+              ),
+              eq(clinicalRecordCorrections.practiceId, ctx.practiceId),
+            ),
+          )
           .where(
             and(
               eq(patientAllergies.patientId, patient.id),
@@ -946,16 +976,21 @@ export const patientsRouter = createRouter({
                   and ${patients.practiceId} = ${ctx.practiceId}
                   and ${patients.deletedAt} is null
               )`,
-              activePracticePredicate(ctx.practiceId),
-              isNull(patientAllergies.deletedAt)
+              activePracticePredicate(ctx.practiceId)
             )
-          ),
+          )
+          .orderBy(desc(patientAllergies.notedAt), desc(patientAllergies.id)),
       ]);
+
+      const allergies = allergyHistory.filter(
+        (allergy) => !allergy.deletedAt && !allergy.correctionId,
+      );
 
       return {
         ...patient,
         weights,
         allergies,
+        allergyHistory,
         requestedPatientId: input.id,
         canonicalPatientId: patient.id,
         mergeMetadata,
@@ -1168,35 +1203,92 @@ export const patientsRouter = createRouter({
       return allergy!;
     }),
 
-  /**
-   * Soft delete: the row keeps its history (the Rx safety log may reference
-   * it) but stops feeding the alert bar, prescription checks, and portal.
-   */
-  removeAllergy: patientManagerProcedure
+  markAllergyEnteredInError: protectedProcedure
+    .use(requireRole("admin", "veterinarian"))
     .input(
       z.object({
         patientId: z.string().uuid(),
-        id: z.string().uuid(),
+        recordId: z.string().uuid(),
+        reason: z
+          .string()
+          .trim()
+          .min(CLINICAL_CORRECTION_REASON_MIN_LENGTH)
+          .max(CLINICAL_CORRECTION_REASON_MAX_LENGTH),
       })
     )
-    .mutation(async ({ ctx, input }) => {
-      await assertPatientBelongsToPractice(ctx.db, ctx.practiceId, input.patientId);
-      const [removed] = await ctx.db
-        .update(patientAllergies)
-        .set({ deletedAt: new Date() })
-        .where(
-          and(
-            eq(patientAllergies.id, input.id),
-            eq(patientAllergies.patientId, input.patientId),
-            isNull(patientAllergies.deletedAt)
+    .mutation(async ({ ctx, input }) =>
+      ctx.db.transaction(async (tx) => {
+        const sourcePredicate = and(
+          eq(patientAllergies.id, input.recordId),
+          eq(patientAllergies.patientId, input.patientId),
+          isNull(patientAllergies.deletedAt),
+          sql`exists (
+            select 1
+            from ${patients}
+            where ${patients.id} = ${patientAllergies.patientId}
+              and ${patients.practiceId} = ${ctx.practiceId}
+              and ${patients.deletedAt} is null
+          )`,
+          activePracticePredicate(ctx.practiceId),
+        );
+        const [source] = await tx
+          .select({
+            id: patientAllergies.id,
+            patientId: patientAllergies.patientId,
+          })
+          .from(patientAllergies)
+          .where(sourcePredicate)
+          .limit(1);
+        if (!source) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Clinical record not found",
+          });
+        }
+
+        const [created] = await tx
+          .insert(clinicalRecordCorrections)
+          .values({
+            practiceId: ctx.practiceId,
+            recordType: "patient_allergy",
+            action: "entered_in_error",
+            patientAllergyId: source.id,
+            patientId: source.patientId,
+            reason: input.reason,
+            correctedBy: ctx.user.id,
+            correctedByName: ctx.user.name,
+          })
+          .onConflictDoNothing()
+          .returning();
+        if (created) return created;
+
+        const [existing] = await tx
+          .select()
+          .from(clinicalRecordCorrections)
+          .where(
+            and(
+              eq(clinicalRecordCorrections.practiceId, ctx.practiceId),
+              eq(clinicalRecordCorrections.patientAllergyId, source.id),
+            ),
           )
-        )
-        .returning({ id: patientAllergies.id });
-      if (!removed) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Allergy not found" });
-      }
-      return { ok: true };
-    }),
+          .limit(1);
+        if (existing) {
+          if (existing.reason !== input.reason) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "This allergy already has a different permanent correction reason. Refresh the chart.",
+            });
+          }
+          return existing;
+        }
+
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "Clinical correction changed; refresh and retry.",
+        });
+      }),
+    ),
 
   previewMerge: protectedProcedure
     .use(requireRole("admin"))

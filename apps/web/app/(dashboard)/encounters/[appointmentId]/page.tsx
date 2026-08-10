@@ -640,15 +640,36 @@ export default function EncounterWorkspacePage() {
                             .join(" · ") || "Patient details unavailable"}
                         </p>
                       </div>
-                      {patient?.allergies.length ? (
-                        <Badge variant="destructive">
-                          {patient.allergies.length} allerg
-                          {patient.allergies.length === 1 ? "y" : "ies"}
-                        </Badge>
-                      ) : (
+                      {!patient?.allergies.length ? (
                         <Badge variant="secondary">No recorded allergies</Badge>
-                      )}
+                      ) : null}
                     </div>
+                    {patient?.allergies.length ? (
+                      <div
+                        className="mt-3 grid gap-2"
+                        role="alert"
+                        aria-label="Current allergy warnings"
+                      >
+                        {patient.allergies.map((allergy) => (
+                          <div
+                            key={allergy.id}
+                            className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="font-semibold text-destructive">
+                                {allergy.allergen}
+                              </span>
+                              <span className="text-xs font-semibold uppercase tracking-wide text-destructive">
+                                {allergy.severity}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-xs text-foreground">
+                              Reaction: {allergy.reaction || "Not documented"}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="flex flex-wrap gap-2">

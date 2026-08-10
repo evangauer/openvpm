@@ -59,7 +59,7 @@ function createDb(opts?: {
     const builder: Record<string, unknown> = {
       then: (
         resolve: (value: unknown[]) => unknown,
-        reject?: (error: unknown) => unknown
+        reject?: (error: unknown) => unknown,
       ) => Promise.resolve(result).then(resolve, reject),
     };
     builder.from = vi.fn(() => builder);
@@ -67,13 +67,19 @@ function createDb(opts?: {
     builder.innerJoin = vi.fn(() => builder);
     builder.where = vi.fn(() => builder);
     builder.orderBy = vi.fn(() => builder);
-    builder.limit = vi.fn(async () => result);
+    builder.limit = vi.fn(() => builder);
     builder.for = vi.fn(async () => result);
     return builder;
   });
 
   const insertReturning = vi.fn(async () => opts?.insertedRows ?? []);
-  const insertValues = vi.fn(() => ({ returning: insertReturning }));
+  const insertOnConflictDoNothing = vi.fn(() => ({
+    returning: insertReturning,
+  }));
+  const insertValues = vi.fn(() => ({
+    returning: insertReturning,
+    onConflictDoNothing: insertOnConflictDoNothing,
+  }));
   const insert = vi.fn(() => ({ values: insertValues }));
 
   const updatedResults = [...(opts?.updatedResults ?? [])];
@@ -113,26 +119,26 @@ describe("patients mutation safety", () => {
         clientId: CLIENT_ID,
         name: "Biscuit",
         species: "canine",
-      })
+      }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(
       viewer.update({
         id: PATIENT_ID,
         name: "Biscuit",
-      })
+      }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(
       viewer.addWeight({
         patientId: PATIENT_ID,
         weightKg: "12.5",
-      })
+      }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(
       viewer.addAllergy({
         patientId: PATIENT_ID,
         allergen: "Chicken",
         severity: "mild",
-      })
+      }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     expect(select).not.toHaveBeenCalled();
@@ -149,7 +155,7 @@ describe("patients mutation safety", () => {
         clientId: CLIENT_ID,
         name: "Biscuit",
         species: "canine",
-      })
+      }),
     ).resolves.toMatchObject({ id: PATIENT_ID });
   });
 
@@ -161,7 +167,7 @@ describe("patients mutation safety", () => {
         clientId: CLIENT_ID,
         name: "   ",
         species: "canine",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -170,7 +176,7 @@ describe("patients mutation safety", () => {
         name: "Biscuit",
         species: "canine",
         dob: "2026-02-30",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -179,35 +185,35 @@ describe("patients mutation safety", () => {
         name: "Biscuit",
         species: "canine",
         breed: "b".repeat(129),
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).update({
         id: PATIENT_ID,
         dob: "not-a-date",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).update({
         id: PATIENT_ID,
         name: "   ",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).update({
         id: PATIENT_ID,
         color: "c".repeat(65),
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).update({
         id: PATIENT_ID,
         photoUrl: "p".repeat(513),
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -215,14 +221,14 @@ describe("patients mutation safety", () => {
         species: "dragon",
         limit: 25,
         offset: 0,
-      } as never)
+      } as never),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).list({
         limit: 1.5,
         offset: 0,
-      } as never)
+      } as never),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -230,27 +236,27 @@ describe("patients mutation safety", () => {
         search: "s".repeat(129),
         limit: 25,
         offset: 0,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).list({
         limit: 25,
         offset: LIST_OFFSET_MAX + 1,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).search({
         query: "   ",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).addWeight({
         patientId: PATIENT_ID,
         weightKg: "12.3456",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(PATIENT_WEIGHT_MIN_KG).toBe(0.001);
@@ -265,21 +271,21 @@ describe("patients mutation safety", () => {
       callerWithDb(db).addWeight({
         patientId: PATIENT_ID,
         weightKg: "0",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).addWeight({
         patientId: PATIENT_ID,
         weightKg: "100000",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).addAllergy({
         patientId: PATIENT_ID,
         allergen: "   ",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -287,7 +293,7 @@ describe("patients mutation safety", () => {
         patientId: PATIENT_ID,
         allergen: "Chicken",
         reaction: "r".repeat(2001),
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(select).not.toHaveBeenCalled();
@@ -305,7 +311,7 @@ describe("patients mutation safety", () => {
         clientId: CLIENT_ID,
         name: "Biscuit",
         species: "canine",
-      })
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(insertValues).not.toHaveBeenCalled();
@@ -319,7 +325,7 @@ describe("patients mutation safety", () => {
         clientId: CLIENT_ID,
         name: "Biscuit",
         species: "canine",
-      })
+      }),
     ).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
@@ -354,7 +360,7 @@ describe("patients mutation safety", () => {
         breed: "  Corgi  ",
         color: "  Tricolor  ",
         microchipNumber: "  985112003001234  ",
-      })
+      }),
     ).resolves.toMatchObject({ id: PATIENT_ID, practiceId: PRACTICE_ID });
 
     expect(insertValues).toHaveBeenCalledWith(
@@ -365,7 +371,7 @@ describe("patients mutation safety", () => {
         breed: "Corgi",
         color: "Tricolor",
         microchipNumber: "985112003001234",
-      })
+      }),
     );
     expect(mocks.dispatchWebhookEvent).toHaveBeenCalledWith(
       PRACTICE_ID,
@@ -376,7 +382,7 @@ describe("patients mutation safety", () => {
         name: "Biscuit",
         breed: "Corgi",
         source: "dashboard",
-      })
+      }),
     );
   });
 
@@ -393,7 +399,7 @@ describe("patients mutation safety", () => {
         color: "  Tricolor  ",
         microchipNumber: "  985112003001234  ",
         photoUrl: "  https://cdn.example.test/biscuit.jpg  ",
-      })
+      }),
     ).resolves.toMatchObject({ id: PATIENT_ID });
 
     expect(updateSet).toHaveBeenCalledWith({
@@ -412,7 +418,7 @@ describe("patients mutation safety", () => {
       callerWithDb(db).addWeight({
         patientId: PATIENT_ID,
         weightKg: "12.4",
-      })
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(insertValues).not.toHaveBeenCalled();
@@ -428,7 +434,7 @@ describe("patients mutation safety", () => {
       callerWithDb(db).addWeight({
         patientId: PATIENT_ID,
         weightKg: " 12.400 ",
-      })
+      }),
     ).resolves.toMatchObject({ id: PATIENT_ID });
 
     await expect(
@@ -436,7 +442,7 @@ describe("patients mutation safety", () => {
         patientId: PATIENT_ID,
         allergen: "  Chicken  ",
         reaction: "  Facial swelling  ",
-      })
+      }),
     ).resolves.toMatchObject({ id: PATIENT_ID });
 
     expect(insertValues).toHaveBeenNthCalledWith(
@@ -444,7 +450,7 @@ describe("patients mutation safety", () => {
       expect.objectContaining({
         patientId: PATIENT_ID,
         weightKg: "12.400",
-      })
+      }),
     );
     expect(insertValues).toHaveBeenNthCalledWith(
       2,
@@ -453,7 +459,7 @@ describe("patients mutation safety", () => {
         allergen: "Chicken",
         reaction: "Facial swelling",
         severity: "moderate",
-      })
+      }),
     );
   });
 
@@ -464,70 +470,114 @@ describe("patients mutation safety", () => {
       callerWithDb(db).addAllergy({
         patientId: PATIENT_ID,
         allergen: "Chicken",
-      })
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(insertValues).not.toHaveBeenCalled();
   });
 
-  it("keeps allergy removal restricted to non-viewer staff roles", async () => {
-    const { db, select, updateSet } = createDb();
+  it("keeps allergy corrections restricted to administrators and veterinarians", async () => {
+    for (const role of ["viewer", "front_desk", "technician"]) {
+      const { db, select, insertValues } = createDb();
+      await expect(
+        callerWithDb(db, role).markAllergyEnteredInError({
+          patientId: PATIENT_ID,
+          recordId: ALLERGY_ID,
+          reason: "Recorded on the wrong patient.",
+        }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(select).not.toHaveBeenCalled();
+      expect(insertValues).not.toHaveBeenCalled();
+    }
+  });
 
+  it("requires a bounded allergy correction reason before DB work", async () => {
+    const { db, select, insertValues } = createDb();
     await expect(
-      callerWithDb(db, "viewer").removeAllergy({
+      callerWithDb(db).markAllergyEnteredInError({
         patientId: PATIENT_ID,
-        id: ALLERGY_ID,
-      })
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
-
+        recordId: ALLERGY_ID,
+        reason: "no",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(select).not.toHaveBeenCalled();
-    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
   });
 
-  it("soft deletes allergies for tenant-owned patients only", async () => {
-    const { db, updateSet } = createDb({
-      selectResults: [[{ id: PATIENT_ID }]],
-      updatedRows: [{ id: ALLERGY_ID }],
+  it("appends an attributed allergy correction without mutating the source", async () => {
+    const correction = {
+      id: "00000000-0000-0000-0000-000000000011",
+      patientAllergyId: ALLERGY_ID,
+      reason: "Recorded on the wrong patient.",
+    };
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [[{ id: ALLERGY_ID, patientId: PATIENT_ID }]],
+      insertedRows: [correction],
     });
 
     await expect(
-      callerWithDb(db, "front_desk").removeAllergy({
+      callerWithDb(db, "veterinarian").markAllergyEnteredInError({
         patientId: PATIENT_ID,
-        id: ALLERGY_ID,
-      })
-    ).resolves.toEqual({ ok: true });
+        recordId: ALLERGY_ID,
+        reason: "  Recorded on the wrong patient.  ",
+      }),
+    ).resolves.toEqual(correction);
 
-    // Soft delete: the row is retired via deletedAt, never hard-deleted.
-    expect(updateSet).toHaveBeenCalledWith(
-      expect.objectContaining({ deletedAt: expect.any(Date) })
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: PRACTICE_ID,
+        recordType: "patient_allergy",
+        patientAllergyId: ALLERGY_ID,
+        patientId: PATIENT_ID,
+        reason: "Recorded on the wrong patient.",
+        correctedBy: USER_ID,
+        correctedByName: "Patient User",
+      }),
     );
-  });
-
-  it("404s allergy removal when the patient is not tenant-owned", async () => {
-    const { db, updateSet } = createDb({ selectResults: [[]] });
-
-    await expect(
-      callerWithDb(db).removeAllergy({
-        patientId: PATIENT_ID,
-        id: ALLERGY_ID,
-      })
-    ).rejects.toMatchObject({ code: "NOT_FOUND" });
-
     expect(updateSet).not.toHaveBeenCalled();
   });
 
-  it("404s allergy removal when the row is missing or already removed", async () => {
-    const { db } = createDb({
-      selectResults: [[{ id: PATIENT_ID }]],
-      updatedRows: [],
-    });
-
+  it("does not enumerate missing, wrong-patient, or cross-tenant allergy sources", async () => {
+    const { db, insertValues } = createDb({ selectResults: [[]] });
     await expect(
-      callerWithDb(db).removeAllergy({
+      callerWithDb(db).markAllergyEnteredInError({
         patientId: PATIENT_ID,
-        id: ALLERGY_ID,
-      })
+        recordId: ALLERGY_ID,
+        reason: "Recorded on the wrong patient.",
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("replays the same allergy correction and rejects a conflicting reason", async () => {
+    const existing = {
+      id: "00000000-0000-0000-0000-000000000011",
+      patientAllergyId: ALLERGY_ID,
+      reason: "Recorded on the wrong patient.",
+    };
+    const replay = createDb({
+      selectResults: [[{ id: ALLERGY_ID, patientId: PATIENT_ID }], [existing]],
+      insertedRows: [],
+    });
+    await expect(
+      callerWithDb(replay.db).markAllergyEnteredInError({
+        patientId: PATIENT_ID,
+        recordId: ALLERGY_ID,
+        reason: existing.reason,
+      }),
+    ).resolves.toEqual(existing);
+
+    const conflict = createDb({
+      selectResults: [[{ id: ALLERGY_ID, patientId: PATIENT_ID }], [existing]],
+      insertedRows: [],
+    });
+    await expect(
+      callerWithDb(conflict.db).markAllergyEnteredInError({
+        patientId: PATIENT_ID,
+        recordId: ALLERGY_ID,
+        reason: "Duplicate allergy record.",
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
   });
 
   it("rejects stale or cross-tenant patient updates", async () => {
@@ -537,7 +587,7 @@ describe("patients mutation safety", () => {
       callerWithDb(db).update({
         id: PATIENT_ID,
         name: "Biscuit",
-      })
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(updateSet).toHaveBeenCalledWith({ name: "Biscuit" });
@@ -566,7 +616,7 @@ describe("patients mutation safety", () => {
     const { db, updateSet } = createDb({ selectResults: [[]] });
 
     await expect(
-      callerWithDb(db).delete({ id: PATIENT_ID })
+      callerWithDb(db).delete({ id: PATIENT_ID }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -578,7 +628,7 @@ describe("patients mutation safety", () => {
     });
 
     await expect(
-      callerWithDb(db).delete({ id: PATIENT_ID })
+      callerWithDb(db).delete({ id: PATIENT_ID }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -590,7 +640,7 @@ describe("patients mutation safety", () => {
     });
 
     await expect(
-      callerWithDb(db).delete({ id: PATIENT_ID })
+      callerWithDb(db).delete({ id: PATIENT_ID }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -602,24 +652,21 @@ describe("patients mutation safety", () => {
       updatedRows: [{ id: PATIENT_ID }],
     });
 
-    await expect(
-      callerWithDb(db).delete({ id: PATIENT_ID })
-    ).resolves.toEqual({ success: true });
+    await expect(callerWithDb(db).delete({ id: PATIENT_ID })).resolves.toEqual({
+      success: true,
+    });
 
     expect(updateSet).toHaveBeenCalledWith({ deletedAt: expect.any(Date) });
   });
 
   it("does not delete a patient with retained clinical or prescription history", async () => {
     const { db, updateSet } = createDb({
-      selectResults: [
-        [{ id: PATIENT_ID }],
-        [],
-        [],
-        [{ exists: true }],
-      ],
+      selectResults: [[{ id: PATIENT_ID }], [], [], [{ exists: true }]],
     });
 
-    await expect(callerWithDb(db).delete({ id: PATIENT_ID })).rejects.toMatchObject({
+    await expect(
+      callerWithDb(db).delete({ id: PATIENT_ID }),
+    ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
     });
     expect(updateSet).not.toHaveBeenCalled();
@@ -649,7 +696,7 @@ describe("patients mutation safety", () => {
       callerWithDb(db).previewMerge({
         keepId: PATIENT_ID,
         mergeId: MERGE_PATIENT_ID,
-      })
+      }),
     ).resolves.toMatchObject({
       allowed: false,
       blockerCounts: { differentClient: 1 },

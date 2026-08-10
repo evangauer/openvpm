@@ -671,6 +671,12 @@ async function assessPrescriptionSafety(
               and ${patients.practiceId} = ${ctx.practiceId}
               and ${patients.deletedAt} is null
           )`,
+          sql`not exists (
+            select 1
+            from ${clinicalRecordCorrections} as allergy_correction
+            where allergy_correction.practice_id = ${ctx.practiceId}
+              and allergy_correction.patient_allergy_id = ${patientAllergies.id}
+          )`,
           isNull(patientAllergies.deletedAt)
         )
       ),

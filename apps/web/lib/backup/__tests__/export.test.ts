@@ -1750,6 +1750,13 @@ describe("restorePracticeData", () => {
           administeredBy: "user-1",
         },
       ],
+      patientAllergies: [
+        {
+          id: "allergy-1",
+          patientId: "patient-1",
+          notedBy: "user-1",
+        },
+      ],
       clinicalRecordCorrections: [
         {
           id: "correction-1",
@@ -1777,6 +1784,18 @@ describe("restorePracticeData", () => {
           vaccinationRecordId: "vaccination-1",
           patientId: "patient-1",
           appointmentId: "appointment-1",
+          correctedBy: "user-1",
+        },
+        {
+          id: "correction-4",
+          recordType: "patient_allergy",
+          soapNoteId: null,
+          vitalSignId: null,
+          vaccinationRecordId: null,
+          labResultId: null,
+          patientAllergyId: "allergy-1",
+          patientId: "patient-1",
+          appointmentId: null,
           correctedBy: "user-1",
         },
       ],
@@ -1813,7 +1832,7 @@ describe("restorePracticeData", () => {
         ],
       }).errors,
     ).toContain(
-      "clinicalRecordCorrections[correction-1].recordType must be soap_note, vital_sign, vaccination_record, or lab_result.",
+      "clinicalRecordCorrections[correction-1].recordType must be soap_note, vital_sign, vaccination_record, lab_result, or patient_allergy.",
     );
 
     expect(
@@ -1838,12 +1857,26 @@ describe("restorePracticeData", () => {
           backup.clinicalRecordCorrections[2],
           {
             ...backup.clinicalRecordCorrections[2],
-            id: "correction-4",
+            id: "correction-5",
           },
         ],
       }).errors,
     ).toContain(
-      "clinicalRecordCorrections[correction-4] duplicates an existing correction source.",
+      "clinicalRecordCorrections[correction-5] duplicates an existing correction source.",
+    );
+
+    expect(
+      validatePracticeExportRestore({
+        ...backup,
+        clinicalRecordCorrections: [
+          {
+            ...backup.clinicalRecordCorrections[3],
+            patientId: "patient-2",
+          },
+        ],
+      }).errors,
+    ).toContain(
+      "clinicalRecordCorrections[correction-4] must match its source record patientId and appointmentId exactly.",
     );
   });
 

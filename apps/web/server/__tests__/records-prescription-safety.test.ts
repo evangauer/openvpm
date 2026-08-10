@@ -733,6 +733,10 @@ describe("records list query scoping", () => {
       "${patients.practiceId} = ${ctx.practiceId}",
     );
     expect(allergySafetyBlock).toContain("${patients.deletedAt} is null");
+    expect(allergySafetyBlock).toContain("not exists (");
+    expect(allergySafetyBlock).toContain(
+      "allergy_correction.patient_allergy_id = ${patientAllergies.id}",
+    );
   });
 });
 

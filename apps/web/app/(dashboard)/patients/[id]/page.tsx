@@ -23,7 +23,6 @@ import {
   Paperclip,
   Plus,
   Receipt,
-  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
@@ -413,9 +412,9 @@ export default function PatientDetailPage() {
     },
     onError: (err) => toast.error(err.message),
   });
-  const removeAllergy = trpc.patients.removeAllergy.useMutation({
+  const correctAllergy = trpc.patients.markAllergyEnteredInError.useMutation({
     onSuccess: () => {
-      toast.success("Allergy removed");
+      toast.success("Allergy correction recorded");
       void refreshPatientDetail();
     },
     onError: (err) => toast.error(err.message),
@@ -434,18 +433,6 @@ export default function PatientDetailPage() {
       severity: allergySeverity,
       reaction: allergyReaction.trim() || undefined,
     });
-  }
-
-  function handleRemoveAllergy(allergy: { id: string; allergen: string }) {
-    if (!patient || removeAllergy.isPending) return;
-    if (
-      !window.confirm(
-        `Remove the "${allergy.allergen}" allergy? Prescription safety checks will stop warning about it.`
-      )
-    ) {
-      return;
-    }
-    removeAllergy.mutate({ patientId: patient.id, id: allergy.id });
   }
 
   const loadError = error ?? recordsSettingsError;
@@ -537,6 +524,7 @@ export default function PatientDetailPage() {
         allergies: (patientData.allergies ?? []).map((a) => ({
           allergen: a.allergen,
           severity: a.severity ?? "unknown",
+          reaction: a.reaction ?? undefined,
         })),
         problems: problems.map((p) => ({
           description: p.description,
@@ -586,11 +574,36 @@ export default function PatientDetailPage() {
               ),
             })),
           })),
-        recordCorrections: soapNotes
-          .filter(
-            (note) => note.status === "finalized" && Boolean(note.correctionId),
-          )
-          .map((note) => ({
+        recordCorrections: [
+          ...(patientData.allergyHistory ?? [])
+            .filter(
+              (allergy) =>
+                Boolean(allergy.correctionId) &&
+                Boolean(allergy.correctionReason) &&
+                Boolean(allergy.correctedAt),
+            )
+            .map((allergy) => ({
+              recordLabel: `Allergy “${allergy.allergen}” recorded ${formatClinicalDate(
+                allergy.notedAt,
+                recordsTimeZone,
+                "Unknown date",
+              )}`,
+              reason: allergy.correctionReason ?? "Reason unavailable",
+              correctedByName:
+                allergy.correctedByName ?? "Unknown clinician",
+              correctedAt: allergy.correctedAt
+                ? formatClinicalDateTime(
+                    allergy.correctedAt,
+                    recordsTimeZone,
+                  )
+                : "Unknown time",
+            })),
+          ...soapNotes
+            .filter(
+              (note) =>
+                note.status === "finalized" && Boolean(note.correctionId),
+            )
+            .map((note) => ({
             recordLabel: `SOAP note dated ${formatClinicalDate(
               note.createdAt,
               recordsTimeZone,
@@ -613,9 +626,10 @@ export default function PatientDetailPage() {
                         "unknown date",
                       )}, finalized by ${replacement.finalizerName ?? "Unknown clinician"}`
                     : "Replacement SOAP retained in chart";
-                })()
+              })()
               : undefined,
-          })),
+            })),
+        ],
         prescriptions: prescriptions.map((rx) => ({
           medication: rx.medicationName,
           dosage: rx.dosage ?? "",
@@ -789,39 +803,47 @@ export default function PatientDetailPage() {
             <p className="text-sm font-semibold text-red-800 dark:text-red-300">
               Allergies
             </p>
-            <div className="mt-1 flex flex-wrap items-center gap-2">
+            <div className="mt-2 grid gap-2 md:grid-cols-2">
               {patient.allergies.map((allergy) => (
-                <span
+                <div
                   key={allergy.id}
-                  title={allergy.reaction ?? undefined}
                   className={cn(
-                    "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
+                    "rounded-md border px-3 py-2 text-sm",
                     allergy.severity === "severe"
-                      ? "bg-red-200 text-red-800 dark:bg-red-900 dark:text-red-200"
+                      ? "border-red-300 bg-red-100 text-red-900 dark:border-red-800 dark:bg-red-950/60 dark:text-red-100"
                       : allergy.severity === "moderate"
-                        ? "bg-amber-200 text-amber-800 dark:bg-amber-900 dark:text-amber-200"
-                        : "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200"
+                        ? "border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-100"
+                        : "border-yellow-300 bg-yellow-50 text-yellow-900 dark:border-yellow-800 dark:bg-yellow-950/50 dark:text-yellow-100"
                   )}
                 >
-                  {allergy.allergen}
-                  {allergy.severity === "severe" ? (
-                    <span className="ml-1 text-[10px] font-semibold uppercase tracking-wide">
-                      severe
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-semibold">{allergy.allergen}</span>
+                    <span className="text-xs font-semibold uppercase tracking-wide">
+                      {allergy.severity}
                     </span>
-                  ) : null}
-                  {canManagePatientDetail ? (
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveAllergy(allergy)}
-                      disabled={removeAllergy.isPending}
-                      aria-label={`Remove ${allergy.allergen} allergy`}
-                      className="ml-1 rounded-full p-0.5 opacity-60 transition-opacity hover:opacity-100 disabled:cursor-not-allowed"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  ) : null}
-                </span>
+                  </div>
+                  <p className="mt-1 text-xs">
+                    Reaction: {allergy.reaction || "Not documented"}
+                  </p>
+                  <ClinicalCorrectionControl
+                    correction={null}
+                    canCorrect={canCorrectClinicalRecords}
+                    isPending={correctAllergy.isPending}
+                    triggerLabel="Mark allergy entered in error"
+                    description="The original allergy and this permanent reason remain in staff chart history. The allergy will stop feeding current alerts, prescription safety, AI context, PDF summaries, and the client portal."
+                    timeZone={recordsTimeZone}
+                    onCorrect={(reason) =>
+                      correctAllergy.mutateAsync({
+                        patientId: patient.id,
+                        recordId: allergy.id,
+                        reason,
+                      })
+                    }
+                  />
+                </div>
               ))}
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
               {canManagePatientDetail && !showAllergyForm ? (
                 <button
                   type="button"
@@ -878,6 +900,61 @@ export default function PatientDetailPage() {
             </div>
           )}
         </div>
+      ) : null}
+
+      {patient.allergyHistory.some(
+        (allergy) => Boolean(allergy.correctionId) || Boolean(allergy.deletedAt),
+      ) ? (
+        <details className="mt-3 rounded-lg border border-border bg-card px-4 py-3">
+          <summary className="cursor-pointer text-sm font-medium">
+            Allergy correction history
+          </summary>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            {patient.allergyHistory
+              .filter(
+                (allergy) =>
+                  Boolean(allergy.correctionId) || Boolean(allergy.deletedAt),
+              )
+              .map((allergy) => (
+                <div
+                  key={allergy.id}
+                  className="rounded-md border border-border bg-muted/20 p-3 text-sm"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-semibold">{allergy.allergen}</span>
+                    <span className="text-xs uppercase text-muted-foreground">
+                      {allergy.severity}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Reaction: {allergy.reaction || "Not documented"}
+                  </p>
+                  {allergy.correctionId &&
+                  allergy.correctionReason &&
+                  allergy.correctedAt ? (
+                    <ClinicalCorrectionControl
+                      correction={{
+                        id: allergy.correctionId,
+                        reason: allergy.correctionReason,
+                        correctedAt: allergy.correctedAt,
+                        correctedByName: allergy.correctedByName,
+                      }}
+                      canCorrect={false}
+                      isPending={false}
+                      onCorrect={async () => undefined}
+                      timeZone={recordsTimeZone}
+                    />
+                  ) : (
+                    <div className="mt-3 rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
+                      Legacy removal retained. This predates permanent allergy
+                      correction attribution, so no reason or clinician is
+                      available.
+                    </div>
+                  )}
+                </div>
+              ))}
+          </div>
+        </details>
       ) : null}
 
       {/* Tab Navigation */}

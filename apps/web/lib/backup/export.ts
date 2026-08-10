@@ -431,6 +431,11 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
     "vaccinationRecords",
   ),
   optionalRef("clinicalRecordCorrections", "labResultId", "labResults"),
+  optionalRef(
+    "clinicalRecordCorrections",
+    "patientAllergyId",
+    "patientAllergies",
+  ),
   requiredRef(
     "labResultReplacements",
     "correctionId",
@@ -1224,6 +1229,7 @@ export function validatePracticeExportRestore(data: unknown): {
   const soapRows = rowsById("soapNotes");
   const vitalRows = rowsById("vitalSigns");
   const vaccinationRows = rowsById("vaccinationRecords");
+  const allergyRows = rowsById("patientAllergies");
   const correctedSources = new Set<string>();
   const correctionOperationIds = new Set<string>();
   rowsFor(data, "clinicalRecordCorrections").forEach((row, index) => {
@@ -1254,6 +1260,12 @@ export function validatePracticeExportRestore(data: unknown): {
         );
         return;
       }
+      if (row.patientAllergyId != null) {
+        pushError(
+          `${label}.patientAllergyId must be null for recordType soap_note.`,
+        );
+        return;
+      }
       source = soapRows.get(row.soapNoteId);
       sourceIdentity = `soap_note:${row.soapNoteId}`;
     } else if (row.recordType === "vital_sign") {
@@ -1281,6 +1293,12 @@ export function validatePracticeExportRestore(data: unknown): {
         );
         return;
       }
+      if (row.patientAllergyId != null) {
+        pushError(
+          `${label}.patientAllergyId must be null for recordType vital_sign.`,
+        );
+        return;
+      }
       source = vitalRows.get(row.vitalSignId);
       sourceIdentity = `vital_sign:${row.vitalSignId}`;
     } else if (row.recordType === "vaccination_record") {
@@ -1296,7 +1314,8 @@ export function validatePracticeExportRestore(data: unknown): {
       if (
         row.soapNoteId != null ||
         row.vitalSignId != null ||
-        row.labResultId != null
+        row.labResultId != null ||
+        row.patientAllergyId != null
       ) {
         pushError(
           `${label} may only set .vaccinationRecordId for recordType vaccination_record.`,
@@ -1315,7 +1334,8 @@ export function validatePracticeExportRestore(data: unknown): {
       if (
         row.soapNoteId != null ||
         row.vitalSignId != null ||
-        row.vaccinationRecordId != null
+        row.vaccinationRecordId != null ||
+        row.patientAllergyId != null
       ) {
         pushError(
           `${label} may only set .labResultId for recordType lab_result.`,
@@ -1342,9 +1362,32 @@ export function validatePracticeExportRestore(data: unknown): {
       correctionOperationIds.add(row.operationId);
       source = labRows.get(row.labResultId);
       sourceIdentity = `lab_result:${row.labResultId}`;
+    } else if (row.recordType === "patient_allergy") {
+      if (
+        typeof row.patientAllergyId !== "string" ||
+        row.patientAllergyId.length === 0
+      ) {
+        pushError(
+          `${label}.patientAllergyId is required for recordType patient_allergy.`,
+        );
+        return;
+      }
+      if (
+        row.soapNoteId != null ||
+        row.vitalSignId != null ||
+        row.vaccinationRecordId != null ||
+        row.labResultId != null
+      ) {
+        pushError(
+          `${label} may only set .patientAllergyId for recordType patient_allergy.`,
+        );
+        return;
+      }
+      source = allergyRows.get(row.patientAllergyId);
+      sourceIdentity = `patient_allergy:${row.patientAllergyId}`;
     } else {
       pushError(
-        `${label}.recordType must be soap_note, vital_sign, vaccination_record, or lab_result.`,
+        `${label}.recordType must be soap_note, vital_sign, vaccination_record, lab_result, or patient_allergy.`,
       );
       return;
     }

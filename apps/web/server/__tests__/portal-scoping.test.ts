@@ -189,6 +189,10 @@ describe("portal public read scoping", () => {
     );
     expect(allergiesBlock).toContain('eq(patients.status, "active")');
     expect(allergiesBlock).toContain("isNull(patients.deletedAt)");
+    expect(allergiesBlock).toContain("not exists (");
+    expect(allergiesBlock).toContain(
+      "allergy_correction.patient_allergy_id = ${patientAllergies.id}"
+    );
 
     const vaccinationsBlock = src.match(
       /\.from\(vaccinationRecords\)[\s\S]+?\.orderBy\(desc\(vaccinationRecords\.administeredAt\)\)/
