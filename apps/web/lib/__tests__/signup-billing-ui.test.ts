@@ -7,15 +7,15 @@ describe("signup billing copy", () => {
   // deck is now the customer-facing first-run voice to hold to account.
   const welcomeCopySource = readFileSync(
     "components/welcome/welcome-copy.ts",
-    "utf8"
+    "utf8",
   );
   const activationChecklistSource = readFileSync(
     "components/dashboard/activation-checklist.tsx",
-    "utf8"
+    "utf8",
   );
   const welcomeEmailSource = readFileSync(
     "../../packages/email/src/templates/WelcomeEmail.tsx",
-    "utf8"
+    "utf8",
   );
   const readmeSource = readFileSync("../../README.md", "utf8");
 
@@ -38,17 +38,23 @@ describe("signup billing copy", () => {
     expect(welcomeEmailSource).toContain("no credit card");
     expect(readmeSource).toContain("no credit card required");
     expect(activationChecklistSource).toContain("Confirm billing is connected");
+    expect(activationChecklistSource).toContain(
+      "done: subscriptionData.billingSetupCompleted",
+    );
+    expect(activationChecklistSource).not.toContain(
+      "done: !!subscriptionData.hasBillingAccount",
+    );
   });
 
   it("keeps the safe card-checkout path for conversion", () => {
     // The card checkout (used to convert/upgrade) is still guarded by the safe
     // redirect helper even though signup no longer forces it.
     expect(registerSource).toContain(
-      'import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect"'
+      'import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect"',
     );
     expect(registerSource).toContain("data.checkoutUrl");
     expect(registerSource).toContain(
-      "if (!isSafeCheckoutRedirectUrl(data.checkoutUrl))"
+      "if (!isSafeCheckoutRedirectUrl(data.checkoutUrl))",
     );
     // New signups land on the dashboard via a FULL document navigation: the
     // logo link prefetches "/" while logged out, so the router cache holds a

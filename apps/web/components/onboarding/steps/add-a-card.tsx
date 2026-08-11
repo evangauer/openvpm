@@ -32,8 +32,10 @@ export function AddACardStep({
   }, [register]);
 
   const unitPrice = subscription.data?.locationUnitPriceMonthlyUsd ?? 79;
-  const alreadyHasCard = Boolean(
-    subscription.data?.hasSubscription || subscription.data?.hasBillingAccount
+  const billingSetupCompleted =
+    subscription.data?.billingSetupCompleted === true;
+  const billingConfirmationPending = Boolean(
+    subscription.data?.hasSubscription && !billingSetupCompleted,
   );
 
   async function addCard() {
@@ -56,7 +58,7 @@ export function AddACardStep({
       window.location.href = url;
     } catch (err) {
       toast.error(
-        err instanceof Error ? err.message : "Could not start checkout."
+        err instanceof Error ? err.message : "Could not start checkout.",
       );
       setRedirecting(false);
     }
@@ -66,8 +68,8 @@ export function AddACardStep({
     <div className="space-y-5">
       <p className="text-sm leading-6 text-slate-600">
         This is optional. Your 14-day trial is fully featured and needs no card.
-        Add one whenever you are ready and your plan continues without a gap when
-        the trial ends.
+        Add one whenever you are ready and your plan continues without a gap
+        when the trial ends.
       </p>
 
       <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-4">
@@ -90,12 +92,21 @@ export function AddACardStep({
         Payments are handled securely by Stripe. Cancel anytime.
       </div>
 
-      {alreadyHasCard ? (
+      {billingSetupCompleted ? (
         <p className="text-sm font-medium text-emerald-700">
-          A card is already on file. You are all set.
+          Billing is connected. You are all set.
+        </p>
+      ) : billingConfirmationPending ? (
+        <p className="text-sm font-medium text-blue-700">
+          Your billing connection is being confirmed.
         </p>
       ) : (
-        <Button type="button" variant="outline" onClick={addCard} disabled={redirecting}>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={addCard}
+          disabled={redirecting}
+        >
           {redirecting ? (
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
           ) : (

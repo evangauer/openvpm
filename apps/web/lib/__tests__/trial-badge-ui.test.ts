@@ -40,18 +40,45 @@ describe("trial badge UI", () => {
     expect(source).toContain("disabled={checkout.isPending}");
   });
 
-  it("routes card-on-file trialing accounts to billing instead of another Checkout", () => {
+  it("routes connected or confirming subscriptions to billing instead of another Checkout", () => {
     expect(source).toContain("if (data.hasSubscription)");
     expect(source).toContain('href="/settings?tab=billing"');
-    expect(source).toContain("Card on file · Manage billing");
+    expect(source).toContain("data.billingSetupCompleted");
+    expect(source).toContain("Billing connected · Manage billing");
+    expect(source).toContain("Billing confirmation pending");
     expect(source.indexOf("if (data.hasSubscription)")).toBeLessThan(
       source.indexOf("const trialing ="),
     );
-    expect(settingsSource).toContain(
+    expect(settingsSource).toContain("{data.hasSubscription ? (");
+    expect(settingsSource).not.toContain(
       "data.hasSubscription || data.hasBillingAccount",
     );
     expect(addCardSource).toContain(
-      "subscription.data?.hasSubscription || subscription.data?.hasBillingAccount",
+      "subscription.data?.billingSetupCompleted === true",
+    );
+    expect(addCardSource).toContain(
+      "subscription.data?.hasSubscription && !billingSetupCompleted",
+    );
+    expect(addCardSource).not.toContain("hasBillingAccount");
+  });
+
+  it("treats Checkout return parameters as confirmation triggers, never billing proof", () => {
+    expect(settingsSource).toContain('checkoutReturnParam === "success"');
+    expect(settingsSource).toContain('checkoutReturnParam === "cancelled"');
+    expect(settingsSource).toContain(
+      "const billingSetupCompleted = data?.billingSetupCompleted === true",
+    );
+    expect(settingsSource).toContain("refetchBillingRef.current()");
+    expect(settingsSource).toContain("}, 2_000)");
+    expect(settingsSource).toContain("}, 30_000)");
+    expect(settingsSource).toContain("Confirming billing with Stripe");
+    expect(settingsSource).toContain("Billing connected");
+    expect(settingsSource).toContain("Checkout cancelled");
+    expect(settingsSource).toContain(
+      'checkoutReturn === "success" && !billingSetupCompleted',
+    );
+    expect(settingsSource).toContain(
+      "disabled={checkout.isPending || checkoutConfirmationUnresolved}",
     );
   });
 

@@ -137,13 +137,23 @@ export const subscriptionRouter = createRouter({
         ])
       : [0, 0];
 
+    const hasSubscription = !!practice.stripeSubscriptionId;
+    // A current subscription identity is linked only from signed Stripe
+    // callbacks or authoritative reconciliation. The Stripe Customer is only
+    // a transport identity and does not prove Checkout or setup completed.
+    const billingSetupCompleted = hasSubscription;
+
     return {
       tier: practice.tier ?? "free",
       billingStatus: practice.billingStatus ?? "none",
       trialEndsAt: practice.trialEndsAt ?? null,
       timezone: practice.timezone ?? null,
-      hasBillingAccount: !!practice.stripeCustomerId,
-      hasSubscription: !!practice.stripeSubscriptionId,
+      hasStripeCustomer: !!practice.stripeCustomerId,
+      hasSubscription,
+      billingSetupCompleted,
+      // Compatibility alias for older consumers. A Stripe Customer is not
+      // evidence that Checkout completed or that a subscription is connected.
+      hasBillingAccount: billingSetupCompleted,
       billingEnforced: enforced,
       hasFullAccess: hasHostedFullAccess(
         practice.tier,

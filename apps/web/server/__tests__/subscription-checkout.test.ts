@@ -267,8 +267,10 @@ describe("subscription checkout", () => {
 
     await expect(callerWithDb(db).get()).resolves.toMatchObject({
       billingEnforced: true,
+      hasStripeCustomer: true,
       hasBillingAccount: true,
       hasSubscription: true,
+      billingSetupCompleted: true,
       locationCount: 2,
       billableSeatCount: 4,
       timezone: "America/Los_Angeles",
@@ -279,6 +281,46 @@ describe("subscription checkout", () => {
     });
     expect(mocks.syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
     expect(mocks.readBillingSyncState).toHaveBeenCalledWith(db, PRACTICE_ID);
+  });
+
+  it("does not treat a Stripe customer record as completed billing setup", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    const db = createDb([
+      [
+        practice({
+          billingStatus: "canceled",
+          stripeCustomerId: "cus_123",
+        }),
+      ],
+    ]);
+
+    await expect(callerWithDb(db).get()).resolves.toMatchObject({
+      hasStripeCustomer: true,
+      hasSubscription: false,
+      billingSetupCompleted: false,
+      hasBillingAccount: false,
+    });
+  });
+
+  it("uses the current subscription identity as billing proof, not the customer record", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    const db = createDb([
+      [
+        practice({
+          billingStatus: "trialing",
+          stripeSubscriptionId: "sub_123",
+        }),
+      ],
+    ]);
+
+    await expect(callerWithDb(db).get()).resolves.toMatchObject({
+      hasStripeCustomer: false,
+      hasSubscription: true,
+      billingSetupCompleted: true,
+      hasBillingAccount: true,
+    });
   });
 
   it("rejects a second Checkout when a Stripe subscription is already connected", async () => {
