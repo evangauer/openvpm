@@ -26,6 +26,7 @@ import {
 import { isPlatformAdmin } from "@/lib/platform-admin";
 import { computeActivationFunnel } from "@/lib/admin/activation-funnel";
 import { computeJourneyFunnel } from "@/lib/admin/journey-funnel";
+import { computeOnboardingStepFunnel } from "@/lib/admin/onboarding-step-funnel";
 import { computeActivationRecovery } from "@/lib/admin/activation-recovery";
 import {
   CLINIC_PILOT_BLOCKERS,
@@ -3340,6 +3341,15 @@ export const adminRouter = createRouter({
         .optional(),
     )
     .query(({ input }) => computeActivationFunnel(db, input?.days ?? 30)),
+
+  /** Four-step guided-setup cohorts with a seven-day abandonment grace. */
+  onboardingStepFunnel: platformAdminProcedure
+    .input(
+      z
+        .object({ days: z.number().int().min(1).max(365).default(30) })
+        .optional(),
+    )
+    .query(({ input }) => computeOnboardingStepFunnel(db, input?.days ?? 30)),
 
   /** Ranked, cross-tenant operator queue for recovering clinic activation. */
   activationRecovery: platformAdminProcedure.query(() =>

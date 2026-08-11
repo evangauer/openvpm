@@ -49,6 +49,7 @@ export function ChoosePathStep({ register, state, setState }: StepProps) {
             ? {
                 ...prev,
                 onboardingIntent: state.onboardingIntent,
+                journeyStepId: "intent",
                 journeyDismissed: false,
               }
             : prev,

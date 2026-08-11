@@ -58,6 +58,25 @@ describe("admin UI", () => {
     expect(source).toContain("Could not load the funnel.");
   });
 
+  it("shows exact four-step setup cohorts and seven-day stalls", () => {
+    expect(source).toContain("trpc.admin.onboardingStepFunnel.useQuery");
+    expect(source).toContain("Guided setup cohorts (30 days)");
+    expect(source).toContain("onboardingFunnel.totals.intentCompleted");
+    expect(source).toContain("onboardingFunnel.totals.basicsCompleted");
+    expect(source).toContain("onboardingFunnel.totals.dataCompleted");
+    expect(source).toContain("onboardingFunnel.totals.allSetCompleted");
+    expect(source).toContain("onboardingFunnel.totals.stalledBeforeIntent");
+    expect(source).toContain("onboardingFunnel.totals.stalledAtBasics");
+    expect(source).toContain("onboardingFunnel.totals.stalledAtData");
+    expect(source).toContain("onboardingFunnel.totals.stalledAtAllSet");
+    expect(source).toContain("onboardingFunnel.weeks.map");
+    expect(source).toContain("Registration week");
+    expect(compactSource).toContain("A clinic is stalled only after");
+    expect(compactSource).toContain(
+      "historical cursor-only progress remains explicitly inferred",
+    );
+  });
+
   it("shows a ranked activation recovery queue with verified contacts", () => {
     expect(source).toContain("trpc.admin.activationRecovery.useQuery");
     expect(source).toContain("Clinic activation recovery");

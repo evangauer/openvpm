@@ -78,6 +78,15 @@ describe("admin activation funnel", () => {
     expect(mocks.execute).not.toHaveBeenCalled();
   });
 
+  it("rejects non-platform-admin onboarding cohort callers", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+
+    await expect(
+      caller("clinic-admin@example.com").onboardingStepFunnel({ days: 30 }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.execute).not.toHaveBeenCalled();
+  });
+
   it("sums weekly rows and computes activation and conversion rates", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
     mocks.executeResults.push(

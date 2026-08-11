@@ -64,12 +64,23 @@ demo, demo submission before registration, and each canonical milestone after
 registration.
 
 Clinic setup reporting is similarly durable. Setup starts at the first saved
-`onboardingIntentSelectedAt` (with the legacy step cursor or completion marker
-as fallbacks), and that first timestamp never changes when a clinic revisits its
-path. `journeyLastProgressAt` advances only after a setup action is persisted
-successfully and is used to age stalled setup in the recovery queue. Completion
-is also first-write-wins, so reopening or replaying the finish action cannot
-move a clinic into a newer cohort.
+`onboardingIntentSelectedAt`. The four-step cohort also records
+`journeyIntentCompletedAt`, `journeyBasicsCompletedAt`,
+`journeyDataCompletedAt`, and `journeyAllSetCompletedAt`. These timestamps use
+the database clock, are first-write-wins, and are added only on a row-locked,
+validated forward transition. Back, “finish later,” retries, and stale clients
+cannot advance or rewrite them. `journeyLastProgressAt` still advances after any
+successfully persisted cursor action and is used by the setup-recovery queue.
+
+The platform-admin setup cohort groups clinics by UTC registration week and
+shows sequential path → basics → data → first-day-handoff rates. A step becomes
+stalled only after seven full days without its successor. Historical cursors
+may contribute inferred completion counts, but never receive a synthetic
+transition time or enter the prospective stall queues; exact, inferred, and
+missing coverage are reported separately, with partial or invalid exact chains
+called out instead of promoted to completed evidence. Guided completion remains
+first-write-wins, so reopening or replaying Finish cannot move a clinic into a
+newer cohort.
 
 Sample clinic IDs are cumulative provenance. Clearing sample data soft-deletes
 the rows but retains every ID with a `clearedAt` marker; reseeding merges new IDs

@@ -235,7 +235,7 @@ function JourneyShell({
   // Do not advance or close until the server accepts the cursor. A local-only
   // optimistic cursor can strand a clinic at an earlier step after a reload.
   const persistCursor = useCallback(
-    async (stepId: string, dismissed?: boolean) => {
+    async (stepId: OnboardingJourneyStep["id"], dismissed?: boolean) => {
       await setJourneyProgress.mutateAsync({ stepId, dismissed });
       utils.settings.getOnboardingState.setData(undefined, (prev) =>
         prev
