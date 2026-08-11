@@ -23,6 +23,26 @@ export interface Brand {
   logoUrl?: string;
 }
 
+/**
+ * Conservative structural gate for the physical postal address required in
+ * promotional email footers. This intentionally does not claim that an
+ * address exists or is deliverable; operators must verify that separately.
+ */
+export function isPlausiblePhysicalCompanyAddress(
+  value: string | null | undefined,
+): boolean {
+  const address = value?.trim();
+  if (!address || address.length < 10 || address.length > 300) return false;
+  if (/[\u0000-\u001f\u007f-\u009f]/u.test(address)) return false;
+  if (
+    address.includes("@") ||
+    /(?:[a-z][a-z0-9+.-]*:\/\/|mailto:)/iu.test(address)
+  ) {
+    return false;
+  }
+  return /[a-z]/iu.test(address) && /\d/u.test(address) && /\s/u.test(address);
+}
+
 function nonBlankEnv(name: string): string | undefined {
   const value = process.env[name]?.trim();
   return value ? value : undefined;

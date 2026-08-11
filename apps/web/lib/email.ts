@@ -1,5 +1,6 @@
 import { Resend } from "resend";
 import {
+  isPlausiblePhysicalCompanyAddress,
   openvpmBrand,
   renderWelcomeEmail,
   renderSetupRecoveryEmail,
@@ -59,7 +60,8 @@ export interface EmailProviderEvidence {
     | "provider_rejected"
     | "send_timeout"
     | "provider_exception"
-    | "missing_provider_id";
+    | "missing_provider_id"
+    | "invalid_company_address";
 }
 
 export type EmailSendResult = Pick<
@@ -69,6 +71,18 @@ export type EmailSendResult = Pick<
 
 function emailSendTimeoutMessage(): string {
   return `Email send timed out after ${EMAIL_SEND_TIMEOUT_MS}ms`;
+}
+
+function promotionalEmailAddressFailure(
+  companyAddress: string | undefined,
+): EmailSendResult | null {
+  if (isPlausiblePhysicalCompanyAddress(companyAddress)) return null;
+  return {
+    success: false,
+    error: "Promotional email requires a valid physical company address.",
+    outcome: "definite_failure",
+    failureCode: "invalid_company_address",
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -618,6 +632,8 @@ export async function sendWelcomeEmail(data: {
   trialDays?: number;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   const brand = openvpmBrand();
+  const addressFailure = promotionalEmailAddressFailure(brand.companyAddress);
+  if (addressFailure) return addressFailure;
   const recipientHash = emailPreferenceRecipientHash(data.to);
   if (!recipientHash) {
     return {
@@ -663,6 +679,8 @@ export async function sendSetupRecoveryEmail(data: {
   resumeUrl?: string;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   const brand = openvpmBrand();
+  const addressFailure = promotionalEmailAddressFailure(brand.companyAddress);
+  if (addressFailure) return addressFailure;
   const recipientHash = emailPreferenceRecipientHash(data.to);
   if (!recipientHash) {
     return {
@@ -731,6 +749,8 @@ export async function sendTrialEndingEmailWithEvidence(data: {
   idempotencyKey?: string;
 }): Promise<EmailSendResult> {
   const brand = openvpmBrand();
+  const addressFailure = promotionalEmailAddressFailure(brand.companyAddress);
+  if (addressFailure) return addressFailure;
   const billingUrl = data.billingUrl ?? `${brand.appUrl}/settings?tab=billing`;
   const recipientHash = emailPreferenceRecipientHash(data.to);
   if (!recipientHash) {
@@ -787,6 +807,8 @@ export async function sendFirstClinicWinEmail(data: {
   idempotencyKey: string;
 }): Promise<EmailSendResult> {
   const brand = openvpmBrand();
+  const addressFailure = promotionalEmailAddressFailure(brand.companyAddress);
+  if (addressFailure) return addressFailure;
   const recipientHash = emailPreferenceRecipientHash(data.to);
   if (!recipientHash) {
     return {

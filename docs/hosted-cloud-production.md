@@ -101,7 +101,7 @@ EMAIL_PREFERENCE_SIGNING_SECRET=... # rotatable `openssl rand -base64 32`; do no
 EMAIL_PREFERENCE_SIGNING_SECRET_PREVIOUS= # comma-separated former signing keys retained for delivered links
 EMAIL_PREFERENCE_BASE_URL=https://app.openvpm.com
 EMAIL_SUPPORT_ADDRESS=support@openvpm.com
-EMAIL_COMPANY_ADDRESS=...
+EMAIL_COMPANY_ADDRESS=... # verified physical US postal address, never an email or URL
 MESSAGING_PROVIDER=telnyx
 TELNYX_API_KEY=...
 TELNYX_PUBLIC_KEY=...
@@ -363,8 +363,12 @@ For local or staging signup tests without real email delivery, set `OPENVPM_EXPO
 Resend sends transactional email and posts delivery lifecycle callbacks back to OpenVPM so bounces, spam complaints, and provider suppressions can fail closed before future client email sends.
 
 `EMAIL_SUPPORT_ADDRESS` is used as lifecycle email Reply-To and footer contact
-address. `EMAIL_COMPANY_ADDRESS` is rendered in hosted email footers. Both gate
-hosted readiness so production emails do not fall back to local/dev defaults.
+address. `EMAIL_COMPANY_ADDRESS` must be a verified physical US postal address
+(a current street address, registered USPS PO box, or registered private
+mailbox), never an email address or URL. It is rendered in promotional email
+footers. Hosted readiness and optional lifecycle marketing both fail closed
+when the value is missing or structurally invalid; set and operator-verify the
+real postal address before deployment or campaign activation.
 `EMAIL_PREFERENCE_IDENTITY_SECRET` is the stable HMAC identity key for PII-free
 recipient hashes. Never rotate it without a coordinated migration of persisted
 preference identities. `EMAIL_PREFERENCE_SIGNING_SECRET` signs new durable

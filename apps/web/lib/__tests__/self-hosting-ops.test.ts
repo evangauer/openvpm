@@ -193,9 +193,14 @@ describe("self-hosting operations docs", () => {
     expect(emailSection).toContain("RESEND_WEBHOOK_SECRET");
     expect(emailSection).toContain("EMAIL_SUPPORT_ADDRESS");
     expect(emailSection).toContain("EMAIL_COMPANY_ADDRESS");
-    expect(emailSection).toContain("production emails do not fall back");
+    expect(emailSection).toContain("verified physical US postal address");
+    expect(emailSection).toContain("never an email address or URL");
+    expect(emailSection).toContain(
+      "optional lifecycle marketing both fail closed",
+    );
     expect(envExample).toContain("RESEND_WEBHOOK_SECRET=");
     expect(envExample).toContain("EMAIL_SUPPORT_ADDRESS=");
+    expect(envExample).toContain("Valid physical US postal address");
     expect(envExample).toContain("EMAIL_COMPANY_ADDRESS=");
 
     for (const event of resendEvents) {

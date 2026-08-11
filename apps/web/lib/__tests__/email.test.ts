@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
   const resendSend = vi.fn();
@@ -439,6 +439,31 @@ describe("sendEmail", () => {
 });
 
 describe("openvpmBrand", () => {
+  it("recognizes plausible physical postal addresses without claiming verification", async () => {
+    const { isPlausiblePhysicalCompanyAddress } = await loadEmailBrand();
+
+    expect(
+      isPlausiblePhysicalCompanyAddress("123 Clinic Way, Boston, MA 02110"),
+    ).toBe(true);
+    expect(
+      isPlausiblePhysicalCompanyAddress("PO Box 123, Boston, MA 02110"),
+    ).toBe(true);
+    expect(isPlausiblePhysicalCompanyAddress("PMB 456, Austin, TX 78701")).toBe(
+      true,
+    );
+
+    for (const invalid of [
+      undefined,
+      "support@openvpm.com",
+      "https://openvpm.com/contact",
+      "OpenVPM headquarters",
+      "123 Main\nStreet",
+      "123",
+    ]) {
+      expect(isPlausiblePhysicalCompanyAddress(invalid)).toBe(false);
+    }
+  });
+
   it("trims configured email brand env values", async () => {
     vi.stubEnv("EMAIL_COMPANY_NAME", " Open Vet Ops ");
     vi.stubEnv("EMAIL_SUPPORT_ADDRESS", " support@example.com ");
@@ -476,6 +501,68 @@ describe("openvpmBrand", () => {
 });
 
 describe("lifecycle email branding", () => {
+  beforeEach(() => {
+    vi.stubEnv("EMAIL_COMPANY_ADDRESS", "123 Clinic Way, Boston, MA 02110");
+  });
+
+  it("fails optional lifecycle marketing before provider dispatch without a physical address", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv("EMAIL_COMPANY_ADDRESS", "evan@openvpm.com");
+    const {
+      sendFirstClinicWinEmail,
+      sendSetupRecoveryEmail,
+      sendTrialEndingEmailWithEvidence,
+      sendWelcomeEmail,
+    } = await loadEmail();
+
+    const expectedFailure = {
+      success: false,
+      error: "Promotional email requires a valid physical company address.",
+      outcome: "definite_failure",
+      failureCode: "invalid_company_address",
+    };
+    await expect(
+      sendTrialEndingEmailWithEvidence({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        daysLeft: 3,
+        trialEndDate: "August 12, 2026",
+      }),
+    ).resolves.toEqual(expectedFailure);
+    await expect(
+      sendFirstClinicWinEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        trialEndDate: "August 20, 2026",
+        billingUrl: "https://app.openvpm.com/settings?tab=billing",
+        idempotencyKey: "lc:first-clinic-win:v1:practice",
+      }),
+    ).resolves.toEqual(expectedFailure);
+    await expect(
+      sendWelcomeEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+      }),
+    ).resolves.toMatchObject({
+      success: false,
+      error: expectedFailure.error,
+    });
+    await expect(
+      sendSetupRecoveryEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        stepTitle: "finishing setup",
+        nextAction: "Continue setup.",
+        attemptNumber: 1,
+      }),
+    ).resolves.toMatchObject({
+      success: false,
+      error: expectedFailure.error,
+    });
+    expect(mocks.Resend).not.toHaveBeenCalled();
+    expect(mocks.resendSend).not.toHaveBeenCalled();
+  });
+
   it("renders setup recovery as a one-click, preference-aware resume", async () => {
     vi.stubEnv("RESEND_API_KEY", "re_test");
     vi.stubEnv(

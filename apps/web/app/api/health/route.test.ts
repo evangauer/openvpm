@@ -831,6 +831,27 @@ describe("health route", () => {
     expect(JSON.stringify(json)).not.toContain("demo.openvpm.com");
   });
 
+  it("rejects a non-postal company address without exposing it", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    vi.stubEnv("EMAIL_COMPANY_ADDRESS", "evan@openvpm.com");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedEmail).toEqual({
+      ok: false,
+      detail: "1 required hosted configuration value is invalid",
+    });
+    const body = JSON.stringify(json);
+    expect(body).not.toContain("evan@openvpm.com");
+    expect(body).not.toContain("EMAIL_COMPANY_ADDRESS");
+    expect(
+      mocks.platformEmailIdentityConfigurationReady,
+    ).not.toHaveBeenCalled();
+  });
+
   it("fails readiness when the persisted email identity key does not match", async () => {
     mocks.billingEnforced.mockReturnValue(true);
     stubHostedRequiredEnvs();
