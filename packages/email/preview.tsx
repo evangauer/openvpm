@@ -6,6 +6,7 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { openvpmBrand } from "./src/brand";
 import {
   renderWelcomeEmail,
+  renderSetupRecoveryEmail,
   renderTrialEndingEmail,
   renderPaymentReceiptEmail,
   renderPaymentFailedEmail,
@@ -20,6 +21,15 @@ async function main() {
   mkdirSync(outDir, { recursive: true });
   const emails = {
     welcome: await renderWelcomeEmail({ brand, practiceName, trialDays: 14 }),
+    "setup-recovery": await renderSetupRecoveryEmail({
+      brand,
+      practiceName,
+      stepTitle: "bring in your clinic records",
+      nextAction:
+        "Import one small file at a time, keep sample data for now, or request a private migration review.",
+      resumeUrl: `${brand.appUrl}/?setup=resume`,
+      attemptNumber: 1,
+    }),
     "trial-ending": await renderTrialEndingEmail({
       brand,
       practiceName,

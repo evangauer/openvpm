@@ -15,6 +15,7 @@ describe("Vercel cron schedule", () => {
         "/api/cron/file-replicas",
         "/api/cron/usage-reconcile",
         "/api/cron/billing-lifecycle",
+        "/api/cron/setup-recovery",
         "/api/cron/wellness-billing",
         "/api/cron/rate-limit-cleanup",
         "/api/cron/auth-cleanup",
@@ -30,6 +31,11 @@ describe("Vercel cron schedule", () => {
       config.crons?.find((cron) => cron.path === "/api/cron/reminders")
         ?.schedule,
     ).toBe("0 * * * *");
+
+    expect(
+      config.crons?.find((cron) => cron.path === "/api/cron/setup-recovery")
+        ?.schedule,
+    ).toBe("0 15 * * *");
 
     expect(
       config.crons?.find((cron) => cron.path === "/api/cron/sms-operations")

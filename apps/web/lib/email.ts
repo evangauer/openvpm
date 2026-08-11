@@ -2,6 +2,7 @@ import { Resend } from "resend";
 import {
   openvpmBrand,
   renderWelcomeEmail,
+  renderSetupRecoveryEmail,
   renderTrialEndingEmail,
   renderPaymentReceiptEmail,
   renderPaymentFailedEmail,
@@ -618,6 +619,54 @@ export async function sendWelcomeEmail(data: {
     brand,
     practiceName: data.practiceName,
     trialDays: data.trialDays ?? 14,
+    unsubscribeUrl: preferenceLinks.preferencesUrl,
+  });
+  return sendEmail({
+    to: data.to,
+    subject,
+    html,
+    replyTo: brand.supportEmail,
+    headers: {
+      "List-Unsubscribe": `<${preferenceLinks.oneClickUrl}>`,
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    },
+  });
+}
+
+/** Stage-specific setup recovery. Optional platform email with a hard send cap. */
+export async function sendSetupRecoveryEmail(data: {
+  to: string;
+  practiceName: string;
+  stepTitle: string;
+  nextAction: string;
+  attemptNumber: 1 | 2;
+  resumeUrl?: string;
+}): Promise<{ success: boolean; id?: string; error?: string }> {
+  const brand = openvpmBrand();
+  const recipientHash = emailPreferenceRecipientHash(data.to);
+  if (!recipientHash) {
+    return {
+      success: false,
+      error: "Email preference signing is not configured.",
+    };
+  }
+  const preferenceLinks = createEmailPreferenceLinks({
+    kind: "recipient",
+    id: recipientHash,
+  });
+  if (!preferenceLinks) {
+    return {
+      success: false,
+      error: "Email preference signing is not configured.",
+    };
+  }
+  const { subject, html } = await renderSetupRecoveryEmail({
+    brand,
+    practiceName: data.practiceName,
+    stepTitle: data.stepTitle,
+    nextAction: data.nextAction,
+    attemptNumber: data.attemptNumber,
+    resumeUrl: data.resumeUrl ?? `${brand.appUrl}/?setup=resume`,
     unsubscribeUrl: preferenceLinks.preferencesUrl,
   });
   return sendEmail({

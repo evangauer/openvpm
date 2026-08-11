@@ -1,5 +1,6 @@
 import { and, eq, lte } from "drizzle-orm";
 import { db } from "@openpims/db/client";
+import type { Database } from "@openpims/db/client";
 import { communications } from "@openpims/db";
 import { withSystem } from "@/lib/tenant-db";
 import { alertOps } from "@/lib/alerts";
@@ -22,6 +23,8 @@ type LifecycleEmailOptions = {
   send: () => Promise<SendResult>;
   retryOnFail?: boolean;
   category: LifecycleEmailCategory;
+  /** Recheck mutable campaign eligibility under the final provider-call lock. */
+  stillEligible?: (tx: Database) => Promise<boolean>;
 };
 
 export const LIFECYCLE_EMAIL_PENDING_RECLAIM_MS = 30 * 60 * 1000;
@@ -74,17 +77,17 @@ export async function sendLifecycleEmail(
     let result: SendResult;
     try {
       const delivery = await withSystem(db, async (tx) => {
-        if (
-          !(await lockPracticeForExternalSideEffects(tx, opts.practiceId))
-        ) {
+        if (!(await lockPracticeForExternalSideEffects(tx, opts.practiceId))) {
+          return { blocked: true as const };
+        }
+        if (opts.stillEligible && !(await opts.stillEligible(tx))) {
           return { blocked: true as const };
         }
         return { blocked: false as const, result: await opts.send() };
       });
       if (delivery.blocked) {
-        // The claim was created before recovery won the serialization race.
-        // Remove it because no provider request occurred; future cron/event
-        // retry can safely claim the same identity after recovery release.
+        // Recovery or campaign state changed after the claim. Remove it because
+        // no provider request occurred; a future eligible run can claim again.
         await withSystem(db, (tx) =>
           tx.delete(communications).where(eq(communications.id, row.id)),
         );

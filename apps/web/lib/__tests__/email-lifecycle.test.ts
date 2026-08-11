@@ -64,8 +64,7 @@ vi.mock("@/lib/platform-email-preferences", () => ({
 vi.mock("@/lib/recovery-hold", () => ({
   RECOVERY_HOLD_BLOCK_MESSAGE: "recovery hold",
   practiceAllowsExternalSideEffects: mocks.practiceAllowsExternalSideEffects,
-  lockPracticeForExternalSideEffects:
-    mocks.lockPracticeForExternalSideEffects,
+  lockPracticeForExternalSideEffects: mocks.lockPracticeForExternalSideEffects,
 }));
 
 const { LIFECYCLE_EMAIL_PENDING_RECLAIM_MS, sendLifecycleEmail } =
@@ -123,6 +122,24 @@ describe("sendLifecycleEmail", () => {
       suppressed: true,
     });
 
+    expect(send).not.toHaveBeenCalled();
+    expect(mocks.deleteWhere).toHaveBeenCalled();
+  });
+
+  it("drops a safe claim when mutable campaign eligibility changes", async () => {
+    mocks.insertResults.push([{ id: "comm-stale-campaign" }]);
+    const stillEligible = vi.fn(async () => false);
+    const send = vi.fn(async () => ({ success: true, id: "email-stale" }));
+
+    await expect(
+      sendLifecycleEmail({ ...BASE_OPTS, stillEligible, send }),
+    ).resolves.toEqual({
+      sent: false,
+      deduped: false,
+      suppressed: true,
+    });
+
+    expect(stillEligible).toHaveBeenCalledWith(mocks.db);
     expect(send).not.toHaveBeenCalled();
     expect(mocks.deleteWhere).toHaveBeenCalled();
   });

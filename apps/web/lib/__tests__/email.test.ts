@@ -476,6 +476,49 @@ describe("openvpmBrand", () => {
 });
 
 describe("lifecycle email branding", () => {
+  it("renders setup recovery as a one-click, preference-aware resume", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_SIGNING_SECRET",
+      "stable-signing-secret-at-least-32-bytes",
+    );
+    vi.stubEnv("EMAIL_PREFERENCE_BASE_URL", "https://app.openvpm.com");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.openvpm.com");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-setup" } });
+    const { sendSetupRecoveryEmail } = await loadEmail();
+
+    await expect(
+      sendSetupRecoveryEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        stepTitle: "bringing in your clinic records",
+        nextAction: "Start with one small client or patient file.",
+        attemptNumber: 1,
+      }),
+    ).resolves.toEqual({ success: true, id: "email-setup" });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload).toMatchObject({
+      to: "owner@example.com",
+      subject: "Resume setup for Neighborhood Veterinary",
+      replyTo: "support@openvpm.com",
+      headers: {
+        "List-Unsubscribe": expect.stringContaining(
+          "https://app.openvpm.com/api/email-preferences/unsubscribe?token=",
+        ),
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+      },
+    });
+    expect(payload.html).toContain("https://app.openvpm.com/?setup=resume");
+    expect(payload.html).toContain("no call or credit card required");
+    expect(payload.html).toContain("do not email patient files");
+    expect(payload.html).toContain("/email-preferences?token=");
+  });
+
   it("uses a signed human link and RFC one-click headers for trial email", async () => {
     vi.stubEnv("RESEND_API_KEY", "re_test");
     vi.stubEnv(

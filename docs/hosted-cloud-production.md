@@ -381,6 +381,16 @@ than a deployment-local database. Optional platform email fails closed when the
 required preference configuration is missing or invalid; security, receipt,
 and service email is unaffected.
 
+The daily `/api/cron/setup-recovery` sweep sends at most two optional setup
+emails to the clinic's earliest verified admin. The first is eligible only after
+24 hours without setup progress; the second requires at least 72 hours of both
+continued inactivity and email cooldown. Completed or activated clinics,
+self-host paths, clinics that requested human help, analytics-excluded rows,
+recovery-held practices, expired trials, and trials with less than 48 hours
+remaining are excluded. Every send uses the shared preference/suppression gate,
+a campaign-versioned idempotency key, and the saved setup step. It never includes
+patient data and never asks a clinic to email an export or make it public.
+
 Webhook endpoint:
 
 ```text
@@ -503,6 +513,7 @@ one global `CRON_HEARTBEAT_URL` to receive every cron completion as POST JSON, o
 set job-specific URLs (`CRON_HEARTBEAT_REMINDERS_URL`,
 `CRON_HEARTBEAT_BACKUP_URL`, `CRON_HEARTBEAT_USAGE_RECONCILE_URL`,
 `CRON_HEARTBEAT_BILLING_LIFECYCLE_URL`,
+`CRON_HEARTBEAT_SETUP_RECOVERY_URL`,
 `CRON_HEARTBEAT_WELLNESS_BILLING_URL`,
 `CRON_HEARTBEAT_RATE_LIMIT_CLEANUP_URL`,
 `CRON_HEARTBEAT_AUTH_CLEANUP_URL`,
