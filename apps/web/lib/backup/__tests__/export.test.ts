@@ -569,6 +569,9 @@ describe("summarizePracticeExport", () => {
     expect(sections).not.toContain("authEmailDeliveryEvents");
     expect(sections).not.toContain("authEmailWebhookConflicts");
     expect(sections).not.toContain("authEmailProviderIdentityConflicts");
+    expect(sections).not.toContain("smsProviderEvents");
+    expect(sections).not.toContain("smsProviderEventConflicts");
+    expect(sections).not.toContain("smsProviderEventConflictReviews");
     expect(PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.usageRecords).toContain("billing");
     expect(
       PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.practiceConversionMilestones,
@@ -594,6 +597,15 @@ describe("summarizePracticeExport", () => {
     expect(
       PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.authEmailProviderIdentityConflicts,
     ).toContain("provider identity conflict evidence");
+    expect(PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.smsProviderEvents).toContain(
+      "provider inbox",
+    );
+    expect(
+      PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.smsProviderEventConflicts,
+    ).toContain("conflict evidence");
+    expect(
+      PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.smsProviderEventConflictReviews,
+    ).toContain("operator review evidence");
   });
 
   it("counts present sections and reports missing sections", () => {

@@ -63,6 +63,8 @@ import {
   RECOVERY_HOLD_BLOCK_MESSAGE,
 } from "@/lib/recovery-hold";
 import { alertOps } from "@/lib/alerts";
+import { envFlagEnabled } from "@/lib/env-bool";
+import { loadSmsProviderEventGateSummaryInTransaction } from "@/lib/messaging/sms-provider-event-operations";
 
 const adminOnly = protectedProcedure.use(requireRole("admin"));
 const MESSAGING_NUMBER_ORDERED_DETAIL =
@@ -1626,12 +1628,43 @@ export const messagingRouter = createRouter({
       }
 
       if (input.enabled) {
-        if (
-          !(await lockPracticeForExternalSideEffects(ctx.db, ctx.practiceId))
-        ) {
+        // Take the strongest practice lock before reading provider-event state.
+        // Webhook intake takes the practice row first with FOR SHARE, so either
+        // its durable event commits before this zero-backlog check or intake
+        // waits until the enable transaction has committed.
+        const [practiceGate] = await ctx.db
+          .select({ recoveryHold: practices.recoveryHold })
+          .from(practices)
+          .where(
+            and(eq(practices.id, ctx.practiceId), isNull(practices.deletedAt)),
+          )
+          .for("update")
+          .limit(1);
+        if (!practiceGate || practiceGate.recoveryHold) {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
             message: RECOVERY_HOLD_BLOCK_MESSAGE,
+          });
+        }
+        if (billingEnforced() && !envFlagEnabled("MESSAGING_INBOUND_ENABLED")) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Inbound provider-event projection must be enabled before clinic SMS sending can be enabled.",
+          });
+        }
+        const providerEventGate =
+          await loadSmsProviderEventGateSummaryInTransaction(
+            ctx.db as unknown as Database,
+            {
+              practiceId: ctx.practiceId,
+              locationId: input.locationId,
+            },
+          );
+        if (providerEventGate.total > 0) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: `${providerEventGate.total} provider event${providerEventGate.total === 1 ? "" : "s"} must be projected or reconciled before clinic SMS sending can be enabled.`,
           });
         }
         assertHostedSendingAllowed(ctx.practiceId, input.locationId);

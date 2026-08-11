@@ -44,6 +44,7 @@ import {
   RECOVERY_HOLD_BLOCK_MESSAGE,
 } from "@/lib/recovery-hold";
 import { isQuietHours } from "@/lib/messaging/reminders";
+import { hasBlockingSmsProviderEventForDispatchInTransaction } from "@/lib/messaging/sms-provider-event-operations";
 
 export const SMS_COMPLIANCE_FOOTER = "Reply STOP to opt out or HELP for help.";
 export const SMS_MAX_BODY_LENGTH = 1600;
@@ -813,6 +814,26 @@ async function dispatchWinner(
         attempt.practiceId,
         attempt.destinationE164,
       );
+
+      if (
+        await hasBlockingSmsProviderEventForDispatchInTransaction(
+          tx as unknown as Database,
+          attempt.practiceId,
+          attempt.destinationE164,
+        )
+      ) {
+        const rejected: SendMessageResult = {
+          status: "definite_failure",
+          error:
+            "Durable provider evidence still requires safe projection or operator remediation. SMS delivery remains blocked.",
+        };
+        await appendProviderResult(
+          tx as unknown as Database,
+          attempt,
+          rejected,
+        );
+        return rejected;
+      }
 
       const ambiguityCutoff = new Date(Date.now() - SMS_AMBIGUITY_LOOKBACK_MS);
       const [ambiguousPrior] = await tx

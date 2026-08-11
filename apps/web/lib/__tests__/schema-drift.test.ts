@@ -18,6 +18,7 @@ type SchemaObjectRow = {
     | "column"
     | "constraint"
     | "index"
+    | "trigger"
     | "rls_policy"
     | "table_privilege"
     | "forbidden_table_privilege";
@@ -277,6 +278,23 @@ describe("findSchemaDrift", () => {
     );
   });
 
+  it("catches a disabled inbox mutation trigger", async () => {
+    const rows = liveSchemaWithout(() => false).map((row) =>
+      row.object_type === "trigger" &&
+      row.table_name === "sms_provider_events" &&
+      row.object_name === "sms_provider_events_mutation_guard"
+        ? { ...row, healthy: false }
+        : row,
+    );
+    const drift = await findSchemaDrift(fakeDb(rows));
+
+    expect(drift.invalidObjects).toContainEqual({
+      kind: "trigger",
+      table: "sms_provider_events",
+      name: "sms_provider_events_mutation_guard",
+    });
+  });
+
   it("catches missing required and present forbidden application privileges", async () => {
     const rows = liveSchemaWithout(
       (row) =>
@@ -301,6 +319,23 @@ describe("findSchemaDrift", () => {
       kind: "forbidden_table_privilege",
       table: "file_storage_events",
       name: "UPDATE",
+    });
+  });
+
+  it("catches forbidden conflict-review mutation privileges", async () => {
+    const rows = liveSchemaWithout(() => false).map((row) =>
+      row.object_type === "forbidden_table_privilege" &&
+      row.table_name === "sms_provider_event_conflict_reviews" &&
+      row.object_name === "DELETE"
+        ? { ...row, healthy: false }
+        : row,
+    );
+    const drift = await findSchemaDrift(fakeDb(rows));
+
+    expect(drift.invalidObjects).toContainEqual({
+      kind: "forbidden_table_privilege",
+      table: "sms_provider_event_conflict_reviews",
+      name: "DELETE",
     });
   });
 });

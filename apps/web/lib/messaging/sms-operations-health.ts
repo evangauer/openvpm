@@ -10,6 +10,10 @@ import {
   loadSmsDeliveryEventQueue,
   loadSmsSendAttemptQueue,
 } from "@/lib/messaging/sms-operations-queues";
+import {
+  loadSmsProviderEventQueue,
+  type SmsProviderEventQueueItem,
+} from "@/lib/messaging/sms-provider-event-operations";
 
 const MINUTE_MS = 60 * 1000;
 
@@ -26,7 +30,8 @@ export type SmsOperationsCategory =
   | "carrier"
   | "profile"
   | "send_attempt"
-  | "delivery_event";
+  | "delivery_event"
+  | "provider_event";
 
 export interface SmsOperationsItem {
   severity: SmsOperationsSeverity;
@@ -51,6 +56,13 @@ export interface SmsOperationsHealth {
     deliveryEvents: number;
     staleWithoutFinal: number;
     providerAuditFailures: number;
+    providerEvents: number;
+    providerEventsPending: number;
+    providerEventsRetry: number;
+    providerEventsBlockedRecovery: number;
+    providerEventsQuarantined: number;
+    providerEventConflicts: number;
+    providerEventsStale: number;
   };
   reasons: Array<{
     severity: SmsOperationsSeverity;
@@ -548,6 +560,52 @@ function queueIssue(
   };
 }
 
+function providerEventIssue(
+  row: SmsProviderEventQueueItem,
+  now: Date,
+): InternalIssue {
+  const observedAt = asDate(row.receivedAt);
+  const critical =
+    row.state === "quarantined" || row.state === "identity_conflict";
+  const reasonCode =
+    row.state === "identity_conflict"
+      ? "provider_event_identity_conflict"
+      : row.state === "quarantined"
+        ? "provider_event_quarantined"
+        : row.state === "blocked_recovery"
+          ? "provider_event_blocked_recovery"
+          : row.state === "retry"
+            ? "provider_event_retry_stale"
+            : "provider_event_pending_stale";
+  const reason =
+    row.state === "identity_conflict"
+      ? "Signed provider evidence reused an identity with different content."
+      : row.state === "quarantined"
+        ? "Provider event processing was quarantined."
+        : row.state === "blocked_recovery"
+          ? "Provider event is waiting for recovery reconciliation."
+          : row.state === "retry"
+            ? "Provider event retry is overdue."
+            : "Provider event projection is overdue.";
+  const nextAction = critical
+    ? "Keep provider and clinic sending disabled; review the redacted queue and exact server evidence."
+    : row.state === "blocked_recovery"
+      ? "Drain and verify this event before releasing the clinic recovery hold."
+      : "Check the projection-worker heartbeat and retry state; do not replay the provider callback manually.";
+
+  return {
+    severity: critical ? "p0" : "p1",
+    category: "provider_event",
+    practiceName: row.practiceName,
+    locationName: row.locationName,
+    ageMinutes: ageMinutes(now, observedAt),
+    reasonCode,
+    reason,
+    nextAction,
+    observedAt,
+  };
+}
+
 async function loadMessagingStates(db: Database): Promise<SmsMessagingState[]> {
   return withSystem(db, async (tx) => {
     const result = await tx.execute(sql`
@@ -776,19 +834,21 @@ export async function getSmsOperationsHealth(
     options.inspectProvider ?? inspectTelnyxProviderReadiness;
 
   const queueLimit = limit + 1;
-  const [states, sendQueue, deliveryQueue] = await Promise.all([
-    loadMessagingStates(db),
-    loadSmsSendAttemptQueue(db, {
-      staleMinutes: SMS_OPERATIONS_THRESHOLDS.sendAttemptMinutes,
-      limit: queueLimit,
-      now,
-    }),
-    loadSmsDeliveryEventQueue(db, {
-      staleMinutes: SMS_OPERATIONS_THRESHOLDS.deliveryReceiptMinutes,
-      limit: queueLimit,
-      now,
-    }),
-  ]);
+  const [states, sendQueue, deliveryQueue, providerEventQueue] =
+    await Promise.all([
+      loadMessagingStates(db),
+      loadSmsSendAttemptQueue(db, {
+        staleMinutes: SMS_OPERATIONS_THRESHOLDS.sendAttemptMinutes,
+        limit: queueLimit,
+        now,
+      }),
+      loadSmsDeliveryEventQueue(db, {
+        staleMinutes: SMS_OPERATIONS_THRESHOLDS.deliveryReceiptMinutes,
+        limit: queueLimit,
+        now,
+      }),
+      loadSmsProviderEventQueue(db, { limit: queueLimit, now }),
+    ]);
   const sendRows = hydrateQueueNames(
     sendQueue.items.map((item) => ({
       practiceId: item.practiceId,
@@ -836,11 +896,22 @@ export async function getSmsOperationsHealth(
   const staleItems = staleRows
     .slice(0, limit)
     .map((row) => queueIssue(row, now, "delivery_event"));
+  const providerEventItems = providerEventQueue.items
+    .filter(
+      (row) =>
+        row.stale ||
+        row.state === "blocked_recovery" ||
+        row.state === "quarantined" ||
+        row.state === "identity_conflict",
+    )
+    .slice(0, limit)
+    .map((row) => providerEventIssue(row, now));
   const allItems = [
     ...stateIssues,
     ...sendItems,
     ...deliveryItems,
     ...staleItems,
+    ...providerEventItems,
   ].sort((left, right) => {
     if (left.severity !== right.severity)
       return left.severity === "p0" ? -1 : 1;
@@ -853,14 +924,25 @@ export async function getSmsOperationsHealth(
   const sendTotal = sendRows.length;
   const deliveryTotal = deliveryRows.length;
   const staleTotal = staleRows.length;
+  const providerEventCritical = providerEventItems.filter(
+    (item) => item.severity === "p0",
+  ).length;
+  const providerEventAttention = providerEventItems.filter(
+    (item) => item.severity === "p1",
+  ).length;
   const localCritical = stateIssues.filter(
     (item) => item.severity === "p0",
   ).length;
   const localAttention = stateIssues.filter(
     (item) => item.severity === "p1",
   ).length;
-  const critical = localCritical;
-  const attention = localAttention + sendTotal + deliveryTotal + staleTotal;
+  const critical = localCritical + providerEventCritical;
+  const attention =
+    localAttention +
+    sendTotal +
+    deliveryTotal +
+    staleTotal +
+    providerEventAttention;
   const carrier = stateIssues.filter(
     (item) => item.category === "carrier",
   ).length;
@@ -881,6 +963,17 @@ export async function getSmsOperationsHealth(
   for (const item of [...deliveryRows, ...staleRows]) {
     addReason(reasons, "p1", "delivery_event", item.classification, 1);
   }
+  for (const item of providerEventItems) {
+    addReason(reasons, item.severity, "provider_event", item.reasonCode, 1);
+  }
+
+  const providerEventCounts = providerEventQueue.counts;
+  const providerEvents =
+    providerEventCounts.pending +
+    providerEventCounts.retry +
+    providerEventCounts.blockedRecovery +
+    providerEventCounts.quarantined +
+    providerEventCounts.conflicts;
 
   return {
     cacheControl: "no-store",
@@ -895,6 +988,13 @@ export async function getSmsOperationsHealth(
       deliveryEvents: deliveryTotal,
       staleWithoutFinal: staleTotal,
       providerAuditFailures,
+      providerEvents,
+      providerEventsPending: providerEventCounts.pending,
+      providerEventsRetry: providerEventCounts.retry,
+      providerEventsBlockedRecovery: providerEventCounts.blockedRecovery,
+      providerEventsQuarantined: providerEventCounts.quarantined,
+      providerEventConflicts: providerEventCounts.conflicts,
+      providerEventsStale: providerEventCounts.stale,
     },
     reasons: [...reasons.values()].sort((left, right) =>
       `${left.severity}|${left.category}|${left.reason}`.localeCompare(
@@ -910,7 +1010,8 @@ export async function getSmsOperationsHealth(
       allItems.length > limit ||
       sendRows.length > limit ||
       deliveryRows.length > limit ||
-      staleRows.length > limit,
+      staleRows.length > limit ||
+      providerEventQueue.truncated,
     thresholds: SMS_OPERATIONS_THRESHOLDS,
   };
 }

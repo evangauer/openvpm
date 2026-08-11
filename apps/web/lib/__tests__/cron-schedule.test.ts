@@ -20,6 +20,7 @@ describe("Vercel cron schedule", () => {
         "/api/cron/auth-cleanup",
         "/api/cron/activation-digest",
         "/api/cron/sms-operations",
+        "/api/cron/sms-provider-events",
         "/api/cron/conversion-reconcile",
         "/api/cron/prescription-expiry",
       ]),
@@ -34,5 +35,22 @@ describe("Vercel cron schedule", () => {
       config.crons?.find((cron) => cron.path === "/api/cron/sms-operations")
         ?.schedule,
     ).toBe("*/15 * * * *");
+
+    const providerEventOperations = readFileSync(
+      "lib/messaging/sms-provider-event-operations.ts",
+      "utf8",
+    );
+    const staleMinutes = Number(
+      providerEventOperations.match(
+        /SMS_PROVIDER_EVENT_STALE_MINUTES\s*=\s*(\d+)/,
+      )?.[1],
+    );
+    expect(staleMinutes).toBeGreaterThanOrEqual(15);
+
+    expect(
+      config.crons?.find(
+        (cron) => cron.path === "/api/cron/sms-provider-events",
+      )?.schedule,
+    ).toBe("*/5 * * * *");
   });
 });

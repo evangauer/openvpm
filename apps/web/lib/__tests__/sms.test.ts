@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   alertOps: vi.fn(async () => undefined),
   practiceAllowsExternalSideEffects: vi.fn(async () => true),
   lockPracticeForExternalSideEffects: vi.fn(async () => true),
+  hasBlockingSmsProviderEventForDispatchInTransaction: vi.fn(async () => false),
   isQuietHours: vi.fn(() => false),
 }));
 
@@ -44,6 +45,10 @@ vi.mock("@/lib/messaging", async (importOriginal) => {
 });
 vi.mock("@/lib/messaging/reminders", () => ({
   isQuietHours: mocks.isQuietHours,
+}));
+vi.mock("@/lib/messaging/sms-provider-event-operations", () => ({
+  hasBlockingSmsProviderEventForDispatchInTransaction:
+    mocks.hasBlockingSmsProviderEventForDispatchInTransaction,
 }));
 
 const {
@@ -432,6 +437,9 @@ beforeEach(() => {
   });
   mocks.recordUsage.mockResolvedValue(undefined);
   mocks.acquireSmsRecipientLockInTransaction.mockResolvedValue(undefined);
+  mocks.hasBlockingSmsProviderEventForDispatchInTransaction.mockResolvedValue(
+    false,
+  );
   mocks.practiceAllowsExternalSideEffects.mockResolvedValue(true);
   vi.stubEnv("MESSAGING_REGISTERED_DISPLAY_NAME", "Neighborhood Veterinary");
   (globalThis as Record<string, unknown>).__smsLedgerState = state;
@@ -848,6 +856,40 @@ describe("durable SMS dispatch", () => {
     expect(mocks.providerSend).not.toHaveBeenCalled();
     expect(mocks.recordUsage).not.toHaveBeenCalled();
   });
+
+  it.each(["START-original/incoming-STOP conflict", "A2P identity conflict"])(
+    "blocks on %s after recipient locking and never calls the provider",
+    async () => {
+      allowHostedPilot();
+      mocks.billingEnforced.mockReturnValue(true);
+      mocks.hasBlockingSmsProviderEventForDispatchInTransaction.mockResolvedValueOnce(
+        true,
+      );
+
+      await expect(sendSms(sendOptions())).resolves.toMatchObject({
+        success: false,
+        outcome: "definite_failure",
+        error: expect.stringContaining("provider evidence"),
+      });
+
+      expect(mocks.providerSend).not.toHaveBeenCalled();
+      expect(mocks.lockPracticeForExternalSideEffects).toHaveBeenCalledWith(
+        mocks.tx,
+        PRACTICE_ID,
+      );
+      expect(mocks.acquireSmsRecipientLockInTransaction).toHaveBeenCalledWith(
+        mocks.tx,
+        PRACTICE_ID,
+        "+15555550199",
+      );
+      expect(
+        mocks.acquireSmsRecipientLockInTransaction.mock.invocationCallOrder[0],
+      ).toBeLessThan(
+        mocks.hasBlockingSmsProviderEventForDispatchInTransaction.mock
+          .invocationCallOrder[0]!,
+      );
+    },
+  );
 
   it("serializes STOP revocation ahead of the hosted consent recheck", async () => {
     allowHostedPilot();

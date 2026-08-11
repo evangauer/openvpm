@@ -33,6 +33,17 @@ const mocks = vi.hoisted(() => {
     usageForPractice: vi.fn(async () => 0),
     currentPeriodMonth: vi.fn(() => "2026-06"),
     lockPracticeForExternalSideEffects: vi.fn(async () => true),
+    loadSmsProviderEventGateSummaryInTransaction: vi.fn(async () => ({
+      pending: 0,
+      retry: 0,
+      blockedRecovery: 0,
+      quarantined: 0,
+      conflicts: 0,
+      exactPractice: 0,
+      unresolved: 0,
+      total: 0,
+      watermark: null,
+    })),
     alertOps: vi.fn(async () => undefined),
   };
 });
@@ -72,6 +83,10 @@ vi.mock("@/lib/billing/usage", () => ({
 vi.mock("@/lib/recovery-hold", () => ({
   RECOVERY_HOLD_BLOCK_MESSAGE: "recovery hold",
   lockPracticeForExternalSideEffects: mocks.lockPracticeForExternalSideEffects,
+}));
+vi.mock("@/lib/messaging/sms-provider-event-operations", () => ({
+  loadSmsProviderEventGateSummaryInTransaction:
+    mocks.loadSmsProviderEventGateSummaryInTransaction,
 }));
 
 vi.mock("@/lib/alerts", () => ({
@@ -201,8 +216,10 @@ function createDb(opts?: {
   ];
   const nextSelectRows = () => selectResults.shift() ?? [];
   const selectLimit = vi.fn(async () => nextSelectRows());
+  const selectForLimit = vi.fn(async () => [{ recoveryHold: false }]);
   const selectWhere = vi.fn(() => ({
     limit: selectLimit,
+    for: vi.fn(() => ({ limit: selectForLimit })),
     then: (
       resolve: (value: unknown[]) => unknown,
       reject: (reason: unknown) => unknown,
@@ -1699,6 +1716,33 @@ describe("messaging location target safety", () => {
     expect(updateSet).not.toHaveBeenCalled();
   });
 
+  it("rejects clinic enablement while durable provider events remain unresolved", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [[{ id: LOCATION_ID }]],
+    });
+    mocks.loadSmsProviderEventGateSummaryInTransaction.mockResolvedValueOnce({
+      pending: 0,
+      retry: 1,
+      blockedRecovery: 0,
+      quarantined: 0,
+      conflicts: 0,
+      exactPractice: 1,
+      unresolved: 0,
+      total: 1,
+      watermark: null,
+    });
+
+    await expect(
+      callerWithDb(db).setEnabled({ locationId: LOCATION_ID, enabled: true }),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("must be projected or reconciled"),
+    });
+
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(mocks.sendSms).not.toHaveBeenCalled();
+  });
+
   it("rejects stale sender activation when readiness changes before the final write", async () => {
     const { db, updateSet, updateWhere } = createDb({
       selectResults: [[{ id: LOCATION_ID }], [{ locationId: LOCATION_ID }]],
@@ -1741,6 +1785,7 @@ describe("messaging location target safety", () => {
 
   it("keeps hosted location enablement default-off even for an active Telnyx sender", async () => {
     vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    vi.stubEnv("MESSAGING_INBOUND_ENABLED", "true");
     const { db, updateSet } = createDb({
       practiceRows: [
         {
@@ -1764,6 +1809,7 @@ describe("messaging location target safety", () => {
 
   it("requires a fresh provider-profile attestation for hosted enablement", async () => {
     vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    vi.stubEnv("MESSAGING_INBOUND_ENABLED", "true");
     vi.stubEnv("MESSAGING_SENDING_ENABLED", "true");
     vi.stubEnv("MESSAGING_SENDING_PRACTICE_IDS", PRACTICE_ID);
     vi.stubEnv("MESSAGING_SENDING_LOCATION_IDS", LOCATION_ID);
@@ -1789,6 +1835,7 @@ describe("messaging location target safety", () => {
 
   it("allows one explicitly allowlisted active Telnyx hosted location to be enabled", async () => {
     vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    vi.stubEnv("MESSAGING_INBOUND_ENABLED", "true");
     vi.stubEnv("MESSAGING_SENDING_ENABLED", "true");
     vi.stubEnv("MESSAGING_SENDING_PRACTICE_IDS", PRACTICE_ID);
     vi.stubEnv("MESSAGING_SENDING_LOCATION_IDS", LOCATION_ID);
@@ -1998,24 +2045,27 @@ describe("messaging location sender join scoping", () => {
     );
   });
 
-  it("scopes inbound SMS webhook sender lookup by provider", () => {
+  it("routes inbound SMS through provider-qualified durable intake", () => {
     const source = readSource("lib/messaging/inbound.ts");
+    const providerEvents = readSource("lib/messaging/sms-provider-events.ts");
+    const telnyx = readSource("app/api/webhooks/telnyx/route.ts");
+    const twilio = readSource("app/api/webhooks/twilio/route.ts");
 
     expect(source).toContain("eq(locationMessaging.provider, provider)");
     expect(source).toContain("findMessagingLocationForWebhook");
     expect(source).toContain("locationMessaging.messagingProfileId");
-    expect(readSource("app/api/webhooks/telnyx/route.ts")).toContain(
-      "handleInboundSmsReply({",
+    expect(providerEvents).toContain(
+      "findMessagingLocationCandidatesForWebhookInTransaction(tx, {",
     );
-    expect(readSource("app/api/webhooks/telnyx/route.ts")).toContain(
-      'provider: "telnyx"',
-    );
-    expect(readSource("app/api/webhooks/twilio/route.ts")).toContain(
-      'provider: "twilio"',
-    );
-    expect(readSource("app/api/webhooks/twilio/route.ts")).toContain(
-      "handleInboundSmsReply({",
-    );
+    expect(providerEvents).toContain("provider: values.provider");
+    expect(telnyx).toContain("ingestSmsProviderEvent({");
+    expect(telnyx).toContain('provider: "telnyx"');
+    expect(telnyx).toContain('kind: "inbound"');
+    expect(twilio).toContain("ingestSmsProviderEvent({");
+    expect(twilio).toContain('provider: "twilio"');
+    expect(twilio).toContain('kind: "inbound"');
+    expect(telnyx).not.toContain("handleInboundSmsReply({");
+    expect(twilio).not.toContain("handleInboundSmsReply({");
   });
 
   it("requires practice context and scopes shared sender resolution to that active location", () => {

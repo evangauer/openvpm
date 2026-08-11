@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseRecoveryArgs } from "../../../scripts/recover-practice";
 
@@ -64,5 +65,29 @@ describe("owner practice recovery CLI", () => {
         "--reviewed-autonomous-jobs",
       ]),
     ).toMatchObject({ command: "release", execute: true });
+  });
+
+  it("owns the practice lock while draining provider events and clears the hold only after a zero-backlog check", () => {
+    const source = readFileSync("scripts/recover-practice.ts", "utf8");
+    const releaseSource = source.slice(
+      source.indexOf("async function release"),
+      source.indexOf("export async function main"),
+    );
+
+    expect(releaseSource).toContain('.for("update")');
+    expect(releaseSource).toContain("recoveryHoldSetAt");
+    expect(releaseSource).toContain(
+      "projectSmsProviderEventForLockedPracticeInTransaction",
+    );
+    expect(releaseSource).toContain("tx.transaction(async (eventTx)");
+    expect(releaseSource).toContain("eventTx as unknown as Database");
+    expect(releaseSource).toContain(
+      "unresolvedSince: practice.recoveryHoldSetAt",
+    );
+    expect(releaseSource).toContain("remainingProviderEvents.total > 0");
+    expect(releaseSource).toContain('action: "hold_release_blocked"');
+    expect(
+      releaseSource.indexOf("remainingProviderEvents.total > 0"),
+    ).toBeLessThan(releaseSource.indexOf("recoveryHold: false"));
   });
 });

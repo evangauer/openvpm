@@ -10,7 +10,14 @@ const mocks = vi.hoisted(() => {
     }
   }
   const selectResults: unknown[][] = [];
-  const selectLimit = vi.fn(async () => selectResults.shift() ?? []);
+  const selectFor = vi.fn(async () => [{ recoveryHold: false }]);
+  const selectLimit = vi.fn(() => ({
+    for: selectFor,
+    then: (
+      resolve: (value: unknown[]) => unknown,
+      reject: (reason: unknown) => unknown,
+    ) => Promise.resolve(selectResults.shift() ?? []).then(resolve, reject),
+  }));
   const selectOrderBy = vi.fn(() => ({ limit: selectLimit }));
   const selectWhere = vi.fn(() => ({
     limit: selectLimit,
@@ -34,7 +41,7 @@ const mocks = vi.hoisted(() => {
     select,
     update,
     insert,
-    execute: vi.fn(async () => undefined),
+    execute: vi.fn(async (_query?: unknown): Promise<unknown> => undefined),
   };
   return {
     db,
@@ -185,6 +192,7 @@ afterEach(() => {
   mocks.updateReturning.mockResolvedValue([
     { id: "00000000-0000-0000-0000-000000000009" },
   ]);
+  mocks.db.execute.mockResolvedValue(undefined);
   mocks.selectResults.length = 0;
 });
 
@@ -706,6 +714,40 @@ describe("platform messaging operations", () => {
         messagingProfileId: "profile-123",
       }),
     );
+  });
+
+  it("blocks provider activation before provider reads when durable evidence remains", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+    vi.stubEnv("MESSAGING_PROVISIONING_ENABLED", "true");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.openvpm.com");
+    mocks.db.execute.mockResolvedValueOnce({
+      rows: [
+        {
+          pending: 0,
+          retry: 0,
+          blockedRecovery: 0,
+          quarantined: 1,
+          conflicts: 0,
+          exactPractice: 1,
+          unresolved: 0,
+          watermark: new Date("2026-08-11T00:00:00.000Z"),
+        },
+      ],
+    });
+
+    await expect(
+      caller().setMessagingProfileEnabled({
+        practiceId: PRACTICE_ID,
+        locationId: LOCATION_ID,
+        enabled: true,
+        confirmProviderMutation: true,
+      }),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("must be projected or reconciled"),
+    });
+    expect(mocks.getMessagingProfile).not.toHaveBeenCalled();
+    expect(mocks.updateMessagingProfileEnabled).not.toHaveBeenCalled();
   });
 
   it("refuses to record readiness when messaging state changes during verification", async () => {

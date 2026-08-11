@@ -17,6 +17,7 @@ import {
 } from "@/lib/rls-assertion";
 import { cronHeartbeatConfigured } from "@/lib/cron-heartbeat";
 import { envFlagEnabled } from "@/lib/env-bool";
+import { loadSmsProviderEventGateSummaryInTransaction } from "@/lib/messaging/sms-provider-event-operations";
 import {
   checkObjectStorageHealth,
   checkReplicaStorageHealth,
@@ -417,6 +418,19 @@ async function hostedSmsRolloutCheck(): Promise<{
         ok: false,
         detail:
           "Hosted SMS pilot scope does not match an active, carrier-ready clinic location",
+      };
+    }
+    const providerEventGate = await withSystem(db, (tx) =>
+      loadSmsProviderEventGateSummaryInTransaction(tx, {
+        practiceId: pilotPracticeId,
+        locationId: sendingLocationId ?? undefined,
+      }),
+    );
+    if (providerEventGate.total > 0) {
+      return {
+        ok: false,
+        detail:
+          "Hosted SMS pilot has unresolved provider-event projection evidence",
       };
     }
   } catch {

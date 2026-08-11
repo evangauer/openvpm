@@ -184,6 +184,11 @@ const unmatchedSmsDeliveryEvent = randomUUID();
 const aSmsDeliveryHistory = randomUUID();
 const bSmsDeliveryHistory = randomUUID();
 const bSmsDeliveryConflictHistory = randomUUID();
+const aSmsProviderEvent = randomUUID();
+const aAttributedSmsProviderEvent = randomUUID();
+const aSmsProviderConflict = randomUUID();
+const aSmsProviderConflictReview = randomUUID();
+const aSmsProviderConflictReviewOperation = randomUUID();
 const funnelEventId = randomUUID();
 const platformEmailPreferenceId = randomUUID();
 const systemUpsertPlatformEmailPreferenceId = randomUUID();
@@ -344,6 +349,73 @@ try {
     (${bSmsDeliveryConflictHistory}, ${bSmsDeliveryEvent}, 'automatic',
       'ambiguous', 'sent', 'Redacted RLS identity conflict.',
       ${`rls:${bSmsDeliveryConflictHistory}`})`;
+  await owner`insert into sms_provider_events
+    (id, provider, kind, provider_event_id, provider_message_id,
+     provider_event_type, event_key, raw_body_fingerprint_sha256,
+     from_e164, to_e164, message_body, inbound_classification)
+    values (${aSmsProviderEvent}, 'telnyx', 'inbound',
+      ${`provider-event-${aSmsProviderEvent}`},
+      ${`provider-message-${aSmsProviderEvent}`}, 'message.received',
+      ${`telnyx:event:${aSmsProviderEvent}`}, ${"4".repeat(64)},
+      '+15555550111', '+15555550112', 'RLS provider inbox test', 'other')`;
+  await owner`insert into sms_provider_events
+    (id, provider, kind, provider_message_id, provider_event_type, event_key,
+     raw_body_fingerprint_sha256, delivery_classification, practice_id,
+     location_id)
+    values (${aAttributedSmsProviderEvent}, 'telnyx', 'delivery',
+      ${`provider-message-${aAttributedSmsProviderEvent}`}, 'message.sent',
+      ${`telnyx:event:${aAttributedSmsProviderEvent}`}, ${"9".repeat(64)},
+      'sent', ${aId}, ${aLocation})`;
+  await owner`insert into sms_provider_event_conflicts
+    (id, original_event_id, incoming_raw_body_fingerprint_sha256,
+     incoming_provider_event_type, incoming_provider_event_id,
+     incoming_provider_message_id)
+    values (${aSmsProviderConflict}, ${aSmsProviderEvent}, ${"5".repeat(64)},
+      'message.received', ${`provider-conflict-${aSmsProviderConflict}`},
+      ${`provider-message-${aSmsProviderEvent}`})`;
+  const [smsProviderPrivileges] = await owner<
+    Array<{
+      event_select: boolean;
+      event_insert: boolean;
+      event_update: boolean;
+      event_delete: boolean;
+      conflict_select: boolean;
+      conflict_insert: boolean;
+      conflict_update: boolean;
+      conflict_delete: boolean;
+      review_select: boolean;
+      review_insert: boolean;
+      review_update: boolean;
+      review_delete: boolean;
+    }>
+  >`select
+      has_table_privilege('openpims_app', 'sms_provider_events', 'select') event_select,
+      has_table_privilege('openpims_app', 'sms_provider_events', 'insert') event_insert,
+      has_table_privilege('openpims_app', 'sms_provider_events', 'update') event_update,
+      has_table_privilege('openpims_app', 'sms_provider_events', 'delete') event_delete,
+      has_table_privilege('openpims_app', 'sms_provider_event_conflicts', 'select') conflict_select,
+      has_table_privilege('openpims_app', 'sms_provider_event_conflicts', 'insert') conflict_insert,
+      has_table_privilege('openpims_app', 'sms_provider_event_conflicts', 'update') conflict_update,
+      has_table_privilege('openpims_app', 'sms_provider_event_conflicts', 'delete') conflict_delete,
+      has_table_privilege('openpims_app', 'sms_provider_event_conflict_reviews', 'select') review_select,
+      has_table_privilege('openpims_app', 'sms_provider_event_conflict_reviews', 'insert') review_insert,
+      has_table_privilege('openpims_app', 'sms_provider_event_conflict_reviews', 'update') review_update,
+      has_table_privilege('openpims_app', 'sms_provider_event_conflict_reviews', 'delete') review_delete`;
+  check(
+    "SMS provider inbox grants only projection privileges to the application role",
+    smsProviderPrivileges?.event_select === true &&
+      smsProviderPrivileges.event_insert === true &&
+      smsProviderPrivileges.event_update === true &&
+      smsProviderPrivileges.event_delete === false &&
+      smsProviderPrivileges.conflict_select === true &&
+      smsProviderPrivileges.conflict_insert === true &&
+      smsProviderPrivileges.conflict_update === false &&
+      smsProviderPrivileges.conflict_delete === false &&
+      smsProviderPrivileges.review_select === true &&
+      smsProviderPrivileges.review_insert === true &&
+      smsProviderPrivileges.review_update === false &&
+      smsProviderPrivileges.review_delete === false,
+  );
   await owner`insert into patients (id, practice_id, client_id, name, species)
     select ${aPatient}, ${aId}, id, 'RLS Pet A', 'canine'
     from clients where practice_id = ${aId}`;
@@ -396,13 +468,13 @@ try {
     "application role has exact file recovery table privileges",
     Boolean(
       fileRecoveryPrivileges?.replica_select &&
-        fileRecoveryPrivileges.replica_insert &&
-        fileRecoveryPrivileges.replica_update &&
-        fileRecoveryPrivileges.replica_delete &&
-        fileRecoveryPrivileges.event_select &&
-        fileRecoveryPrivileges.event_insert &&
-        !fileRecoveryPrivileges.event_update &&
-        !fileRecoveryPrivileges.event_delete,
+      fileRecoveryPrivileges.replica_insert &&
+      fileRecoveryPrivileges.replica_update &&
+      fileRecoveryPrivileges.replica_delete &&
+      fileRecoveryPrivileges.event_select &&
+      fileRecoveryPrivileges.event_insert &&
+      !fileRecoveryPrivileges.event_update &&
+      !fileRecoveryPrivileges.event_delete,
     ),
   );
   await owner`insert into patient_allergies
@@ -1258,6 +1330,259 @@ try {
   check(
     "tenant context cannot read provider identity conflict evidence",
     hiddenAuthEmailProviderConflict.length === 0,
+  );
+
+  const hiddenSmsProviderInbox = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id from sms_provider_events where id = ${aSmsProviderEvent}`;
+  });
+  check(
+    "tenant context cannot read the system-only SMS provider inbox",
+    hiddenSmsProviderInbox.length === 0,
+  );
+  const hiddenSmsProviderConflict = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id from sms_provider_event_conflicts where id = ${aSmsProviderConflict}`;
+  });
+  check(
+    "tenant context cannot read SMS provider conflict evidence",
+    hiddenSmsProviderConflict.length === 0,
+  );
+
+  let tenantSmsProviderInsertBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into sms_provider_events
+        (provider, kind, provider_message_id, provider_event_type, event_key,
+         raw_body_fingerprint_sha256, delivery_classification)
+        values ('telnyx', 'delivery', 'forged-message', 'message.sent',
+          ${`forged:${randomUUID()}`}, ${"6".repeat(64)}, 'sent')`;
+    });
+  } catch {
+    tenantSmsProviderInsertBlocked = true;
+  }
+  check(
+    "tenant context cannot forge SMS provider inbox facts",
+    tenantSmsProviderInsertBlocked,
+  );
+
+  let crossTenantSmsProviderLocationBlocked = false;
+  try {
+    await owner`update sms_provider_events
+      set practice_id = ${aId}, location_id = ${bLocation}
+      where id = ${aSmsProviderEvent}`;
+  } catch {
+    crossTenantSmsProviderLocationBlocked = true;
+  }
+  check(
+    "SMS provider event composite FK rejects cross-tenant attribution",
+    crossTenantSmsProviderLocationBlocked,
+  );
+
+  let smsProviderAttributionRewriteBlocked = false;
+  try {
+    await owner`update sms_provider_events
+      set location_id = ${aAltLocation}
+      where id = ${aAttributedSmsProviderEvent}`;
+  } catch {
+    smsProviderAttributionRewriteBlocked = true;
+  }
+  check(
+    "SMS provider event attribution cannot be rewritten within a tenant",
+    smsProviderAttributionRewriteBlocked,
+  );
+
+  let ownerSmsProviderFactMutationBlocked = false;
+  try {
+    await owner`update sms_provider_events
+      set message_body = 'tampered' where id = ${aSmsProviderEvent}`;
+  } catch {
+    ownerSmsProviderFactMutationBlocked = true;
+  }
+  check(
+    "SMS provider event facts are immutable for the owner",
+    ownerSmsProviderFactMutationBlocked,
+  );
+
+  let ownerSmsProviderConflictMutationBlocked = false;
+  try {
+    await owner`update sms_provider_event_conflicts
+      set incoming_provider_event_type = incoming_provider_event_type
+      where id = ${aSmsProviderConflict}`;
+  } catch {
+    ownerSmsProviderConflictMutationBlocked = true;
+  }
+  check(
+    "SMS provider conflict evidence is immutable for the owner",
+    ownerSmsProviderConflictMutationBlocked,
+  );
+
+  let invalidSmsProviderStateShapeBlocked = false;
+  try {
+    await owner`insert into sms_provider_events
+      (provider, kind, provider_message_id, provider_event_type, event_key,
+       raw_body_fingerprint_sha256, delivery_classification, attempt_count)
+      values ('telnyx', 'delivery', 'invalid-state-message', 'message.sent',
+        ${`invalid:${randomUUID()}`}, ${"7".repeat(64)}, 'sent', 1)`;
+  } catch {
+    invalidSmsProviderStateShapeBlocked = true;
+  }
+  check(
+    "SMS provider inbox rejects incoherent state and attempt facts",
+    invalidSmsProviderStateShapeBlocked,
+  );
+
+  let fabricatedTerminalSmsProviderInsertBlocked = false;
+  try {
+    await owner`with receipt as (select clock_timestamp() as at)
+      insert into sms_provider_events
+        (received_at, provider, kind, provider_message_id,
+         provider_event_type, event_key, raw_body_fingerprint_sha256,
+         delivery_classification, state, attempt_count, next_attempt_at,
+         last_attempt_at, processed_at)
+      select at, 'telnyx', 'delivery', 'fabricated-terminal-message',
+        'message.sent', ${`fabricated:${randomUUID()}`}, ${"a".repeat(64)},
+        'sent', 'ignored', 1, null, at, at
+      from receipt`;
+  } catch {
+    fabricatedTerminalSmsProviderInsertBlocked = true;
+  }
+  check(
+    "ordinary inserts cannot fabricate terminal SMS provider events",
+    fabricatedTerminalSmsProviderInsertBlocked,
+  );
+
+  let nullA2pObservedStatusBlocked = false;
+  try {
+    await owner`insert into sms_provider_events
+      (provider, kind, provider_event_type, event_key,
+       raw_body_fingerprint_sha256, a2p_brand_id)
+      values ('telnyx', 'a2p', '10dlc.brand.update',
+        ${`a2p:${randomUUID()}`}, ${"8".repeat(64)}, 'brand-rls-test')`;
+  } catch {
+    nullA2pObservedStatusBlocked = true;
+  }
+  check(
+    "A2P provider facts cannot bypass shape checks with a NULL observed status",
+    nullA2pObservedStatusBlocked,
+  );
+
+  const quarantinedSmsProviderEvent = await appTransaction(async (tx) => {
+    await tx`select set_config('app.rls_bypass', 'on', true)`;
+    return tx`update sms_provider_events
+      set state = 'quarantined', attempt_count = 1, next_attempt_at = null,
+          last_attempt_at = statement_timestamp(), processed_at = statement_timestamp(),
+          last_error_code = 'provider_event_identity_conflict',
+          last_error_detail = 'Conflicting signed callback fingerprint.'
+      where id = ${aSmsProviderEvent}
+      returning id, state`;
+  });
+  check(
+    "system bypass can terminally quarantine a conflicting inbox event",
+    quarantinedSmsProviderEvent.length === 1 &&
+      quarantinedSmsProviderEvent[0]!.state === "quarantined",
+  );
+
+  let terminalSmsProviderMutationBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`update sms_provider_events
+        set processed_at = processed_at where id = ${aSmsProviderEvent}`;
+    });
+  } catch {
+    terminalSmsProviderMutationBlocked = true;
+  }
+  check(
+    "terminal SMS provider events reject even no-op rewrites",
+    terminalSmsProviderMutationBlocked,
+  );
+
+  let mismatchedConflictReviewReasonBlocked = false;
+  try {
+    await owner`insert into sms_provider_event_conflict_reviews
+      (conflict_id, operation_id, resolution, reason_code,
+       reviewed_by_identity, reviewed_by_name)
+      values (${aSmsProviderConflict}, ${randomUUID()},
+        'semantic_duplicate_confirmed', 'sender_identity_rotated',
+        'rls-operator', 'RLS Operator')`;
+  } catch {
+    mismatchedConflictReviewReasonBlocked = true;
+  }
+  check(
+    "provider-conflict reviews require a reason matching the resolution",
+    mismatchedConflictReviewReasonBlocked,
+  );
+
+  const insertedSmsProviderReview = await appTransaction(async (tx) => {
+    await tx`select set_config('app.rls_bypass', 'on', true)`;
+    return tx`insert into sms_provider_event_conflict_reviews
+      (id, conflict_id, operation_id, resolution, reason_code, detail,
+       reviewed_by_identity, reviewed_by_name)
+      values (${aSmsProviderConflictReview}, ${aSmsProviderConflict},
+        ${aSmsProviderConflictReviewOperation}, 'semantic_duplicate_confirmed',
+        'provider_replay_verified', 'Provider portal evidence reviewed.',
+        'rls-operator', 'RLS Operator')
+      returning id`;
+  });
+  check(
+    "system bypass can append a terminal provider-conflict review",
+    insertedSmsProviderReview.length === 1 &&
+      insertedSmsProviderReview[0]!.id === aSmsProviderConflictReview,
+  );
+
+  const hiddenSmsProviderReview = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id from sms_provider_event_conflict_reviews
+      where id = ${aSmsProviderConflictReview}`;
+  });
+  check(
+    "tenant context cannot read SMS provider conflict reviews",
+    hiddenSmsProviderReview.length === 0,
+  );
+
+  let ownerSmsProviderReviewMutationBlocked = false;
+  try {
+    await owner`update sms_provider_event_conflict_reviews
+      set reason_code = reason_code where id = ${aSmsProviderConflictReview}`;
+  } catch {
+    ownerSmsProviderReviewMutationBlocked = true;
+  }
+  check(
+    "provider-conflict reviews are immutable for the owner",
+    ownerSmsProviderReviewMutationBlocked,
+  );
+
+  let smsProviderReviewMutationBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`update sms_provider_event_conflict_reviews
+        set reason_code = 'security_review_closed'
+        where id = ${aSmsProviderConflictReview}`;
+    });
+  } catch {
+    smsProviderReviewMutationBlocked = true;
+  }
+  check(
+    "application role cannot rewrite provider-conflict reviews",
+    smsProviderReviewMutationBlocked,
+  );
+
+  let smsProviderConflictDeleteBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`select set_config('app.ledger_maintenance', 'on', true)`;
+      await tx`delete from sms_provider_event_conflicts where id = ${aSmsProviderConflict}`;
+    });
+  } catch {
+    smsProviderConflictDeleteBlocked = true;
+  }
+  check(
+    "application role cannot delete provider conflicts even with maintenance GUCs",
+    smsProviderConflictDeleteBlocked,
   );
 
   let tenantAuthEmailInsertBlocked = false;
@@ -3466,6 +3791,9 @@ try {
     if (createdPlatformEmailIdentity) {
       await cleanup`delete from platform_email_identity where key_slot = 1`;
     }
+    await cleanup`delete from sms_provider_event_conflict_reviews where id = ${aSmsProviderConflictReview}`;
+    await cleanup`delete from sms_provider_event_conflicts where id = ${aSmsProviderConflict}`;
+    await cleanup`delete from sms_provider_events where id in (${aSmsProviderEvent}, ${aAttributedSmsProviderEvent})`;
     await cleanup`delete from sms_delivery_event_history where id in (${aSmsDeliveryHistory}, ${bSmsDeliveryHistory}, ${bSmsDeliveryConflictHistory})`;
     await cleanup`delete from sms_delivery_events where id in (${aSmsDeliveryEvent}, ${bSmsDeliveryEvent}, ${unmatchedSmsDeliveryEvent})`;
     await cleanup`delete from lab_result_events where id in (${aLabResultEvent}, ${bLabResultEvent})`;

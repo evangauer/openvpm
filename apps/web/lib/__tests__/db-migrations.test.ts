@@ -123,6 +123,99 @@ describe("committed Drizzle migrations", () => {
     expect(journal.entries?.map((entry) => entry.tag)).toContain(
       "0082_overconfident_manta",
     );
+    expect(
+      journal.entries?.some((entry) => entry.tag?.startsWith("0084_")),
+    ).toBe(true);
+  });
+
+  it("adds the durable provider SMS inbox as a system-only immutable ledger", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries: Array<{ tag: string }> };
+    const tag = journal.entries.find((entry) =>
+      entry.tag.startsWith("0084_"),
+    )?.tag;
+    expect(tag).toBeTruthy();
+    const migration = readRepoFile(`packages/db/drizzle/${tag}.sql`);
+
+    for (const table of [
+      "sms_provider_events",
+      "sms_provider_event_conflicts",
+      "sms_provider_event_conflict_reviews",
+    ]) {
+      expect(migration).toContain(`CREATE TABLE "${table}"`);
+      expect(migration).toContain(
+        `ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`,
+      );
+      expect(migration).toContain(`CREATE POLICY system_only ON ${table}`);
+    }
+    for (const object of [
+      "sms_provider_events_provider_event_key_uq",
+      "sms_provider_events_due_idx",
+      "sms_provider_events_consent_order_idx",
+      "sms_provider_events_location_tenant_fk",
+      "sms_provider_events_kind_shape_check",
+      "sms_provider_events_state_shape_check",
+      "sms_provider_event_conflicts_identity_uq",
+      "sms_provider_event_conflict_reviews_conflict_uq",
+      "sms_provider_event_conflict_reviews_operation_uq",
+      "sms_provider_events_mutation_guard",
+      "sms_provider_event_conflicts_immutable",
+      "sms_provider_event_conflict_reviews_immutable",
+    ]) {
+      expect(migration).toContain(object);
+    }
+    expect(migration).toContain(
+      "GRANT SELECT, INSERT, UPDATE ON sms_provider_events TO openpims_app",
+    );
+    expect(migration).toContain(
+      "GRANT SELECT, INSERT ON sms_provider_event_conflicts, sms_provider_event_conflict_reviews TO openpims_app",
+    );
+    expect(migration).toContain("raw_body_fingerprint_sha256");
+    expect(migration).not.toContain("raw_payload");
+    expect(migration).not.toContain("payload_json");
+    expect(migration).not.toContain("processing_lease");
+    expect(migration).not.toContain(
+      "sms_provider_events_location_id_locations_id_fk",
+    );
+    expect(migration).toContain(
+      '"sms_provider_events"."a2p_observed_status" is not null',
+    );
+    expect(migration).toContain(
+      "SMS provider event attempt time must advance with its attempt count.",
+    );
+    expect(migration).toContain(
+      "BEFORE INSERT OR UPDATE OR DELETE ON sms_provider_events",
+    );
+    expect(migration).toContain(
+      "New SMS provider events must enter the pending state.",
+    );
+    expect(migration).toContain(
+      '"next_attempt_at" timestamp with time zone DEFAULT clock_timestamp(),',
+    );
+
+    const rls = readRepoFile("packages/db/rls/enable-rls.sql");
+    expect(rls).toContain("CREATE POLICY system_only ON sms_provider_events");
+    expect(rls).toContain(
+      "CREATE POLICY system_only ON sms_provider_event_conflicts",
+    );
+    expect(rls).toContain(
+      "CREATE POLICY system_only ON sms_provider_event_conflict_reviews",
+    );
+    expect(rls).toContain(
+      "GRANT SELECT, INSERT, UPDATE ON sms_provider_events TO openpims_app",
+    );
+    expect(rls).not.toContain(
+      "GRANT SELECT, INSERT, UPDATE, DELETE ON sms_provider_events TO openpims_app",
+    );
+
+    const reset = readRepoFile("packages/db/reset.ts");
+    expect(reset.indexOf('"sms_provider_event_conflict_reviews"')).toBeLessThan(
+      reset.indexOf('"sms_provider_event_conflicts"'),
+    );
+    expect(reset.indexOf('"sms_provider_event_conflicts"')).toBeLessThan(
+      reset.indexOf('"sms_provider_events"'),
+    );
   });
 
   it("stages file recovery constraints behind a count-only preflight", () => {
@@ -311,6 +404,7 @@ describe("committed Drizzle migrations", () => {
       "0081",
       "0082",
       "0083",
+      "0084",
     ].map((prefix) => {
       const path = JSON.parse(
         readRepoFile("packages/db/drizzle/meta/_journal.json"),

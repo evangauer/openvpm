@@ -166,6 +166,10 @@ export function SmsRecoveryConsole() {
     { staleMinutes: 60, limit: QUEUE_LIMIT },
     { retry: false },
   );
+  const providerEventQueue = trpc.admin.smsProviderEventQueue.useQuery(
+    { limit: QUEUE_LIMIT },
+    { retry: false },
+  );
   const [attemptSelection, setAttemptSelection] =
     useState<AttemptSelection | null>(null);
   const [deliverySelection, setDeliverySelection] =
@@ -221,6 +225,7 @@ export function SmsRecoveryConsole() {
     void Promise.all([
       utils.admin.smsSendAttemptQueue.invalidate(),
       utils.admin.smsDeliveryEventQueue.invalidate(),
+      utils.admin.smsProviderEventQueue.invalidate(),
       utils.admin.smsOperationsHealth.invalidate(),
     ]);
   };
@@ -405,7 +410,11 @@ export function SmsRecoveryConsole() {
           type="button"
           size="sm"
           variant="outline"
-          disabled={attemptQueue.isFetching || deliveryQueue.isFetching}
+          disabled={
+            attemptQueue.isFetching ||
+            deliveryQueue.isFetching ||
+            providerEventQueue.isFetching
+          }
           onClick={refreshQueues}
         >
           <RefreshCw className="mr-2 h-4 w-4" />
@@ -414,6 +423,95 @@ export function SmsRecoveryConsole() {
       </div>
 
       <ActionNotice message={actionMessage} error={actionError} />
+
+      <div className="mt-5">
+        <h3 className="text-sm font-semibold">Provider-event projection</h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Redacted lifecycle state only. Message bodies, phone numbers, and raw
+          provider detail never leave the server boundary.
+        </p>
+        {providerEventQueue.error ? (
+          <QueueError>
+            Could not load the provider-event projection queue.
+          </QueueError>
+        ) : providerEventQueue.data ? (
+          <>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Pending {providerEventQueue.data.counts.pending} · retry{" "}
+              {providerEventQueue.data.counts.retry} · recovery-blocked{" "}
+              {providerEventQueue.data.counts.blockedRecovery} · quarantined{" "}
+              {providerEventQueue.data.counts.quarantined} · identity conflicts{" "}
+              {providerEventQueue.data.counts.conflicts} · stale{" "}
+              {providerEventQueue.data.counts.stale}
+            </p>
+            <div className="mt-3 overflow-x-auto rounded-md border border-border">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border bg-muted/30 text-left text-muted-foreground">
+                    <th className="px-3 py-2 font-medium">Received</th>
+                    <th className="px-3 py-2 font-medium">Clinic / location</th>
+                    <th className="px-3 py-2 font-medium">Kind / state</th>
+                    <th className="px-3 py-2 font-medium">Redacted evidence</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {providerEventQueue.data.items.map((item, index) => (
+                    <tr key={`${item.eventId}:${item.state}:${index}`}>
+                      <td className="px-3 py-2 align-top">
+                        <p>{formatTimestamp(item.receivedAt)}</p>
+                        {item.stale ? (
+                          <p className="text-xs font-medium text-amber-700">
+                            Stale
+                          </p>
+                        ) : null}
+                      </td>
+                      <td className="px-3 py-2 align-top">
+                        <p>{item.practiceName}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {item.locationName ?? "Practice-wide / unresolved"}
+                        </p>
+                      </td>
+                      <td className="px-3 py-2 align-top capitalize">
+                        {label(item.kind)} · {label(item.state)}
+                        <p className="text-xs text-muted-foreground">
+                          {item.provider} · attempt {item.attemptCount}
+                        </p>
+                      </td>
+                      <td className="px-3 py-2 align-top">
+                        <p className="break-all font-mono text-xs">
+                          event {item.eventId}
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          reason {item.lastErrorCode ?? "—"}
+                        </p>
+                      </td>
+                    </tr>
+                  ))}
+                  {providerEventQueue.data.items.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={4}
+                        className="px-3 py-6 text-center text-muted-foreground"
+                      >
+                        No provider events need projection or operator review.
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+            {providerEventQueue.data.truncated ? (
+              <p className="mt-2 text-xs font-medium text-amber-700">
+                Queue is bounded. Resolve the oldest items, then refresh.
+              </p>
+            ) : null}
+          </>
+        ) : (
+          <p className="mt-3 text-sm text-muted-foreground">
+            Loading provider-event evidence…
+          </p>
+        )}
+      </div>
 
       <div className="mt-5 grid gap-5 xl:grid-cols-2">
         <div>

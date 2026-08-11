@@ -7,9 +7,15 @@ import {
   messagingWebhookContentLengthTooLarge,
 } from "@/lib/messaging-webhook-limits";
 import { normalizeE164 } from "@/lib/messaging";
-import { handleInboundSmsReply } from "@/lib/messaging/inbound";
+import {
+  classifyInboundSms,
+  type InboundSmsClassification,
+} from "@/lib/messaging/inbound";
 import { envValue } from "@/lib/messaging/env";
-import { recordSmsDeliveryCallback } from "@/lib/messaging/sms-delivery-ledger";
+import {
+  ingestSmsProviderEvent,
+  projectSmsProviderEvent,
+} from "@/lib/messaging/sms-provider-events";
 import {
   twilioDeliveryClassification,
   twilioProviderStatus,
@@ -28,6 +34,23 @@ function payloadTooLargeResponse() {
 function nonBlankParam(value: string | undefined): string | null {
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
+}
+
+function twilioInboundClassification(
+  text: string,
+  rawOptOutType: string | undefined,
+): InboundSmsClassification {
+  const local = classifyInboundSms(text);
+  const providerValue = nonBlankParam(rawOptOutType)?.toLowerCase();
+  const provider = new Set(["start", "stop", "help"]).has(providerValue ?? "")
+    ? (providerValue as Exclude<InboundSmsClassification, "other">)
+    : null;
+  if (local === "stop" || provider === "stop") return "stop";
+  if (local === "start")
+    return provider && provider !== "start" ? "other" : "start";
+  if (provider === "start") return "other";
+  if (provider) return provider === local ? provider : "other";
+  return local;
 }
 
 function requestValidationUrls(request: Request): string[] {
@@ -75,6 +98,33 @@ export async function POST(request: Request) {
   const providerMessageId =
     params.MessageSid || params.SmsMessageSid || params.SmsSid || null;
   const messagingProfileId = nonBlankParam(params.MessagingServiceSid);
+  const rawDeliveryStatus = params.MessageStatus ?? params.SmsStatus ?? null;
+  const normalizedDeliveryStatus = rawDeliveryStatus?.trim().toLowerCase();
+  const isDeliveryCallback = Boolean(
+    rawDeliveryStatus && normalizedDeliveryStatus !== "received",
+  );
+
+  if (isDeliveryCallback) {
+    if (!providerMessageId) {
+      return NextResponse.json(
+        { error: "missing delivery message id" },
+        { status: 400 },
+      );
+    }
+    const ingested = await ingestSmsProviderEvent({
+      provider: "twilio",
+      kind: "delivery",
+      providerEventId: nonBlankParam(params.EventSid),
+      providerMessageId,
+      providerEventType: "message.status",
+      rawBody: rawBody.text,
+      providerStatus: twilioProviderStatus(rawDeliveryStatus!),
+      providerErrorCode: nonBlankParam(params.ErrorCode),
+      deliveryClassification: twilioDeliveryClassification(rawDeliveryStatus!),
+    });
+    if (!ingested.conflict) await projectSmsProviderEvent(ingested.eventId);
+    return NextResponse.json({ ok: true });
+  }
 
   if (fromPhone && toPhone && text) {
     if (!providerMessageId) {
@@ -83,48 +133,38 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    const result = await handleInboundSmsReply({
+    const ingested = await ingestSmsProviderEvent({
       provider: "twilio",
-      fromPhone,
-      toPhone,
-      text,
+      kind: "inbound",
+      providerEventId: nonBlankParam(params.EventSid) ?? providerMessageId,
       providerMessageId,
+      providerEventType: "message.received",
+      rawBody: rawBody.text,
+      fromE164: fromPhone,
+      toE164: toPhone,
       messagingProfileId,
+      messageBody: text,
+      inboundClassification: twilioInboundClassification(
+        text,
+        params.OptOutType,
+      ),
     });
-
-    if (result.action === "ignored") {
-      console.warn("[twilio-webhook] inbound_sender_not_resolved");
-      return NextResponse.json({ ok: true });
-    }
-
-    return NextResponse.json(result);
-  }
-
-  const rawDeliveryStatus = params.MessageStatus ?? params.SmsStatus ?? null;
-  if (!rawDeliveryStatus) {
+    if (!ingested.conflict) await projectSmsProviderEvent(ingested.eventId);
     return NextResponse.json({ ok: true });
   }
-  if (!providerMessageId) {
+
+  if (
+    providerMessageId ||
+    rawDeliveryStatus ||
+    params.From ||
+    params.To ||
+    params.Body
+  ) {
     return NextResponse.json(
-      { error: "missing delivery message id" },
+      { error: "malformed messaging callback" },
       { status: 400 },
     );
   }
-
-  await recordSmsDeliveryCallback({
-    provider: "twilio",
-    providerEventId: nonBlankParam(params.EventSid),
-    providerMessageId,
-    providerEventType: "message.status",
-    providerStatus: twilioProviderStatus(rawDeliveryStatus),
-    providerErrorCode: nonBlankParam(params.ErrorCode),
-    classification: twilioDeliveryClassification(rawDeliveryStatus),
-  });
-
-  // A failed/undelivered DLR is not proof that the recipient is permanently
-  // invalid: carrier congestion, filtering, and provider errors share these
-  // statuses. Keep STOP/opt-out webhooks as the only automatic SMS suppression
-  // until a provider-specific permanent-recipient signal is classified safely.
 
   return NextResponse.json({ ok: true });
 }

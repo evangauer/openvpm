@@ -46,6 +46,7 @@ const fake = vi.hoisted(() => {
     lastEvidenceConflict: null as Evidence | null,
     lastHistoryConflictKey: null as string | null,
     updateCalls: [] as Array<Record<string, unknown>>,
+    recoveryHolds: new Set<string>(),
   };
 
   function tableName(table: unknown): string {
@@ -65,6 +66,11 @@ const fake = vi.hoisted(() => {
     selection: Record<string, unknown> | undefined,
     whereStrings: Set<string>,
   ): unknown[] {
+    if (fromName === "practices") {
+      return [...new Set(state.attempts.map((attempt) => attempt.practiceId))]
+        .filter((practiceId) => whereStrings.has(practiceId))
+        .map((id) => ({ id, recoveryHold: state.recoveryHolds.has(id) }));
+    }
     if (fromName === "sms_delivery_events") {
       const exact = state.evidence.find(
         (row) => whereStrings.has(row.id) || whereStrings.has(row.eventKey),
@@ -236,6 +242,9 @@ const fake = vi.hoisted(() => {
         orderBy() {
           return builder;
         },
+        for() {
+          return builder;
+        },
         limit(count: number) {
           return Promise.resolve(
             rowsForSelect(fromName, joinName, selection, whereStrings).slice(
@@ -373,6 +382,7 @@ const fake = vi.hoisted(() => {
     state.lastEvidenceConflict = null;
     state.lastHistoryConflictKey = null;
     state.updateCalls.length = 0;
+    state.recoveryHolds.clear();
   }
 
   return { state, db, reset };
@@ -803,6 +813,30 @@ describe("SMS delivery ledger service behavior", () => {
     expect(
       fake.state.history.filter((row) => row.result === "reconciled"),
     ).toHaveLength(2);
+  });
+
+  it("defers operator projection while the attributed practice is recovery-held", async () => {
+    acceptedAttempt({ practiceId: "practice-held" });
+    const recorded = await callback({
+      eventId: "event-held",
+      classification: "unknown",
+    });
+    fake.state.recoveryHolds.add("practice-held");
+
+    await expect(
+      reconcileSmsDeliveryEvent({
+        deliveryEventId: recorded.eventId,
+        reconciliationId: "00000000-0000-0000-0000-0000000000aa",
+        classification: "delivered",
+        reasonCode: "provider_portal_status_review",
+        actorIdentity: "operator-1",
+        actorName: "Operator",
+      }),
+    ).rejects.toThrow("paused while the clinic is in recovery");
+    expect(fake.state.communications[0]!.status).toBe("pending");
+    expect(fake.state.history.some((row) => row.result === "reconciled")).toBe(
+      false,
+    );
   });
 
   it("rejects a quarantine reason aimed at the wrong incident type", async () => {

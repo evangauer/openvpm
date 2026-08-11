@@ -206,18 +206,24 @@ purchase or carrier submission. Use the platform admin queue in this order:
    `$10.00` daily cap. A new profile may still report its clinic-specific
    auto-response rules as missing at this read-only step.
 3. After the durable inbound-event release is deployed and its recovery drill
-   passes, set `MESSAGING_INBOUND_ENABLED=true`. Then select **Enable provider
-   profile** and confirm the provider mutation. OpenVPM
+   passes, confirm the every-five-minute `sms-provider-events` writer heartbeat,
+   an empty redacted provider-event queue, and a healthy read-only
+   `sms-operations` heartbeat. Then set `MESSAGING_INBOUND_ENABLED=true`, select
+   **Enable provider profile**, and confirm the provider mutation. OpenVPM
    first installs and reads back the exact clinic-branded US START, STOP, and
    HELP rules using the registered clinic name and support phone. Missing,
    duplicate, wildcard, paginated, or changed rules block activation. OpenVPM
    then reads every provider prerequisite back after the update and deliberately
-   leaves the clinic database sender off.
+   leaves the clinic database sender off. Provider activation remains blocked
+   if exact or identity-matched pending, retry, recovery-blocked, quarantined,
+   or unreviewed identity-conflict evidence exists.
 4. Add exactly one practice and location to the sending allowlists and set
    `MESSAGING_SENDING_ENABLED=true`.
 5. Within 15 minutes of the provider readback, have the clinic admin enable the
-   location sender. An expired or failed attestation blocks the database switch;
-   inspect the profile again instead of bypassing the gate.
+   location sender. This transaction takes the practice row before reading the
+   event queue and refuses to enable while relevant evidence remains. An expired
+   or failed attestation blocks the database switch; inspect the profile again
+   instead of bypassing the gate.
 6. Validate only with a current, consented client workflow. Confirm outbound
    accepted-to-delivered evidence, an ordinary inbound reply, HELP, STOP plus a
    blocked resend, START plus restored consent, one reminder, usage metering,
@@ -229,6 +235,13 @@ provider profile**. Provider deactivation always closes the database gate before
 contacting Telnyx, so an uncertain carrier response cannot leave OpenVPM sending.
 
 ### Texting operations response
+
+The every-five-minute `/api/cron/sms-provider-events` job is the only scheduled
+provider-event projection writer. It claims a bounded batch, uses transactional
+row locking and idempotent terminal states, retries failures, never sends an SMS
+or mutates a provider profile, and reports a
+dedicated `sms-provider-events` heartbeat. A crash leaves the durable event
+queued. Keep this writer separate from the monitor below.
 
 The every-15-minute `/api/cron/sms-operations` check is read-only. Its cadence
 matches the shortest unresolved-send threshold. It does not enable a provider
@@ -262,6 +275,13 @@ Use these fixed thresholds and responses:
   evidence after 60 minutes. Use the exact admin queues and their constrained
   review actions; never attach ambiguous evidence to an arbitrary clinic or
   retry an SMS from the monitoring job.
+- **Provider-event projection:** pending/retry work older than 15 minutes and
+  recovery-blocked work are P1. A quarantined event or unreviewed provider-event
+  identity conflict is P0 and keeps activation closed. A conflict review clears
+  only the identity-conflict alert: the original event remains quarantined and
+  still blocks activation/recovery release until a separate audited remediation
+  safely resolves the event. For STOP evidence, consent/suppression projection
+  must be authoritative before any remediation can reopen sending.
 
 Alerts contain only bounded counts and reason codes. They must not contain phone
 numbers, recipients, message bodies, clinic/patient/client names, raw provider
@@ -470,6 +490,7 @@ set job-specific URLs (`CRON_HEARTBEAT_REMINDERS_URL`,
 `CRON_HEARTBEAT_AUTH_CLEANUP_URL`,
 `CRON_HEARTBEAT_ACTIVATION_DIGEST_URL`,
 `CRON_HEARTBEAT_SMS_OPERATIONS_URL`,
+`CRON_HEARTBEAT_SMS_PROVIDER_EVENTS_URL`,
 `CRON_HEARTBEAT_CONVERSION_RECONCILE_URL`,
 `CRON_HEARTBEAT_PRESCRIPTION_EXPIRY_URL`) when your external monitor expects one URL
 per scheduled job. URL templates may include `{job}` and `{status}` tokens.

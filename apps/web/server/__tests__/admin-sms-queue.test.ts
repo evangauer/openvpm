@@ -8,6 +8,35 @@ const sharedQueues = readFileSync(
 );
 
 describe("SMS operator recovery queue", () => {
+  it("checks the durable provider-event gate before provider profile work", () => {
+    const helper = source.slice(
+      source.indexOf("async function withMessagingProviderEffectsAllowed"),
+      source.indexOf("const MESSAGING_SUBMISSION_LOCK_STALE_MS"),
+    );
+    const activation = source.slice(
+      source.indexOf("setMessagingProfileEnabled:"),
+      source.indexOf("submitMessagingBrand:"),
+    );
+    const readiness = source.slice(
+      source.indexOf("async function recordMessagingProfileReady"),
+      source.indexOf("async function recordMessagingProfileDisabled"),
+    );
+
+    expect(helper).toContain('.for("update", { of: practices })');
+    expect(helper).toContain("loadSmsProviderEventGateSummaryInTransaction");
+    expect(helper).toContain("providerEventGate.total > 0");
+    expect(helper.indexOf("providerEventGate.total > 0")).toBeLessThan(
+      helper.indexOf("return action"),
+    );
+    expect(activation).toContain("requireProviderEventClear: input.enabled");
+    expect(activation).toContain("locationId: input.locationId");
+    expect(activation).toMatch(
+      /recordMessagingProfileReady\(\s*\{[\s\S]*?\},\s*providerTx,\s*\);/,
+    );
+    expect(readiness).toContain("if (leaseTx)");
+    expect(readiness).toContain("persistReady(leaseTx, true)");
+  });
+
   it("masks phone-like provider identifiers before any recovery DTO leaves tRPC", () => {
     expect(source).toContain("function safeOperationalProviderId");
     expect(source).toContain("WITHHELD_PHONE_LIKE_OPERATIONAL_ID");

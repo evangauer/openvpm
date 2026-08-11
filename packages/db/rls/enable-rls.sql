@@ -232,6 +232,33 @@ REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_webhoo
 GRANT SELECT, INSERT, UPDATE ON auth_email_attempts TO openpims_app;
 GRANT SELECT, INSERT ON auth_email_delivery_events, auth_email_webhook_conflicts, auth_email_provider_identity_conflicts TO openpims_app;
 
+-- Signed provider SMS facts are global until exact routing attributes them.
+-- They may include message content, so clinic sessions cannot read the inbox;
+-- only explicit system work may ingest, project, retry, or inspect it. Conflict
+-- evidence is append-only and deliberately stores no body or phone numbers.
+ALTER TABLE sms_provider_events ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS system_only ON sms_provider_events;
+CREATE POLICY system_only ON sms_provider_events
+  USING (app_rls_bypass())
+  WITH CHECK (app_rls_bypass());
+
+ALTER TABLE sms_provider_event_conflicts ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS system_only ON sms_provider_event_conflicts;
+CREATE POLICY system_only ON sms_provider_event_conflicts
+  USING (app_rls_bypass())
+  WITH CHECK (app_rls_bypass());
+
+ALTER TABLE sms_provider_event_conflict_reviews ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS system_only ON sms_provider_event_conflict_reviews;
+CREATE POLICY system_only ON sms_provider_event_conflict_reviews
+  USING (app_rls_bypass())
+  WITH CHECK (app_rls_bypass());
+
+REVOKE ALL ON sms_provider_events, sms_provider_event_conflicts, sms_provider_event_conflict_reviews FROM PUBLIC;
+REVOKE ALL ON sms_provider_events, sms_provider_event_conflicts, sms_provider_event_conflict_reviews FROM openpims_app;
+GRANT SELECT, INSERT, UPDATE ON sms_provider_events TO openpims_app;
+GRANT SELECT, INSERT ON sms_provider_event_conflicts, sms_provider_event_conflict_reviews TO openpims_app;
+
 -- Dispense charge snapshots are durable revenue work. The app may advance or
 -- reopen their attributed workflow status, while database triggers prevent
 -- snapshot changes and all deletion.
@@ -457,7 +484,7 @@ BEGIN
   FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format(
-        'REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_provider_identity_conflicts, auth_email_webhook_conflicts, auth_tokens, clinic_pilot_events, clinic_pilots, clinical_record_corrections, demo_accesses, dispense_charge_queue, file_object_replicas, file_storage_events, funnel_events, lab_result_events, lab_result_replacements, messaging_registration_events, patient_allergies, patient_merge_events, platform_email_identity, platform_email_preference_events, platform_email_preferences, practice_conversion_milestones, prescription_events, sessions, sms_delivery_event_history, sms_delivery_events, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
+        'REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_provider_identity_conflicts, auth_email_webhook_conflicts, auth_tokens, clinic_pilot_events, clinic_pilots, clinical_record_corrections, demo_accesses, dispense_charge_queue, file_object_replicas, file_storage_events, funnel_events, lab_result_events, lab_result_replacements, messaging_registration_events, patient_allergies, patient_merge_events, platform_email_identity, platform_email_preference_events, platform_email_preferences, practice_conversion_milestones, prescription_events, sessions, sms_delivery_event_history, sms_delivery_events, sms_provider_event_conflict_reviews, sms_provider_event_conflicts, sms_provider_events, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
       );
     END IF;
   END LOOP;

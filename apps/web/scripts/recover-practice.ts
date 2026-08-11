@@ -2,7 +2,7 @@
 
 import { readFileSync, statSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { and, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import {
   appointments,
   auditLog,
@@ -11,6 +11,7 @@ import {
   invoices,
   patients,
   practices,
+  smsProviderEvents,
   users,
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
@@ -21,9 +22,12 @@ import {
 } from "../lib/backup/export";
 import { PRACTICE_BACKUP_JSON_MAX_BYTES } from "../lib/backup/policy";
 import { withSystem } from "../lib/tenant-db";
+import { loadSmsProviderEventGateSummaryInTransaction } from "../lib/messaging/sms-provider-event-operations";
+import { projectSmsProviderEventForLockedPracticeInTransaction } from "../lib/messaging/sms-provider-events";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const RECOVERY_SMS_EVENT_DRAIN_LIMIT = 500;
 const RELEASE_FLAGS = [
   "verified-objects",
   "verified-user-access",
@@ -201,9 +205,12 @@ async function restore(database: Database, args: ParsedArgs, backup: unknown) {
 }
 
 async function release(database: Database, args: ParsedArgs) {
-  return withSystem(database, async (tx) => {
+  const outcome = await withSystem(database, async (tx) => {
     const [practice] = await tx
-      .select({ recoveryHold: practices.recoveryHold })
+      .select({
+        recoveryHold: practices.recoveryHold,
+        recoveryHoldSetAt: practices.recoveryHoldSetAt,
+      })
       .from(practices)
       .where(
         and(eq(practices.id, args.practiceId), isNull(practices.deletedAt)),
@@ -212,6 +219,11 @@ async function release(database: Database, args: ParsedArgs) {
       .limit(1);
     if (!practice?.recoveryHold) {
       throw new Error("Practice is missing or is not on recovery hold.");
+    }
+    if (!practice.recoveryHoldSetAt) {
+      throw new Error(
+        "Recovery hold is missing its durable start watermark; owner review is required.",
+      );
     }
 
     const [unavailableFiles, activeUsers] = await Promise.all([
@@ -243,6 +255,115 @@ async function release(database: Database, args: ParsedArgs) {
       );
     }
 
+    // The practice row remains FOR UPDATE and the hold remains true while every
+    // attributable event is attempted oldest-first. Webhook intake takes the
+    // practice row first with FOR SHARE, so no pre-release event can cross this
+    // check invisibly. A blocked result commits the drain evidence but never
+    // clears the hold, allowing a later owner run to continue safely.
+    const beforeProviderEvents =
+      await loadSmsProviderEventGateSummaryInTransaction(
+        tx as unknown as Database,
+        {
+          practiceId: args.practiceId,
+          unresolvedSince: practice.recoveryHoldSetAt,
+        },
+      );
+    const drainRows = await tx
+      .select({ id: smsProviderEvents.id })
+      .from(smsProviderEvents)
+      .where(
+        and(
+          eq(smsProviderEvents.practiceId, args.practiceId),
+          inArray(smsProviderEvents.state, [
+            "pending",
+            "retry",
+            "blocked_recovery",
+          ]),
+        ),
+      )
+      .orderBy(asc(smsProviderEvents.receivedAt), asc(smsProviderEvents.id))
+      .limit(RECOVERY_SMS_EVENT_DRAIN_LIMIT);
+    const drainOutcomes: Record<string, number> = {};
+    for (const event of drainRows) {
+      try {
+        // A nested Drizzle transaction creates a savepoint. A SQL/constraint
+        // failure therefore rolls back only this event instead of poisoning
+        // the outer recovery transaction and losing earlier drain progress.
+        const result = await tx.transaction(async (eventTx) =>
+          projectSmsProviderEventForLockedPracticeInTransaction(
+            eventTx as unknown as Database,
+            {
+              practiceId: args.practiceId,
+              eventId: event.id,
+              force: true,
+            },
+          ),
+        );
+        drainOutcomes[result.outcome] =
+          (drainOutcomes[result.outcome] ?? 0) + 1;
+      } catch {
+        // Do not roll back earlier successful projections. The unchanged event
+        // remains in the authoritative final backlog and therefore keeps the
+        // recovery hold closed for a later owner retry.
+        drainOutcomes.projection_error =
+          (drainOutcomes.projection_error ?? 0) + 1;
+      }
+    }
+
+    const remainingProviderEvents =
+      await loadSmsProviderEventGateSummaryInTransaction(
+        tx as unknown as Database,
+        {
+          practiceId: args.practiceId,
+          unresolvedSince: practice.recoveryHoldSetAt,
+        },
+      );
+    const providerEventAudit = {
+      before: {
+        pending: beforeProviderEvents.pending,
+        retry: beforeProviderEvents.retry,
+        blockedRecovery: beforeProviderEvents.blockedRecovery,
+        quarantined: beforeProviderEvents.quarantined,
+        conflicts: beforeProviderEvents.conflicts,
+        unresolved: beforeProviderEvents.unresolved,
+      },
+      attempted: drainRows.length,
+      outcomes: drainOutcomes,
+      remaining: {
+        pending: remainingProviderEvents.pending,
+        retry: remainingProviderEvents.retry,
+        blockedRecovery: remainingProviderEvents.blockedRecovery,
+        quarantined: remainingProviderEvents.quarantined,
+        conflicts: remainingProviderEvents.conflicts,
+        unresolved: remainingProviderEvents.unresolved,
+      },
+      watermark:
+        remainingProviderEvents.watermark?.toISOString() ??
+        beforeProviderEvents.watermark?.toISOString() ??
+        practice.recoveryHoldSetAt.toISOString(),
+      bounded: drainRows.length === RECOVERY_SMS_EVENT_DRAIN_LIMIT,
+    };
+
+    if (remainingProviderEvents.total > 0) {
+      await tx.insert(auditLog).values({
+        practiceId: args.practiceId,
+        userId: null,
+        action: "hold_release_blocked",
+        entityType: "practice_recovery",
+        entityId: args.practiceId,
+        changes: {
+          source: "owner_recovery_cli",
+          state: "held",
+          reason: "sms_provider_events_unresolved",
+          providerEvents: providerEventAudit,
+        },
+      });
+      return {
+        released: false as const,
+        remainingProviderEvents: remainingProviderEvents.total,
+      };
+    }
+
     const now = new Date();
     const [updated] = await tx
       .update(practices)
@@ -259,7 +380,8 @@ async function release(database: Database, args: ParsedArgs) {
         ),
       )
       .returning({ id: practices.id });
-    if (!updated) throw new Error("Recovery hold release lost its database lock.");
+    if (!updated)
+      throw new Error("Recovery hold release lost its database lock.");
 
     await tx.insert(auditLog).values({
       practiceId: args.practiceId,
@@ -271,10 +393,17 @@ async function release(database: Database, args: ParsedArgs) {
         source: "owner_recovery_cli",
         state: "released",
         checklist: RELEASE_FLAGS,
+        providerEvents: providerEventAudit,
       },
     });
-    return { releasedAt: now.toISOString() };
+    return { released: true as const, releasedAt: now.toISOString() };
   });
+  if (!outcome.released) {
+    throw new Error(
+      `Recovery remains held: ${outcome.remainingProviderEvents} provider event${outcome.remainingProviderEvents === 1 ? "" : "s"} require projection or owner reconciliation.`,
+    );
+  }
+  return { releasedAt: outcome.releasedAt };
 }
 
 export async function main(argv = process.argv.slice(2)) {

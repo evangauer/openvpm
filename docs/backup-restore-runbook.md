@@ -168,7 +168,8 @@ a complete recovery source for that incident.
    - Reconnect payment processing (Stripe state is not replayed).
    - Re-provision/reconcile texting before enabling it. SMS send, outcome, and
      delivery ledgers are visible in the source export for audit but are not
-     replayed by clinic restore.
+     replayed by clinic restore. Durable provider-event inbox rows are global
+     operational evidence and are also never imported from clinic JSON.
 
 The restore is additive and fail-closed. It first performs size, section,
 cross-reference, and file-target validation without writing. Its first database
@@ -180,6 +181,27 @@ hold active for owner review; it must never silently reopen the clinic. Rows
 that already exist are skipped. The hold remains active until the owner
 reconciliation procedure explicitly releases it. Backups up to 50 MB of JSON
 are accepted.
+
+Hold release is a database-enforced messaging gate, not just the
+`--reconciled-messaging` checklist assertion. The owner release transaction
+takes the practice row `FOR UPDATE`, keeps `recovery_hold=true`, and attempts up
+to 500 attributable pending/retry/recovery-blocked provider events oldest-first.
+It then blocks on any remaining attributable pending, retry,
+recovery-blocked, or quarantined event, any unreviewed identity conflict, and
+any unresolved event received since `recovery_hold_set_at` (the conservative
+single-clinic pilot boundary). A blocked release commits successful event
+projections and a PHI-free `hold_release_blocked` audit record, but never clears
+the hold. Each event projection uses a database savepoint, so a SQL failure
+rolls back only that event and does not discard earlier drain progress or the
+final blocked-release audit. Rerun only after the redacted queue explains every
+remaining item.
+The successful `hold_released` audit stores before/after counts, projection
+outcomes, the event watermark, and whether the bounded drain filled.
+
+An identity-conflict review does not by itself make a quarantined original event
+safe. The review closes only that conflict incident; quarantine continues to
+block release and activation until a separate audited remediation establishes a
+safe projection. Never use a review to bypass unresolved STOP evidence.
 
 While held, clinic email/SMS/webhook delivery, AI model calls, Stripe checkout,
 capture, refund, metering and subscription-quantity mutations, and Telnyx

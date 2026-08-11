@@ -7,6 +7,9 @@ import { db } from "./client";
 // RESTART IDENTITY resets any serial sequences (none in this schema, but cheap).
 const TABLES = [
   "messaging_registration_events",
+  "sms_provider_event_conflict_reviews",
+  "sms_provider_event_conflicts",
+  "sms_provider_events",
   // Core / leaf tables first (purely defensive — CASCADE handles it)
   "audit_log",
   "rate_limit_buckets",

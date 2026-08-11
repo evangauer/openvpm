@@ -307,9 +307,9 @@ export default function AdminPage() {
               <span className="text-sm">SMS operations health</span>
             </div>
             <p className="mt-2 text-xs text-muted-foreground">
-              Read-only carrier, provider-profile, send-attempt, and delivery
-              evidence. This monitor never enables sending or changes provider
-              state.
+              Read-only carrier, provider-profile, provider-event, send-attempt,
+              and delivery evidence. This monitor never enables sending or
+              changes provider state.
             </p>
           </div>
           {smsOperations ? (
@@ -396,7 +396,7 @@ export default function AdminPage() {
         ) : null}
         {smsOperations ? (
           <>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
               {[
                 ["Critical", smsOperations.counts.critical, "text-red-700"],
                 ["Attention", smsOperations.counts.attention, "text-amber-700"],
@@ -410,6 +410,14 @@ export default function AdminPage() {
                   smsOperations.counts.deliveryEvents +
                     smsOperations.counts.staleWithoutFinal,
                   "text-foreground",
+                ],
+                [
+                  "Provider events",
+                  smsOperations.counts.providerEvents,
+                  smsOperations.counts.providerEventsQuarantined > 0 ||
+                  smsOperations.counts.providerEventConflicts > 0
+                    ? "text-red-700"
+                    : "text-foreground",
                 ],
               ].map(([label, value, tone]) => (
                 <div
@@ -430,6 +438,15 @@ export default function AdminPage() {
               {smsOperations.counts.profile} · Provider audit failures{" "}
               {smsOperations.counts.providerAuditFailures} · Generated{" "}
               {new Date(smsOperations.generatedAt).toLocaleString()}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Provider events: {smsOperations.counts.providerEventsPending}{" "}
+              pending · {smsOperations.counts.providerEventsRetry} retry ·{" "}
+              {smsOperations.counts.providerEventsBlockedRecovery}{" "}
+              recovery-blocked ·{" "}
+              {smsOperations.counts.providerEventsQuarantined} quarantined ·{" "}
+              {smsOperations.counts.providerEventConflicts} identity conflicts ·{" "}
+              {smsOperations.counts.providerEventsStale} stale
             </p>
             {smsOperations.items.length > 0 ? (
               <div className="mt-4 overflow-x-auto rounded-md border border-border">

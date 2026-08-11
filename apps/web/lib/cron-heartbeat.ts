@@ -16,6 +16,7 @@ export const CRON_HEARTBEAT_JOBS = [
   "activation-digest",
   "conversion-reconcile",
   "sms-operations",
+  "sms-provider-events",
 ] as const;
 
 export type CronHeartbeatJob = (typeof CRON_HEARTBEAT_JOBS)[number];
@@ -51,14 +52,14 @@ export function cronHeartbeatUrlForJob(job: string): string | undefined {
 }
 
 export function cronHeartbeatConfigured(
-  jobs: readonly string[] = CRON_HEARTBEAT_JOBS
+  jobs: readonly string[] = CRON_HEARTBEAT_JOBS,
 ): { ok: boolean; detail: string } {
   if (cronHeartbeatUrlFromEnv(CRON_HEARTBEAT_URL_ENV)) {
     return { ok: true, detail: "Cron heartbeat URL configured" };
   }
 
   const missing = jobs.filter(
-    (job) => !cronHeartbeatUrlFromEnv(cronHeartbeatEnvName(job))
+    (job) => !cronHeartbeatUrlFromEnv(cronHeartbeatEnvName(job)),
   );
   return missing.length === 0
     ? { ok: true, detail: "Job-specific cron heartbeat URLs configured" }
@@ -126,7 +127,7 @@ export async function reportCronHeartbeat(opts: {
 
 function renderCronHeartbeatUrl(
   template: string,
-  payload: CronHeartbeatPayload
+  payload: CronHeartbeatPayload,
 ): string {
   return template
     .replaceAll("{job}", encodeURIComponent(payload.job))

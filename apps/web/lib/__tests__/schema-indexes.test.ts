@@ -42,6 +42,9 @@ import {
   soapNotes,
   staffSchedules,
   smsSuppressions,
+  smsProviderEventConflicts,
+  smsProviderEventConflictReviews,
+  smsProviderEvents,
   sessions,
   suppliers,
   treatmentPlanItems,
@@ -220,6 +223,36 @@ describe("hot table indexes", () => {
         "messaging_registration_events_registration_history_idx",
         "messaging_registration_events_practice_time_idx",
         "messaging_registration_events_operation_event_uq",
+      ],
+    ],
+    [
+      "sms_provider_events",
+      smsProviderEvents,
+      [
+        "sms_provider_events_provider_event_key_uq",
+        "sms_provider_events_due_idx",
+        "sms_provider_events_practice_idx",
+        "sms_provider_events_blocked_idx",
+        "sms_provider_events_provider_message_idx",
+        "sms_provider_events_consent_order_idx",
+        "sms_provider_events_location_idx",
+      ],
+    ],
+    [
+      "sms_provider_event_conflicts",
+      smsProviderEventConflicts,
+      [
+        "sms_provider_event_conflicts_identity_uq",
+        "sms_provider_event_conflicts_recovery_idx",
+      ],
+    ],
+    [
+      "sms_provider_event_conflict_reviews",
+      smsProviderEventConflictReviews,
+      [
+        "sms_provider_event_conflict_reviews_conflict_uq",
+        "sms_provider_event_conflict_reviews_operation_uq",
+        "sms_provider_event_conflict_reviews_history_idx",
       ],
     ],
     [

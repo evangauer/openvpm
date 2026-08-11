@@ -57,6 +57,13 @@ function heartbeatMetrics(health: SmsOperationsHealth) {
     deliveryEvents: health.counts.deliveryEvents,
     staleWithoutFinal: health.counts.staleWithoutFinal,
     providerAuditFailures: health.counts.providerAuditFailures,
+    providerEvents: health.counts.providerEvents,
+    providerEventsPending: health.counts.providerEventsPending,
+    providerEventsRetry: health.counts.providerEventsRetry,
+    providerEventsBlockedRecovery: health.counts.providerEventsBlockedRecovery,
+    providerEventsQuarantined: health.counts.providerEventsQuarantined,
+    providerEventConflicts: health.counts.providerEventConflicts,
+    providerEventsStale: health.counts.providerEventsStale,
     reasonGroups: health.reasons.length,
     truncated: health.truncated,
   };
@@ -70,7 +77,7 @@ function degradedAlert(health: SmsOperationsHealth): string {
     : "";
   return [
     `Status: ${health.status}. P0: ${countQualifier}${counts.critical}; P1: ${countQualifier}${counts.attention}.${truncationNotice}`,
-    `Carrier: ${countQualifier}${counts.carrier}; profile: ${countQualifier}${counts.profile}; send attempts: ${countQualifier}${counts.sendAttempts}; delivery events: ${countQualifier}${counts.deliveryEvents}; stale without final: ${countQualifier}${counts.staleWithoutFinal}; provider audit failures: ${countQualifier}${counts.providerAuditFailures}.`,
+    `Carrier: ${countQualifier}${counts.carrier}; profile: ${countQualifier}${counts.profile}; send attempts: ${countQualifier}${counts.sendAttempts}; delivery events: ${countQualifier}${counts.deliveryEvents}; provider events: ${countQualifier}${counts.providerEvents} (${counts.providerEventsPending} pending, ${counts.providerEventsRetry} retry, ${counts.providerEventsBlockedRecovery} recovery-blocked, ${counts.providerEventsQuarantined} quarantined, ${counts.providerEventConflicts} identity conflicts, ${counts.providerEventsStale} stale); stale without final: ${countQualifier}${counts.staleWithoutFinal}; provider audit failures: ${countQualifier}${counts.providerAuditFailures}.`,
     `Reason counts (bounded${health.truncated ? " lower bounds" : ""}): ${reasonSummary(health.reasons)}.`,
     "Review the SMS operations queue. This check made no provider, launch-control, message, or evidence changes.",
   ].join(" ");

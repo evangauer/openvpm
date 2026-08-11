@@ -51,6 +51,10 @@
       "schedule": "*/15 * * * *"
     },
     {
+      "path": "/api/cron/sms-provider-events",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/cron/conversion-reconcile",
       "schedule": "35 * * * *"
     }

@@ -54,6 +54,7 @@ const mocks = vi.hoisted(() => ({
       kind:
         | "constraint"
         | "index"
+        | "trigger"
         | "rls_policy"
         | "table_privilege"
         | "forbidden_table_privilege";
@@ -465,7 +466,7 @@ describe("health route", () => {
       ok: true,
       detail: "Hosted SMS pilot configuration active",
     });
-    expect(mocks.withSystem).toHaveBeenCalledOnce();
+    expect(mocks.withSystem).toHaveBeenCalledTimes(2);
   });
 
   it("rejects different provisioning and sending clinic scopes", async () => {

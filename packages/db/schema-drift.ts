@@ -37,6 +37,7 @@ export type DeclaredDatabaseObject = {
   kind:
     | "constraint"
     | "index"
+    | "trigger"
     | "rls_policy"
     | "table_privilege"
     | "forbidden_table_privilege";
@@ -251,6 +252,121 @@ export function criticalDatabaseContract(): DeclaredDatabaseObject[] {
       table: "file_storage_events",
       name,
     })),
+    {
+      kind: "constraint",
+      table: "sms_provider_events",
+      name: "sms_provider_events_location_tenant_fk",
+    },
+    {
+      kind: "constraint",
+      table: "sms_provider_events",
+      name: "sms_provider_events_kind_shape_check",
+    },
+    {
+      kind: "constraint",
+      table: "sms_provider_events",
+      name: "sms_provider_events_state_shape_check",
+    },
+    {
+      kind: "index",
+      table: "sms_provider_events",
+      name: "sms_provider_events_provider_event_key_uq",
+    },
+    {
+      kind: "index",
+      table: "sms_provider_events",
+      name: "sms_provider_events_due_idx",
+    },
+    {
+      kind: "index",
+      table: "sms_provider_events",
+      name: "sms_provider_events_consent_order_idx",
+    },
+    {
+      kind: "trigger",
+      table: "sms_provider_events",
+      name: "sms_provider_events_mutation_guard",
+    },
+    {
+      kind: "rls_policy",
+      table: "sms_provider_events",
+      name: "system_only",
+    },
+    ...["SELECT", "INSERT", "UPDATE"].map((name) => ({
+      kind: "table_privilege" as const,
+      table: "sms_provider_events",
+      name,
+    })),
+    {
+      kind: "forbidden_table_privilege",
+      table: "sms_provider_events",
+      name: "DELETE",
+    },
+    {
+      kind: "constraint",
+      table: "sms_provider_event_conflicts",
+      name: "sms_provider_event_conflicts_shape_check",
+    },
+    {
+      kind: "index",
+      table: "sms_provider_event_conflicts",
+      name: "sms_provider_event_conflicts_identity_uq",
+    },
+    {
+      kind: "trigger",
+      table: "sms_provider_event_conflicts",
+      name: "sms_provider_event_conflicts_immutable",
+    },
+    {
+      kind: "rls_policy",
+      table: "sms_provider_event_conflicts",
+      name: "system_only",
+    },
+    ...["SELECT", "INSERT"].map((name) => ({
+      kind: "table_privilege" as const,
+      table: "sms_provider_event_conflicts",
+      name,
+    })),
+    ...["UPDATE", "DELETE"].map((name) => ({
+      kind: "forbidden_table_privilege" as const,
+      table: "sms_provider_event_conflicts",
+      name,
+    })),
+    {
+      kind: "constraint",
+      table: "sms_provider_event_conflict_reviews",
+      name: "sms_provider_event_conflict_reviews_shape_check",
+    },
+    {
+      kind: "index",
+      table: "sms_provider_event_conflict_reviews",
+      name: "sms_provider_event_conflict_reviews_conflict_uq",
+    },
+    {
+      kind: "index",
+      table: "sms_provider_event_conflict_reviews",
+      name: "sms_provider_event_conflict_reviews_operation_uq",
+    },
+    {
+      kind: "trigger",
+      table: "sms_provider_event_conflict_reviews",
+      name: "sms_provider_event_conflict_reviews_immutable",
+    },
+    {
+      kind: "rls_policy",
+      table: "sms_provider_event_conflict_reviews",
+      name: "system_only",
+    },
+    ...["SELECT", "INSERT"].map((name) => ({
+      kind: "table_privilege" as const,
+      table: "sms_provider_event_conflict_reviews",
+      name,
+    })),
+    ...["UPDATE", "DELETE"].map((name) => ({
+      kind: "forbidden_table_privilege" as const,
+      table: "sms_provider_event_conflict_reviews",
+      name,
+    })),
   ];
 
   return objects;
@@ -279,6 +395,7 @@ type SchemaObjectRow = {
     | "column"
     | "constraint"
     | "index"
+    | "trigger"
     | "rls_policy"
     | "table_privilege"
     | "forbidden_table_privilege";
@@ -347,6 +464,19 @@ export async function findSchemaDrift(db: Queryable): Promise<SchemaDrift> {
     where table_namespace.nspname = 'public'
     union all
     select
+      'trigger'::text,
+      table_class.relname::text,
+      trigger_object.tgname::text,
+      trigger_object.tgenabled <> 'D'
+    from pg_catalog.pg_trigger trigger_object
+    join pg_catalog.pg_class table_class
+      on table_class.oid = trigger_object.tgrelid
+    join pg_catalog.pg_namespace table_namespace
+      on table_namespace.oid = table_class.relnamespace
+    where table_namespace.nspname = 'public'
+      and not trigger_object.tgisinternal
+    union all
+    select
       'rls_policy'::text,
       table_class.relname::text,
       policy_object.polname::text,
@@ -378,7 +508,12 @@ export async function findSchemaDrift(db: Queryable): Promise<SchemaDrift> {
       )
     from (values
       ('file_storage_events'::text, 'UPDATE'::text),
-      ('file_storage_events'::text, 'DELETE'::text)
+      ('file_storage_events'::text, 'DELETE'::text),
+      ('sms_provider_events'::text, 'DELETE'::text),
+      ('sms_provider_event_conflicts'::text, 'UPDATE'::text),
+      ('sms_provider_event_conflicts'::text, 'DELETE'::text),
+      ('sms_provider_event_conflict_reviews'::text, 'UPDATE'::text),
+      ('sms_provider_event_conflict_reviews'::text, 'DELETE'::text)
     ) required_absence(table_name, privilege_type)
   `);
 

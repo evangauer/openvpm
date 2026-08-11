@@ -5,6 +5,7 @@ import { unstable_noStore as noStore } from "next/cache";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure } from "../trpc";
 import { db } from "@openpims/db/client";
+import type { Database } from "@openpims/db/client";
 import {
   practices,
   users,
@@ -77,6 +78,10 @@ import {
   loadSmsSendAttemptQueue,
 } from "@/lib/messaging/sms-operations-queues";
 import {
+  loadSmsProviderEventGateSummaryInTransaction,
+  loadSmsProviderEventQueue,
+} from "@/lib/messaging/sms-provider-event-operations";
+import {
   decryptRegistrationTaxId,
   MessagingRegistrationEncryptionError,
 } from "@/lib/messaging/registration-crypto";
@@ -118,16 +123,45 @@ const platformAdminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
 
 async function withMessagingProviderEffectsAllowed<T>(
   practiceId: string,
-  action: () => Promise<T>,
+  action: (tx: Database) => Promise<T>,
+  options?: {
+    requireProviderEventClear?: boolean;
+    locationId?: string;
+  },
 ): Promise<T> {
   return withSystem(db, async (tx) => {
-    if (!(await lockPracticeForExternalSideEffects(tx, practiceId))) {
+    const practiceAllowsEffects = options?.requireProviderEventClear
+      ? (
+          await tx
+            .select({ recoveryHold: practices.recoveryHold })
+            .from(practices)
+            .where(
+              and(eq(practices.id, practiceId), isNull(practices.deletedAt)),
+            )
+            .limit(1)
+            .for("update", { of: practices })
+        )[0]?.recoveryHold === false
+      : await lockPracticeForExternalSideEffects(tx, practiceId);
+    if (!practiceAllowsEffects) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: RECOVERY_HOLD_BLOCK_MESSAGE,
       });
     }
-    return action();
+    if (options?.requireProviderEventClear) {
+      const providerEventGate =
+        await loadSmsProviderEventGateSummaryInTransaction(
+          tx as unknown as Database,
+          { practiceId, locationId: options.locationId },
+        );
+      if (providerEventGate.total > 0) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: `${providerEventGate.total} provider event${providerEventGate.total === 1 ? "" : "s"} must be projected or reconciled before the provider profile can be enabled.`,
+        });
+      }
+    }
+    return action(tx as unknown as Database);
   });
 }
 
@@ -403,25 +437,59 @@ async function updateMessagingSenderDisabled(input: {
   });
 }
 
-async function recordMessagingProfileReady(input: {
-  practiceId: string;
-  locationId: string;
-  detail: string;
-  expected: {
-    registrationId: string;
-    providerBrandId: string;
-    providerCampaignId: string;
-    messagingProfileId: string;
-    senderE164: string;
-    clinicEnabled: boolean;
-    providerProfileReady: boolean;
-    providerProfileSyncedAt: Date | null;
-    registration: typeof messagingRegistrations.$inferSelect;
-  };
-  eventType: "provider_profile_enabled" | "provider_profile_verified";
-  actor: MessagingRegistrationEventActor;
-}) {
-  await withSystem(db, async (tx) => {
+async function recordMessagingProfileReady(
+  input: {
+    practiceId: string;
+    locationId: string;
+    detail: string;
+    expected: {
+      registrationId: string;
+      providerBrandId: string;
+      providerCampaignId: string;
+      messagingProfileId: string;
+      senderE164: string;
+      clinicEnabled: boolean;
+      providerProfileReady: boolean;
+      providerProfileSyncedAt: Date | null;
+      registration: typeof messagingRegistrations.$inferSelect;
+    };
+    eventType: "provider_profile_enabled" | "provider_profile_verified";
+    actor: MessagingRegistrationEventActor;
+  },
+  leaseTx?: Database,
+) {
+  assertHostedInboundProjectionEnabled();
+  const persistReady = async (
+    tx: Database,
+    practiceLockAlreadyHeld: boolean,
+  ) => {
+    if (!practiceLockAlreadyHeld) {
+      const [practice] = await tx
+        .select({ recoveryHold: practices.recoveryHold })
+        .from(practices)
+        .where(
+          and(eq(practices.id, input.practiceId), isNull(practices.deletedAt)),
+        )
+        .limit(1)
+        .for("update", { of: practices });
+      if (practice?.recoveryHold !== false) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: RECOVERY_HOLD_BLOCK_MESSAGE,
+        });
+      }
+    }
+    const providerEventGate =
+      await loadSmsProviderEventGateSummaryInTransaction(tx, {
+        practiceId: input.practiceId,
+        locationId: input.locationId,
+      });
+    if (providerEventGate.total > 0) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `${providerEventGate.total} provider event${providerEventGate.total === 1 ? "" : "s"} must be projected or reconciled before provider readiness can be recorded.`,
+      });
+    }
     const [updated] = await tx
       .update(locationMessaging)
       .set({
@@ -490,7 +558,14 @@ async function recordMessagingProfileReady(input: {
       locationId: input.locationId,
       messagingProfileId: input.expected.messagingProfileId,
     });
-  });
+  };
+  if (leaseTx) {
+    await persistReady(leaseTx, true);
+    return;
+  }
+  await withSystem(db, async (tx) =>
+    persistReady(tx as unknown as Database, false),
+  );
 }
 
 async function recordMessagingProfileDisabled(input: {
@@ -1336,6 +1411,19 @@ export const adminRouter = createRouter({
     return getSmsOperationsHealth(db);
   }),
 
+  /** Bounded provider-event state only; bodies, phones and provider detail stay server-side. */
+  smsProviderEventQueue: platformAdminProcedure
+    .input(
+      z.object({
+        practiceId: z.string().uuid().optional(),
+        limit: z.number().int().min(1).max(100).default(50),
+      }),
+    )
+    .query(({ input }) => {
+      noStore();
+      return loadSmsProviderEventQueue(db, input);
+    }),
+
   /** Secret-free structural configuration state for the platform operator. */
   hostedSmsConfiguration: platformAdminProcedure.query(() => {
     noStore();
@@ -1551,63 +1639,179 @@ export const adminRouter = createRouter({
     .mutation(async ({ ctx, input }) => {
       assertMessagingProviderMutationsEnabled();
       if (input.enabled) assertHostedInboundProjectionEnabled();
-      return withMessagingProviderEffectsAllowed(input.practiceId, async () => {
-        const actor = platformMessagingRegistrationActor(ctx.session!.user);
-        const sender = await messagingSenderForOperator(
-          input.practiceId,
-          input.locationId,
-        );
+      return withMessagingProviderEffectsAllowed(
+        input.practiceId,
+        async (providerTx) => {
+          const actor = platformMessagingRegistrationActor(ctx.session!.user);
+          const sender = await messagingSenderForOperator(
+            input.practiceId,
+            input.locationId,
+          );
 
-        if (!input.enabled) {
-          await updateMessagingSenderDisabled({
-            ...input,
-            detail:
-              "OpenVPM disabled the provider profile. Clinic sending remains off.",
-            syncedAt: null,
-          });
-          try {
-            const targetSender = await messagingSenderForOperator(
-              input.practiceId,
-              input.locationId,
-            );
-            const registration = await registrationForOperator(
-              input.practiceId,
-            );
-            let profile = await getMessagingProfile(
-              targetSender.messagingProfileId,
-            );
-            const reused = profile.enabled === false;
-            if (!reused) {
-              assertMessagingProviderMutationsEnabled();
-              await updateMessagingProfileEnabled({
-                profileId: targetSender.messagingProfileId,
-                enabled: false,
-              });
-              profile = await getMessagingProfile(
-                targetSender.messagingProfileId,
-              );
-            }
-            if (profile.enabled !== false) {
-              throw new TRPCError({
-                code: "BAD_GATEWAY",
-                message:
-                  "Telnyx did not confirm that the messaging profile is disabled.",
-              });
-            }
-            await recordMessagingProfileDisabled({
+          if (!input.enabled) {
+            await updateMessagingSenderDisabled({
               ...input,
               detail:
                 "OpenVPM disabled the provider profile. Clinic sending remains off.",
-              expected: {
-                messagingProfileId: targetSender.messagingProfileId,
-                senderE164: targetSender.senderE164,
-              },
-              registration,
-              actor,
+              syncedAt: null,
             });
+            try {
+              const targetSender = await messagingSenderForOperator(
+                input.practiceId,
+                input.locationId,
+              );
+              const registration = await registrationForOperator(
+                input.practiceId,
+              );
+              let profile = await getMessagingProfile(
+                targetSender.messagingProfileId,
+              );
+              const reused = profile.enabled === false;
+              if (!reused) {
+                assertMessagingProviderMutationsEnabled();
+                await updateMessagingProfileEnabled({
+                  profileId: targetSender.messagingProfileId,
+                  enabled: false,
+                });
+                profile = await getMessagingProfile(
+                  targetSender.messagingProfileId,
+                );
+              }
+              if (profile.enabled !== false) {
+                throw new TRPCError({
+                  code: "BAD_GATEWAY",
+                  message:
+                    "Telnyx did not confirm that the messaging profile is disabled.",
+                });
+              }
+              await recordMessagingProfileDisabled({
+                ...input,
+                detail:
+                  "OpenVPM disabled the provider profile. Clinic sending remains off.",
+                expected: {
+                  messagingProfileId: targetSender.messagingProfileId,
+                  senderE164: targetSender.senderE164,
+                },
+                registration,
+                actor,
+              });
+              return {
+                locationId: input.locationId,
+                enabled: false,
+                clinicEnabled: false,
+                reused,
+              };
+            } catch (error) {
+              if (error instanceof TRPCError) throw error;
+              throw providerFailure(error);
+            }
+          }
+
+          if (sender.enabled) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "Turn off clinic sending before changing its provider profile.",
+            });
+          }
+
+          await updateMessagingSenderDisabled({
+            ...input,
+            detail:
+              "OpenVPM is verifying the provider profile. Clinic sending remains off.",
+            syncedAt: null,
+          });
+
+          try {
+            const preconfigurationInspection =
+              await inspectMessagingProviderReadiness({
+                ...input,
+                requireAutoresponses: false,
+              });
+            if (preconfigurationInspection.blockers.length > 0) {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message: `Provider profile is not safe to configure: ${preconfigurationInspection.blockers.join(
+                  "; ",
+                )}.`,
+              });
+            }
+            assertMessagingProviderMutationsEnabled();
+            await ensureMessagingProfileAutoresponses(
+              preconfigurationInspection.sender.messagingProfileId,
+              {
+                assertMutationAllowed: assertMessagingProviderMutationsEnabled,
+                expectedPolicy: messagingProfileAutoresponsesForClinic({
+                  displayName:
+                    preconfigurationInspection.registration.displayName,
+                  businessPhone:
+                    preconfigurationInspection.registration.businessPhone,
+                }),
+              },
+            );
+            const inspection = await inspectMessagingProviderReadiness(input);
+            if (inspection.blockers.length > 0) {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message: `Provider profile is not safe to enable: ${inspection.blockers.join(
+                  "; ",
+                )}.`,
+              });
+            }
+            let profile = inspection.profile;
+            const inspectedSender = inspection.sender;
+            const reused = profile.enabled === true;
+            if (!reused) {
+              assertMessagingProviderMutationsEnabled();
+              await updateMessagingProfileEnabled({
+                profileId: inspectedSender.messagingProfileId,
+                enabled: true,
+              });
+              const [profileReadback, autoresponseReadback] = await Promise.all(
+                [
+                  getMessagingProfile(inspectedSender.messagingProfileId),
+                  getMessagingProfileAutoresponses(
+                    inspectedSender.messagingProfileId,
+                  ),
+                ],
+              );
+              profile = profileReadback;
+              const readbackIssues = [
+                ...messagingProfileSafetyIssues(profile, {
+                  id: inspectedSender.messagingProfileId,
+                  name: openVpmMessagingProfileName(inspectedSender.locationId),
+                  webhookUrl: telnyxRegistrationWebhookUrl(),
+                }),
+                ...messagingProfileAutoresponseSafetyIssues(
+                  autoresponseReadback,
+                  messagingProfileAutoresponsesForClinic({
+                    displayName: inspection.registration.displayName,
+                    businessPhone: inspection.registration.businessPhone,
+                  }),
+                ),
+              ];
+              if (profile.enabled !== true || readbackIssues.length > 0) {
+                throw new TRPCError({
+                  code: "BAD_GATEWAY",
+                  message:
+                    "Telnyx did not confirm the exact safe messaging-profile state.",
+                });
+              }
+            }
+            await recordMessagingProfileReady(
+              {
+                ...input,
+                detail:
+                  "Provider profile is active and verified. A clinic admin may now enable this approved pilot sender.",
+                expected: expectedMessagingProfileState(inspection),
+                eventType: "provider_profile_enabled",
+                actor,
+              },
+              providerTx,
+            );
             return {
               locationId: input.locationId,
-              enabled: false,
+              enabled: true,
               clinicEnabled: false,
               reused,
             };
@@ -1615,116 +1819,12 @@ export const adminRouter = createRouter({
             if (error instanceof TRPCError) throw error;
             throw providerFailure(error);
           }
-        }
-
-        if (sender.enabled) {
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message:
-              "Turn off clinic sending before changing its provider profile.",
-          });
-        }
-
-        await updateMessagingSenderDisabled({
-          ...input,
-          detail:
-            "OpenVPM is verifying the provider profile. Clinic sending remains off.",
-          syncedAt: null,
-        });
-
-        try {
-          const preconfigurationInspection =
-            await inspectMessagingProviderReadiness({
-              ...input,
-              requireAutoresponses: false,
-            });
-          if (preconfigurationInspection.blockers.length > 0) {
-            throw new TRPCError({
-              code: "PRECONDITION_FAILED",
-              message: `Provider profile is not safe to configure: ${preconfigurationInspection.blockers.join(
-                "; ",
-              )}.`,
-            });
-          }
-          assertMessagingProviderMutationsEnabled();
-          await ensureMessagingProfileAutoresponses(
-            preconfigurationInspection.sender.messagingProfileId,
-            {
-              assertMutationAllowed: assertMessagingProviderMutationsEnabled,
-              expectedPolicy: messagingProfileAutoresponsesForClinic({
-                displayName:
-                  preconfigurationInspection.registration.displayName,
-                businessPhone:
-                  preconfigurationInspection.registration.businessPhone,
-              }),
-            },
-          );
-          const inspection = await inspectMessagingProviderReadiness(input);
-          if (inspection.blockers.length > 0) {
-            throw new TRPCError({
-              code: "PRECONDITION_FAILED",
-              message: `Provider profile is not safe to enable: ${inspection.blockers.join(
-                "; ",
-              )}.`,
-            });
-          }
-          let profile = inspection.profile;
-          const inspectedSender = inspection.sender;
-          const reused = profile.enabled === true;
-          if (!reused) {
-            assertMessagingProviderMutationsEnabled();
-            await updateMessagingProfileEnabled({
-              profileId: inspectedSender.messagingProfileId,
-              enabled: true,
-            });
-            const [profileReadback, autoresponseReadback] = await Promise.all([
-              getMessagingProfile(inspectedSender.messagingProfileId),
-              getMessagingProfileAutoresponses(
-                inspectedSender.messagingProfileId,
-              ),
-            ]);
-            profile = profileReadback;
-            const readbackIssues = [
-              ...messagingProfileSafetyIssues(profile, {
-                id: inspectedSender.messagingProfileId,
-                name: openVpmMessagingProfileName(inspectedSender.locationId),
-                webhookUrl: telnyxRegistrationWebhookUrl(),
-              }),
-              ...messagingProfileAutoresponseSafetyIssues(
-                autoresponseReadback,
-                messagingProfileAutoresponsesForClinic({
-                  displayName: inspection.registration.displayName,
-                  businessPhone: inspection.registration.businessPhone,
-                }),
-              ),
-            ];
-            if (profile.enabled !== true || readbackIssues.length > 0) {
-              throw new TRPCError({
-                code: "BAD_GATEWAY",
-                message:
-                  "Telnyx did not confirm the exact safe messaging-profile state.",
-              });
-            }
-          }
-          await recordMessagingProfileReady({
-            ...input,
-            detail:
-              "Provider profile is active and verified. A clinic admin may now enable this approved pilot sender.",
-            expected: expectedMessagingProfileState(inspection),
-            eventType: "provider_profile_enabled",
-            actor,
-          });
-          return {
-            locationId: input.locationId,
-            enabled: true,
-            clinicEnabled: false,
-            reused,
-          };
-        } catch (error) {
-          if (error instanceof TRPCError) throw error;
-          throw providerFailure(error);
-        }
-      });
+        },
+        {
+          requireProviderEventClear: input.enabled,
+          locationId: input.locationId,
+        },
+      );
     }),
 
   /** Fee-bearing TCR brand creation; platform operator only and explicitly confirmed. */

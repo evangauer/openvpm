@@ -106,6 +106,12 @@ export const PRACTICE_EXPORT_SYSTEM_EXCLUSIONS = {
     "Global immutable verification-email callback conflict evidence; it is not clinic-owned restore data.",
   authEmailProviderIdentityConflicts:
     "Global immutable verification-email provider identity conflict evidence; it is not clinic-owned restore data.",
+  smsProviderEvents:
+    "Global system-only provider inbox; it can contain unattributed message content and is recovered only through operational database disaster recovery.",
+  smsProviderEventConflicts:
+    "Global immutable SMS provider idempotency conflict evidence; it is not clinic-owned restore data.",
+  smsProviderEventConflictReviews:
+    "Global immutable operator review evidence for SMS provider conflicts; it is not clinic-owned restore data.",
   captureSessions:
     "Expiring QR photo-capture link tokens; restoring them would resurrect old capture URLs. The photos themselves are in the files section.",
   fileObjectReplicas:

@@ -4,6 +4,7 @@ import { db } from "@openpims/db/client";
 import type { Database } from "@openpims/db/client";
 import {
   communications,
+  practices,
   smsDeliveryEventHistory,
   smsDeliveryEvents,
   smsSendAttemptEvents,
@@ -462,7 +463,7 @@ export async function processPendingDeliveryEvidenceForAcceptedSend(
   return results;
 }
 
-export async function recordSmsDeliveryCallback(input: {
+export type SmsDeliveryCallbackInput = {
   provider: SmsDeliveryProvider;
   providerEventId?: string | null;
   providerMessageId?: string | null;
@@ -471,7 +472,18 @@ export async function recordSmsDeliveryCallback(input: {
   providerErrorCode?: string | null;
   classification: SmsDeliveryClassification;
   occurredAt?: Date | null;
-}) {
+};
+
+/**
+ * Persist immutable delivery evidence and its monotone communication projection
+ * inside the provider inbox transaction. The caller is responsible for taking
+ * every affected practice lock before invoking this function.
+ */
+export async function recordSmsDeliveryCallbackInTransaction(
+  tx: Database,
+  input: SmsDeliveryCallbackInput,
+  options: { identityLockHeld?: boolean } = {},
+) {
   const providerEventId = bounded(input.providerEventId, 255);
   const providerMessageId = bounded(input.providerMessageId, 255);
   const providerEventType =
@@ -489,74 +501,78 @@ export async function recordSmsDeliveryCallback(input: {
   });
   const eventKey = eventIdentity({ providerEventId, fingerprint });
 
-  return withSystem(db, async (tx) => {
-    await lockSmsDeliveryIdentity(
-      tx as unknown as Database,
-      input.provider,
+  if (!options.identityLockHeld) {
+    await lockSmsDeliveryIdentity(tx, input.provider, providerMessageId);
+  }
+  const [inserted] = await tx
+    .insert(smsDeliveryEvents)
+    .values({
+      provider: input.provider,
+      providerEventId,
       providerMessageId,
-    );
-    const [inserted] = await tx
-      .insert(smsDeliveryEvents)
-      .values({
-        provider: input.provider,
-        providerEventId,
+      providerEventType,
+      providerStatus,
+      providerErrorCode,
+      classification: input.classification,
+      occurredAt: input.occurredAt,
+      eventKey,
+      payloadFingerprintSha256: fingerprint,
+    })
+    .onConflictDoNothing({
+      target: [smsDeliveryEvents.provider, smsDeliveryEvents.eventKey],
+    })
+    .returning();
+
+  const [evidence] = inserted
+    ? [inserted]
+    : await tx
+        .select()
+        .from(smsDeliveryEvents)
+        .where(
+          and(
+            eq(smsDeliveryEvents.provider, input.provider),
+            eq(smsDeliveryEvents.eventKey, eventKey),
+          ),
+        )
+        .limit(1);
+  if (!evidence) {
+    throw new Error("SMS delivery evidence could not be persisted.");
+  }
+
+  if (!inserted && evidence.payloadFingerprintSha256 !== fingerprint) {
+    await appendHistory(tx, {
+      deliveryEventId: evidence.id,
+      kind: "automatic",
+      result: "ambiguous",
+      classification: input.classification,
+      detail: conflictingObservationDetail({
+        fingerprint,
         providerMessageId,
         providerEventType,
         providerStatus,
         providerErrorCode,
-        classification: input.classification,
         occurredAt: input.occurredAt,
-        eventKey,
-        payloadFingerprintSha256: fingerprint,
-      })
-      .onConflictDoNothing({
-        target: [smsDeliveryEvents.provider, smsDeliveryEvents.eventKey],
-      })
-      .returning();
+        messageIdDiffers: evidence.providerMessageId !== providerMessageId,
+      }),
+      eventKey: `delivery:${evidence.id}:identity-conflict:${fingerprint}`,
+    });
+    return {
+      eventId: evidence.id,
+      duplicate: true,
+      result: "ambiguous" as const,
+    };
+  }
 
-    const [evidence] = inserted
-      ? [inserted]
-      : await tx
-          .select()
-          .from(smsDeliveryEvents)
-          .where(
-            and(
-              eq(smsDeliveryEvents.provider, input.provider),
-              eq(smsDeliveryEvents.eventKey, eventKey),
-            ),
-          )
-          .limit(1);
-    if (!evidence) {
-      throw new Error("SMS delivery evidence could not be persisted.");
-    }
+  const result = await processEvidence(tx, evidence);
+  return { eventId: evidence.id, duplicate: !inserted, result };
+}
 
-    if (!inserted && evidence.payloadFingerprintSha256 !== fingerprint) {
-      await appendHistory(tx as unknown as Database, {
-        deliveryEventId: evidence.id,
-        kind: "automatic",
-        result: "ambiguous",
-        classification: input.classification,
-        detail: conflictingObservationDetail({
-          fingerprint,
-          providerMessageId,
-          providerEventType,
-          providerStatus,
-          providerErrorCode,
-          occurredAt: input.occurredAt,
-          messageIdDiffers: evidence.providerMessageId !== providerMessageId,
-        }),
-        eventKey: `delivery:${evidence.id}:identity-conflict:${fingerprint}`,
-      });
-      return {
-        eventId: evidence.id,
-        duplicate: true,
-        result: "ambiguous" as const,
-      };
-    }
-
-    const result = await processEvidence(tx as unknown as Database, evidence);
-    return { eventId: evidence.id, duplicate: !inserted, result };
-  });
+export async function recordSmsDeliveryCallback(
+  input: SmsDeliveryCallbackInput,
+) {
+  return withSystem(db, (tx) =>
+    recordSmsDeliveryCallbackInTransaction(tx, input),
+  );
 }
 
 export async function reconcileSmsDeliveryEvent(input: {
@@ -590,6 +606,31 @@ export async function reconcileSmsDeliveryEvent(input: {
       .limit(1);
     if (!evidence) throw new Error("SMS delivery evidence not found.");
 
+    const initialPrior = await existingAttribution(tx, evidence.id);
+    const initialCandidates = await exactAttemptsForEvidence(tx, evidence);
+    const initialPracticeIds = [
+      ...new Set([
+        ...(initialPrior ? [initialPrior.practiceId] : []),
+        ...initialCandidates.map((candidate) => candidate.practiceId),
+      ]),
+    ].sort();
+    if (initialPracticeIds.length > 0) {
+      const practiceRows = await tx
+        .select({ id: practices.id, recoveryHold: practices.recoveryHold })
+        .from(practices)
+        .where(inArray(practices.id, initialPracticeIds))
+        .orderBy(practices.id)
+        .for("share", { of: practices });
+      if (
+        practiceRows.length !== initialPracticeIds.length ||
+        practiceRows.some((practice) => practice.recoveryHold)
+      ) {
+        throw new Error(
+          "Delivery reconciliation is paused while the clinic is in recovery.",
+        );
+      }
+    }
+
     if (evidence.providerMessageId) {
       await lockSmsDeliveryIdentity(
         tx as unknown as Database,
@@ -599,6 +640,20 @@ export async function reconcileSmsDeliveryEvent(input: {
     } else {
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`sms-delivery-event:${evidence.id}`}, 0))`,
+      );
+    }
+
+    const revalidatedPrior = await existingAttribution(tx, evidence.id);
+    const revalidatedCandidates = await exactAttemptsForEvidence(tx, evidence);
+    const revalidatedPracticeIds = [
+      ...new Set([
+        ...(revalidatedPrior ? [revalidatedPrior.practiceId] : []),
+        ...revalidatedCandidates.map((candidate) => candidate.practiceId),
+      ]),
+    ].sort();
+    if (revalidatedPracticeIds.join("|") !== initialPracticeIds.join("|")) {
+      throw new Error(
+        "Delivery attribution changed during reconciliation; retry safely.",
       );
     }
 
