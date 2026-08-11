@@ -79,6 +79,16 @@ const recoveryTrialStyles: Record<string, string> = {
   no_trial: "bg-gray-100 text-gray-600",
 };
 
+const smsPilotStageLabels: Record<string, string> = {
+  deferred: "Safely deferred",
+  blocked: "Blocked",
+  provisioning_prepared: "Provisioning prepared",
+  scope_prepared: "Scope prepared",
+  inbound_prepared: "Inbound prepared",
+  provider_ready: "Provider ready",
+  active: "Active",
+};
+
 function recoveryLabel(value: string) {
   return value.replaceAll("_", " ");
 }
@@ -116,8 +126,10 @@ export default function AdminPage() {
   );
   const { data: smsOperations, error: smsOperationsError } =
     trpc.admin.smsOperationsHealth.useQuery(undefined, { retry: false });
-  const { data: smsConfiguration, error: smsConfigurationError } =
-    trpc.admin.hostedSmsConfiguration.useQuery(undefined, { retry: false });
+  const { data: smsPilotPreflight, error: smsPilotPreflightError } =
+    trpc.admin.hostedSmsPilotActivationPreflight.useQuery(undefined, {
+      retry: false,
+    });
   const [extendTrialError, setExtendTrialError] = useState<string | null>(null);
   const [analyticsError, setAnalyticsError] = useState<string | null>(null);
   const [messagingError, setMessagingError] = useState<string | null>(null);
@@ -326,72 +338,154 @@ export default function AdminPage() {
             </span>
           ) : null}
         </div>
-        {smsConfiguration ? (
+        {smsPilotPreflight ? (
           <div className="mt-4 rounded-md border border-border bg-muted/20 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-sm font-medium">Hosted SMS configuration</p>
-              <span className="text-xs text-muted-foreground">
-                {smsConfiguration.rolloutIntended
-                  ? smsConfiguration.providerIsTelnyx &&
-                    smsConfiguration.apiKeyShapeValid &&
-                    smsConfiguration.webhookPublicKeyShapeValid &&
-                    smsConfiguration.registrationEncryptionKeyShapeValid &&
-                    smsConfiguration.provisioningScopeExact &&
-                    smsConfiguration.sendingScopeExact &&
-                    smsConfiguration.inboundEnabled
-                    ? "Rollout configured"
-                    : "Needs attention"
-                  : "Safely deferred"}
+              <p className="text-sm font-medium">
+                Hosted SMS pilot activation preflight
+              </p>
+              <span
+                className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                  smsPilotPreflight.stage === "blocked"
+                    ? "bg-red-100 text-red-800"
+                    : smsPilotPreflight.stage === "active"
+                      ? "bg-green-100 text-green-800"
+                      : smsPilotPreflight.stage === "deferred"
+                        ? "bg-gray-100 text-gray-700"
+                        : "bg-amber-100 text-amber-800"
+                }`}
+              >
+                {smsPilotStageLabels[smsPilotPreflight.stage] ??
+                  smsPilotPreflight.stage}
               </span>
             </div>
-            <div className="mt-2 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
+            <p className="mt-2 text-sm">{smsPilotPreflight.detail}</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Next: {smsPilotPreflight.nextAction}
+            </p>
+            <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
               {[
-                ["Telnyx provider", smsConfiguration.providerIsTelnyx],
-                ["API key shape", smsConfiguration.apiKeyShapeValid],
-                [
-                  "Webhook key shape",
-                  smsConfiguration.webhookPublicKeyShapeValid,
-                ],
-                [
-                  "Registration key shape",
-                  smsConfiguration.registrationEncryptionKeyShapeValid,
-                ],
-                [
-                  "Provisioning scope exact",
-                  smsConfiguration.provisioningScopeExact,
-                ],
-                ["Sending scope exact", smsConfiguration.sendingScopeExact],
-                ["Inbound gate enabled", smsConfiguration.inboundEnabled],
-              ].map(([label, valid]) => (
-                <div
-                  key={String(label)}
-                  className="flex items-center justify-between rounded border border-border bg-background px-2 py-1.5"
-                >
-                  <span>{label}</span>
-                  <span
-                    className={
-                      valid
-                        ? "font-medium text-green-700"
-                        : "font-medium text-red-700"
-                    }
+                {
+                  label: "Telnyx provider",
+                  value: smsPilotPreflight.configuration.providerIsTelnyx,
+                  falseLabel: "Fix",
+                },
+                {
+                  label: "Credential shapes",
+                  value: smsPilotPreflight.checks.credentialsValid,
+                  falseLabel: "Fix",
+                },
+                {
+                  label: "Provisioning scope",
+                  value: smsPilotPreflight.checks.provisioningScopeExact,
+                  falseLabel: "Fix",
+                },
+                {
+                  label: "Sending scope",
+                  value: smsPilotPreflight.checks.sendingScopeExact,
+                  falseLabel: "Fix",
+                },
+                {
+                  label: "Scopes match",
+                  value: smsPilotPreflight.checks.scopesMatch,
+                  falseLabel: "Fix",
+                },
+                {
+                  label: "Practice active",
+                  value: smsPilotPreflight.checks.practiceActive,
+                  falseLabel: "Blocked",
+                },
+                {
+                  label: "Recovery clear",
+                  value: smsPilotPreflight.checks.recoveryClear,
+                  falseLabel: "Blocked",
+                },
+                {
+                  label: "Carrier identity",
+                  value: smsPilotPreflight.checks.carrierIdentityReady,
+                  falseLabel: "Blocked",
+                },
+                {
+                  label: "Provider events",
+                  value: smsPilotPreflight.checks.providerEventsClear,
+                  falseLabel: "Blocked",
+                },
+                {
+                  label: "Heartbeat delivery",
+                  value: smsPilotPreflight.checks.heartbeatDeliveryConfigured,
+                  falseLabel: "Fix",
+                },
+                {
+                  label: "Inbound gate",
+                  value: smsPilotPreflight.configuration.inboundEnabled,
+                  falseLabel: "Pending",
+                },
+                {
+                  label: "Provider profile",
+                  value: smsPilotPreflight.checks.providerProfileReady,
+                  falseLabel: "Pending",
+                },
+                {
+                  label: "Sending gate",
+                  value: smsPilotPreflight.configuration.sendingEnabled,
+                  falseLabel: "Pending",
+                },
+              ].map((check) => {
+                const ready = check.value === true;
+                const notStaged = check.value === null;
+                return (
+                  <div
+                    key={check.label}
+                    className="flex items-center justify-between rounded border border-border bg-background px-2 py-1.5"
                   >
-                    {valid ? "Valid" : "Fix"}
-                  </span>
-                </div>
-              ))}
+                    <span>{check.label}</span>
+                    <span
+                      className={
+                        ready
+                          ? "font-medium text-green-700"
+                          : notStaged
+                            ? "font-medium text-muted-foreground"
+                            : check.falseLabel === "Pending"
+                              ? "font-medium text-amber-700"
+                              : "font-medium text-red-700"
+                      }
+                    >
+                      {ready
+                        ? "Ready"
+                        : notStaged
+                          ? "Not staged"
+                          : check.falseLabel}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
             <p className="mt-2 text-xs text-muted-foreground">
-              Provisioning {smsConfiguration.provisioningEnabled ? "on" : "off"}
-              {" · "}sending {smsConfiguration.sendingEnabled ? "on" : "off"}
-              {" · "}scopes {smsConfiguration.provisioningPracticeScopeCount}/
-              {smsConfiguration.sendingPracticeScopeCount}/
-              {smsConfiguration.sendingLocationScopeCount} (provisioning /
-              sending practice / sending location). No secret values are shown.
+              Provisioning{" "}
+              {smsPilotPreflight.configuration.provisioningEnabled
+                ? "on"
+                : "off"}
+              {" · "}inbound{" "}
+              {smsPilotPreflight.configuration.inboundEnabled ? "on" : "off"}
+              {" · "}sending{" "}
+              {smsPilotPreflight.configuration.sendingEnabled ? "on" : "off"}
+              {" · "}scopes{" "}
+              {smsPilotPreflight.configuration.provisioningPracticeScopeCount}/
+              {smsPilotPreflight.configuration.sendingPracticeScopeCount}/
+              {smsPilotPreflight.configuration.sendingLocationScopeCount}
+              {" · "}blocking provider events{" "}
+              {smsPilotPreflight.providerEventBlocking ?? "not checked"}. No
+              secret, phone, clinic, or provider identifier is returned.
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Configured heartbeat delivery is necessary but does not prove a
+              fresh external receipt. Verify both SMS heartbeats in the monitor
+              before changing a launch flag.
             </p>
           </div>
-        ) : smsConfigurationError ? (
+        ) : smsPilotPreflightError ? (
           <p className="mt-3 text-sm text-red-700">
-            Could not load hosted SMS configuration diagnostics.
+            Could not load the hosted SMS pilot activation preflight.
           </p>
         ) : null}
         {smsOperations ? (

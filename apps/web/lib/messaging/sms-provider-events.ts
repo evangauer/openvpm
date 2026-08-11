@@ -11,10 +11,10 @@ import {
   smsSendAttempts,
 } from "@openpims/db";
 import { db, type Database } from "@openpims/db/client";
-import { envFlagEnabled } from "@/lib/env-bool";
 import { rowsFromExecute } from "@/lib/db/execute-rows";
 import { withSystem } from "@/lib/tenant-db";
 import { mergeRegistrationStatus } from "./a2p-lifecycle";
+import { hostedMessagingInboundProjectionDecision } from "./launch-gate";
 import {
   findMessagingLocationCandidatesForWebhookInTransaction,
   lockMessagingLocationIdentityInTransaction,
@@ -681,13 +681,6 @@ export type LockedSmsProviderEventRemediation = {
   inboundRecipientLockHeld: boolean;
 };
 
-function hostedInboundProjectionEnabled(): boolean {
-  return (
-    !envFlagEnabled("HOSTED_BILLING_ENABLED") ||
-    envFlagEnabled("MESSAGING_INBOUND_ENABLED")
-  );
-}
-
 async function lockPracticeStatesInTransaction(
   tx: Database,
   practiceIds: string[],
@@ -1219,15 +1212,6 @@ async function projectLockedEventInTransaction(
     : resolution.attribution;
 
   if (event.kind === "inbound") {
-    if (!options.allowDisabledInbound && !hostedInboundProjectionEnabled()) {
-      const outcome = await markRetryInTransaction(tx, event, {
-        ...attribution,
-        code: "inbound_projection_disabled",
-        detail: "Inbound SMS projection is disabled for this deployment.",
-        exhaustible: false,
-      });
-      return { outcome };
-    }
     if (
       !attribution?.locationId ||
       !event.fromE164 ||
@@ -1240,6 +1224,26 @@ async function projectLockedEventInTransaction(
         detail: "Inbound SMS is waiting for exact sender attribution.",
       });
       return { outcome };
+    }
+    if (!options.allowDisabledInbound) {
+      const inboundLaunch = hostedMessagingInboundProjectionDecision({
+        practiceId: attribution.practiceId,
+        locationId: attribution.locationId,
+      });
+      if (!inboundLaunch.allowed) {
+        const globallyDisabled = inboundLaunch.reason === "platform_disabled";
+        const outcome = await markRetryInTransaction(tx, event, {
+          ...attribution,
+          code: globallyDisabled
+            ? "inbound_projection_disabled"
+            : "inbound_projection_outside_pilot_scope",
+          detail: globallyDisabled
+            ? "Inbound SMS projection is disabled for this deployment."
+            : "Inbound SMS projection is outside the configured pilot scope.",
+          exhaustible: false,
+        });
+        return { outcome };
+      }
     }
     const { projectInboundSmsReplyInTransaction } = await import("./inbound");
     await projectInboundSmsReplyInTransaction(tx, {

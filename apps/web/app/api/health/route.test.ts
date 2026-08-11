@@ -1,7 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  dbExecute: vi.fn(async () => [{ ok: 1, scopeValid: true }]),
+  dbExecute: vi.fn(async () => [
+    {
+      ok: 1,
+      practiceActive: true,
+      recoveryClear: true,
+      carrierIdentityReady: true,
+      providerProfileReady: true,
+      clinicSenderEnabled: false,
+    },
+  ]),
   withSystem: vi.fn(
     async (
       database: { execute: typeof mocks.dbExecute },
@@ -177,10 +186,25 @@ function stubHostedSmsInboundGate() {
   vi.stubEnv("MESSAGING_INBOUND_ENABLED", "true");
 }
 
+function stubHostedSmsProvisioningScope(
+  practiceId = "00000000-0000-4000-8000-0000000000aa",
+) {
+  vi.stubEnv("MESSAGING_PROVISIONING_PRACTICE_IDS", practiceId);
+}
+
 afterEach(() => {
   vi.clearAllMocks();
   vi.unstubAllEnvs();
-  mocks.dbExecute.mockResolvedValue([{ ok: 1, scopeValid: true }]);
+  mocks.dbExecute.mockResolvedValue([
+    {
+      ok: 1,
+      practiceActive: true,
+      recoveryClear: true,
+      carrierIdentityReady: true,
+      providerProfileReady: true,
+      clinicSenderEnabled: false,
+    },
+  ]);
   mocks.withSystem.mockImplementation(async (database, fn) => fn(database));
   mocks.billingEnforced.mockReturnValue(false);
   mocks.replicaStorageReadiness.mockReturnValue({
@@ -398,7 +422,7 @@ describe("health route", () => {
     expect(response.status).toBe(503);
     expect(json.checks.hostedSms).toEqual({
       ok: false,
-      detail: "3 required hosted SMS configuration issues detected",
+      detail: "1 hosted SMS pilot readiness issue detected",
     });
     expect(JSON.stringify(json)).not.toContain("TELNYX_API_KEY");
     expect(JSON.stringify(json)).not.toContain(
@@ -422,11 +446,71 @@ describe("health route", () => {
     });
   });
 
+  it("keeps health green while an exact carrier-ready scope is staged with both live gates off", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    stubValidTelnyxEnvs();
+    stubHostedSmsProvisioningScope();
+    vi.stubEnv(
+      "MESSAGING_SENDING_PRACTICE_IDS",
+      "00000000-0000-4000-8000-0000000000aa",
+    );
+    vi.stubEnv(
+      "MESSAGING_SENDING_LOCATION_IDS",
+      "00000000-0000-4000-8000-000000000002",
+    );
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.checks.hostedSms).toEqual({
+      ok: true,
+      detail: "Hosted SMS pilot scope prepared; inbound and sending remain off",
+    });
+  });
+
+  it("keeps health green after inbound enablement while provider activation is pending", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    stubValidTelnyxEnvs();
+    stubHostedSmsInboundGate();
+    stubHostedSmsProvisioningScope();
+    vi.stubEnv(
+      "MESSAGING_SENDING_PRACTICE_IDS",
+      "00000000-0000-4000-8000-0000000000aa",
+    );
+    vi.stubEnv(
+      "MESSAGING_SENDING_LOCATION_IDS",
+      "00000000-0000-4000-8000-000000000002",
+    );
+    mocks.dbExecute.mockResolvedValue([
+      {
+        ok: 1,
+        practiceActive: true,
+        recoveryClear: true,
+        carrierIdentityReady: true,
+        providerProfileReady: false,
+        clinicSenderEnabled: false,
+      },
+    ]);
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.checks.hostedSms).toEqual({
+      ok: true,
+      detail: "Hosted SMS inbound projection prepared; sending remains off",
+    });
+  });
+
   it("rejects an incomplete live hosted SMS pilot scope", async () => {
     mocks.billingEnforced.mockReturnValue(true);
     stubHostedRequiredEnvs();
     stubValidTelnyxEnvs();
     stubHostedSmsInboundGate();
+    stubHostedSmsProvisioningScope();
     vi.stubEnv("MESSAGING_SENDING_ENABLED", "true");
     vi.stubEnv(
       "MESSAGING_SENDING_PRACTICE_IDS",
@@ -439,7 +523,7 @@ describe("health route", () => {
     expect(response.status).toBe(503);
     expect(json.checks.hostedSms).toEqual({
       ok: false,
-      detail: "1 required hosted SMS configuration issue detected",
+      detail: "1 hosted SMS pilot readiness issue detected",
     });
   });
 
@@ -448,6 +532,7 @@ describe("health route", () => {
     stubHostedRequiredEnvs();
     stubValidTelnyxEnvs();
     stubHostedSmsInboundGate();
+    stubHostedSmsProvisioningScope();
     vi.stubEnv("MESSAGING_SENDING_ENABLED", "true");
     vi.stubEnv(
       "MESSAGING_SENDING_PRACTICE_IDS",
@@ -466,7 +551,7 @@ describe("health route", () => {
       ok: true,
       detail: "Hosted SMS pilot configuration active",
     });
-    expect(mocks.withSystem).toHaveBeenCalledTimes(2);
+    expect(mocks.withSystem).toHaveBeenCalledTimes(1);
   });
 
   it("rejects different provisioning and sending clinic scopes", async () => {
@@ -493,7 +578,7 @@ describe("health route", () => {
     expect(response.status).toBe(503);
     expect(json.checks.hostedSms).toEqual({
       ok: false,
-      detail: "1 required hosted SMS configuration issue detected",
+      detail: "1 hosted SMS pilot readiness issue detected",
     });
   });
 
@@ -502,6 +587,7 @@ describe("health route", () => {
     stubHostedRequiredEnvs();
     stubValidTelnyxEnvs();
     stubHostedSmsInboundGate();
+    stubHostedSmsProvisioningScope();
     vi.stubEnv("MESSAGING_SENDING_ENABLED", "true");
     vi.stubEnv(
       "MESSAGING_SENDING_PRACTICE_IDS",
@@ -511,9 +597,16 @@ describe("health route", () => {
       "MESSAGING_SENDING_LOCATION_IDS",
       "00000000-0000-4000-8000-000000000002",
     );
-    mocks.dbExecute
-      .mockResolvedValueOnce([{ ok: 1, scopeValid: true }])
-      .mockResolvedValueOnce([{ ok: 1, scopeValid: false }]);
+    mocks.dbExecute.mockResolvedValue([
+      {
+        ok: 1,
+        practiceActive: true,
+        recoveryClear: true,
+        carrierIdentityReady: false,
+        providerProfileReady: false,
+        clinicSenderEnabled: false,
+      },
+    ]);
 
     const response = await GET();
     const json = await response.json();
@@ -521,8 +614,7 @@ describe("health route", () => {
     expect(response.status).toBe(503);
     expect(json.checks.hostedSms).toEqual({
       ok: false,
-      detail:
-        "Hosted SMS pilot scope does not match an active, carrier-ready clinic location",
+      detail: "2 hosted SMS pilot readiness issues detected",
     });
   });
 
@@ -531,6 +623,7 @@ describe("health route", () => {
     stubHostedRequiredEnvs();
     stubValidTelnyxEnvs();
     stubHostedSmsInboundGate();
+    stubHostedSmsProvisioningScope();
     vi.stubEnv("MESSAGING_PROVIDER", "twilio");
     vi.stubEnv(
       "MESSAGING_SENDING_PRACTICE_IDS",
@@ -547,7 +640,7 @@ describe("health route", () => {
     expect(response.status).toBe(503);
     expect(json.checks.hostedSms).toEqual({
       ok: false,
-      detail: "1 required hosted SMS configuration issue detected",
+      detail: "1 hosted SMS pilot readiness issue detected",
     });
   });
 
@@ -556,6 +649,7 @@ describe("health route", () => {
     stubHostedRequiredEnvs();
     stubValidTelnyxEnvs();
     stubHostedSmsInboundGate();
+    stubHostedSmsProvisioningScope();
     vi.stubEnv("MESSAGING_SENDING_PRACTICE_IDS", "not-a-practice-id");
     vi.stubEnv(
       "MESSAGING_SENDING_LOCATION_IDS",
@@ -568,7 +662,7 @@ describe("health route", () => {
     expect(response.status).toBe(503);
     expect(json.checks.hostedSms).toEqual({
       ok: false,
-      detail: "1 required hosted SMS configuration issue detected",
+      detail: "1 hosted SMS pilot readiness issue detected",
     });
   });
 
@@ -577,6 +671,7 @@ describe("health route", () => {
     stubHostedRequiredEnvs();
     stubValidTelnyxEnvs();
     stubHostedSmsInboundGate();
+    stubHostedSmsProvisioningScope();
     vi.stubEnv(
       "MESSAGING_SENDING_PRACTICE_IDS",
       "00000000-0000-0000-0000-0000000000aa",
@@ -592,7 +687,7 @@ describe("health route", () => {
     expect(response.status).toBe(503);
     expect(json.checks.hostedSms).toEqual({
       ok: false,
-      detail: "1 required hosted SMS configuration issue detected",
+      detail: "1 hosted SMS pilot readiness issue detected",
     });
   });
 
@@ -615,7 +710,7 @@ describe("health route", () => {
     expect(response.status).toBe(503);
     expect(json.checks.hostedSms).toEqual({
       ok: false,
-      detail: "3 required hosted SMS configuration issues detected",
+      detail: "1 hosted SMS pilot readiness issue detected",
     });
     expect(JSON.stringify(json)).not.toContain("test-api-key");
     expect(JSON.stringify(json)).not.toContain("test-public-key");

@@ -17,7 +17,6 @@ import {
 } from "@/lib/rls-assertion";
 import { cronHeartbeatConfigured } from "@/lib/cron-heartbeat";
 import { envFlagEnabled } from "@/lib/env-bool";
-import { loadSmsProviderEventGateSummaryInTransaction } from "@/lib/messaging/sms-provider-event-operations";
 import {
   checkObjectStorageHealth,
   checkReplicaStorageHealth,
@@ -28,8 +27,6 @@ import {
 import { getFileReplicaCoverage } from "@/lib/file-replication";
 import { normalizeAppBaseUrl } from "@/lib/app-url";
 import { platformAdminEmails } from "@/lib/platform-admin";
-import { rowsFromExecute } from "@/lib/db/execute-rows";
-import { withSystem } from "@/lib/tenant-db";
 import {
   CANONICAL_EMAIL_PREFERENCE_BASE_URL,
   isValidEmailPreferencePreviousSecrets,
@@ -38,6 +35,10 @@ import {
 } from "@/lib/email-preferences";
 import { platformEmailIdentityConfigurationReady } from "@/lib/platform-email-preferences";
 import { hostedSmsCredentialIssueCount } from "@/lib/messaging/hosted-sms-readiness";
+import {
+  hostedSmsRolloutIntended,
+  loadHostedSmsPilotActivationPreflight,
+} from "@/lib/messaging/hosted-sms-pilot-preflight";
 
 export const dynamic = "force-dynamic";
 
@@ -89,10 +90,6 @@ const HOSTED_EMAIL_ENV_NAMES = [
   "EMAIL_SUPPORT_ADDRESS",
   "EMAIL_COMPANY_ADDRESS",
 ];
-const HOSTED_SMS_PROVISIONING_PRACTICE_IDS_ENV =
-  "MESSAGING_PROVISIONING_PRACTICE_IDS";
-const HOSTED_SMS_SENDING_PRACTICE_IDS_ENV = "MESSAGING_SENDING_PRACTICE_IDS";
-const HOSTED_SMS_SENDING_LOCATION_IDS_ENV = "MESSAGING_SENDING_LOCATION_IDS";
 const HOSTED_GOOGLE_AI_ENV_NAMES = [
   "GOOGLE_API_KEY",
   "GOOGLE_GENERATIVE_AI_API_KEY",
@@ -258,23 +255,6 @@ function hostedSubscriptionTaxCheck(): { ok: boolean; detail: string } {
   };
 }
 
-function commaSeparatedValues(name: string): string[] {
-  return (process.env[name] ?? "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
-}
-
-function isUuid(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-    value,
-  );
-}
-
-function isExactPilotScope(values: string[]): boolean {
-  return values.length === 1 && isUuid(values[0]!);
-}
-
 function hostedTelnyxCredentialCheck(): { ok: boolean; detail: string } {
   const issueCount = hostedSmsCredentialIssueCount();
   return issueCount > 0
@@ -288,164 +268,6 @@ function hostedTelnyxCredentialCheck(): { ok: boolean; detail: string } {
         ok: true,
         detail: "Hosted Telnyx credentials are structurally valid",
       };
-}
-
-function hostedSmsRolloutIntended(): boolean {
-  return (
-    envFlagEnabled("MESSAGING_PROVISIONING_ENABLED") ||
-    envFlagEnabled("MESSAGING_SENDING_ENABLED") ||
-    envFlagEnabled("MESSAGING_INBOUND_ENABLED") ||
-    commaSeparatedValues(HOSTED_SMS_PROVISIONING_PRACTICE_IDS_ENV).length > 0 ||
-    commaSeparatedValues(HOSTED_SMS_SENDING_PRACTICE_IDS_ENV).length > 0 ||
-    commaSeparatedValues(HOSTED_SMS_SENDING_LOCATION_IDS_ENV).length > 0
-  );
-}
-
-async function hostedSmsRolloutCheck(): Promise<{
-  ok: boolean;
-  detail: string;
-}> {
-  const credentialIssues = hostedSmsCredentialIssueCount();
-  const provisioningEnabled = envFlagEnabled("MESSAGING_PROVISIONING_ENABLED");
-  const sendingEnabled = envFlagEnabled("MESSAGING_SENDING_ENABLED");
-  const inboundEnabled = envFlagEnabled("MESSAGING_INBOUND_ENABLED");
-  const provisioningPracticeIds = commaSeparatedValues(
-    HOSTED_SMS_PROVISIONING_PRACTICE_IDS_ENV,
-  );
-  const sendingPracticeIds = commaSeparatedValues(
-    HOSTED_SMS_SENDING_PRACTICE_IDS_ENV,
-  );
-  const sendingLocationIds = commaSeparatedValues(
-    HOSTED_SMS_SENDING_LOCATION_IDS_ENV,
-  );
-  const provisioningScopePrepared = provisioningPracticeIds.length > 0;
-  const sendingScopePrepared =
-    sendingPracticeIds.length > 0 || sendingLocationIds.length > 0;
-
-  let configurationIssues = 0;
-  if (envValue("MESSAGING_PROVIDER")?.toLowerCase() !== "telnyx") {
-    configurationIssues += 1;
-  }
-  if (
-    (provisioningEnabled || provisioningScopePrepared) &&
-    !isExactPilotScope(provisioningPracticeIds)
-  ) {
-    configurationIssues += 1;
-  }
-  if (
-    (sendingEnabled || sendingScopePrepared) &&
-    (!isExactPilotScope(sendingPracticeIds) ||
-      !isExactPilotScope(sendingLocationIds))
-  ) {
-    configurationIssues += 1;
-  }
-  if (
-    (sendingEnabled || sendingScopePrepared || inboundEnabled) &&
-    !inboundEnabled
-  ) {
-    configurationIssues += 1;
-  }
-  if (inboundEnabled && !sendingScopePrepared) {
-    configurationIssues += 1;
-  }
-  if (
-    provisioningScopePrepared &&
-    sendingScopePrepared &&
-    provisioningPracticeIds[0] !== sendingPracticeIds[0]
-  ) {
-    configurationIssues += 1;
-  }
-
-  const issueCount = credentialIssues + configurationIssues;
-  if (issueCount > 0) {
-    return {
-      ok: false,
-      detail: `${issueCount} required hosted SMS configuration ${
-        issueCount === 1 ? "issue" : "issues"
-      } detected`,
-    };
-  }
-
-  const pilotPracticeId = sendingPracticeIds[0] ?? provisioningPracticeIds[0]!;
-  const sendingLocationId = sendingLocationIds[0] ?? null;
-  try {
-    // Health has no tenant identity. Verify the explicitly configured rollout
-    // scope in system context so hosted RLS does not hide a valid pilot clinic.
-    const result = await withSystem(db, (tx) =>
-      tx.execute(sql`
-        select (
-          exists (
-            select 1
-            from practices as practice
-            where practice.id = ${pilotPracticeId}::uuid
-              and practice.deleted_at is null
-          )
-          and ${
-            sendingLocationId
-              ? sql`exists (
-                  select 1
-                  from locations as location
-                  join location_messaging as sender
-                    on sender.practice_id = location.practice_id
-                    and sender.location_id = location.id
-                    and sender.deleted_at is null
-                  join messaging_registrations as registration
-                    on registration.practice_id = location.practice_id
-                    and registration.deleted_at is null
-                  where location.id = ${sendingLocationId}::uuid
-                    and location.practice_id = ${pilotPracticeId}::uuid
-                    and location.deleted_at is null
-                    and sender.provider = 'telnyx'
-                    and sender.registration_status = 'active'
-                    and nullif(btrim(sender.sender_e164), '') is not null
-                    and nullif(btrim(sender.messaging_profile_id), '') is not null
-                    and sender.provider_profile_ready = true
-                    and sender.provider_profile_synced_at is not null
-                    and registration.provider = 'telnyx'
-                    and registration.status = 'active'
-                    and sender.a2p_brand_id = registration.provider_brand_id
-                    and sender.a2p_campaign_id = registration.provider_campaign_id
-                )`
-              : sql`true`
-          }
-        ) as "scopeValid"
-      `),
-    );
-    const scopeValid =
-      rowsFromExecute<{ scopeValid: boolean }>(result)[0]?.scopeValid === true;
-    if (!scopeValid) {
-      return {
-        ok: false,
-        detail:
-          "Hosted SMS pilot scope does not match an active, carrier-ready clinic location",
-      };
-    }
-    const providerEventGate = await withSystem(db, (tx) =>
-      loadSmsProviderEventGateSummaryInTransaction(tx, {
-        practiceId: pilotPracticeId,
-        locationId: sendingLocationId ?? undefined,
-      }),
-    );
-    if (providerEventGate.total > 0) {
-      return {
-        ok: false,
-        detail:
-          "Hosted SMS pilot has unresolved provider-event projection evidence",
-      };
-    }
-  } catch {
-    return {
-      ok: false,
-      detail: "Hosted SMS pilot scope verification failed",
-    };
-  }
-
-  return {
-    ok: true,
-    detail: sendingEnabled
-      ? "Hosted SMS pilot configuration active"
-      : "Hosted SMS pilot configuration prepared and sending gated off",
-  };
 }
 
 export async function GET() {
@@ -578,13 +400,20 @@ export async function GET() {
     // configuration release-blocking. This prevents a production health 200
     // while provisioning or sending is nominally enabled without credentials,
     // webhook verification, encrypted registration storage, or exact pilot
-    // scope. Missing/partial launch state still fails closed at every send.
-    checks.hostedSms = hostedSmsRolloutIntended()
-      ? await hostedSmsRolloutCheck()
-      : {
-          ...hostedTelnyxCredentialCheck(),
-          advisory: true,
-        };
+    // scope. Missing/partial launch state still fails closed at both inbound
+    // projection and outbound sending boundaries.
+    if (hostedSmsRolloutIntended()) {
+      const smsPreflight = await loadHostedSmsPilotActivationPreflight(db);
+      checks.hostedSms = {
+        ok: smsPreflight.ok,
+        detail: smsPreflight.detail,
+      };
+    } else {
+      checks.hostedSms = {
+        ...hostedTelnyxCredentialCheck(),
+        advisory: true,
+      };
+    }
     checks.hostedOpsAlerting = {
       ...hostedEnvCheck(
         HOSTED_OPS_ALERTING_ENV_NAMES,

@@ -201,8 +201,9 @@ describe("SMS provider event durability contracts", () => {
       "allowDisabledInbound: Boolean(options.lockedPracticeId && options.force)",
     );
     expect(SERVICE_SOURCE).toContain(
-      "!options.allowDisabledInbound && !hostedInboundProjectionEnabled()",
+      "hostedMessagingInboundProjectionDecision({",
     );
+    expect(SERVICE_SOURCE).toContain("inbound_projection_outside_pilot_scope");
   });
 
   it("revalidates exact A2P identities in the registration compare-and-set", () => {
@@ -233,6 +234,7 @@ describe("SMS provider event durability contracts", () => {
       'if (event.kind === "delivery")',
     );
     expect(inbound).toContain("inbound_projection_disabled");
+    expect(inbound).toContain("inbound_projection_outside_pilot_scope");
     expect(inbound).toContain("exhaustible: false");
   });
 
