@@ -575,6 +575,27 @@ const sections: Section[] = [
   invoiceId: string,
   invoiceItemId: string,
   createdInvoice: boolean,
+        replayed: boolean
+}`,
+      },
+      {
+        name: "billing.appendVisitDispenseCharge",
+        method: "POST",
+        description:
+          "After explicit staff confirmation, append one exact visit-linked medication dispense to the unpaid draft invoice without rewriting reconciled lines or moving inventory again. Operation IDs make retries idempotent.",
+        input: `{
+  appointmentId: string,
+  dispenseChargeId: string,
+  operationId: string,
+  expectedDescription: string,
+  expectedQuantity: number,
+  expectedUnitPrice: string
+}`,
+        response: `{
+  invoiceId: string,
+  invoiceItemId: string,
+  invoiceUpdatedAt: Date,
+  createdInvoice: boolean,
   replayed: boolean
 }`,
       },

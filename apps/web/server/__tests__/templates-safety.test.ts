@@ -20,6 +20,10 @@ const SERVICE_ID = "00000000-0000-0000-0000-000000000005";
 const INVOICE_ID = "00000000-0000-0000-0000-000000000006";
 const SECOND_SERVICE_ID = "00000000-0000-0000-0000-000000000007";
 const SECOND_PRODUCT_ID = "00000000-0000-0000-0000-000000000008";
+const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000009";
+const CLIENT_ID = "00000000-0000-0000-0000-00000000000a";
+const PATIENT_ID = "00000000-0000-0000-0000-00000000000b";
+const DISPENSE_CHARGE_ID = "00000000-0000-0000-0000-00000000000c";
 
 function callerWithDb(db: Record<string, unknown>, role = "admin") {
   const session = {
@@ -777,6 +781,58 @@ describe("treatment template safety", () => {
       updatedAt: expect.anything(),
     });
     expect(lockFor).toHaveBeenCalledWith("update");
+  });
+
+  it("blocks a product template when the patient has unresolved dispense evidence", async () => {
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [
+        [{ id: PRACTICE_ID }],
+        [{ id: TEMPLATE_ID }],
+        [
+          {
+            id: INVOICE_ID,
+            status: "draft",
+            paidAmount: "0.00",
+            isEstimate: false,
+            clientId: CLIENT_ID,
+            patientId: PATIENT_ID,
+            appointmentId: APPOINTMENT_ID,
+          },
+        ],
+        [
+          {
+            description: "Medication",
+            defaultQuantity: 2,
+            defaultUnitPrice: "15.00",
+            itemType: "product",
+            itemId: PRODUCT_ID,
+          },
+        ],
+        [
+          {
+            id: APPOINTMENT_ID,
+            clientId: CLIENT_ID,
+            patientId: PATIENT_ID,
+            status: "in_exam",
+          },
+        ],
+        [],
+        [{ id: DISPENSE_CHARGE_ID }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).applyToInvoice({
+        templateId: TEMPLATE_ID,
+        invoiceId: INVOICE_ID,
+      }),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("medication billing queue"),
+    });
+
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
   });
 
   it("does not deduct product stock when applying a template to an estimate", async () => {

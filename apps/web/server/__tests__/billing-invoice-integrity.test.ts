@@ -668,6 +668,42 @@ describe("billing invoice integrity", () => {
     ]);
   });
 
+  it("rejects replacing an invoiced dispense with an unsourced copy", async () => {
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [
+        [{ taxRatePercent: "0.00" }],
+        [
+          {
+            id: INVOICE_ID,
+            clientId: CLIENT_ID,
+            patientId: PATIENT_ID,
+            paidAmount: "0.00",
+            status: "draft",
+            isEstimate: false,
+            updatedAt: UPDATED_AT,
+            appointmentId: null,
+          },
+        ],
+        [],
+        [{ id: DISPENSE_CHARGE_ID }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).updateInvoiceItems({
+        id: INVOICE_ID,
+        expectedUpdatedAt: UPDATED_AT,
+        items: [productLine],
+      }),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("medication billing queue"),
+    });
+
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("does not remove invoice lines already confirmed against performed work", async () => {
     const { db, updateSet, insertValues, execute } = createDb({
       selectResults: [
@@ -1069,8 +1105,9 @@ describe("billing invoice integrity", () => {
     };
     const { db, insertValues, updateSet } = createDb({
       selectResults: [
-        [{ appointmentId: APPOINTMENT_ID }],
+        [{ appointmentId: APPOINTMENT_ID, activeInvoiceId: null }],
         [{ id: APPOINTMENT_ID }],
+        [],
         [source],
         [{ taxRatePercent: "0.00" }],
         [{ id: PRODUCT_ID, taxable: true }],
@@ -1130,7 +1167,12 @@ describe("billing invoice integrity", () => {
     };
     const { db, insertValues, updateSet } = createDb({
       selectResults: [
-        [{ appointmentId: APPOINTMENT_ID }],
+        [
+          {
+            appointmentId: APPOINTMENT_ID,
+            activeInvoiceId: INVOICE_ID,
+          },
+        ],
         [{ id: APPOINTMENT_ID }],
         [source],
         [{ taxRatePercent: "10.00" }],

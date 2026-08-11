@@ -436,6 +436,22 @@ const chargeVisitWorkInput = z.object({
   ]),
 });
 
+const appendVisitDispenseChargeInput = z.object({
+  appointmentId: z.string().uuid(),
+  dispenseChargeId: z.string().uuid(),
+  operationId: z.string().uuid(),
+  expectedDescription: clinicalTextInput(
+    "Expected medication charge description",
+    BILLING_INVOICE_LINE_DESCRIPTION_MAX_LENGTH,
+  ),
+  expectedQuantity: z
+    .number()
+    .int()
+    .min(BILLING_INVOICE_LINE_QUANTITY_MIN)
+    .max(BILLING_INVOICE_LINE_QUANTITY_MAX),
+  expectedUnitPrice: nonNegativeMoneySchema,
+});
+
 type InvoiceLineInput = {
   description: string;
   quantity: number;
@@ -1373,7 +1389,15 @@ async function assertDispenseChargeSources(
           eq(dispenseChargeQueue.practiceId, ctx.practiceId),
           eq(dispenseChargeQueue.patientId, options.patientId),
           inArray(dispenseChargeQueue.productId, unsourcedProductIds),
-          inArray(dispenseChargeQueue.status, ["pending", "waived"]),
+          or(
+            inArray(dispenseChargeQueue.status, ["pending", "waived"]),
+            options.currentInvoiceId
+              ? and(
+                  eq(dispenseChargeQueue.status, "invoiced"),
+                  eq(dispenseChargeQueue.invoiceId, options.currentInvoiceId),
+                )
+              : undefined,
+          ),
         ),
       )
       .limit(1);
@@ -1972,8 +1996,21 @@ export const billingRouter = createRouter({
       const result = await ctx.db.transaction(async (tx) => {
         const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
         const [sourceIdentity] = await tx
-          .select({ appointmentId: dispenseChargeQueue.appointmentId })
+          .select({
+            appointmentId: dispenseChargeQueue.appointmentId,
+            activeInvoiceId: invoices.id,
+          })
           .from(dispenseChargeQueue)
+          .leftJoin(
+            invoices,
+            and(
+              eq(invoices.practiceId, ctx.practiceId),
+              eq(invoices.appointmentId, dispenseChargeQueue.appointmentId),
+              eq(invoices.isEstimate, false),
+              ne(invoices.status, "void"),
+              isNull(invoices.deletedAt),
+            ),
+          )
           .where(
             and(
               eq(dispenseChargeQueue.id, input.id),
@@ -1988,9 +2025,14 @@ export const billingRouter = createRouter({
           });
         }
         if (sourceIdentity.appointmentId) {
-          // Match createInvoice's lock order: appointment first, then the
-          // dispense row. This prevents duplicate visit invoices and avoids a
-          // lock-order inversion when two front-desk tabs charge the same fill.
+          // Match direct invoice edits: an existing invoice serializes before
+          // the appointment row, then the exact dispense row. The appointment
+          // boundary still protects the no-invoice creation race.
+          if (sourceIdentity.activeInvoiceId) {
+            await tx.execute(
+              sql`select pg_advisory_xact_lock(hashtextextended(${sourceIdentity.activeInvoiceId}, 0))`,
+            );
+          }
           await tx.execute(
             sql`select pg_advisory_xact_lock(hashtextextended(${sourceIdentity.appointmentId}, 0))`,
           );
@@ -1998,6 +2040,28 @@ export const billingRouter = createRouter({
             txCtx,
             sourceIdentity.appointmentId,
           );
+          if (!sourceIdentity.activeInvoiceId) {
+            const [appearedInvoice] = await tx
+              .select({ id: invoices.id })
+              .from(invoices)
+              .where(
+                and(
+                  eq(invoices.practiceId, ctx.practiceId),
+                  eq(invoices.appointmentId, sourceIdentity.appointmentId),
+                  eq(invoices.isEstimate, false),
+                  ne(invoices.status, "void"),
+                  isNull(invoices.deletedAt),
+                ),
+              )
+              .limit(1);
+            if (appearedInvoice) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message:
+                  "A visit invoice appeared while this medication charge was opening. Refresh and try again.",
+              });
+            }
+          }
         }
         const [source] = await tx
           .select()
@@ -2206,6 +2270,462 @@ export const billingRouter = createRouter({
         return { invoiceId, replayed: false as const };
       });
       return result;
+    }),
+
+  appendVisitDispenseCharge: protectedProcedure
+    .use(requireRole("admin", "front_desk"))
+    .input(appendVisitDispenseChargeInput)
+    .mutation(async ({ ctx, input }) => {
+      return ctx.db.transaction(async (tx) => {
+        const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${`visit-dispense-charge:${ctx.practiceId}:${input.operationId}`}, 0))`,
+        );
+
+        const [operationLine] = await tx
+          .select({
+            invoiceItemId: invoiceItems.id,
+            sourceDispenseChargeId: invoiceItems.sourceDispenseChargeId,
+            itemDeletedAt: invoiceItems.deletedAt,
+            invoiceId: invoices.id,
+            invoiceAppointmentId: invoices.appointmentId,
+            invoiceStatus: invoices.status,
+            invoiceDeletedAt: invoices.deletedAt,
+            invoiceUpdatedAt: invoices.updatedAt,
+          })
+          .from(invoiceItems)
+          .innerJoin(
+            invoices,
+            and(
+              eq(invoiceItems.invoiceId, invoices.id),
+              eq(invoices.practiceId, ctx.practiceId),
+            ),
+          )
+          .where(eq(invoiceItems.chargeOperationId, input.operationId))
+          .limit(1);
+        if (operationLine) {
+          if (
+            operationLine.sourceDispenseChargeId === input.dispenseChargeId &&
+            operationLine.invoiceAppointmentId === input.appointmentId &&
+            operationLine.itemDeletedAt === null &&
+            operationLine.invoiceDeletedAt === null &&
+            operationLine.invoiceStatus !== "void"
+          ) {
+            return {
+              invoiceId: operationLine.invoiceId,
+              invoiceItemId: operationLine.invoiceItemId,
+              invoiceUpdatedAt: operationLine.invoiceUpdatedAt,
+              createdInvoice: false,
+              replayed: true,
+            };
+          }
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "This medication charge operation was already used. Refresh before trying again.",
+          });
+        }
+
+        const [route] = await tx
+          .select({
+            clientId: appointments.clientId,
+            patientId: appointments.patientId,
+            activeInvoiceId: invoices.id,
+          })
+          .from(appointments)
+          .leftJoin(
+            invoices,
+            and(
+              eq(invoices.practiceId, ctx.practiceId),
+              eq(invoices.appointmentId, appointments.id),
+              eq(invoices.isEstimate, false),
+              ne(invoices.status, "void"),
+              isNull(invoices.deletedAt),
+            ),
+          )
+          .where(
+            and(
+              eq(appointments.id, input.appointmentId),
+              eq(appointments.practiceId, ctx.practiceId),
+              isNull(appointments.deletedAt),
+            ),
+          )
+          .limit(1);
+        if (!route?.clientId || !route.patientId) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "This visit needs an active client and patient before billing.",
+          });
+        }
+        const routeClientId = route.clientId;
+        const routePatientId = route.patientId;
+        if (route.activeInvoiceId) {
+          await tx.execute(
+            sql`select pg_advisory_xact_lock(hashtextextended(${route.activeInvoiceId}, 0))`,
+          );
+        }
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${input.appointmentId}, 0))`,
+        );
+        await lockAppointmentForVisitBilling(
+          txCtx,
+          input.appointmentId,
+          routeClientId,
+          routePatientId,
+          false,
+        );
+
+        const [source] = await tx
+          .select({
+            id: dispenseChargeQueue.id,
+            prescriptionId: dispenseChargeQueue.prescriptionId,
+            productId: dispenseChargeQueue.productId,
+            quantity: dispenseChargeQueue.quantity,
+            description: dispenseChargeQueue.descriptionSnapshot,
+            unitPrice: dispenseChargeQueue.unitPriceSnapshot,
+            status: dispenseChargeQueue.status,
+            invoiceId: dispenseChargeQueue.invoiceId,
+            invoiceItemId: dispenseChargeQueue.invoiceItemId,
+            legacyReview: dispenseChargeQueue.legacyReview,
+          })
+          .from(dispenseChargeQueue)
+          .where(
+            and(
+              eq(dispenseChargeQueue.id, input.dispenseChargeId),
+              eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+              eq(dispenseChargeQueue.appointmentId, input.appointmentId),
+              eq(dispenseChargeQueue.clientId, routeClientId),
+              eq(dispenseChargeQueue.patientId, routePatientId),
+            ),
+          )
+          .for("update");
+        if (!source) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Visit medication dispense not found.",
+          });
+        }
+        if (source.status === "invoiced") {
+          const [existingLine] = await tx
+            .select({
+              invoiceId: invoices.id,
+              invoiceItemId: invoiceItems.id,
+              invoiceUpdatedAt: invoices.updatedAt,
+            })
+            .from(invoiceItems)
+            .innerJoin(
+              invoices,
+              and(
+                eq(invoiceItems.invoiceId, invoices.id),
+                eq(invoices.practiceId, ctx.practiceId),
+                eq(invoices.appointmentId, input.appointmentId),
+                ne(invoices.status, "void"),
+                isNull(invoices.deletedAt),
+              ),
+            )
+            .where(
+              and(
+                eq(invoiceItems.id, source.invoiceItemId!),
+                eq(invoiceItems.sourceDispenseChargeId, source.id),
+                isNull(invoiceItems.deletedAt),
+              ),
+            )
+            .limit(1);
+          if (existingLine && existingLine.invoiceId === source.invoiceId) {
+            return {
+              ...existingLine,
+              createdInvoice: false,
+              replayed: true,
+            };
+          }
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "This medication charge was corrected after invoicing. Refresh before continuing.",
+          });
+        }
+        if (source.status === "waived") {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "This medication dispense was waived. Reopen it before charging.",
+          });
+        }
+        if (
+          source.legacyReview ||
+          requiresPrescriptionInventoryUnitReview({
+            description: source.description,
+          })
+        ) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Review this legacy medication quantity in the medication billing queue before charging it.",
+          });
+        }
+        if (
+          source.description !== input.expectedDescription ||
+          source.quantity !== input.expectedQuantity ||
+          moneyToCents(source.unitPrice) !==
+            moneyToCents(input.expectedUnitPrice)
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "The medication charge changed after confirmation. Refresh and review the current price.",
+          });
+        }
+
+        const [sourceProduct] = await tx
+          .select({ id: products.id, taxable: products.taxable })
+          .from(products)
+          .where(
+            and(
+              eq(products.id, source.productId),
+              eq(products.practiceId, ctx.practiceId),
+              isNull(products.deletedAt),
+            ),
+          )
+          .for("share");
+        if (!sourceProduct) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "The dispensed product is no longer available for billing.",
+          });
+        }
+
+        let invoice:
+          | {
+              id: string;
+              status: "draft" | "sent" | "paid" | "overdue" | "void";
+              paidAmount: string;
+              updatedAt: Date;
+            }
+          | undefined;
+        let createdInvoice = false;
+        if (route.activeInvoiceId) {
+          [invoice] = await tx
+            .select({
+              id: invoices.id,
+              status: invoices.status,
+              paidAmount: invoices.paidAmount,
+              updatedAt: invoices.updatedAt,
+            })
+            .from(invoices)
+            .where(
+              and(
+                eq(invoices.id, route.activeInvoiceId),
+                eq(invoices.practiceId, ctx.practiceId),
+                eq(invoices.appointmentId, input.appointmentId),
+                eq(invoices.clientId, routeClientId),
+                eq(invoices.patientId, routePatientId),
+                eq(invoices.isEstimate, false),
+                ne(invoices.status, "void"),
+                isNull(invoices.deletedAt),
+              ),
+            )
+            .for("update");
+          if (!invoice) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "Visit invoice changed. Refresh before adding the medication charge.",
+            });
+          }
+        } else {
+          const [appearedInvoice] = await tx
+            .select({ id: invoices.id })
+            .from(invoices)
+            .where(
+              and(
+                eq(invoices.practiceId, ctx.practiceId),
+                eq(invoices.appointmentId, input.appointmentId),
+                eq(invoices.isEstimate, false),
+                ne(invoices.status, "void"),
+                isNull(invoices.deletedAt),
+              ),
+            )
+            .limit(1);
+          if (appearedInvoice) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "A visit invoice was created in another session. Refresh, then add this medication charge.",
+            });
+          }
+        }
+        if (
+          invoice &&
+          (invoice.status !== "draft" || moneyToCents(invoice.paidAmount) > 0)
+        ) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Only an unpaid draft visit invoice can receive medication charges.",
+          });
+        }
+
+        const existingLines = invoice
+          ? await tx
+              .select({
+                total: invoiceItems.total,
+                taxable: invoiceItems.taxable,
+              })
+              .from(invoiceItems)
+              .where(
+                and(
+                  eq(invoiceItems.invoiceId, invoice.id),
+                  isNull(invoiceItems.deletedAt),
+                ),
+              )
+              .orderBy(invoiceItems.id)
+              .for("share")
+          : [];
+        if (existingLines.length >= BILLING_INVOICE_MAX_ITEMS) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: `Invoices can include at most ${BILLING_INVOICE_MAX_ITEMS} items.`,
+          });
+        }
+        const [practice] = await tx
+          .select({ taxRatePercent: practices.taxRatePercent })
+          .from(practices)
+          .where(activePracticeWhere(ctx.practiceId))
+          .limit(1);
+        if (!practice) throw practiceNotFound();
+        const lineTotalCents = moneyToCents(source.unitPrice) * source.quantity;
+        const totals = calculateInvoiceTaxTotals(
+          [
+            ...existingLines.map((line) => ({
+              lineTotalCents: moneyToCents(line.total),
+              taxable: line.taxable,
+            })),
+            {
+              lineTotalCents,
+              taxable: sourceProduct.taxable ?? true,
+            },
+          ],
+          practice.taxRatePercent ?? "8.00",
+        );
+
+        if (!invoice) {
+          [invoice] = await tx
+            .insert(invoices)
+            .values({
+              practiceId: ctx.practiceId,
+              clientId: routeClientId,
+              patientId: routePatientId,
+              appointmentId: input.appointmentId,
+              status: "draft",
+              subtotal: centsToMoney(totals.subtotalCents),
+              tax: centsToMoney(totals.taxCents),
+              total: centsToMoney(totals.totalCents),
+              paidAmount: "0.00",
+              dueDate: null,
+              isEstimate: false,
+              updatedAt: new Date(),
+            })
+            .returning({
+              id: invoices.id,
+              status: invoices.status,
+              paidAmount: invoices.paidAmount,
+              updatedAt: invoices.updatedAt,
+            });
+          createdInvoice = true;
+        } else {
+          const [updatedInvoice] = await tx
+            .update(invoices)
+            .set({
+              subtotal: centsToMoney(totals.subtotalCents),
+              tax: centsToMoney(totals.taxCents),
+              total: centsToMoney(totals.totalCents),
+              updatedAt: nextInvoiceUpdatedAt(invoice.updatedAt),
+            })
+            .where(
+              and(
+                eq(invoices.id, invoice.id),
+                eq(invoices.practiceId, ctx.practiceId),
+                eq(invoices.status, "draft"),
+                eq(invoices.isEstimate, false),
+                eq(invoices.paidAmount, invoice.paidAmount),
+                noActivePaymentsForInvoice(),
+                noActiveAdjustmentsForInvoice(),
+                isNull(invoices.deletedAt),
+              ),
+            )
+            .returning({ id: invoices.id, updatedAt: invoices.updatedAt });
+          if (!updatedInvoice) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "Visit invoice changed while adding the medication charge. Refresh and try again.",
+            });
+          }
+          invoice = { ...invoice, updatedAt: updatedInvoice.updatedAt };
+        }
+        if (!invoice) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Visit invoice could not be created.",
+          });
+        }
+
+        const invoiceItemId = randomUUID();
+        await tx.insert(invoiceItems).values({
+          id: invoiceItemId,
+          invoiceId: invoice.id,
+          description: source.description,
+          quantity: source.quantity,
+          unitPrice: source.unitPrice,
+          total: centsToMoney(lineTotalCents),
+          taxable: sourceProduct.taxable ?? true,
+          itemType: "product",
+          itemId: source.productId,
+          sourcePrescriptionId: null,
+          sourceDispenseChargeId: source.id,
+          chargeOperationId: input.operationId,
+        });
+        await setDispenseChargeTransitionContext(tx, {
+          source: createdInvoice ? "invoice_create" : "invoice_edit",
+          actor: ctx.user,
+          operationId: input.operationId,
+        });
+        await markDispenseChargesInvoiced(
+          txCtx,
+          [
+            {
+              chargeId: source.id,
+              invoiceId: invoice.id,
+              invoiceItemId,
+            },
+          ],
+          ctx.user,
+        );
+        await tx.insert(auditLog).values({
+          practiceId: ctx.practiceId,
+          userId: ctx.user.id,
+          action: "visit_dispense_charge_appended",
+          entityType: "dispense_charge",
+          entityId: source.id,
+          changes: {
+            operationId: input.operationId,
+            appointmentId: input.appointmentId,
+            invoiceId: invoice.id,
+            invoiceItemId,
+            createdInvoice,
+          },
+        });
+
+        return {
+          invoiceId: invoice.id,
+          invoiceItemId,
+          invoiceUpdatedAt: invoice.updatedAt,
+          createdInvoice,
+          replayed: false,
+        };
+      });
     }),
 
   waiveDispenseCharge: protectedProcedure

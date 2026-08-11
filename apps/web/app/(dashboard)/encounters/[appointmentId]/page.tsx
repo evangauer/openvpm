@@ -3318,7 +3318,8 @@ function VisitWorkReconciliation({
             Reconciliation state is unavailable. Checkout remains blocked until
             it can be verified.
           </div>
-        ) : reconciliation.data.items.length === 0 ? (
+        ) : reconciliation.data.items.length === 0 &&
+          reconciliation.data.directPendingDispenses.length === 0 ? (
           <p className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">
             No visit-owned vaccinations, labs, procedures, or prescriptions have
             been recorded.
@@ -3337,6 +3338,29 @@ function VisitWorkReconciliation({
                 {reconciliation.data.unresolvedCount}
               </Badge>
             </div>
+            {reconciliation.data.directPendingDispenses.map((dispense) => (
+              <div
+                key={dispense.id}
+                className="rounded-md border border-amber-500/40 bg-amber-500/10 p-4"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium">
+                      Medication dispense awaiting invoice
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {dispense.description} · {dispense.quantity} ×{" "}
+                      {fmt(dispense.unitPrice)}. Inventory already moved; add
+                      this exact dispense from Charge capture so it is not
+                      deducted twice.
+                    </p>
+                  </div>
+                  <Button asChild type="button" size="sm" variant="outline">
+                    <Link href="#charge-capture">Review charge</Link>
+                  </Button>
+                </div>
+              </div>
+            ))}
             {reconciliation.data.items.map((item) => {
               const unresolved = item.status === "unresolved";
               const staleCharge =
@@ -3676,6 +3700,13 @@ function ChargeCapture({
   const [quantity, setQuantity] = useState(1);
   const [items, setItems] = useState<ChargeItem[]>([]);
   const [loadedInvoiceId, setLoadedInvoiceId] = useState<string | null>(null);
+  const [pendingDispenseCharge, setPendingDispenseCharge] = useState<{
+    id: string;
+    operationId: string;
+    name: string;
+    quantity: number;
+    unitPrice: string;
+  } | null>(null);
   const lastSavedItemsFingerprintRef = useRef(chargeItemsFingerprint([]));
   const configQuery = trpc.billing.getTaxConfig.useQuery(undefined, {
     staleTime: 5 * 60 * 1000,
@@ -3746,6 +3777,29 @@ function ChargeCapture({
     loadedInvoiceId,
   ]);
 
+  const readyVisitPrescriptionCharges = useMemo(
+    () =>
+      linkedPrescriptions
+        .filter(
+          (prescription) =>
+            prescription.productId &&
+            prescription.productUnitPrice &&
+            prescription.quantity &&
+            prescription.dispenseChargeId &&
+            prescription.dispenseChargeStatus === "pending" &&
+            prescription.dispenseChargeDescription &&
+            !requiresPrescriptionInventoryUnitReview({
+              description: prescription.dispenseChargeDescription,
+            }),
+        )
+        .map((prescription) => ({
+          id: prescription.dispenseChargeId!,
+          name: prescription.dispenseChargeDescription!,
+          defaultPrice: prescription.productUnitPrice!,
+          quantity: prescription.quantity!,
+        })),
+    [linkedPrescriptions],
+  );
   const catalog = useMemo(() => {
     const services = (servicesQuery.data ?? []).map((service) => ({
       id: `service:${service.id}`,
@@ -3774,32 +3828,6 @@ function ChargeCapture({
         .map((prescription) => prescription.productId)
         .filter((id): id is string => Boolean(id)),
     );
-    const prescriptionCharges = linkedPrescriptions
-      .filter(
-        (prescription) =>
-          prescription.productId &&
-          prescription.productUnitPrice &&
-          prescription.quantity &&
-          prescription.dispenseChargeId &&
-          prescription.dispenseChargeStatus === "pending" &&
-          prescription.dispenseChargeDescription &&
-          !requiresPrescriptionInventoryUnitReview({
-            description: prescription.dispenseChargeDescription,
-          }),
-      )
-      .map((prescription) => ({
-        id: `dispense:${prescription.dispenseChargeId}`,
-        itemId: prescription.productId!,
-        itemType: "product" as const,
-        name: prescription.dispenseChargeDescription!,
-        category: "Visit prescription · inventory already dispensed",
-        defaultPrice: prescription.productUnitPrice!,
-        taxable: prescription.productTaxable ?? true,
-        stockQuantity: null as number | null,
-        quantity: prescription.quantity!,
-        sourcePrescriptionId: undefined as string | undefined,
-        sourceDispenseChargeId: prescription.dispenseChargeId!,
-      }));
     const products = (productsQuery.data ?? [])
       .filter((product) => !linkedProductIds.has(product.id))
       .map((product) => ({
@@ -3815,17 +3843,10 @@ function ChargeCapture({
         sourcePrescriptionId: undefined as string | undefined,
         sourceDispenseChargeId: undefined as string | undefined,
       }));
-    return [...prescriptionCharges, ...services, ...products];
+    return [...services, ...products];
   }, [linkedPrescriptions, productsQuery.data, servicesQuery.data]);
 
   const selected = catalog.find((entry) => entry.id === selectedCatalogId);
-  const readyVisitPrescriptionCharges = catalog.filter(
-    (entry) =>
-      entry.sourceDispenseChargeId &&
-      !items.some(
-        (item) => item.sourceDispenseChargeId === entry.sourceDispenseChargeId,
-      ),
-  );
   const prescriptionChargesNeedingUnitReview = linkedPrescriptions.filter(
     (prescription) =>
       prescription.dispenseChargeStatus === "pending" &&
@@ -3910,7 +3931,35 @@ function ChargeCapture({
     },
     onError: (error) => toast.error(error.message),
   });
-  const isSaving = createInvoice.isPending || updateInvoiceItems.isPending;
+  const appendVisitDispenseCharge =
+    trpc.billing.appendVisitDispenseCharge.useMutation({
+      onSuccess: async ({ invoiceId }) => {
+        await Promise.all([
+          utils.billing.listInvoices.invalidate({
+            appointmentId,
+            limit: 25,
+            offset: 0,
+          }),
+          utils.billing.getInvoice.invalidate({ id: invoiceId }),
+          utils.billing.listDispenseChargeQueue.invalidate(),
+          utils.encounters.getCloseout.invalidate({ appointmentId }),
+          utils.encounters.getVisitReconciliation.invalidate({
+            appointmentId,
+          }),
+        ]);
+        // Reload only after the server append is visible. A stale local item
+        // snapshot must never overwrite the exact dispense line on a later
+        // full-invoice edit.
+        setLoadedInvoiceId(null);
+        setPendingDispenseCharge(null);
+        toast.success("Medication dispense added to the draft invoice");
+      },
+      onError: (error) => toast.error(error.message),
+    });
+  const isSaving =
+    createInvoice.isPending ||
+    updateInvoiceItems.isPending ||
+    appendVisitDispenseCharge.isPending;
   const hasUnsavedCharges =
     chargeItemsFingerprint(items) !== lastSavedItemsFingerprintRef.current;
   useUnsavedChangesGuard(
@@ -3955,6 +4004,18 @@ function ChargeCapture({
     setQuantity(1);
   }
 
+  function confirmPendingDispenseCharge() {
+    if (!pendingDispenseCharge) return;
+    appendVisitDispenseCharge.mutate({
+      appointmentId,
+      dispenseChargeId: pendingDispenseCharge.id,
+      operationId: pendingDispenseCharge.operationId,
+      expectedDescription: pendingDispenseCharge.name,
+      expectedQuantity: pendingDispenseCharge.quantity,
+      expectedUnitPrice: pendingDispenseCharge.unitPrice,
+    });
+  }
+
   function saveCharges() {
     if (!clientId || !patientId || !canSubmit) return;
     const lineItems = items.map(
@@ -3995,346 +4056,389 @@ function ChargeCapture({
   }
 
   return (
-    <Card className="h-fit lg:sticky lg:top-4">
-      <CardHeader>
-        <CardTitle>Charge capture</CardTitle>
-        <CardDescription>
-          {activeInvoiceIsDraft
-            ? "Correct or add services and products before this invoice is sent."
-            : "Add the services and products performed or dispensed during this visit."}
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        {!canManage ? (
-          <div className="rounded-md border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
-            Charge capture is read-only for your role. An admin or front desk
-            teammate can create the invoice.
-          </div>
-        ) : invoiceStateLoading ? (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Confirming visit invoice state...
-          </div>
-        ) : !invoiceStateReady ? (
-          <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
-            Charge capture is locked because invoice state could not be
-            confirmed. Refresh before creating charges.
-          </div>
-        ) : activeInvoice && !activeInvoiceIsDraft ? (
-          <div className="rounded-md border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
-            This visit invoice is already {activeInvoice.status}. Open it from
-            Invoice state to collect payment or review the balance. Only unpaid
-            draft charges can be edited.
-          </div>
-        ) : activeInvoiceIsDraft && invoiceDetailQuery.isLoading ? (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Loading existing visit charges...
-          </div>
-        ) : activeInvoiceIsDraft &&
-          (invoiceDetailQuery.error || !invoiceDetailQuery.data) ? (
-          <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
-            Existing charges could not be loaded. Refresh before editing this
-            draft invoice.
-          </div>
-        ) : configQuery.isLoading ? (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Loading practice tax and currency settings...
-          </div>
-        ) : !configReady ? (
-          <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
-            Charge capture is locked because tax and currency settings could not
-            be confirmed. Refresh before creating charges.
-          </div>
-        ) : !previewTotals ? (
-          <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
-            Set the practice tax rate between 0 and 100% and keep the invoice
-            total within the supported currency range before saving charges.
-          </div>
-        ) : !clientId || !patientId ? (
-          <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
-            Add both a client and patient to the appointment before capturing
-            charges.
-          </div>
-        ) : servicesQuery.error || productsQuery.error ? (
-          <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
-            Unable to load the charge catalog. Refresh before creating an
-            invoice.
-          </div>
-        ) : servicesQuery.isLoading || productsQuery.isLoading ? (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Loading services and products...
-          </div>
-        ) : catalog.length === 0 && items.length === 0 ? (
-          <EmptyState
-            icon={Package}
-            title="Charge catalog is empty"
-            description="Add services or inventory products before building a visit invoice."
-            className="p-8"
-          />
-        ) : (
-          <div className="flex flex-col gap-4">
-            {!isOnline ? (
-              <div
-                className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100"
-                role="status"
-              >
-                Offline — charges stay only in this form. Reconnect before
-                creating or updating the visit invoice.
-              </div>
-            ) : null}
-            {readyVisitPrescriptionCharges.length > 0 ? (
-              <div className="rounded-md border border-primary/30 bg-primary/[0.04] p-3">
-                <p className="text-sm font-medium">Ready from this visit</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  These prescription charges are linked to medication already
-                  dispensed during this appointment. Quantity and price use the
-                  inventory item&apos;s individual dispensing unit. Confirm both
-                  before saving the invoice.
-                </p>
-                <div
-                  className="mt-3 flex flex-col gap-2"
-                  aria-label="Ready-to-add visit prescription charges"
-                >
-                  {readyVisitPrescriptionCharges.map((entry) => (
-                    <Button
-                      key={entry.id}
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      className="h-auto justify-between gap-3 whitespace-normal py-2 text-left"
-                      aria-label={`Add visit charge ${entry.name}`}
-                      disabled={
-                        isSaving || items.length >= BILLING_INVOICE_MAX_ITEMS
-                      }
-                      onClick={() => addCatalogItem(entry, entry.quantity ?? 1)}
-                    >
-                      <span>{entry.name}</span>
-                      <span className="shrink-0 text-right text-muted-foreground">
-                        {entry.quantity ?? 1} × {fmt(entry.defaultPrice)}
-                        <span className="block font-medium text-foreground">
-                          {fmt(
-                            centsToMoney(
-                              moneyToCents(entry.defaultPrice) *
-                                (entry.quantity ?? 1),
-                            ),
-                          )}
-                        </span>
-                      </span>
-                    </Button>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-            {prescriptionChargesNeedingUnitReview.length > 0 ? (
-              <div
-                className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm"
-                role="alert"
-              >
-                <p className="font-medium">
-                  Review medication unit before charging
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  OpenVPM blocked a legacy package-priced dispense snapshot. Do
-                  not copy that package price into an invoice. Record an
-                  attributable exception for the legacy work item, then add the
-                  current inventory product using its verified per-unit price.
-                </p>
-                <ul className="mt-2 space-y-1 text-xs">
-                  {prescriptionChargesNeedingUnitReview.map((prescription) => (
-                    <li key={prescription.id}>
-                      {prescription.dispenseChargeDescription} · quantity{" "}
-                      {prescription.quantity ?? "not recorded"}
-                    </li>
-                  ))}
-                </ul>
-                <Button
-                  asChild
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="mt-3"
-                >
-                  <Link href="/inventory">Review inventory units</Link>
-                </Button>
-              </div>
-            ) : null}
-            <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_90px_auto] lg:grid-cols-1 xl:grid-cols-[minmax(0,1fr)_80px_auto]">
-              <ServicePicker
-                services={catalog}
-                value={selectedCatalogId}
-                onSelect={setSelectedCatalogId}
-                disabled={isSaving}
-                formatPrice={fmt}
-              />
-              <Input
-                type="number"
-                min={1}
-                max={selected?.stockQuantity ?? undefined}
-                value={quantity}
-                aria-label="Charge quantity"
-                aria-invalid={!selectedHasStock}
-                onChange={(event) =>
-                  setQuantity(Math.max(1, Number(event.target.value) || 1))
-                }
-              />
-              <Button
-                type="button"
-                variant="outline"
-                disabled={!canAdd || isSaving}
-                onClick={addSelectedItem}
-              >
-                <Plus className="mr-2 h-4 w-4" />
-                Add
-              </Button>
+    <>
+      <Card className="h-fit lg:sticky lg:top-4">
+        <CardHeader>
+          <CardTitle>Charge capture</CardTitle>
+          <CardDescription>
+            {activeInvoiceIsDraft
+              ? "Correct or add services and products before this invoice is sent."
+              : "Add the services and products performed or dispensed during this visit."}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {!canManage ? (
+            <div className="rounded-md border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
+              Charge capture is read-only for your role. An admin or front desk
+              teammate can create the invoice.
             </div>
-
-            {!selectedHasStock ? (
-              <p className="text-xs font-medium text-destructive">
-                Quantity exceeds available inventory.
-              </p>
-            ) : null}
-
-            {items.length === 0 ? (
-              <p className="rounded-md border border-dashed border-border p-4 text-center text-sm text-muted-foreground">
-                No charges added yet.
-              </p>
-            ) : (
-              <div className="flex flex-col gap-2">
-                {items.map((item) => (
+          ) : invoiceStateLoading ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Confirming visit invoice state...
+            </div>
+          ) : !invoiceStateReady ? (
+            <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
+              Charge capture is locked because invoice state could not be
+              confirmed. Refresh before creating charges.
+            </div>
+          ) : activeInvoice && !activeInvoiceIsDraft ? (
+            <div className="rounded-md border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
+              This visit invoice is already {activeInvoice.status}. Open it from
+              Invoice state to collect payment or review the balance. Only
+              unpaid draft charges can be edited.
+            </div>
+          ) : activeInvoiceIsDraft && invoiceDetailQuery.isLoading ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading existing visit charges...
+            </div>
+          ) : activeInvoiceIsDraft &&
+            (invoiceDetailQuery.error || !invoiceDetailQuery.data) ? (
+            <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
+              Existing charges could not be loaded. Refresh before editing this
+              draft invoice.
+            </div>
+          ) : configQuery.isLoading ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading practice tax and currency settings...
+            </div>
+          ) : !configReady ? (
+            <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
+              Charge capture is locked because tax and currency settings could
+              not be confirmed. Refresh before creating charges.
+            </div>
+          ) : !previewTotals ? (
+            <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
+              Set the practice tax rate between 0 and 100% and keep the invoice
+              total within the supported currency range before saving charges.
+            </div>
+          ) : !clientId || !patientId ? (
+            <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
+              Add both a client and patient to the appointment before capturing
+              charges.
+            </div>
+          ) : servicesQuery.error || productsQuery.error ? (
+            <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
+              Unable to load the charge catalog. Refresh before creating an
+              invoice.
+            </div>
+          ) : servicesQuery.isLoading || productsQuery.isLoading ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading services and products...
+            </div>
+        ) : catalog.length === 0 &&
+          items.length === 0 &&
+          readyVisitPrescriptionCharges.length === 0 ? (
+            <EmptyState
+              icon={Package}
+              title="Charge catalog is empty"
+              description="Add services or inventory products before building a visit invoice."
+              className="p-8"
+            />
+          ) : (
+            <div className="flex flex-col gap-4">
+              {!isOnline ? (
+                <div
+                  className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100"
+                  role="status"
+                >
+                  Offline — charges stay only in this form. Reconnect before
+                  creating or updating the visit invoice.
+                </div>
+              ) : null}
+              {readyVisitPrescriptionCharges.length > 0 ? (
+                <div className="rounded-md border border-primary/30 bg-primary/[0.04] p-3">
+                  <p className="text-sm font-medium">Ready from this visit</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    These prescription charges are linked to medication already
+                    dispensed during this appointment. Quantity and price use
+                    the inventory item&apos;s individual dispensing unit. Each
+                    confirmed charge is appended without rewriting
+                    already-reconciled invoice lines.
+                  </p>
+                  {hasUnsavedCharges ? (
+                    <p className="mt-2 text-xs font-medium text-amber-800 dark:text-amber-200">
+                      Save or discard the other invoice edits before adding a
+                      medication dispense.
+                    </p>
+                  ) : null}
                   <div
-                    key={item.key}
-                    className="flex flex-col gap-3 rounded-md border border-border p-3 sm:flex-row sm:items-center"
+                    className="mt-3 flex flex-col gap-2"
+                    aria-label="Ready-to-add visit prescription charges"
                   >
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium">
-                        {item.description}
-                      </p>
-                      <p className="text-xs capitalize text-muted-foreground">
-                        {item.itemType} ·{" "}
-                        {item.taxable ? "Taxable" : "Not taxable"}
-                      </p>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                        Qty
-                        <Input
-                          type="number"
-                          min={1}
-                          max={10000}
-                          value={item.quantity}
-                          aria-label={`${item.description} quantity`}
-                          className="w-20 text-foreground"
-                          disabled={isSaving}
-                          onChange={(event) =>
-                            setItems((current) =>
-                              current.map((candidate) =>
-                                candidate.key === item.key
-                                  ? {
-                                      ...candidate,
-                                      quantity: Math.max(
-                                        1,
-                                        Number(event.target.value) || 1,
-                                      ),
-                                    }
-                                  : candidate,
-                              ),
-                            )
-                          }
-                        />
-                      </label>
-                      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                        Unit price
-                        <Input
-                          type="number"
-                          min={0}
-                          step="0.01"
-                          value={item.unitPrice}
-                          aria-label={`${item.description} unit price`}
-                          className="w-28 text-foreground"
-                          disabled={isSaving}
-                          onChange={(event) =>
-                            setItems((current) =>
-                              current.map((candidate) =>
-                                candidate.key === item.key
-                                  ? {
-                                      ...candidate,
-                                      unitPrice: event.target.value,
-                                    }
-                                  : candidate,
-                              ),
-                            )
-                          }
-                        />
-                      </label>
-                      <span className="flex w-24 flex-col gap-1 text-right text-xs text-muted-foreground">
-                        Line total
-                        <span className="text-sm font-medium text-foreground tabular-nums">
-                          {fmt(item.quantity * Number(item.unitPrice || 0))}
-                        </span>
-                      </span>
+                    {readyVisitPrescriptionCharges.map((entry) => (
                       <Button
+                        key={entry.id}
                         type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="self-end"
-                        aria-label={`Remove ${item.description}`}
-                        disabled={isSaving}
+                        size="sm"
+                        variant="outline"
+                        className="h-auto justify-between gap-3 whitespace-normal py-2 text-left"
+                        aria-label={`Add visit charge ${entry.name}`}
+                        disabled={
+                          isSaving ||
+                          hasUnsavedCharges ||
+                          items.length >= BILLING_INVOICE_MAX_ITEMS
+                        }
                         onClick={() =>
-                          setItems((current) =>
-                            current.filter(
-                              (candidate) => candidate.key !== item.key,
-                            ),
-                          )
+                          setPendingDispenseCharge({
+                            id: entry.id,
+                            operationId: crypto.randomUUID(),
+                            name: entry.name,
+                            quantity: entry.quantity,
+                            unitPrice: entry.defaultPrice,
+                          })
                         }
                       >
-                        <Trash2 className="h-4 w-4" />
+                        <span>{entry.name}</span>
+                        <span className="shrink-0 text-right text-muted-foreground">
+                          {entry.quantity} × {fmt(entry.defaultPrice)}
+                          <span className="block font-medium text-foreground">
+                            {fmt(
+                              centsToMoney(
+                                moneyToCents(entry.defaultPrice) *
+                                  entry.quantity,
+                              ),
+                            )}
+                          </span>
+                        </span>
                       </Button>
-                    </div>
+                    ))}
                   </div>
-                ))}
+                </div>
+              ) : null}
+              {prescriptionChargesNeedingUnitReview.length > 0 ? (
+                <div
+                  className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm"
+                  role="alert"
+                >
+                  <p className="font-medium">
+                    Review medication unit before charging
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    OpenVPM blocked a legacy package-priced dispense snapshot.
+                    Do not copy that package price into an invoice. Record an
+                    attributable exception for the legacy work item, then add
+                    the current inventory product using its verified per-unit
+                    price.
+                  </p>
+                  <ul className="mt-2 space-y-1 text-xs">
+                    {prescriptionChargesNeedingUnitReview.map(
+                      (prescription) => (
+                        <li key={prescription.id}>
+                          {prescription.dispenseChargeDescription} · quantity{" "}
+                          {prescription.quantity ?? "not recorded"}
+                        </li>
+                      ),
+                    )}
+                  </ul>
+                  <Button
+                    asChild
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="mt-3"
+                  >
+                    <Link href="/inventory">Review inventory units</Link>
+                  </Button>
+                </div>
+              ) : null}
+              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_90px_auto] lg:grid-cols-1 xl:grid-cols-[minmax(0,1fr)_80px_auto]">
+                <ServicePicker
+                  services={catalog}
+                  value={selectedCatalogId}
+                  onSelect={setSelectedCatalogId}
+                  disabled={isSaving}
+                  formatPrice={fmt}
+                />
+                <Input
+                  type="number"
+                  min={1}
+                  max={selected?.stockQuantity ?? undefined}
+                  value={quantity}
+                  aria-label="Charge quantity"
+                  aria-invalid={!selectedHasStock}
+                  onChange={(event) =>
+                    setQuantity(Math.max(1, Number(event.target.value) || 1))
+                  }
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!canAdd || isSaving}
+                  onClick={addSelectedItem}
+                >
+                  <Plus className="mr-2 h-4 w-4" />
+                  Add
+                </Button>
               </div>
-            )}
 
-            {items.length > 0 ? (
-              <div className="flex flex-col gap-1 rounded-md bg-muted/30 p-4 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Subtotal</span>
-                  <span>{fmt(subtotal)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">
-                    Tax ({configQuery.data?.taxRatePercent ?? "0.00"}%)
-                  </span>
-                  <span>{fmt(tax)}</span>
-                </div>
-                <div className="mt-1 flex justify-between border-t border-border pt-2 font-semibold">
-                  <span>Draft total</span>
-                  <span>{fmt(total)}</span>
-                </div>
-              </div>
-            ) : null}
+              {!selectedHasStock ? (
+                <p className="text-xs font-medium text-destructive">
+                  Quantity exceeds available inventory.
+                </p>
+              ) : null}
 
-            <Button disabled={!canSubmit || isSaving} onClick={saveCharges}>
-              {isSaving ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              {items.length === 0 ? (
+                <p className="rounded-md border border-dashed border-border p-4 text-center text-sm text-muted-foreground">
+                  No charges added yet.
+                </p>
               ) : (
-                <Receipt className="mr-2 h-4 w-4" />
+                <div className="flex flex-col gap-2">
+                  {items.map((item) => (
+                    <div
+                      key={item.key}
+                      className="flex flex-col gap-3 rounded-md border border-border p-3 sm:flex-row sm:items-center"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">
+                          {item.description}
+                        </p>
+                        <p className="text-xs capitalize text-muted-foreground">
+                          {item.itemType} ·{" "}
+                          {item.taxable ? "Taxable" : "Not taxable"}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                          Qty
+                          <Input
+                            type="number"
+                            min={1}
+                            max={10000}
+                            value={item.quantity}
+                            aria-label={`${item.description} quantity`}
+                            className="w-20 text-foreground"
+                            disabled={isSaving}
+                            onChange={(event) =>
+                              setItems((current) =>
+                                current.map((candidate) =>
+                                  candidate.key === item.key
+                                    ? {
+                                        ...candidate,
+                                        quantity: Math.max(
+                                          1,
+                                          Number(event.target.value) || 1,
+                                        ),
+                                      }
+                                    : candidate,
+                                ),
+                              )
+                            }
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                          Unit price
+                          <Input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            value={item.unitPrice}
+                            aria-label={`${item.description} unit price`}
+                            className="w-28 text-foreground"
+                            disabled={isSaving}
+                            onChange={(event) =>
+                              setItems((current) =>
+                                current.map((candidate) =>
+                                  candidate.key === item.key
+                                    ? {
+                                        ...candidate,
+                                        unitPrice: event.target.value,
+                                      }
+                                    : candidate,
+                                ),
+                              )
+                            }
+                          />
+                        </label>
+                        <span className="flex w-24 flex-col gap-1 text-right text-xs text-muted-foreground">
+                          Line total
+                          <span className="text-sm font-medium text-foreground tabular-nums">
+                            {fmt(item.quantity * Number(item.unitPrice || 0))}
+                          </span>
+                        </span>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="self-end"
+                          aria-label={`Remove ${item.description}`}
+                          disabled={isSaving}
+                          onClick={() =>
+                            setItems((current) =>
+                              current.filter(
+                                (candidate) => candidate.key !== item.key,
+                              ),
+                            )
+                          }
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               )}
-              {activeInvoiceIsDraft
-                ? "Update visit invoice"
-                : "Create visit invoice"}
-            </Button>
-            <p className="text-xs text-muted-foreground">
-              {activeInvoiceIsDraft
-                ? "Unsourced product stock is restored and re-deducted atomically when draft charges change. Visit-prescription stock was already dispensed and is not moved twice."
-                : "This creates a draft linked to the appointment. Product stock is deducted atomically; visit prescriptions retain their original dispensation."}
-            </p>
-          </div>
-        )}
-      </CardContent>
-    </Card>
+
+              {items.length > 0 ? (
+                <div className="flex flex-col gap-1 rounded-md bg-muted/30 p-4 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Subtotal</span>
+                    <span>{fmt(subtotal)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">
+                      Tax ({configQuery.data?.taxRatePercent ?? "0.00"}%)
+                    </span>
+                    <span>{fmt(tax)}</span>
+                  </div>
+                  <div className="mt-1 flex justify-between border-t border-border pt-2 font-semibold">
+                    <span>Draft total</span>
+                    <span>{fmt(total)}</span>
+                  </div>
+                </div>
+              ) : null}
+
+              <Button disabled={!canSubmit || isSaving} onClick={saveCharges}>
+                {isSaving ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Receipt className="mr-2 h-4 w-4" />
+                )}
+                {activeInvoiceIsDraft
+                  ? "Update visit invoice"
+                  : "Create visit invoice"}
+              </Button>
+              <p className="text-xs text-muted-foreground">
+                {activeInvoiceIsDraft
+                  ? "Unsourced product stock is restored and re-deducted atomically when draft charges change. Visit-prescription stock was already dispensed and is not moved twice."
+                  : "This creates a draft linked to the appointment. Product stock is deducted atomically; visit prescriptions retain their original dispensation."}
+              </p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+      <ActionConfirmationDialog
+        open={pendingDispenseCharge !== null}
+        title="Add this dispensed medication to the draft invoice?"
+        description={
+          pendingDispenseCharge
+            ? `${pendingDispenseCharge.name} will be added as ${pendingDispenseCharge.quantity} × ${fmt(
+                pendingDispenseCharge.unitPrice,
+              )}. Inventory already moved when the medication was dispensed and will not be deducted again. Existing reconciled invoice lines will not be changed.`
+            : "Review the exact medication dispense before adding it."
+        }
+        confirmLabel="Add medication charge"
+        isPending={appendVisitDispenseCharge.isPending}
+        onCancel={() => {
+          if (!appendVisitDispenseCharge.isPending) {
+            setPendingDispenseCharge(null);
+          }
+        }}
+        onConfirm={confirmPendingDispenseCharge}
+      />
+    </>
   );
 }

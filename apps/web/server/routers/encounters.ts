@@ -1032,192 +1032,216 @@ export const encountersRouter = createRouter({
         await syncVisitWorkItems(ctx, input.appointmentId);
       }
 
-      const [items, serviceCatalog, invoiceItemOptions] = await Promise.all([
-        ctx.db
-          .select({
-            id: visitWorkItems.id,
-            status: visitWorkItems.status,
-            sourceType: sql<
-              "vaccination" | "lab" | "procedure" | "prescription"
-            >`
+      const [items, serviceCatalog, invoiceItemOptions, pendingDispenses] =
+        await Promise.all([
+          ctx.db
+            .select({
+              id: visitWorkItems.id,
+              status: visitWorkItems.status,
+              sourceType: sql<
+                "vaccination" | "lab" | "procedure" | "prescription"
+              >`
               case
                 when ${visitWorkItems.vaccinationRecordId} is not null then 'vaccination'
                 when ${visitWorkItems.labResultId} is not null then 'lab'
                 when ${visitWorkItems.procedureId} is not null then 'procedure'
                 else 'prescription'
               end`,
-            sourceId: sql<string>`coalesce(
+              sourceId: sql<string>`coalesce(
               ${visitWorkItems.vaccinationRecordId},
               ${visitWorkItems.labResultId},
               ${visitWorkItems.procedureId},
               ${visitWorkItems.prescriptionId}
             )`,
-            sourceLabel: sql<string>`coalesce(
+              sourceLabel: sql<string>`coalesce(
               ${vaccinationRecords.vaccineName},
               ${labResults.testName},
               ${procedures.name},
               ${prescriptions.medicationName},
               'Unavailable source'
             )`,
-            invoiceId: visitWorkItems.invoiceId,
-            invoiceItemId: visitWorkItems.invoiceItemId,
-            invoiceItemDescription: invoiceItems.description,
-            invoiceItemDeletedAt: invoiceItems.deletedAt,
-            invoiceStatus: invoices.status,
-            invoiceDeletedAt: invoices.deletedAt,
-            noChargeReason: visitWorkItems.noChargeReason,
-            voidReason: visitWorkItems.voidReason,
-            resolvedAt: visitWorkItems.resolvedAt,
-            resolvedByName: users.name,
-            suggestedProductId: products.id,
-            suggestedProductName: products.name,
-            suggestedProductPrice: products.unitPrice,
-            dispenseChargeId: dispenseChargeQueue.id,
-            dispenseChargeStatus: dispenseChargeQueue.status,
-            dispenseChargeDescription: dispenseChargeQueue.descriptionSnapshot,
-            dispenseChargeQuantity: dispenseChargeQueue.quantity,
-            dispenseChargeUnitPrice: dispenseChargeQueue.unitPriceSnapshot,
-            createdAt: visitWorkItems.createdAt,
-          })
-          .from(visitWorkItems)
-          .leftJoin(
-            vaccinationRecords,
-            and(
-              eq(visitWorkItems.vaccinationRecordId, vaccinationRecords.id),
-              eq(vaccinationRecords.practiceId, ctx.practiceId),
-              eq(vaccinationRecords.appointmentId, input.appointmentId),
-              isNull(vaccinationRecords.deletedAt),
-            ),
-          )
-          .leftJoin(
-            labResults,
-            and(
-              eq(visitWorkItems.labResultId, labResults.id),
-              eq(labResults.practiceId, ctx.practiceId),
-              eq(labResults.appointmentId, input.appointmentId),
-              isNull(labResults.deletedAt),
-            ),
-          )
-          .leftJoin(
-            procedures,
-            and(
-              eq(visitWorkItems.procedureId, procedures.id),
-              eq(procedures.practiceId, ctx.practiceId),
-              eq(procedures.appointmentId, input.appointmentId),
-              isNull(procedures.deletedAt),
-            ),
-          )
-          .leftJoin(
-            prescriptions,
-            and(
-              eq(visitWorkItems.prescriptionId, prescriptions.id),
-              eq(prescriptions.practiceId, ctx.practiceId),
-              eq(prescriptions.appointmentId, input.appointmentId),
-              isNull(prescriptions.deletedAt),
-            ),
-          )
-          .leftJoin(
-            products,
-            and(
-              eq(prescriptions.productId, products.id),
-              eq(products.practiceId, ctx.practiceId),
-              isNull(products.deletedAt),
-            ),
-          )
-          .leftJoin(
-            prescriptionEvents,
-            and(
-              eq(prescriptionEvents.prescriptionId, prescriptions.id),
-              eq(prescriptionEvents.practiceId, ctx.practiceId),
-              eq(prescriptionEvents.eventType, "created"),
-            ),
-          )
-          .leftJoin(
-            dispenseChargeQueue,
-            and(
-              eq(
-                dispenseChargeQueue.prescriptionEventId,
-                prescriptionEvents.id,
+              invoiceId: visitWorkItems.invoiceId,
+              invoiceItemId: visitWorkItems.invoiceItemId,
+              invoiceItemDescription: invoiceItems.description,
+              invoiceItemDeletedAt: invoiceItems.deletedAt,
+              invoiceStatus: invoices.status,
+              invoiceDeletedAt: invoices.deletedAt,
+              noChargeReason: visitWorkItems.noChargeReason,
+              voidReason: visitWorkItems.voidReason,
+              resolvedAt: visitWorkItems.resolvedAt,
+              resolvedByName: users.name,
+              suggestedProductId: products.id,
+              suggestedProductName: products.name,
+              suggestedProductPrice: products.unitPrice,
+              dispenseChargeId: dispenseChargeQueue.id,
+              dispenseChargeStatus: dispenseChargeQueue.status,
+              dispenseChargeDescription:
+                dispenseChargeQueue.descriptionSnapshot,
+              dispenseChargeQuantity: dispenseChargeQueue.quantity,
+              dispenseChargeUnitPrice: dispenseChargeQueue.unitPriceSnapshot,
+              createdAt: visitWorkItems.createdAt,
+            })
+            .from(visitWorkItems)
+            .leftJoin(
+              vaccinationRecords,
+              and(
+                eq(visitWorkItems.vaccinationRecordId, vaccinationRecords.id),
+                eq(vaccinationRecords.practiceId, ctx.practiceId),
+                eq(vaccinationRecords.appointmentId, input.appointmentId),
+                isNull(vaccinationRecords.deletedAt),
               ),
-              eq(dispenseChargeQueue.practiceId, ctx.practiceId),
-              eq(dispenseChargeQueue.appointmentId, input.appointmentId),
+            )
+            .leftJoin(
+              labResults,
+              and(
+                eq(visitWorkItems.labResultId, labResults.id),
+                eq(labResults.practiceId, ctx.practiceId),
+                eq(labResults.appointmentId, input.appointmentId),
+                isNull(labResults.deletedAt),
+              ),
+            )
+            .leftJoin(
+              procedures,
+              and(
+                eq(visitWorkItems.procedureId, procedures.id),
+                eq(procedures.practiceId, ctx.practiceId),
+                eq(procedures.appointmentId, input.appointmentId),
+                isNull(procedures.deletedAt),
+              ),
+            )
+            .leftJoin(
+              prescriptions,
+              and(
+                eq(visitWorkItems.prescriptionId, prescriptions.id),
+                eq(prescriptions.practiceId, ctx.practiceId),
+                eq(prescriptions.appointmentId, input.appointmentId),
+                isNull(prescriptions.deletedAt),
+              ),
+            )
+            .leftJoin(
+              products,
+              and(
+                eq(prescriptions.productId, products.id),
+                eq(products.practiceId, ctx.practiceId),
+                isNull(products.deletedAt),
+              ),
+            )
+            .leftJoin(
+              prescriptionEvents,
+              and(
+                eq(prescriptionEvents.prescriptionId, prescriptions.id),
+                eq(prescriptionEvents.practiceId, ctx.practiceId),
+                eq(prescriptionEvents.eventType, "created"),
+              ),
+            )
+            .leftJoin(
+              dispenseChargeQueue,
+              and(
+                eq(
+                  dispenseChargeQueue.prescriptionEventId,
+                  prescriptionEvents.id,
+                ),
+                eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+                eq(dispenseChargeQueue.appointmentId, input.appointmentId),
+              ),
+            )
+            .leftJoin(
+              invoiceItems,
+              eq(visitWorkItems.invoiceItemId, invoiceItems.id),
+            )
+            .leftJoin(
+              invoices,
+              and(
+                eq(visitWorkItems.invoiceId, invoices.id),
+                eq(invoices.practiceId, ctx.practiceId),
+                eq(invoices.appointmentId, input.appointmentId),
+              ),
+            )
+            .leftJoin(
+              users,
+              and(
+                eq(visitWorkItems.resolvedBy, users.id),
+                eq(users.practiceId, ctx.practiceId),
+              ),
+            )
+            .where(
+              and(
+                eq(visitWorkItems.practiceId, ctx.practiceId),
+                eq(visitWorkItems.appointmentId, input.appointmentId),
+                isNull(visitWorkItems.deletedAt),
+              ),
+            )
+            .orderBy(asc(visitWorkItems.createdAt), asc(visitWorkItems.id)),
+          ctx.db
+            .select({
+              id: services.id,
+              name: services.name,
+              defaultPrice: services.defaultPrice,
+            })
+            .from(services)
+            .where(
+              and(
+                eq(services.practiceId, ctx.practiceId),
+                activePracticePredicate(ctx.practiceId),
+                isNull(services.deletedAt),
+              ),
+            )
+            .orderBy(asc(services.name), asc(services.id))
+            .limit(500),
+          ctx.db
+            .select({
+              id: invoiceItems.id,
+              invoiceId: invoices.id,
+              description: invoiceItems.description,
+              itemType: invoiceItems.itemType,
+              itemId: invoiceItems.itemId,
+              quantity: invoiceItems.quantity,
+              total: invoiceItems.total,
+            })
+            .from(invoiceItems)
+            .innerJoin(
+              invoices,
+              and(
+                eq(invoiceItems.invoiceId, invoices.id),
+                eq(invoices.practiceId, ctx.practiceId),
+                eq(invoices.appointmentId, input.appointmentId),
+                eq(invoices.isEstimate, false),
+                ne(invoices.status, "void"),
+                isNull(invoices.deletedAt),
+              ),
+            )
+            .leftJoin(
+              visitWorkItems,
+              and(
+                eq(invoiceItems.id, visitWorkItems.invoiceItemId),
+                isNull(visitWorkItems.deletedAt),
+              ),
+            )
+            .where(
+              and(isNull(invoiceItems.deletedAt), isNull(visitWorkItems.id)),
+            )
+            .orderBy(asc(invoiceItems.createdAt), asc(invoiceItems.id)),
+          ctx.db
+            .select({
+              id: dispenseChargeQueue.id,
+              prescriptionId: dispenseChargeQueue.prescriptionId,
+              description: dispenseChargeQueue.descriptionSnapshot,
+              quantity: dispenseChargeQueue.quantity,
+              unitPrice: dispenseChargeQueue.unitPriceSnapshot,
+            })
+            .from(dispenseChargeQueue)
+            .where(
+              and(
+                eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+                eq(dispenseChargeQueue.appointmentId, input.appointmentId),
+                eq(dispenseChargeQueue.status, "pending"),
+              ),
+            )
+            .orderBy(
+              asc(dispenseChargeQueue.createdAt),
+              asc(dispenseChargeQueue.id),
             ),
-          )
-          .leftJoin(
-            invoiceItems,
-            eq(visitWorkItems.invoiceItemId, invoiceItems.id),
-          )
-          .leftJoin(
-            invoices,
-            and(
-              eq(visitWorkItems.invoiceId, invoices.id),
-              eq(invoices.practiceId, ctx.practiceId),
-              eq(invoices.appointmentId, input.appointmentId),
-            ),
-          )
-          .leftJoin(
-            users,
-            and(
-              eq(visitWorkItems.resolvedBy, users.id),
-              eq(users.practiceId, ctx.practiceId),
-            ),
-          )
-          .where(
-            and(
-              eq(visitWorkItems.practiceId, ctx.practiceId),
-              eq(visitWorkItems.appointmentId, input.appointmentId),
-              isNull(visitWorkItems.deletedAt),
-            ),
-          )
-          .orderBy(asc(visitWorkItems.createdAt), asc(visitWorkItems.id)),
-        ctx.db
-          .select({
-            id: services.id,
-            name: services.name,
-            defaultPrice: services.defaultPrice,
-          })
-          .from(services)
-          .where(
-            and(
-              eq(services.practiceId, ctx.practiceId),
-              activePracticePredicate(ctx.practiceId),
-              isNull(services.deletedAt),
-            ),
-          )
-          .orderBy(asc(services.name), asc(services.id))
-          .limit(500),
-        ctx.db
-          .select({
-            id: invoiceItems.id,
-            invoiceId: invoices.id,
-            description: invoiceItems.description,
-            itemType: invoiceItems.itemType,
-            itemId: invoiceItems.itemId,
-            quantity: invoiceItems.quantity,
-            total: invoiceItems.total,
-          })
-          .from(invoiceItems)
-          .innerJoin(
-            invoices,
-            and(
-              eq(invoiceItems.invoiceId, invoices.id),
-              eq(invoices.practiceId, ctx.practiceId),
-              eq(invoices.appointmentId, input.appointmentId),
-              eq(invoices.isEstimate, false),
-              ne(invoices.status, "void"),
-              isNull(invoices.deletedAt),
-            ),
-          )
-          .leftJoin(
-            visitWorkItems,
-            and(
-              eq(invoiceItems.id, visitWorkItems.invoiceItemId),
-              isNull(visitWorkItems.deletedAt),
-            ),
-          )
-          .where(and(isNull(invoiceItems.deletedAt), isNull(visitWorkItems.id)))
-          .orderBy(asc(invoiceItems.createdAt), asc(invoiceItems.id)),
-      ]);
+        ]);
 
       const servicesByName = new Map<string, (typeof serviceCatalog)[number]>();
       for (const service of serviceCatalog) {
@@ -1225,30 +1249,38 @@ export const encountersRouter = createRouter({
         if (!servicesByName.has(key)) servicesByName.set(key, service);
       }
 
+      const representedDispenseIds = new Set(
+        items
+          .map((item) => item.dispenseChargeId)
+          .filter((id): id is string => Boolean(id)),
+      );
+      const directPendingDispenses = pendingDispenses.filter(
+        (dispense) => !representedDispenseIds.has(dispense.id),
+      );
+      const reconciledItems = items.map((item) => ({
+        ...item,
+        chargeLinkActive:
+          item.status !== "charged" ||
+          (Boolean(item.invoiceStatus) &&
+            item.invoiceItemDeletedAt === null &&
+            item.invoiceDeletedAt === null &&
+            item.invoiceStatus !== "void"),
+        suggestedService:
+          servicesByName.get(
+            item.sourceLabel.trim().toLocaleLowerCase("en-US"),
+          ) ?? null,
+      }));
       return {
-        items: items.map((item) => ({
-          ...item,
-          chargeLinkActive:
-            item.status !== "charged" ||
-            (Boolean(item.invoiceStatus) &&
-              item.invoiceItemDeletedAt === null &&
-              item.invoiceDeletedAt === null &&
-              item.invoiceStatus !== "void"),
-          suggestedService:
-            servicesByName.get(
-              item.sourceLabel.trim().toLocaleLowerCase("en-US"),
-            ) ?? null,
-        })),
+        items: reconciledItems,
         invoiceItemOptions,
-        unresolvedCount: items.filter(
-          (item) =>
-            item.status === "unresolved" ||
-            (item.status === "charged" &&
-              (item.invoiceItemDeletedAt !== null ||
-                item.invoiceDeletedAt !== null ||
-                !item.invoiceStatus ||
-                item.invoiceStatus === "void")),
-        ).length,
+        directPendingDispenses,
+        directPendingDispenseCount: directPendingDispenses.length,
+        unresolvedCount:
+          reconciledItems.filter(
+            (item) =>
+              item.status === "unresolved" ||
+              (item.status === "charged" && !item.chargeLinkActive),
+          ).length + directPendingDispenses.length,
       };
     }),
 

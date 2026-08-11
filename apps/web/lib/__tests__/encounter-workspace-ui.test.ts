@@ -190,7 +190,7 @@ describe("clinic encounter workspace", () => {
       "trpc.billing.updateInvoiceItems.useMutation",
     );
     expect(workspaceSource).toContain("Loading existing visit charges...");
-    expect(workspaceSource).toContain("Only unpaid");
+    expect(workspaceSource).toContain("unpaid draft charges can be edited");
     expect(workspaceSource).toContain("Update visit invoice");
     expect(workspaceSource).toContain(
       "Visit-prescription stock was already dispensed and is not moved twice.",
@@ -295,9 +295,11 @@ describe("clinic encounter workspace", () => {
     expect(workspaceSource).toContain("sourceDispenseChargeId");
     expect(workspaceSource).toContain('dispenseChargeStatus === "pending"');
     expect(workspaceSource).toContain(
-      "id: `dispense:${prescription.dispenseChargeId}`",
+      "trpc.billing.appendVisitDispenseCharge.useMutation",
     );
-    expect(workspaceSource).toContain("inventory already dispensed");
+    expect(workspaceSource).toContain(
+      "Inventory already moved when the medication was dispensed",
+    );
     expect(workspaceSource).toContain("expectedUpdatedAt");
   });
 
@@ -348,11 +350,14 @@ describe("clinic encounter workspace", () => {
     expect(workspaceSource).toContain(
       "Ready-to-add visit prescription charges",
     );
+    expect(workspaceSource).toContain("setPendingDispenseCharge({");
+    expect(workspaceSource).toContain("crypto.randomUUID()");
+    expect(workspaceSource).toContain("appendVisitDispenseCharge.mutate({");
     expect(workspaceSource).toContain(
-      "addCatalogItem(entry, entry.quantity ?? 1)",
+      "Save or discard the other invoice edits before adding a",
     );
     expect(workspaceSource).toContain(
-      "sourceDispenseChargeId === entry.sourceDispenseChargeId",
+      "Existing reconciled invoice lines will not be changed.",
     );
     expect(workspaceSource).toContain("individual dispensing unit");
     expect(workspaceSource).toContain("moneyToCents(entry.defaultPrice)");

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { eq, and, isNull, asc, inArray, sql } from "drizzle-orm";
+import { eq, and, isNull, asc, inArray, or, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import {
@@ -7,6 +7,9 @@ import {
   treatmentTemplateItems,
   invoices,
   invoiceItems,
+  appointments,
+  prescriptions,
+  dispenseChargeQueue,
   practices,
   products,
   services,
@@ -700,6 +703,9 @@ export const templatesRouter = createRouter({
             status: invoices.status,
             paidAmount: invoices.paidAmount,
             isEstimate: invoices.isEstimate,
+            clientId: invoices.clientId,
+            patientId: invoices.patientId,
+            appointmentId: invoices.appointmentId,
           })
           .from(invoices)
           .where(
@@ -749,6 +755,107 @@ export const templatesRouter = createRouter({
             code: "BAD_REQUEST",
             message: "Template has no items",
           });
+        }
+
+        const productIds = [
+          ...new Set(
+            items
+              .filter(
+                (item) => item.itemType === "product" && Boolean(item.itemId),
+              )
+              .map((item) => item.itemId!),
+          ),
+        ].sort();
+
+        if (!invoice.isEstimate && invoice.appointmentId) {
+          // Match direct invoice edits: invoice serialization precedes the
+          // visit boundary, and prescription/dispense evidence is locked
+          // before any inventory product. A template must not become an
+          // unsourced shortcut around an already-dispensed medication.
+          await tx.execute(
+            sql`select pg_advisory_xact_lock(hashtextextended(${invoice.appointmentId}, 0))`,
+          );
+          const [appointment] = await tx
+            .select({
+              id: appointments.id,
+              clientId: appointments.clientId,
+              patientId: appointments.patientId,
+              status: appointments.status,
+            })
+            .from(appointments)
+            .where(
+              and(
+                eq(appointments.id, invoice.appointmentId),
+                eq(appointments.practiceId, ctx.practiceId),
+                isNull(appointments.deletedAt),
+              ),
+            )
+            .for("update");
+          if (
+            !appointment ||
+            appointment.clientId !== invoice.clientId ||
+            appointment.patientId !== invoice.patientId ||
+            appointment.status !== "in_exam"
+          ) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "Start the matching exam before applying a template to this visit invoice.",
+            });
+          }
+        }
+
+        if (!invoice.isEstimate && productIds.length > 0) {
+          if (invoice.appointmentId) {
+            const [visitPrescription] = await tx
+              .select({ id: prescriptions.id })
+              .from(prescriptions)
+              .where(
+                and(
+                  eq(prescriptions.practiceId, ctx.practiceId),
+                  eq(prescriptions.appointmentId, invoice.appointmentId),
+                  inArray(prescriptions.productId, productIds),
+                  isNull(prescriptions.deletedAt),
+                ),
+              )
+              .orderBy(asc(prescriptions.id))
+              .for("share");
+            if (visitPrescription) {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message:
+                  "Charge visit-dispensed medication from its prescription entry before applying product templates.",
+              });
+            }
+          }
+          if (invoice.patientId) {
+            const [unresolvedDispense] = await tx
+              .select({ id: dispenseChargeQueue.id })
+              .from(dispenseChargeQueue)
+              .where(
+                and(
+                  eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+                  eq(dispenseChargeQueue.patientId, invoice.patientId),
+                  inArray(dispenseChargeQueue.productId, productIds),
+                  or(
+                    inArray(dispenseChargeQueue.status, ["pending", "waived"]),
+                    and(
+                      eq(dispenseChargeQueue.status, "invoiced"),
+                      eq(dispenseChargeQueue.invoiceId, invoice.id),
+                    ),
+                  ),
+                ),
+              )
+              .orderBy(asc(dispenseChargeQueue.id))
+              .for("share");
+            if (unresolvedDispense) {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message:
+                  "Resolve this patient's dispensed medication from the medication billing queue before applying product templates.",
+              });
+            }
+          }
         }
 
         // Templates snapshot descriptions and prices, but active catalog

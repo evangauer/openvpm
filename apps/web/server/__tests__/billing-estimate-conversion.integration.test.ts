@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   appointments,
   auditLog,
@@ -24,6 +24,7 @@ import {
   visitWorkItems,
 } from "@openpims/db";
 import { db } from "@openpims/db/client";
+import { rowsFromExecute } from "@/lib/db/execute-rows";
 import { withSystem } from "@/lib/tenant-db";
 
 vi.mock("@/lib/audit", () => ({
@@ -99,6 +100,110 @@ async function within<T>(
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+async function waitForBlockedQueries(
+  fragments: readonly string[],
+  minimum: number,
+  label: string,
+  timeoutMs = 5_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const result = await db.execute(sql`
+      select count(*)::int as count
+      from pg_stat_activity
+      where datname = current_database()
+        and pid <> pg_backend_pid()
+        and state = 'active'
+        and wait_event_type = 'Lock'
+        and ${sql.join(
+          fragments.map((fragment) => sql`query ilike ${`%${fragment}%`}`),
+          sql` and `,
+        )}
+    `);
+    const count = Number(
+      rowsFromExecute<{ count: number }>(result)[0]?.count ?? 0,
+    );
+    if (count >= minimum) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(
+    `${label} did not reach ${minimum} blocked database operations`,
+  );
+}
+
+async function raceBehindProductRows<T>(
+  productIds: readonly string[],
+  start: () => readonly Promise<T>[],
+  label: string,
+): Promise<PromiseSettledResult<T>[]> {
+  let operations: readonly Promise<T>[] = [];
+  await withSystem(db, async (tx) => {
+    await tx
+      .select({ id: products.id })
+      .from(products)
+      .where(inArray(products.id, [...productIds].sort()))
+      .orderBy(products.id)
+      .for("update");
+    operations = start();
+    await waitForBlockedQueries(
+      ['from "products"', "for update"],
+      operations.length,
+      label,
+    );
+  });
+  return within(Promise.allSettled(operations), label);
+}
+
+async function raceBehindAppointmentRow(
+  appointmentId: string,
+  startFirst: () => Promise<unknown>,
+  startSecond: () => Promise<unknown>,
+  label: string,
+): Promise<PromiseSettledResult<unknown>[]> {
+  let first: Promise<unknown> | undefined;
+  let second: Promise<unknown> | undefined;
+  await withSystem(db, async (tx) => {
+    await tx
+      .select({ id: appointments.id })
+      .from(appointments)
+      .where(eq(appointments.id, appointmentId))
+      .for("update");
+    first = startFirst();
+    await waitForBlockedQueries(
+      ['from "appointments"', "for update"],
+      1,
+      `${label} first operation`,
+    );
+    second = startSecond();
+    await waitForBlockedQueries(
+      ['from "appointments"', "for update"],
+      2,
+      `${label} both operations`,
+    );
+  });
+  return within(Promise.allSettled([first!, second!]), label);
+}
+
+async function raceBehindAdvisoryLock(
+  key: string,
+  start: () => readonly Promise<unknown>[],
+  label: string,
+): Promise<PromiseSettledResult<unknown>[]> {
+  let operations: readonly Promise<unknown>[] = [];
+  await withSystem(db, async (tx) => {
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`,
+    );
+    operations = start();
+    await waitForBlockedQueries(
+      ["pg_advisory_xact_lock", "hashtextextended"],
+      operations.length,
+      label,
+    );
+  });
+  return within(Promise.allSettled(operations), label);
 }
 
 function callerContext(fixture: Fixture) {
@@ -469,6 +574,32 @@ async function createServiceTemplate(fixture: Fixture): Promise<string> {
   return templateId;
 }
 
+async function createProductTemplate(
+  fixture: Fixture,
+  productId: string,
+): Promise<string> {
+  const templateId = randomUUID();
+  await withSystem(db, async (tx) => {
+    await tx.insert(treatmentTemplates).values({
+      id: templateId,
+      practiceId: fixture.practiceId,
+      name: "Synthetic medication collision template",
+      isActive: true,
+    });
+    await tx.insert(treatmentTemplateItems).values({
+      id: randomUUID(),
+      templateId,
+      itemType: "product",
+      itemId: productId,
+      description: "Synthetic templated medication",
+      defaultQuantity: 2,
+      defaultUnitPrice: "15.00",
+      sortOrder: 0,
+    });
+  });
+  return templateId;
+}
+
 async function cleanupFixture(practiceId: string): Promise<void> {
   await withSystem(db, async (tx) => {
     await tx.execute(
@@ -595,12 +726,28 @@ describeWithPostgres("billing estimate conversion PostgreSQL drill", () => {
       charge: { kind: "service" as const, serviceId: fixture.serviceId },
     };
 
-    const concurrent = await within(
-      Promise.all([
+    const concurrentResults = await raceBehindAdvisoryLock(
+      `visit-work-charge:${fixture.practiceId}:${operationId}`,
+      () => [
         billingCaller(fixture).chargeVisitWork(input),
         billingCaller(fixture).chargeVisitWork(input),
-      ]),
+      ],
       "same-operation performed-work charge",
+    );
+    assertNoDeadlock(concurrentResults);
+    expect(
+      concurrentResults.every((result) => result.status === "fulfilled"),
+    ).toBe(true);
+    const concurrent = concurrentResults.map((result) =>
+      result.status === "fulfilled"
+        ? (result.value as {
+            invoiceId: string;
+            invoiceItemId: string;
+            replayed: boolean;
+          })
+        : (() => {
+            throw result.reason;
+          })(),
     );
     expect(concurrent.map((result) => result.replayed).sort()).toEqual([
       false,
@@ -781,6 +928,77 @@ describeWithPostgres("billing estimate conversion PostgreSQL drill", () => {
     expect(state.work?.status).toBe("charged");
   });
 
+  it("does not replace a sourced dispense with an unsourced inventory line", async () => {
+    const fixture = await createFixture();
+    const product = await createProduct(fixture, 10);
+    const prescription = await createPrescription(fixture, product);
+    const dispenseChargeId = await createPendingDispense(fixture, prescription);
+    await withSystem(db, (tx) =>
+      tx
+        .update(products)
+        .set({ stockQuantity: 8 })
+        .where(eq(products.id, product.id)),
+    );
+    const charged = await billingCaller(fixture).createDispenseChargeInvoice({
+      id: dispenseChargeId,
+      acknowledgeLegacyReview: false,
+    });
+    const [invoice] = await withSystem(db, (tx) =>
+      tx
+        .select({ updatedAt: invoices.updatedAt })
+        .from(invoices)
+        .where(eq(invoices.id, charged.invoiceId)),
+    );
+
+    await expect(
+      billingCaller(fixture).updateInvoiceItems({
+        id: charged.invoiceId,
+        expectedUpdatedAt: invoice!.updatedAt,
+        items: [
+          {
+            description: "Synthetic medication dispense",
+            quantity: 2,
+            unitPrice: "15.00",
+            itemType: "product",
+            itemId: product.id,
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("medication billing queue"),
+    });
+
+    const state = await withSystem(db, async (tx) => ({
+      stock: await tx
+        .select({ stockQuantity: products.stockQuantity })
+        .from(products)
+        .where(eq(products.id, product.id)),
+      queue: await tx
+        .select({
+          status: dispenseChargeQueue.status,
+          invoiceId: dispenseChargeQueue.invoiceId,
+        })
+        .from(dispenseChargeQueue)
+        .where(eq(dispenseChargeQueue.id, dispenseChargeId)),
+      sourceLines: await tx
+        .select({ id: invoiceItems.id })
+        .from(invoiceItems)
+        .where(
+          and(
+            eq(invoiceItems.invoiceId, charged.invoiceId),
+            eq(invoiceItems.sourceDispenseChargeId, dispenseChargeId),
+            isNull(invoiceItems.deletedAt),
+          ),
+        ),
+    }));
+    expect(state.stock).toEqual([{ stockQuantity: 8 }]);
+    expect(state.queue).toEqual([
+      { status: "invoiced", invoiceId: charged.invoiceId },
+    ]);
+    expect(state.sourceLines).toHaveLength(1);
+  });
+
   it("serializes two estimates for one visit and deducts stock once", async () => {
     const fixture = await createFixture();
     const product = await createProduct(fixture, 10);
@@ -795,17 +1013,18 @@ describeWithPostgres("billing estimate conversion PostgreSQL drill", () => {
       quantity: 2,
     });
 
-    const results = await within(
-      Promise.allSettled([
+    const results = await raceBehindAppointmentRow(
+      fixture.appointmentId,
+      () =>
         billingCaller(fixture).convertEstimateToInvoice({
           id: first.id,
           expectedUpdatedAt: first.updatedAt,
         }),
+      () =>
         billingCaller(fixture).convertEstimateToInvoice({
           id: second.id,
           expectedUpdatedAt: second.updatedAt,
         }),
-      ]),
       "concurrent estimate conversion",
     );
 
@@ -831,12 +1050,14 @@ describeWithPostgres("billing estimate conversion PostgreSQL drill", () => {
       quantity: 2,
     });
 
-    const results = await within(
-      Promise.allSettled([
+    const results = await raceBehindAppointmentRow(
+      fixture.appointmentId,
+      () =>
         billingCaller(fixture).convertEstimateToInvoice({
           id: estimate.id,
           expectedUpdatedAt: estimate.updatedAt,
         }),
+      () =>
         billingCaller(fixture).createInvoice({
           clientId: fixture.clientId,
           patientId: fixture.patientId,
@@ -852,7 +1073,6 @@ describeWithPostgres("billing estimate conversion PostgreSQL drill", () => {
             },
           ],
         }),
-      ]),
       "conversion/create serialization",
     );
 
@@ -909,6 +1129,148 @@ describeWithPostgres("billing estimate conversion PostgreSQL drill", () => {
       estimate.updatedAt.getTime(),
     );
     expect(currentItems).toHaveLength(2);
+  });
+
+  it("blocks a product template from bypassing an older prescription refill queue", async () => {
+    const fixture = await createFixture();
+    const product = await createProduct(fixture, 10);
+    const prescription = await createPrescription(fixture, product, null);
+    const dispenseChargeId = await createPendingDispense(fixture, prescription);
+    await withSystem(db, (tx) =>
+      tx
+        .update(products)
+        .set({ stockQuantity: 8 })
+        .where(eq(products.id, product.id)),
+    );
+    const invoice = await billingCaller(fixture).createInvoice({
+      clientId: fixture.clientId,
+      patientId: fixture.patientId,
+      appointmentId: fixture.appointmentId,
+      isEstimate: false,
+      items: [
+        {
+          description: "Synthetic exam service",
+          quantity: 1,
+          unitPrice: "50.00",
+          itemType: "service",
+          itemId: fixture.serviceId,
+        },
+      ],
+    });
+    const templateId = await createProductTemplate(fixture, product.id);
+
+    await expect(
+      templatesCaller(fixture).applyToInvoice({
+        templateId,
+        invoiceId: invoice.id,
+      }),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("medication billing queue"),
+    });
+
+    const state = await withSystem(db, async (tx) => ({
+      stock: await tx
+        .select({ stockQuantity: products.stockQuantity })
+        .from(products)
+        .where(eq(products.id, product.id)),
+      queue: await tx
+        .select({ status: dispenseChargeQueue.status })
+        .from(dispenseChargeQueue)
+        .where(eq(dispenseChargeQueue.id, dispenseChargeId)),
+      items: await tx
+        .select({ id: invoiceItems.id })
+        .from(invoiceItems)
+        .where(
+          and(
+            eq(invoiceItems.invoiceId, invoice.id),
+            isNull(invoiceItems.deletedAt),
+          ),
+        ),
+    }));
+    expect(state.stock).toEqual([{ stockQuantity: 8 }]);
+    expect(state.queue).toEqual([{ status: "pending" }]);
+    expect(state.items).toHaveLength(1);
+  });
+
+  it("blocks a product template from duplicating medication already sourced to the invoice", async () => {
+    const fixture = await createFixture();
+    const product = await createProduct(fixture, 10);
+    const prescription = await createPrescription(fixture, product, null);
+    const dispenseChargeId = await createPendingDispense(fixture, prescription);
+    await withSystem(db, (tx) =>
+      tx
+        .update(products)
+        .set({ stockQuantity: 8 })
+        .where(eq(products.id, product.id)),
+    );
+    const invoice = await billingCaller(fixture).createInvoice({
+      clientId: fixture.clientId,
+      patientId: fixture.patientId,
+      appointmentId: fixture.appointmentId,
+      isEstimate: false,
+      items: [
+        {
+          description: "Synthetic exam service",
+          quantity: 1,
+          unitPrice: "50.00",
+          itemType: "service",
+          itemId: fixture.serviceId,
+        },
+      ],
+    });
+    await billingCaller(fixture).appendVisitDispenseCharge({
+      appointmentId: fixture.appointmentId,
+      dispenseChargeId,
+      operationId: randomUUID(),
+      expectedDescription: "Synthetic medication dispense",
+      expectedQuantity: 2,
+      expectedUnitPrice: "15.00",
+    });
+    const templateId = await createProductTemplate(fixture, product.id);
+
+    await expect(
+      templatesCaller(fixture).applyToInvoice({
+        templateId,
+        invoiceId: invoice.id,
+      }),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("medication billing queue"),
+    });
+
+    const state = await withSystem(db, async (tx) => ({
+      stock: await tx
+        .select({ stockQuantity: products.stockQuantity })
+        .from(products)
+        .where(eq(products.id, product.id)),
+      queue: await tx
+        .select({
+          status: dispenseChargeQueue.status,
+          invoiceId: dispenseChargeQueue.invoiceId,
+        })
+        .from(dispenseChargeQueue)
+        .where(eq(dispenseChargeQueue.id, dispenseChargeId)),
+      medicationLines: await tx
+        .select({
+          sourceDispenseChargeId: invoiceItems.sourceDispenseChargeId,
+        })
+        .from(invoiceItems)
+        .where(
+          and(
+            eq(invoiceItems.invoiceId, invoice.id),
+            eq(invoiceItems.itemId, product.id),
+            isNull(invoiceItems.deletedAt),
+          ),
+        ),
+    }));
+    expect(state.stock).toEqual([{ stockQuantity: 8 }]);
+    expect(state.queue).toEqual([
+      { status: "invoiced", invoiceId: invoice.id },
+    ]);
+    expect(state.medicationLines).toEqual([
+      { sourceDispenseChargeId: dispenseChargeId },
+    ]);
   });
 
   it("rolls back an earlier stock deduction when a later product is insufficient", async () => {
@@ -1025,19 +1387,20 @@ describeWithPostgres("billing estimate conversion PostgreSQL drill", () => {
       quantity: 2,
     });
 
-    const results = await within(
-      Promise.allSettled([
+    const results = await raceBehindAppointmentRow(
+      fixture.appointmentId,
+      () =>
         billingCaller(fixture).convertEstimateToInvoice({
           id: estimate.id,
           expectedUpdatedAt: estimate.updatedAt,
         }),
+      () =>
         recordsCaller(fixture).recordPrescriptionRefill({
           id: prescription.id,
           operationId: randomUUID(),
           appointmentId: fixture.appointmentId,
           note: "Synthetic concurrency drill refill",
         }),
-      ]),
       "conversion/refill serialization",
     );
 
@@ -1074,11 +1437,15 @@ describeWithPostgres("billing estimate conversion PostgreSQL drill", () => {
     const fixture = await createFixture();
     const product = await createProduct(fixture, 10);
     const prescription = await createPrescription(fixture, product, null);
-    const estimate = await createEstimate(fixture);
-
-    await billingCaller(fixture).convertEstimateToInvoice({
-      id: estimate.id,
-      expectedUpdatedAt: estimate.updatedAt,
+    const serviceWorkItemId = await createProcedureWork(fixture);
+    const serviceCharge = await billingCaller(fixture).chargeVisitWork({
+      appointmentId: fixture.appointmentId,
+      workItemId: serviceWorkItemId,
+      operationId: randomUUID(),
+      expectedDescription: "Synthetic exam service",
+      expectedQuantity: 1,
+      expectedUnitPrice: "50.00",
+      charge: { kind: "service", serviceId: fixture.serviceId },
     });
     await recordsCaller(fixture).recordPrescriptionRefill({
       id: prescription.id,
@@ -1137,7 +1504,7 @@ describeWithPostgres("billing estimate conversion PostgreSQL drill", () => {
 
     await expect(
       billingCaller(fixture).updateInvoiceStatus({
-        id: estimate.id,
+        id: serviceCharge.invoiceId,
         status: "sent",
       }),
     ).rejects.toMatchObject({
@@ -1159,25 +1526,129 @@ describeWithPostgres("billing estimate conversion PostgreSQL drill", () => {
       quantity: 2,
     });
     expect(refillCharge?.dispenseChargeId).toEqual(expect.any(String));
-
-    await billingCaller(fixture).createDispenseChargeInvoice({
-      id: refillCharge!.dispenseChargeId!,
-      acknowledgeLegacyReview: false,
+    await expect(
+      encountersCaller(fixture).getVisitReconciliation({
+        appointmentId: fixture.appointmentId,
+      }),
+    ).resolves.toMatchObject({
+      unresolvedCount: 1,
+      directPendingDispenseCount: 1,
+      directPendingDispenses: [{ id: refillCharge!.dispenseChargeId! }],
+      items: [
+        expect.objectContaining({
+          id: serviceWorkItemId,
+          status: "charged",
+        }),
+      ],
     });
+
+    const appendOperationId = randomUUID();
+    const appendInput = {
+      appointmentId: fixture.appointmentId,
+      dispenseChargeId: refillCharge!.dispenseChargeId!,
+      operationId: appendOperationId,
+      expectedDescription: refillCharge!.dispenseChargeDescription!,
+      expectedQuantity: refillCharge!.quantity!,
+      expectedUnitPrice: refillCharge!.productUnitPrice!,
+    };
+    const appendSettled = await raceBehindAdvisoryLock(
+      `visit-dispense-charge:${fixture.practiceId}:${appendOperationId}`,
+      () => [
+        billingCaller(fixture).appendVisitDispenseCharge(appendInput),
+        billingCaller(fixture).appendVisitDispenseCharge(appendInput),
+      ],
+      "idempotent visit dispense append",
+    );
+    assertNoDeadlock(appendSettled);
+    const appendResults = appendSettled.map((result) =>
+      result.status === "fulfilled"
+        ? (result.value as {
+            invoiceId: string;
+            replayed: boolean;
+          })
+        : (() => {
+            throw result.reason;
+          })(),
+    );
+    expect(appendResults.map((result) => result.replayed).sort()).toEqual([
+      false,
+      true,
+    ]);
+    expect(
+      appendResults.every(
+        (result) => result.invoiceId === serviceCharge.invoiceId,
+      ),
+    ).toBe(true);
     expect((await productStock([product.id])).get(product.id)).toBe(8);
+
+    const appendedState = await withSystem(db, async (tx) => ({
+      lines: await tx
+        .select({
+          id: invoiceItems.id,
+          sourceDispenseChargeId: invoiceItems.sourceDispenseChargeId,
+        })
+        .from(invoiceItems)
+        .where(
+          and(
+            eq(invoiceItems.invoiceId, serviceCharge.invoiceId),
+            isNull(invoiceItems.deletedAt),
+          ),
+        ),
+      work: await tx
+        .select({ status: visitWorkItems.status })
+        .from(visitWorkItems)
+        .where(eq(visitWorkItems.id, serviceWorkItemId)),
+      events: await tx
+        .select({
+          eventType: dispenseChargeEvents.eventType,
+          transitionSource: dispenseChargeEvents.transitionSource,
+          operationId: dispenseChargeEvents.operationId,
+        })
+        .from(dispenseChargeEvents)
+        .where(
+          eq(
+            dispenseChargeEvents.dispenseChargeId,
+            refillCharge!.dispenseChargeId!,
+          ),
+        )
+        .orderBy(asc(dispenseChargeEvents.sequence)),
+    }));
+    expect(appendedState.lines).toHaveLength(2);
+    expect(
+      appendedState.lines.filter(
+        (line) =>
+          line.sourceDispenseChargeId === refillCharge!.dispenseChargeId!,
+      ),
+    ).toHaveLength(1);
+    expect(appendedState.work).toEqual([{ status: "charged" }]);
+    expect(appendedState.events.at(-1)).toEqual({
+      eventType: "invoiced",
+      transitionSource: "invoice_edit",
+      operationId: appendOperationId,
+    });
+    await expect(
+      encountersCaller(fixture).getVisitReconciliation({
+        appointmentId: fixture.appointmentId,
+      }),
+    ).resolves.toMatchObject({
+      unresolvedCount: 0,
+      directPendingDispenseCount: 0,
+    });
     await expect(
       billingCaller(fixture).updateInvoiceStatus({
-        id: estimate.id,
+        id: serviceCharge.invoiceId,
         status: "sent",
       }),
-    ).resolves.toMatchObject({ id: estimate.id, status: "sent" });
+    ).resolves.toMatchObject({ id: serviceCharge.invoiceId, status: "sent" });
 
     await expect(
       encountersCaller(fixture).completeVisit({
         appointmentId: fixture.appointmentId,
         expectedRevision: finalized.revision,
         chargeDisposition: "accounts_receivable",
-        invoiceDueDate: "2099-12-31",
+        invoiceDueDate: new Date(Date.now() + 30 * 24 * 60 * 60_000)
+          .toISOString()
+          .slice(0, 10),
         handoffMethod: "print",
       }),
     ).resolves.toMatchObject({
@@ -1253,8 +1724,9 @@ describeWithPostgres("billing estimate conversion PostgreSQL drill", () => {
         ?.getTime(),
     ).toBe(secondInvoice.updatedAt.getTime());
 
-    const results = await within(
-      Promise.allSettled([
+    const results = await raceBehindProductRows(
+      [firstProduct.id, secondProduct.id],
+      () => [
         billingCaller(fixture).updateInvoiceItems({
           id: firstInvoice.id,
           expectedUpdatedAt: firstInvoice.updatedAt,
@@ -1281,7 +1753,7 @@ describeWithPostgres("billing estimate conversion PostgreSQL drill", () => {
             },
           ],
         }),
-      ]),
+      ],
       "cross-invoice product swap",
     );
 
@@ -1322,8 +1794,9 @@ describeWithPostgres("billing estimate conversion PostgreSQL drill", () => {
       ],
     });
 
-    const results = await within(
-      Promise.allSettled([
+    const results = await raceBehindAdvisoryLock(
+      invoice.id,
+      () => [
         billingCaller(fixture).updateInvoiceItems({
           id: invoice.id,
           expectedUpdatedAt: invoice.updatedAt,
@@ -1341,7 +1814,7 @@ describeWithPostgres("billing estimate conversion PostgreSQL drill", () => {
           id: invoice.id,
           reason: "Synthetic concurrency drill void",
         }),
-      ]),
+      ],
       "same-invoice edit/void serialization",
     );
 

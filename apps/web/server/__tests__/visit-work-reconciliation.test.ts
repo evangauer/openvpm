@@ -126,6 +126,15 @@ describe("visit work reconciliation", () => {
         [listedItem],
         [],
         [],
+        [
+          {
+            id: DISPENSE_CHARGE_ID,
+            prescriptionId: PRESCRIPTION_ID,
+            description: "Synthetic medication dispense",
+            quantity: 2,
+            unitPrice: "15.00",
+          },
+        ],
       ],
     });
 
@@ -135,6 +144,8 @@ describe("visit work reconciliation", () => {
       }),
     ).resolves.toMatchObject({
       unresolvedCount: 1,
+      directPendingDispenseCount: 0,
+      directPendingDispenses: [],
       items: [
         {
           id: WORK_ITEM_ID,
@@ -170,6 +181,7 @@ describe("visit work reconciliation", () => {
         [],
         [],
         [],
+        [],
       ],
     });
 
@@ -180,6 +192,42 @@ describe("visit work reconciliation", () => {
     ).resolves.toMatchObject({ unresolvedCount: 0, items: [] });
     // The tenant-context statement still runs, but no source upserts do.
     expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts a refill dispense that has no duplicate visit work row", async () => {
+    const { db } = createDb({
+      selectResults: [
+        [{ id: APPOINTMENT_ID, status: "in_exam" }],
+        [],
+        [],
+        [],
+        [
+          {
+            id: DISPENSE_CHARGE_ID,
+            prescriptionId: PRESCRIPTION_ID,
+            description: "Cerenia refill",
+            quantity: 2,
+            unitPrice: "15.00",
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).getVisitReconciliation({
+        appointmentId: APPOINTMENT_ID,
+      }),
+    ).resolves.toMatchObject({
+      unresolvedCount: 1,
+      directPendingDispenseCount: 1,
+      directPendingDispenses: [
+        {
+          id: DISPENSE_CHARGE_ID,
+          description: "Cerenia refill",
+        },
+      ],
+      items: [],
+    });
   });
 
   it("serializes vaccination correction and work materialization on the source row", () => {
