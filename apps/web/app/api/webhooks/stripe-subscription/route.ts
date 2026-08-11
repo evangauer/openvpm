@@ -25,6 +25,10 @@ import {
   stripeWebhookContentLengthTooLarge,
 } from "@/lib/stripe-webhook-limits";
 import { projectStripeConversionMilestonesForEvent } from "@/lib/conversion-milestones";
+import {
+  SUBSCRIPTION_CHECKOUT_SOURCES,
+  type SubscriptionCheckoutSource,
+} from "@/lib/billing/checkout-attribution";
 
 function payloadTooLargeResponse() {
   return NextResponse.json(
@@ -534,10 +538,21 @@ function conversionEvidenceForEvent(
     ) {
       return undefined;
     }
+    const checkoutSource = normalizedCheckoutSource(
+      session.metadata?.checkoutSource,
+    );
+    const checkoutSourceEvidenceId = normalizedCheckoutSourceEvidenceId(
+      session.metadata?.checkoutSourceEvidenceId,
+    );
+    const hasValidAttribution =
+      checkoutSource !== null && checkoutSourceEvidenceId !== null;
     return {
       eventCreatedAt,
       objectId: session.id,
       evidenceKind: "subscription_checkout_completed",
+      ...(hasValidAttribution
+        ? { checkoutSource, checkoutSourceEvidenceId }
+        : {}),
     };
   }
 
@@ -563,6 +578,25 @@ function conversionEvidenceForEvent(
   }
 
   return undefined;
+}
+
+function normalizedCheckoutSource(
+  value: string | null | undefined,
+): SubscriptionCheckoutSource | null {
+  return SUBSCRIPTION_CHECKOUT_SOURCES.includes(
+    value as SubscriptionCheckoutSource,
+  )
+    ? (value as SubscriptionCheckoutSource)
+    : null;
+}
+
+function normalizedCheckoutSourceEvidenceId(
+  value: string | null | undefined,
+): string | null {
+  const normalized = value?.trim();
+  return normalized && /^[a-zA-Z0-9._:-]{1,128}$/.test(normalized)
+    ? normalized
+    : null;
 }
 
 function stripeEventCreatedAt(created: number | null | undefined): Date | null {

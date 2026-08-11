@@ -1,19 +1,26 @@
 import { NextResponse } from "next/server";
-import { and, eq, gte, isNotNull, isNull, lte } from "drizzle-orm";
-import { db } from "@openpims/db/client";
-import { practices } from "@openpims/db";
+import { and, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { db, type Database } from "@openpims/db/client";
+import {
+  communications,
+  practiceConversionMilestones,
+  practices,
+  users,
+} from "@openpims/db";
 import {
   billingEnforced,
   CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD,
 } from "@/lib/billing/plans";
 import { cronAuthError } from "@/lib/cron-auth";
-import { sendTrialEndingEmail } from "@/lib/email";
+import { sendTrialEndingEmailWithEvidence } from "@/lib/email";
 import { sendOptionalPlatformEmail } from "@/lib/email-lifecycle";
 import { alertOps } from "@/lib/alerts";
 import { withSystem } from "@/lib/tenant-db";
 import { reportCronHeartbeat } from "@/lib/cron-heartbeat";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
 import { billingContactEmail } from "@/lib/billing/contact";
+import { appBaseUrl } from "@/lib/app-url";
+import { createSubscriptionCheckoutAttributionToken } from "@/lib/billing/checkout-attribution";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -65,6 +72,14 @@ export async function GET(request: Request) {
           email: practices.email,
           timezone: practices.timezone,
           trialEndsAt: practices.trialEndsAt,
+          stripeSubscriptionId: practices.stripeSubscriptionId,
+          settings: practices.settings,
+          country: practices.country,
+          paymentMethodCollected: sql<boolean>`exists (
+            select 1 from ${practiceConversionMilestones} pcm
+            where pcm.practice_id = ${practices.id}
+              and pcm.milestone = 'payment_method_collected'
+          )`,
         })
         .from(practices)
         .where(
@@ -74,7 +89,10 @@ export async function GET(request: Request) {
             gte(practices.trialEndsAt, now),
             lte(practices.trialEndsAt, latestTrialEnd),
             eq(practices.recoveryHold, false),
+            eq(practices.country, "US"),
             isNull(practices.deletedAt),
+            sql`${practices.settings} ->> 'analyticsExcluded' is distinct from 'true'`,
+            sql`${practices.settings} -> 'onboardingState' ->> 'onboardingIntent' is distinct from 'self_host'`,
           ),
         ),
     );
@@ -84,6 +102,7 @@ export async function GET(request: Request) {
     let suppressed = 0;
     let failed = 0;
     let skipped = 0;
+    let dataQualitySuppressed = 0;
 
     for (const practice of trialingPractices) {
       const trialEndsAt = practice.trialEndsAt
@@ -99,19 +118,57 @@ export async function GET(request: Request) {
         continue;
       }
 
+      const variant = practice.stripeSubscriptionId
+        ? practice.paymentMethodCollected
+          ? "billing_connected"
+          : "unknown"
+        : "add_billing";
+      if (variant === "unknown") {
+        dataQualitySuppressed++;
+        suppressed++;
+        continue;
+      }
+
+      const dedupeKey = [
+        "lc:trial-ending",
+        practice.id,
+        formatDateKey(trialEndsAt, practice.timezone ?? undefined),
+        `t-${daysLeft}`,
+      ].join(":");
+      const billingUrl = new URL("/settings", appBaseUrl());
+      billingUrl.searchParams.set("tab", "billing");
+      if (variant === "add_billing") {
+        const attributionToken = createSubscriptionCheckoutAttributionToken({
+          practiceId: practice.id,
+          source: "trial_ending_email",
+          evidenceId: `${formatDateKey(trialEndsAt, practice.timezone ?? undefined)}:t-${daysLeft}`,
+        });
+        if (!attributionToken) {
+          skipped++;
+          continue;
+        }
+        billingUrl.searchParams.set("checkout_attribution", attributionToken);
+      }
+
       const result = await sendOptionalPlatformEmail({
         practiceId: practice.id,
         to,
         emailType: "trial-ending",
-        dedupeKey: [
-          "lc:trial-ending",
-          practice.id,
-          formatDateKey(trialEndsAt, practice.timezone ?? undefined),
-          `t-${daysLeft}`,
-        ].join(":"),
+        dedupeKey,
         retryOnFail: true,
+        stillEligible: (tx) =>
+          trialReminderStillEligible(tx, {
+            practiceId: practice.id,
+            name: practice.name,
+            email: to,
+            timezone: practice.timezone,
+            trialEndsAt,
+            stripeSubscriptionId: practice.stripeSubscriptionId,
+            variant,
+            now,
+          }),
         send: () =>
-          sendTrialEndingEmail({
+          sendTrialEndingEmailWithEvidence({
             to,
             practiceName: practice.name,
             daysLeft,
@@ -120,6 +177,9 @@ export async function GET(request: Request) {
               practice.timezone ?? undefined,
             ),
             monthlyPrice: `$${CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD}`,
+            billingUrl: billingUrl.toString(),
+            variant,
+            idempotencyKey: dedupeKey,
           }),
       });
 
@@ -145,13 +205,20 @@ export async function GET(request: Request) {
         suppressed,
         failed,
         skipped,
+        dataQualitySuppressed,
       },
     });
 
-    return NextResponse.json({ sent, deduped, suppressed, failed, skipped });
+    return NextResponse.json({
+      sent,
+      deduped,
+      suppressed,
+      failed,
+      skipped,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    void alertOps("Billing lifecycle cron failed", message);
+    await alertOps("Billing lifecycle cron failed", message);
     await reportCronHeartbeat({
       job: "billing-lifecycle",
       status: "failed",
@@ -162,6 +229,111 @@ export async function GET(request: Request) {
       { status: 500 },
     );
   }
+}
+
+async function trialReminderStillEligible(
+  tx: Database,
+  expected: {
+    practiceId: string;
+    name: string;
+    email: string;
+    timezone: string;
+    trialEndsAt: Date;
+    stripeSubscriptionId: string | null;
+    variant: "add_billing" | "billing_connected";
+    now: Date;
+  },
+): Promise<boolean> {
+  const [practice] = await tx
+    .select({
+      name: practices.name,
+      email: practices.email,
+      timezone: practices.timezone,
+      billingStatus: practices.billingStatus,
+      trialEndsAt: practices.trialEndsAt,
+      stripeSubscriptionId: practices.stripeSubscriptionId,
+      country: practices.country,
+      settings: practices.settings,
+    })
+    .from(practices)
+    .where(
+      and(eq(practices.id, expected.practiceId), isNull(practices.deletedAt)),
+    )
+    .limit(1);
+  if (!practice || practice.billingStatus !== "trialing") return false;
+  const trialEndsAt = practice.trialEndsAt
+    ? new Date(practice.trialEndsAt)
+    : null;
+  const settings = (practice.settings ?? {}) as {
+    analyticsExcluded?: boolean;
+    onboardingState?: { onboardingIntent?: string };
+  };
+  if (
+    !trialEndsAt ||
+    trialEndsAt.getTime() <= expected.now.getTime() ||
+    trialEndsAt.getTime() !== expected.trialEndsAt.getTime() ||
+    practice.name !== expected.name ||
+    practice.timezone !== expected.timezone ||
+    billingContactEmail(practice.email) !== expected.email ||
+    practice.country !== "US" ||
+    settings.analyticsExcluded === true ||
+    settings.onboardingState?.onboardingIntent === "self_host"
+  ) {
+    return false;
+  }
+
+  const [verifiedAdmin] = await tx
+    .select({ id: users.id })
+    .from(users)
+    .where(
+      and(
+        eq(users.practiceId, expected.practiceId),
+        eq(users.role, "admin"),
+        isNotNull(users.emailVerifiedAt),
+        isNull(users.deletedAt),
+        sql`lower(btrim(${users.email})) = ${expected.email}`,
+      ),
+    )
+    .limit(1);
+  if (!verifiedAdmin) return false;
+
+  const [paymentMethod] = await tx
+    .select({ practiceId: practiceConversionMilestones.practiceId })
+    .from(practiceConversionMilestones)
+    .where(
+      and(
+        eq(practiceConversionMilestones.practiceId, expected.practiceId),
+        eq(practiceConversionMilestones.milestone, "payment_method_collected"),
+      ),
+    )
+    .limit(1);
+  const currentVariant = practice.stripeSubscriptionId
+    ? paymentMethod
+      ? "billing_connected"
+      : "unknown"
+    : "add_billing";
+  if (
+    currentVariant !== expected.variant ||
+    practice.stripeSubscriptionId !== expected.stripeSubscriptionId
+  ) {
+    return false;
+  }
+
+  const cooldownSince = new Date(expected.now.getTime() - DAY_MS);
+  const [recentFirstWin] = await tx
+    .select({ id: communications.id })
+    .from(communications)
+    .where(
+      and(
+        eq(communications.practiceId, expected.practiceId),
+        eq(communications.subject, "first-clinic-win"),
+        eq(communications.status, "sent"),
+        isNull(communications.deletedAt),
+        gte(communications.createdAt, cooldownSince),
+      ),
+    )
+    .limit(1);
+  return !recentFirstWin;
 }
 
 function calendarDaysUntil(end: Date, now: Date, timeZone?: string): number {

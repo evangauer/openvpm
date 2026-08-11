@@ -603,6 +603,13 @@
       "when": 1786428459802,
       "tag": "0085_foamy_rick_jones",
       "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1786470038800,
+      "tag": "0086_woozy_king_cobra",
+      "breakpoints": true
     }
   ]
 }

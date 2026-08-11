@@ -22,6 +22,18 @@ describe("Vercel Analytics capability privacy", () => {
     expect(filterVercelAnalyticsEvent(event)).toBe(event);
   });
 
+  it("removes signed Checkout attribution before analytics delivery", () => {
+    expect(
+      filterVercelAnalyticsEvent({
+        type: "pageview",
+        url: "https://app.openvpm.com/settings?tab=billing&checkout_attribution=signed-secret",
+      }),
+    ).toEqual({
+      type: "pageview",
+      url: "https://app.openvpm.com/settings?tab=billing",
+    });
+  });
+
   it("wires the privacy filter into the only Vercel Analytics component", () => {
     const source = readFileSync("lib/providers.tsx", "utf8");
     expect(source).toContain(

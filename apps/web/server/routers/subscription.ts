@@ -29,6 +29,11 @@ import {
 import { appBaseUrl } from "@/lib/app-url";
 import { billingContactEmail } from "@/lib/billing/contact";
 import { RECOVERY_HOLD_BLOCK_MESSAGE } from "@/lib/recovery-hold";
+import { hasFirstRealVisit } from "@/lib/billing/first-real-visit";
+import {
+  verifySubscriptionCheckoutAttributionToken,
+  type SubscriptionCheckoutSource,
+} from "@/lib/billing/checkout-attribution";
 
 const adminProcedure = protectedProcedure.use(requireRole("admin"));
 
@@ -185,6 +190,7 @@ export const subscriptionRouter = createRouter({
         // Where Stripe sends the admin back: the billing page (default) or
         // the guided setup, which resumes where they left off.
         returnTo: z.enum(["settings", "setup"]).default("settings"),
+        attributionToken: z.string().trim().min(1).max(4096).optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -239,6 +245,40 @@ export const subscriptionRouter = createRouter({
         ctx.practiceId,
       );
 
+      const firstVisitCompleted = await hasFirstRealVisit(
+        ctx.db,
+        ctx.practiceId,
+      );
+      const signedAttribution = input.attributionToken
+        ? verifySubscriptionCheckoutAttributionToken(
+            input.attributionToken,
+            ctx.practiceId,
+          )
+        : null;
+      if (input.attributionToken && !signedAttribution) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "This billing link is invalid or expired. Open billing again.",
+        });
+      }
+      if (
+        signedAttribution?.source === "first_visit_email" &&
+        !firstVisitCompleted
+      ) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "This first-visit billing link is no longer eligible.",
+        });
+      }
+      const checkoutSource: SubscriptionCheckoutSource = signedAttribution
+        ? signedAttribution.source
+        : firstVisitCompleted
+          ? "in_app_post_first_visit"
+          : "in_app_pre_first_visit";
+      const checkoutSourceEvidenceId =
+        signedAttribution?.evidenceId ?? "server-derived:v1";
+
       const base = appBaseUrl();
       const trialTerms = subscriptionCheckoutTrialTerms({
         billingStatus: practice.billingStatus,
@@ -264,6 +304,8 @@ export const subscriptionRouter = createRouter({
         customerEmail,
         trialEnd: trialTerms.trialEnd,
         trialPeriodDays: trialTerms.trialPeriodDays,
+        checkoutSource,
+        checkoutSourceEvidenceId,
         successUrl:
           input.returnTo === "setup"
             ? `${base}/?setup=resume&checkout=success`

@@ -1,6 +1,7 @@
 import type { Database } from "@openpims/db/client";
 import { stripeEvents } from "@openpims/db";
 import { and, eq, isNull, or } from "drizzle-orm";
+import type { SubscriptionCheckoutSource } from "@/lib/billing/checkout-attribution";
 
 export type StripeConversionEvidenceInput = {
   eventCreatedAt: Date;
@@ -10,6 +11,8 @@ export type StripeConversionEvidenceInput = {
     | "positive_subscription_invoice_paid";
   amountCents?: number | null;
   currency?: string | null;
+  checkoutSource?: SubscriptionCheckoutSource | null;
+  checkoutSourceEvidenceId?: string | null;
 };
 
 /**
@@ -26,7 +29,7 @@ export async function claimStripeEvent(
     endpoint: "client-invoice" | "client-invoice-connect" | "subscription";
     eventType: string;
     evidence?: StripeConversionEvidenceInput;
-  }
+  },
 ): Promise<boolean> {
   const rows = await db
     .insert(stripeEvents)
@@ -39,6 +42,14 @@ export async function claimStripeEvent(
             eventCreatedAt: opts.evidence.eventCreatedAt,
             objectId: opts.evidence.objectId,
             evidenceKind: opts.evidence.evidenceKind,
+            ...(opts.evidence.checkoutSource &&
+            opts.evidence.checkoutSourceEvidenceId
+              ? {
+                  checkoutSource: opts.evidence.checkoutSource,
+                  checkoutSourceEvidenceId:
+                    opts.evidence.checkoutSourceEvidenceId,
+                }
+              : {}),
             amountCents: opts.evidence.amountCents ?? null,
             currency: opts.evidence.currency ?? null,
           }

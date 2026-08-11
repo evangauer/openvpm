@@ -50,6 +50,30 @@ function envValue(name: string): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
+function hostedFirstClinicWinCheck(): {
+  ok: boolean;
+  detail: string;
+  advisory: boolean;
+} {
+  if (!envFlagEnabled("FIRST_CLINIC_WIN_EMAIL_ENABLED")) {
+    return {
+      ok: true,
+      detail: "First clinic win outreach is disabled",
+      advisory: true,
+    };
+  }
+  const launchAt = envValue("FIRST_CLINIC_WIN_EMAIL_LAUNCH_AT");
+  const parsed = launchAt ? new Date(launchAt) : null;
+  const valid = parsed !== null && !Number.isNaN(parsed.getTime());
+  return {
+    ok: valid,
+    detail: valid
+      ? "First clinic win outreach has an explicit launch boundary"
+      : "First clinic win outreach launch boundary is missing or invalid",
+    advisory: false,
+  };
+}
+
 // Overage price envs (STRIPE_PRICE_SMS_OVERAGE / STRIPE_PRICE_AI_OVERAGE) drive
 // metered overage via Stripe Billing Meters. They are NOT required here so the
 // app still boots before the meters are configured (and so usage is recorded
@@ -521,6 +545,7 @@ export async function GET() {
       HOSTED_BILLING_ENV_NAMES,
       "Hosted billing envs present",
     );
+    checks.hostedFirstClinicWin = hostedFirstClinicWinCheck();
     checks.hostedSubscriptionTax = hostedSubscriptionTaxCheck();
     const hostedStorageEnv = hostedEnvCheck(
       HOSTED_STORAGE_ENV_NAMES,

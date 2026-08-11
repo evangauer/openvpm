@@ -32,9 +32,10 @@ const mocks = vi.hoisted(() => {
     billingEnforced: vi.fn(() => true),
     cronAuthError: vi.fn(() => null),
     reportCronHeartbeat: vi.fn(async () => undefined),
-    sendTrialEndingEmail: vi.fn(async () => ({
+    sendTrialEndingEmailWithEvidence: vi.fn(async () => ({
       success: true,
       id: "email_123",
+      outcome: "accepted" as const,
     })),
     sendOptionalPlatformEmail: vi.fn(
       async (opts: {
@@ -76,7 +77,11 @@ vi.mock("@/lib/cron-heartbeat", () => ({
 }));
 
 vi.mock("@/lib/email", () => ({
-  sendTrialEndingEmail: mocks.sendTrialEndingEmail,
+  sendTrialEndingEmailWithEvidence: mocks.sendTrialEndingEmailWithEvidence,
+}));
+
+vi.mock("@/lib/billing/checkout-attribution", () => ({
+  createSubscriptionCheckoutAttributionToken: vi.fn(() => "signed-token"),
 }));
 
 vi.mock("@/lib/email-lifecycle", () => ({
@@ -98,6 +103,8 @@ function practice(overrides: Record<string, unknown> = {}) {
     email: "owner@example.com",
     timezone: "America/New_York",
     trialEndsAt: new Date("2026-07-04T15:00:00Z"),
+    stripeSubscriptionId: null,
+    paymentMethodCollected: false,
     ...overrides,
   };
 }
@@ -188,13 +195,17 @@ describe("billing lifecycle cron", () => {
         send: expect.any(Function),
       }),
     );
-    expect(mocks.sendTrialEndingEmail).toHaveBeenCalledWith({
-      to: "owner@example.com",
-      practiceName: "Neighborhood Veterinary",
-      daysLeft: 3,
-      trialEndDate: "July 4, 2026",
-      monthlyPrice: "$79",
-    });
+    expect(mocks.sendTrialEndingEmailWithEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        daysLeft: 3,
+        trialEndDate: "July 4, 2026",
+        monthlyPrice: "$79",
+        variant: "add_billing",
+        idempotencyKey: `lc:trial-ending:${PRACTICE_ID}:2026-07-04:t-3`,
+      }),
+    );
     expect(mocks.reportCronHeartbeat).toHaveBeenCalledWith({
       job: "billing-lifecycle",
       status: "ok",
@@ -206,6 +217,7 @@ describe("billing lifecycle cron", () => {
         suppressed: 0,
         failed: 0,
         skipped: 0,
+        dataQualitySuppressed: 0,
       },
     });
   });
@@ -237,7 +249,7 @@ describe("billing lifecycle cron", () => {
         dedupeKey: `lc:trial-ending:${PRACTICE_ID}:2026-07-03:t-3`,
       }),
     );
-    expect(mocks.sendTrialEndingEmail).toHaveBeenCalledWith(
+    expect(mocks.sendTrialEndingEmailWithEvidence).toHaveBeenCalledWith(
       expect.objectContaining({
         daysLeft: 3,
         trialEndDate: "July 3, 2026",
@@ -261,11 +273,51 @@ describe("billing lifecycle cron", () => {
         to: "owner@example.com",
       }),
     );
-    expect(mocks.sendTrialEndingEmail).toHaveBeenCalledWith(
+    expect(mocks.sendTrialEndingEmailWithEvidence).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "owner@example.com",
       }),
     );
+  });
+
+  it("reassures a connected trial instead of asking for billing again", async () => {
+    mocks.selectResults.push([
+      practice({
+        stripeSubscriptionId: "sub_connected",
+        paymentMethodCollected: true,
+      }),
+    ]);
+
+    const response = await GET(
+      new Request("https://openvpm.test/api/cron/billing-lifecycle"),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({ sent: 1 });
+    expect(mocks.sendTrialEndingEmailWithEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({
+        variant: "billing_connected",
+        billingUrl: "http://localhost:3000/settings?tab=billing",
+      }),
+    );
+  });
+
+  it("suppresses contradictory subscription evidence instead of guessing", async () => {
+    mocks.selectResults.push([
+      practice({
+        stripeSubscriptionId: "sub_unprojected",
+        paymentMethodCollected: false,
+      }),
+    ]);
+
+    const response = await GET(
+      new Request("https://openvpm.test/api/cron/billing-lifecycle"),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      sent: 0,
+      suppressed: 1,
+    });
+    expect(mocks.sendOptionalPlatformEmail).not.toHaveBeenCalled();
   });
 
   it("skips non-milestone trials and practices without billing email", async () => {
@@ -287,7 +339,7 @@ describe("billing lifecycle cron", () => {
       skipped: 3,
     });
     expect(mocks.sendOptionalPlatformEmail).not.toHaveBeenCalled();
-    expect(mocks.sendTrialEndingEmail).not.toHaveBeenCalled();
+    expect(mocks.sendTrialEndingEmailWithEvidence).not.toHaveBeenCalled();
   });
 
   it("does not treat same-calendar-day trial endings as T-1", async () => {
@@ -307,7 +359,7 @@ describe("billing lifecycle cron", () => {
       skipped: 1,
     });
     expect(mocks.sendOptionalPlatformEmail).not.toHaveBeenCalled();
-    expect(mocks.sendTrialEndingEmail).not.toHaveBeenCalled();
+    expect(mocks.sendTrialEndingEmailWithEvidence).not.toHaveBeenCalled();
   });
 
   it("reports deduped lifecycle sends separately from new sends", async () => {
@@ -328,7 +380,7 @@ describe("billing lifecycle cron", () => {
       failed: 0,
       skipped: 0,
     });
-    expect(mocks.sendTrialEndingEmail).not.toHaveBeenCalled();
+    expect(mocks.sendTrialEndingEmailWithEvidence).not.toHaveBeenCalled();
   });
 
   it("reports recipient suppression without claiming or failing the send", async () => {
@@ -350,7 +402,7 @@ describe("billing lifecycle cron", () => {
       failed: 0,
       skipped: 0,
     });
-    expect(mocks.sendTrialEndingEmail).not.toHaveBeenCalled();
+    expect(mocks.sendTrialEndingEmailWithEvidence).not.toHaveBeenCalled();
   });
 
   it("sweeps only active trialing practices", () => {

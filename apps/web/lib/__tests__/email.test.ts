@@ -552,7 +552,7 @@ describe("lifecycle email branding", () => {
     });
     expect(payload.html).toContain("/email-preferences?token=");
     expect(payload.html).toContain(
-      "This address is the OpenVPM billing contact for Neighborhood Veterinary.",
+      "You’re receiving this because this is the practice email saved for Neighborhood Veterinary.",
     );
     expect(payload.html).not.toContain(
       'href="https://app.openvpm.com/settings?tab=billing">Manage email preferences',
@@ -580,6 +580,50 @@ describe("lifecycle email branding", () => {
       error: "Email preference signing is not configured.",
     });
     expect(mocks.resendSend).not.toHaveBeenCalled();
+  });
+
+  it("renders a PHI-free first-clinic-win prompt with transparent pricing", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_SIGNING_SECRET",
+      "stable-signing-secret-at-least-32-bytes",
+    );
+    vi.stubEnv("EMAIL_PREFERENCE_BASE_URL", "https://app.openvpm.com");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-first-win" } });
+    const { sendFirstClinicWinEmail } = await loadEmail();
+
+    await expect(
+      sendFirstClinicWinEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        trialEndDate: "August 20, 2026",
+        billingUrl:
+          "https://app.openvpm.com/settings?tab=billing&checkout_attribution=signed",
+        idempotencyKey: "lc:first-clinic-win:v1:practice",
+      }),
+    ).resolves.toMatchObject({
+      success: true,
+      id: "email-first-win",
+      outcome: "accepted",
+    });
+
+    const [payload, options] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(options).toMatchObject({
+      idempotencyKey: "lc:first-clinic-win:v1:practice",
+    });
+    expect(payload.headers).toMatchObject({
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    });
+    expect(payload.html).toContain("first clinic visit in OpenVPM");
+    expect(payload.html).toContain("$79");
+    expect(payload.html).toContain("$0.03 per text");
+    expect(payload.html).toContain("$0.05 per AI action");
+    expect(payload.html).toContain("workspace becomes read only");
+    expect(payload.html).not.toMatch(/patient|client|invoice|appointment/i);
   });
 
   it("uses the normalized brand support email as lifecycle reply-to", async () => {

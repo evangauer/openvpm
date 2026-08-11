@@ -37,6 +37,7 @@ const mocks = vi.hoisted(() => {
     updateSet,
     alertOps: vi.fn(async () => undefined),
     marketingEmailEnabledForRecipient: vi.fn(async () => true),
+    lockAndCheckMarketingEmailEnabled: vi.fn(async () => true),
     practiceAllowsExternalSideEffects: vi.fn(async () => true),
     lockPracticeForExternalSideEffects: vi.fn(async () => true),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
@@ -59,6 +60,11 @@ vi.mock("@/lib/alerts", () => ({
 
 vi.mock("@/lib/platform-email-preferences", () => ({
   marketingEmailEnabledForRecipient: mocks.marketingEmailEnabledForRecipient,
+  lockAndCheckMarketingEmailEnabled: mocks.lockAndCheckMarketingEmailEnabled,
+}));
+
+vi.mock("@/lib/email-preferences", () => ({
+  emailPreferenceRecipientHash: vi.fn(() => "a".repeat(64)),
 }));
 
 vi.mock("@/lib/recovery-hold", () => ({
@@ -83,6 +89,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-06-28T12:00:00Z"));
   mocks.marketingEmailEnabledForRecipient.mockResolvedValue(true);
+  mocks.lockAndCheckMarketingEmailEnabled.mockResolvedValue(true);
   mocks.practiceAllowsExternalSideEffects.mockResolvedValue(true);
   mocks.lockPracticeForExternalSideEffects.mockResolvedValue(true);
 });
@@ -212,7 +219,10 @@ describe("sendLifecycleEmail", () => {
 
     expect(mocks.alertOps).toHaveBeenCalledWith(
       "Lifecycle email error",
-      expect.stringContaining("preference unavailable"),
+      expect.stringContaining("errorCode=lifecycle_exception"),
+    );
+    expect(JSON.stringify(mocks.alertOps.mock.calls)).not.toContain(
+      "preference unavailable",
     );
     expect(mocks.insertValues).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
@@ -237,6 +247,7 @@ describe("sendLifecycleEmail", () => {
         id: "comm-pending",
         status: "pending",
         createdAt: new Date(Date.now() - 5 * 60 * 1000),
+        content: `trial-ending:recipient:${"a".repeat(64)}`,
       },
     ]);
     const send = vi.fn(async () => ({ success: true, id: "email-1" }));
@@ -259,6 +270,7 @@ describe("sendLifecycleEmail", () => {
         id: "comm-sent",
         status: "sent",
         createdAt: new Date(Date.now() - 5 * 60 * 1000),
+        content: `trial-ending:recipient:${"a".repeat(64)}`,
       },
     ]);
     const send = vi.fn(async () => ({ success: true, id: "email-1" }));
@@ -281,6 +293,7 @@ describe("sendLifecycleEmail", () => {
         createdAt: new Date(
           Date.now() - LIFECYCLE_EMAIL_PENDING_RECLAIM_MS - 1,
         ),
+        content: `trial-ending:recipient:${"a".repeat(64)}`,
       },
     ]);
     mocks.deleteResults.push([{ id: "comm-stale" }]);
@@ -304,7 +317,8 @@ describe("sendLifecycleEmail", () => {
     mocks.insertResults.push([{ id: "comm-1" }]);
     const send = vi.fn(async () => ({
       success: false,
-      error: "provider down",
+      error: "provider rejected owner@example.com and request req_secret_123",
+      failureCode: "provider_rejected",
     }));
 
     await expect(sendLifecycleEmail({ ...BASE_OPTS, send })).resolves.toEqual({
@@ -314,10 +328,57 @@ describe("sendLifecycleEmail", () => {
 
     expect(mocks.alertOps).toHaveBeenCalledWith(
       "Lifecycle email failed",
-      "trial-ending \u2192 owner@example.com: provider down",
+      expect.stringContaining("recipientHash=aaaaaaaaaaaaaaaa"),
+    );
+    expect(JSON.stringify(mocks.alertOps.mock.calls)).not.toContain(
+      "owner@example.com",
+    );
+    expect(JSON.stringify(mocks.alertOps.mock.calls)).not.toContain(
+      "req_secret_123",
+    );
+    expect(mocks.alertOps).toHaveBeenCalledWith(
+      "Lifecycle email failed",
+      expect.stringContaining("errorCode=provider_rejected"),
     );
     expect(mocks.deleteWhere).not.toHaveBeenCalled();
     expect(mocks.updateSet).toHaveBeenCalledWith({ status: "failed" });
+  });
+
+  it("keeps an ambiguous provider outcome recipient-bound for safe retry", async () => {
+    mocks.insertResults.push([{ id: "comm-ambiguous" }]);
+    const send = vi.fn(async () => ({
+      success: false,
+      error: "provider response lost",
+      outcome: "outcome_unknown" as const,
+    }));
+
+    await expect(
+      sendLifecycleEmail({ ...BASE_OPTS, send, retryOnFail: true }),
+    ).resolves.toEqual({ sent: false, deduped: false });
+
+    expect(mocks.deleteWhere).not.toHaveBeenCalled();
+    expect(mocks.updateSet).not.toHaveBeenCalledWith({ status: "failed" });
+  });
+
+  it("rechecks optional consent under the final recipient lock", async () => {
+    mocks.insertResults.push([{ id: "comm-unsubscribe-race" }]);
+    mocks.lockAndCheckMarketingEmailEnabled.mockResolvedValueOnce(false);
+    const send = vi.fn(async () => ({ success: true, id: "email-1" }));
+
+    await expect(
+      sendLifecycleEmail({ ...BASE_OPTS, category: "marketing", send }),
+    ).resolves.toEqual({
+      sent: false,
+      deduped: false,
+      suppressed: true,
+    });
+
+    expect(mocks.lockPracticeForExternalSideEffects).toHaveBeenCalled();
+    expect(mocks.lockAndCheckMarketingEmailEnabled).toHaveBeenCalledWith(
+      mocks.db,
+      BASE_OPTS.to,
+    );
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("drops a failed retryable lifecycle email claim so cron can retry", async () => {

@@ -4,14 +4,24 @@ import type { Database } from "@openpims/db/client";
 import { communications } from "@openpims/db";
 import { withSystem } from "@/lib/tenant-db";
 import { alertOps } from "@/lib/alerts";
-import { marketingEmailEnabledForRecipient } from "@/lib/platform-email-preferences";
+import {
+  lockAndCheckMarketingEmailEnabled,
+  marketingEmailEnabledForRecipient,
+} from "@/lib/platform-email-preferences";
+import { emailPreferenceRecipientHash } from "@/lib/email-preferences";
 import {
   lockPracticeForExternalSideEffects,
   practiceAllowsExternalSideEffects,
   RECOVERY_HOLD_BLOCK_MESSAGE,
 } from "@/lib/recovery-hold";
 
-type SendResult = { success: boolean; id?: string; error?: string };
+type SendResult = {
+  success: boolean;
+  id?: string;
+  error?: string;
+  outcome?: "accepted" | "definite_failure" | "outcome_unknown";
+  failureCode?: string;
+};
 type ClaimedLifecycleEmail = { id: string };
 type LifecycleEmailClaim =
   | { kind: "claimed"; row: ClaimedLifecycleEmail }
@@ -91,6 +101,12 @@ export async function sendLifecycleEmail(opts: LifecycleEmailOptions): Promise<{
         if (!(await lockPracticeForExternalSideEffects(tx, opts.practiceId))) {
           return { blocked: true as const };
         }
+        if (
+          opts.category === "marketing" &&
+          !(await lockAndCheckMarketingEmailEnabled(tx, opts.to))
+        ) {
+          return { blocked: true as const };
+        }
         if (opts.stillEligible && !(await opts.stillEligible(tx))) {
           return { blocked: true as const };
         }
@@ -133,8 +149,18 @@ export async function sendLifecycleEmail(opts: LifecycleEmailOptions): Promise<{
 
     await alertOps(
       "Lifecycle email failed",
-      `${opts.emailType} → ${opts.to}: ${result.error ?? "unknown error"}`,
+      lifecycleAlertDetail(
+        opts,
+        result.failureCode ?? result.outcome ?? "send_failed",
+      ),
     );
+
+    if (result.outcome === "outcome_unknown") {
+      // Keep the recipient-bound claim pending. A stale retry reuses the same
+      // provider idempotency key; deleting here could duplicate an accepted
+      // request whose response was lost.
+      return { sent: false, deduped: false };
+    }
 
     if (opts.retryOnFail) {
       // Drop the claim so the next cron sweep can try again.
@@ -153,10 +179,23 @@ export async function sendLifecycleEmail(opts: LifecycleEmailOptions): Promise<{
   } catch (err) {
     await alertOps(
       "Lifecycle email error",
-      `${opts.emailType} → ${opts.to}: ${err instanceof Error ? err.message : String(err)}`,
+      lifecycleAlertDetail(opts, "lifecycle_exception"),
     );
     return { sent: false, deduped: false };
   }
+}
+
+function lifecycleAlertDetail(
+  opts: Pick<LifecycleEmailOptions, "practiceId" | "to" | "emailType">,
+  errorCode: string,
+): string {
+  const recipientHash = emailPreferenceRecipientHash(opts.to);
+  return [
+    `practice=${opts.practiceId}`,
+    `emailType=${opts.emailType}`,
+    `recipientHash=${recipientHash?.slice(0, 16) ?? "unavailable"}`,
+    `errorCode=${errorCode.replace(/[^a-z0-9_-]/gi, "_").slice(0, 64)}`,
+  ].join(" ");
 }
 
 /**
@@ -172,6 +211,7 @@ export function sendOptionalPlatformEmail(
 
 async function claimLifecycleEmail(opts: {
   practiceId: string;
+  to: string;
   emailType: string;
   dedupeKey: string;
 }): Promise<LifecycleEmailClaim> {
@@ -185,6 +225,7 @@ async function claimLifecycleEmail(opts: {
         id: communications.id,
         status: communications.status,
         createdAt: communications.createdAt,
+        content: communications.content,
       })
       .from(communications)
       .where(eq(communications.dedupeKey, opts.dedupeKey))
@@ -201,6 +242,18 @@ async function claimLifecycleEmail(opts: {
       kind: "duplicate",
       state: existing.status === "sent" ? "sent" : "failed",
     };
+  }
+
+  const expectedRecipientBinding = lifecycleRecipientBinding(opts);
+  if (existing.content !== expectedRecipientBinding) {
+    await alertOps(
+      "Lifecycle email recipient changed after an ambiguous send",
+      lifecycleAlertDetail(
+        opts,
+        "recipient binding differs from the pending provider attempt",
+      ),
+    );
+    return { kind: "duplicate", state: "in_flight" };
   }
 
   const staleBefore = new Date(Date.now() - LIFECYCLE_EMAIL_PENDING_RECLAIM_MS);
@@ -232,6 +285,7 @@ async function claimLifecycleEmail(opts: {
 
 function insertLifecycleEmailClaim(opts: {
   practiceId: string;
+  to: string;
   emailType: string;
   dedupeKey: string;
 }) {
@@ -244,11 +298,22 @@ function insertLifecycleEmailClaim(opts: {
         channel: "email",
         direction: "outbound",
         subject: opts.emailType,
-        content: opts.emailType,
+        content: lifecycleRecipientBinding(opts),
         status: "pending",
         dedupeKey: opts.dedupeKey,
       })
       .onConflictDoNothing({ target: communications.dedupeKey })
       .returning({ id: communications.id }),
   );
+}
+
+function lifecycleRecipientBinding(opts: {
+  to: string;
+  emailType: string;
+}): string {
+  const recipientHash = emailPreferenceRecipientHash(opts.to);
+  if (!recipientHash) {
+    throw new Error("email preference identity is not configured");
+  }
+  return `${opts.emailType}:recipient:${recipientHash}`;
 }

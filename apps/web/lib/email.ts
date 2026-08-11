@@ -4,6 +4,7 @@ import {
   renderWelcomeEmail,
   renderSetupRecoveryEmail,
   renderTrialEndingEmail,
+  renderFirstClinicWinEmail,
   renderPaymentReceiptEmail,
   renderPaymentFailedEmail,
 } from "@openpims/email";
@@ -60,6 +61,11 @@ export interface EmailProviderEvidence {
     | "provider_exception"
     | "missing_provider_id";
 }
+
+export type EmailSendResult = Pick<
+  EmailProviderEvidence,
+  "success" | "id" | "error" | "outcome" | "failureCode"
+>;
 
 function emailSendTimeoutMessage(): string {
   return `Email send timed out after ${EMAIL_SEND_TIMEOUT_MS}ms`;
@@ -289,6 +295,20 @@ export async function sendEmail(
     success,
     ...(id ? { id } : {}),
     ...(error ? { error } : {}),
+  };
+}
+
+async function sendEmailWithEvidence(
+  options: EmailDispatchOptions,
+): Promise<EmailSendResult> {
+  const { success, id, error, outcome, failureCode } =
+    await dispatchEmail(options);
+  return {
+    success,
+    outcome,
+    ...(id ? { id } : {}),
+    ...(error ? { error } : {}),
+    ...(failureCode ? { failureCode } : {}),
   };
 }
 
@@ -689,7 +709,27 @@ export async function sendTrialEndingEmail(data: {
   trialEndDate: string;
   monthlyPrice?: string;
   billingUrl?: string;
+  variant?: "add_billing" | "billing_connected";
+  idempotencyKey?: string;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
+  const result = await sendTrialEndingEmailWithEvidence(data);
+  return {
+    success: result.success,
+    ...(result.id ? { id: result.id } : {}),
+    ...(result.error ? { error: result.error } : {}),
+  };
+}
+
+export async function sendTrialEndingEmailWithEvidence(data: {
+  to: string;
+  practiceName: string;
+  daysLeft: number;
+  trialEndDate: string;
+  monthlyPrice?: string;
+  billingUrl?: string;
+  variant?: "add_billing" | "billing_connected";
+  idempotencyKey?: string;
+}): Promise<EmailSendResult> {
   const brand = openvpmBrand();
   const billingUrl = data.billingUrl ?? `${brand.appUrl}/settings?tab=billing`;
   const recipientHash = emailPreferenceRecipientHash(data.to);
@@ -697,6 +737,8 @@ export async function sendTrialEndingEmail(data: {
     return {
       success: false,
       error: "Email preference signing is not configured.",
+      outcome: "definite_failure",
+      failureCode: "provider_not_configured",
     };
   }
   const preferenceLinks = createEmailPreferenceLinks({
@@ -707,6 +749,8 @@ export async function sendTrialEndingEmail(data: {
     return {
       success: false,
       error: "Email preference signing is not configured.",
+      outcome: "definite_failure",
+      failureCode: "provider_not_configured",
     };
   }
   const { subject, html } = await renderTrialEndingEmail({
@@ -716,9 +760,10 @@ export async function sendTrialEndingEmail(data: {
     trialEndDate: data.trialEndDate,
     monthlyPrice: data.monthlyPrice ?? "$79",
     billingUrl,
+    variant: data.variant,
     unsubscribeUrl: preferenceLinks.preferencesUrl,
   });
-  return sendEmail({
+  return sendEmailWithEvidence({
     to: data.to,
     subject,
     html,
@@ -727,6 +772,61 @@ export async function sendTrialEndingEmail(data: {
       "List-Unsubscribe": `<${preferenceLinks.oneClickUrl}>`,
       "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
     },
+    redactRecipientInLogs: true,
+    ...(data.idempotencyKey ? { idempotencyKey: data.idempotencyKey } : {}),
+  });
+}
+
+/** First-real-visit conversion nudge. Promotional and PHI-free. */
+export async function sendFirstClinicWinEmail(data: {
+  to: string;
+  practiceName: string;
+  trialEndDate: string;
+  monthlyPrice?: string;
+  billingUrl: string;
+  idempotencyKey: string;
+}): Promise<EmailSendResult> {
+  const brand = openvpmBrand();
+  const recipientHash = emailPreferenceRecipientHash(data.to);
+  if (!recipientHash) {
+    return {
+      success: false,
+      error: "Email preference signing is not configured.",
+      outcome: "definite_failure",
+      failureCode: "provider_not_configured",
+    };
+  }
+  const preferenceLinks = createEmailPreferenceLinks({
+    kind: "recipient",
+    id: recipientHash,
+  });
+  if (!preferenceLinks) {
+    return {
+      success: false,
+      error: "Email preference signing is not configured.",
+      outcome: "definite_failure",
+      failureCode: "provider_not_configured",
+    };
+  }
+  const { subject, html } = await renderFirstClinicWinEmail({
+    brand,
+    practiceName: data.practiceName,
+    trialEndDate: data.trialEndDate,
+    monthlyPrice: data.monthlyPrice ?? "$79",
+    billingUrl: data.billingUrl,
+    unsubscribeUrl: preferenceLinks.preferencesUrl,
+  });
+  return sendEmailWithEvidence({
+    to: data.to,
+    subject,
+    html,
+    replyTo: brand.supportEmail,
+    headers: {
+      "List-Unsubscribe": `<${preferenceLinks.oneClickUrl}>`,
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    },
+    redactRecipientInLogs: true,
+    idempotencyKey: data.idempotencyKey,
   });
 }
 

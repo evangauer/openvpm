@@ -3,6 +3,7 @@
 import { track } from "@vercel/analytics";
 import type { FunnelEventName } from "@/lib/funnel-analytics";
 import { getFunnelVisitorId } from "@/lib/funnel-visitor";
+import { sanitizeAnalyticsUrl } from "@/lib/analytics-privacy";
 
 type FunnelProps = Record<string, string | number | boolean | null | undefined>;
 
@@ -12,7 +13,7 @@ type FunnelProps = Record<string, string | number | boolean | null | undefined>;
  */
 export function trackFunnelEvent(
   name: FunnelEventName,
-  props?: FunnelProps
+  props?: FunnelProps,
 ): void {
   const cleaned: Record<string, string | number | boolean> = {};
   if (props) {
@@ -40,10 +41,12 @@ export function trackFunnelEvent(
     const configuredOrigin =
       process.env.NEXT_PUBLIC_FUNNEL_ENDPOINT?.trim() || hostedFunnelOrigin;
     const endpoint = new URL("/api/funnel-event", configuredOrigin).toString();
-    const path =
+    const rawPath =
       typeof cleaned.path === "string"
         ? cleaned.path
         : `${window.location.pathname}${window.location.search}`;
+    const path = sanitizeAnalyticsUrl(rawPath);
+    if (!path) return;
     const source =
       typeof cleaned.source === "string" ? cleaned.source : undefined;
 

@@ -391,6 +391,30 @@ remaining are excluded. Every send uses the shared preference/suppression gate,
 a campaign-versioned idempotency key, and the saved setup step. It never includes
 patient data and never asks a clinic to email an export or make it public.
 
+The hourly `/api/cron/first-clinic-win` conversion sweep is independently
+default-off. It is eligible only after a committed, non-demo checked-out visit,
+and only for an active Cloud trial that has no Stripe subscription or signed
+payment-method milestone. The saved practice email must exactly match an active,
+email-verified admin; the campaign does not guess another clinician, client, or
+contact. It rechecks eligibility under the practice recovery lock, serializes
+with marketing unsubscribe preferences, sends no clinical identifiers, and
+uses one stable practice-wide provider idempotency key.
+
+To stage a prospective rollout, leave the flag off, choose a reviewed UTC
+boundary, deploy `FIRST_CLINIC_WIN_EMAIL_LAUNCH_AT=<ISO timestamp>`, and confirm
+`/api/health` stays green. Then set `FIRST_CLINIC_WIN_EMAIL_ENABLED=true` and
+redeploy. Only visits completed at or after that boundary qualify; do not move
+the boundary backward for a retrospective blast without a separately reviewed
+backfill. Kill the campaign by setting the flag back to `false`. Monitor its
+`sent`, `deduped`, `suppressed`, `failed`, and `skipped` heartbeat counts.
+
+Trial-ending messages use the same preference/idempotency boundary and retain
+their existing stage keys. A trial with no subscription receives the Add
+billing variant. A trial with both a connected subscription and signed Checkout
+milestone receives a billing-connected reassurance. A subscription without its
+signed milestone is suppressed and counted as data quality rather than guessed
+into either message.
+
 Webhook endpoint:
 
 ```text
@@ -528,6 +552,7 @@ one global `CRON_HEARTBEAT_URL` to receive every cron completion as POST JSON, o
 set job-specific URLs (`CRON_HEARTBEAT_REMINDERS_URL`,
 `CRON_HEARTBEAT_BACKUP_URL`, `CRON_HEARTBEAT_USAGE_RECONCILE_URL`,
 `CRON_HEARTBEAT_BILLING_LIFECYCLE_URL`,
+`CRON_HEARTBEAT_FIRST_CLINIC_WIN_URL`,
 `CRON_HEARTBEAT_SETUP_RECOVERY_URL`,
 `CRON_HEARTBEAT_WELLNESS_BILLING_URL`,
 `CRON_HEARTBEAT_RATE_LIMIT_CLEANUP_URL`,

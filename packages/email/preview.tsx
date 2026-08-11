@@ -8,6 +8,7 @@ import {
   renderWelcomeEmail,
   renderSetupRecoveryEmail,
   renderTrialEndingEmail,
+  renderFirstClinicWinEmail,
   renderPaymentReceiptEmail,
   renderPaymentFailedEmail,
 } from "./src/render";
@@ -34,6 +35,14 @@ async function main() {
       brand,
       practiceName,
       daysLeft: 3,
+      trialEndDate: "July 10, 2026",
+      monthlyPrice: "$79",
+      billingUrl,
+      unsubscribeUrl: `${brand.appUrl}/email-preferences?token=preview`,
+    }),
+    "first-clinic-win": await renderFirstClinicWinEmail({
+      brand,
+      practiceName,
       trialEndDate: "July 10, 2026",
       monthlyPrice: "$79",
       billingUrl,

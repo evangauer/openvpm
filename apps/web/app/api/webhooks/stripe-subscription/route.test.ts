@@ -148,7 +148,7 @@ function streamedOversizedStripeRequest() {
   }) as never;
 }
 
-function checkoutCompletedEvent() {
+function checkoutCompletedEvent(metadata?: Record<string, string>) {
   return {
     id: "evt_checkout",
     type: "checkout.session.completed",
@@ -161,6 +161,7 @@ function checkoutCompletedEvent() {
         client_reference_id: PRACTICE_ID,
         customer: CUSTOMER_ID,
         subscription: SUBSCRIPTION_ID,
+        ...(metadata ? { metadata } : {}),
       },
     },
   };
@@ -369,6 +370,36 @@ describe("Stripe subscription webhook", () => {
     expect(
       mocks.projectStripeConversionMilestonesForEvent,
     ).toHaveBeenCalledWith(mocks.db, "evt_checkout");
+  });
+
+  it("persists only valid signed Checkout source metadata", async () => {
+    process.env.STRIPE_PRICE_CLOUD_LOCATION = PRICE_ID;
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
+      checkoutCompletedEvent({
+        checkoutSource: "first_visit_email",
+        checkoutSourceEvidenceId: "first-clinic-win:v1",
+      }),
+    );
+    mocks.retrieveSubscription.mockResolvedValueOnce(
+      stripeSubscription("trialing"),
+    );
+    mocks.updateReturns.push([{ id: PRACTICE_ID }], [{ id: PRACTICE_ID }]);
+
+    const response = await POST(stripeRequest());
+
+    expect(response.status).toBe(200);
+    expect(mocks.claimStripeEvent).toHaveBeenCalledWith(mocks.db, {
+      eventId: "evt_checkout",
+      endpoint: "subscription",
+      eventType: "checkout.session.completed",
+      evidence: {
+        eventCreatedAt: new Date(EVENT_CREATED * 1000),
+        objectId: "cs_subscription",
+        evidenceKind: "subscription_checkout_completed",
+        checkoutSource: "first_visit_email",
+        checkoutSourceEvidenceId: "first-clinic-win:v1",
+      },
+    });
   });
 
   it("does not sync Checkout quantities when no active practice was updated", async () => {

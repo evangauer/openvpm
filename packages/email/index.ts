@@ -6,6 +6,7 @@ export { theme } from "./src/theme";
 export * from "./src/render";
 export type { WelcomeEmailProps } from "./src/templates/WelcomeEmail";
 export type { TrialEndingEmailProps } from "./src/templates/TrialEndingEmail";
+export type { FirstClinicWinEmailProps } from "./src/templates/FirstClinicWinEmail";
 export type { SetupRecoveryEmailProps } from "./src/templates/SetupRecoveryEmail";
 export type { PaymentReceiptEmailProps } from "./src/templates/PaymentReceiptEmail";
 export type { PaymentFailedEmailProps } from "./src/templates/PaymentFailedEmail";

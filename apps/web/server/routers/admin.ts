@@ -25,6 +25,7 @@ import {
 } from "@openpims/db";
 import { isPlatformAdmin } from "@/lib/platform-admin";
 import { computeActivationFunnel } from "@/lib/admin/activation-funnel";
+import { computeFirstVisitConversion } from "@/lib/admin/first-visit-conversion";
 import { computeJourneyFunnel } from "@/lib/admin/journey-funnel";
 import { computeActivationRecovery } from "@/lib/admin/activation-recovery";
 import {
@@ -3340,6 +3341,14 @@ export const adminRouter = createRouter({
         .optional(),
     )
     .query(({ input }) => computeActivationFunnel(db, input?.days ?? 30)),
+
+  firstVisitConversion: platformAdminProcedure
+    .input(
+      z
+        .object({ days: z.number().int().min(7).max(365).default(30) })
+        .optional(),
+    )
+    .query(({ input }) => computeFirstVisitConversion(db, input?.days ?? 30)),
 
   /** Ranked, cross-tenant operator queue for recovering clinic activation. */
   activationRecovery: platformAdminProcedure.query(() =>

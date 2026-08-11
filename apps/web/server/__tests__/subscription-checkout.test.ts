@@ -18,6 +18,17 @@ const mocks = vi.hoisted(() => ({
   syncPracticeSubscriptionQuantities: vi.fn(),
   usageForPractice: vi.fn(async () => 0),
   recordAuditLog: vi.fn(async () => undefined),
+  hasFirstRealVisit: vi.fn(async () => false),
+  verifySubscriptionCheckoutAttributionToken: vi.fn(
+    (
+      _token?: string,
+      _practiceId?: string,
+    ): {
+      practiceId: string;
+      source: "first_visit_email" | "trial_ending_email";
+      evidenceId: string;
+    } | null => null,
+  ),
 }));
 
 vi.mock("@/lib/stripe", () => ({
@@ -42,6 +53,15 @@ vi.mock("@/lib/billing/usage", () => ({
 
 vi.mock("@/lib/audit", () => ({
   recordAuditLog: mocks.recordAuditLog,
+}));
+
+vi.mock("@/lib/billing/first-real-visit", () => ({
+  hasFirstRealVisit: mocks.hasFirstRealVisit,
+}));
+
+vi.mock("@/lib/billing/checkout-attribution", () => ({
+  verifySubscriptionCheckoutAttributionToken:
+    mocks.verifySubscriptionCheckoutAttributionToken,
 }));
 
 vi.mock("@/lib/tenant-db", () => ({
@@ -127,6 +147,8 @@ afterEach(() => {
   });
   mocks.readBillingSyncState.mockResolvedValue(null);
   mocks.usageForPractice.mockResolvedValue(0);
+  mocks.hasFirstRealVisit.mockResolvedValue(false);
+  mocks.verifySubscriptionCheckoutAttributionToken.mockReturnValue(null);
 });
 
 describe("subscription checkout", () => {
@@ -349,8 +371,64 @@ describe("subscription checkout", () => {
           "https://app.example.com/settings?tab=billing&checkout=success",
         cancelUrl:
           "https://app.example.com/settings?tab=billing&checkout=cancelled",
+        checkoutSource: "in_app_pre_first_visit",
+        checkoutSourceEvidenceId: "server-derived:v1",
       }),
     );
+  });
+
+  it("derives post-visit source from durable server evidence", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    mocks.hasFirstRealVisit.mockResolvedValueOnce(true);
+
+    await callerWithDb(createDb([[practice()]])).createCheckout({
+      tier: "cloud",
+    });
+
+    expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        checkoutSource: "in_app_post_first_visit",
+        checkoutSourceEvidenceId: "server-derived:v1",
+      }),
+    );
+  });
+
+  it("accepts only a verified practice-bound email attribution token", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    mocks.hasFirstRealVisit.mockResolvedValueOnce(true);
+    mocks.verifySubscriptionCheckoutAttributionToken.mockReturnValueOnce({
+      practiceId: PRACTICE_ID,
+      source: "first_visit_email",
+      evidenceId: "first-clinic-win:v1",
+    });
+
+    await callerWithDb(createDb([[practice()]])).createCheckout({
+      tier: "cloud",
+      attributionToken: "signed-token",
+    });
+
+    expect(
+      mocks.verifySubscriptionCheckoutAttributionToken,
+    ).toHaveBeenCalledWith("signed-token", PRACTICE_ID);
+    expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        checkoutSource: "first_visit_email",
+        checkoutSourceEvidenceId: "first-clinic-win:v1",
+      }),
+    );
+  });
+
+  it("rejects invalid attribution instead of trusting the browser", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+
+    await expect(
+      callerWithDb(createDb([[practice()]])).createCheckout({
+        tier: "cloud",
+        attributionToken: "tampered-token",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    expect(mocks.createSubscriptionCheckoutSession).not.toHaveBeenCalled();
   });
 
   it("normalizes checkout billing contacts and falls back to the admin email", async () => {

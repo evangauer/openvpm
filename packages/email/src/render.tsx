@@ -6,6 +6,10 @@ import {
   type TrialEndingEmailProps,
 } from "./templates/TrialEndingEmail";
 import {
+  FirstClinicWinEmail,
+  type FirstClinicWinEmailProps,
+} from "./templates/FirstClinicWinEmail";
+import {
   SetupRecoveryEmail,
   type SetupRecoveryEmailProps,
 } from "./templates/SetupRecoveryEmail";
@@ -39,6 +43,15 @@ export async function renderTrialEndingEmail(
   return {
     subject: `Your OpenVPM trial ends ${when}`,
     html: await render(<TrialEndingEmail {...p} />),
+  };
+}
+
+export async function renderFirstClinicWinEmail(
+  p: FirstClinicWinEmailProps,
+): Promise<RenderedEmail> {
+  return {
+    subject: "Your first clinic visit is complete in OpenVPM",
+    html: await render(<FirstClinicWinEmail {...p} />),
   };
 }
 

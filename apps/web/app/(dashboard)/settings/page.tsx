@@ -1377,6 +1377,8 @@ function redirectToClientPaymentUrl(url: unknown) {
 
 function BillingTab() {
   const utils = trpc.useUtils();
+  const searchParams = useSearchParams();
+  const checkoutAttribution = searchParams.get("checkout_attribution");
   const [showAllPlans, setShowAllPlans] = useState(false);
   const {
     data,
@@ -1554,7 +1556,14 @@ function BillingTab() {
             ) : (
               <Button
                 disabled={checkout.isPending}
-                onClick={() => checkout.mutate({ tier: "cloud" })}
+                onClick={() =>
+                  checkout.mutate({
+                    tier: "cloud",
+                    ...(checkoutAttribution
+                      ? { attributionToken: checkoutAttribution }
+                      : {}),
+                  })
+                }
               >
                 {checkout.isPending ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -1662,7 +1671,14 @@ function BillingTab() {
               plans={data.plans}
               currentTier={data.tier}
               enforced
-              onChoose={(tier) => checkout.mutate({ tier })}
+              onChoose={(tier) =>
+                checkout.mutate({
+                  tier,
+                  ...(checkoutAttribution
+                    ? { attributionToken: checkoutAttribution }
+                    : {}),
+                })
+              }
               busyTier={
                 checkout.isPending ? (checkout.variables?.tier ?? null) : null
               }
