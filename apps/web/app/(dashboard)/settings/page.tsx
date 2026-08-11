@@ -50,6 +50,11 @@ import { useWelcome } from "@/components/welcome/welcome-provider";
 import { cn, isValidEmail } from "@/lib/utils";
 import { toast } from "sonner";
 import { regionDefaults } from "@/lib/locale/format";
+import {
+  CLINIC_REGION_OPTIONS,
+  isClinicRegionCode,
+  type ClinicRegionCode,
+} from "@/lib/locale/clinic-regions";
 import { useCurrencyFormatter } from "@/lib/locale/useCurrency";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
@@ -168,15 +173,6 @@ const TIMEZONES = [
   "Australia/Sydney",
 ];
 
-// Supported regions (ISO 3166-1 alpha-2). US-first; others are UK-ready.
-const COUNTRIES: { code: string; label: string }[] = [
-  { code: "US", label: "United States" },
-  { code: "GB", label: "United Kingdom" },
-  { code: "IE", label: "Ireland" },
-  { code: "CA", label: "Canada" },
-  { code: "AU", label: "Australia" },
-];
-
 const CURRENCIES = ["usd", "gbp", "eur", "cad", "aud"];
 
 const PRESET_COLORS = [
@@ -215,7 +211,7 @@ type PracticeInfoForm = {
   email: string;
   website: string;
   timezone: string;
-  country: string;
+  country: ClinicRegionCode | "";
   currency: string;
   taxRatePercent: string;
   vatNumber: string;
@@ -546,6 +542,7 @@ function PracticeInfoTab() {
     isOptionalSettingsEmailValid(practiceForm.email) &&
     practiceForm.website.trim().length <= SETTINGS_WEBSITE_MAX_LENGTH &&
     isSupportedPracticeTimezone(practiceForm.timezone) &&
+    isClinicRegionCode(practiceForm.country) &&
     isValidSettingsTaxRate(practiceForm.taxRatePercent) &&
     practiceForm.vatNumber.trim().length <= SETTINGS_VAT_NUMBER_MAX_LENGTH;
 
@@ -582,7 +579,12 @@ function PracticeInfoTab() {
     email: practice.email ?? "",
     website: practice.website ?? "",
     timezone: practice.timezone ?? "America/New_York",
-    country: practice.country ?? "US",
+    country:
+      practice.jurisdictionConfirmed &&
+      practice.country &&
+      isClinicRegionCode(practice.country)
+        ? practice.country
+        : "",
     currency: practice.currency ?? "usd",
     taxRatePercent: practice.taxRatePercent ?? "8.00",
     vatNumber: practice.vatNumber ?? "",
@@ -595,6 +597,7 @@ function PracticeInfoTab() {
   // Changing country prefills sensible currency/tax/timezone defaults for that
   // region; the admin can still override any of them before saving.
   const handleCountryChange = (country: string) => {
+    if (!isClinicRegionCode(country)) return;
     const d = regionDefaults(country);
     setForm({
       ...current,
@@ -694,8 +697,10 @@ function PracticeInfoTab() {
                   className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                   value={current.country}
                   onChange={(e) => handleCountryChange(e.target.value)}
+                  required
                 >
-                  {COUNTRIES.map((c) => (
+                  <option value="">Choose your clinic country</option>
+                  {CLINIC_REGION_OPTIONS.map((c) => (
                     <option key={c.code} value={c.code}>
                       {c.label}
                     </option>
@@ -936,8 +941,10 @@ function PracticeInfoTab() {
 
       <Button
         onClick={() => {
+          if (!isClinicRegionCode(current.country)) return;
           updateMutation.mutate({
             ...current,
+            country: current.country,
             email: current.email.trim() || undefined,
           });
         }}

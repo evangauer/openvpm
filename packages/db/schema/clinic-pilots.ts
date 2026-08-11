@@ -118,6 +118,7 @@ export type ClinicPilotEvidenceSnapshot = {
   trialEndsAt: string | null;
   hostedFullAccess: boolean;
   country: string;
+  jurisdictionConfirmed: boolean;
   smsStatus: string;
 };
 

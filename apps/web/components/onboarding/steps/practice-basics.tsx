@@ -11,16 +11,12 @@ import {
   STAFF_LICENSE_NUMBER_MAX_LENGTH,
 } from "@/lib/settings-policy";
 import type { StepHandle } from "../journey-types";
-
-// Same regions the settings page offers. Choosing a country auto-fills
-// currency and tax for you on the server, so you do not have to.
-const COUNTRIES: { code: string; label: string }[] = [
-  { code: "US", label: "United States" },
-  { code: "GB", label: "United Kingdom" },
-  { code: "IE", label: "Ireland" },
-  { code: "CA", label: "Canada" },
-  { code: "AU", label: "Australia" },
-];
+import { regionDefaults } from "@/lib/locale/format";
+import {
+  CLINIC_REGION_OPTIONS,
+  isClinicRegionCode,
+  type ClinicRegionCode,
+} from "@/lib/locale/clinic-regions";
 
 // Mirrors the TIMEZONES list on the settings page.
 const TIMEZONES = [
@@ -66,7 +62,7 @@ export function PracticeBasicsStep({
     trpc.settings.updateMyClinicalProfile.useMutation();
 
   const [name, setName] = useState("");
-  const [country, setCountry] = useState("US");
+  const [country, setCountry] = useState<ClinicRegionCode | "">("");
   const [timezone, setTimezone] = useState("America/New_York");
   const [ownerRole, setOwnerRole] = useState<
     "veterinarian" | "non_clinical" | ""
@@ -82,7 +78,12 @@ export function PracticeBasicsStep({
   useEffect(() => {
     if (filled || !practice || !clinicalProfile) return;
     setName(practice.name ?? "");
-    setCountry(practice.country ?? "US");
+    const savedCountry = practice.country?.toUpperCase() ?? "";
+    setCountry(
+      practice.jurisdictionConfirmed && isClinicRegionCode(savedCountry)
+        ? savedCountry
+        : "",
+    );
     setTimezone(practice.timezone ?? "America/New_York");
     setOwnerRole(clinicalProfile.isVeterinarian ? "veterinarian" : "");
     setLicenseNumber(clinicalProfile.licenseNumber ?? "");
@@ -100,6 +101,7 @@ export function PracticeBasicsStep({
         )
           return false;
         if (practiceNameInvalid) return false;
+        if (!country) return false;
         if (!ownerRole) {
           setOwnerRoleMissing(true);
           return false;
@@ -110,6 +112,7 @@ export function PracticeBasicsStep({
             name: trimmedName,
             country,
             timezone,
+            jurisdictionSource: "onboarding",
           });
         }
         await updateClinicalProfile.mutateAsync({
@@ -192,9 +195,19 @@ export function PracticeBasicsStep({
             id="ob-country"
             className={selectClass}
             value={country}
-            onChange={(e) => setCountry(e.target.value)}
+            onChange={(event) => {
+              const nextCountry = event.target.value;
+              if (!isClinicRegionCode(nextCountry)) {
+                setCountry("");
+                return;
+              }
+              setCountry(nextCountry);
+              setTimezone(regionDefaults(nextCountry).timezone);
+            }}
+            required
           >
-            {COUNTRIES.map((c) => (
+            <option value="">Choose your clinic country</option>
+            {CLINIC_REGION_OPTIONS.map((c) => (
               <option key={c.code} value={c.code}>
                 {c.label}
               </option>
@@ -217,6 +230,17 @@ export function PracticeBasicsStep({
           </select>
         </FormField>
       </div>
+
+      {country && country !== "US" ? (
+        <div className="flex gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-950">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>
+            The supported design-partner rollout is currently limited to US
+            clinics. This workspace is for sample-data evaluation only until
+            your region is supported.
+          </p>
+        </div>
+      ) : null}
 
       <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50/70 p-4">
         <FormField

@@ -102,6 +102,7 @@ function evidence(
     trialEndsAt: new Date("2026-08-20T12:00:00.000Z"),
     hostedFullAccess: true,
     country: "US",
+    jurisdictionConfirmed: true,
     smsStatus: "not_configured",
     ...overrides,
   };
@@ -154,6 +155,7 @@ describe("clinic pilot gates", () => {
           verifiedAdmins: [],
           verifiedAdminUserIds: [],
           activeLocationCount: 2,
+          jurisdictionConfirmed: false,
         }),
         now,
       ),
@@ -161,6 +163,7 @@ describe("clinic pilot gates", () => {
       expect.arrayContaining([
         "A verified clinic administrator is required.",
         "The controlled pilot must have exactly one active location.",
+        "The clinic must explicitly confirm its jurisdiction before approval.",
         "Resolve every blocker before approving readiness.",
       ]),
     );

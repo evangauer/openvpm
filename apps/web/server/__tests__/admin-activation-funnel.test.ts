@@ -14,12 +14,12 @@ const mocks = vi.hoisted(() => {
       async (
         database: unknown,
         _practiceId: string,
-        fn: (tx: unknown) => Promise<unknown>
-      ) => fn(database)
+        fn: (tx: unknown) => Promise<unknown>,
+      ) => fn(database),
     ),
     withSystem: vi.fn(
       async (database: unknown, fn: (tx: unknown) => Promise<unknown>) =>
-        fn(database)
+        fn(database),
     ),
   };
 });
@@ -64,7 +64,7 @@ describe("admin activation funnel", () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
 
     await expect(
-      caller("clinic-admin@example.com").activationFunnel({ days: 30 })
+      caller("clinic-admin@example.com").activationFunnel({ days: 30 }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(mocks.execute).not.toHaveBeenCalled();
   });
@@ -73,24 +73,74 @@ describe("admin activation funnel", () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
 
     await expect(
-      caller("clinic-admin@example.com").activationRecovery()
+      caller("clinic-admin@example.com").activationRecovery(),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(mocks.execute).not.toHaveBeenCalled();
   });
 
   it("sums weekly rows and computes activation and conversion rates", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
-    mocks.executeResults.push([
-      { weekStart: "2026-06-15", signups: 4, setupStarted: 3, setupCompleted: 1, activated: 2, firstVisitCompleted: 1, paymentMethodCollected: 2, firstPositivePayment: 1, currentlyActive: 1 },
-      { weekStart: "2026-06-22", signups: 6, setupStarted: 4, setupCompleted: 2, activated: 3, firstVisitCompleted: 2, paymentMethodCollected: 3, firstPositivePayment: 2, currentlyActive: 2 },
-    ], [{ legacyBusinessStageRows: 9, unknownPaymentMethodPractices: 2 }]);
+    mocks.executeResults.push(
+      [
+        {
+          weekStart: "2026-06-15",
+          jurisdictionCohort: "confirmedUs",
+          signups: 4,
+          setupStarted: 3,
+          setupCompleted: 1,
+          activated: 2,
+          firstVisitCompleted: 1,
+          paymentMethodCollected: 2,
+          firstPositivePayment: 1,
+          currentlyActive: 1,
+        },
+        {
+          weekStart: "2026-06-22",
+          jurisdictionCohort: "confirmedNonUs",
+          signups: 6,
+          setupStarted: 4,
+          setupCompleted: 2,
+          activated: 3,
+          firstVisitCompleted: 2,
+          paymentMethodCollected: 3,
+          firstPositivePayment: 2,
+          currentlyActive: 2,
+        },
+      ],
+      [
+        {
+          legacyBusinessStageRows: 9,
+          unknownPaymentMethodPractices: 2,
+        },
+      ],
+    );
 
     const result = await caller().activationFunnel({ days: 30 });
 
     expect(result.days).toBe(30);
     expect(result.weeks).toEqual([
-      { weekStart: "2026-06-15", signups: 4, setupStarted: 3, setupCompleted: 1, activated: 2, firstVisitCompleted: 1, paymentMethodCollected: 2, firstPositivePayment: 1, currentlyActive: 1 },
-      { weekStart: "2026-06-22", signups: 6, setupStarted: 4, setupCompleted: 2, activated: 3, firstVisitCompleted: 2, paymentMethodCollected: 3, firstPositivePayment: 2, currentlyActive: 2 },
+      {
+        weekStart: "2026-06-15",
+        signups: 4,
+        setupStarted: 3,
+        setupCompleted: 1,
+        activated: 2,
+        firstVisitCompleted: 1,
+        paymentMethodCollected: 2,
+        firstPositivePayment: 1,
+        currentlyActive: 1,
+      },
+      {
+        weekStart: "2026-06-22",
+        signups: 6,
+        setupStarted: 4,
+        setupCompleted: 2,
+        activated: 3,
+        firstVisitCompleted: 2,
+        paymentMethodCollected: 3,
+        firstPositivePayment: 2,
+        currentlyActive: 2,
+      },
     ]);
     expect(result.totals).toEqual({
       signups: 10,
@@ -109,13 +159,27 @@ describe("admin activation funnel", () => {
       positivePaymentRate: 0.6,
       currentlyActiveRate: 0.3,
     });
+    expect(result.jurisdictionCohorts.confirmedUs).toMatchObject({
+      signups: 4,
+      activated: 2,
+      activationRate: 0.5,
+    });
+    expect(result.jurisdictionCohorts.confirmedNonUs).toMatchObject({
+      signups: 6,
+      activated: 3,
+      activationRate: 0.5,
+    });
+    expect(result.jurisdictionCohorts.unknown.signups).toBe(0);
     expect(result.dataQuality).toMatchObject({
+      confirmedUsSignups: 4,
+      confirmedNonUsSignups: 6,
+      unknownJurisdictionSignups: 0,
       legacyBusinessStageRows: 9,
       unknownPaymentMethodPractices: 2,
     });
     expect(mocks.withSystem).toHaveBeenCalledWith(
       mocks.db,
-      expect.any(Function)
+      expect.any(Function),
     );
   });
 
@@ -126,6 +190,52 @@ describe("admin activation funnel", () => {
     const result = await caller().activationFunnel();
 
     expect(result.days).toBe(30);
+  });
+
+  it("keeps jurisdiction cohorts separate while aggregating the weekly chart", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+    mocks.executeResults.push(
+      [
+        {
+          weekStart: "2026-06-15",
+          jurisdictionCohort: "confirmedUs",
+          signups: 2,
+          setupStarted: 1,
+          setupCompleted: 1,
+          activated: 1,
+          firstVisitCompleted: 1,
+          paymentMethodCollected: 0,
+          firstPositivePayment: 0,
+          currentlyActive: 0,
+        },
+        {
+          weekStart: "2026-06-15",
+          jurisdictionCohort: "unknown",
+          signups: 1,
+          setupStarted: 0,
+          setupCompleted: 0,
+          activated: 0,
+          firstVisitCompleted: 0,
+          paymentMethodCollected: 0,
+          firstPositivePayment: 0,
+          currentlyActive: 0,
+        },
+      ],
+      [],
+    );
+
+    const result = await caller().activationFunnel({ days: 30 });
+
+    expect(result.weeks).toHaveLength(1);
+    expect(result.weeks[0]).toMatchObject({ signups: 3, activated: 1 });
+    expect(result.jurisdictionCohorts.confirmedUs).toMatchObject({
+      signups: 2,
+      activated: 1,
+    });
+    expect(result.jurisdictionCohorts.unknown).toMatchObject({
+      signups: 1,
+      activated: 0,
+    });
   });
 
   it("returns zero rates instead of dividing by zero when there are no signups", async () => {
@@ -155,9 +265,22 @@ describe("admin activation funnel", () => {
 
   it("coerces string counts from the driver into numbers", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
-    mocks.executeResults.push([
-      { weekStart: "2026-06-29", signups: "2", setupStarted: "1", setupCompleted: "0", activated: "1", firstVisitCompleted: "1", paymentMethodCollected: "1", firstPositivePayment: "0", currentlyActive: "0" },
-    ], []);
+    mocks.executeResults.push(
+      [
+        {
+          weekStart: "2026-06-29",
+          signups: "2",
+          setupStarted: "1",
+          setupCompleted: "0",
+          activated: "1",
+          firstVisitCompleted: "1",
+          paymentMethodCollected: "1",
+          firstPositivePayment: "0",
+          currentlyActive: "0",
+        },
+      ],
+      [],
+    );
 
     const result = await caller().activationFunnel({ days: 30 });
 
@@ -178,7 +301,7 @@ describe("admin activation funnel", () => {
     // Soft-deleted/test practices are excluded from cohorts.
     expect(source).toContain("p.deleted_at is null");
     expect(source).toContain(
-      "p.settings ->> 'analyticsExcluded' is distinct from 'true'"
+      "p.settings ->> 'analyticsExcluded' is distinct from 'true'",
     );
     expect(source).toContain("from practice_conversion_milestones pcm");
     expect(source).toContain("pcm.milestone = 'activated'");
@@ -198,6 +321,10 @@ describe("admin activation funnel", () => {
     expect(source).toContain("s.billing_status = 'active'");
     expect(source).toContain("unknownPositivePaymentPractices");
     expect(source).toContain("legacyBusinessStageRows");
+    expect(source).toContain("jurisdictionSelectedAt");
+    expect(source).toContain("confirmedUsSignups");
+    expect(source).toContain('s.jurisdiction_cohort as "jurisdictionCohort"');
+    expect(source).toContain("jurisdictionCohorts:");
 
     // Weekly grouping via date_trunc — a grouped aggregate, not a per-practice N+1.
     expect(source).toContain("date_trunc('week', p.created_at)");

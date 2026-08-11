@@ -191,6 +191,16 @@ describe("onboarding UI states", () => {
       "trimmedName.length > 0 && trimmedName.length > PRACTICE_NAME_MAX_LENGTH",
     );
     expect(practiceBasics).toContain("if (practiceNameInvalid) return false");
+    expect(practiceBasics).toContain("if (!country) return false");
+    expect(practiceBasics).toContain(
+      "practice.jurisdictionConfirmed && isClinicRegionCode(savedCountry)",
+    );
+    expect(practiceBasics).toContain('useState<ClinicRegionCode | "">("")');
+    expect(practiceBasics).toContain('jurisdictionSource: "onboarding"');
+    expect(practiceBasics).toContain(
+      "setTimezone(regionDefaults(nextCountry).timezone)",
+    );
+    expect(practiceBasics).not.toContain('useState("US")');
     expect(practiceBasics).toContain("name: trimmedName");
     expect(practiceBasics).toContain("maxLength={PRACTICE_NAME_MAX_LENGTH}");
     expect(practiceBasics).toContain(

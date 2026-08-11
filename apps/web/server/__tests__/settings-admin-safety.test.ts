@@ -137,7 +137,7 @@ describe("settings admin stale target safety", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
-      callerWithDb(db).updatePractice({ country: "U1" }),
+      callerWithDb(db).updatePractice({ country: "U1" as never }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -325,6 +325,23 @@ describe("settings admin stale target safety", () => {
     expect(isSupportedPracticeTimezone(" Europe/London ")).toBe(true);
     expect(isSupportedPracticeTimezone("")).toBe(false);
     expect(isSupportedPracticeTimezone("Mars/Olympus_Mons")).toBe(false);
+  });
+
+  it("records explicit jurisdiction without clobbering other settings", () => {
+    const updatePracticeBlock = SETTINGS_SOURCE.match(
+      /updatePractice:[\s\S]+?setMarketingEmailPreference:/,
+    )?.[0];
+    const getPracticeBlock = SETTINGS_SOURCE.match(
+      /getPractice:[\s\S]+?getMarketingEmailPreference:/,
+    )?.[0];
+
+    expect(SETTINGS_SOURCE).toContain("settingsAndOnboardingStateMergePatch");
+    expect(updatePracticeBlock).toContain("explicitJurisdictionState(");
+    expect(updatePracticeBlock).toContain('jurisdictionSource ?? "settings"');
+    expect(updatePracticeBlock).toContain("settingsPatch,");
+    expect(updatePracticeBlock).toContain("jurisdictionPatch,");
+    expect(getPracticeBlock).toContain("hasExplicitPracticeJurisdiction(");
+    expect(getPracticeBlock).toContain("jurisdictionConfirmed:");
   });
 
   it("rejects missing or deleted practice metadata reads", async () => {

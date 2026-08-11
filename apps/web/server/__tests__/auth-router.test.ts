@@ -283,10 +283,19 @@ describe("auth router input validation", () => {
 
     await expect(
       caller.register({
+        email: "owner@example.com",
+        password: "password123",
+        practiceName: "Neighborhood Veterinary",
+      } as never),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    await expect(
+      caller.register({
         name: " ".repeat(4),
         email: "owner@example.com",
         password: "password123",
         practiceName: "Neighborhood Veterinary",
+        country: "US",
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
@@ -295,6 +304,7 @@ describe("auth router input validation", () => {
         email: "owner@example.com",
         password: "p".repeat(129),
         practiceName: "Neighborhood Veterinary",
+        country: "US",
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
@@ -303,6 +313,7 @@ describe("auth router input validation", () => {
         email: `${"a".repeat(250)}@example.com`,
         password: "password123",
         practiceName: "Neighborhood Veterinary",
+        country: "US",
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
@@ -311,6 +322,7 @@ describe("auth router input validation", () => {
         email: "owner@example.com",
         password: "password123",
         practiceName: " ".repeat(4),
+        country: "US",
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
@@ -319,6 +331,7 @@ describe("auth router input validation", () => {
         email: "owner@example.com",
         password: "password123",
         practiceName: "Neighborhood Veterinary",
+        country: "IE",
         onboardingDraft: {
           logoName: "l".repeat(121),
         },
@@ -330,6 +343,7 @@ describe("auth router input validation", () => {
         email: "owner@example.com",
         password: "password123",
         practiceName: "Neighborhood Veterinary",
+        country: "US",
         acquisition: { source: "<script>" },
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
@@ -361,6 +375,7 @@ describe("auth router input validation", () => {
         email: "  Owner@Example.COM  ",
         password: "password123",
         practiceName: "  Neighborhood Veterinary  ",
+        country: "IE",
         locationName: "  North Clinic  ",
         onboardingDraft: {
           logoName: "  Neighborhood  ",
@@ -390,6 +405,10 @@ describe("auth router input validation", () => {
       expect.objectContaining({
         name: "Neighborhood Veterinary",
         email: "owner@example.com",
+        country: "IE",
+        currency: "eur",
+        taxRatePercent: "23.00",
+        timezone: "Europe/Dublin",
       }),
     );
     expect(insertValues).toHaveBeenNthCalledWith(
@@ -411,6 +430,11 @@ describe("auth router input validation", () => {
     );
     expect(updateSet).toHaveBeenCalledWith({
       settings: {
+        onboardingState: {
+          jurisdictionCountry: "IE",
+          jurisdictionSelectedAt: expect.any(String),
+          jurisdictionSource: "registration",
+        },
         acquisition: {
           source: "homepage_hero",
           medium: "website",
@@ -442,6 +466,7 @@ describe("auth router input validation", () => {
         email: "owner@example.com",
         password: "password123",
         practiceName: "Neighborhood Veterinary",
+        country: "US",
       }),
     ).rejects.toMatchObject({
       code: "INTERNAL_SERVER_ERROR",
@@ -468,6 +493,7 @@ describe("auth router input validation", () => {
         email: "owner@example.com",
         password: "password123",
         practiceName: "Neighborhood Veterinary",
+        country: "US",
       }),
     ).rejects.toMatchObject({
       code: "SERVICE_UNAVAILABLE",
@@ -501,6 +527,7 @@ describe("auth router input validation", () => {
         email: "owner@example.com",
         password: "password123",
         practiceName: "Neighborhood Veterinary",
+        country: "US",
       }),
     ).rejects.toMatchObject({
       code: "SERVICE_UNAVAILABLE",
@@ -533,6 +560,11 @@ describe("auth router input validation", () => {
     consoleError.mockRestore();
     expect(updateSet).toHaveBeenCalledWith({
       settings: {
+        onboardingState: {
+          jurisdictionCountry: "US",
+          jurisdictionSelectedAt: expect.any(String),
+          jurisdictionSource: "registration",
+        },
         onboardingCompletedAt: null,
         demoData: {},
       },
@@ -554,6 +586,7 @@ describe("auth router input validation", () => {
         email: "owner@example.com",
         password: "password123",
         practiceName: "Neighborhood Veterinary",
+        country: "US",
       }),
     ).resolves.toMatchObject({
       id: "user-1",
@@ -616,6 +649,7 @@ describe("auth router input validation", () => {
         email: "owner@example.com",
         password: "password123",
         practiceName: "Neighborhood Veterinary",
+        country: "US",
       }),
     ).resolves.toMatchObject({
       id: "user-1",
@@ -681,6 +715,7 @@ describe("auth router input validation", () => {
         email: "owner@example.com",
         password: "password123",
         practiceName: "Neighborhood Veterinary",
+        country: "US",
       }),
     ).resolves.toMatchObject({
       verificationRequired: true,
@@ -704,6 +739,7 @@ describe("auth router input validation", () => {
         email: "owner@example.com",
         password: "password123",
         practiceName: "Neighborhood Veterinary",
+        country: "US",
       }),
     ).rejects.toMatchObject({
       code: "SERVICE_UNAVAILABLE",
@@ -721,6 +757,11 @@ describe("auth router input validation", () => {
     });
     expect(updateSet).toHaveBeenCalledWith({
       settings: {
+        onboardingState: {
+          jurisdictionCountry: "US",
+          jurisdictionSelectedAt: expect.any(String),
+          jurisdictionSource: "registration",
+        },
         onboardingCompletedAt: null,
         demoData: {},
       },
@@ -739,6 +780,7 @@ describe("auth router input validation", () => {
         email: "owner@example.com",
         password: "password123",
         practiceName: "Neighborhood Veterinary",
+        country: "US",
       }),
     ).rejects.toMatchObject({
       code: "INTERNAL_SERVER_ERROR",
@@ -769,6 +811,7 @@ describe("auth router email normalization", () => {
         email: "Admin@Example.COM",
         password: "password123",
         practiceName: "Neighborhood Veterinary",
+        country: "US",
       }),
     ).rejects.toMatchObject({
       code: "CONFLICT",
@@ -1013,6 +1056,7 @@ describe("auth router rate-limit failure guards", () => {
           email: "owner@example.com",
           password: "password123",
           practiceName: "Neighborhood Veterinary",
+          country: "US",
         }),
     },
     {

@@ -12,6 +12,7 @@ import { rowsFromExecute } from "@/lib/db/execute-rows";
 import { recoverySetupState } from "@/lib/admin/activation-recovery";
 import { hasHostedFullAccess } from "@/lib/billing/plans";
 import { withSystem } from "@/lib/tenant-db";
+import { hasExplicitPracticeJurisdiction } from "@/lib/locale/clinic-regions";
 
 export const CLINIC_PILOT_WORKFLOWS = [
   "general_practice",
@@ -153,6 +154,7 @@ export interface ClinicPilotEvidence {
   trialEndsAt: Date | null;
   hostedFullAccess: boolean;
   country: string;
+  jurisdictionConfirmed: boolean;
   smsStatus: ClinicPilotSmsStatus;
 }
 
@@ -327,6 +329,11 @@ export function clinicPilotGateIssues(
   if (needsApprovedReadiness && evidence.country !== "US") {
     issues.push(
       "The first controlled clinic cohort is limited to the United States.",
+    );
+  }
+  if (needsApprovedReadiness && !evidence.jurisdictionConfirmed) {
+    issues.push(
+      "The clinic must explicitly confirm its jurisdiction before approval.",
     );
   }
   if (needsApprovedReadiness && !evidence.verifiedAdmin) {
@@ -512,6 +519,7 @@ function evidenceSnapshot(
     trialEndsAt: evidence.trialEndsAt?.toISOString() ?? null,
     hostedFullAccess: evidence.hostedFullAccess,
     country: evidence.country,
+    jurisdictionConfirmed: evidence.jurisdictionConfirmed,
     smsStatus: evidence.smsStatus,
   };
 }
@@ -758,6 +766,10 @@ export async function loadClinicPilotQueue(db: Database) {
           true,
         ),
         country: row.country,
+        jurisdictionConfirmed: hasExplicitPracticeJurisdiction(
+          row.settings,
+          row.country,
+        ),
         smsStatus: row.smsStatus,
       };
       const firstVisitValidationCurrent = Boolean(
@@ -816,6 +828,7 @@ export async function loadClinicPilotQueue(db: Database) {
           firstPositivePaymentAt: evidence.firstPositivePaymentAt,
           hostedFullAccess: evidence.hostedFullAccess,
           country: evidence.country,
+          jurisdictionConfirmed: evidence.jurisdictionConfirmed,
         },
         gateIssues: clinicPilotGateIssues(
           {
@@ -1065,6 +1078,10 @@ async function loadGateEvidence(
       true,
     ),
     country: row.country,
+    jurisdictionConfirmed: hasExplicitPracticeJurisdiction(
+      row.settings,
+      row.country,
+    ),
     smsStatus: row.smsStatus,
   };
 }

@@ -1351,6 +1351,26 @@ export default function AdminPage() {
                 Legacy business-stage rows are excluded; unknown evidence is
                 never counted as zero or assigned a synthetic date.
               </p>
+              <p className="mt-2 font-medium text-foreground">
+                Jurisdiction cohorts: US{" "}
+                {funnel.jurisdictionCohorts.confirmedUs.signups}
+                {" → "}
+                {funnel.jurisdictionCohorts.confirmedUs.activated} activated (
+                {formatPct(
+                  funnel.jurisdictionCohorts.confirmedUs.activationRate,
+                )}
+                ) · non-US {funnel.jurisdictionCohorts.confirmedNonUs.signups}
+                {" → "}
+                {funnel.jurisdictionCohorts.confirmedNonUs.activated} (
+                {formatPct(
+                  funnel.jurisdictionCohorts.confirmedNonUs.activationRate,
+                )}
+                ) · historical unknown{" "}
+                {funnel.jurisdictionCohorts.unknown.signups}
+                {" → "}
+                {funnel.jurisdictionCohorts.unknown.activated} (
+                {formatPct(funnel.jurisdictionCohorts.unknown.activationRate)})
+              </p>
               <p className="mt-2">
                 Legacy rows: {funnel.dataQuality.legacyBusinessStageRows} ·
                 Unknown payment method:{" "}

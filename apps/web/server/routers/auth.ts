@@ -38,6 +38,11 @@ import {
 } from "@/lib/auth-input-policy";
 import { ACQUISITION_VALUE_MAX_LENGTH } from "@/lib/acquisition";
 import { recordRegistration } from "@/lib/funnel-events-server";
+import { regionDefaults } from "@/lib/locale/format";
+import {
+  CLINIC_REGION_CODES,
+  explicitJurisdictionState,
+} from "@/lib/locale/clinic-regions";
 
 /** Display name from explicit input, else derived from the email local-part. */
 function deriveName(name: string | undefined, email: string): string {
@@ -167,6 +172,7 @@ export const authRouter = createRouter({
           2,
           AUTH_PRACTICE_NAME_MAX_LENGTH
         ),
+        country: z.enum(CLINIC_REGION_CODES),
         locationName: authTextInput(
           "Location name",
           2,
@@ -234,11 +240,19 @@ export const authRouter = createRouter({
       }
 
       const passwordHash = await hash(input.password, PASSWORD_HASH_COST);
-      const practiceSettings: Record<string, unknown> = {};
+      const registeredAt = new Date().toISOString();
+      const defaults = regionDefaults(input.country);
+      const practiceSettings: Record<string, unknown> = {
+        onboardingState: explicitJurisdictionState(
+          input.country,
+          "registration",
+          registeredAt,
+        ),
+      };
       if (input.acquisition) {
         practiceSettings.acquisition = {
           ...input.acquisition,
-          capturedAt: new Date().toISOString(),
+          capturedAt: registeredAt,
         };
       }
       if (onboardingDraft) {
@@ -255,6 +269,10 @@ export const authRouter = createRouter({
             .values({
               name: input.practiceName.trim(),
               email,
+              country: input.country,
+              currency: defaults.currency,
+              taxRatePercent: defaults.taxRatePercent,
+              timezone: defaults.timezone,
               // Card-free trial grants Cloud access immediately with no Stripe
               // subscription; the trial-lifecycle sweep lapses it at expiry.
               ...(noCardTrial

@@ -37,6 +37,9 @@ export interface ActivationFunnelWeek {
 }
 
 export interface ActivationFunnelDataQuality {
+  confirmedUsSignups: number;
+  confirmedNonUsSignups: number;
+  unknownJurisdictionSignups: number;
   legacyBusinessStageRows: number;
   unknownPaymentMethodPractices: number;
   unknownPositivePaymentPractices: number;
@@ -71,10 +74,19 @@ export interface ActivationFunnelTotals {
   currentlyActiveRate: number;
 }
 
+export type ActivationFunnelJurisdictionCohort =
+  | "confirmedUs"
+  | "confirmedNonUs"
+  | "unknown";
+
 export interface ActivationFunnel {
   days: number;
   weeks: ActivationFunnelWeek[];
   totals: ActivationFunnelTotals;
+  jurisdictionCohorts: Record<
+    ActivationFunnelJurisdictionCohort,
+    ActivationFunnelTotals
+  >;
   dataQuality: ActivationFunnelDataQuality;
 }
 
@@ -85,6 +97,7 @@ export function funnelRate(part: number, whole: number): number {
 
 interface FunnelRow {
   weekStart: string;
+  jurisdictionCohort?: string;
   signups: number | string;
   setupStarted: number | string;
   setupCompleted: number | string;
@@ -111,6 +124,73 @@ function rowsFromExecute<T>(result: unknown): T[] {
   return Array.isArray(rows) ? (rows as T[]) : [];
 }
 
+function emptyWeek(weekStart: string): ActivationFunnelWeek {
+  return {
+    weekStart,
+    signups: 0,
+    setupStarted: 0,
+    setupCompleted: 0,
+    activated: 0,
+    firstVisitCompleted: 0,
+    paymentMethodCollected: 0,
+    firstPositivePayment: 0,
+    currentlyActive: 0,
+  };
+}
+
+function summarizeWeeks(weeks: ActivationFunnelWeek[]): ActivationFunnelTotals {
+  const signups = weeks.reduce((sum, week) => sum + week.signups, 0);
+  const setupStarted = weeks.reduce((sum, week) => sum + week.setupStarted, 0);
+  const setupCompleted = weeks.reduce(
+    (sum, week) => sum + week.setupCompleted,
+    0,
+  );
+  const activated = weeks.reduce((sum, week) => sum + week.activated, 0);
+  const firstVisitCompleted = weeks.reduce(
+    (sum, week) => sum + week.firstVisitCompleted,
+    0,
+  );
+  const paymentMethodCollected = weeks.reduce(
+    (sum, week) => sum + week.paymentMethodCollected,
+    0,
+  );
+  const firstPositivePayment = weeks.reduce(
+    (sum, week) => sum + week.firstPositivePayment,
+    0,
+  );
+  const currentlyActive = weeks.reduce(
+    (sum, week) => sum + week.currentlyActive,
+    0,
+  );
+  return {
+    signups,
+    setupStarted,
+    setupCompleted,
+    activated,
+    firstVisitCompleted,
+    paymentMethodCollected,
+    firstPositivePayment,
+    currentlyActive,
+    setupStartRate: funnelRate(setupStarted, signups),
+    setupCompletionRate: funnelRate(setupCompleted, signups),
+    activationRate: funnelRate(activated, signups),
+    firstVisitCompletionRate: funnelRate(firstVisitCompleted, activated),
+    paymentMethodRate: funnelRate(paymentMethodCollected, activated),
+    positivePaymentRate: funnelRate(
+      firstPositivePayment,
+      paymentMethodCollected,
+    ),
+    currentlyActiveRate: funnelRate(currentlyActive, signups),
+  };
+}
+
+function jurisdictionCohort(
+  value: string | undefined,
+): ActivationFunnelJurisdictionCohort {
+  if (value === "confirmedUs" || value === "confirmedNonUs") return value;
+  return "unknown";
+}
+
 export async function computeActivationFunnel(
   db: Database,
   days: number
@@ -127,6 +207,25 @@ export async function computeActivationFunnel(
           p.created_at,
           p.billing_status,
           p.settings,
+          case
+            when nullif(
+              p.settings -> 'onboardingState' ->> 'jurisdictionSelectedAt',
+              ''
+            ) is not null
+              and p.settings -> 'onboardingState' ->> 'jurisdictionCountry'
+                = p.country
+              and p.country = 'US'
+              then 'confirmedUs'
+            when nullif(
+              p.settings -> 'onboardingState' ->> 'jurisdictionSelectedAt',
+              ''
+            ) is not null
+              and p.settings -> 'onboardingState' ->> 'jurisdictionCountry'
+                = p.country
+              and p.country <> 'US'
+              then 'confirmedNonUs'
+            else 'unknown'
+          end as jurisdiction_cohort,
           date_trunc('week', p.created_at) as week_start
         from practices p
         where p.deleted_at is null
@@ -153,6 +252,7 @@ export async function computeActivationFunnel(
       )
       select
         to_char(s.week_start, 'YYYY-MM-DD') as "weekStart",
+        s.jurisdiction_cohort as "jurisdictionCohort",
         count(*) filter (where mt.registered_at is not null)::int as "signups",
         count(*) filter (
           where mt.registered_at is not null
@@ -209,8 +309,8 @@ export async function computeActivationFunnel(
         )::int as "currentlyActive"
       from signups s
       left join milestone_times mt on mt.practice_id = s.id
-      group by s.week_start
-      order by s.week_start
+      group by s.week_start, s.jurisdiction_cohort
+      order by s.week_start, s.jurisdiction_cohort
     `);
 
     const qualityResult = await tx.execute(sql`
@@ -315,69 +415,63 @@ export async function computeActivationFunnel(
     return { cohortResult, qualityResult };
   });
 
-  const weeks: ActivationFunnelWeek[] = rowsFromExecute<FunnelRow>(cohortResult).map(
-    (row) => ({
-      weekStart: String(row.weekStart),
-      signups: Number(row.signups) || 0,
-      setupStarted: Number(row.setupStarted) || 0,
-      setupCompleted: Number(row.setupCompleted) || 0,
-      activated: Number(row.activated) || 0,
-      firstVisitCompleted: Number(row.firstVisitCompleted) || 0,
-      paymentMethodCollected: Number(row.paymentMethodCollected) || 0,
-      firstPositivePayment: Number(row.firstPositivePayment) || 0,
-      currentlyActive: Number(row.currentlyActive) || 0,
-    })
+  const rawWeeks = rowsFromExecute<FunnelRow>(cohortResult).map((row) => ({
+    ...emptyWeek(String(row.weekStart)),
+    jurisdictionCohort: jurisdictionCohort(row.jurisdictionCohort),
+    signups: Number(row.signups) || 0,
+    setupStarted: Number(row.setupStarted) || 0,
+    setupCompleted: Number(row.setupCompleted) || 0,
+    activated: Number(row.activated) || 0,
+    firstVisitCompleted: Number(row.firstVisitCompleted) || 0,
+    paymentMethodCollected: Number(row.paymentMethodCollected) || 0,
+    firstPositivePayment: Number(row.firstPositivePayment) || 0,
+    currentlyActive: Number(row.currentlyActive) || 0,
+  }));
+  const weekly = new Map<string, ActivationFunnelWeek>();
+  for (const row of rawWeeks) {
+    const aggregate = weekly.get(row.weekStart) ?? emptyWeek(row.weekStart);
+    for (const key of [
+      "signups",
+      "setupStarted",
+      "setupCompleted",
+      "activated",
+      "firstVisitCompleted",
+      "paymentMethodCollected",
+      "firstPositivePayment",
+      "currentlyActive",
+    ] as const) {
+      aggregate[key] += row[key];
+    }
+    weekly.set(row.weekStart, aggregate);
+  }
+  const weeks = [...weekly.values()].sort((left, right) =>
+    left.weekStart.localeCompare(right.weekStart),
   );
-
-  const signups = weeks.reduce((sum, week) => sum + week.signups, 0);
-  const setupStarted = weeks.reduce((sum, week) => sum + week.setupStarted, 0);
-  const setupCompleted = weeks.reduce(
-    (sum, week) => sum + week.setupCompleted,
-    0
-  );
-  const activated = weeks.reduce((sum, week) => sum + week.activated, 0);
-  const firstVisitCompleted = weeks.reduce(
-    (sum, week) => sum + week.firstVisitCompleted,
-    0
-  );
-  const paymentMethodCollected = weeks.reduce(
-    (sum, week) => sum + week.paymentMethodCollected,
-    0
-  );
-  const firstPositivePayment = weeks.reduce(
-    (sum, week) => sum + week.firstPositivePayment,
-    0,
-  );
-  const currentlyActive = weeks.reduce(
-    (sum, week) => sum + week.currentlyActive,
-    0,
+  const cohortWeeks = (
+    ["confirmedUs", "confirmedNonUs", "unknown"] as const
+  ).map(
+    (cohort) =>
+      [
+        cohort,
+        rawWeeks
+          .filter((week) => week.jurisdictionCohort === cohort)
+          .map(({ jurisdictionCohort: _cohort, ...week }) => week),
+      ] as const,
   );
   const quality = rowsFromExecute<DataQualityRow>(qualityResult)[0];
+  const jurisdictionCohorts = Object.fromEntries(
+    cohortWeeks.map(([cohort, rows]) => [cohort, summarizeWeeks(rows)]),
+  ) as Record<ActivationFunnelJurisdictionCohort, ActivationFunnelTotals>;
 
   return {
     days,
     weeks,
-    totals: {
-      signups,
-      setupStarted,
-      setupCompleted,
-      activated,
-      firstVisitCompleted,
-      paymentMethodCollected,
-      firstPositivePayment,
-      currentlyActive,
-      setupStartRate: funnelRate(setupStarted, signups),
-      setupCompletionRate: funnelRate(setupCompleted, signups),
-      activationRate: funnelRate(activated, signups),
-      firstVisitCompletionRate: funnelRate(firstVisitCompleted, activated),
-      paymentMethodRate: funnelRate(paymentMethodCollected, activated),
-      positivePaymentRate: funnelRate(
-        firstPositivePayment,
-        paymentMethodCollected,
-      ),
-      currentlyActiveRate: funnelRate(currentlyActive, signups),
-    },
+    totals: summarizeWeeks(weeks),
+    jurisdictionCohorts,
     dataQuality: {
+      confirmedUsSignups: jurisdictionCohorts.confirmedUs.signups,
+      confirmedNonUsSignups: jurisdictionCohorts.confirmedNonUs.signups,
+      unknownJurisdictionSignups: jurisdictionCohorts.unknown.signups,
       legacyBusinessStageRows: Number(quality?.legacyBusinessStageRows) || 0,
       unknownPaymentMethodPractices:
         Number(quality?.unknownPaymentMethodPractices) || 0,

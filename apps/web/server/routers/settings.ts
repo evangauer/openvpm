@@ -36,6 +36,11 @@ import {
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import { regionDefaults } from "@/lib/locale/format";
+import {
+  CLINIC_REGION_CODES,
+  explicitJurisdictionState,
+  hasExplicitPracticeJurisdiction,
+} from "@/lib/locale/clinic-regions";
 import { alertOps } from "@/lib/alerts";
 import { syncPracticeSubscriptionQuantities } from "@/lib/billing/subscription-sync";
 import {
@@ -107,11 +112,7 @@ const emailInput = z
   .max(SETTINGS_EMAIL_MAX_LENGTH)
   .transform((value) => value.toLowerCase());
 const optionalEmailInput = emailInput.optional();
-const countryInput = z
-  .string()
-  .trim()
-  .regex(/^[A-Za-z]{2}$/, "Country must be a two-letter ISO country code")
-  .transform((value) => value.toUpperCase());
+const countryInput = z.enum(CLINIC_REGION_CODES);
 const currencyInput = z
   .string()
   .trim()
@@ -283,6 +284,17 @@ function onboardingStateMergePatch(patch: Record<string, unknown>) {
     coalesce(${practices.settings}, '{}'::jsonb),
     '{onboardingState}',
     coalesce(${practices.settings}->'onboardingState', '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb
+  )`;
+}
+
+function settingsAndOnboardingStateMergePatch(
+  settingsPatch: Record<string, unknown>,
+  onboardingStatePatch: object,
+) {
+  return sql`jsonb_set(
+    coalesce(${practices.settings}, '{}'::jsonb) || ${JSON.stringify(settingsPatch)}::jsonb,
+    '{onboardingState}',
+    coalesce(${practices.settings}->'onboardingState', '{}'::jsonb) || ${JSON.stringify(onboardingStatePatch)}::jsonb
   )`;
 }
 
@@ -518,6 +530,9 @@ interface PracticeSettings {
     setupHelpRequestKind?: "general" | "migration";
     setupHelpMigrationSource?: string;
     migrationHelpRequestedAt?: string;
+    jurisdictionCountry?: string;
+    jurisdictionSelectedAt?: string;
+    jurisdictionSource?: "registration" | "onboarding" | "settings";
   };
   accountDeletionRequest?: {
     status: "requested";
@@ -544,7 +559,13 @@ export const settingsRouter = createRouter({
     if (!practice) {
       throw practiceNotFound();
     }
-    return practice;
+    return {
+      ...practice,
+      jurisdictionConfirmed: hasExplicitPracticeJurisdiction(
+        practice.settings,
+        practice.country,
+      ),
+    };
   }),
 
   getMarketingEmailPreference: adminProcedure.query(async ({ ctx }) => {
@@ -705,9 +726,10 @@ export const settingsRouter = createRouter({
             SETTINGS_WEBSITE_MAX_LENGTH,
           ),
           timezone: timezoneInput.optional(),
-          // Region/locale (Phase 2). country is ISO 3166-1 alpha-2; currency is
-          // ISO 4217 lowercase; taxRatePercent is a percent string e.g. "20.00".
+          // Supported region/locale. Country is one of the explicitly modeled
+          // ISO codes; currency is ISO 4217 lowercase and tax is a percent.
           country: countryInput.optional(),
+          jurisdictionSource: z.enum(["onboarding", "settings"]).optional(),
           currency: currencyInput.optional(),
           taxRatePercent: z
             .string()
@@ -766,8 +788,9 @@ export const settingsRouter = createRouter({
 
         // brandColor isn't a column — merge it into practices.settings without
         // clobbering other keys.
-        const { brandColor, ...columns } = input;
+        const { brandColor, jurisdictionSource, ...columns } = input;
         const patch: Record<string, unknown> = { ...columns };
+        let jurisdictionPatch: object = {};
         // When the country changes, fill in any region fields the caller didn't
         // explicitly set (currency/tax) with that country's sensible defaults.
         if (input.country) {
@@ -776,14 +799,26 @@ export const settingsRouter = createRouter({
           if (input.currency === undefined) patch.currency = defaults.currency;
           if (input.taxRatePercent === undefined)
             patch.taxRatePercent = defaults.taxRatePercent;
+          jurisdictionPatch = explicitJurisdictionState(
+            input.country,
+            jurisdictionSource ?? "settings",
+            new Date().toISOString(),
+          );
         }
         if (typeof patch.currency === "string") {
           patch.currency = (patch.currency as string).toLowerCase();
         }
-        if (brandColor !== undefined) {
-          patch.settings = settingsMergePatch({
-            brandColor: brandColor.toLowerCase(),
-          });
+        const settingsPatch =
+          brandColor !== undefined
+            ? { brandColor: brandColor.toLowerCase() }
+            : {};
+        if (Object.keys(jurisdictionPatch).length > 0) {
+          patch.settings = settingsAndOnboardingStateMergePatch(
+            settingsPatch,
+            jurisdictionPatch,
+          );
+        } else if (Object.keys(settingsPatch).length > 0) {
+          patch.settings = settingsMergePatch(settingsPatch);
         }
         const [updated] = await tx
           .update(practices)

@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
   ArrowRight,
+  AlertTriangle,
   Bot,
   Calendar,
   CheckCircle2,
@@ -41,6 +42,15 @@ import {
 import { FUNNEL_EVENTS } from "@/lib/funnel-analytics";
 import { trackFunnelEvent } from "@/lib/track-funnel-event";
 import { getFunnelVisitorId } from "@/lib/funnel-visitor";
+import {
+  CLINIC_REGION_OPTIONS,
+  type ClinicRegionCode,
+} from "@/lib/locale/clinic-regions";
+
+type RegistrationCountry = ClinicRegionCode | "OTHER" | "";
+
+const selectClass =
+  "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
 
 export default function RegisterPage() {
   return (
@@ -62,6 +72,7 @@ function RegisterPageInner() {
   const cloudIntent = searchParams.get("intent") === "cloud";
   const acquisition = acquisitionFromSearchParams(searchParams);
   const [practiceName, setPracticeName] = useState("");
+  const [country, setCountry] = useState<RegistrationCountry>("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -123,6 +134,9 @@ function RegisterPageInner() {
     if (!isAuthEmailLengthValid(email))
       return `Email must be at most ${AUTH_EMAIL_MAX_LENGTH} characters.`;
     if (!isValidEmail(email)) return "Add a valid work email.";
+    if (!country) return "Choose your clinic country.";
+    if (country === "OTHER")
+      return "Hosted workspaces are not available in your country yet.";
     if (password.length < AUTH_PASSWORD_MIN_LENGTH)
       return `Use at least ${AUTH_PASSWORD_MIN_LENGTH} characters for the password.`;
     if (password.length > AUTH_PASSWORD_MAX_LENGTH)
@@ -134,6 +148,8 @@ function RegisterPageInner() {
     isRequiredAuthTextValid(practiceName, AUTH_PRACTICE_NAME_MAX_LENGTH, 2) &&
     isAuthEmailLengthValid(email) &&
     isValidEmail(email) &&
+    country !== "" &&
+    country !== "OTHER" &&
     password.length >= AUTH_PASSWORD_MIN_LENGTH &&
     password.length <= AUTH_PASSWORD_MAX_LENGTH;
 
@@ -154,6 +170,7 @@ function RegisterPageInner() {
       email: email.trim().toLowerCase(),
       password,
       practiceName: practiceName.trim(),
+      country: country as ClinicRegionCode,
       acquisition: registrationAcquisition,
     });
   }
@@ -199,6 +216,64 @@ function RegisterPageInner() {
                 required
               />
             </FormField>
+
+            <FormField
+              label="Clinic country"
+              htmlFor="country"
+              description="This sets your currency, tax defaults, time zone, and rollout eligibility."
+            >
+              <select
+                id="country"
+                className={selectClass}
+                value={country}
+                onChange={(event) => {
+                  setCountry(event.target.value as RegistrationCountry);
+                  setError("");
+                }}
+                required
+              >
+                <option value="">Choose your clinic country</option>
+                {CLINIC_REGION_OPTIONS.map((option) => (
+                  <option key={option.code} value={option.code}>
+                    {option.label}
+                  </option>
+                ))}
+                <option value="OTHER">Another country</option>
+              </select>
+            </FormField>
+
+            {country && country !== "US" && country !== "OTHER" ? (
+              <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-950">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <p>
+                  OpenVPM can format this workspace for your region, but the
+                  supported design-partner rollout is currently limited to US
+                  clinics. Explore with sample data only; do not move live
+                  clinic work yet.
+                </p>
+              </div>
+            ) : null}
+
+            {country === "OTHER" ? (
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-700">
+                Hosted workspaces are not available in your country yet. You can
+                still{" "}
+                <a
+                  href="https://demo.openvpm.com"
+                  className="font-medium text-primary underline underline-offset-2"
+                >
+                  explore the immediate demo
+                </a>{" "}
+                or review the{" "}
+                <a
+                  href="https://github.com/evangauer/openvpm"
+                  className="font-medium text-primary underline underline-offset-2"
+                >
+                  self-hosted project
+                </a>
+                .
+              </div>
+            ) : null}
 
             <FormField label="Work email" htmlFor="email">
               <Input

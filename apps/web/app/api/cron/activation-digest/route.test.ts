@@ -47,6 +47,29 @@ vi.mock("@/lib/admin/clinic-pilots", () => ({
 
 const { GET } = await import("./route");
 
+function jurisdictionTotals(
+  signups: number,
+  activated: number,
+): ActivationFunnel["totals"] {
+  return {
+    signups,
+    setupStarted: 0,
+    setupCompleted: 0,
+    activated,
+    firstVisitCompleted: 0,
+    paymentMethodCollected: 0,
+    firstPositivePayment: 0,
+    currentlyActive: 0,
+    setupStartRate: 0,
+    setupCompletionRate: 0,
+    activationRate: signups > 0 ? activated / signups : 0,
+    firstVisitCompletionRate: 0,
+    paymentMethodRate: 0,
+    positivePaymentRate: 0,
+    currentlyActiveRate: 0,
+  };
+}
+
 function funnel(
   days: number,
   totals: Partial<ActivationFunnel["totals"]> = {},
@@ -72,7 +95,15 @@ function funnel(
       currentlyActiveRate: 0.2,
       ...totals,
     },
+    jurisdictionCohorts: {
+      confirmedUs: jurisdictionTotals(3, 2),
+      confirmedNonUs: jurisdictionTotals(1, 0),
+      unknown: jurisdictionTotals(1, 0),
+    },
     dataQuality: {
+      confirmedUsSignups: 3,
+      confirmedNonUsSignups: 1,
+      unknownJurisdictionSignups: 1,
       legacyBusinessStageRows: 4,
       unknownPaymentMethodPractices: 1,
       unknownPositivePaymentPractices: 1,
@@ -210,6 +241,13 @@ describe("activation digest cron", () => {
     expect(mocks.sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({
         html: expect.stringContaining("Payment method"),
+      }),
+    );
+    expect(mocks.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        html: expect.stringContaining(
+          "Jurisdiction cohorts:</strong> US 3 signup(s) → 2 activated",
+        ),
       }),
     );
     expect(mocks.sendEmail).toHaveBeenCalledWith(
