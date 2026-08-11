@@ -1496,10 +1496,10 @@ describe("committed Drizzle migrations", () => {
       readRepoFile("packages/db/drizzle/meta/_journal.json"),
     ) as { entries?: Array<{ tag?: string }> };
     expect(journal.entries?.map((entry) => entry.tag)).toContain(
-      "0086_woozy_king_cobra",
+      "0089_absent_vindicator",
     );
 
-    const sql = readRepoFile("packages/db/drizzle/0086_woozy_king_cobra.sql");
+    const sql = readRepoFile("packages/db/drizzle/0089_absent_vindicator.sql");
     expect(sql).toContain(
       'CREATE TYPE "public"."subscription_checkout_source"',
     );
