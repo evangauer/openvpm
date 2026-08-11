@@ -1,6 +1,7 @@
 import { envFlagEnabled } from "@/lib/env-bool";
 
 export const MESSAGING_SENDING_ENABLED_ENV = "MESSAGING_SENDING_ENABLED";
+export const MESSAGING_INBOUND_ENABLED_ENV = "MESSAGING_INBOUND_ENABLED";
 export const MESSAGING_SENDING_PRACTICE_IDS_ENV =
   "MESSAGING_SENDING_PRACTICE_IDS";
 export const MESSAGING_SENDING_LOCATION_IDS_ENV =
@@ -21,7 +22,7 @@ function allowlist(name: string): ReadonlySet<string> {
     (process.env[name] ?? "")
       .split(",")
       .map((value) => value.trim())
-      .filter(Boolean)
+      .filter(Boolean),
   );
 }
 
@@ -43,17 +44,58 @@ export function hostedMessagingLaunchDecision(opts: {
   if (!opts.practiceId?.trim() || !opts.locationId?.trim()) {
     return { allowed: false, reason: "missing_scope" };
   }
-  if (!allowlist(MESSAGING_SENDING_PRACTICE_IDS_ENV).has(opts.practiceId)) {
+  const practiceAllowlist = allowlist(MESSAGING_SENDING_PRACTICE_IDS_ENV);
+  const locationAllowlist = allowlist(MESSAGING_SENDING_LOCATION_IDS_ENV);
+  if (practiceAllowlist.size !== 1 || locationAllowlist.size !== 1) {
+    return { allowed: false, reason: "missing_scope" };
+  }
+  if (!practiceAllowlist.has(opts.practiceId)) {
     return { allowed: false, reason: "practice_not_allowed" };
   }
-  if (!allowlist(MESSAGING_SENDING_LOCATION_IDS_ENV).has(opts.locationId)) {
+  if (!locationAllowlist.has(opts.locationId)) {
+    return { allowed: false, reason: "location_not_allowed" };
+  }
+  return { allowed: true };
+}
+
+/**
+ * Hosted inbound projection is independently default-off, but uses the same
+ * exact practice and location scope as outbound sending. This keeps signed
+ * callbacks durable while preventing historical or out-of-pilot sender
+ * identities from mutating clinic records during a controlled rollout.
+ *
+ * Self-host deployments do not use the hosted rollout flags and retain their
+ * configured provider behavior.
+ */
+export function hostedMessagingInboundProjectionDecision(opts: {
+  practiceId?: string;
+  locationId?: string;
+}): HostedMessagingLaunchDecision {
+  if (!envFlagEnabled("HOSTED_BILLING_ENABLED")) {
+    return { allowed: true };
+  }
+  if (!envFlagEnabled(MESSAGING_INBOUND_ENABLED_ENV)) {
+    return { allowed: false, reason: "platform_disabled" };
+  }
+  if (!opts.practiceId?.trim() || !opts.locationId?.trim()) {
+    return { allowed: false, reason: "missing_scope" };
+  }
+  const practiceAllowlist = allowlist(MESSAGING_SENDING_PRACTICE_IDS_ENV);
+  const locationAllowlist = allowlist(MESSAGING_SENDING_LOCATION_IDS_ENV);
+  if (practiceAllowlist.size !== 1 || locationAllowlist.size !== 1) {
+    return { allowed: false, reason: "missing_scope" };
+  }
+  if (!practiceAllowlist.has(opts.practiceId)) {
+    return { allowed: false, reason: "practice_not_allowed" };
+  }
+  if (!locationAllowlist.has(opts.locationId)) {
     return { allowed: false, reason: "location_not_allowed" };
   }
   return { allowed: true };
 }
 
 export function hostedMessagingLaunchBlockMessage(
-  reason: HostedMessagingLaunchBlock
+  reason: HostedMessagingLaunchBlock,
 ): string {
   if (reason === "missing_scope") {
     return "Hosted SMS requires an explicit clinic practice and location.";

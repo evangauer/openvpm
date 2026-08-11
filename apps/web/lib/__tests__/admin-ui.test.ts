@@ -184,13 +184,26 @@ describe("admin UI", () => {
     expect(source).not.toContain("sender.senderE164");
   });
 
-  it("shows secret-free hosted SMS scope diagnostics instead of count-only readiness", () => {
-    expect(source).toContain("Hosted SMS configuration");
-    expect(source).toContain("Provisioning scope exact");
-    expect(source).toContain("smsConfiguration.provisioningScopeExact");
-    expect(source).toContain("Sending scope exact");
-    expect(source).toContain("smsConfiguration.sendingScopeExact");
-    expect(source).toContain('"Needs attention"');
+  it("shows a sequenced, secret-free hosted SMS pilot activation preflight", () => {
+    expect(source).toContain(
+      "trpc.admin.hostedSmsPilotActivationPreflight.useQuery",
+    );
+    expect(source).toContain("Hosted SMS pilot activation preflight");
+    expect(source).toContain('scope_prepared: "Scope prepared"');
+    expect(source).toContain('inbound_prepared: "Inbound prepared"');
+    expect(source).toContain('provider_ready: "Provider ready"');
+    expect(source).toContain("smsPilotPreflight.checks.provisioningScopeExact");
+    expect(source).toContain("smsPilotPreflight.checks.sendingScopeExact");
+    expect(source).toContain("smsPilotPreflight.checks.providerEventsClear");
+    expect(source).toContain(
+      "smsPilotPreflight.checks.heartbeatDeliveryConfigured",
+    );
+    expect(source).toContain(
+      "Configured heartbeat delivery is necessary but does not prove a",
+    );
+    expect(compactSource).toContain(
+      "No secret, phone, clinic, or provider identifier is returned",
+    );
   });
 
   it("shows bounded read-only redacted carrier lifecycle history", () => {

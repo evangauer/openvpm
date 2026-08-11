@@ -192,11 +192,12 @@ below.
 Provider profiles are created disabled. Never enable one during number
 purchase or carrier submission. Use the platform admin queue in this order:
 
-> **Current release gate:** keep `MESSAGING_INBOUND_ENABLED=false`. Signed
-> hosted callbacks are acknowledged without tenant projection, and provider
-> profile activation is blocked, until the durable recovery-aware inbound event
-> inbox is deployed. Provisioning and carrier review may be prepared, but do
-> not proceed to provider activation or live SMS in this release.
+> The durable recovery-aware provider-event inbox, audited remediation ledger,
+> and provider-free concurrency drill are part of this release. Activation is
+> still default-off: keep inbound and sending disabled until the protected
+> **Hosted SMS pilot activation preflight** proves the exact staged clinic is
+> ready. Loading the preflight is read-only and never contacts Telnyx, changes a
+> provider profile, claims an event, or sends a message.
 
 1. Reconcile the brand as `VERIFIED` or `VETTED_VERIFIED`, the campaign as
    `ACTIVE` or `MNO_PROVISIONED`, and the exact number assignment as `ASSIGNED`.
@@ -205,26 +206,39 @@ purchase or carrier submission. Use the platform admin queue in this order:
    webhook, a US-only destination allowlist, smart encoding, and the enforced
    `$10.00` daily cap. A new profile may still report its clinic-specific
    auto-response rules as missing at this read-only step.
-3. After the durable inbound-event release is deployed and its recovery drill
-   passes, confirm the every-five-minute `sms-provider-events` writer heartbeat,
-   an empty redacted provider-event queue, and a healthy read-only
-   `sms-operations` heartbeat. Then set `MESSAGING_INBOUND_ENABLED=true`, select
-   **Enable provider profile**, and confirm the provider mutation. OpenVPM
-   first installs and reads back the exact clinic-branded US START, STOP, and
-   HELP rules using the registered clinic name and support phone. Missing,
-   duplicate, wildcard, paginated, or changed rules block activation. OpenVPM
-   then reads every provider prerequisite back after the update and deliberately
-   leaves the clinic database sender off. Provider activation remains blocked
-   if exact or identity-matched pending, retry, recovery-blocked, quarantined,
-   or unreviewed identity-conflict evidence exists.
-4. Add exactly one practice and location to the sending allowlists and set
-   `MESSAGING_SENDING_ENABLED=true`.
-5. Within 15 minutes of the provider readback, have the clinic admin enable the
+3. Turn fee-bearing provisioning back off. With
+   `MESSAGING_INBOUND_ENABLED=false` and `MESSAGING_SENDING_ENABLED=false`,
+   stage exactly one provisioning practice, the same sending practice, and its
+   exact location in the three pilot allowlists. Redeploy. Health must remain
+   `200`; the protected preflight must report **Scope prepared**, carrier
+   identity ready, recovery clear, and zero blocking provider events. A staged
+   scope no longer requires the provider profile to be active while sending is
+   safely off. Hosted inbound projection and outbound sending both enforce this
+   exact single-practice, single-location scope at runtime; a multi-clinic or
+   partial allowlist fails closed even if a deployment bypasses health checks.
+4. Confirm a fresh every-five-minute `sms-provider-events` writer heartbeat and
+   a fresh, healthy read-only `sms-operations` heartbeat in the external
+   monitor. A configured heartbeat destination is not proof of a fresh receipt.
+   Then set `MESSAGING_INBOUND_ENABLED=true`, keep sending off, and redeploy.
+   Health must remain `200` and the preflight must report **Inbound prepared**.
+5. Select **Enable provider profile** and confirm the provider mutation.
+   OpenVPM first installs and reads back the exact clinic-branded US START,
+   STOP, and HELP rules using the registered clinic name and support phone.
+   Missing, duplicate, wildcard, paginated, or changed rules block activation.
+   OpenVPM then reads every provider prerequisite back after the update and
+   deliberately leaves the clinic database sender off. Provider activation
+   remains blocked if exact or identity-matched pending, retry,
+   recovery-blocked, quarantined, or unreviewed identity-conflict evidence
+   exists. The preflight must advance to **Provider ready**.
+6. Set `MESSAGING_SENDING_ENABLED=true`, redeploy, and require health `200` plus
+   preflight state **Active**. A live sending flag with inbound disabled or a
+   provider profile that is not ready is release-blocking.
+7. Within 15 minutes of the provider readback, have the clinic admin enable the
    location sender. This transaction takes the practice row before reading the
    event queue and refuses to enable while relevant evidence remains. An expired
    or failed attestation blocks the database switch; inspect the profile again
    instead of bypassing the gate.
-6. Validate only with a current, consented client workflow. Confirm outbound
+8. Validate only with a current, consented client workflow. Confirm outbound
    accepted-to-delivered evidence, an ordinary inbound reply, HELP, STOP plus a
    blocked resend, START plus restored consent, one reminder, usage metering,
    and empty reconciliation queues.

@@ -116,6 +116,7 @@ import {
   RECOVERY_HOLD_BLOCK_MESSAGE,
 } from "@/lib/recovery-hold";
 import { hostedSmsConfigurationDiagnostics } from "@/lib/messaging/hosted-sms-readiness";
+import { loadHostedSmsPilotActivationPreflight } from "@/lib/messaging/hosted-sms-pilot-preflight";
 import { envFlagEnabled } from "@/lib/env-bool";
 
 /**
@@ -1521,6 +1522,12 @@ export const adminRouter = createRouter({
   hostedSmsConfiguration: platformAdminProcedure.query(() => {
     noStore();
     return hostedSmsConfigurationDiagnostics();
+  }),
+
+  /** Read-only, secret-free activation sequence for the exact staged pilot. */
+  hostedSmsPilotActivationPreflight: platformAdminProcedure.query(() => {
+    noStore();
+    return loadHostedSmsPilotActivationPreflight(db);
   }),
 
   /** Newest-first, PHI-free carrier lifecycle evidence for one exact clinic. */
