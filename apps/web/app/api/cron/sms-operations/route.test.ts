@@ -29,21 +29,28 @@ const healthy: SmsOperationsHealth = {
 };
 
 const mocks = vi.hoisted(() => ({
-  alertOps: vi.fn(async (_subject: string, _detail: string) => undefined),
+  alertOps: vi.fn(async (_subject: string, _detail: string) => true),
   cronAuthError: vi.fn((): Response | null => null),
   db: {},
   getSmsOperationsHealth: vi.fn(),
   reportCronHeartbeat: vi.fn(async () => undefined),
+  processSmsOperationsAlertState: vi.fn(),
 }));
 
 vi.mock("@openpims/db/client", () => ({ db: mocks.db }));
-vi.mock("@/lib/alerts", () => ({ alertOps: mocks.alertOps }));
+vi.mock("@/lib/alerts", () => ({
+  alertOps: mocks.alertOps,
+  deliverOpsAlert: mocks.alertOps,
+}));
 vi.mock("@/lib/cron-auth", () => ({ cronAuthError: mocks.cronAuthError }));
 vi.mock("@/lib/cron-heartbeat", () => ({
   reportCronHeartbeat: mocks.reportCronHeartbeat,
 }));
 vi.mock("@/lib/messaging/sms-operations-health", () => ({
   getSmsOperationsHealth: mocks.getSmsOperationsHealth,
+}));
+vi.mock("@/lib/messaging/sms-operations-alert", () => ({
+  processSmsOperationsAlertState: mocks.processSmsOperationsAlertState,
 }));
 
 const { GET } = await import("./route");
@@ -52,6 +59,18 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.cronAuthError.mockReturnValue(null);
   mocks.getSmsOperationsHealth.mockResolvedValue(healthy);
+  mocks.processSmsOperationsAlertState.mockImplementation(
+    async (input: {
+      state: "healthy" | "degraded";
+      deliver?: () => Promise<boolean>;
+    }) => {
+      if (input.state === "healthy") {
+        return { alerted: false, deliveryFailed: false };
+      }
+      const delivered = (await input.deliver?.()) ?? false;
+      return { alerted: delivered, deliveryFailed: !delivered };
+    },
+  );
 });
 
 describe("SMS operations cron", () => {
@@ -208,6 +227,39 @@ describe("SMS operations cron", () => {
         status: "degraded",
         metrics: expect.objectContaining({ providerAuditFailures: 1 }),
       }),
+    );
+  });
+
+  it("suppresses an unchanged degraded alert during the persistent cooldown", async () => {
+    const attention: SmsOperationsHealth = {
+      ...healthy,
+      status: "attention",
+      counts: { ...healthy.counts, attention: 1, carrier: 1 },
+      reasons: [
+        {
+          severity: "p1",
+          category: "carrier",
+          reason: "submission_lock_stale",
+          count: 1,
+        },
+      ],
+    };
+    mocks.getSmsOperationsHealth.mockResolvedValueOnce(attention);
+    mocks.processSmsOperationsAlertState.mockResolvedValueOnce({
+      alerted: false,
+      deliveryFailed: false,
+    });
+
+    await GET(new Request("https://openvpm.test/api/cron/sms-operations"));
+
+    expect(mocks.processSmsOperationsAlertState).toHaveBeenCalledWith({
+      fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+      state: "degraded",
+      deliver: expect.any(Function),
+    });
+    expect(mocks.alertOps).not.toHaveBeenCalled();
+    expect(mocks.reportCronHeartbeat).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "degraded" }),
     );
   });
 

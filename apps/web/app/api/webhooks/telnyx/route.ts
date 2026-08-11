@@ -14,7 +14,11 @@ import {
   messagingWebhookContentLengthTooLarge,
 } from "@/lib/messaging-webhook-limits";
 import { normalizeE164 } from "@/lib/messaging";
-import { handleInboundSmsReply } from "@/lib/messaging/inbound";
+import {
+  classifyInboundSms,
+  handleInboundSmsReply,
+  type InboundSmsClassification,
+} from "@/lib/messaging/inbound";
 import { envValue } from "@/lib/messaging/env";
 import {
   telnyxDeliveryStatus,
@@ -33,9 +37,18 @@ import {
   recordMessagingRegistrationEvent,
   systemMessagingRegistrationActor,
 } from "@/lib/messaging/registration-events";
+import { sanitizeProviderDiagnostic } from "@/lib/messaging/provider-diagnostics";
+import { envFlagEnabled } from "@/lib/env-bool";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+function hostedInboundProjectionEnabled() {
+  return (
+    !envFlagEnabled("HOSTED_BILLING_ENABLED") ||
+    envFlagEnabled("MESSAGING_INBOUND_ENABLED")
+  );
+}
 
 function payloadTooLargeResponse() {
   return NextResponse.json(
@@ -47,6 +60,78 @@ function payloadTooLargeResponse() {
 function payloadString(value: unknown): string | null {
   const trimmed = typeof value === "string" ? value.trim() : "";
   return trimmed || null;
+}
+
+function telnyxInboundClassification(
+  text: string,
+  rawAutoresponseType: unknown,
+): InboundSmsClassification {
+  const local = classifyInboundSms(text);
+  const providerValue = payloadString(rawAutoresponseType)?.toLowerCase();
+  const provider = new Set(["start", "stop", "help"]).has(providerValue ?? "")
+    ? (providerValue as Exclude<InboundSmsClassification, "other">)
+    : null;
+
+  // Revocations always win. Re-enabling consent requires the signed provider
+  // classification to agree with the text so YES/START cannot clear a carrier
+  // block when the profile keyword contract is missing or has drifted.
+  if (local === "stop" || provider === "stop") return "stop";
+  if (local === "start") return provider === "start" ? "start" : "other";
+  if (provider === "start") return "other";
+  if (provider) return provider === local ? provider : "other";
+  return local;
+}
+
+const PROVIDER_FAILURE_DETAIL_MAX_LENGTH = 1_000;
+const PROVIDER_FAILURE_REASON_MAX_LENGTH = 500;
+
+/**
+ * Provider failure text is operator evidence, not a place to retain submitted
+ * legal identifiers. Accept only the human-readable description, run it
+ * through the shared provider diagnostic redactor, and bound both individual
+ * reasons and the final database value.
+ */
+function sanitizedProviderFailureText(
+  value: unknown,
+  maxLength: number,
+): string | null {
+  return sanitizeProviderDiagnostic(value, maxLength);
+}
+
+function providerFailureDetail(payload: {
+  description?: unknown;
+  reasons?: unknown;
+}): string | null {
+  const descriptions = [
+    sanitizedProviderFailureText(
+      payload.description,
+      PROVIDER_FAILURE_REASON_MAX_LENGTH,
+    ),
+    ...(Array.isArray(payload.reasons) ? payload.reasons : [])
+      .map((reason) => {
+        if (typeof reason === "string") return reason;
+        if (!reason || typeof reason !== "object" || Array.isArray(reason)) {
+          return null;
+        }
+        // Telnyx reason objects may also contain `fields`. Deliberately ignore
+        // every property except the human-readable description.
+        return (reason as { description?: unknown }).description;
+      })
+      .map((reason) =>
+        sanitizedProviderFailureText(
+          reason,
+          PROVIDER_FAILURE_REASON_MAX_LENGTH,
+        ),
+      )
+      .filter((reason): reason is string => Boolean(reason)),
+  ].filter((reason): reason is string => Boolean(reason));
+
+  const uniqueDescriptions = [...new Set(descriptions)];
+
+  return sanitizedProviderFailureText(
+    uniqueDescriptions.join("; "),
+    PROVIDER_FAILURE_DETAIL_MAX_LENGTH,
+  );
 }
 
 function providerEventOperationId(value: unknown): string {
@@ -83,15 +168,41 @@ const A2P_EVENT_TYPES = new Set([
 function a2pWebhookStatus(payload: {
   status?: unknown;
   type?: unknown;
+  eventType?: unknown;
 }): RegistrationLifecycleStatus {
   const status = payloadString(payload.status)?.toUpperCase();
   const type = payloadString(payload.type)?.toUpperCase();
-  if (status === "DORMANT" || type === "SUSPENDED") return "suspended";
+  const providerEventType = payloadString(payload.eventType)?.toUpperCase();
+  const terminalValues = new Set(
+    [status, type, providerEventType].filter(Boolean),
+  );
   if (
-    status === "FAILED" ||
-    status === "REJECTED" ||
-    type === "FAILED" ||
-    type === "REJECTED"
+    terminalValues.has("DORMANT") ||
+    terminalValues.has("DELETED") ||
+    terminalValues.has("SUSPENDED") ||
+    terminalValues.has("TCR_SUSPENDED") ||
+    terminalValues.has("TCR_EXPIRED") ||
+    terminalValues.has("EXPIRED") ||
+    Boolean(
+      providerEventType && /(EXPIRED|SUSPEND|DELET)/.test(providerEventType),
+    ) ||
+    (type === "DELETION" && status === "SUCCESS")
+  ) {
+    return "suspended";
+  }
+  if (
+    [
+      "FAILED",
+      "REJECTED",
+      "REGISTRATION_FAILED",
+      "TCR_FAILED",
+      "TELNYX_FAILED",
+      "MNO_REJECTED",
+      "MNO_PROVISIONING_FAILED",
+      "FAILED_ASSIGNMENT",
+      "FAILED_UNASSIGNMENT",
+    ].some((value) => terminalValues.has(value)) ||
+    Boolean(providerEventType && /(REJECT|FAIL)/.test(providerEventType))
   ) {
     return "action_required";
   }
@@ -109,6 +220,7 @@ async function handleA2pLifecycleWebhook(opts: {
     phoneNumber?: unknown;
     status?: unknown;
     type?: unknown;
+    eventType?: unknown;
     description?: unknown;
     reasons?: unknown;
   };
@@ -117,7 +229,9 @@ async function handleA2pLifecycleWebhook(opts: {
   const campaignId = payloadString(opts.payload.campaignId);
   const phoneNumber = normalizeE164(payloadString(opts.payload.phoneNumber));
   const providerStatus =
-    payloadString(opts.payload.status) ?? payloadString(opts.payload.type);
+    payloadString(opts.payload.status) ??
+    payloadString(opts.payload.eventType) ??
+    payloadString(opts.payload.type);
   const observed = a2pWebhookStatus(opts.payload);
   const operationId = providerEventOperationId(opts.providerEventId);
 
@@ -262,13 +376,7 @@ async function handleA2pLifecycleWebhook(opts: {
     if (existingEvent) return "duplicate" as const;
 
     const next = mergeRegistrationStatus(registration.status, observed);
-    const reasons = Array.isArray(opts.payload.reasons)
-      ? opts.payload.reasons.filter(
-          (item): item is string => typeof item === "string",
-        )
-      : [];
-    const detail =
-      payloadString(opts.payload.description) ?? (reasons.join("; ") || null);
+    const detail = providerFailureDetail(opts.payload);
     const [updated] = await tx
       .update(messagingRegistrations)
       .set({
@@ -399,6 +507,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "invalid signature" }, { status: 401 });
   }
 
+  // Hosted inbound projection remains independently default-off until the
+  // durable, recovery-aware provider-event inbox is deployed. Outbound and
+  // provisioning flags do not authorize webhook mutation.
+  if (!hostedInboundProjectionEnabled()) {
+    return NextResponse.json({ ok: true });
+  }
+
   let event: unknown;
   try {
     event = JSON.parse(rawBody.text);
@@ -422,10 +537,12 @@ export async function POST(request: Request) {
         messaging_profile_id?: string;
         messagingProfileId?: string;
         messaging_profile?: { id?: string };
+        autoresponse_type?: string;
         brandId?: string;
         campaignId?: string;
         phoneNumber?: string;
         type?: string;
+        eventType?: string;
         description?: string;
         reasons?: unknown;
         errors?: Array<{ code?: unknown }>;
@@ -498,14 +615,16 @@ export async function POST(request: Request) {
     text,
     providerMessageId,
     messagingProfileId,
+    classification: telnyxInboundClassification(
+      text,
+      payload.autoresponse_type,
+    ),
   });
 
   if (result.action === "ignored") {
-    console.warn(
-      `[telnyx-webhook] inbound to unrecognised sender ${
-        toPhone ?? messagingProfileId
-      }`,
-    );
+    // The target number/profile is untrusted public-webhook input and may also
+    // identify a clinic. Keep the operational signal without logging it.
+    console.warn("[telnyx-webhook] inbound to unrecognised sender");
     return NextResponse.json({ ok: true });
   }
   return NextResponse.json(result);

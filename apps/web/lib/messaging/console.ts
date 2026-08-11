@@ -16,19 +16,10 @@ export const consoleProvider: MessagingProvider = {
     return true;
   },
 
-  async send({
-    to,
-    body,
-    sender,
-  }: SendMessageInput): Promise<SendMessageResult> {
-    console.log("──────────────────────────────────────────");
-    console.log("[SMS] No messaging provider configured – logging to console");
-    console.log(
-      `  From: ${sender.messagingServiceId ?? sender.from ?? "(unset)"}`,
-    );
-    console.log(`  To:   ${to}`);
-    console.log(`  Body: ${body}`);
-    console.log("──────────────────────────────────────────");
+  async send({ body }: SendMessageInput): Promise<SendMessageResult> {
+    console.log("[SMS] console_provider_accept", {
+      bodyLength: body.length,
+    });
     // The immutable send ledger enforces provider-message uniqueness within a
     // practice, so local sends need the same one-message/one-id property as a
     // real carrier response.

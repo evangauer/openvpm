@@ -80,6 +80,7 @@ describe("messaging.getInboxStatus", () => {
         messagingProfileId: null,
         registrationStatus: "active",
         enabled: true,
+        providerProfileReady: false,
       },
     ]);
 
@@ -137,6 +138,44 @@ describe("messaging.getInboxStatus", () => {
         kind: "ready",
         smsComposeEnabled: true,
         showBanner: false,
+      },
+    });
+  });
+
+  it("keeps hosted compose blocked when provider-profile attestation is absent", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    vi.stubEnv("MESSAGING_SENDING_ENABLED", "true");
+    vi.stubEnv("MESSAGING_SENDING_PRACTICE_IDS", PRACTICE_ID);
+    vi.stubEnv(
+      "MESSAGING_SENDING_LOCATION_IDS",
+      "00000000-0000-0000-0000-000000000002",
+    );
+    const { db } = createDb([
+      {
+        locationId: "00000000-0000-0000-0000-000000000002",
+        name: "Main Clinic",
+        provider: "telnyx",
+        senderE164: "+15555550100",
+        messagingProfileId: "profile-1",
+        registrationStatus: "active",
+        enabled: true,
+        providerProfileReady: false,
+      },
+    ]);
+
+    await expect(callerWithDb(db).getInboxStatus()).resolves.toMatchObject({
+      locations: [
+        {
+          messaging: {
+            launchEligible: true,
+            providerProfileReady: false,
+            providerProfileReadyRequired: true,
+          },
+        },
+      ],
+      summary: {
+        kind: "action_required",
+        smsComposeEnabled: false,
       },
     });
   });

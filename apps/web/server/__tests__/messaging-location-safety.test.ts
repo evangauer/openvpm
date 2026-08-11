@@ -23,6 +23,8 @@ const mocks = vi.hoisted(() => {
     findMessagingProfilesByName: vi.fn(),
     findOwnedPhoneNumbers: vi.fn(),
     findNumberOrdersByCustomerReference: vi.fn(),
+    getMessagingProfile: vi.fn(),
+    messagingProfileSafetyIssues: vi.fn(),
     reserveMessagingProfileAttempt: vi.fn(),
     releaseMessagingProfileAttempt: vi.fn(),
     TelnyxError: MockTelnyxError,
@@ -31,6 +33,7 @@ const mocks = vi.hoisted(() => {
     usageForPractice: vi.fn(async () => 0),
     currentPeriodMonth: vi.fn(() => "2026-06"),
     lockPracticeForExternalSideEffects: vi.fn(async () => true),
+    alertOps: vi.fn(async () => undefined),
   };
 });
 
@@ -49,6 +52,8 @@ vi.mock("@/lib/messaging/telnyx-provisioning", () => ({
   findOwnedPhoneNumbers: mocks.findOwnedPhoneNumbers,
   findNumberOrdersByCustomerReference:
     mocks.findNumberOrdersByCustomerReference,
+  getMessagingProfile: mocks.getMessagingProfile,
+  messagingProfileSafetyIssues: mocks.messagingProfileSafetyIssues,
   TelnyxError: mocks.TelnyxError,
   TelnyxMutationUncertainError: mocks.TelnyxMutationUncertainError,
   TelnyxNotConfiguredError: mocks.TelnyxNotConfiguredError,
@@ -66,8 +71,11 @@ vi.mock("@/lib/billing/usage", () => ({
 
 vi.mock("@/lib/recovery-hold", () => ({
   RECOVERY_HOLD_BLOCK_MESSAGE: "recovery hold",
-  lockPracticeForExternalSideEffects:
-    mocks.lockPracticeForExternalSideEffects,
+  lockPracticeForExternalSideEffects: mocks.lockPracticeForExternalSideEffects,
+}));
+
+vi.mock("@/lib/alerts", () => ({
+  alertOps: mocks.alertOps,
 }));
 
 const { messagingRouter } = await import("../routers/messaging");
@@ -266,6 +274,13 @@ beforeEach(() => {
   mocks.reserveMessagingProfileAttempt.mockResolvedValue(true);
   mocks.releaseMessagingProfileAttempt.mockResolvedValue(true);
   mocks.createMessagingProfile.mockResolvedValue({ id: "profile_123" });
+  mocks.getMessagingProfile.mockResolvedValue({
+    id: "profile_123",
+    name: `OpenVPM provision ${LOCATION_ID}`,
+    webhookUrl: "https://app.example.com/api/webhooks/telnyx",
+    enabled: false,
+  });
+  mocks.messagingProfileSafetyIssues.mockReturnValue([]);
   mocks.buyNumber.mockResolvedValue({
     orderId: "order_123",
     status: "pending",
@@ -539,6 +554,42 @@ describe("messaging location target safety", () => {
     expect(insertUpdate.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({ setWhere: expect.anything() }),
     );
+    expect(mocks.alertOps).toHaveBeenCalledWith(
+      "SMS registration ready for carrier review",
+      `practice=${PRACTICE_ID} registration=00000000-0000-0000-0000-000000000008 action=review_saved_registration`,
+    );
+    const alertPayload = JSON.stringify(mocks.alertOps.mock.calls);
+    expect(alertPayload).not.toContain("123456789");
+    expect(alertPayload).not.toContain("Healthy Pets LLC");
+    expect(alertPayload).not.toContain("alex@example.com");
+  });
+
+  it("does not duplicate the operator alert when saved registration details are edited", async () => {
+    vi.stubEnv(
+      "MESSAGING_REGISTRATION_ENCRYPTION_KEY",
+      Buffer.alloc(32, 9).toString("base64"),
+    );
+    const { db } = createDb({
+      selectResults: [
+        [
+          {
+            taxIdEncrypted: "v1:stored",
+            taxIdLast4: "6789",
+            providerBrandId: null,
+            providerCampaignId: null,
+            submissionLockId: null,
+            status: "not_started",
+          },
+        ],
+      ],
+    });
+
+    await callerWithDb(db).saveRegistration({
+      ...registrationInput(),
+      taxId: undefined,
+    });
+
+    expect(mocks.alertOps).not.toHaveBeenCalled();
   });
 
   it("does not collect new carrier registration data outside the hosted pilot", async () => {
@@ -1117,7 +1168,7 @@ describe("messaging location target safety", () => {
         callerWithDb(retry.db).provisionNumber(resumeNumberInput()),
       ).rejects.toMatchObject({
         code: "CONFLICT",
-        message: expect.stringContaining("No additional purchase"),
+        message: expect.stringContaining("still uncertain"),
       });
 
       expect(mocks.createMessagingProfile).toHaveBeenCalledTimes(1);
@@ -1125,6 +1176,26 @@ describe("messaging location target safety", () => {
       expect(mocks.releaseMessagingProfileAttempt).not.toHaveBeenCalled();
     },
   );
+
+  it("releases the durable gate after a definitive profile-create rejection", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
+    mocks.createMessagingProfile.mockRejectedValueOnce(
+      new mocks.TelnyxError("invalid profile request", 400),
+    );
+    const gate = preparedMessagingGate();
+    const { db, insertValues } = createDb({
+      selectResults: [[{ id: LOCATION_ID }], [gate]],
+    });
+
+    await expect(
+      callerWithDb(db).provisionNumber(startNumberInput()),
+    ).rejects.toMatchObject({ code: "BAD_GATEWAY" });
+
+    expect(mocks.releaseMessagingProfileAttempt).toHaveBeenCalledTimes(1);
+    expect(mocks.deleteMessagingProfile).not.toHaveBeenCalled();
+    expect(mocks.buyNumber).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
 
   it("keeps resume read-only when the exact profile later becomes visible", async () => {
     process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
@@ -1510,6 +1581,28 @@ describe("messaging location target safety", () => {
     );
   });
 
+  it("cleans a definitive rejected number order back to a fresh setup", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
+    mocks.buyNumber.mockRejectedValueOnce(
+      new mocks.TelnyxError("number order rejected", 400),
+    );
+    const gate = preparedMessagingGate();
+    const { db, updateSet, insertValues } = createDb({
+      selectResults: [[{ id: LOCATION_ID }], [gate], [gate]],
+      updateRows: [{ id: "00000000-0000-0000-0000-000000000010" }],
+    });
+
+    await expect(
+      callerWithDb(db).provisionNumber(startNumberInput()),
+    ).rejects.toMatchObject({ code: "BAD_GATEWAY" });
+
+    expect(mocks.deleteMessagingProfile).toHaveBeenCalledWith("profile_123");
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ deletedAt: expect.any(Date) }),
+    );
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("rechecks the kill switch immediately before a number purchase", async () => {
     process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
     mocks.createMessagingProfile.mockImplementation(async () => {
@@ -1532,6 +1625,52 @@ describe("messaging location target safety", () => {
         registrationStatus: "failed",
       }),
     );
+  });
+
+  it("rechecks the hosted practice allowlist immediately before a number purchase", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
+    process.env.HOSTED_BILLING_ENABLED = "true";
+    process.env.MESSAGING_PROVISIONING_PRACTICE_IDS = PRACTICE_ID;
+    mocks.createMessagingProfile.mockImplementation(async () => {
+      process.env.MESSAGING_PROVISIONING_PRACTICE_IDS = "";
+      return { id: "profile_123" };
+    });
+    const { db } = createDb({
+      practiceRows: [
+        {
+          tier: "cloud",
+          billingStatus: "trialing",
+          trialEndsAt: new Date("2099-01-01T00:00:00Z"),
+        },
+      ],
+      selectResults: [[{ id: PRACTICE_ID }], [{ id: LOCATION_ID }], []],
+    });
+
+    await expect(
+      callerWithDb(db).provisionNumber(startNumberInput()),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("approved pilot clinics"),
+    });
+
+    expect(mocks.buyNumber).not.toHaveBeenCalled();
+  });
+
+  it("refuses number purchase when exact profile readback has safety drift", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
+    mocks.messagingProfileSafetyIssues.mockReturnValueOnce([
+      "daily spend limit is not $10.00",
+    ]);
+    const { db } = createDb({
+      selectResults: [[{ id: LOCATION_ID }], []],
+    });
+
+    await expect(
+      callerWithDb(db).provisionNumber(startNumberInput()),
+    ).rejects.toMatchObject({ code: "BAD_GATEWAY" });
+
+    expect(mocks.getMessagingProfile).toHaveBeenCalledWith("profile_123");
+    expect(mocks.buyNumber).not.toHaveBeenCalled();
   });
 
   it("rejects enable toggles for stale or deleted locations before updating", async () => {

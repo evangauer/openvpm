@@ -43,6 +43,7 @@ import {
   practiceAllowsExternalSideEffects,
   RECOVERY_HOLD_BLOCK_MESSAGE,
 } from "@/lib/recovery-hold";
+import { isQuietHours } from "@/lib/messaging/reminders";
 
 export const SMS_COMPLIANCE_FOOTER = "Reply STOP to opt out or HELP for help.";
 export const SMS_MAX_BODY_LENGTH = 1600;
@@ -606,6 +607,7 @@ async function dispatchWinner(
   let result: SendMessageResult;
   try {
     result = await withSystem(db, async (tx) => {
+      let hostedPracticeTimezone: string | null | undefined;
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`sms-attempt:${attempt.practiceId}:${attempt.id}`}, 0))`,
       );
@@ -632,6 +634,7 @@ async function dispatchWinner(
             tier: practices.subscriptionTier,
             billingStatus: practices.billingStatus,
             trialEndsAt: practices.trialEndsAt,
+            timezone: practices.timezone,
           })
           .from(practices)
           .where(
@@ -653,6 +656,7 @@ async function dispatchWinner(
           );
           return rejected;
         }
+        hostedPracticeTimezone = practice.timezone;
         if (
           !hasHostedFullAccess(
             practice.tier,
@@ -664,6 +668,19 @@ async function dispatchWinner(
             status: "definite_failure",
             error:
               "OpenVPM Cloud is read-only until your trial or subscription is active.",
+          };
+          await appendProviderResult(
+            tx as unknown as Database,
+            attempt,
+            rejected,
+          );
+          return rejected;
+        }
+        if (isQuietHours(new Date(), practice.timezone)) {
+          const rejected: SendMessageResult = {
+            status: "definite_failure",
+            error:
+              "SMS delivery is blocked during local quiet hours (9 PM–8 AM).",
           };
           await appendProviderResult(
             tx as unknown as Database,
@@ -906,6 +923,44 @@ async function dispatchWinner(
         const rejected: SendMessageResult = {
           status: "definite_failure",
           error: "Recipient has opted out of SMS (STOP).",
+        };
+        await appendProviderResult(
+          tx as unknown as Database,
+          attempt,
+          rejected,
+        );
+        return rejected;
+      }
+
+      if (hostedExternalSend) {
+        const launch = hostedMessagingLaunchDecision({
+          practiceId: attempt.practiceId,
+          locationId: attempt.locationId ?? undefined,
+        });
+        if (!launch.allowed) {
+          const rejected: SendMessageResult = {
+            status: "definite_failure",
+            error: hostedMessagingLaunchBlockMessage(launch.reason),
+          };
+          await appendProviderResult(
+            tx as unknown as Database,
+            attempt,
+            rejected,
+          );
+          return rejected;
+        }
+      }
+
+      // Locks, sender/consent reads, and operator review can span the quiet-
+      // hours boundary. Recheck at the last possible instant before transport.
+      if (
+        hostedExternalSend &&
+        isQuietHours(new Date(), hostedPracticeTimezone)
+      ) {
+        const rejected: SendMessageResult = {
+          status: "definite_failure",
+          error:
+            "SMS delivery is blocked during local quiet hours (9 PM–8 AM).",
         };
         await appendProviderResult(
           tx as unknown as Database,

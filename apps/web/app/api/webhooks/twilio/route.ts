@@ -93,9 +93,7 @@ export async function POST(request: Request) {
     });
 
     if (result.action === "ignored") {
-      console.warn(
-        `[twilio-webhook] inbound to unrecognised number ${toPhone}`,
-      );
+      console.warn("[twilio-webhook] inbound_sender_not_resolved");
       return NextResponse.json({ ok: true });
     }
 

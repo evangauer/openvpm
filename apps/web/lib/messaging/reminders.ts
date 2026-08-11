@@ -12,14 +12,14 @@ const QUIET_START_HOUR = 21; // 9pm — quiet from here
 /**
  * Is `now` within quiet hours for the given IANA timezone? We approximate the
  * recipient's local time with the practice/location timezone (we don't store a
- * per-client tz). Unknown/empty tz → not quiet (don't block).
+ * per-client tz). Unknown or invalid timezone data fails closed as quiet.
  */
 export function isQuietHours(
   now: Date,
-  timeZone: string | null | undefined
+  timeZone: string | null | undefined,
 ): boolean {
   const normalizedTimeZone = timeZone?.trim();
-  if (!normalizedTimeZone) return false;
+  if (!normalizedTimeZone) return true;
   let hour: number;
   try {
     const parts = new Intl.DateTimeFormat("en-US", {
@@ -29,9 +29,9 @@ export function isQuietHours(
     }).formatToParts(now);
     hour = Number(parts.find((p) => p.type === "hour")?.value ?? "") % 24; // "24" → 0
   } catch {
-    return false; // invalid tz → don't block
+    return true;
   }
-  if (Number.isNaN(hour)) return false;
+  if (Number.isNaN(hour)) return true;
   return hour < QUIET_END_HOUR || hour >= QUIET_START_HOUR;
 }
 

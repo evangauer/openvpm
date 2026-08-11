@@ -116,6 +116,8 @@ export default function AdminPage() {
   );
   const { data: smsOperations, error: smsOperationsError } =
     trpc.admin.smsOperationsHealth.useQuery(undefined, { retry: false });
+  const { data: smsConfiguration, error: smsConfigurationError } =
+    trpc.admin.hostedSmsConfiguration.useQuery(undefined, { retry: false });
   const [extendTrialError, setExtendTrialError] = useState<string | null>(null);
   const [analyticsError, setAnalyticsError] = useState<string | null>(null);
   const [messagingError, setMessagingError] = useState<string | null>(null);
@@ -324,6 +326,74 @@ export default function AdminPage() {
             </span>
           ) : null}
         </div>
+        {smsConfiguration ? (
+          <div className="mt-4 rounded-md border border-border bg-muted/20 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm font-medium">Hosted SMS configuration</p>
+              <span className="text-xs text-muted-foreground">
+                {smsConfiguration.rolloutIntended
+                  ? smsConfiguration.providerIsTelnyx &&
+                    smsConfiguration.apiKeyShapeValid &&
+                    smsConfiguration.webhookPublicKeyShapeValid &&
+                    smsConfiguration.registrationEncryptionKeyShapeValid &&
+                    smsConfiguration.provisioningScopeExact &&
+                    smsConfiguration.sendingScopeExact &&
+                    smsConfiguration.inboundEnabled
+                    ? "Rollout configured"
+                    : "Needs attention"
+                  : "Safely deferred"}
+              </span>
+            </div>
+            <div className="mt-2 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
+              {[
+                ["Telnyx provider", smsConfiguration.providerIsTelnyx],
+                ["API key shape", smsConfiguration.apiKeyShapeValid],
+                [
+                  "Webhook key shape",
+                  smsConfiguration.webhookPublicKeyShapeValid,
+                ],
+                [
+                  "Registration key shape",
+                  smsConfiguration.registrationEncryptionKeyShapeValid,
+                ],
+                [
+                  "Provisioning scope exact",
+                  smsConfiguration.provisioningScopeExact,
+                ],
+                ["Sending scope exact", smsConfiguration.sendingScopeExact],
+                ["Inbound gate enabled", smsConfiguration.inboundEnabled],
+              ].map(([label, valid]) => (
+                <div
+                  key={String(label)}
+                  className="flex items-center justify-between rounded border border-border bg-background px-2 py-1.5"
+                >
+                  <span>{label}</span>
+                  <span
+                    className={
+                      valid
+                        ? "font-medium text-green-700"
+                        : "font-medium text-red-700"
+                    }
+                  >
+                    {valid ? "Valid" : "Fix"}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Provisioning {smsConfiguration.provisioningEnabled ? "on" : "off"}
+              {" · "}sending {smsConfiguration.sendingEnabled ? "on" : "off"}
+              {" · "}scopes {smsConfiguration.provisioningPracticeScopeCount}/
+              {smsConfiguration.sendingPracticeScopeCount}/
+              {smsConfiguration.sendingLocationScopeCount} (provisioning /
+              sending practice / sending location). No secret values are shown.
+            </p>
+          </div>
+        ) : smsConfigurationError ? (
+          <p className="mt-3 text-sm text-red-700">
+            Could not load hosted SMS configuration diagnostics.
+          </p>
+        ) : null}
         {smsOperations ? (
           <>
             <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -777,7 +847,7 @@ export default function AdminPage() {
                                     onClick={() => {
                                       if (
                                         window.confirm(
-                                          `Enable ${registration.practiceName}'s Telnyx profile only after OpenVPM verifies its exact webhook, US-only destination list, $10 daily cap, active campaign, and assigned number? Clinic sending will remain off.`,
+                                          `Install ${registration.practiceName}'s exact clinic-branded START, STOP, and HELP rules, then enable its Telnyx profile only after OpenVPM verifies the webhook, US-only destination list, $10 daily cap, active campaign, and assigned number? Clinic sending will remain off.`,
                                         )
                                       ) {
                                         setMessagingProfileEnabled.mutate({

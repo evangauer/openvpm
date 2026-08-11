@@ -13,6 +13,10 @@ export type InboxSmsLocation = {
     messagingProfileId: string | null;
     registrationStatus: InboxSmsRegistrationStatus;
     enabled: boolean;
+    /** Fresh provider readback required before hosted staff compose is shown. */
+    providerProfileReady?: boolean;
+    /** Hosted deployment policy; omitted/false for self-host compatibility. */
+    providerProfileReadyRequired?: boolean;
     /** Server-computed hosted rollout policy. Omitted for self-host/back-compat. */
     launchEligible?: boolean;
   } | null;
@@ -39,25 +43,27 @@ export type InboxSmsStatusSummary = {
 };
 
 export function summarizeInboxSmsStatus(
-  locations: InboxSmsLocation[]
+  locations: InboxSmsLocation[],
 ): InboxSmsStatusSummary {
   const configured = locations
     .map((location) => location.messaging)
     .filter(
       (messaging): messaging is NonNullable<InboxSmsLocation["messaging"]> =>
-        Boolean(messaging)
+        Boolean(messaging),
     );
   const hasSender = (messaging: NonNullable<InboxSmsLocation["messaging"]>) =>
     Boolean(
-      messaging.senderE164?.trim() || messaging.messagingProfileId?.trim()
+      messaging.senderE164?.trim() || messaging.messagingProfileId?.trim(),
     );
 
   const ready = configured.some(
     (messaging) =>
       messaging.enabled &&
       messaging.launchEligible !== false &&
+      (!messaging.providerProfileReadyRequired ||
+        messaging.providerProfileReady === true) &&
       messaging.registrationStatus === "active" &&
-      hasSender(messaging)
+      hasSender(messaging),
   );
 
   if (ready) {
@@ -73,7 +79,7 @@ export function summarizeInboxSmsStatus(
   }
 
   const launchBlocked = configured.some(
-    (messaging) => messaging.launchEligible === false
+    (messaging) => messaging.launchEligible === false,
   );
   if (launchBlocked) {
     return {
@@ -104,9 +110,11 @@ export function summarizeInboxSmsStatus(
   const needsAction = configured.some(
     (messaging) =>
       !hasSender(messaging) ||
+      (messaging.providerProfileReadyRequired === true &&
+        messaging.providerProfileReady !== true) ||
       messaging.registrationStatus === "action_required" ||
       messaging.registrationStatus === "failed" ||
-      messaging.registrationStatus === "suspended"
+      messaging.registrationStatus === "suspended",
   );
 
   if (needsAction) {
@@ -125,7 +133,7 @@ export function summarizeInboxSmsStatus(
   const pending = configured.some(
     (messaging) =>
       messaging.registrationStatus === "pending" ||
-      messaging.registrationStatus === "not_started"
+      messaging.registrationStatus === "not_started",
   );
 
   if (pending) {

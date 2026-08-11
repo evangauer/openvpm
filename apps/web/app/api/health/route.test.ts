@@ -172,6 +172,10 @@ function stubValidTelnyxEnvs() {
   );
 }
 
+function stubHostedSmsInboundGate() {
+  vi.stubEnv("MESSAGING_INBOUND_ENABLED", "true");
+}
+
 afterEach(() => {
   vi.clearAllMocks();
   vi.unstubAllEnvs();
@@ -421,6 +425,7 @@ describe("health route", () => {
     mocks.billingEnforced.mockReturnValue(true);
     stubHostedRequiredEnvs();
     stubValidTelnyxEnvs();
+    stubHostedSmsInboundGate();
     vi.stubEnv("MESSAGING_SENDING_ENABLED", "true");
     vi.stubEnv(
       "MESSAGING_SENDING_PRACTICE_IDS",
@@ -441,6 +446,7 @@ describe("health route", () => {
     mocks.billingEnforced.mockReturnValue(true);
     stubHostedRequiredEnvs();
     stubValidTelnyxEnvs();
+    stubHostedSmsInboundGate();
     vi.stubEnv("MESSAGING_SENDING_ENABLED", "true");
     vi.stubEnv(
       "MESSAGING_SENDING_PRACTICE_IDS",
@@ -466,6 +472,7 @@ describe("health route", () => {
     mocks.billingEnforced.mockReturnValue(true);
     stubHostedRequiredEnvs();
     stubValidTelnyxEnvs();
+    stubHostedSmsInboundGate();
     vi.stubEnv(
       "MESSAGING_PROVISIONING_PRACTICE_IDS",
       "00000000-0000-4000-8000-0000000000aa",
@@ -493,6 +500,7 @@ describe("health route", () => {
     mocks.billingEnforced.mockReturnValue(true);
     stubHostedRequiredEnvs();
     stubValidTelnyxEnvs();
+    stubHostedSmsInboundGate();
     vi.stubEnv("MESSAGING_SENDING_ENABLED", "true");
     vi.stubEnv(
       "MESSAGING_SENDING_PRACTICE_IDS",
@@ -521,6 +529,7 @@ describe("health route", () => {
     mocks.billingEnforced.mockReturnValue(true);
     stubHostedRequiredEnvs();
     stubValidTelnyxEnvs();
+    stubHostedSmsInboundGate();
     vi.stubEnv("MESSAGING_PROVIDER", "twilio");
     vi.stubEnv(
       "MESSAGING_SENDING_PRACTICE_IDS",
@@ -545,6 +554,7 @@ describe("health route", () => {
     mocks.billingEnforced.mockReturnValue(true);
     stubHostedRequiredEnvs();
     stubValidTelnyxEnvs();
+    stubHostedSmsInboundGate();
     vi.stubEnv("MESSAGING_SENDING_PRACTICE_IDS", "not-a-practice-id");
     vi.stubEnv(
       "MESSAGING_SENDING_LOCATION_IDS",
@@ -565,6 +575,7 @@ describe("health route", () => {
     mocks.billingEnforced.mockReturnValue(true);
     stubHostedRequiredEnvs();
     stubValidTelnyxEnvs();
+    stubHostedSmsInboundGate();
     vi.stubEnv(
       "MESSAGING_SENDING_PRACTICE_IDS",
       "00000000-0000-0000-0000-0000000000aa",
@@ -1109,8 +1120,7 @@ describe("health route", () => {
     expect(response.status).toBe(503);
     expect(json.checks.hostedFileReplica).toEqual({
       ok: false,
-      detail:
-        "2/3 active files independently available (66.67%); backlog 1",
+      detail: "2/3 active files independently available (66.67%); backlog 1",
       advisory: false,
     });
   });
@@ -1132,8 +1142,7 @@ describe("health route", () => {
     expect(response.status).toBe(200);
     expect(json.checks.hostedFileReplica).toEqual({
       ok: true,
-      detail:
-        "1/1 active files independently available (100%); backlog 0",
+      detail: "1/1 active files independently available (100%); backlog 0",
       advisory: false,
     });
     expect(mocks.checkReplicaStorageHealth).toHaveBeenCalledTimes(1);

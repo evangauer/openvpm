@@ -18,6 +18,11 @@ describe("classifyInboundSms", () => {
     "remove me from your text list",
     "take me off the SMS list",
     "unsubscribe me from SMS messages",
+    "please unsubscribe",
+    "revoke consent",
+    "withdraw my SMS consent",
+    "please opt me out",
+    "I don't want any more texts",
   ])("classifies an unambiguous opt-out: %s", (text) => {
     expect(classifyInboundSms(text)).toBe("stop");
   });
@@ -26,7 +31,7 @@ describe("classifyInboundSms", () => {
     "classifies an exact opt-in keyword: %s",
     (text) => {
       expect(classifyInboundSms(text)).toBe("start");
-    }
+    },
   );
 
   it.each(["HELP", "info!"])("classifies exact HELP: %s", (text) => {

@@ -36,6 +36,7 @@ import {
   normalizeEmailPreferenceBaseUrl,
 } from "@/lib/email-preferences";
 import { platformEmailIdentityConfigurationReady } from "@/lib/platform-email-preferences";
+import { hostedSmsCredentialIssueCount } from "@/lib/messaging/hosted-sms-readiness";
 
 export const dynamic = "force-dynamic";
 
@@ -273,33 +274,8 @@ function isExactPilotScope(values: string[]): boolean {
   return values.length === 1 && isUuid(values[0]!);
 }
 
-function isBase64EncodedBytes(
-  value: string | undefined,
-  bytes: number,
-): boolean {
-  if (!value || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return false;
-  try {
-    return Buffer.from(value, "base64").length === bytes;
-  } catch {
-    return false;
-  }
-}
-
-function hostedTelnyxCredentialIssueCount(): number {
-  let issues = 0;
-  const apiKey = envValue("TELNYX_API_KEY");
-  if (!apiKey?.startsWith("KEY_") || apiKey.length < 20) issues += 1;
-  if (!isBase64EncodedBytes(envValue("TELNYX_PUBLIC_KEY"), 32)) issues += 1;
-  if (
-    !isBase64EncodedBytes(envValue("MESSAGING_REGISTRATION_ENCRYPTION_KEY"), 32)
-  ) {
-    issues += 1;
-  }
-  return issues;
-}
-
 function hostedTelnyxCredentialCheck(): { ok: boolean; detail: string } {
-  const issueCount = hostedTelnyxCredentialIssueCount();
+  const issueCount = hostedSmsCredentialIssueCount();
   return issueCount > 0
     ? {
         ok: false,
@@ -317,6 +293,7 @@ function hostedSmsRolloutIntended(): boolean {
   return (
     envFlagEnabled("MESSAGING_PROVISIONING_ENABLED") ||
     envFlagEnabled("MESSAGING_SENDING_ENABLED") ||
+    envFlagEnabled("MESSAGING_INBOUND_ENABLED") ||
     commaSeparatedValues(HOSTED_SMS_PROVISIONING_PRACTICE_IDS_ENV).length > 0 ||
     commaSeparatedValues(HOSTED_SMS_SENDING_PRACTICE_IDS_ENV).length > 0 ||
     commaSeparatedValues(HOSTED_SMS_SENDING_LOCATION_IDS_ENV).length > 0
@@ -327,9 +304,10 @@ async function hostedSmsRolloutCheck(): Promise<{
   ok: boolean;
   detail: string;
 }> {
-  const credentialIssues = hostedTelnyxCredentialIssueCount();
+  const credentialIssues = hostedSmsCredentialIssueCount();
   const provisioningEnabled = envFlagEnabled("MESSAGING_PROVISIONING_ENABLED");
   const sendingEnabled = envFlagEnabled("MESSAGING_SENDING_ENABLED");
+  const inboundEnabled = envFlagEnabled("MESSAGING_INBOUND_ENABLED");
   const provisioningPracticeIds = commaSeparatedValues(
     HOSTED_SMS_PROVISIONING_PRACTICE_IDS_ENV,
   );
@@ -358,6 +336,15 @@ async function hostedSmsRolloutCheck(): Promise<{
     (!isExactPilotScope(sendingPracticeIds) ||
       !isExactPilotScope(sendingLocationIds))
   ) {
+    configurationIssues += 1;
+  }
+  if (
+    (sendingEnabled || sendingScopePrepared || inboundEnabled) &&
+    !inboundEnabled
+  ) {
+    configurationIssues += 1;
+  }
+  if (inboundEnabled && !sendingScopePrepared) {
     configurationIssues += 1;
   }
   if (
@@ -537,7 +524,8 @@ export async function GET() {
     } else if (replicaRequired && !replicaEnabled) {
       replicaCheck = {
         ok: false,
-        detail: "Independent file replica is required but execution is disabled",
+        detail:
+          "Independent file replica is required but execution is disabled",
       };
     } else {
       const storageCheck = await checkReplicaStorageHealth();
@@ -546,7 +534,8 @@ export async function GET() {
       } else {
         try {
           const coverage = await getFileReplicaCoverage();
-          const complete = coverage.backlog === 0 && coverage.coveragePct === 100;
+          const complete =
+            coverage.backlog === 0 && coverage.coveragePct === 100;
           replicaCheck = {
             ok: replicaRequired ? complete : storageCheck.ok,
             detail: `${coverage.available}/${coverage.activeFiles} active files independently available (${coverage.coveragePct}%); backlog ${coverage.backlog}`,

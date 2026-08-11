@@ -48,7 +48,7 @@
     },
     {
       "path": "/api/cron/sms-operations",
-      "schedule": "30 13 * * *"
+      "schedule": "*/15 * * * *"
     },
     {
       "path": "/api/cron/conversion-reconcile",

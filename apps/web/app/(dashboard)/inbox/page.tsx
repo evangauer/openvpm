@@ -1237,6 +1237,11 @@ export default function InboxPage() {
                   <p className="text-xs text-muted-foreground">
                     Checking texting setup before SMS can be sent.
                   </p>
+                ) : composeChannel === "sms" ? (
+                  <p className="text-xs text-muted-foreground">
+                    Service messages only: appointments, care updates, and
+                    replies. Marketing or promotional texting is not supported.
+                  </p>
                 ) : null}
               </div>
             </div>

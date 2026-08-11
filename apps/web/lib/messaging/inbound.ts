@@ -73,6 +73,10 @@ export function classifyInboundSms(text: string): InboundSmsClassification {
     /^(?:please |kindly )?no more (?:texts|text messages|sms messages)$/,
     /^(?:please |kindly )?(?:remove me from|take me off) (?:your |the )?(?:text|texting|sms) list$/,
     /^(?:please |kindly )?unsubscribe me from (?:texts|text messages|sms messages)$/,
+    /^(?:please |kindly )?unsubscribe(?: me)?$/,
+    /^(?:please |kindly )?(?:revoke|withdraw) (?:my )?(?:sms |text |texting )?consent$/,
+    /^(?:please |kindly )?opt me out(?: of (?:texts|text messages|sms messages))?$/,
+    /^(?:please |kindly )?i (?:do not|don['’]t) want (?:any )?(?:more|further) (?:texts|text messages|sms messages)$/,
   ].some((pattern) => pattern.test(sentence));
   return naturalOptOut ? "stop" : "other";
 }
@@ -165,15 +169,38 @@ export async function findMessagingLocationForWebhook(opts: {
   messagingProfileId?: string | null;
   provider: InboundSmsProvider;
 }): Promise<{ practiceId: string; locationId: string } | null> {
-  const sender = opts.senderE164 ? normalizeE164(opts.senderE164) : null;
+  const rawSender = nonBlank(opts.senderE164);
+  const sender = rawSender ? normalizeE164(rawSender) : null;
   const messagingProfileId = nonBlank(opts.messagingProfileId);
 
+  if (rawSender && messagingProfileId) {
+    if (!sender) return null;
+    const [senderLocation, profileLocation] = await Promise.all([
+      findMessagingLocationMatching(
+        opts.provider,
+        sql`trim(${locationMessaging.senderE164}) = ${sender}`,
+      ),
+      findMessagingLocationMatching(
+        opts.provider,
+        sql`trim(${locationMessaging.messagingProfileId}) = ${messagingProfileId}`,
+      ),
+    ]);
+    if (
+      !senderLocation ||
+      !profileLocation ||
+      senderLocation.practiceId !== profileLocation.practiceId ||
+      senderLocation.locationId !== profileLocation.locationId
+    ) {
+      return null;
+    }
+    return senderLocation;
+  }
+
   if (sender) {
-    const loc = await findMessagingLocationMatching(
+    return findMessagingLocationMatching(
       opts.provider,
       sql`trim(${locationMessaging.senderE164}) = ${sender}`,
     );
-    if (loc) return loc;
   }
 
   if (!messagingProfileId) return null;
@@ -364,6 +391,8 @@ export async function handleInboundSmsReply(opts: {
   text: string;
   providerMessageId: string | null;
   messagingProfileId?: string | null;
+  /** Signed provider keyword classification after route-level agreement checks. */
+  classification?: InboundSmsClassification;
 }): Promise<{ ok: true; action: InboundSmsAction }> {
   const fromPhone = normalizeE164(opts.fromPhone);
   const toPhone = opts.toPhone ? normalizeE164(opts.toPhone) : null;
@@ -379,7 +408,7 @@ export async function handleInboundSmsReply(opts: {
   });
   if (!loc) return { ok: true, action: "ignored" };
 
-  const classification = classifyInboundSms(text);
+  const classification = opts.classification ?? classifyInboundSms(text);
   const keyword = normalizedKeyword(text);
   if (classification === "stop") {
     const providerMessageId = opts.providerMessageId;

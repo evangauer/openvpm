@@ -33,6 +33,8 @@ import {
   findMessagingProfilesByName,
   findOwnedPhoneNumbers,
   findNumberOrdersByCustomerReference,
+  getMessagingProfile,
+  messagingProfileSafetyIssues,
   TelnyxError,
   TelnyxMutationUncertainError,
   TelnyxNotConfiguredError,
@@ -60,6 +62,7 @@ import {
   lockPracticeForExternalSideEffects,
   RECOVERY_HOLD_BLOCK_MESSAGE,
 } from "@/lib/recovery-hold";
+import { alertOps } from "@/lib/alerts";
 
 const adminOnly = protectedProcedure.use(requireRole("admin"));
 const MESSAGING_NUMBER_ORDERED_DETAIL =
@@ -592,6 +595,7 @@ export const messagingRouter = createRouter({
           input.privacyPolicyUrl || hostedPolicyUrls!.privacyPolicyUrl,
         termsUrl: input.termsUrl || hostedPolicyUrls!.termsUrl,
       };
+      let savedRegistrationId: string | null = null;
       await ctx.db.transaction(async (tx) => {
         const [registration] = await tx
           .insert(messagingRegistrations)
@@ -638,6 +642,7 @@ export const messagingRouter = createRouter({
             message: "Carrier registration changed while saving.",
           });
         }
+        savedRegistrationId = registration.id;
         await recordMessagingRegistrationEvent(tx as unknown as Database, {
           registration,
           eventType: "details_saved",
@@ -648,6 +653,16 @@ export const messagingRouter = createRouter({
           actor: clinicMessagingRegistrationActor(ctx.user),
         });
       });
+
+      // The registration row is the durable work item. Notify only when that
+      // work item is first created, after commit, and never include legal,
+      // contact, address, or tax data in the operator alert.
+      if (!existing && savedRegistrationId) {
+        await alertOps(
+          "SMS registration ready for carrier review",
+          `practice=${ctx.practiceId} registration=${savedRegistrationId} action=review_saved_registration`,
+        );
+      }
 
       return { ok: true, taxIdLast4 };
     }),
@@ -668,6 +683,7 @@ export const messagingRouter = createRouter({
         messagingProfileId: locationMessaging.messagingProfileId,
         registrationStatus: locationMessaging.registrationStatus,
         enabled: locationMessaging.enabled,
+        providerProfileReady: locationMessaging.providerProfileReady,
       })
       .from(locations)
       .leftJoin(
@@ -696,6 +712,7 @@ export const messagingRouter = createRouter({
             messagingProfileId: l.messagingProfileId,
             registrationStatus: l.registrationStatus ?? "not_started",
             enabled: l.enabled ?? false,
+            providerProfileReady: l.providerProfileReady ?? false,
             provider: l.provider,
           }
         : null,
@@ -709,6 +726,7 @@ export const messagingRouter = createRouter({
       messaging: location.messaging
         ? {
             ...location.messaging,
+            providerProfileReadyRequired: billingEnforced(),
             launchEligible:
               launchEligibleLocationIds.has(location.locationId) &&
               (!billingEnforced() || location.messaging.provider === "telnyx"),
@@ -1024,9 +1042,7 @@ export const messagingRouter = createRouter({
       assertProvisioningEnabled();
       assertProvisioningPracticeAllowed(ctx.practiceId);
       await assertActivePractice(ctx);
-      if (
-        !(await lockPracticeForExternalSideEffects(ctx.db, ctx.practiceId))
-      ) {
+      if (!(await lockPracticeForExternalSideEffects(ctx.db, ctx.practiceId))) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
           message: RECOVERY_HOLD_BLOCK_MESSAGE,
@@ -1042,8 +1058,10 @@ export const messagingRouter = createRouter({
       let profileId: string | null = null;
       let profileCreated = false;
       let profileMutationAttempted = false;
+      let profileCreationDefinitivelyRejected = false;
       let conclusiveEmptyProfileState = false;
       let orderMutationAttempted = false;
+      let orderDefinitivelyRejected = false;
       let purchaseOutcomeUncertain = false;
       let failureRecordAllowed = false;
       let preparedThisRequest = false;
@@ -1079,6 +1097,7 @@ export const messagingRouter = createRouter({
           // A request may have waited on the lock. Re-check immediately before
           // every possible provider mutation, not only at request entry.
           assertProvisioningEnabled();
+          assertProvisioningPracticeAllowed(ctx.practiceId);
 
           const [loc] = await tx
             .select({ id: locations.id })
@@ -1198,7 +1217,8 @@ export const messagingRouter = createRouter({
           }
           if (
             profileId &&
-            (!recoveredProfile || recoveredProfile.id !== profileId)
+            recoveredProfile &&
+            recoveredProfile.id !== profileId
           ) {
             throw provisioningConflict(
               "The saved provider identity does not match the recoverable setup. No number was purchased; contact support to reconcile it.",
@@ -1215,6 +1235,17 @@ export const messagingRouter = createRouter({
             );
           }
           const recoveredOrder = orders[0];
+
+          if (
+            input.action === "resume" &&
+            !recoveredProfile &&
+            !recoveredOrder
+          ) {
+            throw provisioningConflict(
+              "The earlier provider profile outcome is still uncertain. OpenVPM will not create another profile automatically; review the carrier account before retrying.",
+            );
+          }
+
           if (recoveredOrder) {
             if (
               !profileId ||
@@ -1255,11 +1286,20 @@ export const messagingRouter = createRouter({
               );
             }
             assertProvisioningEnabled();
+            assertProvisioningPracticeAllowed(ctx.practiceId);
             profileMutationAttempted = true;
-            const profile = await createMessagingProfile({
-              name: profileName,
-              webhookUrl,
-            });
+            let profile: Awaited<ReturnType<typeof createMessagingProfile>>;
+            try {
+              profile = await createMessagingProfile({
+                name: profileName,
+                webhookUrl,
+              });
+            } catch (error) {
+              profileCreationDefinitivelyRejected =
+                error instanceof TelnyxError &&
+                !(error instanceof TelnyxMutationUncertainError);
+              throw error;
+            }
             profileId = profile.id;
             profileCreated = true;
             failureRecordAllowed = true;
@@ -1268,6 +1308,24 @@ export const messagingRouter = createRouter({
           if (!activeProfileId) {
             throw new Error(
               "The provider setup did not return a durable profile identity. Retry setup or contact OpenVPM support.",
+            );
+          }
+
+          const verifiedProfile = await getMessagingProfile(activeProfileId);
+          const profileIssues = messagingProfileSafetyIssues(verifiedProfile, {
+            id: activeProfileId,
+            name: profileName,
+            webhookUrl,
+          });
+          if (profileIssues.length > 0 || verifiedProfile.enabled !== false) {
+            throw new TelnyxError(
+              `The provider messaging profile is not safe for number purchase: ${[
+                ...profileIssues,
+                ...(verifiedProfile.enabled === false
+                  ? []
+                  : ["profile is not disabled"]),
+              ].join("; ")}.`,
+              409,
             );
           }
 
@@ -1306,6 +1364,7 @@ export const messagingRouter = createRouter({
               throw provisioningConflict(INCONCLUSIVE_ORDER_DETAIL);
             }
             assertProvisioningEnabled();
+            assertProvisioningPracticeAllowed(ctx.practiceId);
             let order: Awaited<ReturnType<typeof buyNumber>>;
             try {
               orderMutationAttempted = true;
@@ -1317,6 +1376,9 @@ export const messagingRouter = createRouter({
             } catch (error) {
               purchaseOutcomeUncertain =
                 error instanceof TelnyxMutationUncertainError;
+              orderDefinitivelyRejected =
+                error instanceof TelnyxError &&
+                !(error instanceof TelnyxMutationUncertainError);
               throw error;
             }
             if (
@@ -1374,7 +1436,7 @@ export const messagingRouter = createRouter({
         if (
           preparedThisRequest &&
           e164 &&
-          !profileMutationAttempted &&
+          (!profileMutationAttempted || profileCreationDefinitivelyRejected) &&
           (e instanceof TelnyxNotConfiguredError || conclusiveEmptyProfileState)
         ) {
           try {
@@ -1396,6 +1458,7 @@ export const messagingRouter = createRouter({
           }
         }
         if (failureRecordAllowed && e164) {
+          const failureE164 = e164;
           try {
             await ctx.db.transaction(async (tx) => {
               // Serialize compensation with a retry. If the retry won the lock
@@ -1411,6 +1474,8 @@ export const messagingRouter = createRouter({
                   senderE164: locationMessaging.senderE164,
                   numberSource: locationMessaging.numberSource,
                   registrationStatus: locationMessaging.registrationStatus,
+                  registrationDetail: locationMessaging.registrationDetail,
+                  enabled: locationMessaging.enabled,
                 })
                 .from(locationMessaging)
                 .where(
@@ -1424,14 +1489,14 @@ export const messagingRouter = createRouter({
               const newerAttemptCompleted = Boolean(
                 current?.provider === "telnyx" &&
                 current.messagingProfileId &&
-                current.senderE164 === e164 &&
+                current.senderE164 === failureE164 &&
                 current.numberSource === "purchased" &&
                 current.registrationStatus !== "failed",
               );
               const differentSetupExists = Boolean(
                 current &&
                 (current.provider !== "telnyx" ||
-                  (current.senderE164 && current.senderE164 !== e164) ||
+                  (current.senderE164 && current.senderE164 !== failureE164) ||
                   (current.numberSource &&
                     current.numberSource !== "purchased")),
               );
@@ -1444,7 +1509,7 @@ export const messagingRouter = createRouter({
               if (
                 profileId &&
                 profileCreated &&
-                !orderMutationAttempted &&
+                (!orderMutationAttempted || orderDefinitivelyRejected) &&
                 !purchaseOutcomeUncertain
               ) {
                 try {
@@ -1456,6 +1521,45 @@ export const messagingRouter = createRouter({
                 }
               }
 
+              // A provider-confirmed profile deletion after a definitive,
+              // pre-order failure restores a truly fresh start. Soft-delete
+              // only the exact untouched reservation; a later click can then
+              // reserve it again without being stranded in resume-only state.
+              if (
+                profileId === null &&
+                profileCreated &&
+                (!orderMutationAttempted || orderDefinitivelyRejected) &&
+                !purchaseOutcomeUncertain &&
+                current?.provider === "telnyx" &&
+                current.messagingProfileId === null &&
+                current.senderE164 === failureE164 &&
+                current.numberSource === "purchased" &&
+                current.registrationStatus === "failed"
+              ) {
+                const [released] = await tx
+                  .update(locationMessaging)
+                  .set({ deletedAt: new Date(), updatedAt: new Date() })
+                  .where(
+                    and(
+                      eq(locationMessaging.locationId, input.locationId),
+                      eq(locationMessaging.practiceId, ctx.practiceId),
+                      eq(locationMessaging.provider, "telnyx"),
+                      isNull(locationMessaging.messagingProfileId),
+                      eq(locationMessaging.senderE164, failureE164),
+                      eq(locationMessaging.numberSource, "purchased"),
+                      eq(locationMessaging.registrationStatus, "failed"),
+                      eq(
+                        locationMessaging.registrationDetail,
+                        MESSAGING_PROVISIONING_PREPARED_DETAIL,
+                      ),
+                      eq(locationMessaging.enabled, false),
+                      isNull(locationMessaging.deletedAt),
+                    ),
+                  )
+                  .returning({ id: locationMessaging.id });
+                if (released) return;
+              }
+
               await tx
                 .insert(locationMessaging)
                 .values({
@@ -1463,7 +1567,7 @@ export const messagingRouter = createRouter({
                   locationId: input.locationId,
                   provider: "telnyx",
                   messagingProfileId: profileId,
-                  senderE164: e164,
+                  senderE164: failureE164,
                   numberSource: "purchased",
                   registrationStatus: "failed",
                   registrationDetail: MESSAGING_PROVISIONING_FAILED_DETAIL,
@@ -1476,7 +1580,7 @@ export const messagingRouter = createRouter({
                   set: {
                     provider: "telnyx",
                     messagingProfileId: profileId,
-                    senderE164: e164,
+                    senderE164: failureE164,
                     numberSource: "purchased",
                     registrationStatus: "failed",
                     registrationDetail: MESSAGING_PROVISIONING_FAILED_DETAIL,

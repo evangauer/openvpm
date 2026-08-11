@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
+import { createHash } from "node:crypto";
 import { db } from "@openpims/db/client";
-import { alertOps } from "@/lib/alerts";
+import { alertOps, deliverOpsAlert } from "@/lib/alerts";
 import { cronAuthError } from "@/lib/cron-auth";
 import { reportCronHeartbeat } from "@/lib/cron-heartbeat";
 import {
   getSmsOperationsHealth,
   type SmsOperationsHealth,
 } from "@/lib/messaging/sms-operations-health";
+import { processSmsOperationsAlertState } from "@/lib/messaging/sms-operations-alert";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -74,10 +76,31 @@ function degradedAlert(health: SmsOperationsHealth): string {
   ].join(" ");
 }
 
+function healthFingerprint(health: SmsOperationsHealth): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        status: health.status,
+        counts: health.counts,
+        reasons: health.reasons.map((reason) => ({
+          severity: reason.severity,
+          category: reason.category,
+          reason: SAFE_REASON_CODE.test(reason.reason)
+            ? reason.reason
+            : "unclassified",
+          count: reason.count,
+        })),
+        truncated: health.truncated,
+      }),
+    )
+    .digest("hex");
+}
+
 /**
- * Daily, read-only SMS operations monitor. It reports existing evidence only;
- * it never sends/retries SMS, reconciles evidence, mutates a provider profile,
- * or changes a launch flag or allowlist.
+ * Frequent, read-only SMS operations monitor. Its 15-minute schedule matches
+ * the shortest unresolved-send safety threshold. It reports evidence only; it
+ * never sends/retries SMS, reconciles evidence, mutates a provider profile, or
+ * changes a launch flag or allowlist.
  */
 export async function GET(request: Request) {
   const authError = cronAuthError(request);
@@ -87,13 +110,32 @@ export async function GET(request: Request) {
     const health = await getSmsOperationsHealth(db);
     const degraded = health.status !== "healthy";
 
+    const fingerprint = healthFingerprint(health);
     if (degraded) {
-      await alertOpsSafely(
+      const subject =
         health.status === "critical"
           ? "SMS operations critical"
-          : "SMS operations attention required",
-        degradedAlert(health),
-      );
+          : "SMS operations attention required";
+      const detail = degradedAlert(health);
+      try {
+        await processSmsOperationsAlertState({
+          fingerprint,
+          state: "degraded",
+          deliver: () => deliverOpsAlert(subject, detail),
+        });
+      } catch {
+        // State persistence failure must not silence a new incident.
+        await alertOpsSafely(subject, detail);
+      }
+    } else {
+      try {
+        await processSmsOperationsAlertState({
+          fingerprint,
+          state: "healthy",
+        });
+      } catch {
+        // Heartbeat evidence remains authoritative if transition storage fails.
+      }
     }
 
     await reportHeartbeatSafely({

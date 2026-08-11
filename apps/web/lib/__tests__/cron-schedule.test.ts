@@ -33,6 +33,6 @@ describe("Vercel cron schedule", () => {
     expect(
       config.crons?.find((cron) => cron.path === "/api/cron/sms-operations")
         ?.schedule,
-    ).toBe("30 13 * * *");
+    ).toBe("*/15 * * * *");
   });
 });

@@ -7,7 +7,7 @@ afterEach(() => {
 
 describe("console messaging provider", () => {
   it("returns a unique accepted id for every local send", async () => {
-    vi.spyOn(console, "log").mockImplementation(() => {});
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
     const input = {
       to: "+15555550199",
       body: "Local test",
@@ -25,5 +25,10 @@ describe("console messaging provider", () => {
     expect(second.status === "accepted" && second.id).not.toBe(
       first.status === "accepted" ? first.id : undefined,
     );
+    expect(log).toHaveBeenCalledWith("[SMS] console_provider_accept", {
+      bodyLength: "Local test".length,
+    });
+    expect(JSON.stringify(log.mock.calls)).not.toContain("+15555550199");
+    expect(JSON.stringify(log.mock.calls)).not.toContain("Local test");
   });
 });

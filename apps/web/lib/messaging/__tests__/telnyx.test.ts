@@ -21,7 +21,7 @@ describe("telnyxProvider", () => {
         to: "+15555550199",
         body: "Reminder",
         sender: { messagingServiceId: "mp-1" },
-      })
+      }),
     ).resolves.toEqual({
       status: "definite_failure",
       error: "Telnyx is not configured (TELNYX_API_KEY missing).",
@@ -35,7 +35,7 @@ describe("telnyxProvider", () => {
       async () =>
         new Response(JSON.stringify({ data: { id: "msg-1" } }), {
           headers: { "Content-Type": "application/json" },
-        })
+        }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -44,7 +44,7 @@ describe("telnyxProvider", () => {
         to: "+15555550199",
         body: "Reminder",
         sender: { messagingServiceId: " mp-1 " },
-      })
+      }),
     ).resolves.toEqual({ status: "accepted", id: "msg-1" });
 
     expect(fetchMock).toHaveBeenCalledWith(
@@ -61,7 +61,7 @@ describe("telnyxProvider", () => {
           messaging_profile_id: "mp-1",
         }),
         signal: expect.any(AbortSignal),
-      })
+      }),
     );
   });
 
@@ -76,8 +76,8 @@ describe("telnyxProvider", () => {
             init?.signal?.addEventListener("abort", () => {
               reject(new Error("aborted"));
             });
-          })
-      )
+          }),
+      ),
     );
 
     const result = telnyxProvider.send({
@@ -89,7 +89,7 @@ describe("telnyxProvider", () => {
 
     await expect(result).resolves.toEqual({
       status: "outcome_unknown",
-      error: "aborted",
+      error: "Telnyx send outcome is unknown after a network error.",
     });
   });
 
@@ -126,6 +126,44 @@ describe("telnyxProvider", () => {
         sender: { from: "+15555550100" },
       }),
     ).resolves.toMatchObject({ status: "definite_failure" });
+  });
+
+  it("never returns raw provider response details to the durable send ledger", async () => {
+    vi.stubEnv("TELNYX_API_KEY", "KEY123");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              errors: [
+                {
+                  code: "40000",
+                  title: "Invalid destination",
+                  detail:
+                    "Phone +15555550199 profile 3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                },
+              ],
+            }),
+            { status: 400 },
+          ),
+      ),
+    );
+
+    const result = await telnyxProvider.send({
+      to: "+15555550199",
+      body: "Reminder",
+      sender: { from: "+15555550100" },
+    });
+
+    expect(result).toEqual({
+      status: "definite_failure",
+      error:
+        "Telnyx send request failed (400): code 40000: Invalid destination",
+    });
+    expect(result.status !== "accepted" && result.error).not.toContain(
+      "555555",
+    );
   });
 
   it("treats 2xx without a provider id as outcome unknown", async () => {

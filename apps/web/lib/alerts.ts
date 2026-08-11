@@ -5,7 +5,10 @@
  * style) if configured; always logs. Never throws into the caller.
  */
 
-export function formatOpsAlert(subject: string, detail: string): { text: string } {
+export function formatOpsAlert(
+  subject: string,
+  detail: string,
+): { text: string } {
   return { text: `🚨 OpenVPM ops alert — ${subject}\n${detail}` };
 }
 
@@ -16,22 +19,38 @@ export function opsAlertWebhookUrl(): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
-export async function alertOps(subject: string, detail: string): Promise<void> {
+export async function deliverOpsAlert(
+  subject: string,
+  detail: string,
+): Promise<boolean> {
   console.error(`[ops-alert] ${subject}: ${detail}`);
   const url = opsAlertWebhookUrl();
-  if (!url) return;
+  if (!url) return true;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), OPS_ALERT_TIMEOUT_MS);
   try {
-    await fetch(url, {
+    const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(formatOpsAlert(subject, detail)),
       signal: controller.signal,
     });
+    if (!response.ok) {
+      console.error(
+        "[ops-alert] failed to deliver alert:",
+        new Error(`alert endpoint returned HTTP ${response.status}`),
+      );
+      return false;
+    }
+    return true;
   } catch (err) {
     console.error("[ops-alert] failed to deliver alert:", err);
+    return false;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export async function alertOps(subject: string, detail: string): Promise<void> {
+  await deliverOpsAlert(subject, detail);
 }

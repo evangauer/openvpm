@@ -138,6 +138,15 @@ describe("admin UI", () => {
     expect(source).not.toContain("sender.senderE164");
   });
 
+  it("shows secret-free hosted SMS scope diagnostics instead of count-only readiness", () => {
+    expect(source).toContain("Hosted SMS configuration");
+    expect(source).toContain("Provisioning scope exact");
+    expect(source).toContain("smsConfiguration.provisioningScopeExact");
+    expect(source).toContain("Sending scope exact");
+    expect(source).toContain("smsConfiguration.sendingScopeExact");
+    expect(source).toContain('"Needs attention"');
+  });
+
   it("shows bounded read-only redacted carrier lifecycle history", () => {
     expect(source).toContain(
       "trpc.admin.messagingRegistrationHistory.useQuery",

@@ -5,6 +5,7 @@ import type {
 } from "./types";
 import { cleanSender, envValue } from "./env";
 import { fetchTelnyx } from "./telnyx-http";
+import { providerHttpErrorDiagnostic } from "./provider-diagnostics";
 
 // Telnyx v2 REST — used directly (no SDK dependency) so the adapter stays a thin
 // wrapper. https://developers.telnyx.com/api/messaging/send-message
@@ -27,7 +28,11 @@ export const telnyxProvider: MessagingProvider = {
     return Boolean(apiKey());
   },
 
-  async send({ to, body, sender }: SendMessageInput): Promise<SendMessageResult> {
+  async send({
+    to,
+    body,
+    sender,
+  }: SendMessageInput): Promise<SendMessageResult> {
     const key = apiKey();
     if (!key) {
       return {
@@ -45,7 +50,8 @@ export const telnyxProvider: MessagingProvider = {
     } else {
       return {
         status: "definite_failure",
-        error: "No Telnyx sender (messaging profile or from-number) configured.",
+        error:
+          "No Telnyx sender (messaging profile or from-number) configured.",
       };
     }
 
@@ -59,14 +65,24 @@ export const telnyxProvider: MessagingProvider = {
         body: JSON.stringify(payload),
       });
       if (!res.ok) {
-        const detail = await res.text().catch(() => "");
+        const responseText = await res.text().catch(() => "");
+        let responsePayload: unknown;
+        try {
+          responsePayload = responseText ? JSON.parse(responseText) : null;
+        } catch {
+          responsePayload = null;
+        }
         const status =
           res.status === 408 || res.status === 429 || res.status >= 500
             ? "outcome_unknown"
             : "definite_failure";
         return {
           status,
-          error: `Telnyx send failed (${res.status}): ${detail.slice(0, 300)}`,
+          error: providerHttpErrorDiagnostic(
+            "Telnyx send",
+            res.status,
+            responsePayload,
+          ),
         };
       }
       const json = (await res.json()) as { data?: { id?: string } };
@@ -78,10 +94,10 @@ export const telnyxProvider: MessagingProvider = {
             error:
               "Telnyx accepted the request but returned no provider message id.",
           };
-    } catch (err) {
+    } catch {
       return {
         status: "outcome_unknown",
-        error: err instanceof Error ? err.message : "Unknown Telnyx error",
+        error: "Telnyx send outcome is unknown after a network error.",
       };
     }
   },

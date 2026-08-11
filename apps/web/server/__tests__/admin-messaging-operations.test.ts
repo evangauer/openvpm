@@ -15,6 +15,10 @@ const mocks = vi.hoisted(() => {
   const selectWhere = vi.fn(() => ({
     limit: selectLimit,
     orderBy: selectOrderBy,
+    then: (
+      resolve: (value: unknown[]) => unknown,
+      reject: (reason: unknown) => unknown,
+    ) => Promise.resolve(selectResults.shift() ?? []).then(resolve, reject),
   }));
   const selectFrom = vi.fn(() => ({ where: selectWhere }));
   const select = vi.fn(() => ({ from: selectFrom }));
@@ -51,11 +55,15 @@ const mocks = vi.hoisted(() => {
     getA2pCampaign: vi.fn(),
     getA2pNumberAssignment: vi.fn(),
     getMessagingProfile: vi.fn(),
+    getMessagingProfileAutoresponses: vi.fn(async () => []),
+    messagingProfileAutoresponseSafetyIssues: vi.fn((): string[] => []),
     messagingProfileSafetyIssues: vi.fn((): string[] => []),
     openVpmMessagingProfileName: vi.fn(
       (locationId: string) => `OpenVPM provision ${locationId}`,
     ),
     updateMessagingProfileEnabled: vi.fn(),
+    ensureMessagingProfileAutoresponses: vi.fn(async () => []),
+    messagingProfileAutoresponsesForClinic: vi.fn(() => []),
     lockPracticeForExternalSideEffects: vi.fn(async () => true),
     MockTelnyxError,
     withTenant: vi.fn(
@@ -82,8 +90,7 @@ vi.mock("@/lib/audit", () => ({
 }));
 vi.mock("@/lib/recovery-hold", () => ({
   RECOVERY_HOLD_BLOCK_MESSAGE: "recovery hold",
-  lockPracticeForExternalSideEffects:
-    mocks.lockPracticeForExternalSideEffects,
+  lockPracticeForExternalSideEffects: mocks.lockPracticeForExternalSideEffects,
 }));
 vi.mock("@/lib/messaging/telnyx-provisioning", () => ({
   createA2pBrand: mocks.createA2pBrand,
@@ -95,9 +102,16 @@ vi.mock("@/lib/messaging/telnyx-provisioning", () => ({
   getA2pCampaign: mocks.getA2pCampaign,
   getA2pNumberAssignment: mocks.getA2pNumberAssignment,
   getMessagingProfile: mocks.getMessagingProfile,
+  getMessagingProfileAutoresponses: mocks.getMessagingProfileAutoresponses,
+  messagingProfileAutoresponseSafetyIssues:
+    mocks.messagingProfileAutoresponseSafetyIssues,
   messagingProfileSafetyIssues: mocks.messagingProfileSafetyIssues,
   openVpmMessagingProfileName: mocks.openVpmMessagingProfileName,
   updateMessagingProfileEnabled: mocks.updateMessagingProfileEnabled,
+  ensureMessagingProfileAutoresponses:
+    mocks.ensureMessagingProfileAutoresponses,
+  messagingProfileAutoresponsesForClinic:
+    mocks.messagingProfileAutoresponsesForClinic,
   TelnyxError: mocks.MockTelnyxError,
 }));
 
@@ -115,6 +129,9 @@ function activeRegistration() {
     providerBrandId: "brand-123",
     providerCampaignId: "campaign-123",
     status: "active",
+    displayName: "Healthy Pets",
+    entityType: "PRIVATE_PROFIT",
+    businessPhone: "+15555550100",
   };
 }
 
@@ -172,6 +189,29 @@ afterEach(() => {
 });
 
 describe("platform messaging operations", () => {
+  it("returns actionable SMS credential shapes without secret values", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+    vi.stubEnv("MESSAGING_PROVIDER", "telnyx");
+    vi.stubEnv("TELNYX_API_KEY", "legacy-sensitive-value");
+    vi.stubEnv("TELNYX_PUBLIC_KEY", Buffer.alloc(32, 3).toString("base64"));
+    vi.stubEnv(
+      "MESSAGING_REGISTRATION_ENCRYPTION_KEY",
+      Buffer.alloc(32, 4).toString("base64"),
+    );
+
+    const result = await caller().hostedSmsConfiguration();
+
+    expect(result).toMatchObject({
+      providerIsTelnyx: true,
+      apiKeyShapeValid: false,
+      webhookPublicKeyShapeValid: true,
+      registrationEncryptionKeyShapeValid: true,
+      rolloutIntended: false,
+    });
+    expect(JSON.stringify(result)).not.toContain("legacy-sensitive-value");
+    expect(mocks.noStore).toHaveBeenCalled();
+  });
+
   it("returns bounded newest-first PHI-free registration history", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
     const newest = {
@@ -294,6 +334,7 @@ describe("platform messaging operations", () => {
         providerBrandId: "brand-123",
         providerCampaignId: null,
         displayName: "Healthy Pets",
+        entityType: "PRIVATE_PROFIT",
         businessPhone: "+15555550100",
         website: "https://healthypets.example",
         privacyPolicyUrl: "https://healthypets.example/sms-privacy",
@@ -303,6 +344,13 @@ describe("platform messaging operations", () => {
     mocks.getA2pBrand.mockResolvedValue({
       brandId: "brand-123",
       identityStatus: "VERIFIED",
+      status: null,
+      failureReasons: null,
+      displayName: "Healthy Pets",
+      entityType: "PRIVATE_PROFIT",
+      country: "US",
+      companyName: "Healthy Pets LLC",
+      website: "https://healthypets.example",
     });
     mocks.findA2pCampaignByReference.mockResolvedValue(null);
     mocks.createA2pCampaign.mockResolvedValue({
@@ -366,6 +414,52 @@ describe("platform messaging operations", () => {
     );
   });
 
+  it.each([
+    { displayName: "Another Clinic", status: "OK" },
+    { displayName: "Healthy Pets", status: "REGISTRATION_FAILED" },
+  ])(
+    "refuses a campaign charge for mismatched or terminal brand evidence: $status",
+    async ({ displayName, status }) => {
+      vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+      vi.stubEnv("MESSAGING_PROVISIONING_ENABLED", "true");
+      mocks.selectResults.push([
+        {
+          id: REGISTRATION_ID,
+          practiceId: PRACTICE_ID,
+          providerBrandId: "brand-123",
+          providerCampaignId: null,
+          displayName: "Healthy Pets",
+          entityType: "PRIVATE_PROFIT",
+          businessPhone: "+15555550100",
+          website: "https://healthypets.example",
+          privacyPolicyUrl: "https://healthypets.example/sms-privacy",
+          termsUrl: "https://healthypets.example/sms-terms",
+        },
+      ]);
+      mocks.getA2pBrand.mockResolvedValue({
+        brandId: "brand-123",
+        identityStatus: "VERIFIED",
+        status,
+        failureReasons: null,
+        displayName,
+        entityType: "PRIVATE_PROFIT",
+        country: "US",
+        companyName: "Healthy Pets LLC",
+        website: "https://healthypets.example",
+      });
+
+      await expect(
+        caller().submitMessagingCampaign({
+          practiceId: PRACTICE_ID,
+          confirmProviderCharges: true,
+          retryAfterProviderReview: false,
+        }),
+      ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+      expect(mocks.findA2pCampaignByReference).not.toHaveBeenCalled();
+      expect(mocks.createA2pCampaign).not.toHaveBeenCalled();
+    },
+  );
+
   it("blocks fee-bearing provider work before DB reads while the kill-switch is off", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
     vi.stubEnv("MESSAGING_PROVISIONING_ENABLED", "false");
@@ -425,6 +519,118 @@ describe("platform messaging operations", () => {
     expect(mocks.createA2pBrand).not.toHaveBeenCalled();
   });
 
+  it("refuses number assignment when the provider campaign belongs to another clinic", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+    vi.stubEnv("MESSAGING_PROVISIONING_ENABLED", "true");
+    mocks.selectResults.push([activeRegistration()]);
+    mocks.getA2pBrand.mockResolvedValue({
+      brandId: "brand-123",
+      identityStatus: "VERIFIED",
+      status: null,
+      failureReasons: null,
+      displayName: "Healthy Pets",
+      entityType: "PRIVATE_PROFIT",
+      country: "US",
+      companyName: "Healthy Pets LLC",
+      website: "https://healthy.example",
+    });
+    mocks.getA2pCampaign.mockResolvedValue({
+      campaignId: "campaign-123",
+      brandId: "brand-other",
+      referenceId: `openvpm-clinic-${PRACTICE_ID}`,
+      status: "ACTIVE",
+      campaignStatus: "MNO_PROVISIONED",
+      submissionStatus: null,
+      failureReasons: null,
+    });
+
+    await expect(
+      caller().assignMessagingNumbers({
+        practiceId: PRACTICE_ID,
+        confirmProviderMutation: true,
+      }),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("does not match this clinic"),
+    });
+    expect(mocks.ensureA2pNumberAssignment).not.toHaveBeenCalled();
+  });
+
+  it("refuses number assignment when live brand identity is no longer verified", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+    vi.stubEnv("MESSAGING_PROVISIONING_ENABLED", "true");
+    mocks.selectResults.push([activeRegistration()]);
+    mocks.getA2pBrand.mockResolvedValue({
+      brandId: "brand-123",
+      identityStatus: "UNVERIFIED",
+      status: "OK",
+      failureReasons: null,
+      displayName: "Healthy Pets",
+      entityType: "PRIVATE_PROFIT",
+      country: "US",
+      companyName: "Healthy Pets LLC",
+      website: "https://healthy.example",
+    });
+    mocks.getA2pCampaign.mockResolvedValue({
+      campaignId: "campaign-123",
+      brandId: "brand-123",
+      referenceId: `openvpm-clinic-${PRACTICE_ID}`,
+      status: "ACTIVE",
+      campaignStatus: "MNO_PROVISIONED",
+      submissionStatus: null,
+      failureReasons: null,
+    });
+
+    await expect(
+      caller().assignMessagingNumbers({
+        practiceId: PRACTICE_ID,
+        confirmProviderMutation: true,
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(mocks.ensureA2pNumberAssignment).not.toHaveBeenCalled();
+  });
+
+  it("fails reconciliation closed when attached provider identities do not match", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+    mocks.selectResults.push([activeRegistration()], []);
+    mocks.getA2pBrand.mockResolvedValue({
+      brandId: "brand-123",
+      identityStatus: "VERIFIED",
+      status: null,
+      failureReasons: null,
+      displayName: "Another Clinic",
+      entityType: "PRIVATE_PROFIT",
+      country: "US",
+      companyName: "Another Clinic LLC",
+      website: "https://another.example",
+    });
+    mocks.getA2pCampaign.mockResolvedValue({
+      campaignId: "campaign-123",
+      brandId: "brand-123",
+      referenceId: `openvpm-clinic-${PRACTICE_ID}`,
+      status: "ACTIVE",
+      campaignStatus: "MNO_PROVISIONED",
+      submissionStatus: null,
+      failureReasons: null,
+    });
+
+    await expect(
+      caller().reconcileMessagingRegistration({ practiceId: PRACTICE_ID }),
+    ).resolves.toEqual({ ok: true, status: "action_required", assignments: 0 });
+    expect(mocks.updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "action_required",
+        lastError: "Provider registration identity does not match this clinic.",
+      }),
+    );
+    expect(mocks.updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        enabled: false,
+        providerProfileReady: false,
+      }),
+    );
+  });
+
   it("enables an exact safe provider profile but keeps clinic sending off", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
     vi.stubEnv("MESSAGING_PROVISIONING_ENABLED", "true");
@@ -433,8 +639,11 @@ describe("platform messaging operations", () => {
       [activeSender()],
       [activeRegistration()],
       [activeSender()],
+      [activeRegistration()],
+      [activeSender()],
     );
     mocks.getMessagingProfile
+      .mockResolvedValueOnce(providerProfile(false))
       .mockResolvedValueOnce(providerProfile(false))
       .mockResolvedValueOnce(providerProfile(true));
     mocks.findOwnedPhoneNumbers.mockResolvedValue([
@@ -507,6 +716,8 @@ describe("platform messaging operations", () => {
       [activeSender()],
       [activeRegistration()],
       [activeSender()],
+      [activeRegistration()],
+      [activeSender()],
     );
     mocks.getMessagingProfile.mockResolvedValue(providerProfile(true));
     mocks.findOwnedPhoneNumbers.mockResolvedValue([
@@ -562,8 +773,14 @@ describe("platform messaging operations", () => {
       [activeSender()],
       [activeRegistration()],
       [inspectedSender],
+      [activeRegistration()],
+      [inspectedSender],
     );
     mocks.getMessagingProfile
+      .mockResolvedValueOnce({
+        ...providerProfile(false),
+        id: "profile-current",
+      })
       .mockResolvedValueOnce({
         ...providerProfile(false),
         id: "profile-current",
@@ -633,6 +850,34 @@ describe("platform messaging operations", () => {
     expect(mocks.updateMessagingProfileEnabled).not.toHaveBeenCalled();
   });
 
+  it("blocks hosted provider activation while inbound projection is deferred", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+    vi.stubEnv("MESSAGING_PROVISIONING_ENABLED", "true");
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    vi.stubEnv("MESSAGING_INBOUND_ENABLED", "false");
+    mocks.selectResults.push([
+      {
+        tier: "cloud",
+        billingStatus: "active",
+        trialEndsAt: null,
+      },
+    ]);
+
+    await expect(
+      caller().setMessagingProfileEnabled({
+        practiceId: PRACTICE_ID,
+        locationId: LOCATION_ID,
+        enabled: true,
+        confirmProviderMutation: true,
+      }),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("inbound messaging is still deferred"),
+    });
+    expect(mocks.withSystem).not.toHaveBeenCalled();
+    expect(mocks.updateMessagingProfileEnabled).not.toHaveBeenCalled();
+  });
+
   it("refuses provider activation when exact profile safety checks fail", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
     vi.stubEnv("MESSAGING_PROVISIONING_ENABLED", "true");
@@ -697,8 +942,11 @@ describe("platform messaging operations", () => {
       [activeSender()],
       [activeRegistration()],
       [activeSender()],
+      [activeRegistration()],
+      [activeSender()],
     );
     mocks.getMessagingProfile
+      .mockResolvedValueOnce(providerProfile(false))
       .mockResolvedValueOnce(providerProfile(false))
       .mockResolvedValueOnce(providerProfile(true));
     mocks.findOwnedPhoneNumbers.mockResolvedValue([
@@ -723,6 +971,7 @@ describe("platform messaging operations", () => {
       assignmentStatus: "ASSIGNED",
     });
     mocks.messagingProfileSafetyIssues
+      .mockReturnValueOnce([])
       .mockReturnValueOnce([])
       .mockReturnValueOnce(["daily spend limit is not enabled"]);
 

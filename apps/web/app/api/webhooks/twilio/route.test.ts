@@ -356,7 +356,31 @@ describe("Twilio webhook", () => {
     });
   });
 
-  it("falls back to MessagingServiceSid when logging inbound replies", async () => {
+  it("does not log destination or profile identifiers for unmatched inbound messages", async () => {
+    process.env.TWILIO_AUTH_TOKEN = "test-token";
+    mocks.selectResults.push([]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const response = await POST(
+      twilioRequest({
+        From: "+15555550199",
+        To: "+15555550100",
+        Body: "Hello",
+        MessageSid: "SM-unmatched",
+        MessagingServiceSid: "MG-sensitive-profile",
+      }),
+    );
+
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    expect(warn).toHaveBeenCalledWith(
+      "[twilio-webhook] inbound_sender_not_resolved",
+    );
+    const logged = JSON.stringify(warn.mock.calls);
+    expect(logged).not.toContain("+15555550100");
+    expect(logged).not.toContain("MG-sensitive-profile");
+  });
+
+  it("fails closed when sender and MessagingServiceSid identities disagree", async () => {
     process.env.TWILIO_AUTH_TOKEN = "test-token";
     mocks.selectResults.push(
       [],
@@ -366,7 +390,6 @@ describe("Twilio webhook", () => {
           locationId: "00000000-0000-0000-0000-000000000002",
         },
       ],
-      [{ id: "00000000-0000-0000-0000-000000000003" }],
     );
 
     const response = await POST(
@@ -379,27 +402,14 @@ describe("Twilio webhook", () => {
       }),
     );
 
-    await expect(response.json()).resolves.toEqual({
-      ok: true,
-      action: "logged",
-    });
-    expect(mocks.withSystem).toHaveBeenCalledTimes(3);
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    expect(mocks.withSystem).toHaveBeenCalledTimes(2);
     const profileCondition = mocks.selectWhere.mock.calls[1]?.[0];
     expect(
       sqlIncludesColumnName(profileCondition, "messaging_profile_id"),
     ).toBe(true);
     expect(sqlIncludesValue(profileCondition, "MG123")).toBe(true);
-    expect(mocks.insertValues).toHaveBeenCalledWith(
-      expect.objectContaining({
-        practiceId: "00000000-0000-0000-0000-0000000000aa",
-        clientId: "00000000-0000-0000-0000-000000000003",
-        channel: "sms",
-        direction: "inbound",
-        content: "Can you confirm pickup?",
-        providerMessageId: "SM-profile-inbound",
-        dedupeKey: "twilio:inbound:SM-profile-inbound",
-      }),
-    );
+    expect(mocks.insertValues).not.toHaveBeenCalled();
   });
 
   it("suppresses recipients and flips consent on STOP", async () => {
@@ -628,9 +638,7 @@ describe("Twilio webhook", () => {
   it("rejects a malformed status callback without its required MessageSid", async () => {
     process.env.TWILIO_AUTH_TOKEN = "test-token";
 
-    const response = await POST(
-      twilioRequest({ MessageStatus: "delivered" }),
-    );
+    const response = await POST(twilioRequest({ MessageStatus: "delivered" }));
 
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({

@@ -75,6 +75,9 @@ export interface SmsMessagingState {
   registrationStatus: string | null;
   providerBrandId: string | null;
   providerCampaignId: string | null;
+  registrationDisplayName: string | null;
+  registrationEntityType: string | null;
+  registrationBusinessPhone: string | null;
   submissionLockAt: Date | string | null;
   lastSubmittedAt: Date | string | null;
   lastSyncedAt: Date | string | null;
@@ -555,6 +558,9 @@ async function loadMessagingStates(db: Database): Promise<SmsMessagingState[]> {
         mr.status::text as "registrationStatus",
         mr.provider_brand_id as "providerBrandId",
         mr.provider_campaign_id as "providerCampaignId",
+        mr.display_name as "registrationDisplayName",
+        mr.entity_type::text as "registrationEntityType",
+        mr.business_phone as "registrationBusinessPhone",
         mr.submission_lock_at as "submissionLockAt",
         mr.last_submitted_at as "lastSubmittedAt",
         mr.last_synced_at as "lastSyncedAt",
@@ -689,7 +695,10 @@ async function providerIssues(
           !state.messagingProfileId?.trim() ||
           !state.senderE164?.trim() ||
           !state.providerBrandId?.trim() ||
-          !state.providerCampaignId?.trim()
+          !state.providerCampaignId?.trim() ||
+          !state.registrationDisplayName?.trim() ||
+          !state.registrationEntityType?.trim() ||
+          !state.registrationBusinessPhone?.trim()
         ) {
           return [
             stateIssue(state, {
@@ -708,6 +717,7 @@ async function providerIssues(
 
         try {
           const inspection = await inspectProvider({
+            practiceId: state.practiceId,
             locationId: state.locationId,
             messagingProfileId: state.messagingProfileId,
             senderE164: state.senderE164,
@@ -717,6 +727,9 @@ async function providerIssues(
             senderRegistrationStatus:
               state.senderRegistrationStatus ?? "not_started",
             webhookUrl,
+            registrationDisplayName: state.registrationDisplayName,
+            registrationEntityType: state.registrationEntityType,
+            registrationBusinessPhone: state.registrationBusinessPhone,
           });
           const blockers = [...inspection.blockers];
           if (inspection.profile && inspection.profile.enabled !== true) {

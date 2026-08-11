@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   alertOps: vi.fn(async () => undefined),
   practiceAllowsExternalSideEffects: vi.fn(async () => true),
   lockPracticeForExternalSideEffects: vi.fn(async () => true),
+  isQuietHours: vi.fn(() => false),
 }));
 
 vi.mock("@openpims/db/client", () => ({ db: {} }));
@@ -29,8 +30,7 @@ vi.mock("@/lib/alerts", () => ({ alertOps: mocks.alertOps }));
 vi.mock("@/lib/recovery-hold", () => ({
   RECOVERY_HOLD_BLOCK_MESSAGE: "recovery hold",
   practiceAllowsExternalSideEffects: mocks.practiceAllowsExternalSideEffects,
-  lockPracticeForExternalSideEffects:
-    mocks.lockPracticeForExternalSideEffects,
+  lockPracticeForExternalSideEffects: mocks.lockPracticeForExternalSideEffects,
 }));
 vi.mock("@/lib/messaging", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/messaging")>();
@@ -42,6 +42,9 @@ vi.mock("@/lib/messaging", async (importOriginal) => {
       mocks.acquireSmsRecipientLockInTransaction,
   };
 });
+vi.mock("@/lib/messaging/reminders", () => ({
+  isQuietHours: mocks.isQuietHours,
+}));
 
 const {
   classifySmsAttemptForOps,
@@ -422,6 +425,7 @@ beforeEach(() => {
   });
   mocks.billingEnforced.mockReturnValue(false);
   mocks.hasHostedFullAccess.mockReturnValue(true);
+  mocks.isQuietHours.mockReturnValue(false);
   mocks.providerSend.mockResolvedValue({
     status: "accepted",
     id: "msg-default",
@@ -635,6 +639,45 @@ describe("durable SMS dispatch", () => {
       error:
         "Client SMS consent or phone changed before sending; delivery was blocked.",
     });
+    expect(mocks.providerSend).not.toHaveBeenCalled();
+    expect(mocks.recordUsage).not.toHaveBeenCalled();
+  });
+
+  it("rechecks quiet hours at the final hosted provider boundary", async () => {
+    allowHostedPilot();
+    mocks.billingEnforced.mockReturnValue(true);
+    mocks.isQuietHours.mockReturnValueOnce(false).mockReturnValueOnce(true);
+
+    await expect(sendSms(sendOptions())).resolves.toMatchObject({
+      success: false,
+      outcome: "definite_failure",
+      error: "SMS delivery is blocked during local quiet hours (9 PM–8 AM).",
+    });
+
+    expect(mocks.isQuietHours).toHaveBeenCalledTimes(2);
+    expect(mocks.isQuietHours).toHaveBeenLastCalledWith(
+      expect.any(Date),
+      undefined,
+    );
+    expect(mocks.providerSend).not.toHaveBeenCalled();
+    expect(mocks.recordUsage).not.toHaveBeenCalled();
+  });
+
+  it("rechecks the complete hosted rollout scope at the final provider boundary", async () => {
+    allowHostedPilot();
+    mocks.billingEnforced.mockReturnValue(true);
+    mocks.isQuietHours.mockImplementationOnce(() => {
+      process.env.MESSAGING_SENDING_ENABLED = "false";
+      return false;
+    });
+
+    await expect(sendSms(sendOptions())).resolves.toMatchObject({
+      success: false,
+      outcome: "definite_failure",
+      error:
+        "Texting is not enabled for this clinic pilot. Contact OpenVPM support.",
+    });
+
     expect(mocks.providerSend).not.toHaveBeenCalled();
     expect(mocks.recordUsage).not.toHaveBeenCalled();
   });

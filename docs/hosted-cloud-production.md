@@ -143,6 +143,11 @@ location completes texting setup. `TELNYX_MESSAGING_PROFILE_ID` and
 `TELNYX_FROM_NUMBER` are optional platform fallback sender values for legacy or
 development calls that do not specify a location; do not point them at an
 individual clinic merely to satisfy readiness checks.
+For production CLI work, run from the repository root and explicitly target
+the `openvpm-app` Vercel project. Do not rely on a nested or cached `.vercel`
+link when reading or changing SMS variables. The protected platform-admin SMS
+configuration card identifies which credential shape is invalid without
+returning any secret value.
 Keep `MESSAGING_PROVISIONING_ENABLED=false` until the Telnyx account, webhook,
 operator queue, and budget controls have been verified; changing it to `true`
 opens the explicitly confirmed fee-bearing provisioning actions. Hosted
@@ -187,15 +192,27 @@ below.
 Provider profiles are created disabled. Never enable one during number
 purchase or carrier submission. Use the platform admin queue in this order:
 
+> **Current release gate:** keep `MESSAGING_INBOUND_ENABLED=false`. Signed
+> hosted callbacks are acknowledged without tenant projection, and provider
+> profile activation is blocked, until the durable recovery-aware inbound event
+> inbox is deployed. Provisioning and carrier review may be prepared, but do
+> not proceed to provider activation or live SMS in this release.
+
 1. Reconcile the brand as `VERIFIED` or `VETTED_VERIFIED`, the campaign as
    `ACTIVE` or `MNO_PROVISIONED`, and the exact number assignment as `ASSIGNED`.
 2. Select **Inspect profile**. OpenVPM reads the exact profile, owned number,
    brand, campaign, and assignment. The profile must have the canonical v2
    webhook, a US-only destination allowlist, smart encoding, and the enforced
-   `$10.00` daily cap.
-3. Select **Enable provider profile** and confirm the provider mutation. OpenVPM
-   reads the provider state back after the update and deliberately leaves the
-   clinic database sender off.
+   `$10.00` daily cap. A new profile may still report its clinic-specific
+   auto-response rules as missing at this read-only step.
+3. After the durable inbound-event release is deployed and its recovery drill
+   passes, set `MESSAGING_INBOUND_ENABLED=true`. Then select **Enable provider
+   profile** and confirm the provider mutation. OpenVPM
+   first installs and reads back the exact clinic-branded US START, STOP, and
+   HELP rules using the registered clinic name and support phone. Missing,
+   duplicate, wildcard, paginated, or changed rules block activation. OpenVPM
+   then reads every provider prerequisite back after the update and deliberately
+   leaves the clinic database sender off.
 4. Add exactly one practice and location to the sending allowlists and set
    `MESSAGING_SENDING_ENABLED=true`.
 5. Within 15 minutes of the provider readback, have the clinic admin enable the
@@ -213,9 +230,10 @@ contacting Telnyx, so an uncertain carrier response cannot leave OpenVPM sending
 
 ### Texting operations response
 
-The daily `/api/cron/sms-operations` check is read-only. It does not enable a
-provider profile, change a launch flag or allowlist, send or retry a message, or
-reconcile evidence. It sends one bounded, PHI-free operations alert only when
+The every-15-minute `/api/cron/sms-operations` check is read-only. Its cadence
+matches the shortest unresolved-send threshold. It does not enable a provider
+profile, change a launch flag or allowlist, send or retry a message, or reconcile
+evidence. It sends one bounded, PHI-free operations alert only when
 the health computation finds an exception; a healthy run emits only its cron
 heartbeat.
 

@@ -4,11 +4,16 @@ import {
   getA2pCampaign,
   getA2pNumberAssignment,
   getMessagingProfile,
+  getMessagingProfileAutoresponses,
+  messagingProfileAutoresponseSafetyIssues,
+  messagingProfileAutoresponsesForClinic,
   messagingProfileSafetyIssues,
   openVpmMessagingProfileName,
 } from "@/lib/messaging/telnyx-provisioning";
+import { telnyxCampaignIsActive } from "@/lib/messaging/a2p-lifecycle";
 
 export interface TelnyxProviderReadinessInput {
+  practiceId: string;
   locationId: string;
   messagingProfileId: string;
   senderE164: string;
@@ -17,6 +22,10 @@ export interface TelnyxProviderReadinessInput {
   registrationStatus: string;
   senderRegistrationStatus: string;
   webhookUrl: string;
+  registrationDisplayName: string;
+  registrationEntityType: string;
+  registrationBusinessPhone: string;
+  requireAutoresponses?: boolean;
 }
 
 /**
@@ -27,9 +36,10 @@ export interface TelnyxProviderReadinessInput {
 export async function inspectTelnyxProviderReadiness(
   input: TelnyxProviderReadinessInput,
 ) {
-  const [profile, ownedNumbers, brand, campaign, assignment] =
+  const [profile, autoresponses, ownedNumbers, brand, campaign, assignment] =
     await Promise.all([
       getMessagingProfile(input.messagingProfileId),
+      getMessagingProfileAutoresponses(input.messagingProfileId),
       findOwnedPhoneNumbers(input.senderE164),
       getA2pBrand(input.providerBrandId),
       getA2pCampaign(input.providerCampaignId),
@@ -41,6 +51,17 @@ export async function inspectTelnyxProviderReadiness(
     name: openVpmMessagingProfileName(input.locationId),
     webhookUrl: input.webhookUrl,
   });
+  if (input.requireAutoresponses !== false) {
+    blockers.push(
+      ...messagingProfileAutoresponseSafetyIssues(
+        autoresponses,
+        messagingProfileAutoresponsesForClinic({
+          displayName: input.registrationDisplayName,
+          businessPhone: input.registrationBusinessPhone,
+        }),
+      ),
+    );
+  }
   const ownedNumber = ownedNumbers.length === 1 ? ownedNumbers[0] : undefined;
   if (
     !ownedNumber ||
@@ -49,28 +70,41 @@ export async function inspectTelnyxProviderReadiness(
   ) {
     blockers.push("phone number is not active on the exact messaging profile");
   }
-  if (
-    brand.brandId !== input.providerBrandId ||
-    !new Set(["VERIFIED", "VETTED_VERIFIED"]).has(
-      (brand.identityStatus ?? "").toUpperCase(),
-    )
-  ) {
-    blockers.push(
-      brand.brandId !== input.providerBrandId
-        ? "carrier brand identity mismatch"
-        : "carrier brand is not verified",
-    );
+  if (brand.brandId !== input.providerBrandId) {
+    blockers.push("carrier brand identity mismatch");
   }
   if (
-    campaign.campaignId !== input.providerCampaignId ||
-    (campaign.status?.toUpperCase() !== "ACTIVE" &&
-      campaign.campaignStatus?.toUpperCase() !== "MNO_PROVISIONED")
+    (brand.displayName !== undefined &&
+      brand.displayName !== input.registrationDisplayName) ||
+    (brand.entityType !== undefined &&
+      brand.entityType !== input.registrationEntityType) ||
+    (brand.country !== undefined && brand.country !== "US")
   ) {
-    blockers.push(
-      campaign.campaignId !== input.providerCampaignId
-        ? "carrier campaign identity mismatch"
-        : "carrier campaign is not active",
-    );
+    blockers.push("carrier brand registration details mismatch");
+  }
+  if (
+    !new Set(["VERIFIED", "VETTED_VERIFIED"]).has(
+      (brand.identityStatus ?? "").toUpperCase(),
+    ) ||
+    (brand.status !== undefined &&
+      brand.status !== null &&
+      brand.status.toUpperCase() !== "OK")
+  ) {
+    blockers.push("carrier brand is not verified");
+  }
+  if (campaign.campaignId !== input.providerCampaignId) {
+    blockers.push("carrier campaign identity mismatch");
+  }
+  if (
+    (campaign.brandId !== undefined &&
+      campaign.brandId !== input.providerBrandId) ||
+    (campaign.referenceId !== undefined &&
+      campaign.referenceId !== `openvpm-clinic-${input.practiceId}`)
+  ) {
+    blockers.push("carrier campaign registration identity mismatch");
+  }
+  if (!telnyxCampaignIsActive(campaign)) {
+    blockers.push("carrier campaign is not active");
   }
   if (
     !assignment ||

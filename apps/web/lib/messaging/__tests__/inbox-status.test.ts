@@ -13,7 +13,7 @@ describe("summarizeInboxSmsStatus", () => {
             enabled: true,
           },
         },
-      ])
+      ]),
     ).toMatchObject({
       kind: "ready",
       smsComposeEnabled: true,
@@ -32,7 +32,7 @@ describe("summarizeInboxSmsStatus", () => {
             enabled: true,
           },
         },
-      ])
+      ]),
     ).toMatchObject({
       kind: "ready",
       smsComposeEnabled: true,
@@ -51,12 +51,35 @@ describe("summarizeInboxSmsStatus", () => {
             enabled: true,
           },
         },
-      ])
+      ]),
     ).toMatchObject({
       kind: "action_required",
       smsComposeEnabled: false,
       showBanner: true,
       badge: { variant: "destructive" },
+    });
+  });
+
+  it("does not enable hosted compose until the exact provider profile is attested", () => {
+    expect(
+      summarizeInboxSmsStatus([
+        {
+          messaging: {
+            provider: "telnyx",
+            senderE164: "+15555550100",
+            messagingProfileId: "profile-1",
+            registrationStatus: "active",
+            enabled: true,
+            launchEligible: true,
+            providerProfileReady: false,
+            providerProfileReadyRequired: true,
+          },
+        },
+      ]),
+    ).toMatchObject({
+      kind: "action_required",
+      smsComposeEnabled: false,
+      showBanner: true,
     });
   });
 
@@ -80,7 +103,7 @@ describe("summarizeInboxSmsStatus", () => {
             enabled: false,
           },
         },
-      ])
+      ]),
     ).toMatchObject({
       kind: "pending",
       smsComposeEnabled: false,
@@ -99,7 +122,7 @@ describe("summarizeInboxSmsStatus", () => {
             enabled: false,
           },
         },
-      ])
+      ]),
     ).toMatchObject({
       kind: "action_required",
       smsComposeEnabled: false,

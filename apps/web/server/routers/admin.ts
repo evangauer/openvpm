@@ -60,6 +60,10 @@ import {
   getA2pCampaign,
   getA2pNumberAssignment,
   getMessagingProfile,
+  getMessagingProfileAutoresponses,
+  messagingProfileAutoresponseSafetyIssues,
+  messagingProfileAutoresponsesForClinic,
+  ensureMessagingProfileAutoresponses,
   messagingProfileSafetyIssues,
   openVpmMessagingProfileName,
   TelnyxError,
@@ -79,6 +83,7 @@ import {
 import {
   mergeRegistrationStatus,
   observedRegistrationStatus,
+  telnyxCampaignIsActive,
 } from "@/lib/messaging/a2p-lifecycle";
 import { messagingProgramUrls } from "@/lib/messaging/public-program";
 import { reconcileSmsSendAttempt, resendSmsAttempt } from "@/lib/sms-dispatch";
@@ -94,6 +99,8 @@ import {
   lockPracticeForExternalSideEffects,
   RECOVERY_HOLD_BLOCK_MESSAGE,
 } from "@/lib/recovery-hold";
+import { hostedSmsConfigurationDiagnostics } from "@/lib/messaging/hosted-sms-readiness";
+import { envFlagEnabled } from "@/lib/env-bool";
 
 /**
  * Platform-operator only. Crosses tenant boundaries deliberately, so it is
@@ -201,6 +208,19 @@ function assertMessagingProviderMutationsEnabled() {
   }
 }
 
+function assertHostedInboundProjectionEnabled() {
+  if (
+    envFlagEnabled("HOSTED_BILLING_ENABLED") &&
+    !envFlagEnabled("MESSAGING_INBOUND_ENABLED")
+  ) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Hosted inbound messaging is still deferred; provider activation is blocked.",
+    });
+  }
+}
+
 function telnyxRegistrationWebhookUrl(): string {
   const raw =
     process.env.NEXT_PUBLIC_APP_URL?.trim() || process.env.NEXTAUTH_URL?.trim();
@@ -295,6 +315,7 @@ async function messagingSenderForOperator(
 async function inspectMessagingProviderReadiness(input: {
   practiceId: string;
   locationId: string;
+  requireAutoresponses?: boolean;
 }) {
   const registration = await registrationForOperator(input.practiceId);
   const sender = await messagingSenderForOperator(
@@ -312,6 +333,7 @@ async function inspectMessagingProviderReadiness(input: {
 
   const webhookUrl = telnyxRegistrationWebhookUrl();
   const { profile, blockers } = await inspectTelnyxProviderReadiness({
+    practiceId: input.practiceId,
     locationId: sender.locationId,
     messagingProfileId: sender.messagingProfileId,
     senderE164: sender.senderE164,
@@ -320,6 +342,10 @@ async function inspectMessagingProviderReadiness(input: {
     registrationStatus: registration.status,
     senderRegistrationStatus: sender.registrationStatus,
     webhookUrl,
+    registrationDisplayName: registration.displayName,
+    registrationEntityType: registration.entityType,
+    registrationBusinessPhone: registration.businessPhone,
+    requireAutoresponses: input.requireAutoresponses,
   });
 
   return {
@@ -525,6 +551,33 @@ async function recordMessagingProfileDisabled(input: {
 
 function campaignReferenceId(practiceId: string) {
   return `openvpm-clinic-${practiceId}`;
+}
+
+function providerRegistrationIdentityMatches(input: {
+  practiceId: string;
+  registration: Pick<
+    typeof messagingRegistrations.$inferSelect,
+    "providerBrandId" | "providerCampaignId" | "displayName" | "entityType"
+  >;
+  brand: Awaited<ReturnType<typeof getA2pBrand>>;
+  campaign: Awaited<ReturnType<typeof getA2pCampaign>> | null;
+}) {
+  return (
+    input.registration.providerBrandId !== null &&
+    input.brand.brandId === input.registration.providerBrandId &&
+    new Set(["VERIFIED", "VETTED_VERIFIED"]).has(
+      (input.brand.identityStatus ?? "").toUpperCase(),
+    ) &&
+    input.brand.displayName === input.registration.displayName &&
+    input.brand.entityType === input.registration.entityType &&
+    input.brand.country === "US" &&
+    (!input.brand.status || input.brand.status.toUpperCase() === "OK") &&
+    (input.campaign === null ||
+      (input.registration.providerCampaignId !== null &&
+        input.campaign.campaignId === input.registration.providerCampaignId &&
+        input.campaign.brandId === input.registration.providerBrandId &&
+        input.campaign.referenceId === campaignReferenceId(input.practiceId)))
+  );
 }
 
 export function messagingCampaignCopy(input: {
@@ -1283,6 +1336,12 @@ export const adminRouter = createRouter({
     return getSmsOperationsHealth(db);
   }),
 
+  /** Secret-free structural configuration state for the platform operator. */
+  hostedSmsConfiguration: platformAdminProcedure.query(() => {
+    noStore();
+    return hostedSmsConfigurationDiagnostics();
+  }),
+
   /** Newest-first, PHI-free carrier lifecycle evidence for one exact clinic. */
   messagingRegistrationHistory: platformAdminProcedure
     .input(
@@ -1491,60 +1550,173 @@ export const adminRouter = createRouter({
     )
     .mutation(async ({ ctx, input }) => {
       assertMessagingProviderMutationsEnabled();
+      if (input.enabled) assertHostedInboundProjectionEnabled();
       return withMessagingProviderEffectsAllowed(input.practiceId, async () => {
-      const actor = platformMessagingRegistrationActor(ctx.session!.user);
-      const sender = await messagingSenderForOperator(
-        input.practiceId,
-        input.locationId,
-      );
+        const actor = platformMessagingRegistrationActor(ctx.session!.user);
+        const sender = await messagingSenderForOperator(
+          input.practiceId,
+          input.locationId,
+        );
 
-      if (!input.enabled) {
-        await updateMessagingSenderDisabled({
-          ...input,
-          detail:
-            "OpenVPM disabled the provider profile. Clinic sending remains off.",
-          syncedAt: null,
-        });
-        try {
-          const targetSender = await messagingSenderForOperator(
-            input.practiceId,
-            input.locationId,
-          );
-          const registration = await registrationForOperator(input.practiceId);
-          let profile = await getMessagingProfile(
-            targetSender.messagingProfileId,
-          );
-          const reused = profile.enabled === false;
-          if (!reused) {
-            await updateMessagingProfileEnabled({
-              profileId: targetSender.messagingProfileId,
-              enabled: false,
-            });
-            profile = await getMessagingProfile(
-              targetSender.messagingProfileId,
-            );
-          }
-          if (profile.enabled !== false) {
-            throw new TRPCError({
-              code: "BAD_GATEWAY",
-              message:
-                "Telnyx did not confirm that the messaging profile is disabled.",
-            });
-          }
-          await recordMessagingProfileDisabled({
+        if (!input.enabled) {
+          await updateMessagingSenderDisabled({
             ...input,
             detail:
               "OpenVPM disabled the provider profile. Clinic sending remains off.",
-            expected: {
-              messagingProfileId: targetSender.messagingProfileId,
-              senderE164: targetSender.senderE164,
+            syncedAt: null,
+          });
+          try {
+            const targetSender = await messagingSenderForOperator(
+              input.practiceId,
+              input.locationId,
+            );
+            const registration = await registrationForOperator(
+              input.practiceId,
+            );
+            let profile = await getMessagingProfile(
+              targetSender.messagingProfileId,
+            );
+            const reused = profile.enabled === false;
+            if (!reused) {
+              assertMessagingProviderMutationsEnabled();
+              await updateMessagingProfileEnabled({
+                profileId: targetSender.messagingProfileId,
+                enabled: false,
+              });
+              profile = await getMessagingProfile(
+                targetSender.messagingProfileId,
+              );
+            }
+            if (profile.enabled !== false) {
+              throw new TRPCError({
+                code: "BAD_GATEWAY",
+                message:
+                  "Telnyx did not confirm that the messaging profile is disabled.",
+              });
+            }
+            await recordMessagingProfileDisabled({
+              ...input,
+              detail:
+                "OpenVPM disabled the provider profile. Clinic sending remains off.",
+              expected: {
+                messagingProfileId: targetSender.messagingProfileId,
+                senderE164: targetSender.senderE164,
+              },
+              registration,
+              actor,
+            });
+            return {
+              locationId: input.locationId,
+              enabled: false,
+              clinicEnabled: false,
+              reused,
+            };
+          } catch (error) {
+            if (error instanceof TRPCError) throw error;
+            throw providerFailure(error);
+          }
+        }
+
+        if (sender.enabled) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Turn off clinic sending before changing its provider profile.",
+          });
+        }
+
+        await updateMessagingSenderDisabled({
+          ...input,
+          detail:
+            "OpenVPM is verifying the provider profile. Clinic sending remains off.",
+          syncedAt: null,
+        });
+
+        try {
+          const preconfigurationInspection =
+            await inspectMessagingProviderReadiness({
+              ...input,
+              requireAutoresponses: false,
+            });
+          if (preconfigurationInspection.blockers.length > 0) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: `Provider profile is not safe to configure: ${preconfigurationInspection.blockers.join(
+                "; ",
+              )}.`,
+            });
+          }
+          assertMessagingProviderMutationsEnabled();
+          await ensureMessagingProfileAutoresponses(
+            preconfigurationInspection.sender.messagingProfileId,
+            {
+              assertMutationAllowed: assertMessagingProviderMutationsEnabled,
+              expectedPolicy: messagingProfileAutoresponsesForClinic({
+                displayName:
+                  preconfigurationInspection.registration.displayName,
+                businessPhone:
+                  preconfigurationInspection.registration.businessPhone,
+              }),
             },
-            registration,
+          );
+          const inspection = await inspectMessagingProviderReadiness(input);
+          if (inspection.blockers.length > 0) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: `Provider profile is not safe to enable: ${inspection.blockers.join(
+                "; ",
+              )}.`,
+            });
+          }
+          let profile = inspection.profile;
+          const inspectedSender = inspection.sender;
+          const reused = profile.enabled === true;
+          if (!reused) {
+            assertMessagingProviderMutationsEnabled();
+            await updateMessagingProfileEnabled({
+              profileId: inspectedSender.messagingProfileId,
+              enabled: true,
+            });
+            const [profileReadback, autoresponseReadback] = await Promise.all([
+              getMessagingProfile(inspectedSender.messagingProfileId),
+              getMessagingProfileAutoresponses(
+                inspectedSender.messagingProfileId,
+              ),
+            ]);
+            profile = profileReadback;
+            const readbackIssues = [
+              ...messagingProfileSafetyIssues(profile, {
+                id: inspectedSender.messagingProfileId,
+                name: openVpmMessagingProfileName(inspectedSender.locationId),
+                webhookUrl: telnyxRegistrationWebhookUrl(),
+              }),
+              ...messagingProfileAutoresponseSafetyIssues(
+                autoresponseReadback,
+                messagingProfileAutoresponsesForClinic({
+                  displayName: inspection.registration.displayName,
+                  businessPhone: inspection.registration.businessPhone,
+                }),
+              ),
+            ];
+            if (profile.enabled !== true || readbackIssues.length > 0) {
+              throw new TRPCError({
+                code: "BAD_GATEWAY",
+                message:
+                  "Telnyx did not confirm the exact safe messaging-profile state.",
+              });
+            }
+          }
+          await recordMessagingProfileReady({
+            ...input,
+            detail:
+              "Provider profile is active and verified. A clinic admin may now enable this approved pilot sender.",
+            expected: expectedMessagingProfileState(inspection),
+            eventType: "provider_profile_enabled",
             actor,
           });
           return {
             locationId: input.locationId,
-            enabled: false,
+            enabled: true,
             clinicEnabled: false,
             reused,
           };
@@ -1552,75 +1724,6 @@ export const adminRouter = createRouter({
           if (error instanceof TRPCError) throw error;
           throw providerFailure(error);
         }
-      }
-
-      if (sender.enabled) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message:
-            "Turn off clinic sending before changing its provider profile.",
-        });
-      }
-
-      await updateMessagingSenderDisabled({
-        ...input,
-        detail:
-          "OpenVPM is verifying the provider profile. Clinic sending remains off.",
-        syncedAt: null,
-      });
-
-      try {
-        const inspection = await inspectMessagingProviderReadiness(input);
-        if (inspection.blockers.length > 0) {
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message: `Provider profile is not safe to enable: ${inspection.blockers.join(
-              "; ",
-            )}.`,
-          });
-        }
-        let profile = inspection.profile;
-        const inspectedSender = inspection.sender;
-        const reused = profile.enabled === true;
-        if (!reused) {
-          await updateMessagingProfileEnabled({
-            profileId: inspectedSender.messagingProfileId,
-            enabled: true,
-          });
-          profile = await getMessagingProfile(
-            inspectedSender.messagingProfileId,
-          );
-        }
-        const readbackIssues = messagingProfileSafetyIssues(profile, {
-          id: inspectedSender.messagingProfileId,
-          name: openVpmMessagingProfileName(inspectedSender.locationId),
-          webhookUrl: telnyxRegistrationWebhookUrl(),
-        });
-        if (profile.enabled !== true || readbackIssues.length > 0) {
-          throw new TRPCError({
-            code: "BAD_GATEWAY",
-            message:
-              "Telnyx did not confirm the exact safe messaging-profile state.",
-          });
-        }
-        await recordMessagingProfileReady({
-          ...input,
-          detail:
-            "Provider profile is active and verified. A clinic admin may now enable this approved pilot sender.",
-          expected: expectedMessagingProfileState(inspection),
-          eventType: "provider_profile_enabled",
-          actor,
-        });
-        return {
-          locationId: input.locationId,
-          enabled: true,
-          clinicEnabled: false,
-          reused,
-        };
-      } catch (error) {
-        if (error instanceof TRPCError) throw error;
-        throw providerFailure(error);
-      }
       });
     }),
 
@@ -1636,72 +1739,73 @@ export const adminRouter = createRouter({
     .mutation(async ({ ctx, input }) => {
       assertMessagingProviderMutationsEnabled();
       return withMessagingProviderEffectsAllowed(input.practiceId, async () => {
-      const actor = platformMessagingRegistrationActor(ctx.session!.user);
-      const registration = await registrationForOperator(input.practiceId);
-      if (registration.providerBrandId) {
-        return {
-          ok: true,
-          providerBrandId: registration.providerBrandId,
-          reused: true,
-        };
-      }
-      const lockId = await claimRegistrationOperation({
-        registration,
-        operation: "brand",
-        allowReviewedRetry: input.retryAfterProviderReview,
-        actor,
-      });
-      try {
-        const brand = await createA2pBrand({
-          entityType: registration.entityType,
-          displayName: registration.displayName,
-          legalName: registration.legalName,
-          ein: decryptRegistrationTaxId(registration.taxIdEncrypted),
-          firstName: registration.contactFirstName,
-          lastName: registration.contactLastName,
-          email: registration.contactEmail,
-          phone: registration.businessPhone,
-          street: registration.street,
-          city: registration.city,
-          state: registration.state,
-          postalCode: registration.postalCode,
-          website: registration.website,
-          webhookUrl: telnyxRegistrationWebhookUrl(),
-        });
-        await finishRegistrationOperation({
-          registrationId: registration.id,
-          lockId,
-          values: {
-            providerBrandId: brand.brandId,
-            providerBrandStatus: brand.identityStatus ?? brand.status,
-            status:
-              brand.identityStatus === "UNVERIFIED"
-                ? "action_required"
-                : "pending",
-            statusDetail:
-              brand.identityStatus === "UNVERIFIED"
-                ? "Carrier could not verify the clinic identity; OpenVPM review is required."
-                : "Carrier brand submitted. Waiting for identity verification.",
-            lastError: brand.failureReasons,
-            lastSyncedAt: new Date(),
-          },
-          operation: "brand_submission",
-          eventType: "provider_operation_succeeded",
-          reasonCode: "carrier_brand_submitted",
+        const actor = platformMessagingRegistrationActor(ctx.session!.user);
+        const registration = await registrationForOperator(input.practiceId);
+        if (registration.providerBrandId) {
+          return {
+            ok: true,
+            providerBrandId: registration.providerBrandId,
+            reused: true,
+          };
+        }
+        const lockId = await claimRegistrationOperation({
+          registration,
+          operation: "brand",
+          allowReviewedRetry: input.retryAfterProviderReview,
           actor,
         });
-        return { ok: true, providerBrandId: brand.brandId, reused: false };
-      } catch (error) {
-        await failRegistrationOperation({
-          registrationId: registration.id,
-          practiceId: registration.practiceId,
-          lockId,
-          error,
-          operation: "brand_submission",
-          actor,
-        });
-        throw providerFailure(error);
-      }
+        try {
+          assertMessagingProviderMutationsEnabled();
+          const brand = await createA2pBrand({
+            entityType: registration.entityType,
+            displayName: registration.displayName,
+            legalName: registration.legalName,
+            ein: decryptRegistrationTaxId(registration.taxIdEncrypted),
+            firstName: registration.contactFirstName,
+            lastName: registration.contactLastName,
+            email: registration.contactEmail,
+            phone: registration.businessPhone,
+            street: registration.street,
+            city: registration.city,
+            state: registration.state,
+            postalCode: registration.postalCode,
+            website: registration.website,
+            webhookUrl: telnyxRegistrationWebhookUrl(),
+          });
+          await finishRegistrationOperation({
+            registrationId: registration.id,
+            lockId,
+            values: {
+              providerBrandId: brand.brandId,
+              providerBrandStatus: brand.identityStatus ?? brand.status,
+              status:
+                brand.identityStatus === "UNVERIFIED"
+                  ? "action_required"
+                  : "pending",
+              statusDetail:
+                brand.identityStatus === "UNVERIFIED"
+                  ? "Carrier could not verify the clinic identity; OpenVPM review is required."
+                  : "Carrier brand submitted. Waiting for identity verification.",
+              lastError: brand.failureReasons,
+              lastSyncedAt: new Date(),
+            },
+            operation: "brand_submission",
+            eventType: "provider_operation_succeeded",
+            reasonCode: "carrier_brand_submitted",
+            actor,
+          });
+          return { ok: true, providerBrandId: brand.brandId, reused: false };
+        } catch (error) {
+          await failRegistrationOperation({
+            registrationId: registration.id,
+            practiceId: registration.practiceId,
+            lockId,
+            error,
+            operation: "brand_submission",
+            actor,
+          });
+          throw providerFailure(error);
+        }
       });
     }),
 
@@ -1717,197 +1821,213 @@ export const adminRouter = createRouter({
     .mutation(async ({ ctx, input }) => {
       assertMessagingProviderMutationsEnabled();
       return withMessagingProviderEffectsAllowed(input.practiceId, async () => {
-      const actor = platformMessagingRegistrationActor(ctx.session!.user);
-      const registration = await registrationForOperator(input.practiceId);
-      if (!registration.providerBrandId) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: "Submit the clinic brand before its campaign.",
-        });
-      }
-      const providerBrandId = registration.providerBrandId;
-      if (registration.providerCampaignId) {
-        return {
-          ok: true,
-          providerCampaignId: registration.providerCampaignId,
-          reused: true,
-        };
-      }
-
-      const brand = await getA2pBrand(providerBrandId);
-      if (
-        !new Set(["VERIFIED", "VETTED_VERIFIED"]).has(
-          brand.identityStatus ?? "",
-        )
-      ) {
-        await withSystem(db, async (tx) => {
-          const [updated] = await tx
-            .update(messagingRegistrations)
-            .set({
-              providerBrandStatus: brand.identityStatus ?? brand.status,
-              status:
-                brand.identityStatus === "UNVERIFIED"
-                  ? "action_required"
-                  : "pending",
-              statusDetail:
-                "Carrier brand verification must finish before campaign submission.",
-              lastError: brand.failureReasons,
-              lastSyncedAt: new Date(),
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(messagingRegistrations.id, registration.id),
-                eq(messagingRegistrations.status, registration.status),
-                eq(messagingRegistrations.providerBrandId, providerBrandId),
-                isNull(messagingRegistrations.providerCampaignId),
-                isNull(messagingRegistrations.submissionLockId),
-                isNull(messagingRegistrations.deletedAt),
-              ),
-            )
-            .returning();
-          if (!updated) {
-            throw new TRPCError({
-              code: "CONFLICT",
-              message:
-                "Registration changed during carrier brand inspection. Refresh and retry.",
-            });
-          }
-          await recordMessagingRegistrationEvent(tx, {
-            registration: updated,
-            eventType: "provider_state_observed",
-            operation: "brand_submission",
-            statusBefore: registration.status,
-            operationId: randomUUID(),
-            reasonCode: "carrier_brand_not_verified",
-            actor,
+        const actor = platformMessagingRegistrationActor(ctx.session!.user);
+        const registration = await registrationForOperator(input.practiceId);
+        if (!registration.providerBrandId) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "Submit the clinic brand before its campaign.",
           });
-        });
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: "Carrier brand verification is not complete.",
-        });
-      }
+        }
+        const providerBrandId = registration.providerBrandId;
+        if (registration.providerCampaignId) {
+          return {
+            ok: true,
+            providerCampaignId: registration.providerCampaignId,
+            reused: true,
+          };
+        }
 
-      const referenceId = campaignReferenceId(input.practiceId);
-      const recovered = await findA2pCampaignByReference({
-        brandId: providerBrandId,
-        referenceId,
-      });
-      if (recovered) {
-        await withSystem(db, async (tx) => {
-          const [updated] = await tx
-            .update(messagingRegistrations)
-            .set({
-              providerCampaignId: recovered.campaignId,
-              providerCampaignStatus:
-                recovered.campaignStatus ??
-                recovered.status ??
-                recovered.submissionStatus,
-              status: "pending",
-              statusDetail:
-                "Recovered the existing carrier campaign; awaiting approval.",
-              lastError: recovered.failureReasons,
-              lastSyncedAt: new Date(),
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(messagingRegistrations.id, registration.id),
-                eq(messagingRegistrations.status, registration.status),
-                eq(messagingRegistrations.providerBrandId, providerBrandId),
-                isNull(messagingRegistrations.providerCampaignId),
-                isNull(messagingRegistrations.submissionLockId),
-                isNull(messagingRegistrations.deletedAt),
-              ),
-            )
-            .returning();
-          if (!updated) {
-            throw new TRPCError({
-              code: "CONFLICT",
-              message: "Registration changed during campaign recovery.",
-            });
-          }
-          await recordMessagingRegistrationEvent(tx, {
-            registration: updated,
-            eventType: "provider_operation_succeeded",
-            operation: "campaign_submission",
-            statusBefore: registration.status,
-            operationId: randomUUID(),
-            reasonCode: "carrier_campaign_recovered",
-            actor,
+        const brand = await getA2pBrand(providerBrandId);
+        if (
+          !providerRegistrationIdentityMatches({
+            practiceId: input.practiceId,
+            registration,
+            brand,
+            campaign: null,
+          })
+        ) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "The verified carrier brand identity does not match this clinic.",
           });
-        });
-        return {
-          ok: true,
-          providerCampaignId: recovered.campaignId,
-          reused: true,
-        };
-      }
+        }
+        if (
+          !new Set(["VERIFIED", "VETTED_VERIFIED"]).has(
+            brand.identityStatus ?? "",
+          ) ||
+          (brand.status !== null && brand.status.toUpperCase() !== "OK")
+        ) {
+          await withSystem(db, async (tx) => {
+            const [updated] = await tx
+              .update(messagingRegistrations)
+              .set({
+                providerBrandStatus: brand.identityStatus ?? brand.status,
+                status:
+                  brand.identityStatus === "UNVERIFIED"
+                    ? "action_required"
+                    : "pending",
+                statusDetail:
+                  "Carrier brand verification must finish before campaign submission.",
+                lastError: brand.failureReasons,
+                lastSyncedAt: new Date(),
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(messagingRegistrations.id, registration.id),
+                  eq(messagingRegistrations.status, registration.status),
+                  eq(messagingRegistrations.providerBrandId, providerBrandId),
+                  isNull(messagingRegistrations.providerCampaignId),
+                  isNull(messagingRegistrations.submissionLockId),
+                  isNull(messagingRegistrations.deletedAt),
+                ),
+              )
+              .returning();
+            if (!updated) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message:
+                  "Registration changed during carrier brand inspection. Refresh and retry.",
+              });
+            }
+            await recordMessagingRegistrationEvent(tx, {
+              registration: updated,
+              eventType: "provider_state_observed",
+              operation: "brand_submission",
+              statusBefore: registration.status,
+              operationId: randomUUID(),
+              reasonCode: "carrier_brand_not_verified",
+              actor,
+            });
+          });
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "Carrier brand verification is not complete.",
+          });
+        }
 
-      const lockId = await claimRegistrationOperation({
-        registration,
-        operation: "campaign",
-        allowReviewedRetry: input.retryAfterProviderReview,
-        actor,
-      });
-      try {
-        const programUrls = messagingProgramUrls(registration.practiceId);
-        const copy = messagingCampaignCopy({
-          displayName: registration.displayName,
-          businessPhone: registration.businessPhone,
-          website: registration.website,
-          programUrl: programUrls.programUrl,
-          privacyPolicyUrl: registration.privacyPolicyUrl,
-          termsUrl: registration.termsUrl,
-          optInUrl: programUrls.optInUrl,
-        });
-        const campaign = await createA2pCampaign({
+        const referenceId = campaignReferenceId(input.practiceId);
+        const recovered = await findA2pCampaignByReference({
           brandId: providerBrandId,
           referenceId,
-          displayName: registration.displayName,
-          ...copy,
-          privacyPolicyUrl: registration.privacyPolicyUrl,
-          termsUrl: registration.termsUrl,
-          webhookUrl: telnyxRegistrationWebhookUrl(),
         });
-        await finishRegistrationOperation({
-          registrationId: registration.id,
-          lockId,
-          values: {
-            providerBrandStatus: brand.identityStatus ?? brand.status,
+        if (recovered) {
+          await withSystem(db, async (tx) => {
+            const [updated] = await tx
+              .update(messagingRegistrations)
+              .set({
+                providerCampaignId: recovered.campaignId,
+                providerCampaignStatus:
+                  recovered.campaignStatus ??
+                  recovered.status ??
+                  recovered.submissionStatus,
+                status: "pending",
+                statusDetail:
+                  "Recovered the existing carrier campaign; awaiting approval.",
+                lastError: recovered.failureReasons,
+                lastSyncedAt: new Date(),
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(messagingRegistrations.id, registration.id),
+                  eq(messagingRegistrations.status, registration.status),
+                  eq(messagingRegistrations.providerBrandId, providerBrandId),
+                  isNull(messagingRegistrations.providerCampaignId),
+                  isNull(messagingRegistrations.submissionLockId),
+                  isNull(messagingRegistrations.deletedAt),
+                ),
+              )
+              .returning();
+            if (!updated) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: "Registration changed during campaign recovery.",
+              });
+            }
+            await recordMessagingRegistrationEvent(tx, {
+              registration: updated,
+              eventType: "provider_operation_succeeded",
+              operation: "campaign_submission",
+              statusBefore: registration.status,
+              operationId: randomUUID(),
+              reasonCode: "carrier_campaign_recovered",
+              actor,
+            });
+          });
+          return {
+            ok: true,
+            providerCampaignId: recovered.campaignId,
+            reused: true,
+          };
+        }
+
+        const lockId = await claimRegistrationOperation({
+          registration,
+          operation: "campaign",
+          allowReviewedRetry: input.retryAfterProviderReview,
+          actor,
+        });
+        try {
+          const programUrls = messagingProgramUrls(registration.practiceId);
+          const copy = messagingCampaignCopy({
+            displayName: registration.displayName,
+            businessPhone: registration.businessPhone,
+            website: registration.website,
+            programUrl: programUrls.programUrl,
+            privacyPolicyUrl: registration.privacyPolicyUrl,
+            termsUrl: registration.termsUrl,
+            optInUrl: programUrls.optInUrl,
+          });
+          assertMessagingProviderMutationsEnabled();
+          const campaign = await createA2pCampaign({
+            brandId: providerBrandId,
+            referenceId,
+            displayName: registration.displayName,
+            ...copy,
+            privacyPolicyUrl: registration.privacyPolicyUrl,
+            termsUrl: registration.termsUrl,
+            webhookUrl: telnyxRegistrationWebhookUrl(),
+          });
+          await finishRegistrationOperation({
+            registrationId: registration.id,
+            lockId,
+            values: {
+              providerBrandStatus: brand.identityStatus ?? brand.status,
+              providerCampaignId: campaign.campaignId,
+              providerCampaignStatus:
+                campaign.campaignStatus ??
+                campaign.status ??
+                campaign.submissionStatus,
+              status: "pending",
+              statusDetail:
+                "Carrier campaign submitted. Waiting for mobile-network approval.",
+              lastError: campaign.failureReasons,
+              lastSyncedAt: new Date(),
+            },
+            operation: "campaign_submission",
+            eventType: "provider_operation_succeeded",
+            reasonCode: "carrier_campaign_submitted",
+            actor,
+          });
+          return {
+            ok: true,
             providerCampaignId: campaign.campaignId,
-            providerCampaignStatus:
-              campaign.campaignStatus ??
-              campaign.status ??
-              campaign.submissionStatus,
-            status: "pending",
-            statusDetail:
-              "Carrier campaign submitted. Waiting for mobile-network approval.",
-            lastError: campaign.failureReasons,
-            lastSyncedAt: new Date(),
-          },
-          operation: "campaign_submission",
-          eventType: "provider_operation_succeeded",
-          reasonCode: "carrier_campaign_submitted",
-          actor,
-        });
-        return {
-          ok: true,
-          providerCampaignId: campaign.campaignId,
-          reused: false,
-        };
-      } catch (error) {
-        await failRegistrationOperation({
-          registrationId: registration.id,
-          practiceId: registration.practiceId,
-          lockId,
-          error,
-          operation: "campaign_submission",
-          actor,
-        });
-        throw providerFailure(error);
-      }
+            reused: false,
+          };
+        } catch (error) {
+          await failRegistrationOperation({
+            registrationId: registration.id,
+            practiceId: registration.practiceId,
+            lockId,
+            error,
+            operation: "campaign_submission",
+            actor,
+          });
+          throw providerFailure(error);
+        }
       });
     }),
 
@@ -1922,150 +2042,164 @@ export const adminRouter = createRouter({
     .mutation(async ({ ctx, input }) => {
       assertMessagingProviderMutationsEnabled();
       return withMessagingProviderEffectsAllowed(input.practiceId, async () => {
-      const actor = platformMessagingRegistrationActor(ctx.session!.user);
-      const registration = await registrationForOperator(input.practiceId);
-      if (!registration.providerCampaignId || !registration.providerBrandId) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message:
-            "An approved brand and campaign are required before assignment.",
-        });
-      }
-      const campaign = await getA2pCampaign(registration.providerCampaignId);
-      if (
-        campaign.status !== "ACTIVE" &&
-        campaign.campaignStatus !== "MNO_PROVISIONED"
-      ) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: "The carrier campaign is not fully active yet.",
-        });
-      }
-      const senders = await withSystem(db, async (tx) =>
-        tx
-          .select({ phoneNumber: locationMessaging.senderE164 })
-          .from(locationMessaging)
-          .where(
-            and(
-              eq(locationMessaging.practiceId, input.practiceId),
-              eq(locationMessaging.provider, "telnyx"),
-              isNull(locationMessaging.deletedAt),
-              sql`nullif(trim(${locationMessaging.senderE164}), '') is not null`,
-            ),
-          ),
-      );
-      if (senders.length === 0) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: "Provision at least one clinic texting number first.",
-        });
-      }
-
-      const lockId = await claimRegistrationOperation({
-        registration,
-        operation: "assignment",
-        allowReviewedRetry: false,
-        actor,
-      });
-      try {
-        const assignments: TelnyxNumberAssignment[] = [];
-        for (const sender of senders) {
-          if (!sender.phoneNumber) continue;
-          assignments.push(
-            await ensureA2pNumberAssignment({
-              phoneNumber: sender.phoneNumber,
-              campaignId: registration.providerCampaignId,
-            }),
-          );
-        }
-        const observed = observedRegistrationStatus({
-          brandIdentityStatus: registration.providerBrandStatus,
-          campaignStatus: campaign.campaignStatus ?? campaign.status,
-          campaignSubmissionStatus: campaign.submissionStatus,
-          assignmentStatuses: assignments.map((row) => row.assignmentStatus),
-        });
-        const next = mergeRegistrationStatus("pending", observed);
-        await withSystem(db, async (tx) => {
-          const [updated] = await tx
-            .update(messagingRegistrations)
-            .set({
-              providerCampaignStatus:
-                campaign.campaignStatus ??
-                campaign.status ??
-                campaign.submissionStatus,
-              status: next,
-              statusDetail:
-                next === "active"
-                  ? "Carrier registration and all clinic number assignments are active."
-                  : "Clinic numbers were submitted for carrier assignment.",
-              lastError:
-                assignments
-                  .map((row) => row.failureReasons)
-                  .filter(Boolean)
-                  .join("; ") || null,
-              lastSyncedAt: new Date(),
-              submissionLockId: null,
-              submissionLockAt: null,
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(messagingRegistrations.id, registration.id),
-                eq(messagingRegistrations.submissionLockId, lockId),
-                isNull(messagingRegistrations.deletedAt),
-              ),
-            )
-            .returning();
-          if (!updated) {
-            throw new TRPCError({
-              code: "CONFLICT",
-              message: "Registration changed while assigning carrier numbers.",
-            });
-          }
-          await recordMessagingRegistrationEvent(tx, {
-            registration: updated,
-            eventType: "provider_operation_succeeded",
-            operation: "number_assignment",
-            statusBefore: "pending",
-            operationId: lockId,
-            reasonCode: "carrier_numbers_assigned",
-            actor,
+        const actor = platformMessagingRegistrationActor(ctx.session!.user);
+        const registration = await registrationForOperator(input.practiceId);
+        if (!registration.providerCampaignId || !registration.providerBrandId) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "An approved brand and campaign are required before assignment.",
           });
-          await tx
-            .update(locationMessaging)
-            .set({
-              a2pBrandId: registration.providerBrandId,
-              a2pCampaignId: registration.providerCampaignId,
-              registrationStatus: next,
-              registrationDetail:
-                next === "active"
-                  ? "Carrier registration active. An admin may now enable sending."
-                  : "Carrier number assignment is pending.",
-              providerProfileReady: false,
-              providerProfileSyncedAt: null,
-              enabled: false,
-              updatedAt: new Date(),
-            })
+        }
+        const campaign = await getA2pCampaign(registration.providerCampaignId);
+        const brand = await getA2pBrand(registration.providerBrandId);
+        if (
+          !providerRegistrationIdentityMatches({
+            practiceId: input.practiceId,
+            registration,
+            brand,
+            campaign,
+          })
+        ) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "The carrier brand or campaign identity does not match this clinic.",
+          });
+        }
+        if (!telnyxCampaignIsActive(campaign)) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "The carrier campaign is not fully active yet.",
+          });
+        }
+        const senders = await withSystem(db, async (tx) =>
+          tx
+            .select({ phoneNumber: locationMessaging.senderE164 })
+            .from(locationMessaging)
             .where(
               and(
                 eq(locationMessaging.practiceId, input.practiceId),
                 eq(locationMessaging.provider, "telnyx"),
                 isNull(locationMessaging.deletedAt),
+                sql`nullif(trim(${locationMessaging.senderE164}), '') is not null`,
               ),
-            );
-        });
-        return { ok: true, status: next, assigned: assignments.length };
-      } catch (error) {
-        await failRegistrationOperation({
-          registrationId: registration.id,
-          practiceId: registration.practiceId,
-          lockId,
-          error,
-          operation: "number_assignment",
+            ),
+        );
+        if (senders.length === 0) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "Provision at least one clinic texting number first.",
+          });
+        }
+
+        const lockId = await claimRegistrationOperation({
+          registration,
+          operation: "assignment",
+          allowReviewedRetry: false,
           actor,
         });
-        throw providerFailure(error);
-      }
+        try {
+          const assignments: TelnyxNumberAssignment[] = [];
+          for (const sender of senders) {
+            if (!sender.phoneNumber) continue;
+            assertMessagingProviderMutationsEnabled();
+            assignments.push(
+              await ensureA2pNumberAssignment({
+                phoneNumber: sender.phoneNumber,
+                campaignId: registration.providerCampaignId,
+              }),
+            );
+          }
+          const observed = observedRegistrationStatus({
+            brandIdentityStatus: registration.providerBrandStatus,
+            campaignStatus: campaign.campaignStatus ?? campaign.status,
+            campaignSubmissionStatus: campaign.submissionStatus,
+            assignmentStatuses: assignments.map((row) => row.assignmentStatus),
+          });
+          const next = mergeRegistrationStatus("pending", observed);
+          await withSystem(db, async (tx) => {
+            const [updated] = await tx
+              .update(messagingRegistrations)
+              .set({
+                providerCampaignStatus:
+                  campaign.campaignStatus ??
+                  campaign.status ??
+                  campaign.submissionStatus,
+                status: next,
+                statusDetail:
+                  next === "active"
+                    ? "Carrier registration and all clinic number assignments are active."
+                    : "Clinic numbers were submitted for carrier assignment.",
+                lastError:
+                  assignments
+                    .map((row) => row.failureReasons)
+                    .filter(Boolean)
+                    .join("; ") || null,
+                lastSyncedAt: new Date(),
+                submissionLockId: null,
+                submissionLockAt: null,
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(messagingRegistrations.id, registration.id),
+                  eq(messagingRegistrations.submissionLockId, lockId),
+                  isNull(messagingRegistrations.deletedAt),
+                ),
+              )
+              .returning();
+            if (!updated) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message:
+                  "Registration changed while assigning carrier numbers.",
+              });
+            }
+            await recordMessagingRegistrationEvent(tx, {
+              registration: updated,
+              eventType: "provider_operation_succeeded",
+              operation: "number_assignment",
+              statusBefore: "pending",
+              operationId: lockId,
+              reasonCode: "carrier_numbers_assigned",
+              actor,
+            });
+            await tx
+              .update(locationMessaging)
+              .set({
+                a2pBrandId: registration.providerBrandId,
+                a2pCampaignId: registration.providerCampaignId,
+                registrationStatus: next,
+                registrationDetail:
+                  next === "active"
+                    ? "Carrier registration active. An admin may now enable sending."
+                    : "Carrier number assignment is pending.",
+                providerProfileReady: false,
+                providerProfileSyncedAt: null,
+                enabled: false,
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(locationMessaging.practiceId, input.practiceId),
+                  eq(locationMessaging.provider, "telnyx"),
+                  isNull(locationMessaging.deletedAt),
+                ),
+              );
+          });
+          return { ok: true, status: next, assigned: assignments.length };
+        } catch (error) {
+          await failRegistrationOperation({
+            registrationId: registration.id,
+            practiceId: registration.practiceId,
+            lockId,
+            error,
+            operation: "number_assignment",
+            actor,
+          });
+          throw providerFailure(error);
+        }
       });
     }),
 
@@ -2615,15 +2749,32 @@ export const adminRouter = createRouter({
             assignments.push(await getA2pNumberAssignment(sender.phoneNumber));
           }
         }
-        const observed = observedRegistrationStatus({
-          brandIdentityStatus: brand.identityStatus,
-          brandStatus: brand.status,
-          campaignStatus: campaign?.campaignStatus ?? campaign?.status,
-          campaignSubmissionStatus: campaign?.submissionStatus,
-          assignmentStatuses: assignments.map((row) => row?.assignmentStatus),
+        const providerIdentityMatches = providerRegistrationIdentityMatches({
+          practiceId: input.practiceId,
+          registration,
+          brand,
+          campaign,
         });
+        const observed = providerIdentityMatches
+          ? observedRegistrationStatus({
+              brandIdentityStatus: brand.identityStatus,
+              brandStatus: brand.status,
+              campaignStatuses: [
+                campaign?.status,
+                campaign?.campaignStatus,
+                campaign?.submissionStatus,
+              ],
+              campaignSubmissionStatus: campaign?.submissionStatus,
+              assignmentStatuses: assignments.map(
+                (row) => row?.assignmentStatus,
+              ),
+            })
+          : ("action_required" as const);
         const next = mergeRegistrationStatus(registration.status, observed);
         const failureDetail = [
+          providerIdentityMatches
+            ? null
+            : "Provider registration identity does not match this clinic.",
           brand.failureReasons,
           campaign?.failureReasons,
           ...assignments.map((row) => row?.failureReasons),
