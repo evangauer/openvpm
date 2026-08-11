@@ -113,6 +113,11 @@ describe("visit work reconciliation", () => {
       suggestedProductId: null,
       suggestedProductName: null,
       suggestedProductPrice: null,
+      dispenseChargeId: DISPENSE_CHARGE_ID,
+      dispenseChargeStatus: "pending",
+      dispenseChargeDescription: "Synthetic medication dispense",
+      dispenseChargeQuantity: 2,
+      dispenseChargeUnitPrice: "15.00",
       createdAt: new Date("2026-08-08T16:30:00.000Z"),
     };
     const { db, execute } = createDb({
@@ -130,7 +135,14 @@ describe("visit work reconciliation", () => {
       }),
     ).resolves.toMatchObject({
       unresolvedCount: 1,
-      items: [{ id: WORK_ITEM_ID, sourceLabel: "Dental cleaning" }],
+      items: [
+        {
+          id: WORK_ITEM_ID,
+          sourceLabel: "Dental cleaning",
+          dispenseChargeId: DISPENSE_CHARGE_ID,
+          dispenseChargeStatus: "pending",
+        },
+      ],
     });
     // Tenant context, deterministic vaccination/lab-source locks, and four
     // bounded source upserts all finish before the list query resolves.

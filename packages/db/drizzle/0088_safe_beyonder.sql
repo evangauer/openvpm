@@ -1,0 +1,2 @@
+ALTER TABLE "invoice_items" ADD COLUMN "charge_operation_id" uuid;--> statement-breakpoint
+CREATE UNIQUE INDEX "invoice_items_charge_operation_uq" ON "invoice_items" USING btree ("charge_operation_id") WHERE "invoice_items"."charge_operation_id" is not null;

@@ -52,7 +52,7 @@ DECLARE
   t text;
   tbls text[] := array[
     'api_keys','appointment_types','appointment_waitlist','appointments','audit_log','booking_pages',
-    'capture_sessions','cases','clients','clinical_notes','clinical_record_corrections','communications','consent_forms','consent_requests','controlled_substance_log','dispense_charge_queue','email_suppressions',
+    'capture_sessions','cases','clients','clinical_notes','clinical_record_corrections','communications','consent_forms','consent_requests','controlled_substance_log','dispense_charge_events','dispense_charge_queue','email_suppressions',
     'files','insurance_claims','insurance_policies','invoices','lab_result_events','lab_result_replacements','lab_results','location_messaging','messaging_registration_events','messaging_registrations','migration_runs',
     'locations','patient_merge_events','patients','practice_payment_accounts','prescription_events','prescriptions','problem_list','procedures','products','purchase_orders',
     'recurring_series','rooms','services','sms_consent_events','sms_send_attempt_events','sms_send_attempts','sms_suppressions','soap_note_addenda','soap_note_replacements','soap_notes','staff_schedules','suppliers',
@@ -270,6 +270,13 @@ GRANT SELECT, INSERT ON sms_provider_event_conflicts, sms_provider_event_conflic
 -- snapshot changes and all deletion.
 REVOKE ALL ON dispense_charge_queue FROM openpims_app;
 GRANT SELECT, INSERT, UPDATE ON dispense_charge_queue TO openpims_app;
+
+-- Medication charge transition evidence is trigger-written and append-only.
+-- Clinic sessions may read their own audit trail but cannot fabricate, edit,
+-- or delete it directly.
+REVOKE ALL ON dispense_charge_events FROM PUBLIC;
+REVOKE ALL ON dispense_charge_events FROM openpims_app;
+GRANT SELECT ON dispense_charge_events TO openpims_app;
 
 -- 5) Child tables without their own practice_id are isolated by joining to the
 --    parent row, which carries practice_id and its own tenant RLS.
@@ -490,7 +497,7 @@ BEGIN
   FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format(
-        'REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_provider_identity_conflicts, auth_email_webhook_conflicts, auth_tokens, clinic_pilot_events, clinic_pilots, clinical_record_corrections, demo_accesses, dispense_charge_queue, file_object_replicas, file_storage_events, funnel_events, lab_result_events, lab_result_replacements, messaging_registration_events, patient_allergies, patient_merge_events, platform_email_identity, platform_email_preference_events, platform_email_preferences, practice_conversion_milestones, prescription_events, sessions, sms_delivery_event_history, sms_delivery_events, sms_provider_event_conflict_reviews, sms_provider_event_conflicts, sms_provider_event_resolutions, sms_provider_events, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
+        'REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_provider_identity_conflicts, auth_email_webhook_conflicts, auth_tokens, clinic_pilot_events, clinic_pilots, clinical_record_corrections, demo_accesses, dispense_charge_events, dispense_charge_queue, file_object_replicas, file_storage_events, funnel_events, lab_result_events, lab_result_replacements, messaging_registration_events, patient_allergies, patient_merge_events, platform_email_identity, platform_email_preference_events, platform_email_preferences, practice_conversion_milestones, prescription_events, sessions, sms_delivery_event_history, sms_delivery_events, sms_provider_event_conflict_reviews, sms_provider_event_conflicts, sms_provider_event_resolutions, sms_provider_events, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
       );
     END IF;
   END LOOP;

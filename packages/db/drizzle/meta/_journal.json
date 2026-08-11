@@ -603,6 +603,27 @@
       "when": 1786428459802,
       "tag": "0085_foamy_rick_jones",
       "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1786449600155,
+      "tag": "0086_solid_ben_grimm",
+      "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1786451412667,
+      "tag": "0087_polite_hellcat",
+      "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1786451730973,
+      "tag": "0088_safe_beyonder",
+      "breakpoints": true
     }
   ]
 }

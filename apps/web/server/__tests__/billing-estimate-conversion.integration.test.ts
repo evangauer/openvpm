@@ -5,6 +5,7 @@ import {
   appointments,
   auditLog,
   clients,
+  dispenseChargeEvents,
   dispenseChargeQueue,
   invoiceItems,
   invoices,
@@ -13,6 +14,7 @@ import {
   practices,
   prescriptionEvents,
   prescriptions,
+  procedures,
   products,
   services,
   treatmentTemplateItems,
@@ -406,6 +408,44 @@ async function createPendingDispense(
   return id;
 }
 
+async function createProcedureWork(fixture: Fixture): Promise<string> {
+  const procedureId = randomUUID();
+  const workItemId = randomUUID();
+  await withSystem(db, async (tx) => {
+    await tx.insert(procedures).values({
+      id: procedureId,
+      practiceId: fixture.practiceId,
+      patientId: fixture.patientId,
+      appointmentId: fixture.appointmentId,
+      name: "Synthetic exam service",
+      performedBy: fixture.userId,
+    });
+    await tx.insert(visitWorkItems).values({
+      id: workItemId,
+      practiceId: fixture.practiceId,
+      appointmentId: fixture.appointmentId,
+      procedureId,
+    });
+  });
+  return workItemId;
+}
+
+async function createPrescriptionWork(
+  fixture: Fixture,
+  prescription: PrescriptionFixture,
+): Promise<string> {
+  const workItemId = randomUUID();
+  await withSystem(db, async (tx) => {
+    await tx.insert(visitWorkItems).values({
+      id: workItemId,
+      practiceId: fixture.practiceId,
+      appointmentId: fixture.appointmentId,
+      prescriptionId: prescription.id,
+    });
+  });
+  return workItemId;
+}
+
 async function createServiceTemplate(fixture: Fixture): Promise<string> {
   const templateId = randomUUID();
   await withSystem(db, async (tx) => {
@@ -434,6 +474,9 @@ async function cleanupFixture(practiceId: string): Promise<void> {
     await tx.execute(
       sql`select set_config('app.ledger_maintenance', 'on', true)`,
     );
+    await tx
+      .delete(dispenseChargeEvents)
+      .where(eq(dispenseChargeEvents.practiceId, practiceId));
     await tx
       .delete(visitWorkItems)
       .where(eq(visitWorkItems.practiceId, practiceId));
@@ -476,6 +519,7 @@ async function cleanupFixture(practiceId: string): Promise<void> {
     await tx
       .delete(prescriptions)
       .where(eq(prescriptions.practiceId, practiceId));
+    await tx.delete(procedures).where(eq(procedures.practiceId, practiceId));
     await tx.delete(products).where(eq(products.practiceId, practiceId));
     await tx.delete(services).where(eq(services.practiceId, practiceId));
     await tx
@@ -535,6 +579,206 @@ describeWithPostgres("billing estimate conversion PostgreSQL drill", () => {
     for (const practiceId of [...fixtures]) {
       await cleanupFixture(practiceId);
     }
+  });
+
+  it("converges a confirmed performed-work charge to one draft invoice line", async () => {
+    const fixture = await createFixture();
+    const workItemId = await createProcedureWork(fixture);
+    const operationId = randomUUID();
+    const input = {
+      appointmentId: fixture.appointmentId,
+      workItemId,
+      operationId,
+      expectedDescription: "Synthetic exam service",
+      expectedQuantity: 1,
+      expectedUnitPrice: "50.00",
+      charge: { kind: "service" as const, serviceId: fixture.serviceId },
+    };
+
+    const concurrent = await within(
+      Promise.all([
+        billingCaller(fixture).chargeVisitWork(input),
+        billingCaller(fixture).chargeVisitWork(input),
+      ]),
+      "same-operation performed-work charge",
+    );
+    expect(concurrent.map((result) => result.replayed).sort()).toEqual([
+      false,
+      true,
+    ]);
+    expect(new Set(concurrent.map((result) => result.invoiceId)).size).toBe(1);
+    expect(new Set(concurrent.map((result) => result.invoiceItemId)).size).toBe(
+      1,
+    );
+
+    await withSystem(db, (tx) =>
+      tx
+        .update(appointments)
+        .set({ status: "checked_out" })
+        .where(eq(appointments.id, fixture.appointmentId)),
+    );
+    await expect(
+      billingCaller(fixture).chargeVisitWork(input),
+    ).resolves.toMatchObject({
+      invoiceId: concurrent[0]!.invoiceId,
+      invoiceItemId: concurrent[0]!.invoiceItemId,
+      replayed: true,
+    });
+
+    const state = await withSystem(db, async (tx) => {
+      const invoiceRows = await tx
+        .select({
+          id: invoices.id,
+          status: invoices.status,
+          total: invoices.total,
+        })
+        .from(invoices)
+        .where(eq(invoices.practiceId, fixture.practiceId));
+      const itemRows = await tx
+        .select({
+          id: invoiceItems.id,
+          operationId: invoiceItems.chargeOperationId,
+          total: invoiceItems.total,
+        })
+        .from(invoiceItems)
+        .where(eq(invoiceItems.chargeOperationId, operationId));
+      const [work] = await tx
+        .select({
+          status: visitWorkItems.status,
+          invoiceItemId: visitWorkItems.invoiceItemId,
+        })
+        .from(visitWorkItems)
+        .where(eq(visitWorkItems.id, workItemId));
+      const auditRows = await tx
+        .select({ changes: auditLog.changes })
+        .from(auditLog)
+        .where(
+          and(
+            eq(auditLog.practiceId, fixture.practiceId),
+            eq(auditLog.action, "visit_work_charged"),
+          ),
+        );
+      return { invoiceRows, itemRows, work, auditRows };
+    });
+    expect(state.invoiceRows).toEqual([
+      expect.objectContaining({ status: "draft", total: "50.00" }),
+    ]);
+    expect(state.itemRows).toEqual([
+      expect.objectContaining({ operationId, total: "50.00" }),
+    ]);
+    expect(state.work).toEqual({
+      status: "charged",
+      invoiceItemId: state.itemRows[0]!.id,
+    });
+    expect(state.auditRows).toEqual([
+      expect.objectContaining({
+        changes: expect.objectContaining({ operationId }),
+      }),
+    ]);
+  });
+
+  it("rejects a confirmed performed-work charge when the catalog price changed", async () => {
+    const fixture = await createFixture();
+    const workItemId = await createProcedureWork(fixture);
+    await withSystem(db, (tx) =>
+      tx
+        .update(services)
+        .set({ defaultPrice: "55.00" })
+        .where(eq(services.id, fixture.serviceId)),
+    );
+
+    await expect(
+      billingCaller(fixture).chargeVisitWork({
+        appointmentId: fixture.appointmentId,
+        workItemId,
+        operationId: randomUUID(),
+        expectedDescription: "Synthetic exam service",
+        expectedQuantity: 1,
+        expectedUnitPrice: "50.00",
+        charge: { kind: "service", serviceId: fixture.serviceId },
+      }),
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: expect.stringContaining("changed after confirmation"),
+    });
+
+    const state = await withSystem(db, async (tx) => ({
+      invoices: await tx
+        .select({ id: invoices.id })
+        .from(invoices)
+        .where(eq(invoices.practiceId, fixture.practiceId)),
+      work: await tx
+        .select({ status: visitWorkItems.status })
+        .from(visitWorkItems)
+        .where(eq(visitWorkItems.id, workItemId)),
+    }));
+    expect(state.invoices).toEqual([]);
+    expect(state.work).toEqual([{ status: "unresolved" }]);
+  });
+
+  it("charges an exact medication dispense without deducting stock twice", async () => {
+    const fixture = await createFixture();
+    const product = await createProduct(fixture, 10);
+    const prescription = await createPrescription(fixture, product);
+    const dispenseChargeId = await createPendingDispense(fixture, prescription);
+    const workItemId = await createPrescriptionWork(fixture, prescription);
+    await withSystem(db, (tx) =>
+      tx
+        .update(products)
+        .set({ stockQuantity: 8 })
+        .where(eq(products.id, product.id)),
+    );
+    const operationId = randomUUID();
+
+    const charged = await billingCaller(fixture).chargeVisitWork({
+      appointmentId: fixture.appointmentId,
+      workItemId,
+      operationId,
+      expectedDescription: "Synthetic medication dispense",
+      expectedQuantity: 2,
+      expectedUnitPrice: "15.00",
+      charge: { kind: "dispense", dispenseChargeId },
+    });
+    expect(charged).toMatchObject({ replayed: false, createdInvoice: true });
+
+    const state = await withSystem(db, async (tx) => {
+      const [productRow] = await tx
+        .select({ stockQuantity: products.stockQuantity })
+        .from(products)
+        .where(eq(products.id, product.id));
+      const [queue] = await tx
+        .select({
+          status: dispenseChargeQueue.status,
+          invoiceItemId: dispenseChargeQueue.invoiceItemId,
+        })
+        .from(dispenseChargeQueue)
+        .where(eq(dispenseChargeQueue.id, dispenseChargeId));
+      const events = await tx
+        .select({
+          eventType: dispenseChargeEvents.eventType,
+          source: dispenseChargeEvents.transitionSource,
+          operationId: dispenseChargeEvents.operationId,
+        })
+        .from(dispenseChargeEvents)
+        .where(eq(dispenseChargeEvents.dispenseChargeId, dispenseChargeId))
+        .orderBy(asc(dispenseChargeEvents.sequence));
+      const [work] = await tx
+        .select({ status: visitWorkItems.status })
+        .from(visitWorkItems)
+        .where(eq(visitWorkItems.id, workItemId));
+      return { productRow, queue, events, work };
+    });
+    expect(state.productRow?.stockQuantity).toBe(8);
+    expect(state.queue).toEqual({
+      status: "invoiced",
+      invoiceItemId: charged.invoiceItemId,
+    });
+    expect(state.events.at(-1)).toEqual({
+      eventType: "invoiced",
+      source: "visit_reconciliation",
+      operationId,
+    });
+    expect(state.work?.status).toBe("charged");
   });
 
   it("serializes two estimates for one visit and deducts stock once", async () => {

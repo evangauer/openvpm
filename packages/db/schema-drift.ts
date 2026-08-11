@@ -254,6 +254,65 @@ export function criticalDatabaseContract(): DeclaredDatabaseObject[] {
     })),
     {
       kind: "constraint",
+      table: "dispense_charge_events",
+      name: "dispense_charge_events_shape_check",
+    },
+    ...[
+      "dispense_charge_events_practice_charge_fk",
+      "dispense_charge_events_practice_prescription_event_fk",
+      "dispense_charge_events_practice_actor_fk",
+    ].map((name) => ({
+      kind: "constraint" as const,
+      table: "dispense_charge_events",
+      name,
+    })),
+    ...[
+      "dispense_charge_events_charge_history_idx",
+      "dispense_charge_events_practice_time_idx",
+      "dispense_charge_events_charge_sequence_uq",
+      "dispense_charge_events_practice_charge_operation_uq",
+    ].map((name) => ({
+      kind: "index" as const,
+      table: "dispense_charge_events",
+      name,
+    })),
+    {
+      kind: "index",
+      table: "dispense_charge_queue",
+      name: "dispense_charge_queue_practice_id_uq",
+    },
+    {
+      kind: "index",
+      table: "invoice_items",
+      name: "invoice_items_charge_operation_uq",
+    },
+    {
+      kind: "trigger",
+      table: "dispense_charge_queue",
+      name: "dispense_charge_queue_record_event",
+    },
+    {
+      kind: "trigger",
+      table: "dispense_charge_events",
+      name: "dispense_charge_events_immutable",
+    },
+    {
+      kind: "rls_policy",
+      table: "dispense_charge_events",
+      name: "tenant_isolation",
+    },
+    {
+      kind: "table_privilege",
+      table: "dispense_charge_events",
+      name: "SELECT",
+    },
+    ...["INSERT", "UPDATE", "DELETE"].map((name) => ({
+      kind: "forbidden_table_privilege" as const,
+      table: "dispense_charge_events",
+      name,
+    })),
+    {
+      kind: "constraint",
       table: "sms_provider_events",
       name: "sms_provider_events_location_tenant_fk",
     },
@@ -564,6 +623,9 @@ export async function findSchemaDrift(db: Queryable): Promise<SchemaDrift> {
     from (values
       ('file_storage_events'::text, 'UPDATE'::text),
       ('file_storage_events'::text, 'DELETE'::text),
+      ('dispense_charge_events'::text, 'INSERT'::text),
+      ('dispense_charge_events'::text, 'UPDATE'::text),
+      ('dispense_charge_events'::text, 'DELETE'::text),
       ('sms_provider_events'::text, 'DELETE'::text),
       ('sms_provider_event_conflicts'::text, 'UPDATE'::text),
       ('sms_provider_event_conflicts'::text, 'DELETE'::text),

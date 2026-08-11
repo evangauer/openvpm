@@ -276,6 +276,85 @@ function emptyBackup(): Record<string, unknown[]> {
   );
 }
 
+function medicationChargeBackup() {
+  const practiceId = "source-practice";
+  return {
+    ...emptyBackup(),
+    practiceId,
+    users: [{ id: "user-1", practiceId, name: "Ledger Operator" }],
+    clients: [{ id: "client-1", practiceId }],
+    patients: [{ id: "patient-1", practiceId, clientId: "client-1" }],
+    products: [{ id: "product-1", practiceId }],
+    prescriptions: [
+      {
+        id: "prescription-1",
+        practiceId,
+        patientId: "patient-1",
+        appointmentId: null,
+        productId: "product-1",
+        quantity: 2,
+        prescribedBy: "user-1",
+      },
+    ],
+    prescriptionEvents: [
+      {
+        id: "prescription-event-1",
+        practiceId,
+        prescriptionId: "prescription-1",
+        patientId: "patient-1",
+        productId: "product-1",
+        quantity: 2,
+        eventType: "created",
+        actorId: "user-1",
+      },
+    ],
+    dispenseChargeQueue: [
+      {
+        id: "dispense-1",
+        practiceId,
+        createdAt: "2026-08-11T12:00:00.000Z",
+        updatedAt: "2026-08-11T12:00:00.000Z",
+        prescriptionEventId: "prescription-event-1",
+        prescriptionId: "prescription-1",
+        patientId: "patient-1",
+        clientId: "client-1",
+        appointmentId: null,
+        productId: "product-1",
+        quantity: 2,
+        descriptionSnapshot: "Medication × 2",
+        unitPriceSnapshot: "12.50",
+        status: "pending",
+        invoiceId: null,
+        invoiceItemId: null,
+        resolvedBy: null,
+        resolvedByName: null,
+        resolvedAt: null,
+        resolutionReason: null,
+      },
+    ],
+    dispenseChargeEvents: [
+      {
+        id: "dispense-event-1",
+        createdAt: "2026-08-11T12:00:00.000Z",
+        practiceId,
+        dispenseChargeId: "dispense-1",
+        prescriptionEventId: "prescription-event-1",
+        sequence: 1,
+        operationId: "00000000-0000-4000-8000-000000000071",
+        eventType: "created",
+        transitionSource: "prescription_dispense",
+        statusBefore: null,
+        statusAfter: "pending",
+        invoiceId: null,
+        invoiceItemId: null,
+        actorId: "user-1",
+        actorName: "Ledger Operator",
+        reason: null,
+      },
+    ],
+  };
+}
+
 function withCanonicalCounts<T extends Record<string, unknown>>(backup: T) {
   return {
     ...backup,
@@ -1031,7 +1110,9 @@ describe("independent recovery metadata", () => {
 
     expect(
       validatePracticeExportRestore({ ...backup, practice: undefined }).errors,
-    ).toContain("practice recovery metadata is required in backup format v6.");
+    ).toContain(
+      `practice recovery metadata is required in backup format v${PRACTICE_EXPORT_FORMAT_VERSION}.`,
+    );
     expect(
       validatePracticeExportRestore({
         ...backup,
@@ -1056,7 +1137,7 @@ describe("independent recovery metadata", () => {
         ...backup,
         formatVersion: PRACTICE_EXPORT_FORMAT_VERSION + 1,
       }).errors,
-    ).toContain("backup format v7 is newer than this release supports.");
+    ).toContain("backup format v8 is newer than this release supports.");
     expect(
       validatePracticeExportRestore({
         ...backup,
@@ -1068,7 +1149,9 @@ describe("independent recovery metadata", () => {
         ...backup,
         counts: undefined,
       }).errors,
-    ).toContain("canonical section counts are required in backup format v6.");
+    ).toContain(
+      `canonical section counts are required in backup format v${PRACTICE_EXPORT_FORMAT_VERSION}.`,
+    );
     expect(
       validatePracticeExportRestore({
         ...backup,
@@ -2444,6 +2527,79 @@ describe("restorePracticeData", () => {
         "prescriptions[rx-1] must have exactly one created prescription event.",
       ],
     });
+  });
+
+  it("requires a complete contiguous medication charge transition history", () => {
+    const backup = medicationChargeBackup();
+    expect(validatePracticeExportRestore(backup)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    backup.dispenseChargeEvents[0]!.sequence = 2;
+    expect(validatePracticeExportRestore(backup).errors).toEqual(
+      expect.arrayContaining([
+        "dispenseChargeQueue[dispense-1] has a non-contiguous medication charge history.",
+        "dispenseChargeQueue[dispense-1] must have complete medication charge transition history through its current status.",
+      ]),
+    );
+  });
+
+  it("requires medication charge evidence in current backups but accepts legacy absence", () => {
+    const current: Record<string, unknown> = {
+      formatVersion: PRACTICE_EXPORT_FORMAT_VERSION,
+      ...emptyBackup(),
+    };
+    delete current.dispenseChargeEvents;
+    expect(summarizePracticeExport(current).missingSections).toContain(
+      "dispenseChargeEvents",
+    );
+
+    const legacy: Record<string, unknown> = {
+      formatVersion: PRACTICE_EXPORT_FORMAT_VERSION - 1,
+      ...medicationChargeBackup(),
+    };
+    delete legacy.dispenseChargeEvents;
+    expect(summarizePracticeExport(legacy).missingSections).not.toContain(
+      "dispenseChargeEvents",
+    );
+  });
+
+  it("restores exact medication charge evidence only inside the held-practice bypass", async () => {
+    const backup = medicationChargeBackup();
+    const { db, inserted, executed } = restoreDb();
+
+    await expect(
+      restorePracticeData(db as never, "source-practice", backup),
+    ).resolves.toMatchObject({
+      restored: { dispenseChargeQueue: 1, dispenseChargeEvents: 1 },
+    });
+
+    expect(executed).toHaveLength(2);
+    expect(inserted.flatMap(({ rows }) => rows)).toContainEqual(
+      expect.objectContaining({
+        id: "dispense-event-1",
+        practiceId: "source-practice",
+        sequence: 1,
+        eventType: "created",
+      }),
+    );
+  });
+
+  it("lets a legacy restore synthesize current-state medication history", async () => {
+    const legacy = {
+      ...medicationChargeBackup(),
+      formatVersion: PRACTICE_EXPORT_FORMAT_VERSION - 1,
+    } as Record<string, unknown>;
+    delete legacy.dispenseChargeEvents;
+    const { db, executed } = restoreDb();
+
+    await expect(
+      restorePracticeData(db as never, "source-practice", legacy),
+    ).resolves.toMatchObject({
+      restored: { dispenseChargeQueue: 1, dispenseChargeEvents: 1 },
+    });
+    expect(executed).toHaveLength(0);
   });
 
   it("synthesizes a factual created event for a legacy backup", async () => {

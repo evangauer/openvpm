@@ -322,4 +322,21 @@ describe("API reference docs", () => {
       "{ id: string, expectedUpdatedAt: Date }",
     );
   });
+
+  it("documents idempotent explicitly confirmed visit-work charging", () => {
+    const source = readFileSync("app/api-docs/page.tsx", "utf8");
+    const section = source.slice(
+      source.indexOf('name: "billing.chargeVisitWork"'),
+      source.indexOf(
+        'name: "billing.convertEstimateToInvoice"',
+        source.indexOf('name: "billing.chargeVisitWork"'),
+      ),
+    );
+
+    expect(section).toContain("operationId: string");
+    expect(section).toContain("expectedUnitPrice: string");
+    expect(section).toContain('kind: "dispense"');
+    expect(section).toContain("does not collect payment");
+    expect(section).toContain("replayed: boolean");
+  });
 });

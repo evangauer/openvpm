@@ -1,0 +1,4 @@
+CREATE UNIQUE INDEX "dispense_charge_queue_practice_id_uq" ON "dispense_charge_queue" USING btree ("practice_id","id");--> statement-breakpoint
+ALTER TABLE "dispense_charge_events" ADD CONSTRAINT "dispense_charge_events_practice_charge_fk" FOREIGN KEY ("practice_id","dispense_charge_id") REFERENCES "public"."dispense_charge_queue"("practice_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dispense_charge_events" ADD CONSTRAINT "dispense_charge_events_practice_prescription_event_fk" FOREIGN KEY ("practice_id","prescription_event_id") REFERENCES "public"."prescription_events"("practice_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dispense_charge_events" ADD CONSTRAINT "dispense_charge_events_practice_actor_fk" FOREIGN KEY ("practice_id","actor_id") REFERENCES "public"."users"("practice_id","id") ON DELETE no action ON UPDATE no action;

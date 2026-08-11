@@ -61,6 +61,7 @@ import {
   assertVisitReconciliationMutable,
   syncVisitWorkItems,
 } from "../visit-billing-integrity";
+import { setDispenseChargeTransitionContext } from "@/lib/billing/dispense-charge-transition";
 
 type EncounterDb = Pick<
   Database,
@@ -1071,6 +1072,11 @@ export const encountersRouter = createRouter({
             suggestedProductId: products.id,
             suggestedProductName: products.name,
             suggestedProductPrice: products.unitPrice,
+            dispenseChargeId: dispenseChargeQueue.id,
+            dispenseChargeStatus: dispenseChargeQueue.status,
+            dispenseChargeDescription: dispenseChargeQueue.descriptionSnapshot,
+            dispenseChargeQuantity: dispenseChargeQueue.quantity,
+            dispenseChargeUnitPrice: dispenseChargeQueue.unitPriceSnapshot,
             createdAt: visitWorkItems.createdAt,
           })
           .from(visitWorkItems)
@@ -1116,6 +1122,25 @@ export const encountersRouter = createRouter({
               eq(prescriptions.productId, products.id),
               eq(products.practiceId, ctx.practiceId),
               isNull(products.deletedAt),
+            ),
+          )
+          .leftJoin(
+            prescriptionEvents,
+            and(
+              eq(prescriptionEvents.prescriptionId, prescriptions.id),
+              eq(prescriptionEvents.practiceId, ctx.practiceId),
+              eq(prescriptionEvents.eventType, "created"),
+            ),
+          )
+          .leftJoin(
+            dispenseChargeQueue,
+            and(
+              eq(
+                dispenseChargeQueue.prescriptionEventId,
+                prescriptionEvents.id,
+              ),
+              eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+              eq(dispenseChargeQueue.appointmentId, input.appointmentId),
             ),
           )
           .leftJoin(
@@ -1439,6 +1464,11 @@ export const encountersRouter = createRouter({
           dispenseCharge?.status === "pending" &&
           input.resolution.status !== "charged"
         ) {
+          await setDispenseChargeTransitionContext(tx, {
+            source: "visit_reconciliation",
+            actor: ctx.user,
+            reason: input.resolution.reason,
+          });
           const [waived] = await tx
             .update(dispenseChargeQueue)
             .set({
@@ -1592,6 +1622,11 @@ export const encountersRouter = createRouter({
         });
 
         if (dispenseCharge?.status === "waived") {
+          await setDispenseChargeTransitionContext(tx, {
+            source: "visit_reconciliation",
+            actor: ctx.user,
+            reason: input.reason,
+          });
           const [reopenedCharge] = await tx
             .update(dispenseChargeQueue)
             .set({

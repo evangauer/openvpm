@@ -26,7 +26,7 @@ const mocks = vi.hoisted(() => {
         practiceId: string,
         exportedAt: string,
       ): Promise<PracticeExportFixture> => ({
-        formatVersion: 6,
+        formatVersion: 7,
         practiceId,
         exportedAt,
         counts: {},
@@ -483,7 +483,7 @@ describe("backup cron", () => {
 
   it("fails before upload when an export cannot be restored within the supported size cap", async () => {
     mocks.exportPracticeData.mockResolvedValueOnce({
-      formatVersion: 6,
+      formatVersion: 7,
       practiceId: "practice-1",
       exportedAt: "2026-06-28T14:05:06.789Z",
       counts: {},
@@ -528,7 +528,7 @@ describe("backup cron", () => {
 
   it("reports exports approaching the restore cap separately from failures", async () => {
     mocks.exportPracticeData.mockResolvedValueOnce({
-      formatVersion: 6,
+      formatVersion: 7,
       practiceId: "practice-1",
       exportedAt: "2026-06-28T14:05:06.789Z",
       counts: {},

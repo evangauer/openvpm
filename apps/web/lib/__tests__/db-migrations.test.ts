@@ -405,6 +405,10 @@ describe("committed Drizzle migrations", () => {
       "0082",
       "0083",
       "0084",
+      "0085",
+      "0086",
+      "0087",
+      "0088",
     ].map((prefix) => {
       const path = JSON.parse(
         readRepoFile("packages/db/drizzle/meta/_journal.json"),
@@ -1276,6 +1280,76 @@ describe("committed Drizzle migrations", () => {
     expect(sql).toContain("REVOKE ALL ON dispense_charge_queue FROM anon");
     expect(sql).toContain(
       "REVOKE ALL ON dispense_charge_queue FROM authenticated",
+    );
+  });
+
+  it("records every medication charge transition in an immutable ledger", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries?: Array<{ tag?: string }> };
+    const tag = journal.entries?.find((entry) =>
+      entry.tag?.startsWith("0086_"),
+    )?.tag;
+    expect(tag).toBeTruthy();
+    const sql = readRepoFile(`packages/db/drizzle/${tag}.sql`);
+
+    expect(sql).toContain('CREATE TABLE "dispense_charge_events"');
+    expect(sql).toContain("dispense_charge_events_shape_check");
+    expect(sql).toContain("record_dispense_charge_event");
+    expect(sql).toContain("dispense_charge_queue_record_event");
+    expect(sql).toContain("dispense_charge_events_immutable");
+    expect(sql).toContain("SECURITY DEFINER");
+    expect(sql).toContain("app.dispense_charge_restore");
+    expect(sql).toContain("app.dispense_charge_restore_practice_id");
+    expect(sql).toContain("practice.recovery_hold = true");
+    expect(sql).toContain(
+      "Medication charge restore bypass requires the exact held practice.",
+    );
+    expect(sql).toContain("'legacy_backfill'");
+    expect(sql).toContain("LEFT JOIN public.users resolver");
+    expect(sql).toContain("resolver.practice_id = queue.practice_id");
+    expect(sql).toContain(
+      "GRANT SELECT ON public.dispense_charge_events TO openpims_app",
+    );
+    expect(sql).not.toContain(
+      "GRANT SELECT, INSERT ON public.dispense_charge_events",
+    );
+
+    const hardeningTag = journal.entries?.find((entry) =>
+      entry.tag?.startsWith("0087_"),
+    )?.tag;
+    expect(hardeningTag).toBeTruthy();
+    const hardening = readRepoFile(`packages/db/drizzle/${hardeningTag}.sql`);
+    const queueIdentityIndex = hardening.indexOf(
+      'CREATE UNIQUE INDEX "dispense_charge_queue_practice_id_uq"',
+    );
+    const queueTenantFk = hardening.indexOf(
+      'ADD CONSTRAINT "dispense_charge_events_practice_charge_fk"',
+    );
+    expect(queueIdentityIndex).toBeGreaterThanOrEqual(0);
+    expect(queueTenantFk).toBeGreaterThan(queueIdentityIndex);
+    expect(hardening).toContain(
+      'ADD CONSTRAINT "dispense_charge_events_practice_prescription_event_fk"',
+    );
+    expect(hardening).toContain(
+      'ADD CONSTRAINT "dispense_charge_events_practice_actor_fk"',
+    );
+
+    const chargeOperationTag = journal.entries?.find((entry) =>
+      entry.tag?.startsWith("0088_"),
+    )?.tag;
+    expect(chargeOperationTag).toBeTruthy();
+    const chargeOperation = readRepoFile(
+      `packages/db/drizzle/${chargeOperationTag}.sql`,
+    );
+    expect(chargeOperation).toContain(
+      'ALTER TABLE "invoice_items" ADD COLUMN "charge_operation_id" uuid',
+    );
+    expect(chargeOperation).toContain(
+      'CREATE UNIQUE INDEX "invoice_items_charge_operation_uq"',
+    );
+    expect(chargeOperation).toContain(
+      'WHERE "invoice_items"."charge_operation_id" is not null',
     );
   });
 

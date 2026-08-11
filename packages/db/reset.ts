@@ -34,6 +34,7 @@ const TABLES = [
   "sms_send_attempts",
   "sms_consent_events",
   "patient_merge_events",
+  "dispense_charge_events",
   "dispense_charge_queue",
   "invoice_items",
   "invoices",

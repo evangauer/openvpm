@@ -92,6 +92,11 @@ jobs:
       - name: Execute SMS provider-resolution database contract
         run: pnpm --filter @openpims/db db:sms-provider-resolutions:test
 
+      # Prove the medication charge transition trigger, immutable ledger,
+      # least-privilege role, and held-practice restore boundary on PostgreSQL.
+      - name: Execute medication charge ledger database contract
+        run: pnpm --filter @openpims/db db:dispense-charge-events:test
+
       # Exercise real PostgreSQL row/advisory locks, savepoints, and durable
       # event convergence with synthetic data only. No provider adapter is
       # imported or called, and every hosted SMS capability remains disabled.

@@ -83,17 +83,17 @@ export const practicePaymentAccounts = pgTable(
   },
   (table) => ({
     practiceProviderUq: uniqueIndex(
-      "practice_payment_accounts_practice_provider_uq"
+      "practice_payment_accounts_practice_provider_uq",
     ).on(table.practiceId, table.provider),
     stripeAccountUq: uniqueIndex(
-      "practice_payment_accounts_stripe_account_uq"
+      "practice_payment_accounts_stripe_account_uq",
     ).on(table.stripeAccountId),
     practiceStatusIdx: index("practice_payment_accounts_status_idx").on(
       table.practiceId,
       table.deletedAt,
-      table.onboardingStatus
+      table.onboardingStatus,
     ),
-  })
+  }),
 );
 
 export const services = pgTable(
@@ -106,20 +106,23 @@ export const services = pgTable(
     name: varchar("name", { length: 255 }).notNull(),
     code: varchar("code", { length: 32 }),
     category: varchar("category", { length: 128 }),
-    defaultPrice: numeric("default_price", { precision: 10, scale: 2 }).notNull(),
+    defaultPrice: numeric("default_price", {
+      precision: 10,
+      scale: 2,
+    }).notNull(),
     taxable: boolean("taxable").notNull().default(true),
   },
   (table) => ({
     practiceNameIdx: index("services_practice_name_idx").on(
       table.practiceId,
       table.deletedAt,
-      table.name
+      table.name,
     ),
     defaultPriceNonnegative: check(
       "services_default_price_nonnegative",
-      sql`${table.defaultPrice} >= 0`
+      sql`${table.defaultPrice} >= 0`,
     ),
-  })
+  }),
 );
 
 export const invoices = pgTable(
@@ -150,26 +153,26 @@ export const invoices = pgTable(
     practiceIdx: index("invoices_practice_idx").on(
       table.practiceId,
       table.deletedAt,
-      table.createdAt
+      table.createdAt,
     ),
     clientIdx: index("invoices_client_idx").on(
       table.practiceId,
       table.clientId,
       table.deletedAt,
-      table.createdAt
+      table.createdAt,
     ),
     patientIdx: index("invoices_patient_idx").on(
       table.practiceId,
       table.patientId,
       table.clientId,
-      table.deletedAt
+      table.deletedAt,
     ),
     appointmentIdx: index("invoices_appointment_idx").on(
       table.practiceId,
       table.appointmentId,
       table.deletedAt,
       table.isEstimate,
-      table.status
+      table.status,
     ),
     activeAppointmentUq: uniqueIndex("invoices_active_appointment_uq")
       .on(table.practiceId, table.appointmentId)
@@ -177,14 +180,14 @@ export const invoices = pgTable(
         sql`${table.appointmentId} is not null
           and ${table.isEstimate} = false
           and ${table.status} <> 'void'
-          and ${table.deletedAt} is null`
+          and ${table.deletedAt} is null`,
       ),
     visitTargetUq: uniqueIndex("invoices_visit_target_uq").on(
       table.practiceId,
       table.appointmentId,
-      table.id
+      table.id,
     ),
-  })
+  }),
 );
 
 export const invoiceItems = pgTable(
@@ -207,48 +210,54 @@ export const invoiceItems = pgTable(
     // source identity lets billing charge it without dispensing the stock a
     // second time.
     sourcePrescriptionId: uuid("source_prescription_id").references(
-      (): AnyPgColumn => prescriptions.id
+      (): AnyPgColumn => prescriptions.id,
     ),
     // Durable per-dispensation billing identity. Unlike a prescription, this
     // distinguishes the initial fill from every later clinic-stock refill.
     sourceDispenseChargeId: uuid("source_dispense_charge_id"),
+    // Durable idempotency identity for an explicitly confirmed one-step
+    // performed-work charge. Ordinary/manual invoice lines leave this null.
+    chargeOperationId: uuid("charge_operation_id"),
   },
   (table) => ({
     invoiceIdx: index("invoice_items_invoice_idx").on(
       table.invoiceId,
-      table.deletedAt
+      table.deletedAt,
     ),
     itemIdx: index("invoice_items_item_idx").on(
       table.itemType,
       table.deletedAt,
-      table.itemId
+      table.itemId,
     ),
     sourcePrescriptionIdx: index("invoice_items_source_prescription_idx").on(
       table.sourcePrescriptionId,
-      table.deletedAt
+      table.deletedAt,
     ),
     sourcePrescriptionInvoiceUq: uniqueIndex(
-      "invoice_items_source_prescription_invoice_uq"
+      "invoice_items_source_prescription_invoice_uq",
     )
       .on(table.invoiceId, table.sourcePrescriptionId)
       .where(
-        sql`${table.sourcePrescriptionId} is not null and ${table.deletedAt} is null`
+        sql`${table.sourcePrescriptionId} is not null and ${table.deletedAt} is null`,
       ),
     sourceDispenseChargeIdx: index(
-      "invoice_items_source_dispense_charge_idx"
+      "invoice_items_source_dispense_charge_idx",
     ).on(table.sourceDispenseChargeId, table.deletedAt),
     sourceDispenseChargeInvoiceUq: uniqueIndex(
-      "invoice_items_source_dispense_charge_invoice_uq"
+      "invoice_items_source_dispense_charge_invoice_uq",
     )
       .on(table.invoiceId, table.sourceDispenseChargeId)
       .where(
-        sql`${table.sourceDispenseChargeId} is not null and ${table.deletedAt} is null`
+        sql`${table.sourceDispenseChargeId} is not null and ${table.deletedAt} is null`,
       ),
+    chargeOperationUq: uniqueIndex("invoice_items_charge_operation_uq")
+      .on(table.chargeOperationId)
+      .where(sql`${table.chargeOperationId} is not null`),
     invoiceItemTargetUq: uniqueIndex("invoice_items_invoice_item_target_uq").on(
       table.invoiceId,
-      table.id
+      table.id,
     ),
-  })
+  }),
 );
 
 export const invoiceAdjustments = pgTable(
@@ -268,17 +277,17 @@ export const invoiceAdjustments = pgTable(
   (table) => ({
     invoiceIdx: index("invoice_adjustments_invoice_idx").on(
       table.invoiceId,
-      table.deletedAt
+      table.deletedAt,
     ),
     operationKeyUq: uniqueIndex("invoice_adjustments_operation_key_uq").on(
-      table.operationKey
+      table.operationKey,
     ),
     operationResultCheck: check(
       "invoice_adjustments_operation_result_check",
       sql`(${table.operationKey} is null and ${table.balanceAfter} is null)
-        or (${table.operationKey} is not null and ${table.balanceAfter} is not null and ${table.balanceAfter} >= 0)`
+        or (${table.operationKey} is not null and ${table.balanceAfter} is not null and ${table.balanceAfter} >= 0)`,
     ),
-  })
+  }),
 );
 
 export const products = pgTable(
@@ -303,34 +312,34 @@ export const products = pgTable(
   (table) => ({
     practiceIdx: index("products_practice_idx").on(
       table.practiceId,
-      table.deletedAt
+      table.deletedAt,
     ),
     practiceNameIdx: index("products_practice_name_idx").on(
       table.practiceId,
       table.deletedAt,
-      table.name
+      table.name,
     ),
     locationIdx: index("products_location_idx").on(
       table.practiceId,
       table.locationId,
-      table.deletedAt
+      table.deletedAt,
     ),
     skuIdx: index("products_sku_idx").on(table.practiceId, table.sku),
     expirationIdx: index("products_expiration_idx").on(
       table.practiceId,
       table.expirationDate,
-      table.deletedAt
+      table.deletedAt,
     ),
     stockAlertIdx: index("products_stock_alert_idx").on(
       table.practiceId,
       table.deletedAt,
-      table.stockQuantity
+      table.stockQuantity,
     ),
     practiceIdUq: uniqueIndex("products_practice_id_uq").on(
       table.practiceId,
-      table.id
+      table.id,
     ),
-  })
+  }),
 );
 
 export const suppliers = pgTable(
@@ -350,9 +359,9 @@ export const suppliers = pgTable(
     practiceNameIdx: index("suppliers_practice_name_idx").on(
       table.practiceId,
       table.deletedAt,
-      table.name
+      table.name,
     ),
-  })
+  }),
 );
 
 export const purchaseOrders = pgTable("purchase_orders", {
@@ -396,10 +405,10 @@ export const payments = pgTable(
     invoiceIdx: index("payments_invoice_idx").on(
       table.invoiceId,
       table.deletedAt,
-      table.receivedAt
+      table.receivedAt,
     ),
     externalIdUq: uniqueIndex("payments_external_id_uq").on(table.externalId),
-  })
+  }),
 );
 
 // Relations
@@ -454,7 +463,7 @@ export const invoiceAdjustmentsRelations = relations(
       fields: [invoiceAdjustments.createdBy],
       references: [users.id],
     }),
-  })
+  }),
 );
 
 export const paymentsRelations = relations(payments, ({ one }) => ({
@@ -475,7 +484,7 @@ export const practicePaymentAccountsRelations = relations(
       fields: [practicePaymentAccounts.practiceId],
       references: [practices.id],
     }),
-  })
+  }),
 );
 
 export const productsRelations = relations(products, ({ one }) => ({
@@ -496,16 +505,13 @@ export const suppliersRelations = relations(suppliers, ({ one }) => ({
   }),
 }));
 
-export const purchaseOrdersRelations = relations(
-  purchaseOrders,
-  ({ one }) => ({
-    practice: one(practices, {
-      fields: [purchaseOrders.practiceId],
-      references: [practices.id],
-    }),
-    supplier: one(suppliers, {
-      fields: [purchaseOrders.supplierId],
-      references: [suppliers.id],
-    }),
-  })
-);
+export const purchaseOrdersRelations = relations(purchaseOrders, ({ one }) => ({
+  practice: one(practices, {
+    fields: [purchaseOrders.practiceId],
+    references: [practices.id],
+  }),
+  supplier: one(suppliers, {
+    fields: [purchaseOrders.supplierId],
+    references: [suppliers.id],
+  }),
+}));

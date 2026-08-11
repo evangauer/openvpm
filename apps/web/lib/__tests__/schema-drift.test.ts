@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   criticalDatabaseContract,
@@ -6,6 +7,10 @@ import {
   driftIsClean,
   findSchemaDrift,
 } from "@openpims/db/schema-drift";
+
+function readRepoFile(path: string): string {
+  return readFileSync(new URL(`../../../../${path}`, import.meta.url), "utf8");
+}
 
 /**
  * Regression cover for the failure that reached a customer: the deployed code
@@ -256,6 +261,29 @@ describe("findSchemaDrift", () => {
     });
   });
 
+  it("requires the one-step visit-charge idempotency index", async () => {
+    expect(criticalDatabaseContract()).toContainEqual({
+      kind: "index",
+      table: "invoice_items",
+      name: "invoice_items_charge_operation_uq",
+    });
+
+    const drift = await findSchemaDrift(
+      fakeDb(
+        liveSchemaWithout(
+          (row) =>
+            row.object_type === "index" &&
+            row.object_name === "invoice_items_charge_operation_uq",
+        ),
+      ),
+    );
+    expect(drift.invalidObjects).toContainEqual({
+      kind: "index",
+      table: "invoice_items",
+      name: "invoice_items_charge_operation_uq",
+    });
+  });
+
   it("catches a missing policy and RLS disabled under an existing policy", async () => {
     const rows = liveSchemaWithout(
       (row) =>
@@ -292,6 +320,22 @@ describe("findSchemaDrift", () => {
       kind: "trigger",
       table: "sms_provider_events",
       name: "sms_provider_events_mutation_guard",
+    });
+  });
+
+  it("catches a missing medication charge transition trigger", async () => {
+    const rows = liveSchemaWithout(
+      (row) =>
+        row.object_type === "trigger" &&
+        row.table_name === "dispense_charge_queue" &&
+        row.object_name === "dispense_charge_queue_record_event",
+    );
+    const drift = await findSchemaDrift(fakeDb(rows));
+
+    expect(drift.invalidObjects).toContainEqual({
+      kind: "trigger",
+      table: "dispense_charge_queue",
+      name: "dispense_charge_queue_record_event",
     });
   });
 
@@ -337,6 +381,16 @@ describe("findSchemaDrift", () => {
       table: "sms_provider_event_conflict_reviews",
       name: "DELETE",
     });
+  });
+
+  it("enumerates every forbidden medication charge ledger mutation", () => {
+    const source = readRepoFile("packages/db/schema-drift.ts");
+
+    for (const privilege of ["INSERT", "UPDATE", "DELETE"]) {
+      expect(source).toContain(
+        `('dispense_charge_events'::text, '${privilege}'::text)`,
+      );
+    }
   });
 });
 

@@ -145,6 +145,28 @@ afterEach(() => {
 });
 
 describe("billing invoice integrity", () => {
+  it("keeps one-step performed-work charging restricted to billing roles", async () => {
+    const { db, select, updateSet, insertValues } = createDb({
+      selectResults: [],
+    });
+
+    await expect(
+      callerWithDb(db, "technician").chargeVisitWork({
+        appointmentId: APPOINTMENT_ID,
+        workItemId: "00000000-0000-0000-0000-00000000000b",
+        operationId: "00000000-0000-0000-0000-00000000000c",
+        expectedDescription: "Exam",
+        expectedQuantity: 1,
+        expectedUnitPrice: "50.00",
+        charge: { kind: "service", serviceId: SERVICE_ID },
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    expect(select).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("keeps estimate conversion restricted to billing manager roles", async () => {
     const { db, select, updateSet, insertValues } = createDb({
       selectResults: [],

@@ -13,6 +13,7 @@ export * from "./prescriptions";
 export * from "./prescription-events";
 export * from "./billing";
 export * from "./dispense-charge-queue";
+export * from "./dispense-charge-events";
 export * from "./communications";
 export * from "./auth";
 export * from "./controlled-substances";

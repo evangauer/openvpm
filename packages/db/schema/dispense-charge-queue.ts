@@ -86,6 +86,10 @@ export const dispenseChargeQueue = pgTable(
       table.practiceId,
       table.prescriptionEventId,
     ),
+    practiceIdUq: uniqueIndex("dispense_charge_queue_practice_id_uq").on(
+      table.practiceId,
+      table.id,
+    ),
     pendingIdx: index("dispense_charge_queue_pending_idx")
       .on(table.practiceId, table.createdAt, table.id)
       .where(sql`${table.status} = 'pending'`),

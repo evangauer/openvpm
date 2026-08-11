@@ -21,10 +21,11 @@ drill pass.
   labs plus their immutable completion/review/follow-up history, procedures,
   prescriptions, problem lists, cases, treatment plans,
   controlled-substance log), clients and patients, scheduling, billing
-  (invoices, items, payments, adjustments, claims), inventory, staff, and the
+  (invoices, items, payments, adjustments, claims, medication dispense queue,
+  and its append-only charge-transition ledger), inventory, staff, and the
   audit log. The canonical section list is `PRACTICE_EXPORT_SECTIONS` in
   `apps/web/lib/backup/export.ts`.
-- **Recovery identity:** format v6 includes a sanitized top-level `practice`
+- **Recovery identity:** format v7 includes a sanitized top-level `practice`
   snapshot for a reviewed database-owner bootstrap. It preserves the original
   practice UUID and safe clinic settings, but excludes Stripe IDs, provider
   authority, calendar tokens, secrets, and paid status.
@@ -47,7 +48,7 @@ drill pass.
   tokens are cleared, API keys are disabled, webhook secrets are replaced and
   webhooks arrive deactivated.
 - **File binaries are not in the JSON.** The `files` section holds attachment
-  manifests only. Format v6 includes a sanitized top-level `practice` recovery
+  manifests only. Format v7 includes a sanitized top-level `practice` recovery
   snapshot and the manifests include checksum, byte size, patient/visit links,
   and document metadata. Provider ETags/version IDs, replica projections, and
   storage transition events remain outside clinic JSON. A same-practice

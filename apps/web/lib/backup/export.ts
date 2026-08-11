@@ -23,6 +23,7 @@ import {
   clients,
   communications,
   controlledSubstanceLog,
+  dispenseChargeEvents,
   dispenseChargeQueue,
   emailSuppressions,
   files,
@@ -202,6 +203,7 @@ export const PRACTICE_EXPORT_SECTIONS = [
   "prescriptions",
   "prescriptionEvents",
   "dispenseChargeQueue",
+  "dispenseChargeEvents",
   "visitCloseouts",
   "files",
   "controlledSubstanceLog",
@@ -216,6 +218,9 @@ const PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS = [
   // prescription lifecycle ledger was introduced.
   "prescriptionEvents",
   "dispenseChargeQueue",
+  // Backward compatibility for backups created before immutable medication
+  // charge transition evidence.
+  "dispenseChargeEvents",
   // Backward compatibility for backups created before durable patient lineage.
   "patientMergeEvents",
   // Backward compatibility for backups created before SMS consent evidence.
@@ -246,7 +251,7 @@ export type PracticeExport = {
   counts: Record<PracticeExportSection, number>;
 } & Record<PracticeExportSection, unknown[]>;
 
-export const PRACTICE_EXPORT_FORMAT_VERSION = 6;
+export const PRACTICE_EXPORT_FORMAT_VERSION = 7;
 export const PRACTICE_RECOVERY_HOLD_REASON =
   "Practice data restore pending owner reconciliation";
 
@@ -531,6 +536,17 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
   optionalRef("dispenseChargeQueue", "invoiceId", "invoices"),
   optionalRef("dispenseChargeQueue", "invoiceItemId", "invoiceItems"),
   optionalRef("dispenseChargeQueue", "resolvedBy", "users"),
+  requiredRef(
+    "dispenseChargeEvents",
+    "dispenseChargeId",
+    "dispenseChargeQueue",
+  ),
+  requiredRef(
+    "dispenseChargeEvents",
+    "prescriptionEventId",
+    "prescriptionEvents",
+  ),
+  optionalRef("dispenseChargeEvents", "actorId", "users"),
   requiredRef("visitCloseouts", "appointmentId", "appointments"),
   optionalRef("visitCloseouts", "followUpAppointmentId", "appointments"),
   optionalRef("visitCloseouts", "clinicalFinalizedBy", "users"),
@@ -825,7 +841,9 @@ export function validatePracticeExportRestore(data: unknown): {
   }
   if (exportRecord.formatVersion === PRACTICE_EXPORT_FORMAT_VERSION) {
     if (!isRecord(exportRecord.practice)) {
-      pushError("practice recovery metadata is required in backup format v6.");
+      pushError(
+        `practice recovery metadata is required in backup format v${PRACTICE_EXPORT_FORMAT_VERSION}.`,
+      );
     } else if (exportRecord.practice.id !== exportRecord.practiceId) {
       pushError("practice recovery metadata must match practiceId exactly.");
     } else {
@@ -847,7 +865,9 @@ export function validatePracticeExportRestore(data: unknown): {
     }
 
     if (!isRecord(exportRecord.counts)) {
-      pushError("canonical section counts are required in backup format v6.");
+      pushError(
+        `canonical section counts are required in backup format v${PRACTICE_EXPORT_FORMAT_VERSION}.`,
+      );
     } else {
       const countKeys = Object.keys(exportRecord.counts);
       const missingCountKeys = PRACTICE_EXPORT_SECTIONS.filter(
@@ -1469,6 +1489,128 @@ export function validatePracticeExportRestore(data: unknown): {
       ) {
         pushError(
           `${label} waived state requires one bounded reason and no invoice.`,
+        );
+      }
+    });
+  }
+
+  if (Array.isArray(record.dispenseChargeEvents)) {
+    const queueById = rowsById("dispenseChargeQueue");
+    const eventsByCharge = new Map<string, Row[]>();
+    const eventSources = new Set([
+      "prescription_dispense",
+      "invoice_create",
+      "invoice_edit",
+      "medication_queue",
+      "visit_reconciliation",
+      "invoice_void",
+      "invoice_line_removed",
+      "legacy_backfill",
+      "database_safeguard",
+    ]);
+
+    rowsFor(data, "dispenseChargeEvents").forEach((event, index) => {
+      const label = `dispenseChargeEvents[${rowLabel(event, index)}]`;
+      if (
+        event.practiceId !== backupPracticeId ||
+        typeof event.dispenseChargeId !== "string"
+      ) {
+        pushError(`${label} must belong to the declared practice and charge.`);
+        return;
+      }
+      const queue = queueById.get(event.dispenseChargeId);
+      if (
+        queue &&
+        (queue.practiceId !== event.practiceId ||
+          queue.prescriptionEventId !== event.prescriptionEventId)
+      ) {
+        pushError(`${label} does not match its medication charge source.`);
+      }
+      if (
+        !isRestoredTimestamp(event.createdAt) ||
+        typeof event.operationId !== "string" ||
+        !CANONICAL_LOWER_UUID.test(event.operationId) ||
+        !Number.isSafeInteger(event.sequence) ||
+        Number(event.sequence) < 1 ||
+        typeof event.actorName !== "string" ||
+        event.actorName.trim().length === 0 ||
+        event.actorName.length > 255 ||
+        typeof event.transitionSource !== "string" ||
+        !eventSources.has(event.transitionSource) ||
+        (event.reason != null &&
+          (typeof event.reason !== "string" || event.reason.length > 1000))
+      ) {
+        pushError(`${label} has invalid immutable transition evidence.`);
+      }
+      const events = eventsByCharge.get(event.dispenseChargeId) ?? [];
+      events.push(event);
+      eventsByCharge.set(event.dispenseChargeId, events);
+    });
+
+    rowsFor(data, "dispenseChargeQueue").forEach((queue, index) => {
+      if (typeof queue.id !== "string") return;
+      const label = `dispenseChargeQueue[${rowLabel(queue, index)}]`;
+      const events = [...(eventsByCharge.get(queue.id) ?? [])].sort(
+        (left, right) => Number(left.sequence) - Number(right.sequence),
+      );
+      let status: unknown = null;
+      const operationKeys = new Set<string>();
+      for (const [eventIndex, event] of events.entries()) {
+        if (event.sequence !== eventIndex + 1) {
+          pushError(`${label} has a non-contiguous medication charge history.`);
+          break;
+        }
+        const eventKey = `${String(event.operationId)}:${String(event.eventType)}`;
+        if (operationKeys.has(eventKey)) {
+          pushError(`${label} has duplicate medication charge operations.`);
+        }
+        operationKeys.add(eventKey);
+
+        const reasonLength =
+          typeof event.reason === "string" ? event.reason.trim().length : 0;
+        const createdShape =
+          event.eventType === "created" &&
+          status === null &&
+          event.statusBefore == null &&
+          event.statusAfter === "pending" &&
+          event.invoiceId == null &&
+          event.invoiceItemId == null &&
+          event.reason == null;
+        const invoicedShape =
+          event.eventType === "invoiced" &&
+          status === "pending" &&
+          event.statusBefore === "pending" &&
+          event.statusAfter === "invoiced" &&
+          typeof event.invoiceId === "string" &&
+          typeof event.invoiceItemId === "string" &&
+          event.reason == null;
+        const waivedShape =
+          event.eventType === "waived" &&
+          status === "pending" &&
+          event.statusBefore === "pending" &&
+          event.statusAfter === "waived" &&
+          event.invoiceId == null &&
+          event.invoiceItemId == null &&
+          reasonLength >= 5;
+        const reopenedShape =
+          event.eventType === "reopened" &&
+          (status === "invoiced" || status === "waived") &&
+          event.statusBefore === status &&
+          event.statusAfter === "pending" &&
+          reasonLength >= 5 &&
+          (status === "invoiced"
+            ? typeof event.invoiceId === "string" &&
+              typeof event.invoiceItemId === "string"
+            : event.invoiceId == null && event.invoiceItemId == null);
+        if (!createdShape && !invoicedShape && !waivedShape && !reopenedShape) {
+          pushError(`${label} has an invalid medication charge event chain.`);
+          break;
+        }
+        status = event.statusAfter;
+      }
+      if (events.length === 0 || status !== queue.status) {
+        pushError(
+          `${label} must have complete medication charge transition history through its current status.`,
         );
       }
     });
@@ -2469,6 +2611,7 @@ export async function exportPracticeData(
     allPrescriptionRows,
     prescriptionEventRows,
     dispenseChargeRows,
+    dispenseChargeEventRows,
     visitCloseoutRows,
     fileRows,
     controlledSubstanceRows,
@@ -2522,6 +2665,7 @@ export async function exportPracticeData(
     allPracticeRows(db, prescriptions, practiceId),
     allPracticeRows(db, prescriptionEvents, practiceId),
     allPracticeRows(db, dispenseChargeQueue, practiceId),
+    allPracticeRows(db, dispenseChargeEvents, practiceId),
     activeRows(db, visitCloseouts, practiceId),
     activeFileRows(db, practiceId),
     activeRows(db, controlledSubstanceLog, practiceId),
@@ -2892,6 +3036,7 @@ export async function exportPracticeData(
     prescriptions: prescriptionRows,
     prescriptionEvents: prescriptionEventRows,
     dispenseChargeQueue: dispenseChargeRows,
+    dispenseChargeEvents: dispenseChargeEventRows,
     visitCloseouts: visitCloseoutRows,
     files: fileRows,
     controlledSubstanceLog: controlledSubstanceRows,
@@ -2929,6 +3074,8 @@ async function restorePracticeDataRows(
     backupRecord,
     "dispenseChargeQueue",
   );
+  const dispenseChargeEventRestoreRows = rowsFor(data, "dispenseChargeEvents");
+  const hasDispenseChargeEvents = dispenseChargeEventRestoreRows.length > 0;
   const dispenseChargeRestoreRows = rowsFor(data, "dispenseChargeQueue");
   const smsConsentRestore = prepareLegacySmsConsentRestore(data);
   const soapNoteRestoreRows = rowsFor(data, "soapNotes").map((row) => {
@@ -3292,6 +3439,13 @@ async function restorePracticeDataRows(
     prescriptionEventRows,
     { practiceId },
   );
+  if (hasDispenseChargeEvents) {
+    await db.execute(sql`
+      select
+        set_config('app.dispense_charge_restore_practice_id', ${practiceId}, true),
+        set_config('app.dispense_charge_restore', 'on', true)
+    `);
+  }
   // Restore every queue row as pending first. Invoiced rows form an intentional
   // cycle with invoice_items, and the database protection trigger should see
   // the exact active source line before accepting their final status.
@@ -3358,6 +3512,26 @@ async function restorePracticeDataRows(
           ),
         );
     }
+  }
+  if (hasDispenseChargeEvents) {
+    restored.dispenseChargeEvents = await restoreRows(
+      db,
+      dispenseChargeEvents,
+      "dispenseChargeEvents",
+      dispenseChargeEventRestoreRows,
+      { practiceId },
+    );
+    await db.execute(sql`
+      select
+        set_config('app.dispense_charge_restore', '', true),
+        set_config('app.dispense_charge_restore_practice_id', '', true)
+    `);
+  } else {
+    restored.dispenseChargeEvents =
+      dispenseChargeRestoreRows.length +
+      dispenseChargeRestoreRows.filter(
+        (row) => row.status === "invoiced" || row.status === "waived",
+      ).length;
   }
   await restorePracticeRows("visitCloseouts", visitCloseouts);
   restored.files = await restoreRows(

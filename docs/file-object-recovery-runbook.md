@@ -22,7 +22,7 @@ provider. A scheduled worker then:
 
 The daily per-practice JSON backup is also copied and read-back verified at
 `database-backups/v2/{practiceId}/{YYYY-MM-DD}/{backupSha256}.json`, with an
-independently versioned checksum-addressed catalog. Backup format v6 contains a
+independently versioned checksum-addressed catalog. Backup format v7 contains a
 sanitized clinic identity/configuration snapshot plus portable file manifests.
 It excludes storage-provider ETags/version IDs, replica projections, Stripe
 provider IDs, messaging dispatch authority, and capability tokens.
@@ -186,7 +186,7 @@ The replica is launch-ready only after:
 
 - code, migration, RLS, unit, integration, build, and production smoke checks
   are green;
-- Evan approves the independent provider/account and any resulting spend;
+- A platform owner approves the independent provider/account and any resulting spend;
 - bucket independence, encryption, versioning, immutability, IAM, retention,
   and spend alerts are evidenced;
 - production backfill reaches 100% fresh coverage;

@@ -556,6 +556,29 @@ const sections: Section[] = [
         response: `Invoice`,
       },
       {
+        name: "billing.chargeVisitWork",
+        method: "POST",
+        description:
+          "After explicit staff confirmation, atomically add one catalog-backed performed item to the unpaid draft visit invoice and reconcile its work record. The operation ID makes response-loss retries idempotent; this does not collect payment.",
+        input: `{
+  appointmentId: string,
+  workItemId: string,
+  operationId: string,
+  expectedDescription: string,
+  expectedQuantity: number,
+  expectedUnitPrice: string,
+  charge:
+    | { kind: "service", serviceId: string }
+    | { kind: "dispense", dispenseChargeId: string }
+}`,
+        response: `{
+  invoiceId: string,
+  invoiceItemId: string,
+  createdInvoice: boolean,
+  replayed: boolean
+}`,
+      },
+      {
         name: "billing.convertEstimateToInvoice",
         method: "POST",
         description:

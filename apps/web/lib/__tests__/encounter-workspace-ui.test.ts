@@ -301,7 +301,7 @@ describe("clinic encounter workspace", () => {
     expect(workspaceSource).toContain("expectedUpdatedAt");
   });
 
-  it("makes performed work reconciliation explicit without automatic billing", () => {
+  it("makes performed work reconciliation explicit with confirmed atomic charging", () => {
     expect(workspaceSource).toContain(
       "trpc.encounters.getVisitReconciliation.useQuery",
     );
@@ -313,6 +313,23 @@ describe("clinic encounter workspace", () => {
     expect(workspaceSource).toContain("No charge");
     expect(workspaceSource).toContain("Void/corrected");
     expect(workspaceSource).toContain("never bills a suggestion automatically");
+    expect(workspaceSource).toContain(
+      "trpc.billing.chargeVisitWork.useMutation",
+    );
+    expect(workspaceSource).toContain("Review &amp; add charge");
+    expect(workspaceSource).toContain(
+      "Add this performed work to the draft invoice?",
+    );
+    expect(workspaceSource).toContain("operationId: crypto.randomUUID()");
+    expect(workspaceSource).toContain(
+      "The client is not charged and no payment is collected.",
+    );
+    expect(workspaceSource).toContain(
+      'closeoutQuery.data?.closeout?.status !== "completed"',
+    );
+    expect(workspaceSource).toContain(
+      "utils.billing.listDispenseChargeQueue.invalidate()",
+    );
   });
 
   it("guides the clinic through one safe visit-completion action at a time", () => {

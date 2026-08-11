@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
-import { PRACTICE_EXPORT_SECTIONS } from "../export";
+import {
+  PRACTICE_EXPORT_FORMAT_VERSION,
+  PRACTICE_EXPORT_SECTIONS,
+} from "../export";
 
 const script = resolve("scripts/verify-backup-evidence.mjs");
 const tempDirectories: string[] = [];
@@ -42,7 +45,7 @@ function evidenceFixture(
       sections[section]!.length,
     ]),
   );
-  const formatVersion = options.formatVersion ?? 6;
+  const formatVersion = options.formatVersion ?? PRACTICE_EXPORT_FORMAT_VERSION;
   const objectBody = Buffer.from(
     JSON.stringify({
       formatVersion,
@@ -139,10 +142,16 @@ describe("backup recovery evidence CLI", () => {
   });
 
   it("rejects artifacts outside the one canonical supported export format", () => {
-    const result = run(evidenceFixture({ formatVersion: 5 }));
+    const result = run(
+      evidenceFixture({
+        formatVersion: PRACTICE_EXPORT_FORMAT_VERSION - 1,
+      }),
+    );
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("exportFormatVersion must be 6");
+    expect(result.stderr).toContain(
+      `exportFormatVersion must be ${PRACTICE_EXPORT_FORMAT_VERSION}`,
+    );
   });
 
   it("checks catalog counts against the actual canonical section arrays", () => {

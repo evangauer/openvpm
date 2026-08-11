@@ -825,6 +825,11 @@ export default function EncounterWorkspacePage() {
           <VisitWorkReconciliation
             appointmentId={appointmentId}
             canManage={canManageVisit(role) && appointment.status === "in_exam"}
+            canCharge={
+              canManageBilling(role) &&
+              appointment.status === "in_exam" &&
+              closeoutQuery.data?.closeout?.status !== "completed"
+            }
             canCorrect={
               appointment.status === "in_exam" &&
               (role === "admin" ||
@@ -3195,11 +3200,13 @@ function useCurrencyFormatterWithConfig() {
 function VisitWorkReconciliation({
   appointmentId,
   canManage,
+  canCharge,
   canCorrect,
   canVoid,
 }: {
   appointmentId: string;
   canManage: boolean;
+  canCharge: boolean;
   canCorrect: boolean;
   canVoid: boolean;
 }) {
@@ -3212,6 +3219,17 @@ function VisitWorkReconciliation({
     Record<string, string>
   >({});
   const [reasons, setReasons] = useState<Record<string, string>>({});
+  const [pendingCharge, setPendingCharge] = useState<{
+    workItemId: string;
+    operationId: string;
+    sourceLabel: string;
+    description: string;
+    quantity: number;
+    unitPrice: string;
+    charge:
+      | { kind: "service"; serviceId: string }
+      | { kind: "dispense"; dispenseChargeId: string };
+  } | null>(null);
   const resolve = trpc.encounters.resolveVisitWork.useMutation({
     onSuccess: () => {
       toast.success("Performed item reconciled");
@@ -3231,6 +3249,53 @@ function VisitWorkReconciliation({
     },
     onError: (error) => toast.error(error.message),
   });
+  const chargeWork = trpc.billing.chargeVisitWork.useMutation({
+    onSuccess: async ({ invoiceId, replayed }) => {
+      setPendingCharge(null);
+      toast.success(
+        replayed
+          ? "Confirmed charge already saved"
+          : "Performed work added to the draft invoice",
+      );
+      await Promise.all([
+        utils.encounters.getVisitReconciliation.invalidate({ appointmentId }),
+        utils.encounters.getCloseout.invalidate({ appointmentId }),
+        utils.billing.listInvoices.invalidate({
+          appointmentId,
+          limit: 25,
+          offset: 0,
+        }),
+        utils.billing.getInvoice.invalidate({ id: invoiceId }),
+        utils.billing.listDispenseChargeQueue.invalidate(),
+      ]);
+    },
+    onError: async (error) => {
+      toast.error(error.message);
+      await Promise.all([
+        utils.encounters.getVisitReconciliation.invalidate({ appointmentId }),
+        utils.encounters.getCloseout.invalidate({ appointmentId }),
+        utils.billing.listInvoices.invalidate({
+          appointmentId,
+          limit: 25,
+          offset: 0,
+        }),
+        utils.billing.listDispenseChargeQueue.invalidate(),
+      ]);
+    },
+  });
+
+  function confirmCharge() {
+    if (!pendingCharge) return;
+    chargeWork.mutate({
+      appointmentId,
+      workItemId: pendingCharge.workItemId,
+      operationId: pendingCharge.operationId,
+      expectedDescription: pendingCharge.description,
+      expectedQuantity: pendingCharge.quantity,
+      expectedUnitPrice: pendingCharge.unitPrice,
+      charge: pendingCharge.charge,
+    });
+  }
 
   return (
     <Card id="visit-work-reconciliation" className="scroll-mt-4">
@@ -3281,6 +3346,35 @@ function VisitWorkReconciliation({
                 : item.suggestedService
                   ? `${item.suggestedService.name} (${fmt(item.suggestedService.defaultPrice)})`
                   : null;
+              const oneStepCharge =
+                item.dispenseChargeId &&
+                item.dispenseChargeStatus === "pending" &&
+                item.dispenseChargeDescription &&
+                item.dispenseChargeQuantity &&
+                item.dispenseChargeUnitPrice &&
+                !requiresPrescriptionInventoryUnitReview({
+                  description: item.dispenseChargeDescription,
+                })
+                  ? {
+                      description: item.dispenseChargeDescription,
+                      quantity: item.dispenseChargeQuantity,
+                      unitPrice: item.dispenseChargeUnitPrice,
+                      charge: {
+                        kind: "dispense" as const,
+                        dispenseChargeId: item.dispenseChargeId,
+                      },
+                    }
+                  : item.suggestedService
+                    ? {
+                        description: item.suggestedService.name,
+                        quantity: 1,
+                        unitPrice: item.suggestedService.defaultPrice,
+                        charge: {
+                          kind: "service" as const,
+                          serviceId: item.suggestedService.id,
+                        },
+                      }
+                    : null;
               const reason = reasons[item.id] ?? "";
               const selectedCharge = selectedCharges[item.id] ?? "";
               return (
@@ -3309,10 +3403,32 @@ function VisitWorkReconciliation({
                   {unresolved || staleCharge ? (
                     <div className="mt-4 flex flex-col gap-3">
                       <p className="text-xs text-muted-foreground">
-                        {suggestedCatalog
-                          ? `Suggested catalog match: ${suggestedCatalog}. Add and save it in Charge capture, then link the saved invoice line here.`
-                          : "Add and save the appropriate service or product in Charge capture, then link the saved invoice line here. OpenVPM never bills a suggestion automatically."}
+                        {oneStepCharge
+                          ? `Confirmed catalog match: ${oneStepCharge.description} (${fmt(oneStepCharge.unitPrice)}). Review it before OpenVPM creates or updates the draft invoice and reconciles this item in one step.`
+                          : suggestedCatalog
+                            ? `Suggested catalog match: ${suggestedCatalog}. Add and save it in Charge capture, then link the saved invoice line here.`
+                            : "Add and save the appropriate service or product in Charge capture, then link the saved invoice line here. OpenVPM never bills a suggestion automatically."}
                       </p>
+                      {unresolved && canCharge && oneStepCharge ? (
+                        <Button
+                          className="min-h-11 self-start"
+                          disabled={
+                            chargeWork.isPending ||
+                            resolve.isPending ||
+                            reopen.isPending
+                          }
+                          onClick={() =>
+                            setPendingCharge({
+                              workItemId: item.id,
+                              operationId: crypto.randomUUID(),
+                              sourceLabel: item.sourceLabel,
+                              ...oneStepCharge,
+                            })
+                          }
+                        >
+                          Review &amp; add charge
+                        </Button>
+                      ) : null}
                       {unresolved && canManage ? (
                         <>
                           <div className="flex flex-col gap-2 sm:flex-row">
@@ -3320,7 +3436,11 @@ function VisitWorkReconciliation({
                               className="h-10 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm"
                               aria-label={`Invoice charge for ${item.sourceLabel}`}
                               value={selectedCharge}
-                              disabled={resolve.isPending || reopen.isPending}
+                              disabled={
+                                chargeWork.isPending ||
+                                resolve.isPending ||
+                                reopen.isPending
+                              }
                               onChange={(event) =>
                                 setSelectedCharges((current) => ({
                                   ...current,
@@ -3344,6 +3464,7 @@ function VisitWorkReconciliation({
                               variant="outline"
                               disabled={
                                 !selectedCharge ||
+                                chargeWork.isPending ||
                                 resolve.isPending ||
                                 reopen.isPending
                               }
@@ -3367,7 +3488,11 @@ function VisitWorkReconciliation({
                               maxLength={500}
                               placeholder="Reason required for no charge or void/correction"
                               aria-label={`Reconciliation reason for ${item.sourceLabel}`}
-                              disabled={resolve.isPending || reopen.isPending}
+                              disabled={
+                                chargeWork.isPending ||
+                                resolve.isPending ||
+                                reopen.isPending
+                              }
                               onChange={(event) =>
                                 setReasons((current) => ({
                                   ...current,
@@ -3379,6 +3504,7 @@ function VisitWorkReconciliation({
                               variant="outline"
                               disabled={
                                 reason.trim().length < 3 ||
+                                chargeWork.isPending ||
                                 resolve.isPending ||
                                 reopen.isPending
                               }
@@ -3400,6 +3526,7 @@ function VisitWorkReconciliation({
                                 variant="outline"
                                 disabled={
                                   reason.trim().length < 3 ||
+                                  chargeWork.isPending ||
                                   resolve.isPending ||
                                   reopen.isPending
                                 }
@@ -3451,7 +3578,11 @@ function VisitWorkReconciliation({
                         maxLength={500}
                         placeholder="Why does this reconciliation need correction?"
                         aria-label={`Correction reason for ${item.sourceLabel}`}
-                        disabled={resolve.isPending || reopen.isPending}
+                        disabled={
+                          chargeWork.isPending ||
+                          resolve.isPending ||
+                          reopen.isPending
+                        }
                         onChange={(event) =>
                           setReasons((current) => ({
                             ...current,
@@ -3463,6 +3594,7 @@ function VisitWorkReconciliation({
                         variant="outline"
                         disabled={
                           reason.trim().length < 5 ||
+                          chargeWork.isPending ||
                           resolve.isPending ||
                           reopen.isPending
                         }
@@ -3484,6 +3616,25 @@ function VisitWorkReconciliation({
           </div>
         )}
       </CardContent>
+      <ActionConfirmationDialog
+        open={pendingCharge !== null}
+        title="Add this performed work to the draft invoice?"
+        description={
+          pendingCharge
+            ? `${pendingCharge.sourceLabel} will be added as ${pendingCharge.quantity} × ${fmt(pendingCharge.unitPrice)} (${fmt(
+                (moneyToCents(pendingCharge.unitPrice) *
+                  pendingCharge.quantity) /
+                  100,
+              )} total). OpenVPM will create or update the unpaid draft visit invoice and reconcile this performed item in one transaction. The client is not charged and no payment is collected.`
+            : "Review the selected performed-work charge."
+        }
+        confirmLabel="Add to draft invoice"
+        isPending={chargeWork.isPending}
+        onCancel={() => {
+          if (!chargeWork.isPending) setPendingCharge(null);
+        }}
+        onConfirm={confirmCharge}
+      />
     </Card>
   );
 }
