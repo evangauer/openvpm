@@ -1524,7 +1524,8 @@ function BillingTab() {
                   data.billingStatus === "trialing" &&
                     "bg-blue-100 text-blue-700",
                   data.billingStatus === "past_due" &&
-                    "bg-red-100 text-red-700",
+                    "bg-amber-100 text-amber-800",
+                  data.billingStatus === "unpaid" && "bg-red-100 text-red-700",
                   (data.billingStatus === "canceled" ||
                     data.billingStatus === "none") &&
                     "bg-gray-100 text-gray-600",
@@ -1613,9 +1614,10 @@ function BillingTab() {
           </div>
         )}
         {data.billingStatus === "past_due" && (
-          <p className="mt-3 text-sm text-red-600">
-            Your last payment failed. Update your payment method to restore
-            write access.
+          <p className="mt-3 text-sm text-amber-700">
+            Your last payment failed, and Stripe is retrying it. Your clinic
+            remains available; update your payment method to prevent an
+            interruption.
           </p>
         )}
         {showSyncNote && (

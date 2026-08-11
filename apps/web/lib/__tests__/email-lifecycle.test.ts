@@ -244,11 +244,32 @@ describe("sendLifecycleEmail", () => {
     await expect(sendLifecycleEmail({ ...BASE_OPTS, send })).resolves.toEqual({
       sent: false,
       deduped: true,
+      dedupeState: "in_flight",
     });
 
     expect(send).not.toHaveBeenCalled();
     expect(mocks.deleteWhere).not.toHaveBeenCalled();
     expect(mocks.updateSet).not.toHaveBeenCalled();
+  });
+
+  it("distinguishes a durably sent duplicate from an in-flight claim", async () => {
+    mocks.insertResults.push([]);
+    mocks.selectResults.push([
+      {
+        id: "comm-sent",
+        status: "sent",
+        createdAt: new Date(Date.now() - 5 * 60 * 1000),
+      },
+    ]);
+    const send = vi.fn(async () => ({ success: true, id: "email-1" }));
+
+    await expect(sendLifecycleEmail({ ...BASE_OPTS, send })).resolves.toEqual({
+      sent: false,
+      deduped: true,
+      dedupeState: "sent",
+    });
+
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("reclaims a stale pending claim before retrying the send", async () => {

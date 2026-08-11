@@ -493,6 +493,21 @@ Subscribe to:
 
 Store this endpoint secret as `STRIPE_SUBSCRIPTION_WEBHOOK_SECRET`.
 
+### Subscription retry and access states
+
+Keep Stripe's retrying and terminal dunning states distinct. A Cloud
+subscription in `past_due` is still inside Stripe's retry lifecycle, so the
+clinic remains writable while staff update the payment method or Stripe retries
+the invoice. Continue showing the billing-recovery CTA and monitoring the retry;
+do not describe the clinic as already locked out.
+
+`unpaid`, `canceled`, and `incomplete_expired` are terminal for hosted access and
+must leave the clinic read-only until billing is reactivated. Do not normalize
+`unpaid` back to `past_due`, because that would grant retry-period access after
+Stripe has exhausted collection. An expired card-free trial remains read-only
+unless a subscription is activated. Self-host access is unchanged and never
+uses these hosted gates.
+
 `checkout.session.completed` is shared by the platform invoice and hosted
 subscription endpoints. OpenVPM de-duplicates it per endpoint, so both webhook
 endpoints must remain configured; each handler ignores sessions that belong to

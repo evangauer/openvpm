@@ -737,6 +737,7 @@ export async function sendPaymentReceiptEmail(data: {
   amount: string;
   periodLabel: string;
   invoiceUrl?: string;
+  idempotencyKey?: string;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   const brand = openvpmBrand();
   const { subject, html } = await renderPaymentReceiptEmail({
@@ -746,7 +747,13 @@ export async function sendPaymentReceiptEmail(data: {
     periodLabel: data.periodLabel,
     invoiceUrl: data.invoiceUrl,
   });
-  return sendEmail({ to: data.to, subject, html, replyTo: brand.supportEmail });
+  return sendEmail({
+    to: data.to,
+    subject,
+    html,
+    replyTo: brand.supportEmail,
+    ...(data.idempotencyKey ? { idempotencyKey: data.idempotencyKey } : {}),
+  });
 }
 
 /** Dunning email sent on a failed subscription payment. */
@@ -756,6 +763,7 @@ export async function sendPaymentFailedEmail(data: {
   amount: string;
   nextRetryDate?: string;
   billingUrl?: string;
+  idempotencyKey?: string;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   const brand = openvpmBrand();
   const billingUrl = data.billingUrl ?? `${brand.appUrl}/settings?tab=billing`;
@@ -766,5 +774,11 @@ export async function sendPaymentFailedEmail(data: {
     nextRetryDate: data.nextRetryDate,
     billingUrl,
   });
-  return sendEmail({ to: data.to, subject, html, replyTo: brand.supportEmail });
+  return sendEmail({
+    to: data.to,
+    subject,
+    html,
+    replyTo: brand.supportEmail,
+    ...(data.idempotencyKey ? { idempotencyKey: data.idempotencyKey } : {}),
+  });
 }

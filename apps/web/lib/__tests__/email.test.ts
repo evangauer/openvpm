@@ -634,15 +634,39 @@ describe("lifecycle email branding", () => {
         practiceName: "Neighborhood Veterinary",
         amount: "$79.00",
         periodLabel: "July 2026",
+        idempotencyKey: "lc:receipt:in_test",
       }),
     ).resolves.toEqual({ success: true, id: "email-1" });
 
-    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    const [payload, options] = mocks.resendSend.mock.calls[0] ?? [];
     expect(payload).toEqual(
       expect.objectContaining({
         replyTo: "support@openvpm.com",
         to: "owner@example.com",
       }),
+    );
+    expect(options).toEqual(
+      expect.objectContaining({ idempotencyKey: "lc:receipt:in_test" }),
+    );
+  });
+
+  it("passes the lifecycle key to Resend for dunning retries", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-1" } });
+    const { sendPaymentFailedEmail } = await loadEmail();
+
+    await expect(
+      sendPaymentFailedEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        amount: "$79.00",
+        idempotencyKey: "lc:dunning:in_test:2",
+      }),
+    ).resolves.toEqual({ success: true, id: "email-1" });
+
+    const [, options] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(options).toEqual(
+      expect.objectContaining({ idempotencyKey: "lc:dunning:in_test:2" }),
     );
   });
 });

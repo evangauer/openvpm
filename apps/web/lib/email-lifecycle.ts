@@ -13,6 +13,9 @@ import {
 
 type SendResult = { success: boolean; id?: string; error?: string };
 type ClaimedLifecycleEmail = { id: string };
+type LifecycleEmailClaim =
+  | { kind: "claimed"; row: ClaimedLifecycleEmail }
+  | { kind: "duplicate"; state: "sent" | "in_flight" | "failed" };
 type LifecycleEmailCategory = "transactional" | "marketing";
 
 type LifecycleEmailOptions = {
@@ -41,9 +44,12 @@ export const LIFECYCLE_EMAIL_PENDING_RECLAIM_MS = 30 * 60 * 1000;
  * we delete the claim so the next run retries; for webhook mail we keep it
  * (Stripe redelivers the event anyway) so customers never get duplicates.
  */
-export async function sendLifecycleEmail(
-  opts: LifecycleEmailOptions,
-): Promise<{ sent: boolean; deduped: boolean; suppressed?: boolean }> {
+export async function sendLifecycleEmail(opts: LifecycleEmailOptions): Promise<{
+  sent: boolean;
+  deduped: boolean;
+  suppressed?: boolean;
+  dedupeState?: "sent" | "in_flight" | "failed";
+}> {
   // Never throw into the caller (Stripe webhook / cron). Any infra error
   // (incl. a not-yet-migrated dedupe column) degrades to "not sent" + an alert.
   try {
@@ -68,10 +74,15 @@ export async function sendLifecycleEmail(
     // 1. Atomic claim. A fresh existing pending row means another worker is
     // sending right now; an old pending row means the previous worker likely
     // died before recording sent/failed, so it can be reclaimed.
-    const row = await claimLifecycleEmail(opts);
-    if (!row) {
-      return { sent: false, deduped: true };
+    const claim = await claimLifecycleEmail(opts);
+    if (claim.kind === "duplicate") {
+      return {
+        sent: false,
+        deduped: true,
+        dedupeState: claim.state,
+      };
     }
+    const row = claim.row;
 
     // 2. Send.
     let result: SendResult;
@@ -163,10 +174,10 @@ async function claimLifecycleEmail(opts: {
   practiceId: string;
   emailType: string;
   dedupeKey: string;
-}): Promise<ClaimedLifecycleEmail | null> {
+}): Promise<LifecycleEmailClaim> {
   const claimed = await insertLifecycleEmailClaim(opts);
   const row = claimed[0];
-  if (row) return row;
+  if (row) return { kind: "claimed", row };
 
   const [existing] = await withSystem(db, (tx) =>
     tx
@@ -179,11 +190,22 @@ async function claimLifecycleEmail(opts: {
       .where(eq(communications.dedupeKey, opts.dedupeKey))
       .limit(1),
   );
-  if (!existing || existing.status !== "pending") return null;
+  if (!existing) {
+    // The unique conflict disappeared between INSERT and SELECT. Treat the
+    // outcome as in-flight so webhook callers retry instead of acknowledging
+    // a delivery whose durable state cannot be proven.
+    return { kind: "duplicate", state: "in_flight" };
+  }
+  if (existing.status !== "pending") {
+    return {
+      kind: "duplicate",
+      state: existing.status === "sent" ? "sent" : "failed",
+    };
+  }
 
   const staleBefore = new Date(Date.now() - LIFECYCLE_EMAIL_PENDING_RECLAIM_MS);
   if (new Date(existing.createdAt).getTime() > staleBefore.getTime()) {
-    return null;
+    return { kind: "duplicate", state: "in_flight" };
   }
 
   const deleted = await withSystem(db, (tx) =>
@@ -198,9 +220,14 @@ async function claimLifecycleEmail(opts: {
       )
       .returning({ id: communications.id }),
   );
-  if (!deleted[0]) return null;
+  if (!deleted[0]) {
+    return { kind: "duplicate", state: "in_flight" };
+  }
 
-  return (await insertLifecycleEmailClaim(opts))[0] ?? null;
+  const reclaimed = (await insertLifecycleEmailClaim(opts))[0];
+  return reclaimed
+    ? { kind: "claimed", row: reclaimed }
+    : { kind: "duplicate", state: "in_flight" };
 }
 
 function insertLifecycleEmailClaim(opts: {
