@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActivationFunnel } from "@/lib/admin/activation-funnel";
 import type { JourneyFunnel } from "@/lib/admin/journey-funnel";
+import type { OnboardingStepFunnel } from "@/lib/admin/onboarding-step-funnel";
 
 const mocks = vi.hoisted(() => ({
   db: {},
@@ -10,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   sendEmail: vi.fn(async () => ({ success: true, id: "email_123" })),
   computeActivationFunnel: vi.fn(),
   computeJourneyFunnel: vi.fn(),
+  computeOnboardingStepFunnel: vi.fn(),
   loadClinicPilotQueue: vi.fn(async () => []),
 }));
 
@@ -39,6 +41,10 @@ vi.mock("@/lib/admin/activation-funnel", () => ({
 
 vi.mock("@/lib/admin/journey-funnel", () => ({
   computeJourneyFunnel: mocks.computeJourneyFunnel,
+}));
+
+vi.mock("@/lib/admin/onboarding-step-funnel", () => ({
+  computeOnboardingStepFunnel: mocks.computeOnboardingStepFunnel,
 }));
 
 vi.mock("@/lib/admin/clinic-pilots", () => ({
@@ -144,6 +150,35 @@ function journey(days: number): JourneyFunnel {
   };
 }
 
+function onboarding(days: number): OnboardingStepFunnel {
+  return {
+    days,
+    stallDays: 7,
+    weeks: [],
+    totals: {
+      signups: 5,
+      intentCompleted: 4,
+      basicsCompleted: 3,
+      dataCompleted: 2,
+      allSetCompleted: 1,
+      stalledBeforeIntent: 1,
+      stalledAtBasics: 1,
+      stalledAtData: 1,
+      stalledAtAllSet: 1,
+      intentCompletionRate: 0.8,
+      basicsCompletionRate: 0.75,
+      dataCompletionRate: 2 / 3,
+      allSetCompletionRate: 0.5,
+    },
+    dataQuality: {
+      fullyInstrumentedPractices: 2,
+      partiallyInstrumentedPractices: 1,
+      historicalInferredPractices: 1,
+      noStepEvidencePractices: 1,
+    },
+  };
+}
+
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.clearAllMocks();
@@ -199,6 +234,9 @@ describe("activation digest cron", () => {
     mocks.computeJourneyFunnel.mockImplementation(
       async (_db: unknown, days: number) => journey(days),
     );
+    mocks.computeOnboardingStepFunnel.mockImplementation(
+      async (_db: unknown, days: number) => onboarding(days),
+    );
     mocks.loadClinicPilotQueue.mockResolvedValueOnce([
       {
         practiceName: "North <Clinic>",
@@ -229,6 +267,11 @@ describe("activation digest cron", () => {
     expect(mocks.computeActivationFunnel).toHaveBeenCalledWith(mocks.db, 30);
     expect(mocks.computeJourneyFunnel).toHaveBeenCalledWith(mocks.db, 7);
     expect(mocks.computeJourneyFunnel).toHaveBeenCalledWith(mocks.db, 30);
+    expect(mocks.computeOnboardingStepFunnel).toHaveBeenCalledWith(mocks.db, 7);
+    expect(mocks.computeOnboardingStepFunnel).toHaveBeenCalledWith(
+      mocks.db,
+      30,
+    );
     expect(mocks.loadClinicPilotQueue).toHaveBeenCalledWith(mocks.db);
     expect(mocks.sendEmail).toHaveBeenCalledTimes(2);
     expect(mocks.sendEmail).toHaveBeenCalledWith(
@@ -269,6 +312,18 @@ describe("activation digest cron", () => {
     );
     expect(mocks.sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({
+        html: expect.stringContaining("Guided setup · past 30 days"),
+      }),
+    );
+    expect(mocks.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        html: expect.stringContaining(
+          "Stalled after 7 days: before path 1 · basics 1 · data 1",
+        ),
+      }),
+    );
+    expect(mocks.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
         html: expect.stringContaining("Supported clinic cohort"),
       }),
     );
@@ -298,6 +353,9 @@ describe("activation digest cron", () => {
     );
     mocks.computeJourneyFunnel.mockImplementation(
       async (_db: unknown, days: number) => journey(days),
+    );
+    mocks.computeOnboardingStepFunnel.mockImplementation(
+      async (_db: unknown, days: number) => onboarding(days),
     );
     mocks.sendEmail.mockResolvedValueOnce({
       success: false,

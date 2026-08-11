@@ -97,6 +97,8 @@ export default function AdminPage() {
   );
   const { data: funnel, error: funnelError } =
     trpc.admin.activationFunnel.useQuery({ days: 30 }, { retry: false });
+  const { data: onboardingFunnel, error: onboardingFunnelError } =
+    trpc.admin.onboardingStepFunnel.useQuery({ days: 30 }, { retry: false });
   const { data: recoveryQueue, error: recoveryError } =
     trpc.admin.activationRecovery.useQuery(undefined, { retry: false });
   const { data: journey, error: journeyError } =
@@ -1391,6 +1393,152 @@ export default function AdminPage() {
         ) : (
           <p className="mt-3 text-sm text-muted-foreground">
             {funnelError ? "Could not load the funnel." : "Loading funnel..."}
+          </p>
+        )}
+      </div>
+
+      <div className="mt-6 rounded-lg border border-border bg-card p-5">
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <TrendingUp className="h-4 w-4" />
+          <span className="text-sm">
+            Guided setup cohorts (30 days)
+            {onboardingFunnel
+              ? ` · ${onboardingFunnel.totals.signups} registered`
+              : ""}
+          </span>
+        </div>
+        {onboardingFunnel ? (
+          <>
+            <div className="mt-3 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <div>
+                <p className="text-sm text-muted-foreground">Path completed</p>
+                <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
+                  {onboardingFunnel.totals.intentCompleted}
+                  <span className="ml-2 text-sm font-normal text-muted-foreground">
+                    {formatPct(onboardingFunnel.totals.intentCompletionRate)}
+                  </span>
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {onboardingFunnel.totals.stalledBeforeIntent} stalled before
+                  choosing a path
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">
+                  Clinic basics completed
+                </p>
+                <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
+                  {onboardingFunnel.totals.basicsCompleted}
+                  <span className="ml-2 text-sm font-normal text-muted-foreground">
+                    {formatPct(onboardingFunnel.totals.basicsCompletionRate)}
+                  </span>
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {onboardingFunnel.totals.stalledAtBasics} stalled at clinic
+                  basics
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">
+                  Data step completed
+                </p>
+                <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
+                  {onboardingFunnel.totals.dataCompleted}
+                  <span className="ml-2 text-sm font-normal text-muted-foreground">
+                    {formatPct(onboardingFunnel.totals.dataCompletionRate)}
+                  </span>
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {onboardingFunnel.totals.stalledAtData} stalled at data
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">
+                  First-day handoff completed
+                </p>
+                <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
+                  {onboardingFunnel.totals.allSetCompleted}
+                  <span className="ml-2 text-sm font-normal text-muted-foreground">
+                    {formatPct(onboardingFunnel.totals.allSetCompletionRate)}
+                  </span>
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {onboardingFunnel.totals.stalledAtAllSet} stalled at the
+                  first-day handoff
+                </p>
+              </div>
+            </div>
+            <p className="mt-3 text-xs text-muted-foreground">
+              Step rates are sequential: each percentage uses the prior step as
+              its denominator. A clinic is stalled only after{" "}
+              {onboardingFunnel.stallDays} full days without the next durable
+              transition. New timestamps are server-owned and first-write-wins;
+              historical cursor-only progress remains explicitly inferred.
+            </p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Complete exact step chains:{" "}
+              {onboardingFunnel.dataQuality.fullyInstrumentedPractices} ·
+              Partial/invalid exact chains:{" "}
+              {onboardingFunnel.dataQuality.partiallyInstrumentedPractices} ·
+              Historical inferred:{" "}
+              {onboardingFunnel.dataQuality.historicalInferredPractices} · No
+              step evidence:{" "}
+              {onboardingFunnel.dataQuality.noStepEvidencePractices}
+            </p>
+            {onboardingFunnel.weeks.length > 0 ? (
+              <div className="mt-4 overflow-x-auto">
+                <table className="w-full min-w-[36rem] text-xs">
+                  <thead>
+                    <tr className="border-b border-border text-left text-muted-foreground">
+                      <th className="py-2 pr-3 font-medium">
+                        Registration week
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        Signups
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">Path</th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        Basics
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">Data</th>
+                      <th className="py-2 pl-3 text-right font-medium">
+                        First-day handoff
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {onboardingFunnel.weeks.map((week) => (
+                      <tr key={week.weekStart}>
+                        <td className="py-2 pr-3 font-medium">
+                          {week.weekStart}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {week.signups}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {week.intentCompleted}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {week.basicsCompleted}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {week.dataCompleted}
+                        </td>
+                        <td className="py-2 pl-3 text-right tabular-nums">
+                          {week.allSetCompleted}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <p className="mt-3 text-sm text-muted-foreground">
+            {onboardingFunnelError
+              ? "Could not load guided setup cohorts."
+              : "Loading guided setup cohorts..."}
           </p>
         )}
       </div>

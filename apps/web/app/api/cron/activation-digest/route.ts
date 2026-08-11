@@ -13,6 +13,10 @@ import {
   computeJourneyFunnel,
   type JourneyFunnel,
 } from "@/lib/admin/journey-funnel";
+import {
+  computeOnboardingStepFunnel,
+  type OnboardingStepFunnel,
+} from "@/lib/admin/onboarding-step-funnel";
 import { loadClinicPilotQueue } from "@/lib/admin/clinic-pilots";
 
 export const dynamic = "force-dynamic";
@@ -39,16 +43,34 @@ export async function GET(request: Request) {
       return NextResponse.json({ recipients: 0, sent: 0, failed: 0 });
     }
 
-    const [week, month, journeyWeek, journeyMonth, pilots] = await Promise.all([
+    const [
+      week,
+      month,
+      journeyWeek,
+      journeyMonth,
+      onboardingWeek,
+      onboardingMonth,
+      pilots,
+    ] = await Promise.all([
       computeActivationFunnel(db, 7),
       computeActivationFunnel(db, 30),
       computeJourneyFunnel(db, 7),
       computeJourneyFunnel(db, 30),
+      computeOnboardingStepFunnel(db, 7),
+      computeOnboardingStepFunnel(db, 30),
       loadClinicPilotQueue(db),
     ]);
 
     const subject = `OpenVPM trial funnel: ${week.totals.signups} signups, ${week.totals.activated} activated this week`;
-    const html = digestHtml(week, month, journeyWeek, journeyMonth, pilots);
+    const html = digestHtml(
+      week,
+      month,
+      journeyWeek,
+      journeyMonth,
+      onboardingWeek,
+      onboardingMonth,
+      pilots,
+    );
 
     let sent = 0;
     let failed = 0;
@@ -175,6 +197,32 @@ function journeySection(title: string, funnel: JourneyFunnel): string {
 <p style="margin:4px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Attribution quality: ${funnel.totals.historicalUnattributedRegistrations} historical/unknown registration(s) · ${funnel.totals.repairableAttributionGaps} captured-ID telemetry gap(s).</p>`;
 }
 
+function onboardingSection(
+  title: string,
+  funnel: OnboardingStepFunnel,
+): string {
+  const totals = funnel.totals;
+  return `<h2 style="margin:24px 0 8px;font-size:16px;color:#111827;">${title}</h2>
+<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;">
+  <tr style="text-align:left;color:#6b7280;font-size:13px;">
+    <th style="padding:4px 12px 4px 0;font-weight:500;">Registered</th>
+    <th style="padding:4px 12px 4px 0;font-weight:500;">Path</th>
+    <th style="padding:4px 12px 4px 0;font-weight:500;">Basics</th>
+    <th style="padding:4px 12px 4px 0;font-weight:500;">Data</th>
+    <th style="padding:4px 0;font-weight:500;">First-day handoff</th>
+  </tr>
+  <tr style="font-size:20px;color:#111827;font-weight:600;">
+    <td style="padding:2px 12px 2px 0;">${totals.signups}</td>
+    <td style="padding:2px 12px 2px 0;">${totals.intentCompleted} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(totals.intentCompletionRate)}</span></td>
+    <td style="padding:2px 12px 2px 0;">${totals.basicsCompleted} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(totals.basicsCompletionRate)}</span></td>
+    <td style="padding:2px 12px 2px 0;">${totals.dataCompleted} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(totals.dataCompletionRate)}</span></td>
+    <td style="padding:2px 0;">${totals.allSetCompleted} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(totals.allSetCompletionRate)}</span></td>
+  </tr>
+</table>
+<p style="margin:8px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Stalled after ${funnel.stallDays} days: before path ${totals.stalledBeforeIntent} · basics ${totals.stalledAtBasics} · data ${totals.stalledAtData} · first-day handoff ${totals.stalledAtAllSet}.</p>
+<p style="margin:4px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Evidence quality: ${funnel.dataQuality.fullyInstrumentedPractices} complete exact chain(s) · ${funnel.dataQuality.partiallyInstrumentedPractices} partial/invalid exact chain(s) · ${funnel.dataQuality.historicalInferredPractices} historical/inferred · ${funnel.dataQuality.noStepEvidencePractices} with no step evidence. Rates are sequential and no historical transition time is invented.</p>`;
+}
+
 type ClinicPilotQueue = Awaited<ReturnType<typeof loadClinicPilotQueue>>;
 
 function pilotSection(pilots: ClinicPilotQueue, now = new Date()): string {
@@ -195,6 +243,8 @@ function digestHtml(
   month: ActivationFunnel,
   journeyWeek: JourneyFunnel,
   journeyMonth: JourneyFunnel,
+  onboardingWeek: OnboardingStepFunnel,
+  onboardingMonth: OnboardingStepFunnel,
   pilots: ClinicPilotQueue,
 ): string {
   return `<!DOCTYPE html>
@@ -218,6 +268,8 @@ function digestHtml(
             <td style="padding:32px;">
               ${journeySection("Production journey · past 7 days", journeyWeek)}
               ${journeySection("Production journey · past 30 days", journeyMonth)}
+              ${onboardingSection("Guided setup · past 7 days", onboardingWeek)}
+              ${onboardingSection("Guided setup · past 30 days", onboardingMonth)}
               ${funnelSection("Past 7 days", week)}
               ${funnelSection("Past 30 days", month)}
               ${pilotSection(pilots)}

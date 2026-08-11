@@ -87,6 +87,7 @@ describe("onboarding UI states", () => {
       "saveIntent.mutateAsync({ intent: state.onboardingIntent })",
     );
     expect(choosePath).toContain("onboardingIntent: state.onboardingIntent");
+    expect(choosePath).toContain('journeyStepId: "intent"');
     expect(choosePath).toContain("journeyDismissed: false");
     expect(settingsRouter).toContain("onboardingIntentSelectedAt");
   });

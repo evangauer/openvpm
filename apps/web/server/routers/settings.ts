@@ -81,6 +81,11 @@ import {
   ONBOARDING_INTENTS,
   type OnboardingIntent,
 } from "@/lib/onboarding/intent";
+import {
+  ONBOARDING_JOURNEY_STEP_IDS,
+  isRetiredOnboardingJourneyStepId,
+  type OnboardingJourneyStepId,
+} from "@/lib/onboarding/journey-plan";
 import { isValidMigrationSource } from "@/lib/import/sources";
 import { parseBookingPageConfig } from "@/lib/booking/page-config";
 import { takeAppointmentSchedulingLock } from "@/lib/scheduling/location";
@@ -251,11 +256,7 @@ const tourStepIdInput = z
   .max(128, "Tour step must be at most 128 characters")
   .nullish();
 
-const journeyStepIdInput = z
-  .string()
-  .trim()
-  .max(64, "Journey step must be at most 64 characters")
-  .nullish();
+const journeyStepIdInput = z.enum(ONBOARDING_JOURNEY_STEP_IDS);
 const onboardingIntentInput = z.enum(ONBOARDING_INTENTS);
 const migrationHelpSourceInput = z
   .string()
@@ -303,37 +304,230 @@ function settingsAndOnboardingStateMergePatch(
  * first time setup actually began. That timestamp is cohort evidence, not a
  * last-updated field.
  */
-function onboardingIntentStatePatch(intent: OnboardingIntent, now: string) {
+function onboardingIntentStatePatch(intent: OnboardingIntent) {
   return sql`jsonb_set(
     coalesce(${practices.settings}, '{}'::jsonb),
     '{onboardingState}',
     coalesce(${practices.settings}->'onboardingState', '{}'::jsonb) ||
       jsonb_build_object(
         'onboardingIntent', ${intent},
+        'journeyStepId', case
+          when nullif(
+            ${practices.settings}->'onboardingState'->>'onboardingIntent',
+            ''
+          ) is null then 'intent'
+          else coalesce(
+            nullif(${practices.settings}->'onboardingState'->>'journeyStepId', ''),
+            'intent'
+          )
+        end,
         'onboardingIntentSelectedAt', coalesce(
           nullif(${practices.settings}->'onboardingState'->>'onboardingIntentSelectedAt', ''),
-          ${now}
+          clock_timestamp()::text
         ),
-        'journeyLastProgressAt', ${now},
+        'journeyIntentCompletedAt', coalesce(
+          nullif(${practices.settings}->'onboardingState'->>'journeyIntentCompletedAt', ''),
+          clock_timestamp()::text
+        ),
+        'journeyLastProgressAt', clock_timestamp()::text,
         'journeyDismissed', false
       )
   )`;
 }
 
-/** Keep setup completion first-write-wins while recording fresh activity. */
-function onboardingCompletionPatch(now: string) {
+function journeyStageEvidencePatch(stage: OnboardingJourneyStepId) {
+  const fieldByStage = {
+    intent: "journeyIntentCompletedAt",
+    basics: "journeyBasicsCompletedAt",
+    data: "journeyDataCompletedAt",
+    allSet: "journeyAllSetCompletedAt",
+  } as const;
+  const field = fieldByStage[stage];
+  return sql`jsonb_build_object(
+    ${sql.raw(`'${field}'`)},
+    coalesce(
+      nullif(${practices.settings}->'onboardingState'->>${field}, ''),
+      clock_timestamp()::text
+    )
+  )`;
+}
+
+function onboardingJourneyProgressPatch(
+  stepId: OnboardingJourneyStepId,
+  dismissed: boolean | undefined,
+  completedStage: "basics" | "data" | null,
+) {
+  const progressPatch = {
+    journeyStepId: stepId,
+    journeyLastProgressAt: null,
+    ...(dismissed === undefined ? {} : { journeyDismissed: dismissed }),
+  };
+  const evidencePatch = completedStage
+    ? journeyStageEvidencePatch(completedStage)
+    : sql`'{}'::jsonb`;
+
+  return sql`jsonb_set(
+    coalesce(${practices.settings}, '{}'::jsonb),
+    '{onboardingState}',
+    (
+      coalesce(${practices.settings}->'onboardingState', '{}'::jsonb)
+      || ${JSON.stringify(progressPatch)}::jsonb
+      || jsonb_build_object('journeyLastProgressAt', clock_timestamp()::text)
+      || ${evidencePatch}
+    )
+  )`;
+}
+
+function isAllowedJourneyTransition(
+  currentStepId: OnboardingJourneyStepId | null,
+  targetStepId: OnboardingJourneyStepId,
+  intentSelected: boolean,
+): boolean {
+  if (
+    targetStepId === "basics" &&
+    (currentStepId === null || currentStepId === "intent") &&
+    !intentSelected
+  ) {
+    return false;
+  }
+  const currentIndex =
+    currentStepId === null
+      ? -1
+      : ONBOARDING_JOURNEY_STEP_IDS.indexOf(currentStepId);
+  const targetIndex = ONBOARDING_JOURNEY_STEP_IDS.indexOf(targetStepId);
+  if (currentIndex >= 0) return Math.abs(targetIndex - currentIndex) <= 1;
+
+  return (
+    targetStepId === "intent" || (targetStepId === "basics" && intentSelected)
+  );
+}
+
+function validOrderedJourneyEvidence(input: {
+  createdAt: Date | string;
+  dbNow: Date | string;
+  intentAt?: string | null;
+  basicsAt?: string | null;
+  dataAt?: string | null;
+}): {
+  intent: boolean;
+  basics: boolean;
+  data: boolean;
+} {
+  const createdAt =
+    input.createdAt instanceof Date
+      ? input.createdAt.getTime()
+      : Date.parse(input.createdAt);
+  const dbNow =
+    input.dbNow instanceof Date
+      ? input.dbNow.getTime()
+      : Date.parse(input.dbNow);
+  const intentAt = input.intentAt ? Date.parse(input.intentAt) : Number.NaN;
+  const basicsAt = input.basicsAt ? Date.parse(input.basicsAt) : Number.NaN;
+  const dataAt = input.dataAt ? Date.parse(input.dataAt) : Number.NaN;
+  const intent =
+    Number.isFinite(intentAt) && intentAt >= createdAt && intentAt <= dbNow;
+  const basics =
+    intent &&
+    Number.isFinite(basicsAt) &&
+    basicsAt >= intentAt &&
+    basicsAt <= dbNow;
+  const data =
+    basics && Number.isFinite(dataAt) && dataAt >= basicsAt && dataAt <= dbNow;
+  return { intent, basics, data };
+}
+
+function hasValidBoundedJourneyTimestamp(
+  value: string | null | undefined,
+  createdAt: Date | string,
+  dbNow: Date | string,
+): boolean {
+  const timestamp = value ? Date.parse(value) : Number.NaN;
+  const lowerBound =
+    createdAt instanceof Date ? createdAt.getTime() : Date.parse(createdAt);
+  const upperBound =
+    dbNow instanceof Date ? dbNow.getTime() : Date.parse(dbNow);
+  return (
+    Number.isFinite(timestamp) &&
+    Number.isFinite(lowerBound) &&
+    Number.isFinite(upperBound) &&
+    timestamp >= lowerBound &&
+    timestamp <= upperBound
+  );
+}
+
+async function resolveStoredJourneyStep(
+  db: Database,
+  practiceId: string,
+  storedStepId: string | null | undefined,
+  onboardingIntentPresent: boolean,
+  legacyMigrationHasCommittedChanges: boolean,
+): Promise<{
+  stepId: OnboardingJourneyStepId | null;
+  retired: boolean;
+}> {
+  if (!onboardingIntentPresent) return { stepId: null, retired: false };
+  if (!storedStepId) return { stepId: null, retired: false };
+  if (
+    ONBOARDING_JOURNEY_STEP_IDS.includes(
+      storedStepId as OnboardingJourneyStepId,
+    )
+  ) {
+    return {
+      stepId: storedStepId as OnboardingJourneyStepId,
+      retired: false,
+    };
+  }
+  if (!isRetiredOnboardingJourneyStepId(storedStepId)) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "Setup progress is invalid. Refresh and restart guided setup.",
+    });
+  }
+
+  if (legacyMigrationHasCommittedChanges) {
+    return { stepId: "allSet", retired: true };
+  }
+
+  const [committedMigration] = await db
+    .select({ id: migrationRuns.id })
+    .from(migrationRuns)
+    .where(
+      and(
+        eq(migrationRuns.practiceId, practiceId),
+        eq(migrationRuns.status, "committed"),
+        isNull(migrationRuns.deletedAt),
+        sql`${migrationRuns.importedCount} + ${migrationRuns.reconciledCount} > 0`,
+      ),
+    )
+    .limit(1);
+  return {
+    stepId: committedMigration ? "allSet" : "data",
+    retired: true,
+  };
+}
+
+/**
+ * Keep setup completion first-write-wins while recording fresh activity.
+ * Pre-instrumentation clinics keep their step times explicitly historical;
+ * completing them must not fabricate four same-time stage transitions.
+ */
+function onboardingCompletionPatch(recordAllSetEvidence: boolean) {
+  const stepEvidence = recordAllSetEvidence
+    ? journeyStageEvidencePatch("allSet")
+    : sql`'{}'::jsonb`;
   return sql`jsonb_set(
     jsonb_set(
       coalesce(${practices.settings}, '{}'::jsonb),
       '{onboardingCompletedAt}',
       to_jsonb(coalesce(
         nullif(${practices.settings}->>'onboardingCompletedAt', ''),
-        ${now}
+        clock_timestamp()::text
       )::text)
     ),
     '{onboardingState}',
-    coalesce(${practices.settings}->'onboardingState', '{}'::jsonb) ||
-      jsonb_build_object('journeyLastProgressAt', ${now})
+    coalesce(${practices.settings}->'onboardingState', '{}'::jsonb)
+      || ${stepEvidence}
+      || jsonb_build_object('journeyLastProgressAt', clock_timestamp()::text)
   )`;
 }
 
@@ -508,6 +702,10 @@ interface PracticeSettings {
     /** Adoption pathway selected on the first guided-setup step. */
     onboardingIntent?: OnboardingIntent;
     onboardingIntentSelectedAt?: string;
+    journeyIntentCompletedAt?: string;
+    journeyBasicsCompletedAt?: string;
+    journeyDataCompletedAt?: string;
+    journeyAllSetCompletedAt?: string;
     /** Resume cursor for the "Make it yours" setup wizard (step id, not index). */
     journeyStepId?: string | null;
     /** Last successfully persisted journey action, used for stall recovery. */
@@ -1577,11 +1775,55 @@ export const settingsRouter = createRouter({
 
   /** Mark onboarding complete. */
   completeOnboarding: adminProcedure.mutation(async ({ ctx }) => {
-    const completedAt = new Date().toISOString();
+    const [practice] = await ctx.db
+      .select({
+        settings: practices.settings,
+        createdAt: practices.createdAt,
+        dbNow: sql<Date>`clock_timestamp()`,
+      })
+      .from(practices)
+      .where(activePracticeWhere(ctx.practiceId))
+      .for("update");
+    if (!practice) {
+      throw practiceNotFound();
+    }
+    const settings = (practice.settings ?? {}) as PracticeSettings;
+    const state = settings.onboardingState;
+    const resolvedStep = await resolveStoredJourneyStep(
+      ctx.db,
+      ctx.practiceId,
+      state?.journeyStepId,
+      Boolean(state?.onboardingIntent),
+      state?.migrationHasCommittedChanges === true,
+    );
+    const hasNewStepEvidence = Boolean(
+      state?.journeyIntentCompletedAt ||
+      state?.journeyDataCompletedAt ||
+      state?.journeyBasicsCompletedAt ||
+      state?.journeyAllSetCompletedAt,
+    );
+    const hasFullPredecessorEvidence = validOrderedJourneyEvidence({
+      createdAt: practice.createdAt,
+      dbNow: practice.dbNow,
+      intentAt: state?.journeyIntentCompletedAt,
+      basicsAt: state?.journeyBasicsCompletedAt,
+      dataAt: state?.journeyDataCompletedAt,
+    }).data;
+    if (
+      !settings.onboardingCompletedAt &&
+      (resolvedStep.stepId !== "allSet" ||
+        (hasNewStepEvidence && !hasFullPredecessorEvidence))
+    ) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "Finish each guided setup step before completing setup.",
+      });
+    }
+
     const [updated] = await ctx.db
       .update(practices)
       .set({
-        settings: onboardingCompletionPatch(completedAt),
+        settings: onboardingCompletionPatch(!settings.onboardingCompletedAt),
       })
       .where(activePracticeWhere(ctx.practiceId))
       .returning({ id: practices.id });
@@ -1652,6 +1894,10 @@ export const settingsRouter = createRouter({
       setupDismissed: false,
       onboardingIntent: null,
       onboardingIntentSelectedAt: null,
+      journeyIntentCompletedAt: null,
+      journeyBasicsCompletedAt: null,
+      journeyDataCompletedAt: null,
+      journeyAllSetCompletedAt: null,
       journeyStepId: null,
       journeyLastProgressAt: null,
       journeyDismissed: false,
@@ -1709,11 +1955,10 @@ export const settingsRouter = createRouter({
   setOnboardingIntent: adminProcedure
     .input(z.object({ intent: onboardingIntentInput }))
     .mutation(async ({ ctx, input }) => {
-      const now = new Date().toISOString();
       const [updated] = await ctx.db
         .update(practices)
         .set({
-          settings: onboardingIntentStatePatch(input.intent, now),
+          settings: onboardingIntentStatePatch(input.intent),
         })
         .where(activePracticeWhere(ctx.practiceId))
         .returning({ id: practices.id });
@@ -1736,16 +1981,74 @@ export const settingsRouter = createRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const patch: Record<string, unknown> = {
-        journeyLastProgressAt: new Date().toISOString(),
-      };
-      if (input.stepId != null) patch.journeyStepId = input.stepId;
-      if (input.dismissed !== undefined)
-        patch.journeyDismissed = input.dismissed;
+      const [practice] = await ctx.db
+        .select({
+          settings: practices.settings,
+          createdAt: practices.createdAt,
+          dbNow: sql<Date>`clock_timestamp()`,
+        })
+        .from(practices)
+        .where(activePracticeWhere(ctx.practiceId))
+        .for("update");
+      if (!practice) {
+        throw practiceNotFound();
+      }
+      const state = ((practice.settings ?? {}) as PracticeSettings)
+        .onboardingState;
+      const resolvedStep = await resolveStoredJourneyStep(
+        ctx.db,
+        ctx.practiceId,
+        state?.journeyStepId,
+        Boolean(state?.onboardingIntent),
+        state?.migrationHasCommittedChanges === true,
+      );
+      const orderedEvidence = validOrderedJourneyEvidence({
+        createdAt: practice.createdAt,
+        dbNow: practice.dbNow,
+        intentAt: state?.journeyIntentCompletedAt,
+        basicsAt: state?.journeyBasicsCompletedAt,
+        dataAt: state?.journeyDataCompletedAt,
+      });
+      const intentSelected = hasValidBoundedJourneyTimestamp(
+        state?.onboardingIntentSelectedAt,
+        practice.createdAt,
+        practice.dbNow,
+      );
+      if (
+        !isAllowedJourneyTransition(
+          resolvedStep.stepId,
+          input.stepId,
+          intentSelected,
+        )
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message:
+            "Setup progress changed in another session. Refresh and try again.",
+        });
+      }
+      const completedStage =
+        input.dismissed !== true &&
+        resolvedStep.stepId === "basics" &&
+        input.stepId === "data" &&
+        orderedEvidence.intent
+          ? "basics"
+          : input.dismissed !== true &&
+              resolvedStep.stepId === "data" &&
+              input.stepId === "allSet" &&
+              orderedEvidence.basics
+            ? "data"
+            : null;
 
       const [updated] = await ctx.db
         .update(practices)
-        .set({ settings: onboardingStateMergePatch(patch) })
+        .set({
+          settings: onboardingJourneyProgressPatch(
+            input.stepId,
+            input.dismissed,
+            completedStage,
+          ),
+        })
         .where(activePracticeWhere(ctx.practiceId))
         .returning({ id: practices.id });
       if (!updated) {
@@ -2267,9 +2570,7 @@ export const settingsRouter = createRouter({
       if (!practice) {
         throw practiceNotFound();
       }
-      if (
-        !(await lockPracticeForExternalSideEffects(ctx.db, ctx.practiceId))
-      ) {
+      if (!(await lockPracticeForExternalSideEffects(ctx.db, ctx.practiceId))) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
           message: RECOVERY_HOLD_BLOCK_MESSAGE,

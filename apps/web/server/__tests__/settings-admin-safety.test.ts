@@ -36,8 +36,7 @@ vi.mock("@/lib/billing/subscription-sync", () => ({
 
 vi.mock("@/lib/recovery-hold", () => ({
   RECOVERY_HOLD_BLOCK_MESSAGE: "recovery hold",
-  lockPracticeForExternalSideEffects:
-    mocks.lockPracticeForExternalSideEffects,
+  lockPracticeForExternalSideEffects: mocks.lockPracticeForExternalSideEffects,
 }));
 
 const { settingsRouter } = await import("../routers/settings");
@@ -60,6 +59,8 @@ const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000005";
 const WAITLIST_ID = "00000000-0000-0000-0000-000000000006";
 const SCHEDULE_ID = "00000000-0000-0000-0000-000000000007";
 const LOCATION_ID = "00000000-0000-0000-0000-000000000008";
+const PRACTICE_CREATED_AT = new Date("2026-08-11T11:00:00.000Z");
+const DB_NOW = new Date("2026-08-11T13:00:00.000Z");
 
 function callerWithDb(db: Record<string, unknown>) {
   const session = {
@@ -222,6 +223,12 @@ describe("settings admin stale target safety", () => {
       callerWithDb(db).setOnboardingIntent({ intent: "unknown" as never }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
+    await expect(
+      callerWithDb(db).setJourneyProgress({
+        stepId: "billing" as never,
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
     expect(updateSet).not.toHaveBeenCalled();
     expect(insertValues).not.toHaveBeenCalled();
   });
@@ -237,25 +244,302 @@ describe("settings admin stale target safety", () => {
 
     expect(updateSet).toHaveBeenCalledTimes(1);
     expect(SETTINGS_SOURCE).toContain(
-      "onboardingIntentStatePatch(input.intent, now)",
+      "onboardingIntentStatePatch(input.intent)",
     );
     expect(SETTINGS_SOURCE).toContain("'onboardingIntent', ${intent}");
     expect(SETTINGS_SOURCE).toContain("onboardingIntentSelectedAt");
+    expect(SETTINGS_SOURCE).toContain("journeyIntentCompletedAt");
+    expect(SETTINGS_SOURCE).toContain("'journeyStepId', case");
+    expect(SETTINGS_SOURCE).toContain("clock_timestamp()::text");
     expect(SETTINGS_SOURCE).toContain("journeyLastProgressAt");
   });
 
-  it("keeps setup start and completion cohort timestamps first-write-wins", () => {
+  it("keeps every setup completion timestamp first-write-wins", () => {
     expect(SETTINGS_SOURCE).toContain("function onboardingIntentStatePatch");
     expect(SETTINGS_SOURCE).toContain(
       "nullif(${practices.settings}->'onboardingState'->>'onboardingIntentSelectedAt', '')",
     );
     expect(SETTINGS_SOURCE).toContain("function onboardingCompletionPatch");
+    expect(SETTINGS_SOURCE).toContain("journeyBasicsCompletedAt");
+    expect(SETTINGS_SOURCE).toContain("journeyDataCompletedAt");
+    expect(SETTINGS_SOURCE).toContain("journeyAllSetCompletedAt");
     expect(SETTINGS_SOURCE).toContain(
       "nullif(${practices.settings}->>'onboardingCompletedAt', '')",
     );
     expect(SETTINGS_SOURCE).toContain(
-      "settings: onboardingCompletionPatch(completedAt)",
+      "settings: onboardingCompletionPatch(!settings.onboardingCompletedAt)",
     );
+    expect(SETTINGS_SOURCE).toContain(
+      "completing them must not fabricate four same-time stage transitions",
+    );
+    expect(SETTINGS_SOURCE).toContain('resolvedStep.stepId === "basics" &&');
+    expect(SETTINGS_SOURCE).toContain('input.stepId === "data"');
+    expect(SETTINGS_SOURCE).toContain('resolvedStep.stepId === "data" &&');
+    expect(SETTINGS_SOURCE).toContain('input.stepId === "allSet"');
+    expect(SETTINGS_SOURCE).toContain("input.dismissed !== true");
+    expect(SETTINGS_SOURCE).toContain('journeyStageEvidencePatch("allSet")');
+    expect(SETTINGS_SOURCE).toContain("validOrderedJourneyEvidence");
+  });
+
+  it("requires selected intent before an empty cursor can advance to basics", async () => {
+    const missingIntent = createDb({
+      selectRows: [
+        {
+          createdAt: PRACTICE_CREATED_AT,
+          dbNow: DB_NOW,
+          settings: { onboardingState: {} },
+        },
+      ],
+    });
+    await expect(
+      callerWithDb(missingIntent.db).setJourneyProgress({ stepId: "basics" }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(missingIntent.updateSet).not.toHaveBeenCalled();
+
+    const selectedIntent = createDb({
+      selectRows: [
+        {
+          createdAt: PRACTICE_CREATED_AT,
+          dbNow: DB_NOW,
+          settings: {
+            onboardingState: {
+              onboardingIntent: "alongside",
+              onboardingIntentSelectedAt: "2026-08-11T12:00:00.000Z",
+              journeyIntentCompletedAt: "2026-08-11T12:00:00.000Z",
+            },
+          },
+        },
+      ],
+      updatedRows: [{ id: PRACTICE_ID }],
+    });
+    await expect(
+      callerWithDb(selectedIntent.db).setJourneyProgress({ stepId: "basics" }),
+    ).resolves.toEqual({ ok: true });
+  });
+
+  it("accepts an adjacent forward step under a row lock", async () => {
+    const { db, updateSet } = createDb({
+      selectRows: [
+        {
+          createdAt: PRACTICE_CREATED_AT,
+          dbNow: DB_NOW,
+          settings: {
+            onboardingState: {
+              onboardingIntent: "alongside",
+              journeyStepId: "basics",
+              onboardingIntentSelectedAt: "2026-08-11T12:00:00.000Z",
+              journeyIntentCompletedAt: "2026-08-11T12:00:00.000Z",
+            },
+          },
+        },
+      ],
+      updatedRows: [{ id: PRACTICE_ID }],
+    });
+
+    await expect(
+      callerWithDb(db).setJourneyProgress({
+        stepId: "data",
+        dismissed: false,
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    expect(updateSet).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a skipped or stale multi-step cursor without writing", async () => {
+    const { db, updateSet } = createDb({
+      selectRows: [
+        {
+          createdAt: PRACTICE_CREATED_AT,
+          dbNow: DB_NOW,
+          settings: {
+            onboardingState: {
+              onboardingIntent: "alongside",
+              journeyStepId: "intent",
+              onboardingIntentSelectedAt: "2026-08-11T12:00:00.000Z",
+              journeyIntentCompletedAt: "2026-08-11T12:00:00.000Z",
+            },
+          },
+        },
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).setJourneyProgress({
+        stepId: "allSet",
+        dismissed: false,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("rejects an arbitrary stored cursor instead of treating it as legacy", async () => {
+    const { db, updateSet } = createDb({
+      selectRows: [
+        {
+          createdAt: PRACTICE_CREATED_AT,
+          dbNow: DB_NOW,
+          settings: {
+            onboardingState: {
+              onboardingIntent: "alongside",
+              journeyStepId: "corrupt-step",
+              onboardingIntentSelectedAt: "2026-08-11T12:00:00.000Z",
+            },
+          },
+        },
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).setJourneyProgress({ stepId: "data" }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("resumes retired cursors from saved or ledger-backed migration evidence", async () => {
+    const savedMarker = createDb({
+      selectResults: [
+        [
+          {
+            createdAt: PRACTICE_CREATED_AT,
+            dbNow: DB_NOW,
+            settings: {
+              onboardingState: {
+                onboardingIntent: "alongside",
+                journeyStepId: "branding",
+                migrationHasCommittedChanges: true,
+              },
+            },
+          },
+        ],
+      ],
+      updatedRows: [{ id: PRACTICE_ID }],
+    });
+    await expect(
+      callerWithDb(savedMarker.db).setJourneyProgress({ stepId: "allSet" }),
+    ).resolves.toEqual({ ok: true });
+
+    const ledger = createDb({
+      selectResults: [
+        [
+          {
+            createdAt: PRACTICE_CREATED_AT,
+            dbNow: DB_NOW,
+            settings: {
+              onboardingState: {
+                onboardingIntent: "alongside",
+                journeyStepId: "team",
+              },
+            },
+          },
+        ],
+        [{ id: "00000000-0000-0000-0000-000000000099" }],
+      ],
+      updatedRows: [{ id: PRACTICE_ID }],
+    });
+    await expect(
+      callerWithDb(ledger.db).setJourneyProgress({ stepId: "allSet" }),
+    ).resolves.toEqual({ ok: true });
+  });
+
+  it("normalizes a retired cursor without intent back to the intent path", async () => {
+    const { db, updateSet } = createDb({
+      selectRows: [
+        {
+          createdAt: PRACTICE_CREATED_AT,
+          dbNow: DB_NOW,
+          settings: {
+            onboardingState: {
+              journeyStepId: "billing",
+              migrationHasCommittedChanges: true,
+            },
+          },
+        },
+      ],
+      updatedRows: [{ id: PRACTICE_ID }],
+    });
+
+    await expect(
+      callerWithDb(db).setJourneyProgress({ stepId: "allSet" }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(updateSet).not.toHaveBeenCalled();
+
+    await expect(
+      callerWithDb(db).setJourneyProgress({ stepId: "intent" }),
+    ).resolves.toEqual({ ok: true });
+  });
+
+  it("requires the all-set cursor and predecessor evidence before completion", async () => {
+    const incomplete = createDb({
+      selectRows: [
+        {
+          createdAt: PRACTICE_CREATED_AT,
+          dbNow: DB_NOW,
+          settings: {
+            onboardingState: {
+              onboardingIntent: "alongside",
+              journeyStepId: "allSet",
+              journeyIntentCompletedAt: "2026-08-11T12:00:00.000Z",
+              journeyBasicsCompletedAt: "2026-08-11T12:01:00.000Z",
+            },
+          },
+        },
+      ],
+    });
+
+    await expect(
+      callerWithDb(incomplete.db).completeOnboarding(),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(incomplete.updateSet).not.toHaveBeenCalled();
+
+    const complete = createDb({
+      selectRows: [
+        {
+          createdAt: PRACTICE_CREATED_AT,
+          dbNow: DB_NOW,
+          settings: {
+            onboardingState: {
+              onboardingIntent: "alongside",
+              journeyStepId: "allSet",
+              journeyIntentCompletedAt: "2026-08-11T12:00:00.000Z",
+              journeyBasicsCompletedAt: "2026-08-11T12:01:00.000Z",
+              journeyDataCompletedAt: "2026-08-11T12:02:00.000Z",
+            },
+          },
+        },
+      ],
+      updatedRows: [{ id: PRACTICE_ID }],
+    });
+
+    await expect(
+      callerWithDb(complete.db).completeOnboarding(),
+    ).resolves.toEqual({ ok: true });
+    expect(complete.updateSet).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects malformed or out-of-order exact predecessor evidence", async () => {
+    const { db, updateSet } = createDb({
+      selectRows: [
+        {
+          createdAt: PRACTICE_CREATED_AT,
+          dbNow: DB_NOW,
+          settings: {
+            onboardingState: {
+              onboardingIntent: "alongside",
+              journeyStepId: "allSet",
+              journeyIntentCompletedAt: "not-a-time",
+              journeyBasicsCompletedAt: "2026-08-11T12:01:00.000Z",
+              journeyDataCompletedAt: "2026-08-11T12:02:00.000Z",
+            },
+          },
+        },
+      ],
+    });
+
+    await expect(callerWithDb(db).completeOnboarding()).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+    expect(updateSet).not.toHaveBeenCalled();
   });
 
   it("lets the clinic owner become a veterinarian provider on the primary location", async () => {
@@ -371,14 +655,12 @@ describe("settings admin stale target safety", () => {
       updatedRows: [],
     });
 
-    // completeOnboarding writes with a guarded atomic update: the
-    // active-practice predicate excludes missing/deleted rows, so zero
-    // updated rows surfaces as NOT_FOUND and no fallback state is created.
+    // completeOnboarding locks and validates the active practice before write.
     await expect(callerWithDb(db).completeOnboarding()).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
     });
-    expect(updateSet).toHaveBeenCalledTimes(1);
+    expect(updateSet).not.toHaveBeenCalled();
     updateSet.mockClear();
 
     await expect(

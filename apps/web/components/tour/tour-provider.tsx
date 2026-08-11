@@ -113,6 +113,10 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
         ...prev,
         onboardingIntent: prev?.onboardingIntent ?? null,
         onboardingIntentSelectedAt: prev?.onboardingIntentSelectedAt ?? null,
+        journeyIntentCompletedAt: prev?.journeyIntentCompletedAt ?? null,
+        journeyBasicsCompletedAt: prev?.journeyBasicsCompletedAt ?? null,
+        journeyDataCompletedAt: prev?.journeyDataCompletedAt ?? null,
+        journeyAllSetCompletedAt: prev?.journeyAllSetCompletedAt ?? null,
         migrationHasCommittedChanges:
           prev?.migrationHasCommittedChanges ?? false,
         migrationLastCommittedAt: prev?.migrationLastCommittedAt ?? null,
