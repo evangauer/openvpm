@@ -46,6 +46,10 @@ type CandidateRow = {
   firstVisitAt: Date | string;
 };
 
+type CandidateCountRow = {
+  candidateCount: number | string;
+};
+
 export type FirstClinicWinCampaignResult = {
   candidates: number;
   sent: number;
@@ -56,30 +60,84 @@ export type FirstClinicWinCampaignResult = {
   disabled: boolean;
 };
 
+export type FirstClinicWinCampaignPreview = {
+  enabled: boolean;
+  ready: boolean;
+  launchAt: string | null;
+  configurationIssue: string | null;
+  eligibleCandidates: number;
+  hasAdditionalCandidates: boolean;
+  batchLimit: number;
+};
+
 function rowsFromExecute<T>(result: unknown): T[] {
   if (Array.isArray(result)) return result as T[];
   const rows = (result as { rows?: unknown[] } | null)?.rows;
   return Array.isArray(rows) ? (rows as T[]) : [];
 }
 
-export function firstClinicWinCampaignConfiguration():
-  | { enabled: false; reason: string }
-  | { enabled: true; launchAt: Date } {
+function firstClinicWinLaunchConfiguration():
+  | { ready: false; reason: string }
+  | { ready: true; launchAt: Date } {
   if (!billingEnforced()) {
-    return { enabled: false, reason: "hosted billing disabled" };
-  }
-  if (!envFlagEnabled(CAMPAIGN_ENABLED_ENV)) {
-    return { enabled: false, reason: `${CAMPAIGN_ENABLED_ENV} is false` };
+    return { ready: false, reason: "Hosted billing is disabled." };
   }
   const rawLaunchAt = process.env[CAMPAIGN_LAUNCH_AT_ENV]?.trim();
   const launchAt = rawLaunchAt ? new Date(rawLaunchAt) : null;
   if (!launchAt || Number.isNaN(launchAt.getTime())) {
     return {
-      enabled: false,
-      reason: `${CAMPAIGN_LAUNCH_AT_ENV} is missing or invalid`,
+      ready: false,
+      reason: `${CAMPAIGN_LAUNCH_AT_ENV} is missing or invalid.`,
     };
   }
+  return { ready: true, launchAt };
+}
+
+export function firstClinicWinCampaignConfiguration():
+  | { enabled: false; reason: string }
+  | { enabled: true; launchAt: Date } {
+  const launch = firstClinicWinLaunchConfiguration();
+  if (!launch.ready) {
+    return { enabled: false, reason: launch.reason.replace(/\.$/u, "") };
+  }
+  if (!envFlagEnabled(CAMPAIGN_ENABLED_ENV)) {
+    return { enabled: false, reason: `${CAMPAIGN_ENABLED_ENV} is false` };
+  }
+  const { launchAt } = launch;
   return { enabled: true, launchAt };
+}
+
+/**
+ * Read-only, PHI-free operator preflight. A staged launch boundary can be
+ * reviewed while the delivery flag remains off.
+ */
+export async function previewFirstClinicWinCampaign(
+  now = new Date(),
+): Promise<FirstClinicWinCampaignPreview> {
+  const enabled = envFlagEnabled(CAMPAIGN_ENABLED_ENV);
+  const launch = firstClinicWinLaunchConfiguration();
+  if (!launch.ready) {
+    return {
+      enabled,
+      ready: false,
+      launchAt: null,
+      configurationIssue: launch.reason,
+      eligibleCandidates: 0,
+      hasAdditionalCandidates: false,
+      batchLimit: FIRST_WIN_BATCH_LIMIT,
+    };
+  }
+
+  const eligibleCandidates = await countCandidates(launch.launchAt, now);
+  return {
+    enabled,
+    ready: true,
+    launchAt: launch.launchAt.toISOString(),
+    configurationIssue: null,
+    eligibleCandidates,
+    hasAdditionalCandidates: eligibleCandidates > FIRST_WIN_BATCH_LIMIT,
+    batchLimit: FIRST_WIN_BATCH_LIMIT,
+  };
 }
 
 /** Run one bounded, deterministic repair sweep from durable closeout evidence. */
@@ -160,67 +218,17 @@ export async function runFirstClinicWinCampaign(
   return result;
 }
 
-async function listCandidates(launchAt: Date, now: Date): Promise<Candidate[]> {
-  const terminalDedupePattern = `${FIRST_CLINIC_WIN_DEDUPE_PREFIX}:%`;
+async function listCandidates(
+  launchAt: Date,
+  now: Date,
+  limit = FIRST_WIN_BATCH_LIMIT,
+): Promise<Candidate[]> {
   const result = await withSystem(db, (tx) =>
     tx.execute(sql`
-      select
-        p.id,
-        p.name,
-        lower(btrim(p.email)) as email,
-        p.timezone,
-        p.trial_ends_at as "trialEndsAt",
-        min(vc.completed_at) as "firstVisitAt"
-      from practices p
-      join appointments a
-        on a.practice_id = p.id
-       and a.deleted_at is null
-       and a.status = 'checked_out'
-       and a.created_at >= p.created_at
-      join visit_closeouts vc
-        on vc.practice_id = p.id
-       and vc.appointment_id = a.id
-       and vc.deleted_at is null
-       and vc.status = 'completed'
-       and vc.completed_at >= ${launchAt}
-       and vc.completed_at >= p.created_at
-      where p.deleted_at is null
-        and p.subscription_tier = 'cloud'
-        and p.billing_status = 'trialing'
-        and p.trial_ends_at > ${now}
-        and p.stripe_subscription_id is null
-        and p.recovery_hold = false
-        and p.country = 'US'
-        and nullif(btrim(p.email), '') is not null
-        and p.settings ->> 'analyticsExcluded' is distinct from 'true'
-        and p.settings -> 'onboardingState' ->> 'onboardingIntent'
-          is distinct from 'self_host'
-        and not (
-          coalesce(p.settings -> 'demoData' -> 'appointmentIds', '[]'::jsonb)
-            @> to_jsonb(a.id::text)
-        )
-        and exists (
-          select 1 from users u
-          where u.practice_id = p.id
-            and u.role = 'admin'
-            and u.email_verified_at is not null
-            and u.deleted_at is null
-            and lower(btrim(u.email)) = lower(btrim(p.email))
-        )
-        and not exists (
-          select 1 from practice_conversion_milestones pcm
-          where pcm.practice_id = p.id
-            and pcm.milestone = 'payment_method_collected'
-        )
-        and not exists (
-          select 1 from communications c
-          where c.practice_id = p.id
-            and c.dedupe_key like ${terminalDedupePattern}
-            and c.status <> 'pending'
-        )
-      group by p.id, p.name, p.email, p.timezone, p.trial_ends_at
-      order by min(vc.completed_at), p.id
-      limit ${FIRST_WIN_BATCH_LIMIT}
+      select candidate.*
+      from (${candidateCohortSql(launchAt, now)}) candidate
+      order by candidate."firstVisitAt", candidate.id
+      limit ${limit}
     `),
   );
 
@@ -237,6 +245,80 @@ async function listCandidates(launchAt: Date, now: Date): Promise<Candidate[]> {
     }
     return [{ ...row, email, trialEndsAt, firstVisitAt }];
   });
+}
+
+async function countCandidates(launchAt: Date, now: Date): Promise<number> {
+  const result = await withSystem(db, (tx) =>
+    tx.execute(sql`
+      select count(*)::int as "candidateCount"
+      from (${candidateCohortSql(launchAt, now)}) candidate
+    `),
+  );
+  const value = Number(
+    rowsFromExecute<CandidateCountRow>(result)[0]?.candidateCount ?? 0,
+  );
+  return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+function candidateCohortSql(launchAt: Date, now: Date) {
+  const terminalDedupePattern = `${FIRST_CLINIC_WIN_DEDUPE_PREFIX}:%`;
+  return sql`
+    select
+      p.id,
+      p.name,
+      lower(btrim(p.email)) as email,
+      p.timezone,
+      p.trial_ends_at as "trialEndsAt",
+      min(vc.completed_at) as "firstVisitAt"
+    from practices p
+    join appointments a
+      on a.practice_id = p.id
+     and a.deleted_at is null
+     and a.status = 'checked_out'
+     and a.created_at >= p.created_at
+    join visit_closeouts vc
+      on vc.practice_id = p.id
+     and vc.appointment_id = a.id
+     and vc.deleted_at is null
+     and vc.status = 'completed'
+     and vc.completed_at >= ${launchAt}
+     and vc.completed_at >= p.created_at
+    where p.deleted_at is null
+      and p.subscription_tier = 'cloud'
+      and p.billing_status = 'trialing'
+      and p.trial_ends_at > ${now}
+      and p.stripe_subscription_id is null
+      and p.recovery_hold = false
+      and p.country = 'US'
+      and nullif(btrim(p.email), '') is not null
+      and p.settings ->> 'analyticsExcluded' is distinct from 'true'
+      and p.settings -> 'onboardingState' ->> 'onboardingIntent'
+        is distinct from 'self_host'
+      and not (
+        coalesce(p.settings -> 'demoData' -> 'appointmentIds', '[]'::jsonb)
+          @> to_jsonb(a.id::text)
+      )
+      and exists (
+        select 1 from users u
+        where u.practice_id = p.id
+          and u.role = 'admin'
+          and u.email_verified_at is not null
+          and u.deleted_at is null
+          and lower(btrim(u.email)) = lower(btrim(p.email))
+      )
+      and not exists (
+        select 1 from practice_conversion_milestones pcm
+        where pcm.practice_id = p.id
+          and pcm.milestone = 'payment_method_collected'
+      )
+      and not exists (
+        select 1 from communications c
+        where c.practice_id = p.id
+          and c.dedupe_key like ${terminalDedupePattern}
+          and c.status <> 'pending'
+      )
+    group by p.id, p.name, p.email, p.timezone, p.trial_ends_at
+  `;
 }
 
 async function firstClinicWinStillEligible(

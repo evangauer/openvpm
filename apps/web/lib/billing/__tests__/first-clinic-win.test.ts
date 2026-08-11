@@ -52,6 +52,7 @@ vi.mock("@/lib/alerts", () => ({ alertOps: mocks.alertOps }));
 const {
   FIRST_CLINIC_WIN_DEDUPE_PREFIX,
   firstClinicWinCampaignConfiguration,
+  previewFirstClinicWinCampaign,
   runFirstClinicWinCampaign,
 } = await import("../first-clinic-win");
 
@@ -76,6 +77,46 @@ describe("first clinic win campaign", () => {
       enabled: false,
       reason: "FIRST_CLINIC_WIN_EMAIL_LAUNCH_AT is missing or invalid",
     });
+  });
+
+  it("previews a staged eligible batch without claiming or sending email", async () => {
+    vi.stubEnv("FIRST_CLINIC_WIN_EMAIL_ENABLED", "false");
+    vi.stubEnv("FIRST_CLINIC_WIN_EMAIL_LAUNCH_AT", "2026-08-11T00:00:00.000Z");
+    mocks.execute.mockResolvedValueOnce({
+      rows: [{ candidateCount: 121 }],
+    });
+
+    await expect(
+      previewFirstClinicWinCampaign(new Date("2026-08-11T16:00:00.000Z")),
+    ).resolves.toEqual({
+      enabled: false,
+      ready: true,
+      launchAt: "2026-08-11T00:00:00.000Z",
+      configurationIssue: null,
+      eligibleCandidates: 121,
+      hasAdditionalCandidates: true,
+      batchLimit: 100,
+    });
+    expect(mocks.createToken).not.toHaveBeenCalled();
+    expect(mocks.sendOptionalPlatformEmail).not.toHaveBeenCalled();
+    expect(mocks.sendFirstClinicWinEmail).not.toHaveBeenCalled();
+  });
+
+  it("reports an invalid preview configuration without querying clinic data", async () => {
+    vi.stubEnv("FIRST_CLINIC_WIN_EMAIL_ENABLED", "true");
+    vi.stubEnv("FIRST_CLINIC_WIN_EMAIL_LAUNCH_AT", "not-a-date");
+
+    await expect(previewFirstClinicWinCampaign()).resolves.toEqual({
+      enabled: true,
+      ready: false,
+      launchAt: null,
+      configurationIssue:
+        "FIRST_CLINIC_WIN_EMAIL_LAUNCH_AT is missing or invalid.",
+      eligibleCandidates: 0,
+      hasAdditionalCandidates: false,
+      batchLimit: 100,
+    });
+    expect(mocks.execute).not.toHaveBeenCalled();
   });
 
   it("sends one PHI-free, practice-wide conversion prompt with one provider key", async () => {
@@ -149,8 +190,9 @@ describe("first clinic win campaign", () => {
       "analyticsExcluded",
       "onboardingIntent",
       "appointmentIds",
-      "order by min(vc.completed_at), p.id",
-      "limit ${FIRST_WIN_BATCH_LIMIT}",
+      'order by candidate."firstVisitAt", candidate.id',
+      "limit ${limit}",
+      'select count(*)::int as "candidateCount"',
     ]) {
       expect(source).toContain(invariant);
     }

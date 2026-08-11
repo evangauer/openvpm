@@ -406,11 +406,14 @@ uses one stable practice-wide provider idempotency key.
 
 To stage a prospective rollout, leave the flag off, choose a reviewed UTC
 boundary, deploy `FIRST_CLINIC_WIN_EMAIL_LAUNCH_AT=<ISO timestamp>`, and confirm
-`/api/health` stays green. Then set `FIRST_CLINIC_WIN_EMAIL_ENABLED=true` and
-redeploy. Only visits completed at or after that boundary qualify; do not move
-the boundary backward for a retrospective blast without a separately reviewed
-backfill. Kill the campaign by setting the flag back to `false`. Monitor its
-`sent`, `deduped`, `suppressed`, `failed`, and `skipped` heartbeat counts.
+`/api/health` stays green. Review the platform-admin first-visit outreach
+preflight before enabling; it shows only the prospective UTC boundary, exact
+eligible count, send state, and per-sweep cap, and never claims a recipient or
+sends email. Then set `FIRST_CLINIC_WIN_EMAIL_ENABLED=true` and redeploy. Only
+visits completed at or after that boundary qualify; do not move the boundary
+backward for a retrospective blast without a separately reviewed backfill.
+Kill the campaign by setting the flag back to `false`. Monitor its `sent`,
+`deduped`, `suppressed`, `failed`, and `skipped` heartbeat counts.
 
 Trial-ending messages use the same preference/idempotency boundary and retain
 their existing stage keys. A trial with no subscription receives the Add

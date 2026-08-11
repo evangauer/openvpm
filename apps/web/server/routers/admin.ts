@@ -26,6 +26,7 @@ import {
 import { isPlatformAdmin } from "@/lib/platform-admin";
 import { computeActivationFunnel } from "@/lib/admin/activation-funnel";
 import { computeFirstVisitConversion } from "@/lib/admin/first-visit-conversion";
+import { previewFirstClinicWinCampaign } from "@/lib/billing/first-clinic-win";
 import { computeJourneyFunnel } from "@/lib/admin/journey-funnel";
 import { computeActivationRecovery } from "@/lib/admin/activation-recovery";
 import {
@@ -3349,6 +3350,12 @@ export const adminRouter = createRouter({
         .optional(),
     )
     .query(({ input }) => computeFirstVisitConversion(db, input?.days ?? 30)),
+
+  /** Aggregate-only campaign preview. This never claims or sends email. */
+  firstClinicWinCampaignPreview: platformAdminProcedure.query(() => {
+    noStore();
+    return previewFirstClinicWinCampaign(new Date());
+  }),
 
   /** Ranked, cross-tenant operator queue for recovering clinic activation. */
   activationRecovery: platformAdminProcedure.query(() =>

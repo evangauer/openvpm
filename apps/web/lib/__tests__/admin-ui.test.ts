@@ -70,6 +70,17 @@ describe("admin UI", () => {
     expect(compactSource).toContain(
       "Both rates use the same 72-hour-mature opportunity denominator",
     );
+    expect(source).toContain(
+      "trpc.admin.firstClinicWinCampaignPreview.useQuery",
+    );
+    expect(source).toContain("First-visit outreach preflight");
+    expect(source).toContain("firstClinicWinPreview.eligibleCandidates");
+    expect(source).toContain("firstClinicWinPreview.hasAdditionalCandidates");
+    expect(source).toContain("Multiple sweeps");
+    expect(source).toContain("Prospective UTC boundary");
+    expect(compactSource).toContain(
+      "Loading this card never claims a recipient or sends email",
+    );
   });
 
   it("shows a ranked activation recovery queue with verified contacts", () => {
