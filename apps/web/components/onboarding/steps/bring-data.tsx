@@ -41,6 +41,7 @@ import { getOnboardingIntentOption } from "@/lib/onboarding/intent";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import type { StepProps } from "../journey-types";
+import { MigrationHelpRequest } from "../migration-help-request";
 
 type Choice = "import" | "api" | "keep";
 type CsvPreview = {
@@ -681,13 +682,8 @@ export function BringDataStep({ register, state, setState }: StepProps) {
             </label>
             <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
               <p>{selectedMigrationSourceHint}</p>
-              <a
-                href={`mailto:support@openvpm.com?subject=${encodeURIComponent(`${selectedMigrationSourceName} full history migration review`)}`}
-                className="mt-2 inline-flex font-medium text-emerald-700 hover:underline"
-              >
-                Ask us to review your full-history export before import
-              </a>
             </div>
+            <MigrationHelpRequest source={migrationSource} />
 
             <div className="space-y-4">
               {MIGRATION_STEPS.slice(0, 2).map((step, index) => (

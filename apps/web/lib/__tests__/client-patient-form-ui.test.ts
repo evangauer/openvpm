@@ -111,7 +111,9 @@ describe("client and patient form UI states", () => {
     expect(newClient).toContain("if (!canManageClientFormRole(session?.user?.role))");
     expect(newClient).toContain("Checking client access...");
     expect(newClient).toContain("Client actions are read-only");
-    expect(newClient).toContain("return <NewClientForm />");
+    expect(newClient).toContain(
+      "return <NewClientForm firstClinicDay={firstClinicDay} />"
+    );
 
     expect(editClient).toContain("function canManageClientFormRole");
     expect(editClient).toContain("if (!canManageClientFormRole(session?.user?.role))");
@@ -123,13 +125,33 @@ describe("client and patient form UI states", () => {
     expect(newPatient).toContain("if (!canManagePatientFormRole(session?.user?.role))");
     expect(newPatient).toContain("Checking patient access...");
     expect(newPatient).toContain("Patient actions are read-only");
-    expect(newPatient).toContain("return <NewPatientForm />");
+    expect(newPatient).toContain("<NewPatientForm />");
 
     expect(editPatient).toContain("function canManagePatientFormRole");
     expect(editPatient).toContain("if (!canManagePatientFormRole(session?.user?.role))");
     expect(editPatient).toContain("Checking patient access...");
     expect(editPatient).toContain("Patient actions are read-only");
     expect(editPatient).toContain("return <EditPatientForm />");
+  });
+
+  it("keeps first-clinic-day momentum through owner, pet, and booking", () => {
+    const newClient = readFileSync(
+      "app/(dashboard)/clients/new/page.tsx",
+      "utf8"
+    );
+    const newPatient = readFileSync(
+      "app/(dashboard)/patients/new/page.tsx",
+      "utf8"
+    );
+
+    expect(newClient).toContain('searchParams.get("setup") === "first-visit"');
+    expect(newClient).toContain("First clinic day, step 1 of 3");
+    expect(newClient).toContain("&setup=first-visit`");
+    expect(newPatient).toContain('searchParams.get("setup") === "first-visit"');
+    expect(newPatient).toContain("First clinic day, step 2 of 3");
+    expect(newPatient).toContain(
+      "`/schedule?setup=first-visit&patient=${encodeURIComponent(patient.name)}`"
+    );
   });
 
   it("surfaces New Patient owner-search loading and error states", () => {

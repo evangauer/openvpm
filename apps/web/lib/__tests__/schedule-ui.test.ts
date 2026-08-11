@@ -30,6 +30,23 @@ describe("schedule appointment form UX", () => {
     );
   });
 
+  it("opens a bounded booking handoff for the first clinic day", () => {
+    const source = readFileSync("app/(dashboard)/schedule/page.tsx", "utf8");
+
+    expect(source).toContain('searchParams.get("setup") === "first-visit"');
+    expect(source).toContain("<Suspense");
+    expect(source).toContain("<SchedulePageContent />");
+    expect(source).toContain("First clinic day · Step 3 of 3");
+    expect(source).toContain(
+      "isAppointmentPatientSearchInputValid(\n    requestedPatientSearch"
+    );
+    expect(source).toContain("setupBookingOpened.current = true");
+    expect(source).toContain("setShowBookingForm(true)");
+    expect(source).toContain(
+      "defaultPatientSearch={setupPatientSearch || undefined}"
+    );
+  });
+
   it("bounds New Appointment inputs before creating appointments", () => {
     const source = readFileSync("app/(dashboard)/schedule/page.tsx", "utf8");
 

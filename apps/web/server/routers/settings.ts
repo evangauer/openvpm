@@ -256,6 +256,10 @@ const journeyStepIdInput = z
   .max(64, "Journey step must be at most 64 characters")
   .nullish();
 const onboardingIntentInput = z.enum(ONBOARDING_INTENTS);
+const migrationHelpSourceInput = z
+  .string()
+  .trim()
+  .refine(isValidMigrationSource, "Migration source is invalid");
 
 /**
  * At or above this many patients a practice counts as established, so the
@@ -511,6 +515,9 @@ interface PracticeSettings {
     setupHelpRequestedAt?: string;
     setupHelpRequestedByUserId?: string;
     setupHelpRequestedByEmail?: string;
+    setupHelpRequestKind?: "general" | "migration";
+    setupHelpMigrationSource?: string;
+    migrationHelpRequestedAt?: string;
   };
   accountDeletionRequest?: {
     status: "requested";
@@ -1761,6 +1768,70 @@ export const settingsRouter = createRouter({
 
     return { requestedAt };
   }),
+
+  /**
+   * Request a private, hands-on migration review without moving any clinic
+   * records through email. This also sets the generic setup-help marker so the
+   * request appears in the existing activation-recovery queue.
+   */
+  requestMigrationHelp: adminProcedure
+    .input(z.object({ source: migrationHelpSourceInput }))
+    .mutation(async ({ ctx, input }) => {
+      await ctx.db.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`migration-help:${ctx.practiceId}`}, 0))`,
+      );
+      const [practice] = await ctx.db
+        .select({ name: practices.name, settings: practices.settings })
+        .from(practices)
+        .where(activePracticeWhere(ctx.practiceId))
+        .limit(1);
+      if (!practice) {
+        throw practiceNotFound();
+      }
+
+      const settings = (practice.settings ?? {}) as PracticeSettings;
+      const state = settings.onboardingState;
+      if (state?.migrationHelpRequestedAt) {
+        return {
+          requestedAt: state.migrationHelpRequestedAt,
+          source: state.setupHelpMigrationSource ?? input.source,
+        };
+      }
+
+      const requestedAt = new Date().toISOString();
+      const [updated] = await ctx.db
+        .update(practices)
+        .set({
+          settings: onboardingStateMergePatch({
+            setupHelpRequestedAt: state?.setupHelpRequestedAt ?? requestedAt,
+            setupHelpRequestedByUserId:
+              state?.setupHelpRequestedByUserId ?? ctx.user.id,
+            setupHelpRequestedByEmail:
+              state?.setupHelpRequestedByEmail ?? ctx.user.email,
+            setupHelpRequestKind: "migration",
+            setupHelpMigrationSource: input.source,
+            migrationHelpRequestedAt: requestedAt,
+          }),
+        })
+        .where(activePracticeWhere(ctx.practiceId))
+        .returning({ id: practices.id });
+      if (!updated) {
+        throw practiceNotFound();
+      }
+
+      await alertOps(
+        "Private migration review requested",
+        [
+          `practice=${ctx.practiceId}`,
+          `practiceName=${practice.name}`,
+          `requestedBy=${ctx.user.email}`,
+          `source=${input.source}`,
+          `requestedAt=${requestedAt}`,
+        ].join(" "),
+      );
+
+      return { requestedAt, source: input.source };
+    }),
 
   /** Dismiss the dashboard "finish setup" card. */
   dismissSetup: adminProcedure.mutation(async ({ ctx }) => {

@@ -14,6 +14,14 @@ describe("dashboard onboarding UI states", () => {
     "components/onboarding/journey-overlay.tsx",
     "utf8",
   );
+  const journeyPlanSource = readFileSync(
+    "lib/onboarding/journey-plan.ts",
+    "utf8",
+  );
+  const migrationHelpSource = readFileSync(
+    "components/onboarding/migration-help-request.tsx",
+    "utf8",
+  );
   const settingsRouter = readFileSync("server/routers/settings.ts", "utf8");
 
   it("surfaces activation checklist query failures before hiding for missing data", () => {
@@ -143,22 +151,11 @@ describe("dashboard onboarding UI states", () => {
       "const openJourney = useCallback(() => {",
     );
     expect(journeyProviderSource).toContain("if (!isAdmin) return;");
-    expect(journeyProviderSource).toContain("pendingManualOpen.current = true");
-    expect(journeyProviderSource).toContain("!pendingManualOpen.current ||");
-    expect(journeyProviderSource).toContain(
-      "pendingManualOpen.current = false",
-    );
-    expect(journeyProviderSource).toContain(
-      "if (subscription.error) retryPendingManualOpen();",
-    );
-    expect(journeyProviderSource).toContain(
-      "if (result.error && pendingManualOpen.current)",
-    );
     expect(journeyProviderSource).toContain(
       "const isOpen = isAdmin && index !== null",
     );
     expect(journeyProviderSource).toContain("value={{ openJourney, isOpen }}");
-    expect(journeyProviderSource).toMatch(/<JourneyShell\s+steps=\{steps\}/);
+    expect(journeyProviderSource).toContain("steps={steps}");
     expect(journeyProviderSource).toContain(
       "disabled={busy || continueDisabled}",
     );
@@ -173,6 +170,15 @@ describe("dashboard onboarding UI states", () => {
     );
     expect(settingsRouter).toContain("clearDemoData: adminProcedure.mutation");
     expect(settingsRouter).toContain("setOnboardingIntent: adminProcedure");
+    expect(journeyPlanSource).toContain(
+      '{ id: "data", title: "Bring your clinic records." }',
+    );
+    expect(journeyProviderSource).toContain(
+      "router.push(\n      state.hasImportedData",
+    );
+    expect(journeyProviderSource).toContain('"/clients/new?setup=first-visit"');
+    expect(journeyProviderSource).not.toContain("<SetUpTextingStep");
+    expect(journeyProviderSource).not.toContain("<AddACardStep");
   });
 
   it("uses the selected pathway to put a tailored first win first", () => {
@@ -204,6 +210,14 @@ describe("dashboard onboarding UI states", () => {
     expect(activationSource).toContain("Resume guided setup");
     expect(activationSource).toContain("Start guided setup");
     expect(activationSource).toContain("onClick={openJourney}");
+    expect(migrationHelpSource).toContain(
+      "trpc.settings.requestMigrationHelp.useMutation",
+    );
+    expect(migrationHelpSource).toContain(
+      "Do not email patient files or use an Anyone-with-the-link folder.",
+    );
+    expect(settingsRouter).toContain("requestMigrationHelp: adminProcedure");
+    expect(settingsRouter).toContain('"Private migration review requested"');
   });
 
   it("auto-opens the wizard for unfinished, non-dismissed onboarding and resumes durably", () => {
@@ -236,9 +250,8 @@ describe("dashboard onboarding UI states", () => {
     expect(settingsRouter).toContain("asc(appointments.startTime)");
     expect(settingsRouter).toContain("asc(appointments.id)");
     // Resume from the durable cursor rather than always step 0.
-    expect(journeyProviderSource).toContain(
-      "steps.findIndex((s) => s.id === journeyStepId)",
-    );
+    expect(journeyProviderSource).toContain("onboardingJourneyResumeIndex({");
+    expect(journeyPlanSource).toContain("retiredStepIds.has");
     expect(journeyProviderSource).toContain("setIndex(resumeIndex)");
     // "I'll finish later" records dismissal WITHOUT completing onboarding.
     expect(journeyProviderSource).toContain(
@@ -254,7 +267,7 @@ describe("dashboard onboarding UI states", () => {
       "await persistCursor(steps[prev]!.id, false)",
     );
     expect(journeyProviderSource).toContain(
-      "if (!onboardingState.data || !subscription.data) return;",
+      "if (!onboardingState.data) return;",
     );
     expect(settingsRouter).toContain("setJourneyProgress: adminProcedure");
   });

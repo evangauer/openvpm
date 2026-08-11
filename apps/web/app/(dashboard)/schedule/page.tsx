@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useRef, useEffect, useId, useMemo } from "react";
+import { Suspense, useState, useRef, useEffect, useId, useMemo } from "react";
 import { useSession } from "next-auth/react";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
   ChevronLeft,
@@ -1830,19 +1831,21 @@ function BookingForm({
   defaultDate,
   defaultTime,
   defaultLocationId,
+  defaultPatientSearch,
   timeZone,
 }: {
   onClose: () => void;
   defaultDate: Date;
   defaultTime?: string;
   defaultLocationId?: string;
+  defaultPatientSearch?: string;
   timeZone?: string | null;
 }) {
   const modalRef = useRef<HTMLDivElement>(null);
   const utils = trpc.useUtils();
 
   // Form state
-  const [patientSearch, setPatientSearch] = useState("");
+  const [patientSearch, setPatientSearch] = useState(defaultPatientSearch ?? "");
   const [selectedPatient, setSelectedPatient] = useState<{
     id: string;
     name: string;
@@ -2447,6 +2450,22 @@ function BookingForm({
 // --- Main Page ---
 
 export default function SchedulePage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex items-center justify-center gap-2 rounded-lg border border-border bg-card p-8 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading schedule...
+        </div>
+      }
+    >
+      <SchedulePageContent />
+    </Suspense>
+  );
+}
+
+function SchedulePageContent() {
+  const searchParams = useSearchParams();
   const { data: session } = useSession();
   const userRole = session?.user?.role;
   const canCreateAppointments = canCreateAppointmentsRole(userRole);
@@ -2465,6 +2484,14 @@ export default function SchedulePage() {
     startOfCalendarDay(new Date())
   );
   const [bookingDefaultTime, setBookingDefaultTime] = useState<string | undefined>(undefined);
+  const setupBookingOpened = useRef(false);
+  const firstClinicDay = searchParams.get("setup") === "first-visit";
+  const requestedPatientSearch = searchParams.get("patient")?.trim() ?? "";
+  const setupPatientSearch = isAppointmentPatientSearchInputValid(
+    requestedPatientSearch
+  )
+    ? requestedPatientSearch
+    : "";
 
   const weekDays = useMemo(() => buildWeekDays(currentDate), [currentDate]);
   const monthDays = useMemo(() => buildMonthGrid(currentDate), [currentDate]);
@@ -2648,6 +2675,20 @@ export default function SchedulePage() {
     setShowBookingForm(true);
   };
 
+  useEffect(() => {
+    if (
+      !firstClinicDay ||
+      setupBookingOpened.current ||
+      !canUseScheduleInteractions
+    ) {
+      return;
+    }
+    setupBookingOpened.current = true;
+    setBookingDefaultDate(startOfCalendarDay(new Date()));
+    setBookingDefaultTime(undefined);
+    setShowBookingForm(true);
+  }, [canUseScheduleInteractions, firstClinicDay]);
+
   const goToday = () => setCurrentDate(startOfCalendarDay(new Date()));
   const goPrev = () =>
     setCurrentDate((d) =>
@@ -2701,6 +2742,20 @@ export default function SchedulePage() {
 
   return (
     <div>
+      {firstClinicDay ? (
+        <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-800">
+            First clinic day · Step 3 of 3
+          </p>
+          <p className="mt-1 text-sm font-semibold text-foreground">
+            Book the pet&apos;s first real appointment.
+          </p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            Choose the pet, time, location, and visit type. Your current PIMS
+            can stay in place while the team validates this visit end to end.
+          </p>
+        </div>
+      ) : null}
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
@@ -2982,6 +3037,7 @@ export default function SchedulePage() {
                   ? scheduleLocations[0]!.id
                   : undefined
             }
+            defaultPatientSearch={setupPatientSearch || undefined}
             timeZone={verifiedCalendarSettings.timezone}
           />
         )}

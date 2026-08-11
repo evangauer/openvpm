@@ -44,6 +44,7 @@ import { AccentColorPicker } from "@/components/brand/accent-color-picker";
 import { MessagingTab } from "@/components/settings/messaging-tab";
 import { BookingTab } from "@/components/settings/booking-tab";
 import { ProviderHours } from "@/components/settings/provider-hours";
+import { MigrationHelpRequest } from "@/components/onboarding/migration-help-request";
 import { ServicesTab } from "@/components/settings/services-tab";
 import { useWelcome } from "@/components/welcome/welcome-provider";
 import { cn, isValidEmail } from "@/lib/utils";
@@ -4136,21 +4137,16 @@ function DataTab() {
           ))}
         </div>
         {migrationSource ? (
-          <div className="mb-4 max-w-2xl rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-            <p>
-              {
-                MIGRATION_SOURCES.find((s) => s.id === migrationSource)!
-                  .exportHint
-              }
-            </p>
-            {migrationSource === "shepherd" ? (
-              <a
-                href="mailto:support@openvpm.com?subject=Assisted%20Shepherd%20migration"
-                className="mt-2 inline-flex font-medium text-primary hover:underline"
-              >
-                Request a migration review before the full import
-              </a>
-            ) : null}
+          <div className="mb-4 max-w-2xl space-y-3">
+            <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+              <p>
+                {
+                  MIGRATION_SOURCES.find((s) => s.id === migrationSource)!
+                    .exportHint
+                }
+              </p>
+            </div>
+            <MigrationHelpRequest source={migrationSource} />
           </div>
         ) : (
           <p className="mb-4 text-xs font-medium text-amber-700">

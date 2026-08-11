@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { AlertCircle, ArrowLeft, Loader2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
@@ -34,17 +34,31 @@ function canManageClientFormRole(role?: string | null): boolean {
   );
 }
 
+function NewClientPageFallback() {
+  return (
+    <div className="flex items-center justify-center gap-2 rounded-lg border border-border bg-card p-8 text-sm text-muted-foreground">
+      <Loader2 className="h-4 w-4 animate-spin" />
+      Checking client access...
+    </div>
+  );
+}
+
 export default function NewClientPage() {
+  return (
+    <Suspense fallback={<NewClientPageFallback />}>
+      <NewClientPageContent />
+    </Suspense>
+  );
+}
+
+function NewClientPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { data: session, status } = useSession();
+  const firstClinicDay = searchParams.get("setup") === "first-visit";
 
   if (status === "loading") {
-    return (
-      <div className="flex items-center justify-center gap-2 rounded-lg border border-border bg-card p-8 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" />
-        Checking client access...
-      </div>
-    );
+    return <NewClientPageFallback />;
   }
 
   if (!canManageClientFormRole(session?.user?.role)) {
@@ -72,10 +86,10 @@ export default function NewClientPage() {
     );
   }
 
-  return <NewClientForm />;
+  return <NewClientForm firstClinicDay={firstClinicDay} />;
 }
 
-function NewClientForm() {
+function NewClientForm({ firstClinicDay }: { firstClinicDay: boolean }) {
   const router = useRouter();
   const utils = trpc.useUtils();
   const [form, setForm] = useState({
@@ -97,6 +111,13 @@ function NewClientForm() {
     onSuccess: async (client) => {
       await utils.clients.list.invalidate();
       toast.success("Client created");
+      if (firstClinicDay) {
+        const ownerName = `${client.firstName} ${client.lastName}`;
+        router.push(
+          `/patients/new?clientId=${encodeURIComponent(client.id)}&clientName=${encodeURIComponent(ownerName)}&setup=first-visit`,
+        );
+        return;
+      }
       router.push(`/clients/${client.id}`);
     },
     onError: (err) => {
@@ -177,7 +198,9 @@ function NewClientForm() {
 
       <h2 className="font-heading text-xl font-semibold">New Client</h2>
       <p className="mt-1 text-sm text-muted-foreground">
-        Add a new client to your practice
+        {firstClinicDay
+          ? "First clinic day, step 1 of 3: add one real owner. Their pet is next."
+          : "Add a new client to your practice"}
       </p>
 
       {error && (

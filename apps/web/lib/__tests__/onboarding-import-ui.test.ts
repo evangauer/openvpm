@@ -16,6 +16,14 @@ describe("onboarding import UI", () => {
     "components/onboarding/journey-overlay.tsx",
     "utf8",
   );
+  const journeyPlanSource = readFileSync(
+    "lib/onboarding/journey-plan.ts",
+    "utf8",
+  );
+  const migrationHelpSource = readFileSync(
+    "components/onboarding/migration-help-request.tsx",
+    "utf8",
+  );
 
   it("offers the complete four-stage clinic migration in safe order", () => {
     expect(MIGRATION_STEPS.map((step) => step.mode)).toEqual([
@@ -42,10 +50,11 @@ describe("onboarding import UI", () => {
     expect(source).toContain(
       "History attaches only to a safely matched real patient",
     );
-    expect(journeySource).toContain('title: "Bring your clinic records."');
-    expect(journeySource).not.toContain(
+    expect(journeyPlanSource).toContain('title: "Bring your clinic records."');
+    expect(journeyPlanSource).not.toContain(
       'title: "Add your real clients and pets."',
     );
+    expect(journeySource).toContain("<BringDataStep");
   });
 
   it("previews every supplied file before its exact reviewed commit", () => {
@@ -100,8 +109,10 @@ describe("onboarding import UI", () => {
     );
     expect(source).toContain("Already reviewed:");
     expect(source.match(/clearAllImportReview\(\)/g)).toHaveLength(4);
-    expect(source).toContain(
-      "Ask us to review your full-history export before import",
+    expect(source).toContain("<MigrationHelpRequest source={migrationSource}");
+    expect(migrationHelpSource).toContain("Request a private migration review");
+    expect(migrationHelpSource).toContain(
+      "Do not email patient files or use an Anyone-with-the-link folder.",
     );
   });
 

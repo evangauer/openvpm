@@ -50,14 +50,15 @@ function createDb(opts: { practiceRows: unknown[]; updatedRows?: unknown[] }) {
   const updateWhere = vi.fn(() => ({ returning: updateReturning }));
   const updateSet = vi.fn(() => ({ where: updateWhere }));
   const update = vi.fn(() => ({ set: updateSet }));
+  const execute = vi.fn(async (_statement: unknown) => undefined);
   const db: Record<string, unknown> = {
     select,
     update,
-    execute: vi.fn(async () => undefined),
+    execute,
   };
   db.transaction = async (fn: (tx: unknown) => unknown) => fn(db);
 
-  return { db, select, updateSet };
+  return { db, execute, select, updateSet };
 }
 
 beforeEach(() => {
@@ -121,6 +122,87 @@ describe("settings.requestOnboardingHelp", () => {
       callerWithRole(db).requestOnboardingHelp(),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
     expect(updateSet).not.toHaveBeenCalled();
+    expect(mocks.alertOps).not.toHaveBeenCalled();
+  });
+});
+
+describe("settings.requestMigrationHelp", () => {
+  it("persists a private migration request and routes it into setup recovery", async () => {
+    const { db, execute, updateSet } = createDb({
+      practiceRows: [{ name: "Aspen Creek Animal Hospital", settings: {} }],
+      updatedRows: [{ id: PRACTICE_ID }],
+    });
+
+    const result = await callerWithRole(db).requestMigrationHelp({
+      source: "shepherd",
+    });
+
+    expect(result).toEqual({
+      requestedAt: expect.any(String),
+      source: "shepherd",
+    });
+    expect(
+      execute.mock.calls.some(([statement]) =>
+        JSON.stringify(statement).includes("pg_advisory_xact_lock"),
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(execute.mock.calls)).toContain("migration-help");
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ settings: expect.anything() }),
+    );
+    expect(mocks.alertOps).toHaveBeenCalledWith(
+      "Private migration review requested",
+      expect.stringContaining("source=shepherd"),
+    );
+    expect(mocks.alertOps).toHaveBeenCalledWith(
+      "Private migration review requested",
+      expect.stringContaining("requestedBy=owner@example.com"),
+    );
+  });
+
+  it("returns the durable migration request without alerting twice", async () => {
+    const requestedAt = "2026-08-11T12:00:00.000Z";
+    const { db, updateSet } = createDb({
+      practiceRows: [
+        {
+          name: "Aspen Creek Animal Hospital",
+          settings: {
+            onboardingState: {
+              migrationHelpRequestedAt: requestedAt,
+              setupHelpMigrationSource: "shepherd",
+            },
+          },
+        },
+      ],
+    });
+
+    await expect(
+      callerWithRole(db).requestMigrationHelp({ source: "other" }),
+    ).resolves.toEqual({ requestedAt, source: "shepherd" });
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(mocks.alertOps).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid source identifiers before database access", async () => {
+    const { db, select, updateSet } = createDb({ practiceRows: [] });
+
+    await expect(
+      callerWithRole(db).requestMigrationHelp({ source: "bad source" }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(select).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(mocks.alertOps).not.toHaveBeenCalled();
+  });
+
+  it("keeps migration requests admin-only", async () => {
+    const { db, select } = createDb({ practiceRows: [] });
+
+    await expect(
+      callerWithRole(db, "front_desk").requestMigrationHelp({
+        source: "shepherd",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(select).not.toHaveBeenCalled();
     expect(mocks.alertOps).not.toHaveBeenCalled();
   });
 });

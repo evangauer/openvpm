@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { AlertCircle, ArrowLeft, Check, Loader2 } from "lucide-react";
@@ -77,7 +77,18 @@ export default function NewPatientPage() {
     );
   }
 
-  return <NewPatientForm />;
+  return (
+    <Suspense
+      fallback={
+        <div className="flex items-center justify-center gap-2 rounded-lg border border-border bg-card p-8 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading patient form...
+        </div>
+      }
+    >
+      <NewPatientForm />
+    </Suspense>
+  );
 }
 
 function canManagePatientFormRole(role?: string | null): boolean {
@@ -108,6 +119,7 @@ function NewPatientForm() {
   const [error, setError] = useState<string | null>(null);
   const preselectedClientId = searchParams.get("clientId") ?? "";
   const preselectedClientName = (searchParams.get("clientName") ?? "").trim();
+  const firstClinicDay = searchParams.get("setup") === "first-visit";
   const trimmedClientSearch = clientSearch.trim();
   const canSearchClients = isClientSearchInputValid(clientSearch);
 
@@ -147,6 +159,12 @@ function NewPatientForm() {
   const createPatient = trpc.patients.create.useMutation({
     onSuccess: (patient) => {
       toast.success("Patient created");
+      if (firstClinicDay) {
+        router.push(
+          `/schedule?setup=first-visit&patient=${encodeURIComponent(patient.name)}`
+        );
+        return;
+      }
       router.push(`/patients/${patient.id}`);
     },
     onError: (err) => {
@@ -227,7 +245,9 @@ function NewPatientForm() {
 
       <h2 className="font-heading text-xl font-semibold">New Patient</h2>
       <p className="mt-1 text-sm text-muted-foreground">
-        Add a new patient record
+        {firstClinicDay
+          ? "First clinic day, step 2 of 3: add this owner's pet. Booking is next."
+          : "Add a new patient record"}
       </p>
 
       {error && (

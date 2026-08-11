@@ -39,6 +39,7 @@ describe("onboarding UI states", () => {
     "components/onboarding/journey-overlay.tsx",
     "utf8",
   );
+  const journeyPlan = readFileSync("lib/onboarding/journey-plan.ts", "utf8");
   const settingsRouter = readFileSync("server/routers/settings.ts", "utf8");
   const dataRouter = readFileSync("server/routers/data.ts", "utf8");
 
@@ -72,7 +73,7 @@ describe("onboarding UI states", () => {
   });
 
   it("starts with a persisted adoption pathway and recommends running alongside", () => {
-    expect(journeyOverlay).toContain(
+    expect(journeyPlan).toContain(
       '{ id: "intent", title: "How do you want to start?" }',
     );
     expect(journeyOverlay).toContain(

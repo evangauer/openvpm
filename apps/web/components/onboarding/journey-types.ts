@@ -8,8 +8,6 @@ export interface JourneyState {
   onboardingIntent: OnboardingIntent;
   /** When true, the seeded sample data stays put instead of being cleared at finish. */
   keepSampleData: boolean;
-  /** When true, finishing the wizard launches the quick product tour. */
-  startTourAfter: boolean;
   /** A reviewed multi-file migration has committed at least one stage locally. */
   hasPartialImport: boolean;
   /** Sticky for this journey once reviewed real data has reached the practice. */

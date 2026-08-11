@@ -141,8 +141,13 @@ describe("request-only booking UI", () => {
       "Keep validating real clinic workflows with your team before"
     );
     expect(activationChecklist).not.toContain("is ready to run");
-    expect(allSetStep).toContain("You finished the guided setup.");
-    expect(allSetStep).toContain("Before switching clinic workflows");
+    expect(allSetStep).toContain("Add the first real client");
+    expect(allSetStep).toContain(
+      "before changing your clinic's live workflow"
+    );
+    expect(allSetStep).toContain(
+      "None of them blocks this first clinic test."
+    );
     expect(allSetStep).not.toContain("Your workspace is ready");
   });
 });

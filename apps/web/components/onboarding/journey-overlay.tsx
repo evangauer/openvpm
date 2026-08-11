@@ -10,65 +10,28 @@ import {
   useState,
 } from "react";
 import { useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { ArrowLeft, ArrowRight, Loader2, PawPrint } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import { useTour } from "@/components/tour/tour-provider";
 import { firstRunMode } from "@/lib/welcome/first-run";
 import {
   DEFAULT_ONBOARDING_INTENT,
   type OnboardingIntent,
 } from "@/lib/onboarding/intent";
 import type { JourneyState, StepHandle } from "./journey-types";
+import {
+  ONBOARDING_JOURNEY_STEPS,
+  onboardingJourneyResumeIndex,
+  type OnboardingJourneyStep,
+} from "@/lib/onboarding/journey-plan";
 import { ChoosePathStep } from "./steps/choose-path";
 import { PracticeBasicsStep } from "./steps/practice-basics";
-import { BrandingStep } from "./steps/branding";
-import { InviteTeamStep } from "./steps/invite-team";
 import { BringDataStep } from "./steps/bring-data";
-import { TryAgentStep } from "./steps/try-agent";
-import { SetUpTextingStep } from "./steps/set-up-texting";
-import { AddACardStep } from "./steps/add-a-card";
 import { AllSetStep } from "./steps/all-set";
-
-type StepId =
-  | "intent"
-  | "basics"
-  | "branding"
-  | "team"
-  | "data"
-  | "agent"
-  | "phone"
-  | "billing"
-  | "allSet";
-
-interface StepDef {
-  id: StepId;
-  title: string;
-}
-
-/**
- * The effective step list. Billing ("add a card") only appears on the hosted
- * service; self-host has nothing to charge. The closing guided-setup step
- * always comes last and offers the quick product tour.
- */
-function buildSteps(billingEnforced: boolean): StepDef[] {
-  return [
-    { id: "intent", title: "How do you want to start?" },
-    { id: "basics", title: "Tell us about your clinic." },
-    { id: "branding", title: "Make it feel like yours." },
-    { id: "team", title: "Bring your team in." },
-    { id: "data", title: "Bring your clinic records." },
-    { id: "agent", title: "Try your AI helper." },
-    { id: "phone", title: "Set up texting." },
-    ...(billingEnforced
-      ? [{ id: "billing" as const, title: "Add a card." }]
-      : []),
-    { id: "allSet", title: "Guided setup complete." },
-  ];
-}
 
 interface OnboardingJourneyContextValue {
   /** Open the "Make it yours" guided setup (resumes at the saved step). */
@@ -92,7 +55,7 @@ export function useOnboardingJourney() {
  * checklist can also invoke `openJourney()` explicitly. Mount once in the
  * dashboard layout. Each step runs its own server work on Continue; finishing
  * marks onboarding complete (and clears the sample data unless the user chose to
- * keep it), then optionally launches the quick product tour.
+ * keep it), then routes directly to the next real clinic action.
  */
 export function OnboardingJourneyProvider({
   children,
@@ -108,88 +71,27 @@ export function OnboardingJourneyProvider({
   const onboardingState = trpc.settings.getOnboardingState.useQuery(undefined, {
     enabled: isAdmin,
   });
-  const subscription = trpc.subscription.get.useQuery(undefined, {
-    enabled: isAdmin,
-  });
-
-  const billingEnforced = subscription.data?.billingEnforced ?? false;
-  const steps = useMemo(() => buildSteps(billingEnforced), [billingEnforced]);
+  const steps = ONBOARDING_JOURNEY_STEPS;
 
   const journeyStepId = onboardingState.data?.journeyStepId ?? null;
   const onboardingIntent = onboardingState.data?.onboardingIntent ?? null;
   const resumeIndex = useMemo(() => {
-    // Anyone who started before pathways existed gets the new choice once.
-    if (!onboardingIntent) return 0;
-    const i = steps.findIndex((s) => s.id === journeyStepId);
-    return i >= 0 ? i : 0;
-  }, [steps, journeyStepId, onboardingIntent]);
+    return onboardingJourneyResumeIndex({
+      onboardingIntent,
+      journeyStepId,
+      migrationHasCommittedChanges:
+        onboardingState.data?.migrationHasCommittedChanges === true,
+    });
+  }, [journeyStepId, onboardingIntent, onboardingState.data]);
 
   // null = closed; a number is the active step index.
   const [index, setIndex] = useState<number | null>(null);
   // Opens at most once per mount, so finishing/dismissing never reopens it.
   const opened = useRef(false);
-  // A manual CTA can be clicked before the subscription query settles. Queue
-  // that intent so the click is never lost and resolve it against stable steps.
-  const pendingManualOpen = useRef(false);
-  const pendingOpenRetryAttempted = useRef(false);
-
-  const retryPendingManualOpen = useCallback(() => {
-    if (pendingOpenRetryAttempted.current) return;
-    pendingOpenRetryAttempted.current = true;
-    toast.error("Guided setup is still loading. Retrying now.");
-    void subscription.refetch().then((result) => {
-      if (result.error && pendingManualOpen.current) {
-        pendingManualOpen.current = false;
-        pendingOpenRetryAttempted.current = false;
-        toast.error("Guided setup could not load. Please try again.");
-      }
-    });
-  }, [subscription.refetch]);
-
   const openJourney = useCallback(() => {
-    // `billingEnforced` changes the step positions. Never open against the
-    // temporary self-host step list while subscription context is loading.
     if (!isAdmin) return;
-    if (!subscription.data) {
-      pendingManualOpen.current = true;
-      if (subscription.error) {
-        retryPendingManualOpen();
-      }
-      return;
-    }
-    pendingManualOpen.current = false;
-    pendingOpenRetryAttempted.current = false;
     setIndex(resumeIndex);
-  }, [
-    isAdmin,
-    resumeIndex,
-    subscription.data,
-    subscription.error,
-    retryPendingManualOpen,
-  ]);
-
-  useEffect(() => {
-    if (!isAdmin) {
-      pendingManualOpen.current = false;
-      pendingOpenRetryAttempted.current = false;
-      return;
-    }
-    if (!pendingManualOpen.current || index !== null) return;
-    if (!subscription.data) {
-      if (subscription.error) retryPendingManualOpen();
-      return;
-    }
-    pendingManualOpen.current = false;
-    pendingOpenRetryAttempted.current = false;
-    setIndex(resumeIndex);
-  }, [
-    isAdmin,
-    index,
-    resumeIndex,
-    retryPendingManualOpen,
-    subscription.data,
-    subscription.error,
-  ]);
+  }, [isAdmin, resumeIndex]);
 
   // Returning from Stripe Checkout during setup: ?setup=resume reopens the
   // journey at the saved step (the card step persisted "allSet" before the
@@ -199,10 +101,7 @@ export function OnboardingJourneyProvider({
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
     if (params.get("setup") !== "resume") return;
-    // Wait for both the saved cursor and the hosted/self-host step list. A
-    // numeric index resolved against the temporary list can otherwise shift
-    // from `allSet` back to `billing` once subscription data arrives.
-    if (!onboardingState.data || !subscription.data) return;
+    if (!onboardingState.data) return;
     opened.current = true;
     params.delete("setup");
     const rest = params.toString();
@@ -212,13 +111,7 @@ export function OnboardingJourneyProvider({
       window.location.pathname + (rest ? `?${rest}` : ""),
     );
     setIndex(resumeIndex);
-  }, [
-    isAdmin,
-    index,
-    onboardingState.data,
-    subscription.data,
-    resumeIndex,
-  ]);
+  }, [isAdmin, index, onboardingState.data, resumeIndex]);
 
   useEffect(() => {
     if (opened.current || index !== null || !isAdmin) return;
@@ -227,8 +120,8 @@ export function OnboardingJourneyProvider({
     // offer, activation checklist). NEXT_PUBLIC_FIRST_RUN_MODE=wizard
     // restores this auto-open exactly.
     if (firstRunMode() === "welcome") return;
-    // Wait until all gates are loaded so the step list + resume point are stable.
-    if (!onboardingStatus.data || !onboardingState.data || !subscription.data) {
+    // Wait until the setup state is loaded so the resume point is stable.
+    if (!onboardingStatus.data || !onboardingState.data) {
       return;
     }
     const notFinished = onboardingStatus.data.completedAt == null;
@@ -245,7 +138,6 @@ export function OnboardingJourneyProvider({
     index,
     onboardingStatus.data,
     onboardingState.data,
-    subscription.data,
     resumeIndex,
   ]);
 
@@ -290,7 +182,7 @@ function JourneyShell({
   initialMigrationSourceHasCommittedChanges,
   initialMigrationCompletedModes,
 }: {
-  steps: StepDef[];
+  steps: readonly OnboardingJourneyStep[];
   index: number;
   setIndex: (i: number | null) => void;
   initialIntent: OnboardingIntent;
@@ -302,16 +194,16 @@ function JourneyShell({
   >;
 }) {
   const utils = trpc.useUtils();
-  const { start: startTour } = useTour();
+  const router = useRouter();
   const completeOnboarding = trpc.settings.completeOnboarding.useMutation();
   const clearDemoData = trpc.settings.clearDemoData.useMutation();
   const setJourneyProgress = trpc.settings.setJourneyProgress.useMutation();
 
-  // Shared step state. Default to keeping sample data and offering the tour.
+  // Shared step state. Real imports replace sample data; otherwise the clinic
+  // can keep the sample records while it adds its first real client.
   const [state, setStateRaw] = useState<JourneyState>({
     onboardingIntent: initialIntent,
     keepSampleData: !initialMigrationHasCommittedChanges,
-    startTourAfter: true,
     hasPartialImport: false,
     hasImportedData: initialMigrationHasCommittedChanges,
     migrationSource: initialMigrationSource,
@@ -374,18 +266,19 @@ function JourneyShell({
       utils.settings.getOnboardingState.invalidate(),
     ]);
     setIndex(null);
-    // Chain the quick product tour if the user opted in on the last step.
-    if (state.startTourAfter) {
-      startTour();
-    }
+    router.push(
+      state.hasImportedData
+        ? "/schedule?setup=first-visit"
+        : "/clients/new?setup=first-visit",
+    );
   }, [
     completeOnboarding,
     clearDemoData,
     state.keepSampleData,
-    state.startTourAfter,
+    state.hasImportedData,
     utils,
     setIndex,
-    startTour,
+    router,
   ]);
 
   const handleContinue = useCallback(async () => {
@@ -543,12 +436,6 @@ function JourneyShell({
                 {step.id === "basics" ? (
                   <PracticeBasicsStep register={register} />
                 ) : null}
-                {step.id === "branding" ? (
-                  <BrandingStep register={register} />
-                ) : null}
-                {step.id === "team" ? (
-                  <InviteTeamStep register={register} />
-                ) : null}
                 {step.id === "data" ? (
                   <BringDataStep
                     register={register}
@@ -556,21 +443,8 @@ function JourneyShell({
                     setState={setState}
                   />
                 ) : null}
-                {step.id === "agent" ? (
-                  <TryAgentStep register={register} />
-                ) : null}
-                {step.id === "phone" ? (
-                  <SetUpTextingStep register={register} />
-                ) : null}
-                {step.id === "billing" ? (
-                  <AddACardStep register={register} />
-                ) : null}
                 {step.id === "allSet" ? (
-                  <AllSetStep
-                    register={register}
-                    state={state}
-                    setState={setState}
-                  />
+                  <AllSetStep register={register} state={state} />
                 ) : null}
               </div>
 
@@ -629,10 +503,8 @@ function JourneyShell({
                   {busy ? (
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   ) : null}
-                  {isLast ? "Finish" : (continueLabel ?? "Continue")}
-                  {!isLast && !busy ? (
-                    <ArrowRight className="ml-2 h-4 w-4" />
-                  ) : null}
+                  {continueLabel ?? (isLast ? "Finish" : "Continue")}
+                  {!busy ? <ArrowRight className="ml-2 h-4 w-4" /> : null}
                 </Button>
               </div>
             </div>
