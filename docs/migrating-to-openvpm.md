@@ -43,6 +43,12 @@ Headers are matched loosely (case, spaces, and underscores do not matter) and co
 - **Shepherd**: Reports → export client and patient lists as CSV. For your full record set, ask Shepherd support for your data export; Shepherd is cloud based, so support sends the files.
 - **Anything else**: any spreadsheet saved as CSV works. When in doubt, share a de-identified sample through the approved secure channel and we will confirm the mapping.
 
+For an approved assisted Shepherd full-export review, operators must first use
+the [Shepherd migration archive preflight](shepherd-migration-archive-preflight.md)
+to produce privacy-minimized structural evidence. That local preflight does not
+expand the self-serve importer, prove importability, or authorize a production
+write; the reviewed CSV dry run remains authoritative.
+
 ## Import order (it matters)
 
 1. **Clients first.** Pets link to owners by the persisted source client ID or email, so owners must exist before pets.
