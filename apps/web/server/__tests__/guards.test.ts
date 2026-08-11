@@ -50,7 +50,7 @@ describe("viewer read-only guard", () => {
   it("blocks mutations for a viewer with FORBIDDEN (before the resolver)", async () => {
     const caller = callerFor("viewer");
     await expect(
-      caller.clients.create({ firstName: "A", lastName: "B" })
+      caller.clients.create({ firstName: "A", lastName: "B" }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
@@ -73,7 +73,7 @@ describe("viewer read-only guard", () => {
             limit: async () => [
               {
                 tier: "cloud",
-                billingStatus: "past_due",
+                billingStatus: "unpaid",
                 trialEndsAt: null,
               },
             ],
@@ -87,8 +87,51 @@ describe("viewer read-only guard", () => {
     };
     const caller = callerFor("front_desk", db);
     await expect(
-      caller.clients.create({ firstName: "A", lastName: "B" })
+      caller.clients.create({ firstName: "A", lastName: "B" }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("allows a hosted Cloud practice to reach the resolver while Stripe is retrying", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    const selectResults = [
+      [
+        {
+          tier: "cloud",
+          billingStatus: "past_due",
+          trialEndsAt: null,
+        },
+      ],
+      [],
+    ];
+    const select = vi.fn(() => {
+      const result = selectResults.shift() ?? [];
+      return {
+        from: () => ({
+          where: () => ({
+            limit: async () => result,
+          }),
+        }),
+      };
+    });
+    const tx: Record<string, unknown> = {
+      execute: async () => undefined,
+      select,
+    };
+    const db: Record<string, unknown> = {
+      transaction: async (fn: (t: unknown) => unknown) => fn(tx),
+      execute: async () => undefined,
+    };
+    const caller = callerFor("front_desk", db);
+
+    // The resolver's own active-practice check is the second lookup. Reaching
+    // its NOT_FOUND proves the hosted billing guard allowed retrying access.
+    await expect(
+      caller.clients.create({ firstName: "A", lastName: "B" }),
+    ).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      message: "Practice not found",
+    });
+    expect(select).toHaveBeenCalledTimes(2);
   });
 
   it("fails closed when hosted mutation guard cannot find the active practice", async () => {
@@ -110,7 +153,7 @@ describe("viewer read-only guard", () => {
     const caller = callerFor("front_desk", db);
 
     await expect(
-      caller.clients.create({ firstName: "A", lastName: "B" })
+      caller.clients.create({ firstName: "A", lastName: "B" }),
     ).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
@@ -124,7 +167,7 @@ describe("viewer read-only guard", () => {
       [
         {
           tier: "cloud",
-          billingStatus: "past_due",
+          billingStatus: "unpaid",
           trialEndsAt: null,
         },
       ],
@@ -168,7 +211,7 @@ describe("viewer read-only guard", () => {
         contactEmail: "owner@example.com",
         confirmExportDownloaded: true,
         confirmManualReview: true,
-      })
+      }),
     ).resolves.toMatchObject({
       status: "requested",
       contactEmail: "owner@example.com",

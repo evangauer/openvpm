@@ -644,6 +644,55 @@ describe("health route", () => {
     expect(JSON.stringify(json)).not.toContain("STRIPE_PRICE_CLOUD_USER");
   });
 
+  it("keeps first-clinic-win outreach advisory while independently disabled", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.checks.hostedFirstClinicWin).toEqual({
+      ok: true,
+      detail: "First clinic win outreach is disabled",
+      advisory: true,
+    });
+  });
+
+  it("fails hosted readiness when outreach is enabled without a valid launch boundary", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    vi.stubEnv("FIRST_CLINIC_WIN_EMAIL_ENABLED", "true");
+    vi.stubEnv("FIRST_CLINIC_WIN_EMAIL_LAUNCH_AT", "not-a-date");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedFirstClinicWin).toEqual({
+      ok: false,
+      detail: "First clinic win outreach launch boundary is missing or invalid",
+      advisory: false,
+    });
+  });
+
+  it("accepts an explicitly bounded first-clinic-win rollout", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    vi.stubEnv("FIRST_CLINIC_WIN_EMAIL_ENABLED", "true");
+    vi.stubEnv("FIRST_CLINIC_WIN_EMAIL_LAUNCH_AT", "2026-08-12T00:00:00.000Z");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.checks.hostedFirstClinicWin).toEqual({
+      ok: true,
+      detail: "First clinic win outreach has an explicit launch boundary",
+      advisory: false,
+    });
+  });
+
   it("requires the client invoice webhook secret for hosted billing readiness", async () => {
     mocks.billingEnforced.mockReturnValue(true);
     stubHostedRequiredEnvs();
@@ -780,6 +829,27 @@ describe("health route", () => {
       detail: "1 required hosted configuration value is invalid",
     });
     expect(JSON.stringify(json)).not.toContain("demo.openvpm.com");
+  });
+
+  it("rejects a non-postal company address without exposing it", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    vi.stubEnv("EMAIL_COMPANY_ADDRESS", "evan@openvpm.com");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedEmail).toEqual({
+      ok: false,
+      detail: "1 required hosted configuration value is invalid",
+    });
+    const body = JSON.stringify(json);
+    expect(body).not.toContain("evan@openvpm.com");
+    expect(body).not.toContain("EMAIL_COMPANY_ADDRESS");
+    expect(
+      mocks.platformEmailIdentityConfigurationReady,
+    ).not.toHaveBeenCalled();
   });
 
   it("fails readiness when the persisted email identity key does not match", async () => {

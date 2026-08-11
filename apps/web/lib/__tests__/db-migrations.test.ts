@@ -1491,6 +1491,43 @@ describe("committed Drizzle migrations", () => {
     );
   });
 
+  it("adds bounded prospective subscription Checkout attribution evidence", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries?: Array<{ tag?: string }> };
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0086_woozy_king_cobra",
+    );
+
+    const sql = readRepoFile("packages/db/drizzle/0086_woozy_king_cobra.sql");
+    expect(sql).toContain(
+      'CREATE TYPE "public"."subscription_checkout_source"',
+    );
+    for (const source of [
+      "registration",
+      "in_app_pre_first_visit",
+      "in_app_post_first_visit",
+      "first_visit_email",
+      "trial_ending_email",
+    ]) {
+      expect(sql).toContain(`'${source}'`);
+    }
+    expect(sql).toContain('ADD COLUMN "checkout_source"');
+    expect(sql).toContain(
+      'ADD COLUMN "checkout_source_evidence_id" varchar(128)',
+    );
+    expect(sql).toContain('CREATE INDEX "stripe_events_checkout_source_idx"');
+    expect(sql).toContain(
+      '"stripe_events"."checkout_source" is null and\n        "stripe_events"."checkout_source_evidence_id" is null',
+    );
+    expect(sql).toContain(
+      '"stripe_events"."checkout_source" is not null and\n                "stripe_events"."checkout_source_evidence_id" is not null',
+    );
+    expect(sql).toContain(
+      '"stripe_events"."evidence_kind" = \'positive_subscription_invoice_paid\'',
+    );
+  });
+
   it("creates the append-only SMS delivery ledger with valid self-FK ordering", () => {
     const journal = JSON.parse(
       readRepoFile("packages/db/drizzle/meta/_journal.json"),

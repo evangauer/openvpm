@@ -77,6 +77,33 @@ describe("admin UI", () => {
     );
   });
 
+  it("shows a denominator-safe first-real-visit conversion report", () => {
+    expect(source).toContain(
+      "trpc.admin.firstVisitConversion.useQuery({ days: 30 }, { retry: false })",
+    );
+    expect(source).toContain(
+      "Supported US Cloud first visit → billing connected (30 days)",
+    );
+    expect(source).toContain("firstVisitConversion.matureOpportunities");
+    expect(source).toContain("firstVisitConversion.convertedWithin24Hours");
+    expect(source).toContain("firstVisitConversion.convertedWithin72Hours");
+    expect(source).toContain("firstVisitConversion.sourceBreakdown.unknown");
+    expect(compactSource).toContain(
+      "Both rates use the same 72-hour-mature opportunity denominator",
+    );
+    expect(source).toContain(
+      "trpc.admin.firstClinicWinCampaignPreview.useQuery",
+    );
+    expect(source).toContain("First-visit outreach preflight");
+    expect(source).toContain("firstClinicWinPreview.eligibleCandidates");
+    expect(source).toContain("firstClinicWinPreview.hasAdditionalCandidates");
+    expect(source).toContain("Multiple sweeps");
+    expect(source).toContain("Prospective UTC boundary");
+    expect(compactSource).toContain(
+      "Loading this card never claims a recipient or sends email",
+    );
+  });
+
   it("shows a ranked activation recovery queue with verified contacts", () => {
     expect(source).toContain("trpc.admin.activationRecovery.useQuery");
     expect(source).toContain("Clinic activation recovery");

@@ -624,6 +624,13 @@
       "when": 1786451730973,
       "tag": "0088_safe_beyonder",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1786477645522,
+      "tag": "0089_absent_vindicator",
+      "breakpoints": true
     }
   ]
 }

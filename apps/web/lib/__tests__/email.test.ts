@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
   const resendSend = vi.fn();
@@ -439,6 +439,31 @@ describe("sendEmail", () => {
 });
 
 describe("openvpmBrand", () => {
+  it("recognizes plausible physical postal addresses without claiming verification", async () => {
+    const { isPlausiblePhysicalCompanyAddress } = await loadEmailBrand();
+
+    expect(
+      isPlausiblePhysicalCompanyAddress("123 Clinic Way, Boston, MA 02110"),
+    ).toBe(true);
+    expect(
+      isPlausiblePhysicalCompanyAddress("PO Box 123, Boston, MA 02110"),
+    ).toBe(true);
+    expect(isPlausiblePhysicalCompanyAddress("PMB 456, Austin, TX 78701")).toBe(
+      true,
+    );
+
+    for (const invalid of [
+      undefined,
+      "support@openvpm.com",
+      "https://openvpm.com/contact",
+      "OpenVPM headquarters",
+      "123 Main\nStreet",
+      "123",
+    ]) {
+      expect(isPlausiblePhysicalCompanyAddress(invalid)).toBe(false);
+    }
+  });
+
   it("trims configured email brand env values", async () => {
     vi.stubEnv("EMAIL_COMPANY_NAME", " Open Vet Ops ");
     vi.stubEnv("EMAIL_SUPPORT_ADDRESS", " support@example.com ");
@@ -476,6 +501,68 @@ describe("openvpmBrand", () => {
 });
 
 describe("lifecycle email branding", () => {
+  beforeEach(() => {
+    vi.stubEnv("EMAIL_COMPANY_ADDRESS", "123 Clinic Way, Boston, MA 02110");
+  });
+
+  it("fails optional lifecycle marketing before provider dispatch without a physical address", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv("EMAIL_COMPANY_ADDRESS", "evan@openvpm.com");
+    const {
+      sendFirstClinicWinEmail,
+      sendSetupRecoveryEmail,
+      sendTrialEndingEmailWithEvidence,
+      sendWelcomeEmail,
+    } = await loadEmail();
+
+    const expectedFailure = {
+      success: false,
+      error: "Promotional email requires a valid physical company address.",
+      outcome: "definite_failure",
+      failureCode: "invalid_company_address",
+    };
+    await expect(
+      sendTrialEndingEmailWithEvidence({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        daysLeft: 3,
+        trialEndDate: "August 12, 2026",
+      }),
+    ).resolves.toEqual(expectedFailure);
+    await expect(
+      sendFirstClinicWinEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        trialEndDate: "August 20, 2026",
+        billingUrl: "https://app.openvpm.com/settings?tab=billing",
+        idempotencyKey: "lc:first-clinic-win:v1:practice",
+      }),
+    ).resolves.toEqual(expectedFailure);
+    await expect(
+      sendWelcomeEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+      }),
+    ).resolves.toMatchObject({
+      success: false,
+      error: expectedFailure.error,
+    });
+    await expect(
+      sendSetupRecoveryEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        stepTitle: "finishing setup",
+        nextAction: "Continue setup.",
+        attemptNumber: 1,
+      }),
+    ).resolves.toMatchObject({
+      success: false,
+      error: expectedFailure.error,
+    });
+    expect(mocks.Resend).not.toHaveBeenCalled();
+    expect(mocks.resendSend).not.toHaveBeenCalled();
+  });
+
   it("renders setup recovery as a one-click, preference-aware resume", async () => {
     vi.stubEnv("RESEND_API_KEY", "re_test");
     vi.stubEnv(
@@ -552,7 +639,7 @@ describe("lifecycle email branding", () => {
     });
     expect(payload.html).toContain("/email-preferences?token=");
     expect(payload.html).toContain(
-      "This address is the OpenVPM billing contact for Neighborhood Veterinary.",
+      "You’re receiving this because this is the practice email saved for Neighborhood Veterinary.",
     );
     expect(payload.html).not.toContain(
       'href="https://app.openvpm.com/settings?tab=billing">Manage email preferences',
@@ -580,6 +667,50 @@ describe("lifecycle email branding", () => {
       error: "Email preference signing is not configured.",
     });
     expect(mocks.resendSend).not.toHaveBeenCalled();
+  });
+
+  it("renders a PHI-free first-clinic-win prompt with transparent pricing", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_SIGNING_SECRET",
+      "stable-signing-secret-at-least-32-bytes",
+    );
+    vi.stubEnv("EMAIL_PREFERENCE_BASE_URL", "https://app.openvpm.com");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-first-win" } });
+    const { sendFirstClinicWinEmail } = await loadEmail();
+
+    await expect(
+      sendFirstClinicWinEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        trialEndDate: "August 20, 2026",
+        billingUrl:
+          "https://app.openvpm.com/settings?tab=billing&checkout_attribution=signed",
+        idempotencyKey: "lc:first-clinic-win:v1:practice",
+      }),
+    ).resolves.toMatchObject({
+      success: true,
+      id: "email-first-win",
+      outcome: "accepted",
+    });
+
+    const [payload, options] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(options).toMatchObject({
+      idempotencyKey: "lc:first-clinic-win:v1:practice",
+    });
+    expect(payload.headers).toMatchObject({
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    });
+    expect(payload.html).toContain("first clinic visit in OpenVPM");
+    expect(payload.html).toContain("$79");
+    expect(payload.html).toContain("$0.03 per text");
+    expect(payload.html).toContain("$0.05 per AI action");
+    expect(payload.html).toContain("workspace becomes read only");
+    expect(payload.html).not.toMatch(/patient|client|invoice|appointment/i);
   });
 
   it("uses the normalized brand support email as lifecycle reply-to", async () => {
@@ -634,15 +765,39 @@ describe("lifecycle email branding", () => {
         practiceName: "Neighborhood Veterinary",
         amount: "$79.00",
         periodLabel: "July 2026",
+        idempotencyKey: "lc:receipt:in_test",
       }),
     ).resolves.toEqual({ success: true, id: "email-1" });
 
-    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    const [payload, options] = mocks.resendSend.mock.calls[0] ?? [];
     expect(payload).toEqual(
       expect.objectContaining({
         replyTo: "support@openvpm.com",
         to: "owner@example.com",
       }),
+    );
+    expect(options).toEqual(
+      expect.objectContaining({ idempotencyKey: "lc:receipt:in_test" }),
+    );
+  });
+
+  it("passes the lifecycle key to Resend for dunning retries", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-1" } });
+    const { sendPaymentFailedEmail } = await loadEmail();
+
+    await expect(
+      sendPaymentFailedEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        amount: "$79.00",
+        idempotencyKey: "lc:dunning:in_test:2",
+      }),
+    ).resolves.toEqual({ success: true, id: "email-1" });
+
+    const [, options] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(options).toEqual(
+      expect.objectContaining({ idempotencyKey: "lc:dunning:in_test:2" }),
     );
   });
 });

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { sql } from "drizzle-orm";
 import { db } from "@openpims/db/client";
+import { isPlausiblePhysicalCompanyAddress } from "@openpims/email";
 import {
   describeDrift,
   driftIsClean,
@@ -48,6 +49,30 @@ function configured(name: string): boolean {
 function envValue(name: string): string | undefined {
   const trimmed = process.env[name]?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function hostedFirstClinicWinCheck(): {
+  ok: boolean;
+  detail: string;
+  advisory: boolean;
+} {
+  if (!envFlagEnabled("FIRST_CLINIC_WIN_EMAIL_ENABLED")) {
+    return {
+      ok: true,
+      detail: "First clinic win outreach is disabled",
+      advisory: true,
+    };
+  }
+  const launchAt = envValue("FIRST_CLINIC_WIN_EMAIL_LAUNCH_AT");
+  const parsed = launchAt ? new Date(launchAt) : null;
+  const valid = parsed !== null && !Number.isNaN(parsed.getTime());
+  return {
+    ok: valid,
+    detail: valid
+      ? "First clinic win outreach has an explicit launch boundary"
+      : "First clinic win outreach launch boundary is missing or invalid",
+    advisory: false,
+  };
 }
 
 // Overage price envs (STRIPE_PRICE_SMS_OVERAGE / STRIPE_PRICE_AI_OVERAGE) drive
@@ -169,10 +194,14 @@ async function hostedEmailCheck(): Promise<{ ok: boolean; detail: string }> {
   const invalidBaseUrl =
     configured("EMAIL_PREFERENCE_BASE_URL") &&
     preferenceBaseUrl !== CANONICAL_EMAIL_PREFERENCE_BASE_URL;
+  const invalidCompanyAddress =
+    configured("EMAIL_COMPANY_ADDRESS") &&
+    !isPlausiblePhysicalCompanyAddress(process.env.EMAIL_COMPANY_ADDRESS);
   const invalid =
     invalidSecrets.length +
     (invalidPreviousSecrets ? 1 : 0) +
-    (invalidBaseUrl ? 1 : 0);
+    (invalidBaseUrl ? 1 : 0) +
+    (invalidCompanyAddress ? 1 : 0);
   const issues = missing.length + invalid;
   const envResult = {
     ok: issues === 0,
@@ -521,6 +550,7 @@ export async function GET() {
       HOSTED_BILLING_ENV_NAMES,
       "Hosted billing envs present",
     );
+    checks.hostedFirstClinicWin = hostedFirstClinicWinCheck();
     checks.hostedSubscriptionTax = hostedSubscriptionTaxCheck();
     const hostedStorageEnv = hostedEnvCheck(
       HOSTED_STORAGE_ENV_NAMES,

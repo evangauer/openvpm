@@ -99,6 +99,12 @@ export default function AdminPage() {
     trpc.admin.activationFunnel.useQuery({ days: 30 }, { retry: false });
   const { data: onboardingFunnel, error: onboardingFunnelError } =
     trpc.admin.onboardingStepFunnel.useQuery({ days: 30 }, { retry: false });
+  const { data: firstVisitConversion, error: firstVisitConversionError } =
+    trpc.admin.firstVisitConversion.useQuery({ days: 30 }, { retry: false });
+  const { data: firstClinicWinPreview, error: firstClinicWinPreviewError } =
+    trpc.admin.firstClinicWinCampaignPreview.useQuery(undefined, {
+      retry: false,
+    });
   const { data: recoveryQueue, error: recoveryError } =
     trpc.admin.activationRecovery.useQuery(undefined, { retry: false });
   const { data: journey, error: journeyError } =
@@ -135,6 +141,7 @@ export default function AdminPage() {
       setAnalyticsError(null);
       utils.admin.overview.invalidate();
       utils.admin.activationFunnel.invalidate();
+      utils.admin.firstVisitConversion.invalidate();
       utils.admin.activationRecovery.invalidate();
     },
     onError: (err) => setAnalyticsError(err.message),
@@ -1249,6 +1256,165 @@ export default function AdminPage() {
               : "Loading journey cohorts..."}
           </p>
         )}
+      </div>
+
+      <div className="mt-6 rounded-lg border border-border bg-card p-5">
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <TrendingUp className="h-4 w-4" />
+          <span className="text-sm">
+            Supported US Cloud first visit → billing connected (30 days)
+          </span>
+        </div>
+        {firstVisitConversion ? (
+          <>
+            <div className="mt-3 grid gap-4 sm:grid-cols-3 xl:grid-cols-6">
+              <div>
+                <p className="text-sm text-muted-foreground">First visits</p>
+                <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
+                  {firstVisitConversion.totalFirstVisits}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">
+                  Already connected
+                </p>
+                <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
+                  {firstVisitConversion.alreadyCardedAtVisit}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">
+                  Mature opportunities
+                </p>
+                <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
+                  {firstVisitConversion.matureOpportunities}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">Within 24h</p>
+                <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
+                  {firstVisitConversion.convertedWithin24Hours}
+                  <span className="ml-2 text-sm font-normal text-muted-foreground">
+                    {formatPct(firstVisitConversion.conversionRate24Hours)}
+                  </span>
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">Within 72h</p>
+                <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
+                  {firstVisitConversion.convertedWithin72Hours}
+                  <span className="ml-2 text-sm font-normal text-muted-foreground">
+                    {formatPct(firstVisitConversion.conversionRate72Hours)}
+                  </span>
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">
+                  Awaiting maturity
+                </p>
+                <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
+                  {firstVisitConversion.awaitingMaturity}
+                </p>
+              </div>
+            </div>
+            <p className="mt-3 text-xs text-muted-foreground">
+              Both rates use the same 72-hour-mature opportunity denominator. A
+              signed subscription Checkout must occur strictly after the first
+              completed non-demo visit for a supported US Cloud practice.
+              Already-connected clinics are reported separately.
+            </p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              72-hour conversions by server-owned source: registration{" "}
+              {firstVisitConversion.sourceBreakdown.registration} · in-app
+              before visit{" "}
+              {firstVisitConversion.sourceBreakdown.in_app_pre_first_visit} ·
+              in-app after visit{" "}
+              {firstVisitConversion.sourceBreakdown.in_app_post_first_visit} ·
+              first-visit email{" "}
+              {firstVisitConversion.sourceBreakdown.first_visit_email} · trial
+              reminder {firstVisitConversion.sourceBreakdown.trial_ending_email}{" "}
+              · historical unknown{" "}
+              {firstVisitConversion.sourceBreakdown.unknown}
+            </p>
+          </>
+        ) : (
+          <p className="mt-3 text-sm text-muted-foreground">
+            {firstVisitConversionError
+              ? "Could not load first-visit conversion."
+              : "Loading first-visit conversion..."}
+          </p>
+        )}
+        <div className="mt-4 rounded-md border border-border bg-muted/30 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-medium">
+              First-visit outreach preflight
+            </p>
+            {firstClinicWinPreview ? (
+              <span
+                className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                  firstClinicWinPreview.enabled
+                    ? "bg-green-100 text-green-700"
+                    : firstClinicWinPreview.ready
+                      ? "bg-amber-100 text-amber-800"
+                      : "bg-red-100 text-red-700"
+                }`}
+              >
+                {firstClinicWinPreview.enabled
+                  ? "Enabled"
+                  : firstClinicWinPreview.ready
+                    ? "Staged, sending off"
+                    : "Blocked"}
+              </span>
+            ) : null}
+          </div>
+          {firstClinicWinPreview ? (
+            firstClinicWinPreview.ready ? (
+              <div className="mt-2 grid gap-3 text-sm sm:grid-cols-3">
+                <div>
+                  <p className="text-xs text-muted-foreground">
+                    Prospective UTC boundary
+                  </p>
+                  <p className="mt-1 tabular-nums">
+                    {firstClinicWinPreview.launchAt}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">
+                    Eligible next sweep
+                  </p>
+                  <p className="mt-1 font-semibold tabular-nums">
+                    {firstClinicWinPreview.eligibleCandidates}
+                    {firstClinicWinPreview.hasAdditionalCandidates ? (
+                      <span className="ml-2 text-xs font-normal text-amber-700">
+                        Multiple sweeps
+                      </span>
+                    ) : null}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Per-sweep cap</p>
+                  <p className="mt-1 font-semibold tabular-nums">
+                    {firstClinicWinPreview.batchLimit}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <p className="mt-2 text-sm text-red-700">
+                {firstClinicWinPreview.configurationIssue}
+              </p>
+            )
+          ) : (
+            <p className="mt-2 text-sm text-muted-foreground">
+              {firstClinicWinPreviewError
+                ? "Could not load the outreach preflight."
+                : "Loading outreach preflight..."}
+            </p>
+          )}
+          <p className="mt-2 text-xs text-muted-foreground">
+            Read-only aggregate preview. Loading this card never claims a
+            recipient or sends email.
+          </p>
+        </div>
       </div>
 
       <div className="mt-6 rounded-lg border border-border bg-card p-5">

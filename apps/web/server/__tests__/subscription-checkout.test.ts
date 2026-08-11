@@ -2,9 +2,11 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  createSubscriptionCheckoutSession: vi.fn(async () => ({
-    url: "https://stripe.example/subscription-checkout",
-  })),
+  createSubscriptionCheckoutSession: vi.fn(
+    async (_params: Record<string, unknown>) => ({
+      url: "https://stripe.example/subscription-checkout",
+    }),
+  ),
   createBillingPortalSession: vi.fn(async () => ({
     url: "https://stripe.example/billing-portal",
   })),
@@ -16,6 +18,17 @@ const mocks = vi.hoisted(() => ({
   syncPracticeSubscriptionQuantities: vi.fn(),
   usageForPractice: vi.fn(async () => 0),
   recordAuditLog: vi.fn(async () => undefined),
+  hasFirstRealVisit: vi.fn(async () => false),
+  verifySubscriptionCheckoutAttributionToken: vi.fn(
+    (
+      _token?: string,
+      _practiceId?: string,
+    ): {
+      practiceId: string;
+      source: "first_visit_email" | "trial_ending_email";
+      evidenceId: string;
+    } | null => null,
+  ),
 }));
 
 vi.mock("@/lib/stripe", () => ({
@@ -42,21 +55,32 @@ vi.mock("@/lib/audit", () => ({
   recordAuditLog: mocks.recordAuditLog,
 }));
 
+vi.mock("@/lib/billing/first-real-visit", () => ({
+  hasFirstRealVisit: mocks.hasFirstRealVisit,
+}));
+
+vi.mock("@/lib/billing/checkout-attribution", () => ({
+  verifySubscriptionCheckoutAttributionToken:
+    mocks.verifySubscriptionCheckoutAttributionToken,
+}));
+
 vi.mock("@/lib/tenant-db", () => ({
   withTenant: async (
     db: unknown,
     _practiceId: string,
-    fn: (tx: unknown) => Promise<unknown>
+    fn: (tx: unknown) => Promise<unknown>,
   ) => fn(db),
   withSystem: async (db: unknown, fn: (tx: unknown) => Promise<unknown>) =>
     fn(db),
 }));
 
-const { subscriptionRouter } = await import("../routers/subscription");
+const { subscriptionCheckoutTrialTerms, subscriptionRouter } =
+  await import("../routers/subscription");
 const { TRIAL_DAYS } = await import("@/lib/billing/plans");
 
 const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const USER_ID = "00000000-0000-0000-0000-000000000001";
+const HOUR_MS = 60 * 60 * 1000;
 
 function callerWithDb(db: Record<string, unknown>) {
   const session = {
@@ -123,15 +147,77 @@ afterEach(() => {
   });
   mocks.readBillingSyncState.mockResolvedValue(null);
   mocks.usageForPractice.mockResolvedValue(0);
+  mocks.hasFirstRealVisit.mockResolvedValue(false);
+  mocks.verifySubscriptionCheckoutAttributionToken.mockReturnValue(null);
 });
 
 describe("subscription checkout", () => {
+  it("derives mutually exclusive trial terms at Stripe's exact lead-time boundary", () => {
+    const now = new Date("2026-06-27T12:00:00.000Z");
+    const safelyBeyondStripeMinimum = new Date(
+      now.getTime() + 48 * HOUR_MS + 5 * 60 * 1000,
+    );
+    const justInsideSafetyBoundary = new Date(
+      safelyBeyondStripeMinimum.getTime() - 1,
+    );
+
+    expect(
+      subscriptionCheckoutTrialTerms({
+        billingStatus: "trialing",
+        trialEndsAt: safelyBeyondStripeMinimum,
+        now,
+      }),
+    ).toEqual({
+      trialEnd: safelyBeyondStripeMinimum,
+      trialPeriodDays: undefined,
+    });
+    expect(
+      subscriptionCheckoutTrialTerms({
+        billingStatus: "trialing",
+        trialEndsAt: justInsideSafetyBoundary,
+        now,
+      }),
+    ).toEqual({
+      trialEnd: null,
+      trialPeriodDays: 3,
+    });
+
+    for (const terms of [
+      subscriptionCheckoutTrialTerms({
+        billingStatus: "trialing",
+        trialEndsAt: safelyBeyondStripeMinimum,
+        now,
+      }),
+      subscriptionCheckoutTrialTerms({
+        billingStatus: "trialing",
+        trialEndsAt: justInsideSafetyBoundary,
+        now,
+      }),
+      subscriptionCheckoutTrialTerms({
+        billingStatus: "trialing",
+        trialEndsAt: new Date(now.getTime() - 1),
+        now,
+      }),
+      subscriptionCheckoutTrialTerms({
+        billingStatus: "none",
+        trialEndsAt: null,
+        now,
+      }),
+    ]) {
+      expect(
+        Boolean(terms.trialEnd) && terms.trialPeriodDays !== undefined,
+      ).toBe(false);
+    }
+  });
+
   it("keeps active-practice invariants explicit after practice checks", () => {
     const source = readFileSync("server/routers/subscription.ts", "utf8");
 
     expect(source).toContain("throw practiceNotFound()");
     expect(source).toContain('tier: practice.tier ?? "free"');
-    expect(source).toContain("customerId: practice.stripeCustomerId ?? undefined");
+    expect(source).toContain(
+      "customerId: practice.stripeCustomerId ?? undefined",
+    );
     expect(source).toContain("if (!practice.stripeCustomerId)");
     expect(source).toContain("const checkoutUrl = result?.url");
     expect(source).toContain("if (!isSafeCheckoutRedirectUrl(checkoutUrl))");
@@ -181,8 +267,10 @@ describe("subscription checkout", () => {
 
     await expect(callerWithDb(db).get()).resolves.toMatchObject({
       billingEnforced: true,
+      hasStripeCustomer: true,
       hasBillingAccount: true,
       hasSubscription: true,
+      billingSetupCompleted: true,
       locationCount: 2,
       billableSeatCount: 4,
       timezone: "America/Los_Angeles",
@@ -193,6 +281,46 @@ describe("subscription checkout", () => {
     });
     expect(mocks.syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
     expect(mocks.readBillingSyncState).toHaveBeenCalledWith(db, PRACTICE_ID);
+  });
+
+  it("does not treat a Stripe customer record as completed billing setup", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    const db = createDb([
+      [
+        practice({
+          billingStatus: "canceled",
+          stripeCustomerId: "cus_123",
+        }),
+      ],
+    ]);
+
+    await expect(callerWithDb(db).get()).resolves.toMatchObject({
+      hasStripeCustomer: true,
+      hasSubscription: false,
+      billingSetupCompleted: false,
+      hasBillingAccount: false,
+    });
+  });
+
+  it("uses the current subscription identity as billing proof, not the customer record", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    const db = createDb([
+      [
+        practice({
+          billingStatus: "trialing",
+          stripeSubscriptionId: "sub_123",
+        }),
+      ],
+    ]);
+
+    await expect(callerWithDb(db).get()).resolves.toMatchObject({
+      hasStripeCustomer: false,
+      hasSubscription: true,
+      billingSetupCompleted: true,
+      hasBillingAccount: true,
+    });
   });
 
   it("rejects a second Checkout when a Stripe subscription is already connected", async () => {
@@ -208,7 +336,7 @@ describe("subscription checkout", () => {
     ]);
 
     await expect(
-      callerWithDb(db).createCheckout({ tier: "cloud" })
+      callerWithDb(db).createCheckout({ tier: "cloud" }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message:
@@ -246,7 +374,9 @@ describe("subscription checkout", () => {
       message: "Practice not found",
     });
 
-    await expect(caller.createCheckout({ tier: "cloud" })).rejects.toMatchObject({
+    await expect(
+      caller.createCheckout({ tier: "cloud" }),
+    ).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
     });
@@ -268,7 +398,7 @@ describe("subscription checkout", () => {
     const db = createDb([[practice()]]);
 
     await expect(
-      callerWithDb(db).createCheckout({ tier: "cloud" })
+      callerWithDb(db).createCheckout({ tier: "cloud" }),
     ).resolves.toEqual({ url: "https://stripe.example/subscription-checkout" });
 
     expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalledWith(
@@ -279,11 +409,68 @@ describe("subscription checkout", () => {
         customerEmail: "practice@example.com",
         trialEnd: null,
         trialPeriodDays: TRIAL_DAYS,
-        successUrl: "https://app.example.com/settings?tab=billing&checkout=success",
+        successUrl:
+          "https://app.example.com/settings?tab=billing&checkout=success",
         cancelUrl:
           "https://app.example.com/settings?tab=billing&checkout=cancelled",
-      })
+        checkoutSource: "in_app_pre_first_visit",
+        checkoutSourceEvidenceId: "server-derived:v1",
+      }),
     );
+  });
+
+  it("derives post-visit source from durable server evidence", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    mocks.hasFirstRealVisit.mockResolvedValueOnce(true);
+
+    await callerWithDb(createDb([[practice()]])).createCheckout({
+      tier: "cloud",
+    });
+
+    expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        checkoutSource: "in_app_post_first_visit",
+        checkoutSourceEvidenceId: "server-derived:v1",
+      }),
+    );
+  });
+
+  it("accepts only a verified practice-bound email attribution token", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    mocks.hasFirstRealVisit.mockResolvedValueOnce(true);
+    mocks.verifySubscriptionCheckoutAttributionToken.mockReturnValueOnce({
+      practiceId: PRACTICE_ID,
+      source: "first_visit_email",
+      evidenceId: "first-clinic-win:v1",
+    });
+
+    await callerWithDb(createDb([[practice()]])).createCheckout({
+      tier: "cloud",
+      attributionToken: "signed-token",
+    });
+
+    expect(
+      mocks.verifySubscriptionCheckoutAttributionToken,
+    ).toHaveBeenCalledWith("signed-token", PRACTICE_ID);
+    expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        checkoutSource: "first_visit_email",
+        checkoutSourceEvidenceId: "first-clinic-win:v1",
+      }),
+    );
+  });
+
+  it("rejects invalid attribution instead of trusting the browser", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+
+    await expect(
+      callerWithDb(createDb([[practice()]])).createCheckout({
+        tier: "cloud",
+        attributionToken: "tampered-token",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    expect(mocks.createSubscriptionCheckoutSession).not.toHaveBeenCalled();
   });
 
   it("normalizes checkout billing contacts and falls back to the admin email", async () => {
@@ -314,13 +501,13 @@ describe("subscription checkout", () => {
       1,
       expect.objectContaining({
         customerEmail: "practice.owner@example.com",
-      })
+      }),
     );
     expect(mocks.createSubscriptionCheckoutSession).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
         customerEmail: "admin@example.com",
-      })
+      }),
     );
   });
 
@@ -340,7 +527,7 @@ describe("subscription checkout", () => {
     ]);
 
     await expect(
-      callerWithDb(db).createCheckout({ tier: "cloud" })
+      callerWithDb(db).createCheckout({ tier: "cloud" }),
     ).resolves.toEqual({ url: "https://stripe.example/subscription-checkout" });
 
     expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalledWith(
@@ -348,7 +535,67 @@ describe("subscription checkout", () => {
         customerId: "cus_123",
         trialEnd: trialEndsAt,
         trialPeriodDays: undefined,
-      })
+      }),
+    );
+  });
+
+  it("uses stable three-day terms for repeated near-expiry Checkout attempts", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-27T12:00:00Z"));
+    const trialEndsAt = new Date("2026-06-29T11:00:00Z");
+    const nearExpiryPractice = practice({
+      billingStatus: "trialing",
+      trialEndsAt,
+      stripeCustomerId: "cus_123",
+    });
+    const db = createDb([[nearExpiryPractice], [nearExpiryPractice]]);
+    const caller = callerWithDb(db);
+
+    await expect(caller.createCheckout({ tier: "cloud" })).resolves.toEqual({
+      url: "https://stripe.example/subscription-checkout",
+    });
+    vi.setSystemTime(new Date("2026-06-27T13:00:00Z"));
+    await expect(caller.createCheckout({ tier: "cloud" })).resolves.toEqual({
+      url: "https://stripe.example/subscription-checkout",
+    });
+
+    const firstParams =
+      mocks.createSubscriptionCheckoutSession.mock.calls[0]?.[0];
+    const secondParams =
+      mocks.createSubscriptionCheckoutSession.mock.calls[1]?.[0];
+    expect(firstParams).toEqual(secondParams);
+    expect(firstParams).toEqual(
+      expect.objectContaining({
+        customerId: "cus_123",
+        trialEnd: null,
+        trialPeriodDays: 3,
+      }),
+    );
+  });
+
+  it("uses three-day terms when an active trial has one hour left", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-27T12:00:00Z"));
+    const db = createDb([
+      [
+        practice({
+          billingStatus: "trialing",
+          trialEndsAt: new Date("2026-06-27T13:00:00Z"),
+        }),
+      ],
+    ]);
+
+    await expect(
+      callerWithDb(db).createCheckout({ tier: "cloud" }),
+    ).resolves.toEqual({ url: "https://stripe.example/subscription-checkout" });
+
+    expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        trialEnd: null,
+        trialPeriodDays: 3,
+      }),
     );
   });
 
@@ -366,14 +613,14 @@ describe("subscription checkout", () => {
     ]);
 
     await expect(
-      callerWithDb(db).createCheckout({ tier: "cloud" })
+      callerWithDb(db).createCheckout({ tier: "cloud" }),
     ).resolves.toEqual({ url: "https://stripe.example/subscription-checkout" });
 
     expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalledWith(
       expect.objectContaining({
         trialEnd: null,
         trialPeriodDays: undefined,
-      })
+      }),
     );
   });
 
@@ -385,7 +632,7 @@ describe("subscription checkout", () => {
     const db = createDb([[practice()]]);
 
     await expect(
-      callerWithDb(db).createCheckout({ tier: "cloud" })
+      callerWithDb(db).createCheckout({ tier: "cloud" }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message: "Billing is not configured on this server.",
@@ -400,7 +647,7 @@ describe("subscription checkout", () => {
     const db = createDb([[practice()]]);
 
     await expect(
-      callerWithDb(db).createCheckout({ tier: "cloud" })
+      callerWithDb(db).createCheckout({ tier: "cloud" }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message: "Billing is not configured on this server.",

@@ -95,6 +95,35 @@ describe("claimStripeEvent", () => {
     });
   });
 
+  it("persists prospective Checkout source only with its bounded evidence id", async () => {
+    const values = vi.fn(() => ({
+      onConflictDoNothing: vi.fn(() => ({
+        returning: vi.fn(async () => [{ eventId: "evt_checkout" }]),
+      })),
+    }));
+    const db = { insert: vi.fn(() => ({ values })) };
+
+    await claimStripeEvent(db as never, {
+      eventId: "evt_checkout",
+      endpoint: "subscription",
+      eventType: "checkout.session.completed",
+      evidence: {
+        eventCreatedAt: new Date("2026-08-11T12:00:00.000Z"),
+        objectId: "cs_checkout",
+        evidenceKind: "subscription_checkout_completed",
+        checkoutSource: "first_visit_email",
+        checkoutSourceEvidenceId: "first-clinic-win:v1",
+      },
+    });
+
+    expect(values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        checkoutSource: "first_visit_email",
+        checkoutSourceEvidenceId: "first-clinic-win:v1",
+      }),
+    );
+  });
+
   it("attaches evidence once and rejects a missing or differently-owned row", async () => {
     const returning = vi
       .fn()

@@ -9,6 +9,7 @@ export const CRON_HEARTBEAT_JOBS = [
   "file-replicas",
   "usage-reconcile",
   "billing-lifecycle",
+  "first-clinic-win",
   "setup-recovery",
   "wellness-billing",
   "rate-limit-cleanup",

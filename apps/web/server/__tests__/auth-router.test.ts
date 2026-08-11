@@ -614,6 +614,8 @@ describe("auth router input validation", () => {
         practiceId: "practice-1",
         customerEmail: "owner@example.com",
         trialPeriodDays: 14,
+        checkoutSource: "registration",
+        checkoutSourceEvidenceId: "registration:v1",
         successUrl: "http://localhost:3000/login?checkout=success",
         cancelUrl: "http://localhost:3000/login?checkout=cancelled",
       }),

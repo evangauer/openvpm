@@ -19,13 +19,15 @@ describe("trial badge UI", () => {
     expect(source).toContain("Billing status unavailable");
     expect(source).toContain("if (error || !data)");
     expect(source.indexOf("if (isLoading)")).toBeLessThan(
-      source.indexOf("if (error || !data)")
+      source.indexOf("if (error || !data)"),
     );
     expect(source.indexOf("if (error || !data)")).toBeLessThan(
-      source.indexOf('if (!data.billingEnforced || data.billingStatus === "active")')
+      source.indexOf(
+        'if (!data.billingEnforced || data.billingStatus === "active")',
+      ),
     );
     expect(source).not.toContain(
-      'if (!data || !data.billingEnforced || data.billingStatus === "active")'
+      'if (!data || !data.billingEnforced || data.billingStatus === "active")',
     );
   });
 
@@ -38,27 +40,84 @@ describe("trial badge UI", () => {
     expect(source).toContain("disabled={checkout.isPending}");
   });
 
-  it("routes card-on-file trialing accounts to billing instead of another Checkout", () => {
+  it("routes connected or confirming subscriptions to billing instead of another Checkout", () => {
     expect(source).toContain("if (data.hasSubscription)");
     expect(source).toContain('href="/settings?tab=billing"');
-    expect(source).toContain("Card on file · Manage billing");
+    expect(source).toContain("data.billingSetupCompleted");
+    expect(source).toContain("Billing connected · Manage billing");
+    expect(source).toContain("Billing confirmation pending");
     expect(source.indexOf("if (data.hasSubscription)")).toBeLessThan(
       source.indexOf("const trialing ="),
     );
-    expect(settingsSource).toContain(
+    expect(settingsSource).toContain("{data.hasSubscription ? (");
+    expect(settingsSource).not.toContain(
       "data.hasSubscription || data.hasBillingAccount",
     );
     expect(addCardSource).toContain(
-      "subscription.data?.hasSubscription || subscription.data?.hasBillingAccount",
+      "subscription.data?.billingSetupCompleted === true",
+    );
+    expect(addCardSource).toContain(
+      "subscription.data?.hasSubscription && !billingSetupCompleted",
+    );
+    expect(addCardSource).not.toContain("hasBillingAccount");
+  });
+
+  it("treats Checkout return parameters as confirmation triggers, never billing proof", () => {
+    expect(settingsSource).toContain('checkoutReturnParam === "success"');
+    expect(settingsSource).toContain('checkoutReturnParam === "cancelled"');
+    expect(settingsSource).toContain(
+      "const billingSetupCompleted = data?.billingSetupCompleted === true",
+    );
+    expect(settingsSource).toContain("refetchBillingRef.current()");
+    expect(settingsSource).toContain("}, 2_000)");
+    expect(settingsSource).toContain("}, 30_000)");
+    expect(settingsSource).toContain("Confirming billing with Stripe");
+    expect(settingsSource).toContain("Billing connected");
+    expect(settingsSource).toContain("Checkout cancelled");
+    expect(settingsSource).toContain(
+      'checkoutReturn === "success" && !billingSetupCompleted',
+    );
+    expect(settingsSource).toContain(
+      "disabled={checkout.isPending || checkoutConfirmationUnresolved}",
+    );
+  });
+
+  it("states Cloud feature access and metered usage without claiming everything is unmetered", () => {
+    expect(settingsSource).toContain(
+      "Unlimited staff and all product features are",
+    );
+    expect(settingsSource).toContain("currentPlan.smsOveragePriceUsd");
+    expect(settingsSource).toContain("currentPlan.aiOveragePriceUsd");
+    expect(settingsSource).toContain("Additional usage is");
+    expect(settingsSource).toContain("/text");
+    expect(settingsSource).toContain("/AI action");
+    expect(settingsSource).not.toContain("staff, everything included");
+  });
+
+  it("distinguishes retrying payments from terminal read-only billing", () => {
+    expect(source).toContain('data.billingStatus === "past_due"');
+    expect(source).toContain("Payment retrying · Manage billing");
+    expect(source).toContain('data.billingStatus === "unpaid"');
+    expect(source).toContain("Subscription inactive · Reactivate billing");
+    expect(source.indexOf('data.billingStatus === "past_due"')).toBeLessThan(
+      source.indexOf("if (data.hasSubscription)"),
+    );
+    expect(source.indexOf('data.billingStatus === "unpaid"')).toBeLessThan(
+      source.indexOf("if (data.hasSubscription)"),
+    );
+    expect(settingsSource).toContain("Stripe is retrying it.");
+    expect(settingsSource).toContain("remains available; update your payment");
+    expect(settingsSource).not.toContain(
+      "Update your payment method to restore write access.",
     );
   });
 
   it("counts trial days from the practice timezone", () => {
     expect(source).toContain(
-      'import { trialCalendarDaysLeft } from "@/lib/billing/trial-days"'
+      'import { trialCalendarDaysLeft } from "@/lib/billing/trial-days"',
     );
     expect(source).toContain(
-      "trialCalendarDaysLeft(data.trialEndsAt, data.timezone)"
+      "trialCalendarDaysLeft(data.trialEndsAt, data.timezone)",
     );
     expect(source).not.toContain("getTime() - Date.now()");
     expect(source).not.toContain("24 * 60 * 60 * 1000");

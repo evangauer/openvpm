@@ -15,6 +15,7 @@ describe("Vercel cron schedule", () => {
         "/api/cron/file-replicas",
         "/api/cron/usage-reconcile",
         "/api/cron/billing-lifecycle",
+        "/api/cron/first-clinic-win",
         "/api/cron/setup-recovery",
         "/api/cron/wellness-billing",
         "/api/cron/rate-limit-cleanup",

@@ -260,6 +260,28 @@ export async function marketingEmailEnabledForRecipient(
   });
 }
 
+/**
+ * Serialize a final marketing-send decision with settings, one-click
+ * unsubscribe, bounce, and complaint projections for the same recipient.
+ * Callers must acquire the practice recovery lock first so every platform
+ * lifecycle send follows one fixed lock order: practice -> recipient.
+ */
+export async function lockAndCheckMarketingEmailEnabled(
+  tx: Database,
+  email: string,
+): Promise<boolean> {
+  const identity = configuredIdentity();
+  const emailHash = identity.emailHashFor(email);
+  await assertPersistedIdentityKey(tx, identity.fingerprint);
+  await lockRecipient(tx, emailHash);
+  const preference = await currentPreference(
+    tx,
+    emailHash,
+    identity.fingerprint,
+  );
+  return preference?.marketingEnabled !== false;
+}
+
 export async function setMarketingEmailPreferenceForRecipient(input: {
   email: string;
   enabled: boolean;

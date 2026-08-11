@@ -39,17 +39,25 @@ export const usageRecords = pgTable(
   (t) => ({
     practicePeriodIdx: index("usage_practice_period_idx").on(
       t.practiceId,
-      t.periodMonth
+      t.periodMonth,
     ),
     meterRetryIdx: index("usage_meter_retry_idx").on(t.stripeMeteredAt),
-  })
+  }),
 );
 
 export const stripeConversionEvidenceKindEnum = pgEnum(
   "stripe_conversion_evidence_kind",
+  ["subscription_checkout_completed", "positive_subscription_invoice_paid"],
+);
+
+export const subscriptionCheckoutSourceEnum = pgEnum(
+  "subscription_checkout_source",
   [
-    "subscription_checkout_completed",
-    "positive_subscription_invoice_paid",
+    "registration",
+    "in_app_pre_first_visit",
+    "in_app_post_first_visit",
+    "first_visit_email",
+    "trial_ending_email",
   ],
 );
 
@@ -71,6 +79,11 @@ export const stripeEvents = pgTable(
     /** Allowlisted Checkout Session / Invoice object id; never the raw payload. */
     objectId: varchar("object_id", { length: 128 }),
     evidenceKind: stripeConversionEvidenceKindEnum("evidence_kind"),
+    /** Prospective, signed Checkout metadata. Null is explicit legacy unknown. */
+    checkoutSource: subscriptionCheckoutSourceEnum("checkout_source"),
+    checkoutSourceEvidenceId: varchar("checkout_source_evidence_id", {
+      length: 128,
+    }),
     /** Positive subscription invoice amount in integer minor currency units. */
     amountCents: integer("amount_cents"),
     /** Lower-case ISO 4217 code, only for positive invoice evidence. */
@@ -92,12 +105,22 @@ export const stripeEvents = pgTable(
         table.eventId,
       )
       .where(sql`${table.evidenceKind} is not null`),
+    checkoutSourceIdx: index("stripe_events_checkout_source_idx")
+      .on(
+        table.checkoutSource,
+        table.practiceId,
+        table.eventCreatedAt,
+        table.eventId,
+      )
+      .where(sql`${table.checkoutSource} is not null`),
     evidenceShapeCheck: check(
       "stripe_events_conversion_evidence_shape_check",
       sql`(
         ${table.evidenceKind} is null and
         ${table.eventCreatedAt} is null and
         ${table.objectId} is null and
+        ${table.checkoutSource} is null and
+        ${table.checkoutSourceEvidenceId} is null and
         ${table.amountCents} is null and
         ${table.currency} is null
       ) or (
@@ -107,15 +130,24 @@ export const stripeEvents = pgTable(
         length(btrim(${table.objectId})) > 0 and
         (
           (${table.evidenceKind} = 'subscription_checkout_completed' and
-            ${table.amountCents} is null and ${table.currency} is null) or
+            ${table.amountCents} is null and ${table.currency} is null and
+            (
+              (${table.checkoutSource} is null and
+                ${table.checkoutSourceEvidenceId} is null) or
+              (${table.checkoutSource} is not null and
+                ${table.checkoutSourceEvidenceId} is not null and
+                length(btrim(${table.checkoutSourceEvidenceId})) > 0)
+            )) or
           (${table.evidenceKind} = 'positive_subscription_invoice_paid' and
             ${table.amountCents} is not null and ${table.amountCents} > 0 and
             ${table.currency} is not null and
+            ${table.checkoutSource} is null and
+            ${table.checkoutSourceEvidenceId} is null and
             ${table.currency} ~ '^[a-z]{3}$')
         )
       )`,
     ),
-  })
+  }),
 );
 
 /**
@@ -136,5 +168,5 @@ export const rateLimitBuckets = pgTable(
   },
   (table) => ({
     resetAtIdx: index("rate_limit_buckets_reset_at_idx").on(table.resetAt),
-  })
+  }),
 );

@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => {
     const result = selectResults.shift() ?? [];
     const builder = {
       from: vi.fn(() => builder),
+      innerJoin: vi.fn(() => builder),
       where: vi.fn(() => builder),
       limit: vi.fn(async () => result),
       then: (
@@ -42,7 +43,17 @@ const mocks = vi.hoisted(() => {
     syncPracticeSubscriptionQuantities: vi.fn(async () => ({ status: "ok" })),
     alertOps: vi.fn(async () => undefined),
     sendLifecycleEmail: vi.fn(
-      async (_opts: { send: () => Promise<unknown> }) => undefined,
+      async (_opts: {
+        send: () => Promise<unknown>;
+        stillEligible?: (tx: unknown) => Promise<boolean>;
+      }): Promise<{
+        sent: boolean;
+        deduped: boolean;
+        dedupeState?: "sent" | "in_flight" | "failed";
+      }> => ({
+        sent: true,
+        deduped: false,
+      }),
     ),
     sendPaymentReceiptEmail: vi.fn(async () => undefined),
     sendPaymentFailedEmail: vi.fn(async () => undefined),
@@ -137,7 +148,7 @@ function streamedOversizedStripeRequest() {
   }) as never;
 }
 
-function checkoutCompletedEvent() {
+function checkoutCompletedEvent(metadata?: Record<string, string>) {
   return {
     id: "evt_checkout",
     type: "checkout.session.completed",
@@ -150,13 +161,14 @@ function checkoutCompletedEvent() {
         client_reference_id: PRACTICE_ID,
         customer: CUSTOMER_ID,
         subscription: SUBSCRIPTION_ID,
+        ...(metadata ? { metadata } : {}),
       },
     },
   };
 }
 
 function stripeSubscription(
-  status: "trialing" | "active" = "active",
+  status: "trialing" | "active" | "past_due" | "unpaid" | "canceled" = "active",
   metadata: Record<string, string> = { practiceId: PRACTICE_ID },
 ) {
   return {
@@ -172,7 +184,7 @@ function stripeSubscription(
 }
 
 function subscriptionUpdatedEvent(
-  status: "trialing" | "active" = "active",
+  status: "trialing" | "active" | "past_due" | "unpaid" = "active",
   eventId = "evt_subscription",
 ) {
   return {
@@ -214,7 +226,7 @@ function invoicePaymentSucceededEvent(subscriptionId?: string) {
   };
 }
 
-function invoicePaymentFailedEvent() {
+function invoicePaymentFailedEvent(subscriptionId = SUBSCRIPTION_ID) {
   return {
     id: "evt_invoice_failed",
     type: "invoice.payment_failed",
@@ -228,6 +240,14 @@ function invoicePaymentFailedEvent() {
         next_payment_attempt: Math.floor(
           Date.parse("2026-07-01T02:00:00.000Z") / 1000,
         ),
+        parent: {
+          type: "subscription_details",
+          quote_details: null,
+          subscription_details: {
+            metadata: { practiceId: PRACTICE_ID },
+            subscription: subscriptionId,
+          },
+        },
       },
     },
   };
@@ -235,8 +255,15 @@ function invoicePaymentFailedEvent() {
 
 function invokeLifecycleSendOnce() {
   mocks.sendLifecycleEmail.mockImplementationOnce(
-    async (opts: { send: () => Promise<unknown> }) => {
+    async (opts: {
+      send: () => Promise<unknown>;
+      stillEligible?: (tx: unknown) => Promise<boolean>;
+    }) => {
+      if (opts.stillEligible && !(await opts.stillEligible(mocks.db))) {
+        return { sent: false, deduped: false };
+      }
       await opts.send();
+      return { sent: true, deduped: false };
     },
   );
 }
@@ -245,6 +272,18 @@ afterEach(() => {
   vi.clearAllMocks();
   mocks.selectResults.length = 0;
   mocks.updateReturns.length = 0;
+  mocks.withSystem.mockImplementation(
+    async (_db: unknown, fn: (tx: unknown) => unknown) => fn(mocks.db),
+  );
+  mocks.sendLifecycleEmail.mockImplementation(
+    async (_opts: {
+      send: () => Promise<unknown>;
+      stillEligible?: (tx: unknown) => Promise<boolean>;
+    }) => ({
+      sent: true,
+      deduped: false,
+    }),
+  );
   mocks.claimStripeEvent.mockResolvedValue(true);
   mocks.attachStripeEventPractice.mockResolvedValue(undefined);
   mocks.projectStripeConversionMilestonesForEvent.mockResolvedValue(1);
@@ -333,6 +372,36 @@ describe("Stripe subscription webhook", () => {
     ).toHaveBeenCalledWith(mocks.db, "evt_checkout");
   });
 
+  it("persists only valid signed Checkout source metadata", async () => {
+    process.env.STRIPE_PRICE_CLOUD_LOCATION = PRICE_ID;
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
+      checkoutCompletedEvent({
+        checkoutSource: "first_visit_email",
+        checkoutSourceEvidenceId: "first-clinic-win:v1",
+      }),
+    );
+    mocks.retrieveSubscription.mockResolvedValueOnce(
+      stripeSubscription("trialing"),
+    );
+    mocks.updateReturns.push([{ id: PRACTICE_ID }], [{ id: PRACTICE_ID }]);
+
+    const response = await POST(stripeRequest());
+
+    expect(response.status).toBe(200);
+    expect(mocks.claimStripeEvent).toHaveBeenCalledWith(mocks.db, {
+      eventId: "evt_checkout",
+      endpoint: "subscription",
+      eventType: "checkout.session.completed",
+      evidence: {
+        eventCreatedAt: new Date(EVENT_CREATED * 1000),
+        objectId: "cs_subscription",
+        evidenceKind: "subscription_checkout_completed",
+        checkoutSource: "first_visit_email",
+        checkoutSourceEvidenceId: "first-clinic-win:v1",
+      },
+    });
+  });
+
   it("does not sync Checkout quantities when no active practice was updated", async () => {
     mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
       checkoutCompletedEvent(),
@@ -344,6 +413,28 @@ describe("Stripe subscription webhook", () => {
     await expect(response.json()).resolves.toEqual({ received: true });
     expect(mocks.retrieveSubscription).not.toHaveBeenCalled();
     expect(mocks.syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
+  });
+
+  it("does not let a delayed old Checkout replace a newer subscription identity", async () => {
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
+      checkoutCompletedEvent(),
+    );
+    // The initial link CAS loses because the practice already stores another
+    // customer or subscription identity.
+    mocks.updateReturns.push([]);
+
+    const response = await POST(stripeRequest());
+
+    expect(response.status).toBe(200);
+    expect(mocks.retrieveSubscription).not.toHaveBeenCalled();
+    expect(mocks.attachStripeEventPractice).not.toHaveBeenCalled();
+    expect(mocks.syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
+    expect(ROUTE_SOURCE).toMatch(
+      /isNull\(practices\.stripeSubscriptionId\)[\s\S]*eq\(practices\.stripeSubscriptionId, subscriptionId\)/,
+    );
+    expect(ROUTE_SOURCE).toMatch(
+      /isNull\(practices\.stripeCustomerId\)[\s\S]*eq\(practices\.stripeCustomerId, customerId\)/,
+    );
   });
 
   it("applies subscription updates only after touching an active practice", async () => {
@@ -380,6 +471,78 @@ describe("Stripe subscription webhook", () => {
     ).not.toHaveBeenCalled();
   });
 
+  it("re-reads current Stripe state before applying an out-of-order subscription update", async () => {
+    process.env.STRIPE_PRICE_CLOUD_LOCATION = PRICE_ID;
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
+      subscriptionUpdatedEvent("past_due", "evt_stale_past_due"),
+    );
+    mocks.retrieveSubscription.mockResolvedValueOnce(
+      stripeSubscription("unpaid"),
+    );
+    mocks.updateReturns.push([{ id: PRACTICE_ID }]);
+
+    const response = await POST(stripeRequest());
+
+    expect(response.status).toBe(200);
+    expect(mocks.retrieveSubscription).toHaveBeenCalledWith(SUBSCRIPTION_ID);
+    expect(mocks.updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        billingStatus: "unpaid",
+        stripeSubscriptionId: SUBSCRIPTION_ID,
+      }),
+    );
+    expect(mocks.updateSet).not.toHaveBeenCalledWith(
+      expect.objectContaining({ billingStatus: "past_due" }),
+    );
+  });
+
+  it("does not let an older subscription replace a newer stored identity", async () => {
+    const oldSubscriptionId = "sub_old";
+    const newSubscriptionId = "sub_new";
+    const event = subscriptionUpdatedEvent("active", "evt_old_subscription");
+    event.data.object.id = oldSubscriptionId;
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(event);
+    mocks.retrieveSubscription.mockResolvedValueOnce({
+      ...stripeSubscription("active"),
+      id: oldSubscriptionId,
+    });
+    // The identity-CAS update loses because the clinic now stores sub_new;
+    // the follow-up read classifies this as a stale old-subscription event.
+    mocks.updateReturns.push([]);
+    mocks.selectResults.push([{ stripeSubscriptionId: newSubscriptionId }]);
+
+    const response = await POST(stripeRequest());
+
+    expect(response.status).toBe(200);
+    expect(mocks.syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
+    expect(ROUTE_SOURCE).toMatch(
+      /or\(\s*isNull\(practices\.stripeSubscriptionId\),\s*eq\(practices\.stripeSubscriptionId, sub\.id\)/s,
+    );
+  });
+
+  it("does not reattach a terminal subscription after its id was cleared", async () => {
+    const event = subscriptionUpdatedEvent(
+      "past_due",
+      "evt_delayed_terminal_subscription",
+    );
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(event);
+    mocks.retrieveSubscription.mockResolvedValueOnce(
+      stripeSubscription("canceled"),
+    );
+    mocks.updateReturns.push([{ id: PRACTICE_ID }]);
+
+    const response = await POST(stripeRequest());
+
+    expect(response.status).toBe(200);
+    expect(mocks.updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        billingStatus: "canceled",
+        stripeSubscriptionId: null,
+      }),
+    );
+    expect(mocks.syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
+  });
+
   it("does not manufacture payment evidence from a zero-dollar invoice", async () => {
     const event = invoicePaymentSucceededEvent(SUBSCRIPTION_ID);
     event.data.object.amount_paid = 0;
@@ -414,7 +577,9 @@ describe("Stripe subscription webhook", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ received: true });
     expect(mocks.retrieveSubscription).toHaveBeenCalledWith(SUBSCRIPTION_ID);
-    expect(mocks.select).not.toHaveBeenCalled();
+    // Post-commit delivery checks the exact event attribution and finds none;
+    // it never falls back from this strict subscription mapping to customer id.
+    expect(mocks.select).toHaveBeenCalledTimes(2);
     expect(mocks.attachStripeEventPractice).not.toHaveBeenCalled();
     expect(mocks.sendLifecycleEmail).not.toHaveBeenCalled();
     expect(
@@ -508,6 +673,9 @@ describe("Stripe subscription webhook", () => {
     const event = subscriptionUpdatedEvent();
     event.data.object.metadata = {};
     mocks.constructSubscriptionWebhookEvent.mockResolvedValue(event);
+    mocks.retrieveSubscription.mockResolvedValueOnce(
+      stripeSubscription("active", {}),
+    );
     mocks.selectResults.push([
       { id: PRACTICE_ID, stripeSubscriptionId: SUBSCRIPTION_ID },
     ]);
@@ -528,6 +696,9 @@ describe("Stripe subscription webhook", () => {
     const event = subscriptionUpdatedEvent();
     event.data.object.metadata = {};
     mocks.constructSubscriptionWebhookEvent.mockResolvedValue(event);
+    mocks.retrieveSubscription.mockResolvedValueOnce(
+      stripeSubscription("active", {}),
+    );
     mocks.selectResults.push([
       { id: PRACTICE_ID, stripeSubscriptionId: SUBSCRIPTION_ID },
       {
@@ -551,14 +722,15 @@ describe("Stripe subscription webhook", () => {
     mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
       invoicePaymentSucceededEvent(),
     );
-    mocks.selectResults.push([
-      {
-        id: PRACTICE_ID,
-        email: " Owner@Example.COM ",
-        name: "Westside Vet",
-        timezone: "America/Los_Angeles",
-      },
-    ]);
+    const practice = {
+      id: PRACTICE_ID,
+      email: " Owner@Example.COM ",
+      name: "Westside Vet",
+      timezone: "America/Los_Angeles",
+    };
+    // First resolve/attach the customer-only invoice inside the billing
+    // transaction, then re-read that durable event attribution post-commit.
+    mocks.selectResults.push([practice], [practice]);
     invokeLifecycleSendOnce();
 
     const response = await POST(stripeRequest());
@@ -570,6 +742,7 @@ describe("Stripe subscription webhook", () => {
         to: "owner@example.com",
         emailType: "receipt",
         dedupeKey: "lc:receipt:in_paid",
+        retryOnFail: true,
       }),
     );
     expect(mocks.sendPaymentReceiptEmail).toHaveBeenCalledWith({
@@ -578,7 +751,38 @@ describe("Stripe subscription webhook", () => {
       amount: "$79.00",
       periodLabel: "June 30, 2026 – July 31, 2026",
       invoiceUrl: "https://billing.stripe.test/in_paid",
+      idempotencyKey: "lc:receipt:in_paid",
     });
+  });
+
+  it("fails closed when a customer-only receipt maps to multiple active practices", async () => {
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
+      invoicePaymentSucceededEvent(),
+    );
+    mocks.selectResults.push([
+      {
+        id: PRACTICE_ID,
+        email: "owner@example.com",
+        name: "Westside Vet",
+        timezone: "America/New_York",
+      },
+      {
+        id: "00000000-0000-0000-0000-0000000000bb",
+        email: "other@example.com",
+        name: "Other Vet",
+        timezone: "America/New_York",
+      },
+    ]);
+
+    const response = await POST(stripeRequest());
+
+    expect(response.status).toBe(500);
+    expect(mocks.attachStripeEventPractice).not.toHaveBeenCalled();
+    expect(mocks.sendLifecycleEmail).not.toHaveBeenCalled();
+    expect(mocks.alertOps).toHaveBeenCalledWith(
+      "Subscription webhook handler error",
+      expect.stringContaining("maps to multiple active practices"),
+    );
   });
 
   it("self-heals subscription state from a positive paid invoice", async () => {
@@ -634,6 +838,122 @@ describe("Stripe subscription webhook", () => {
     expect(mocks.sendPaymentReceiptEmail).toHaveBeenCalledOnce();
   });
 
+  it("delivers lifecycle email only after the billing transaction resolves", async () => {
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
+      invoicePaymentSucceededEvent(),
+    );
+    const practice = {
+      id: PRACTICE_ID,
+      email: "owner@example.com",
+      name: "Westside Vet",
+      timezone: "America/New_York",
+    };
+    mocks.selectResults.push([practice], [practice]);
+    let withSystemCalls = 0;
+    let billingTransactionResolved = false;
+    mocks.withSystem.mockImplementation(async (_db, fn) => {
+      withSystemCalls += 1;
+      const result = await fn(mocks.db);
+      if (withSystemCalls === 1) billingTransactionResolved = true;
+      return result;
+    });
+    mocks.sendLifecycleEmail.mockImplementationOnce(async (opts) => {
+      expect(billingTransactionResolved).toBe(true);
+      await opts.send();
+      return { sent: true, deduped: false };
+    });
+
+    const response = await POST(stripeRequest());
+
+    expect(response.status).toBe(200);
+    expect(mocks.withSystem).toHaveBeenCalledTimes(2);
+    expect(mocks.sendPaymentReceiptEmail).toHaveBeenCalledOnce();
+  });
+
+  it("uses durable event attribution to finish email on a duplicate Stripe delivery", async () => {
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
+      invoicePaymentSucceededEvent(),
+    );
+    mocks.claimStripeEvent.mockResolvedValueOnce(false);
+    mocks.selectResults.push([
+      {
+        id: PRACTICE_ID,
+        email: "owner@example.com",
+        name: "Westside Vet",
+        timezone: "America/New_York",
+      },
+    ]);
+    invokeLifecycleSendOnce();
+
+    const response = await POST(stripeRequest());
+
+    expect(response.status).toBe(200);
+    expect(mocks.updateSet).not.toHaveBeenCalled();
+    expect(mocks.attachStripeEventPractice).not.toHaveBeenCalled();
+    expect(mocks.sendPaymentReceiptEmail).toHaveBeenCalledOnce();
+  });
+
+  it("returns 500 while a duplicate lifecycle claim is still in flight", async () => {
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
+      invoicePaymentSucceededEvent(),
+    );
+    mocks.claimStripeEvent.mockResolvedValueOnce(false);
+    mocks.selectResults.push([
+      {
+        id: PRACTICE_ID,
+        email: "owner@example.com",
+        name: "Westside Vet",
+        timezone: "America/New_York",
+        billingStatus: "active",
+      },
+    ]);
+    mocks.sendLifecycleEmail.mockResolvedValueOnce({
+      sent: false,
+      deduped: true,
+      dedupeState: "in_flight",
+    });
+
+    const response = await POST(stripeRequest());
+
+    expect(response.status).toBe(500);
+    expect(mocks.sendPaymentReceiptEmail).not.toHaveBeenCalled();
+    expect(mocks.alertOps).toHaveBeenCalledWith(
+      "Subscription lifecycle delivery error",
+      expect.stringContaining("does not have a durable sent outcome"),
+    );
+  });
+
+  it("returns 500 so Stripe retries a post-commit lifecycle delivery failure", async () => {
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
+      invoicePaymentSucceededEvent(),
+    );
+    const practice = {
+      id: PRACTICE_ID,
+      email: "owner@example.com",
+      name: "Westside Vet",
+      timezone: "America/New_York",
+    };
+    mocks.selectResults.push([practice], [practice]);
+    mocks.sendLifecycleEmail.mockResolvedValueOnce({
+      sent: false,
+      deduped: false,
+    });
+
+    const response = await POST(stripeRequest());
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({ error: "Handler error" });
+    expect(mocks.attachStripeEventPractice).toHaveBeenCalledWith(mocks.db, {
+      eventId: "evt_invoice_paid",
+      endpoint: "subscription",
+      practiceId: PRACTICE_ID,
+    });
+    expect(mocks.alertOps).toHaveBeenCalledWith(
+      "Subscription lifecycle delivery error",
+      expect.stringContaining("failed after billing state committed"),
+    );
+  });
+
   it("skips subscription receipts when the billing contact is blank", async () => {
     mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
       invoicePaymentSucceededEvent(),
@@ -658,35 +978,54 @@ describe("Stripe subscription webhook", () => {
     mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
       invoicePaymentFailedEvent(),
     );
-    mocks.selectResults.push([
-      {
-        id: PRACTICE_ID,
-        email: " Owner@Example.COM ",
-        name: "Westside Vet",
-        timezone: "America/Los_Angeles",
-      },
-    ]);
+    mocks.retrieveSubscription.mockResolvedValueOnce(
+      stripeSubscription("past_due"),
+    );
+    mocks.selectResults.push(
+      [
+        {
+          id: PRACTICE_ID,
+          email: " Owner@Example.COM ",
+          name: "Westside Vet",
+          timezone: "America/Los_Angeles",
+          billingStatus: "past_due",
+        },
+      ],
+      [{ id: PRACTICE_ID }],
+    );
+    mocks.updateReturns.push([{ id: PRACTICE_ID }]);
     invokeLifecycleSendOnce();
 
     const response = await POST(stripeRequest());
 
     await expect(response.json()).resolves.toEqual({ received: true });
-    expect(mocks.updateSet).toHaveBeenCalledWith({
-      billingStatus: "past_due",
-    });
+    expect(mocks.updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        billingStatus: "past_due",
+        stripeSubscriptionId: SUBSCRIPTION_ID,
+      }),
+    );
+    expect(mocks.retrieveSubscription).toHaveBeenCalledWith(SUBSCRIPTION_ID);
     expect(mocks.sendLifecycleEmail).toHaveBeenCalledWith(
       expect.objectContaining({
         practiceId: PRACTICE_ID,
         to: "owner@example.com",
         emailType: "dunning",
         dedupeKey: "lc:dunning:in_failed:2",
+        retryOnFail: true,
       }),
     );
+    expect(mocks.attachStripeEventPractice).toHaveBeenCalledWith(mocks.db, {
+      eventId: "evt_invoice_failed",
+      endpoint: "subscription",
+      practiceId: PRACTICE_ID,
+    });
     expect(mocks.sendPaymentFailedEmail).toHaveBeenCalledWith({
       to: "owner@example.com",
       practiceName: "Westside Vet",
       amount: "$79.00",
       nextRetryDate: "June 30, 2026",
+      idempotencyKey: "lc:dunning:in_failed:2",
     });
   });
 
@@ -694,23 +1033,93 @@ describe("Stripe subscription webhook", () => {
     mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
       invoicePaymentFailedEvent(),
     );
+    mocks.retrieveSubscription.mockResolvedValueOnce(
+      stripeSubscription("past_due"),
+    );
     mocks.selectResults.push([
       {
         id: PRACTICE_ID,
         email: "\t",
         name: "Westside Vet",
         timezone: "America/Los_Angeles",
+        billingStatus: "past_due",
+      },
+    ]);
+    mocks.updateReturns.push([{ id: PRACTICE_ID }]);
+
+    const response = await POST(stripeRequest());
+
+    await expect(response.json()).resolves.toEqual({ received: true });
+    expect(mocks.updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ billingStatus: "past_due" }),
+    );
+    expect(mocks.sendLifecycleEmail).not.toHaveBeenCalled();
+    expect(mocks.sendPaymentFailedEmail).not.toHaveBeenCalled();
+  });
+
+  it("blocks stale dunning when final locked eligibility no longer matches", async () => {
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
+      invoicePaymentFailedEvent(),
+    );
+    mocks.retrieveSubscription.mockResolvedValueOnce(
+      stripeSubscription("past_due"),
+    );
+    mocks.updateReturns.push([{ id: PRACTICE_ID }]);
+    mocks.selectResults.push(
+      [
+        {
+          id: PRACTICE_ID,
+          email: "owner@example.com",
+          name: "Westside Vet",
+          timezone: "America/New_York",
+          billingStatus: "past_due",
+        },
+      ],
+      [],
+    );
+    invokeLifecycleSendOnce();
+
+    const response = await POST(stripeRequest());
+
+    expect(response.status).toBe(500);
+    expect(mocks.sendPaymentFailedEmail).not.toHaveBeenCalled();
+    expect(mocks.sendLifecycleEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ stillEligible: expect.any(Function) }),
+    );
+  });
+
+  it("does not let a stale failed-invoice event reopen terminal unpaid access", async () => {
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
+      invoicePaymentFailedEvent(),
+    );
+    mocks.retrieveSubscription.mockResolvedValueOnce(
+      stripeSubscription("unpaid"),
+    );
+    mocks.updateReturns.push([{ id: PRACTICE_ID }]);
+    mocks.selectResults.push([
+      {
+        id: PRACTICE_ID,
+        email: "owner@example.com",
+        name: "Westside Vet",
+        timezone: "America/New_York",
+        billingStatus: "unpaid",
       },
     ]);
 
     const response = await POST(stripeRequest());
 
-    await expect(response.json()).resolves.toEqual({ received: true });
-    expect(mocks.updateSet).toHaveBeenCalledWith({
-      billingStatus: "past_due",
-    });
+    expect(response.status).toBe(200);
+    expect(mocks.updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ billingStatus: "unpaid" }),
+    );
+    expect(mocks.updateSet).not.toHaveBeenCalledWith(
+      expect.objectContaining({ billingStatus: "past_due" }),
+    );
     expect(mocks.sendLifecycleEmail).not.toHaveBeenCalled();
-    expect(mocks.sendPaymentFailedEmail).not.toHaveBeenCalled();
+    expect(mocks.alertOps).toHaveBeenCalledWith(
+      "Subscription payment failed",
+      expect.stringContaining("current subscription state is unpaid"),
+    );
   });
 
   it("keeps destructive and customer webhook updates active-practice scoped", () => {

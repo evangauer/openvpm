@@ -29,8 +29,64 @@ import {
 import { appBaseUrl } from "@/lib/app-url";
 import { billingContactEmail } from "@/lib/billing/contact";
 import { RECOVERY_HOLD_BLOCK_MESSAGE } from "@/lib/recovery-hold";
+import { hasFirstRealVisit } from "@/lib/billing/first-real-visit";
+import {
+  verifySubscriptionCheckoutAttributionToken,
+  type SubscriptionCheckoutSource,
+} from "@/lib/billing/checkout-attribution";
 
 const adminProcedure = protectedProcedure.use(requireRole("admin"));
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const STRIPE_TRIAL_END_MIN_LEAD_MS = 2 * DAY_MS;
+const STRIPE_TRIAL_END_SAFETY_BUFFER_MS = 5 * 60 * 1000;
+const LATE_TRIAL_CHECKOUT_GRACE_DAYS = 3;
+
+type CheckoutTrialTerms = {
+  trialEnd: Date | string | null;
+  trialPeriodDays: number | undefined;
+};
+
+/**
+ * Derive mutually exclusive Stripe Checkout trial terms from durable practice
+ * state. Checkout rejects a custom trial_end that is less than 48 hours away,
+ * so a still-active trial near that boundary receives a deterministic three-day
+ * grace. The grace is independent of the current instant, keeping repeated
+ * near-expiry Checkout attempts on identical provider parameters.
+ */
+export function subscriptionCheckoutTrialTerms(input: {
+  billingStatus: string | null | undefined;
+  trialEndsAt: Date | string | null | undefined;
+  now: Date;
+}): CheckoutTrialTerms {
+  const { billingStatus, trialEndsAt, now } = input;
+  if (billingStatus === "trialing" && trialEndsAt) {
+    const trialEndMs = new Date(trialEndsAt).getTime();
+    const remainingMs = trialEndMs - now.getTime();
+    if (
+      Number.isFinite(remainingMs) &&
+      remainingMs > 0 &&
+      remainingMs >=
+        STRIPE_TRIAL_END_MIN_LEAD_MS + STRIPE_TRIAL_END_SAFETY_BUFFER_MS
+    ) {
+      return { trialEnd: trialEndsAt, trialPeriodDays: undefined };
+    }
+    if (Number.isFinite(remainingMs) && remainingMs > 0) {
+      return {
+        trialEnd: null,
+        trialPeriodDays: LATE_TRIAL_CHECKOUT_GRACE_DAYS,
+      };
+    }
+  }
+
+  // Any stored end is historical trial evidence. Never grant another trial to
+  // an expired, canceled, or otherwise non-trialing practice.
+  if (trialEndsAt) {
+    return { trialEnd: null, trialPeriodDays: undefined };
+  }
+
+  return { trialEnd: null, trialPeriodDays: TRIAL_DAYS };
+}
 
 function activePracticeWhere(practiceId: string) {
   return and(eq(practices.id, practiceId), isNull(practices.deletedAt));
@@ -71,7 +127,7 @@ export const subscriptionRouter = createRouter({
     let counts = await countBillableLocationsAndSeats(ctx.db, ctx.practiceId);
     let billingSync: BillingSyncState | null = await readBillingSyncState(
       ctx.db,
-      ctx.practiceId
+      ctx.practiceId,
     );
     const period = currentPeriodMonth();
     const [smsUsed, aiUsed] = enforced
@@ -81,18 +137,28 @@ export const subscriptionRouter = createRouter({
         ])
       : [0, 0];
 
+    const hasSubscription = !!practice.stripeSubscriptionId;
+    // A current subscription identity is linked only from signed Stripe
+    // callbacks or authoritative reconciliation. The Stripe Customer is only
+    // a transport identity and does not prove Checkout or setup completed.
+    const billingSetupCompleted = hasSubscription;
+
     return {
       tier: practice.tier ?? "free",
       billingStatus: practice.billingStatus ?? "none",
       trialEndsAt: practice.trialEndsAt ?? null,
       timezone: practice.timezone ?? null,
-      hasBillingAccount: !!practice.stripeCustomerId,
-      hasSubscription: !!practice.stripeSubscriptionId,
+      hasStripeCustomer: !!practice.stripeCustomerId,
+      hasSubscription,
+      billingSetupCompleted,
+      // Compatibility alias for older consumers. A Stripe Customer is not
+      // evidence that Checkout completed or that a subscription is connected.
+      hasBillingAccount: billingSetupCompleted,
       billingEnforced: enforced,
       hasFullAccess: hasHostedFullAccess(
         practice.tier,
         practice.billingStatus,
-        practice.trialEndsAt
+        practice.trialEndsAt,
       ),
       locationCount: counts.locationCount,
       billableSeatCount: counts.billableSeatCount,
@@ -100,7 +166,7 @@ export const subscriptionRouter = createRouter({
       seatUnitPriceMonthlyUsd: CLOUD_SEAT_UNIT_PRICE_MONTHLY_USD,
       estimatedMonthlyBase: estimatedCloudBaseMonthlyUsd(
         counts.locationCount,
-        counts.billableSeatCount
+        counts.billableSeatCount,
       ),
       billingSyncStatus: billingSync,
       usage: { period, sms: smsUsed, aiRuns: aiUsed },
@@ -134,7 +200,8 @@ export const subscriptionRouter = createRouter({
         // Where Stripe sends the admin back: the billing page (default) or
         // the guided setup, which resumes where they left off.
         returnTo: z.enum(["settings", "setup"]).default("settings"),
-      })
+        attributionToken: z.string().trim().min(1).max(4096).optional(),
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const plan = PLANS[input.tier];
@@ -183,15 +250,51 @@ export const subscriptionRouter = createRouter({
         });
       }
 
-      const counts = await countBillableLocationsAndSeats(ctx.db, ctx.practiceId);
+      const counts = await countBillableLocationsAndSeats(
+        ctx.db,
+        ctx.practiceId,
+      );
+
+      const firstVisitCompleted = await hasFirstRealVisit(
+        ctx.db,
+        ctx.practiceId,
+      );
+      const signedAttribution = input.attributionToken
+        ? verifySubscriptionCheckoutAttributionToken(
+            input.attributionToken,
+            ctx.practiceId,
+          )
+        : null;
+      if (input.attributionToken && !signedAttribution) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "This billing link is invalid or expired. Open billing again.",
+        });
+      }
+      if (
+        signedAttribution?.source === "first_visit_email" &&
+        !firstVisitCompleted
+      ) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "This first-visit billing link is no longer eligible.",
+        });
+      }
+      const checkoutSource: SubscriptionCheckoutSource = signedAttribution
+        ? signedAttribution.source
+        : firstVisitCompleted
+          ? "in_app_post_first_visit"
+          : "in_app_pre_first_visit";
+      const checkoutSourceEvidenceId =
+        signedAttribution?.evidenceId ?? "server-derived:v1";
 
       const base = appBaseUrl();
-      const activeTrialEnd =
-        practice.billingStatus === "trialing" &&
-        practice.trialEndsAt &&
-        new Date(practice.trialEndsAt).getTime() > Date.now()
-          ? practice.trialEndsAt
-          : null;
+      const trialTerms = subscriptionCheckoutTrialTerms({
+        billingStatus: practice.billingStatus,
+        trialEndsAt: practice.trialEndsAt,
+        now: new Date(),
+      });
       // Checkout carries only the per-location licensed item so the clinic
       // sees one clean product. The metered overage items (AI + SMS) are
       // attached to the subscription server-side after creation
@@ -209,8 +312,10 @@ export const subscriptionRouter = createRouter({
         practiceId: ctx.practiceId,
         customerId: practice.stripeCustomerId ?? undefined,
         customerEmail,
-        trialEnd: activeTrialEnd,
-        trialPeriodDays: activeTrialEnd || practice.trialEndsAt ? undefined : TRIAL_DAYS,
+        trialEnd: trialTerms.trialEnd,
+        trialPeriodDays: trialTerms.trialPeriodDays,
+        checkoutSource,
+        checkoutSourceEvidenceId,
         successUrl:
           input.returnTo === "setup"
             ? `${base}/?setup=resume&checkout=success`

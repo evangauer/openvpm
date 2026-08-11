@@ -101,7 +101,7 @@ EMAIL_PREFERENCE_SIGNING_SECRET=... # rotatable `openssl rand -base64 32`; do no
 EMAIL_PREFERENCE_SIGNING_SECRET_PREVIOUS= # comma-separated former signing keys retained for delivered links
 EMAIL_PREFERENCE_BASE_URL=https://app.openvpm.com
 EMAIL_SUPPORT_ADDRESS=support@openvpm.com
-EMAIL_COMPANY_ADDRESS=...
+EMAIL_COMPANY_ADDRESS=... # verified physical US postal address, never an email or URL
 MESSAGING_PROVIDER=telnyx
 TELNYX_API_KEY=...
 TELNYX_PUBLIC_KEY=...
@@ -363,8 +363,12 @@ For local or staging signup tests without real email delivery, set `OPENVPM_EXPO
 Resend sends transactional email and posts delivery lifecycle callbacks back to OpenVPM so bounces, spam complaints, and provider suppressions can fail closed before future client email sends.
 
 `EMAIL_SUPPORT_ADDRESS` is used as lifecycle email Reply-To and footer contact
-address. `EMAIL_COMPANY_ADDRESS` is rendered in hosted email footers. Both gate
-hosted readiness so production emails do not fall back to local/dev defaults.
+address. `EMAIL_COMPANY_ADDRESS` must be a verified physical US postal address
+(a current street address, registered USPS PO box, or registered private
+mailbox), never an email address or URL. It is rendered in promotional email
+footers. Hosted readiness and optional lifecycle marketing both fail closed
+when the value is missing or structurally invalid; set and operator-verify the
+real postal address before deployment or campaign activation.
 `EMAIL_PREFERENCE_IDENTITY_SECRET` is the stable HMAC identity key for PII-free
 recipient hashes. Never rotate it without a coordinated migration of persisted
 preference identities. `EMAIL_PREFERENCE_SIGNING_SECRET` signs new durable
@@ -390,6 +394,33 @@ recovery-held practices, expired trials, and trials with less than 48 hours
 remaining are excluded. Every send uses the shared preference/suppression gate,
 a campaign-versioned idempotency key, and the saved setup step. It never includes
 patient data and never asks a clinic to email an export or make it public.
+
+The hourly `/api/cron/first-clinic-win` conversion sweep is independently
+default-off. It is eligible only after a committed, non-demo checked-out visit,
+and only for an active Cloud trial that has no Stripe subscription or signed
+payment-method milestone. The saved practice email must exactly match an active,
+email-verified admin; the campaign does not guess another clinician, client, or
+contact. It rechecks eligibility under the practice recovery lock, serializes
+with marketing unsubscribe preferences, sends no clinical identifiers, and
+uses one stable practice-wide provider idempotency key.
+
+To stage a prospective rollout, leave the flag off, choose a reviewed UTC
+boundary, deploy `FIRST_CLINIC_WIN_EMAIL_LAUNCH_AT=<ISO timestamp>`, and confirm
+`/api/health` stays green. Review the platform-admin first-visit outreach
+preflight before enabling; it shows only the prospective UTC boundary, exact
+eligible count, send state, and per-sweep cap, and never claims a recipient or
+sends email. Then set `FIRST_CLINIC_WIN_EMAIL_ENABLED=true` and redeploy. Only
+visits completed at or after that boundary qualify; do not move the boundary
+backward for a retrospective blast without a separately reviewed backfill.
+Kill the campaign by setting the flag back to `false`. Monitor its `sent`,
+`deduped`, `suppressed`, `failed`, and `skipped` heartbeat counts.
+
+Trial-ending messages use the same preference/idempotency boundary and retain
+their existing stage keys. A trial with no subscription receives the Add
+billing variant. A trial with both a connected subscription and signed Checkout
+milestone receives a billing-connected reassurance. A subscription without its
+signed milestone is suppressed and counted as data quality rather than guessed
+into either message.
 
 Webhook endpoint:
 
@@ -493,6 +524,21 @@ Subscribe to:
 
 Store this endpoint secret as `STRIPE_SUBSCRIPTION_WEBHOOK_SECRET`.
 
+### Subscription retry and access states
+
+Keep Stripe's retrying and terminal dunning states distinct. A Cloud
+subscription in `past_due` is still inside Stripe's retry lifecycle, so the
+clinic remains writable while staff update the payment method or Stripe retries
+the invoice. Continue showing the billing-recovery CTA and monitoring the retry;
+do not describe the clinic as already locked out.
+
+`unpaid`, `canceled`, and `incomplete_expired` are terminal for hosted access and
+must leave the clinic read-only until billing is reactivated. Do not normalize
+`unpaid` back to `past_due`, because that would grant retry-period access after
+Stripe has exhausted collection. An expired card-free trial remains read-only
+unless a subscription is activated. Self-host access is unchanged and never
+uses these hosted gates.
+
 `checkout.session.completed` is shared by the platform invoice and hosted
 subscription endpoints. OpenVPM de-duplicates it per endpoint, so both webhook
 endpoints must remain configured; each handler ignores sessions that belong to
@@ -513,6 +559,7 @@ one global `CRON_HEARTBEAT_URL` to receive every cron completion as POST JSON, o
 set job-specific URLs (`CRON_HEARTBEAT_REMINDERS_URL`,
 `CRON_HEARTBEAT_BACKUP_URL`, `CRON_HEARTBEAT_USAGE_RECONCILE_URL`,
 `CRON_HEARTBEAT_BILLING_LIFECYCLE_URL`,
+`CRON_HEARTBEAT_FIRST_CLINIC_WIN_URL`,
 `CRON_HEARTBEAT_SETUP_RECOVERY_URL`,
 `CRON_HEARTBEAT_WELLNESS_BILLING_URL`,
 `CRON_HEARTBEAT_RATE_LIMIT_CLEANUP_URL`,

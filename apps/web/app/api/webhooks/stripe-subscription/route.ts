@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { and, eq, isNull, or } from "drizzle-orm";
 import type Stripe from "stripe";
 import { db } from "@openpims/db/client";
-import { practices } from "@openpims/db";
+import { practices, stripeEvents } from "@openpims/db";
 import { constructSubscriptionWebhookEvent, stripe } from "@/lib/stripe";
 import {
   tierForStripePrice,
@@ -25,6 +25,10 @@ import {
   stripeWebhookContentLengthTooLarge,
 } from "@/lib/stripe-webhook-limits";
 import { projectStripeConversionMilestonesForEvent } from "@/lib/conversion-milestones";
+import {
+  SUBSCRIPTION_CHECKOUT_SOURCES,
+  type SubscriptionCheckoutSource,
+} from "@/lib/billing/checkout-attribution";
 
 function payloadTooLargeResponse() {
   return NextResponse.json(
@@ -77,15 +81,17 @@ export async function POST(req: NextRequest) {
   }
 
   const conversionEvidence = conversionEvidenceForEvent(event);
+  let eventClaimed = false;
+  let failedSubscriptionStatus: string | null = null;
   try {
-    await withSystem(db, async (tx) => {
+    eventClaimed = await withSystem(db, async (tx) => {
       const claimed = await claimStripeEvent(tx, {
         eventId: event.id,
         endpoint: "subscription",
         eventType: event.type,
         ...(conversionEvidence ? { evidence: conversionEvidence } : {}),
       });
-      if (!claimed) return;
+      if (!claimed) return false;
 
       switch (event.type) {
         case "checkout.session.completed": {
@@ -98,15 +104,29 @@ export async function POST(req: NextRequest) {
               : (s.subscription?.id ?? null);
           let activePracticeId: string | null = null;
           if (practiceId && s.customer) {
+            const customerId =
+              typeof s.customer === "string" ? s.customer : s.customer.id;
             const [practice] = await tx
               .update(practices)
               .set({
-                stripeCustomerId:
-                  typeof s.customer === "string" ? s.customer : s.customer!.id,
+                stripeCustomerId: customerId,
                 stripeSubscriptionId: subscriptionId,
               })
               .where(
-                and(eq(practices.id, practiceId), isNull(practices.deletedAt)),
+                and(
+                  eq(practices.id, practiceId),
+                  isNull(practices.deletedAt),
+                  or(
+                    isNull(practices.stripeCustomerId),
+                    eq(practices.stripeCustomerId, customerId),
+                  ),
+                  subscriptionId
+                    ? or(
+                        isNull(practices.stripeSubscriptionId),
+                        eq(practices.stripeSubscriptionId, subscriptionId),
+                      )
+                    : isNull(practices.stripeSubscriptionId),
+                ),
               )
               .returning({ id: practices.id });
             activePracticeId = practice?.id ?? null;
@@ -145,7 +165,18 @@ export async function POST(req: NextRequest) {
 
         case "customer.subscription.created":
         case "customer.subscription.updated": {
-          await applySubscription(tx, event.data.object as Stripe.Subscription);
+          const historical = event.data.object as Stripe.Subscription;
+          if (!stripe) {
+            throw new Error(
+              "Stripe is unavailable while reconciling a subscription lifecycle event.",
+            );
+          }
+          // Stripe does not guarantee event order. The signed event proves a
+          // transition occurred, but only a current GET is authoritative for
+          // access. This prevents stale past_due/trialing callbacks from
+          // overwriting a newer unpaid/active/canceled state.
+          const current = await stripe.subscriptions.retrieve(historical.id);
+          await applySubscription(tx, current);
           break;
         }
 
@@ -196,35 +227,16 @@ export async function POST(req: NextRequest) {
                 subscription,
               );
             }
-            const practice = subscriptionPracticeId
-              ? await practiceById(tx, subscriptionPracticeId)
+            const practiceId = subscriptionPracticeId
+              ? subscriptionPracticeId
               : subscriptionId
                 ? null
-                : await practiceForCustomer(tx, customerId);
-            if (practice && conversionEvidence) {
+                : (await practiceForCustomer(tx, customerId))?.id;
+            if (practiceId) {
               await attachStripeEventPractice(tx, {
                 eventId: event.id,
                 endpoint: "subscription",
-                practiceId: practice.id,
-              });
-            }
-            const to = billingContactEmail(practice?.email);
-            if (practice && to) {
-              const practiceName = practice.name ?? "your practice";
-              await sendLifecycleEmail({
-                practiceId: practice.id,
-                to,
-                emailType: "receipt",
-                dedupeKey: `lc:receipt:${inv.id}`,
-                category: "transactional",
-                send: () =>
-                  sendPaymentReceiptEmail({
-                    to,
-                    practiceName,
-                    amount: formatMoney(inv.amount_paid, inv.currency),
-                    periodLabel: invoicePeriodLabel(inv, practice.timezone),
-                    invoiceUrl: inv.hosted_invoice_url ?? undefined,
-                  }),
+                practiceId,
               });
             }
           }
@@ -233,45 +245,29 @@ export async function POST(req: NextRequest) {
 
         case "invoice.payment_failed": {
           const inv = event.data.object as Stripe.Invoice;
-          const customerId =
-            typeof inv.customer === "string" ? inv.customer : inv.customer?.id;
-          if (customerId) {
-            await tx
-              .update(practices)
-              .set({ billingStatus: "past_due" })
-              .where(
-                and(
-                  eq(practices.stripeCustomerId, customerId),
-                  isNull(practices.deletedAt),
-                ),
-              );
-            await alertOps(
-              "Subscription payment failed",
-              `Stripe customer ${customerId} had a failed subscription payment; marked past_due.`,
+          const subscriptionId = subscriptionIdForInvoice(inv);
+          if (!subscriptionId) break;
+          if (!stripe) {
+            throw new Error(
+              "Stripe is unavailable while reconciling a failed invoice.",
             );
-            const practice = await practiceForCustomer(tx, customerId);
-            const to = billingContactEmail(practice?.email);
-            if (practice && to) {
-              const practiceName = practice.name ?? "your practice";
-              await sendLifecycleEmail({
-                practiceId: practice.id,
-                to,
-                emailType: "dunning",
-                // One dunning email per Stripe retry attempt.
-                dedupeKey: `lc:dunning:${inv.id}:${inv.attempt_count ?? 0}`,
-                category: "transactional",
-                send: () =>
-                  sendPaymentFailedEmail({
-                    to,
-                    practiceName,
-                    amount: formatMoney(inv.amount_due, inv.currency),
-                    nextRetryDate: formatUnixDate(
-                      inv.next_payment_attempt,
-                      practice.timezone,
-                    ),
-                  }),
-              });
-            }
+          }
+          // A failed-invoice callback is historical evidence, not current
+          // entitlement state. Re-read the subscription so a late callback
+          // cannot overwrite a newer active/unpaid/canceled status and reopen
+          // or close clinic writes out of order.
+          const subscription =
+            await stripe.subscriptions.retrieve(subscriptionId);
+          failedSubscriptionStatus = normalizeBillingStatus(
+            subscription.status,
+          );
+          const practiceId = await applySubscription(tx, subscription);
+          if (practiceId) {
+            await attachStripeEventPractice(tx, {
+              eventId: event.id,
+              endpoint: "subscription",
+              practiceId,
+            });
           }
           break;
         }
@@ -280,6 +276,7 @@ export async function POST(req: NextRequest) {
           // Ignore other event types.
           break;
       }
+      return true;
     });
   } catch (err) {
     console.error("[Stripe Subscription Webhook] handler error:", err);
@@ -287,6 +284,46 @@ export async function POST(req: NextRequest) {
       "Subscription webhook handler error",
       `Event ${event.type} failed: ${err instanceof Error ? err.message : String(err)}`,
     );
+    return NextResponse.json({ error: "Handler error" }, { status: 500 });
+  }
+
+  // Lifecycle delivery deliberately runs only after the Stripe claim and
+  // subscription/practice mutations commit. sendLifecycleEmail takes its own
+  // practice-row recovery lock; awaiting it inside the transaction above
+  // would make that inner transaction wait on the outer practice update while
+  // the outer transaction waited for the email, a self-deadlock. Run this for
+  // duplicate Stripe deliveries too: if the process committed billing state
+  // and died before email delivery, Stripe's retry can still claim or converge
+  // the lifecycle email by its own dedupe key.
+  try {
+    if (
+      eventClaimed &&
+      event.type === "invoice.payment_failed" &&
+      failedSubscriptionStatus &&
+      failedSubscriptionStatus !== "active" &&
+      failedSubscriptionStatus !== "trialing"
+    ) {
+      const inv = event.data.object as Stripe.Invoice;
+      const customerId = stripeInvoiceCustomerId(inv);
+      if (customerId) {
+        await alertOps(
+          "Subscription payment failed",
+          `Stripe customer ${customerId} had a failed subscription payment; current subscription state is ${failedSubscriptionStatus}.`,
+        );
+      }
+    }
+    await deliverSubscriptionLifecycleEmail(event);
+  } catch (err) {
+    console.error(
+      "[Stripe Subscription Webhook] lifecycle delivery error:",
+      err,
+    );
+    await alertOps(
+      "Subscription lifecycle delivery error",
+      `Event ${event.type} failed after billing state committed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    // The Stripe claim has already committed. Returning 500 is intentional:
+    // redelivery skips the billing mutation but retries this deduped email.
     return NextResponse.json({ error: "Handler error" }, { status: 500 });
   }
 
@@ -311,6 +348,102 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ received: true });
 }
 
+async function deliverSubscriptionLifecycleEmail(
+  event: Stripe.Event,
+): Promise<void> {
+  if (
+    event.type !== "invoice.payment_succeeded" &&
+    event.type !== "invoice.payment_failed"
+  ) {
+    return;
+  }
+
+  const invoice = event.data.object as Stripe.Invoice;
+  if (
+    event.type === "invoice.payment_succeeded" &&
+    (invoice.amount_paid ?? 0) <= 0
+  ) {
+    return;
+  }
+  const practice = await withSystem(db, (tx) =>
+    practiceForLifecycleEvent(tx, event.id),
+  );
+  const to = billingContactEmail(practice?.email);
+  if (!practice || !to) return;
+  if (
+    event.type === "invoice.payment_failed" &&
+    practice.billingStatus !== "past_due"
+  ) {
+    return;
+  }
+  const practiceName = practice.name ?? "your practice";
+
+  const result =
+    event.type === "invoice.payment_succeeded"
+      ? await sendLifecycleEmail({
+          practiceId: practice.id,
+          to,
+          emailType: "receipt",
+          dedupeKey: `lc:receipt:${invoice.id}`,
+          category: "transactional",
+          retryOnFail: true,
+          send: () =>
+            sendPaymentReceiptEmail({
+              to,
+              practiceName,
+              amount: formatMoney(invoice.amount_paid, invoice.currency),
+              periodLabel: invoicePeriodLabel(invoice, practice.timezone),
+              invoiceUrl: invoice.hosted_invoice_url ?? undefined,
+              idempotencyKey: `lc:receipt:${invoice.id}`,
+            }),
+        })
+      : await sendLifecycleEmail({
+          practiceId: practice.id,
+          to,
+          emailType: "dunning",
+          // One dunning email per Stripe retry attempt.
+          dedupeKey: `lc:dunning:${invoice.id}:${invoice.attempt_count ?? 0}`,
+          category: "transactional",
+          retryOnFail: true,
+          stillEligible: async (tx) => {
+            const subscriptionId = subscriptionIdForInvoice(invoice);
+            if (!subscriptionId) return false;
+            const [eligible] = await tx
+              .select({ id: practices.id })
+              .from(practices)
+              .where(
+                and(
+                  eq(practices.id, practice.id),
+                  eq(practices.billingStatus, "past_due"),
+                  eq(practices.stripeSubscriptionId, subscriptionId),
+                  isNull(practices.deletedAt),
+                ),
+              )
+              .limit(1);
+            return Boolean(eligible);
+          },
+          send: () =>
+            sendPaymentFailedEmail({
+              to,
+              practiceName,
+              amount: formatMoney(invoice.amount_due, invoice.currency),
+              nextRetryDate: formatUnixDate(
+                invoice.next_payment_attempt,
+                practice.timezone,
+              ),
+              idempotencyKey: `lc:dunning:${invoice.id}:${invoice.attempt_count ?? 0}`,
+            }),
+        });
+
+  const deliveryCompleted =
+    result.sent || (result.deduped && result.dedupeState === "sent");
+  if (!deliveryCompleted) {
+    throw new Error(
+      `${event.type} lifecycle email does not have a durable sent outcome.`,
+    );
+  }
+}
+
 /** Apply a subscription's tier/status/trial through one shared mapping path. */
 async function applySubscription(
   tx: typeof db,
@@ -329,19 +462,45 @@ async function applySubscription(
   const customerId =
     typeof sub.customer === "string" ? sub.customer : sub.customer?.id;
   const billingStatus = normalizeBillingStatus(sub.status);
+  const terminalSubscription = billingStatus === "canceled";
 
   const [practice] = await tx
     .update(practices)
     .set({
       ...(tier ? { subscriptionTier: tier } : {}),
       billingStatus,
-      stripeSubscriptionId: sub.id,
+      stripeSubscriptionId: terminalSubscription ? null : sub.id,
       ...(customerId ? { stripeCustomerId: customerId } : {}),
       trialEndsAt: sub.trial_end ? new Date(sub.trial_end * 1000) : null,
     })
-    .where(and(eq(practices.id, practiceId), isNull(practices.deletedAt)))
+    .where(
+      and(
+        eq(practices.id, practiceId),
+        isNull(practices.deletedAt),
+        or(
+          isNull(practices.stripeSubscriptionId),
+          eq(practices.stripeSubscriptionId, sub.id),
+        ),
+      ),
+    )
     .returning({ id: practices.id });
   if (!practice) {
+    const [currentPractice] = await tx
+      .select({ stripeSubscriptionId: practices.stripeSubscriptionId })
+      .from(practices)
+      .where(and(eq(practices.id, practiceId), isNull(practices.deletedAt)))
+      .limit(1);
+    if (
+      currentPractice?.stripeSubscriptionId &&
+      currentPractice.stripeSubscriptionId !== sub.id
+    ) {
+      console.warn(
+        "[Stripe Subscription Webhook] ignored stale subscription identity:",
+        sub.id,
+        practiceId,
+      );
+      return null;
+    }
     console.warn(
       "[Stripe Subscription Webhook] subscription for missing/deleted practice:",
       sub.id,
@@ -349,11 +508,13 @@ async function applySubscription(
     );
     return null;
   }
-  await syncPracticeSubscriptionQuantities({
-    db: tx,
-    practiceId: practice.id,
-    subscriptionId: sub.id,
-  });
+  if (!terminalSubscription) {
+    await syncPracticeSubscriptionQuantities({
+      db: tx,
+      practiceId: practice.id,
+      subscriptionId: sub.id,
+    });
+  }
   return practice.id;
 }
 
@@ -377,10 +538,21 @@ function conversionEvidenceForEvent(
     ) {
       return undefined;
     }
+    const checkoutSource = normalizedCheckoutSource(
+      session.metadata?.checkoutSource,
+    );
+    const checkoutSourceEvidenceId = normalizedCheckoutSourceEvidenceId(
+      session.metadata?.checkoutSourceEvidenceId,
+    );
+    const hasValidAttribution =
+      checkoutSource !== null && checkoutSourceEvidenceId !== null;
     return {
       eventCreatedAt,
       objectId: session.id,
       evidenceKind: "subscription_checkout_completed",
+      ...(hasValidAttribution
+        ? { checkoutSource, checkoutSourceEvidenceId }
+        : {}),
     };
   }
 
@@ -406,6 +578,25 @@ function conversionEvidenceForEvent(
   }
 
   return undefined;
+}
+
+function normalizedCheckoutSource(
+  value: string | null | undefined,
+): SubscriptionCheckoutSource | null {
+  return SUBSCRIPTION_CHECKOUT_SOURCES.includes(
+    value as SubscriptionCheckoutSource,
+  )
+    ? (value as SubscriptionCheckoutSource)
+    : null;
+}
+
+function normalizedCheckoutSourceEvidenceId(
+  value: string | null | undefined,
+): string | null {
+  const normalized = value?.trim();
+  return normalized && /^[a-zA-Z0-9._:-]{1,128}$/.test(normalized)
+    ? normalized
+    : null;
 }
 
 function stripeEventCreatedAt(created: number | null | undefined): Date | null {
@@ -494,14 +685,21 @@ function subscriptionIdForInvoice(inv: Stripe.Invoice): string | null {
     : (subscription?.id ?? null);
 }
 
+function stripeInvoiceCustomerId(inv: Stripe.Invoice): string | null {
+  return typeof inv.customer === "string"
+    ? inv.customer
+    : (inv.customer?.id ?? null);
+}
+
 /** Look up a practice's id / email / name by its Stripe customer id. */
 async function practiceForCustomer(tx: typeof db, customerId: string) {
-  const [p] = await tx
+  const matches = await tx
     .select({
       id: practices.id,
       email: practices.email,
       name: practices.name,
       timezone: practices.timezone,
+      billingStatus: practices.billingStatus,
     })
     .from(practices)
     .where(
@@ -510,21 +708,44 @@ async function practiceForCustomer(tx: typeof db, customerId: string) {
         isNull(practices.deletedAt),
       ),
     )
-    .limit(1);
-  return p ?? null;
+    .limit(2);
+  if (matches.length > 1) {
+    throw new Error(
+      `Stripe customer ${customerId} maps to multiple active practices.`,
+    );
+  }
+  return matches[0] ?? null;
 }
 
-/** Read billing contact details for an already-authoritatively resolved clinic. */
-async function practiceById(tx: typeof db, practiceId: string) {
+/**
+ * Read the clinic attached by the authoritative Stripe transaction. This is
+ * intentionally event-bound rather than a customer-id fallback: duplicate
+ * delivery may finish a post-commit email, but it may never loosen tenant
+ * attribution while doing so.
+ */
+async function practiceForLifecycleEvent(tx: typeof db, eventId: string) {
   const [practice] = await tx
     .select({
       id: practices.id,
       email: practices.email,
       name: practices.name,
       timezone: practices.timezone,
+      billingStatus: practices.billingStatus,
     })
-    .from(practices)
-    .where(and(eq(practices.id, practiceId), isNull(practices.deletedAt)))
+    .from(stripeEvents)
+    .innerJoin(
+      practices,
+      and(
+        eq(stripeEvents.practiceId, practices.id),
+        isNull(practices.deletedAt),
+      ),
+    )
+    .where(
+      and(
+        eq(stripeEvents.eventId, eventId),
+        eq(stripeEvents.endpoint, "subscription"),
+      ),
+    )
     .limit(1);
   return practice ?? null;
 }

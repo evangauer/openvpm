@@ -69,6 +69,24 @@ describe("admin activation funnel", () => {
     expect(mocks.execute).not.toHaveBeenCalled();
   });
 
+  it("protects first-visit conversion evidence with the same platform-admin boundary", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+
+    await expect(
+      caller("clinic-admin@example.com").firstVisitConversion({ days: 30 }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.execute).not.toHaveBeenCalled();
+  });
+
+  it("protects the outreach preflight with the same platform-admin boundary", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+
+    await expect(
+      caller("clinic-admin@example.com").firstClinicWinCampaignPreview(),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.execute).not.toHaveBeenCalled();
+  });
+
   it("rejects non-platform-admin activation recovery callers", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
 

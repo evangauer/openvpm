@@ -102,7 +102,7 @@ const onboardingTeamMemberSchema = z.object({
   name: authTextInput(
     "Team member name",
     1,
-    AUTH_ONBOARDING_TEAM_MEMBER_NAME_MAX_LENGTH
+    AUTH_ONBOARDING_TEAM_MEMBER_NAME_MAX_LENGTH,
   ),
   email: authEmailInput,
   role: z.enum(["veterinarian", "technician", "front_desk", "viewer"]),
@@ -114,7 +114,10 @@ const onboardingDraftSchema = z.object({
     1,
     AUTH_ONBOARDING_LOGO_NAME_MAX_LENGTH,
   ).optional(),
-  brandColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  brandColor: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .optional(),
   teamMembers: z.array(onboardingTeamMemberSchema).max(8).optional(),
 });
 
@@ -139,7 +142,7 @@ const authTokenSchema = z
   .regex(/^[a-f0-9]{64}$/i, "Invalid or expired link.");
 
 function cleanOnboardingDraft(
-  draft: z.infer<typeof onboardingDraftSchema> | undefined
+  draft: z.infer<typeof onboardingDraftSchema> | undefined,
 ): Record<string, unknown> | undefined {
   if (!draft) return undefined;
 
@@ -170,17 +173,17 @@ export const authRouter = createRouter({
         practiceName: authTextInput(
           "Practice name",
           2,
-          AUTH_PRACTICE_NAME_MAX_LENGTH
+          AUTH_PRACTICE_NAME_MAX_LENGTH,
         ),
         country: z.enum(CLINIC_REGION_CODES),
         locationName: authTextInput(
           "Location name",
           2,
-          AUTH_LOCATION_NAME_MAX_LENGTH
+          AUTH_LOCATION_NAME_MAX_LENGTH,
         ).optional(),
         onboardingDraft: onboardingDraftSchema.optional(),
         acquisition: signupAcquisitionSchema.optional(),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const email = normalizeAuthEmail(input.email);
@@ -262,8 +265,8 @@ export const authRouter = createRouter({
         practiceSettings.onboardingCompletedAt = null;
       }
 
-      const { practice, user, checkoutUrl } =
-        await ctx.db.transaction(async (tx) => {
+      const { practice, user, checkoutUrl } = await ctx.db.transaction(
+        async (tx) => {
           const [createdPractice] = await tx
             .insert(practices)
             .values({
@@ -364,6 +367,8 @@ export const authRouter = createRouter({
                 practiceId: createdPractice.id,
                 customerEmail: email,
                 trialPeriodDays: TRIAL_DAYS,
+                checkoutSource: "registration",
+                checkoutSourceEvidenceId: "registration:v1",
                 successUrl: `${base}/login?checkout=success`,
                 cancelUrl: `${base}/login?checkout=cancelled`,
               });
@@ -394,14 +399,18 @@ export const authRouter = createRouter({
             user: createdUser,
             checkoutUrl: createdCheckoutUrl,
           };
-        });
+        },
+      );
 
       // Durable, privacy-safe registration stage. Non-fatal so telemetry can
       // never turn a successful account creation into a failed signup.
       try {
         await recordRegistration(ctx.db, practice.id);
       } catch (err) {
-        console.error("[register] conversion milestone projection failed:", err);
+        console.error(
+          "[register] conversion milestone projection failed:",
+          err,
+        );
       }
 
       // On the hosted service, request email verification without blocking the
@@ -471,7 +480,9 @@ export const authRouter = createRouter({
           } catch {
             // Signup is already committed. Keep verification soft and do not
             // log the auth link or recipient embedded in the closure.
-            console.error("[register] post-commit verification dispatch failed");
+            console.error(
+              "[register] post-commit verification dispatch failed",
+            );
           }
         });
       }
@@ -548,8 +559,8 @@ export const authRouter = createRouter({
         and(
           eq(users.id, ctx.user.id),
           eq(users.practiceId, ctx.practiceId),
-          isNull(users.deletedAt)
-        )
+          isNull(users.deletedAt),
+        ),
       )
       .limit(1);
 
@@ -687,7 +698,7 @@ export const authRouter = createRouter({
       z.object({
         token: authTokenSchema,
         password: authPasswordInput,
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const result = await consumeAuthToken(input.token, "password_reset", {
@@ -720,7 +731,7 @@ export const authRouter = createRouter({
       z.object({
         token: authTokenSchema,
         password: authPasswordInput,
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const result = await consumeAuthToken(input.token, "invite", {

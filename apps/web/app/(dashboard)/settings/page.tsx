@@ -1377,7 +1377,16 @@ function redirectToClientPaymentUrl(url: unknown) {
 
 function BillingTab() {
   const utils = trpc.useUtils();
+  const searchParams = useSearchParams();
+  const checkoutAttribution = searchParams.get("checkout_attribution");
+  const checkoutReturnParam = searchParams.get("checkout");
+  const checkoutReturn =
+    checkoutReturnParam === "success" || checkoutReturnParam === "cancelled"
+      ? checkoutReturnParam
+      : null;
   const [showAllPlans, setShowAllPlans] = useState(false);
+  const [checkoutConfirmationTimedOut, setCheckoutConfirmationTimedOut] =
+    useState(false);
   const {
     data,
     isLoading,
@@ -1420,6 +1429,40 @@ function BillingTab() {
     },
     onError: (e) => toast.error(e.message),
   });
+
+  const billingSetupCompleted = data?.billingSetupCompleted === true;
+  const hasBillingData = data !== undefined;
+  const refetchBillingRef = useRef(refetchBilling);
+
+  useEffect(() => {
+    refetchBillingRef.current = refetchBilling;
+  }, [refetchBilling]);
+
+  useEffect(() => {
+    if (
+      checkoutReturn !== "success" ||
+      billingSetupCompleted ||
+      !hasBillingData
+    ) {
+      setCheckoutConfirmationTimedOut(false);
+      return;
+    }
+
+    setCheckoutConfirmationTimedOut(false);
+    void refetchBillingRef.current();
+    const pollId = window.setInterval(() => {
+      void refetchBillingRef.current();
+    }, 2_000);
+    const timeoutId = window.setTimeout(() => {
+      window.clearInterval(pollId);
+      setCheckoutConfirmationTimedOut(true);
+    }, 30_000);
+
+    return () => {
+      window.clearInterval(pollId);
+      window.clearTimeout(timeoutId);
+    };
+  }, [billingSetupCompleted, checkoutReturn, hasBillingData]);
 
   if (billingError) {
     return (
@@ -1504,9 +1547,78 @@ function BillingTab() {
     data.billingSyncStatus &&
     (data.billingSyncStatus.status === "error" ||
       data.billingSyncStatus.status === "legacy");
+  const overageRates = [
+    currentPlan?.smsOveragePriceUsd != null
+      ? `$${currentPlan.smsOveragePriceUsd}/text`
+      : null,
+    currentPlan?.aiOveragePriceUsd != null
+      ? `$${currentPlan.aiOveragePriceUsd}/AI action`
+      : null,
+  ].filter((rate): rate is string => rate !== null);
+  const overageSentence =
+    overageRates.length > 0
+      ? `Additional usage is ${overageRates.join(" and ")}.`
+      : null;
+  const checkoutConfirmationUnresolved =
+    checkoutReturn === "success" && !billingSetupCompleted;
 
   return (
     <div className="space-y-6">
+      {checkoutReturn === "success" && billingSetupCompleted ? (
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+          <div className="flex items-center gap-2 font-medium">
+            <Check className="h-4 w-4" />
+            Billing connected
+          </div>
+          <p className="mt-1 text-emerald-800">
+            Stripe confirmed your subscription and saved payment setup.
+          </p>
+        </div>
+      ) : checkoutReturn === "success" ? (
+        <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
+          <div className="flex items-center gap-2 font-medium">
+            {checkoutConfirmationTimedOut ? (
+              <AlertTriangle className="h-4 w-4" />
+            ) : (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            )}
+            {checkoutConfirmationTimedOut
+              ? "Billing is still being confirmed"
+              : "Confirming billing with Stripe"}
+          </div>
+          <p className="mt-1 text-blue-800">
+            {checkoutConfirmationTimedOut
+              ? "We have not received signed confirmation yet. Refresh the status before starting another Checkout."
+              : "This usually takes only a few seconds. This page will update automatically."}
+          </p>
+          {checkoutConfirmationTimedOut ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void refetchBilling()}
+              >
+                Refresh billing status
+              </Button>
+              <Button size="sm" variant="ghost" asChild>
+                <a href="/settings?tab=billing">Start over</a>
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      ) : checkoutReturn === "cancelled" ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          <div className="flex items-center gap-2 font-medium">
+            <AlertTriangle className="h-4 w-4" />
+            Checkout cancelled
+          </div>
+          <p className="mt-1 text-amber-800">
+            No billing change was confirmed. You can subscribe whenever you are
+            ready.
+          </p>
+        </div>
+      ) : null}
+
       {/* One clear plan card: what you have, what it costs, what is included. */}
       <div className="rounded-lg border border-border bg-card p-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
@@ -1524,7 +1636,8 @@ function BillingTab() {
                   data.billingStatus === "trialing" &&
                     "bg-blue-100 text-blue-700",
                   data.billingStatus === "past_due" &&
-                    "bg-red-100 text-red-700",
+                    "bg-amber-100 text-amber-800",
+                  data.billingStatus === "unpaid" && "bg-red-100 text-red-700",
                   (data.billingStatus === "canceled" ||
                     data.billingStatus === "none") &&
                     "bg-gray-100 text-gray-600",
@@ -1537,7 +1650,7 @@ function BillingTab() {
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
-            {data.hasSubscription || data.hasBillingAccount ? (
+            {data.hasSubscription ? (
               <Button
                 variant="outline"
                 disabled={portal.isPending}
@@ -1552,15 +1665,22 @@ function BillingTab() {
               </Button>
             ) : (
               <Button
-                disabled={checkout.isPending}
-                onClick={() => checkout.mutate({ tier: "cloud" })}
+                disabled={checkout.isPending || checkoutConfirmationUnresolved}
+                onClick={() =>
+                  checkout.mutate({
+                    tier: "cloud",
+                    ...(checkoutAttribution
+                      ? { attributionToken: checkoutAttribution }
+                      : {}),
+                  })
+                }
               >
-                {checkout.isPending ? (
+                {checkout.isPending || checkoutConfirmationUnresolved ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 ) : (
                   <CreditCard className="mr-2 h-4 w-4" />
                 )}
-                Subscribe
+                {checkoutConfirmationUnresolved ? "Confirming…" : "Subscribe"}
               </Button>
             )}
           </div>
@@ -1574,13 +1694,13 @@ function BillingTab() {
                 {daysLeft} days
               </span>{" "}
               left. After that, {currentPlan?.name ?? "Cloud"} is{" "}
-              {priceSentence}. Unlimited staff, and everything you see today
-              stays on.
+              {priceSentence}. Unlimited staff and all product features are
+              included.
             </>
           ) : (
             <>
-              {currentPlan?.name ?? "Cloud"} is {priceSentence}. Unlimited
-              staff, everything included.
+              {currentPlan?.name ?? "Cloud"} is {priceSentence}. Unlimited staff
+              and all product features are included.
             </>
           )}
         </p>
@@ -1598,7 +1718,7 @@ function BillingTab() {
               {data.usage.aiRuns}
             </span>{" "}
             of {currentPlan?.includedAiRunsPerMonth?.toLocaleString()} included
-            AI actions
+            AI actions. {overageSentence}
           </p>
         )}
 
@@ -1613,9 +1733,10 @@ function BillingTab() {
           </div>
         )}
         {data.billingStatus === "past_due" && (
-          <p className="mt-3 text-sm text-red-600">
-            Your last payment failed. Update your payment method to restore
-            write access.
+          <p className="mt-3 text-sm text-amber-700">
+            Your last payment failed, and Stripe is retrying it. Your clinic
+            remains available; update your payment method to prevent an
+            interruption.
           </p>
         )}
         {showSyncNote && (
@@ -1660,7 +1781,14 @@ function BillingTab() {
               plans={data.plans}
               currentTier={data.tier}
               enforced
-              onChoose={(tier) => checkout.mutate({ tier })}
+              onChoose={(tier) =>
+                checkout.mutate({
+                  tier,
+                  ...(checkoutAttribution
+                    ? { attributionToken: checkoutAttribution }
+                    : {}),
+                })
+              }
               busyTier={
                 checkout.isPending ? (checkout.variables?.tier ?? null) : null
               }
