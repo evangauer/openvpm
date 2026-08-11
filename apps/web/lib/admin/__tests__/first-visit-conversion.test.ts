@@ -71,7 +71,7 @@ describe("first-visit conversion report", () => {
     expect(result.sourceBreakdown.unknown).toBe(0);
   });
 
-  it("pins the mature, non-demo, signed post-visit cohort contract", () => {
+  it("pins the supported US Cloud, mature, signed post-visit cohort contract", () => {
     const source = readFileSync(
       fileURLToPath(new URL("../first-visit-conversion.ts", import.meta.url)),
       "utf8",
@@ -79,6 +79,10 @@ describe("first-visit conversion report", () => {
     for (const invariant of [
       "a.status = 'checked_out'",
       "vc.status = 'completed'",
+      "p.subscription_tier = 'cloud'",
+      "p.country = 'US'",
+      "onboardingIntent",
+      "is distinct from 'self_host'",
       "analyticsExcluded",
       "appointmentIds",
       "se.endpoint = 'subscription'",

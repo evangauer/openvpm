@@ -62,7 +62,9 @@ describe("admin UI", () => {
     expect(source).toContain(
       "trpc.admin.firstVisitConversion.useQuery({ days: 30 }, { retry: false })",
     );
-    expect(source).toContain("First real visit → billing connected (30 days)");
+    expect(source).toContain(
+      "Supported US Cloud first visit → billing connected (30 days)",
+    );
     expect(source).toContain("firstVisitConversion.matureOpportunities");
     expect(source).toContain("firstVisitConversion.convertedWithin24Hours");
     expect(source).toContain("firstVisitConversion.convertedWithin72Hours");

@@ -80,6 +80,10 @@ export async function computeFirstVisitConversion(
            and vc.completed_at is not null
            and vc.completed_at >= p.created_at
           where p.deleted_at is null
+            and p.subscription_tier = 'cloud'
+            and p.country = 'US'
+            and p.settings -> 'onboardingState' ->> 'onboardingIntent'
+              is distinct from 'self_host'
             and p.settings ->> 'analyticsExcluded' is distinct from 'true'
             and not (
               coalesce(p.settings -> 'demoData' -> 'appointmentIds', '[]'::jsonb)

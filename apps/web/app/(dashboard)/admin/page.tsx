@@ -1260,7 +1260,7 @@ export default function AdminPage() {
         <div className="flex items-center gap-2 text-muted-foreground">
           <TrendingUp className="h-4 w-4" />
           <span className="text-sm">
-            First real visit → billing connected (30 days)
+            Supported US Cloud first visit → billing connected (30 days)
           </span>
         </div>
         {firstVisitConversion ? (
@@ -1318,8 +1318,8 @@ export default function AdminPage() {
             <p className="mt-3 text-xs text-muted-foreground">
               Both rates use the same 72-hour-mature opportunity denominator. A
               signed subscription Checkout must occur strictly after the first
-              completed non-demo visit. Already-connected clinics are reported
-              separately.
+              completed non-demo visit for a supported US Cloud practice.
+              Already-connected clinics are reported separately.
             </p>
             <p className="mt-2 text-xs text-muted-foreground">
               72-hour conversions by server-owned source: registration{" "}
