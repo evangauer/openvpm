@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => {
     TelnyxNotConfiguredError: MockTelnyxNotConfiguredError,
     usageForPractice: vi.fn(async () => 0),
     currentPeriodMonth: vi.fn(() => "2026-06"),
+    lockPracticeForExternalSideEffects: vi.fn(async () => true),
   };
 });
 
@@ -61,6 +62,12 @@ vi.mock("@/lib/messaging/provisioning-attempt-gate", () => ({
 vi.mock("@/lib/billing/usage", () => ({
   usageForPractice: mocks.usageForPractice,
   currentPeriodMonth: mocks.currentPeriodMonth,
+}));
+
+vi.mock("@/lib/recovery-hold", () => ({
+  RECOVERY_HOLD_BLOCK_MESSAGE: "recovery hold",
+  lockPracticeForExternalSideEffects:
+    mocks.lockPracticeForExternalSideEffects,
 }));
 
 const { messagingRouter } = await import("../routers/messaging");
@@ -352,6 +359,19 @@ describe("messaging provisioning kill-switch", () => {
 });
 
 describe("messaging location target safety", () => {
+  it("does not create a provider profile or buy a number while held", async () => {
+    mocks.lockPracticeForExternalSideEffects.mockResolvedValueOnce(false);
+    const { db } = createDb();
+
+    await expect(
+      callerWithDb(db).provisionNumber(startNumberInput()),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    expect(mocks.reserveMessagingProfileAttempt).not.toHaveBeenCalled();
+    expect(mocks.createMessagingProfile).not.toHaveBeenCalled();
+    expect(mocks.buyNumber).not.toHaveBeenCalled();
+  });
+
   it("keeps automated appointment reminders admin-controlled and constrained", async () => {
     const { db, updateSet } = createDb({
       updateRows: [{ enabled: true, leadHours: 48 }],

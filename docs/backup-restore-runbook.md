@@ -2,12 +2,17 @@
 
 OpenVPM Cloud takes a structured database backup of every practice every day.
 This runbook covers what is in those JSON backups, how to restore one, and the
-drill log for the database path. Attachment-binary disaster recovery remains a
-separate launch gate until the independent replica and restore drill pass.
+drill log for the database path. Attachment-binary disaster recovery is defined
+in [File and Object Recovery Runbook](file-object-recovery-runbook.md) and
+remains a launch gate until its independent target, backfill, and destructive
+drill pass.
 
 ## What gets backed up
 
 - **When:** daily at 3:00 AM UTC (`/api/cron/backup`, see `apps/web/vercel.json`).
+- **Database snapshot:** each practice export runs in its own read-only
+  `REPEATABLE READ` transaction so every section and canonical count describes
+  one consistent point-in-time view.
 - **Where:** object storage, one file per practice per day:
   `backups/{practiceId}/{YYYY-MM-DD}.json` (date in the practice's timezone).
 - **What:** every practice-owned table, active rows only. That includes the
@@ -19,6 +24,10 @@ separate launch gate until the independent replica and restore drill pass.
   (invoices, items, payments, adjustments, claims), inventory, staff, and the
   audit log. The canonical section list is `PRACTICE_EXPORT_SECTIONS` in
   `apps/web/lib/backup/export.ts`.
+- **Recovery identity:** format v6 includes a sanitized top-level `practice`
+  snapshot for a reviewed database-owner bootstrap. It preserves the original
+  practice UUID and safe clinic settings, but excludes Stripe IDs, provider
+  authority, calendar tokens, secrets, and paid status.
 - **What is left out on purpose:** billing meter records, Stripe state,
   rate-limit buckets, sessions, and expiring tokens
   (`PRACTICE_EXPORT_SYSTEM_EXCLUSIONS` documents each reason). The `practices`
@@ -38,13 +47,68 @@ separate launch gate until the independent replica and restore drill pass.
   tokens are cleared, API keys are disabled, webhook secrets are replaced and
   webhooks arrive deactivated.
 - **File binaries are not in the JSON.** The `files` section holds attachment
-  manifests only. A same-practice database recovery can reuse surviving
-  objects. A fresh-practice restore with file manifests is currently rejected
-  before writing because its source-practice keys would be unusable; portable
-  object staging and key rewriting must ship before that path is supported.
+  manifests only. Format v6 includes a sanitized top-level `practice` recovery
+  snapshot and the manifests include checksum, byte size, patient/visit links,
+  and document metadata. Provider ETags/version IDs, replica projections, and
+  storage transition events remain outside clinic JSON. A same-practice
+  database recovery can reuse surviving objects or independently retained
+  copies. A fresh-practice restore with file manifests is rejected because its
+  source-practice keys would be unusable.
+- **Independent evidence:** when the controlled replica rollout includes the
+  practice, the cron also writes a checksum-addressed JSON object beneath
+  `database-backups/v2/{practiceId}/{YYYY-MM-DD}/` and a checksum-addressed
+  catalog beneath `database-backup-catalog/v2/...`. Both are read back and
+  checksum-verified before the independent copy is counted successful. The
+  catalog records the exact provider version ID of the backup object. The
+  export is rejected before upload if it exceeds the same 50 MB restore cap.
+  Backup heartbeat metrics distinguish `oversized` exports from
+  `otherFailed`, count exports at or above 80% of the cap as `nearLimit`, and
+  report `maxExportBytes` against `backupMaxBytes` for capacity planning.
 
 Admins can also download the identical payload on demand:
 **Settings → Data → Export Database Backup**.
+
+## Owner artifact-integrity verification (offline)
+
+Before a restore or disaster drill, a database/storage owner can verify a
+downloaded independent backup and its catalog without connecting this tool to
+storage or writing any application state. Work in a temporary directory
+outside the repository; never commit clinic backup JSON.
+
+1. Select one checksum-addressed catalog key beneath
+   `database-backup-catalog/v2/{practiceId}/{YYYY-MM-DD}/`. Download that
+   catalog by an explicit provider version when the storage provider exposes
+   versioning.
+2. Read `objectKey` and `objectVersionId` from the catalog, then download that
+   exact backup object version. Do not substitute the current/latest object.
+3. Run the local verifier from `apps/web`:
+
+   ```sh
+   pnpm backup:verify-evidence -- \
+     --catalog /tmp/openvpm-recovery/catalog.json \
+     --catalog-key 'database-backup-catalog/v2/PRACTICE_ID/YYYY-MM-DD/CATALOG_SHA256.json' \
+     --object /tmp/openvpm-recovery/backup.json \
+     --expected-practice 'PRACTICE_ID' \
+     --expected-date 'YYYY-MM-DD'
+   ```
+
+The command is intentionally read-only and offline. It bounds both local
+files, verifies the catalog's content-addressed key, requires the catalog's
+exact backup-object version ID, checks the backup bytes/size/checksum, and
+requires the one supported canonical export format and its complete section
+counts to equal the actual section-array lengths. Its JSON output inventories
+only recovery evidence and counts; it does not print clinical rows. A
+successful result has `status: "artifact_integrity_verified"`,
+`verificationScope: "artifact_integrity_and_canonical_counts"`,
+`applicationRestoreValidationPerformed: false`, and
+`restorePerformed: false`.
+
+Stop on any verifier error. Do not edit either JSON file to make it pass, do
+not restore an unverified object, and do not weaken the 50 MB bound. This
+artifact-integrity check proves the downloaded artifacts agree and that their
+canonical counts match their arrays. It does not run the application's full
+row/cross-reference restore validator and does not replace the transactional
+application dry run or the repeatable restore drill below.
 
 ## Restore runbook (clinic data recovery)
 
@@ -106,9 +170,32 @@ a complete recovery source for that incident.
      delivery ledgers are visible in the source export for audit but are not
      replayed by clinic restore.
 
-The restore is transactional and additive: it validates sections and
-cross-references first, inserts everything in one transaction, and skips rows
-that already exist. Backups up to 50 MB of JSON are accepted.
+The restore is additive and fail-closed. It first performs size, section,
+cross-reference, and file-target validation without writing. Its first database
+mutation then places the active target practice on a recovery hold and commits
+that hold independently. Only after other transactions holding an in-flight
+provider lock have drained does the bulk insert transaction begin. A bulk
+insert failure rolls back restored rows but deliberately leaves the committed
+hold active for owner review; it must never silently reopen the clinic. Rows
+that already exist are skipped. The hold remains active until the owner
+reconciliation procedure explicitly releases it. Backups up to 50 MB of JSON
+are accepted.
+
+While held, clinic email/SMS/webhook delivery, AI model calls, Stripe checkout,
+capture, refund, metering and subscription-quantity mutations, and Telnyx
+profile/number/A2P mutations are blocked. These paths take a shared lock on the
+practice row through the provider call; recovery's hold update therefore waits
+for a provider operation that already started, and no provider operation can
+start after the hold commits. Local usage evidence and authenticated inbound
+Stripe facts remain durable for later reconciliation.
+
+Intentional exceptions are narrow: password-reset and verification email stay
+available so authorized staff can recover access; read-only provider searches
+and operator reconciliation reads may inspect authoritative state but may not
+mutate it; backup creation and owner-controlled object replication/recovery
+remain available because they preserve or repair recovery evidence. Disabling
+a sender is safe, but enabling clinic delivery remains blocked until the hold is
+released.
 
 For a same-install database disaster, restore the database snapshot/WAL under
 the database-owner procedure. That trusted owner-maintenance path preserves the
@@ -175,8 +262,11 @@ UI, printing phase timings at the end.
   restore. Documented above (step 4); a clearer in-product hint on the
   restore error is a candidate follow-up.
 - **Known gap:** no in-product way to list or download the stored daily
-  snapshots; retrieval is a manual S3 pull (step 2). Candidate follow-up.
-- **Launch-blocking gap:** file binaries currently exist only in primary
-  object storage. Object-storage loss is not covered by the JSON backups, and
-  file-bearing fresh-practice restore is intentionally fail-closed. Track the
-  independent-copy rollout and destructive primary-loss drill in OPENVPM-41.
+  snapshots; retrieval is still a manual, owner-authorized object-store pull.
+  The local owner verifier now validates the selected checksum/version
+  evidence before restore, but does not perform discovery or download.
+- **Launch-blocking gap at drill time:** file binaries existed only in primary
+  object storage. The independent-copy implementation now has a separate
+  activation gate; it is not operationally complete until provider setup,
+  backfill, and the combined-loss drill in the file/object runbook pass. Track
+  that evidence in OPENVPM-41.

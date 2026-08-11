@@ -8,12 +8,23 @@ type WebhookRow = {
 
 const mocks = vi.hoisted(() => {
   const activeWebhooks: WebhookRow[] = [];
+  const selectWhere = vi.fn(async () => activeWebhooks);
+  const tx = {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({ where: selectWhere })),
+    })),
+  };
 
   return {
     activeWebhooks,
     db: {},
+    tx,
+    selectWhere,
     alertOps: vi.fn(async () => undefined),
-    withTenant: vi.fn(async () => activeWebhooks),
+    withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
+      fn(tx),
+    ),
+    lockPracticeForExternalSideEffects: vi.fn(async () => true),
   };
 });
 
@@ -26,7 +37,12 @@ vi.mock("@/lib/alerts", () => ({
 }));
 
 vi.mock("@/lib/tenant-db", () => ({
-  withTenant: mocks.withTenant,
+  withSystem: mocks.withSystem,
+}));
+
+vi.mock("@/lib/recovery-hold", () => ({
+  lockPracticeForExternalSideEffects:
+    mocks.lockPracticeForExternalSideEffects,
 }));
 
 const { WEBHOOK_DELIVERY_TIMEOUT_MS, dispatchWebhookEvent } = await import(
@@ -47,6 +63,8 @@ function webhook(overrides: Partial<WebhookRow> = {}): WebhookRow {
 
 beforeEach(() => {
   mocks.activeWebhooks.length = 0;
+  mocks.lockPracticeForExternalSideEffects.mockResolvedValue(true);
+  mocks.selectWhere.mockImplementation(async () => mocks.activeWebhooks);
 });
 
 afterEach(() => {
@@ -56,6 +74,17 @@ afterEach(() => {
 });
 
 describe("webhook dispatcher delivery", () => {
+  it("does not query or deliver while the practice is on recovery hold", async () => {
+    mocks.lockPracticeForExternalSideEffects.mockResolvedValueOnce(false);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await dispatchWebhookEvent(PRACTICE_ID, EVENT, { id: "appt-1" });
+
+    expect(mocks.tx.select).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("delivers subscribed events with a timeout signal", async () => {
     mocks.activeWebhooks.push(webhook());
     const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
@@ -149,7 +178,7 @@ describe("webhook dispatcher delivery", () => {
     const consoleError = vi
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
-    mocks.withTenant.mockRejectedValueOnce(new Error("db down"));
+    mocks.selectWhere.mockRejectedValueOnce(new Error("db down"));
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 

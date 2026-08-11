@@ -16,6 +16,7 @@ import {
   AgentNotConfiguredError,
   AgentPracticeNotFoundError,
   AgentRateLimitedError,
+  AgentRecoveryHoldError,
 } from "@/lib/agent";
 import { AGENT_INSTRUCTION_MAX_LENGTH } from "@/lib/agent/policy";
 import { billingEnforced } from "@/lib/billing/plans";
@@ -105,6 +106,12 @@ export const agentRouter = createRouter({
         }
         if (e instanceof AgentRateLimitedError) {
           throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: e.message });
+        }
+        if (e instanceof AgentRecoveryHoldError) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: e.message,
+          });
         }
         if (e instanceof AgentPracticeNotFoundError) {
           throw practiceNotFound();

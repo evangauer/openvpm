@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   withSystem: vi.fn(),
   acquireSmsRecipientLockInTransaction: vi.fn(async () => undefined),
   alertOps: vi.fn(async () => undefined),
+  practiceAllowsExternalSideEffects: vi.fn(async () => true),
+  lockPracticeForExternalSideEffects: vi.fn(async () => true),
 }));
 
 vi.mock("@openpims/db/client", () => ({ db: {} }));
@@ -24,6 +26,12 @@ vi.mock("@/lib/billing/plans", () => ({
 }));
 vi.mock("@/lib/billing/usage", () => ({ recordUsage: mocks.recordUsage }));
 vi.mock("@/lib/alerts", () => ({ alertOps: mocks.alertOps }));
+vi.mock("@/lib/recovery-hold", () => ({
+  RECOVERY_HOLD_BLOCK_MESSAGE: "recovery hold",
+  practiceAllowsExternalSideEffects: mocks.practiceAllowsExternalSideEffects,
+  lockPracticeForExternalSideEffects:
+    mocks.lockPracticeForExternalSideEffects,
+}));
 vi.mock("@/lib/messaging", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/messaging")>();
   return {
@@ -420,6 +428,7 @@ beforeEach(() => {
   });
   mocks.recordUsage.mockResolvedValue(undefined);
   mocks.acquireSmsRecipientLockInTransaction.mockResolvedValue(undefined);
+  mocks.practiceAllowsExternalSideEffects.mockResolvedValue(true);
   vi.stubEnv("MESSAGING_REGISTERED_DISPLAY_NAME", "Neighborhood Veterinary");
   (globalThis as Record<string, unknown>).__smsLedgerState = state;
 });
@@ -523,6 +532,18 @@ describe("independent ledger reservation", () => {
 });
 
 describe("durable SMS dispatch", () => {
+  it("blocks a held practice before resolving a sender or reserving delivery", async () => {
+    mocks.practiceAllowsExternalSideEffects.mockResolvedValueOnce(false);
+
+    await expect(sendSms(sendOptions())).resolves.toMatchObject({
+      success: false,
+      outcome: "definite_failure",
+      error: "recovery hold",
+    });
+    expect(mocks.resolveMessagingTransport).not.toHaveBeenCalled();
+    expect(mocks.providerSend).not.toHaveBeenCalled();
+  });
+
   it("keeps hosted sending default-off before DB or provider work", async () => {
     mocks.billingEnforced.mockReturnValue(true);
 

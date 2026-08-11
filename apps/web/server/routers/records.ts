@@ -99,9 +99,13 @@ import {
 import {
   CONSENT_BODY_MAX_LENGTH,
   CONSENT_TITLE_MAX_LENGTH,
+  hasUnresolvedConsentPlaceholders,
 } from "@/lib/consult/consent-template";
 import { CONSENT_FORM_LIBRARY } from "@/lib/consult/consent-form-library";
-import { PATIENT_PHOTO_CATEGORY } from "@/lib/records/file-kinds";
+import {
+  CONSENT_FILE_CATEGORY,
+  PATIENT_PHOTO_CATEGORY,
+} from "@/lib/records/file-kinds";
 import { appBaseUrl } from "@/lib/app-url";
 import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
 import { lockOpenVisitForClinicalAppend } from "@/lib/records/visit-integrity";
@@ -3749,6 +3753,7 @@ export const recordsRouter = createRouter({
             eq(files.entityId, input.patientId),
             eq(files.category, PATIENT_PHOTO_CATEGORY),
             like(files.mimeType, "image/%"),
+            eq(files.storageStatus, "available"),
             activePracticePredicate(ctx.practiceId),
             isNull(files.deletedAt)
           )
@@ -3758,10 +3763,10 @@ export const recordsRouter = createRouter({
     }),
 
   /**
-   * Everything attached to a patient (photos, signed consents, documents),
-   * newest first, for the patient Documents tab. Optionally narrowed to one
-   * visit for the per-appointment documents view. Signed consents join back
-   * to their request so the UI can say what was signed and by whom.
+   * Every integrity-verified attachment for a patient (photos, signed
+   * consents, documents), newest first, for the patient Documents tab.
+   * Optionally narrowed to one visit for the per-appointment documents view.
+   * Consent artifacts are published only once their request is fully signed.
    */
   listPatientFiles: protectedProcedure
     .input(
@@ -3798,6 +3803,8 @@ export const recordsRouter = createRouter({
           consentRequests,
           and(
             eq(consentRequests.fileId, files.id),
+            eq(consentRequests.practiceId, ctx.practiceId),
+            eq(consentRequests.status, "signed"),
             isNull(consentRequests.deletedAt)
           )
         )
@@ -3809,6 +3816,12 @@ export const recordsRouter = createRouter({
             input.appointmentId
               ? eq(files.appointmentId, input.appointmentId)
               : undefined,
+            eq(files.storageStatus, "available"),
+            or(
+              isNull(files.category),
+              ne(files.category, CONSENT_FILE_CATEGORY),
+              eq(consentRequests.status, "signed")
+            ),
             activePracticePredicate(ctx.practiceId),
             isNull(files.deletedAt)
           )
@@ -3906,6 +3919,18 @@ export const recordsRouter = createRouter({
           message: "Consent form not found",
         });
       }
+      const title = input.title ?? form.title;
+      const bodyText = input.bodyText ?? form.body;
+      if (
+        hasUnresolvedConsentPlaceholders(title) ||
+        hasUnresolvedConsentPlaceholders(bodyText)
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "Fill in every blank and resolve each staff instruction before making the consent code.",
+        });
+      }
       const appointmentId = input.appointmentId
         ? (
             await assertAppointmentBelongsToPatient(
@@ -3927,8 +3952,8 @@ export const recordsRouter = createRouter({
           formId: form.id,
           token,
           expiresAt,
-          title: input.title ?? form.title,
-          bodyText: input.bodyText ?? form.body,
+          title,
+          bodyText,
         })
         .returning({ id: consentRequests.id });
       return {
@@ -3940,7 +3965,7 @@ export const recordsRouter = createRouter({
       };
     }),
 
-  /** Consent requests for a patient, newest first (tokens never leave here). */
+  /** Available signed consents for a patient, newest first. */
   listConsents: protectedProcedure
     .input(z.object({ patientId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
@@ -3958,14 +3983,22 @@ export const recordsRouter = createRouter({
           fileUrl: files.fileUrl,
         })
         .from(consentRequests)
-        .leftJoin(
+        .innerJoin(
           files,
-          and(eq(files.id, consentRequests.fileId), isNull(files.deletedAt))
+          and(
+            eq(files.id, consentRequests.fileId),
+            eq(files.practiceId, ctx.practiceId),
+            eq(files.patientId, input.patientId),
+            eq(files.category, CONSENT_FILE_CATEGORY),
+            eq(files.storageStatus, "available"),
+            isNull(files.deletedAt)
+          )
         )
         .where(
           and(
             eq(consentRequests.practiceId, ctx.practiceId),
             eq(consentRequests.patientId, input.patientId),
+            eq(consentRequests.status, "signed"),
             activePracticePredicate(ctx.practiceId),
             isNull(consentRequests.deletedAt)
           )

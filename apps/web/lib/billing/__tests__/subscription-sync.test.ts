@@ -1,6 +1,23 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
-import { countBillableStaffRows } from "../subscription-sync";
+import { describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+  retrieve: vi.fn(),
+  update: vi.fn(),
+  create: vi.fn(),
+}));
+
+vi.mock("@/lib/stripe", () => ({
+  stripe: {
+    subscriptions: { retrieve: mocks.retrieve },
+    subscriptionItems: { update: mocks.update, create: mocks.create },
+  },
+}));
+
+import {
+  countBillableStaffRows,
+  syncPracticeSubscriptionQuantities,
+} from "../subscription-sync";
 
 describe("countBillableStaffRows", () => {
   it("counts every non-deleted staff user and excludes deleted users", () => {
@@ -53,6 +70,32 @@ describe("billing sync practice scoping", () => {
       syncState.indexOf("const counts = await countBillableLocationsAndSeats")
     );
     expect(syncState).toContain("{ locationCount: 0, billableSeatCount: 0 }");
+  });
+
+  it("does not call Stripe or count billable rows while held", async () => {
+    const locked = vi.fn(async () => [
+      { stripeSubscriptionId: "sub_held", recoveryHold: true },
+    ]);
+    const limit = vi.fn(() => ({ for: locked }));
+    const where = vi.fn(() => ({ limit }));
+    const from = vi.fn(() => ({ where }));
+    const select = vi.fn(() => ({ from }));
+
+    await expect(
+      syncPracticeSubscriptionQuantities({
+        db: { select } as never,
+        practiceId: "practice-held",
+      }),
+    ).resolves.toMatchObject({
+      status: "skipped",
+      locationCount: 0,
+      billableSeatCount: 0,
+    });
+
+    expect(select).toHaveBeenCalledOnce();
+    expect(mocks.retrieve).not.toHaveBeenCalled();
+    expect(mocks.update).not.toHaveBeenCalled();
+    expect(mocks.create).not.toHaveBeenCalled();
   });
 
   it("attaches missing metered overage items idempotently during sync", () => {

@@ -13,14 +13,35 @@ const SIGNATURE_WIDTH_MM = 70;
 const SIGNATURE_HEIGHT_MM = 26;
 
 export interface ConsentPdfInput {
-  practiceName: string;
-  patientName: string;
+  /** Stable UUID for deterministic PDF metadata across upload retries. */
+  documentId: string;
+  /** Durable tenant and patient identifiers from the consent snapshot. */
+  practiceId: string;
+  patientId: string;
   title: string;
   bodyText: string;
   signerName: string;
   signedAtIso: string;
   /** PNG data URL of the drawn signature. */
   signaturePngDataUrl: string;
+}
+
+/**
+ * Fully parse a bounded signature with the same PNG decoder used by the final
+ * renderer. Magic bytes and IHDR dimensions alone do not validate chunk CRCs,
+ * truncation, or compressed image data. Callers must apply byte and pixel
+ * bounds before invoking this decoder.
+ */
+export function consentSignaturePngDecodes(
+  signaturePngDataUrl: string,
+): boolean {
+  try {
+    const validator = new jsPDF();
+    validator.addImage(signaturePngDataUrl, "PNG", 0, 0, 1, 1);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function ensureSpace(doc: jsPDF, y: number, needed: number): number {
@@ -34,6 +55,10 @@ function ensureSpace(doc: jsPDF, y: number, needed: number): number {
 
 export function buildConsentPdf(input: ConsentPdfInput): Buffer {
   const doc = new jsPDF();
+  // jsPDF otherwise embeds a fresh document ID and the wall-clock creation
+  // time, making the same consent render to different bytes on every retry.
+  doc.setFileId(input.documentId.replaceAll("-", "").toUpperCase());
+  doc.setCreationDate(new Date(input.signedAtIso));
   let y = PAGE_MARGIN;
 
   doc.setFont("helvetica", "bold");
@@ -45,11 +70,9 @@ export function buildConsentPdf(input: ConsentPdfInput): Buffer {
   doc.setFont("helvetica", "normal");
   doc.setFontSize(10);
   doc.setTextColor(102, 102, 102);
-  doc.text(
-    `${input.practiceName}  ·  Patient: ${input.patientName}`,
-    PAGE_MARGIN,
-    y
-  );
+  doc.text(`Clinic record: ${input.practiceId}`, PAGE_MARGIN, y);
+  y += 5;
+  doc.text(`Patient record: ${input.patientId}`, PAGE_MARGIN, y);
   y += 4;
   doc.setDrawColor(238, 238, 238);
   doc.setLineWidth(0.5);
@@ -78,7 +101,7 @@ export function buildConsentPdf(input: ConsentPdfInput): Buffer {
     PAGE_MARGIN,
     y,
     SIGNATURE_WIDTH_MM,
-    SIGNATURE_HEIGHT_MM
+    SIGNATURE_HEIGHT_MM,
   );
   y += SIGNATURE_HEIGHT_MM + 2;
   doc.setDrawColor(102, 102, 102);
@@ -94,7 +117,7 @@ export function buildConsentPdf(input: ConsentPdfInput): Buffer {
   doc.text(
     `Signed ${new Date(input.signedAtIso).toUTCString()}`,
     PAGE_MARGIN,
-    y
+    y,
   );
 
   return Buffer.from(doc.output("arraybuffer"));

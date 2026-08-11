@@ -14,7 +14,7 @@ import {
   vaccinationRecords,
   soapNotes,
 } from "@openpims/db";
-import type { Database } from "@openpims/db/client";
+import { db as rootDb, type Database } from "@openpims/db/client";
 import {
   type ClientImportRecord,
   type PatientImportRecord,
@@ -2405,6 +2405,7 @@ export const dataRouter = createRouter({
         ctx.db,
         ctx.practiceId,
         input.backup,
+        { recoveryHoldDb: rootDb },
       );
       await recordActivationAfterAppointmentCreated(
         ctx.db,

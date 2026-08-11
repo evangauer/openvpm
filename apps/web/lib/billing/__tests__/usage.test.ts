@@ -24,12 +24,14 @@ describe("usage query scoping", () => {
     expect(activePracticeGuard).toBeGreaterThanOrEqual(0);
     expect(usageInsert).toBeGreaterThan(activePracticeGuard);
     expect(source).toMatch(
-      /select\(\{ id: practices\.id \}\)[\s\S]+?where\(\s*and\(\s*eq\(practices\.id, opts\.practiceId\),\s*isNull\(practices\.deletedAt\)\s*\)\s*\)/s
+      /id: practices\.id,\s*recoveryHold: practices\.recoveryHold,[\s\S]+?where\(\s*and\(\s*eq\(practices\.id, opts\.practiceId\),\s*isNull\(practices\.deletedAt\)\s*\)\s*\)/s
     );
     expect(source).toContain("if (!activePractice) return;");
     expect(source).toMatch(
       /eq\(practices\.id, opts\.practiceId\),\s*isNull\(practices\.deletedAt\)/s
     );
+    expect(source).toContain("eq(practices.recoveryHold, false)");
+    expect(source).toContain('.for("share", { of: practices })');
     expect(source).toMatch(
       /eq\(usageRecords\.id, opts\.usageRecordId\),\s*isNull\(usageRecords\.deletedAt\)/s
     );

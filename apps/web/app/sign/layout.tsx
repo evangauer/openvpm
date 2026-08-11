@@ -4,6 +4,8 @@ import { PawMark } from "@/components/brand/paw-mark";
 export const metadata: Metadata = {
   title: "Sign Consent - OpenVPM",
   description: "Review and sign a consent form",
+  referrer: "no-referrer",
+  robots: { index: false, follow: false, nocache: true },
 };
 
 /**

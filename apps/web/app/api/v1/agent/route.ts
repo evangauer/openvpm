@@ -12,6 +12,7 @@ import {
   AgentNotConfiguredError,
   AgentPracticeNotFoundError,
   AgentRateLimitedError,
+  AgentRecoveryHoldError,
   runAgent,
 } from "@/lib/agent";
 import { AGENT_INSTRUCTION_MAX_LENGTH } from "@/lib/agent/policy";
@@ -102,6 +103,9 @@ export async function POST(req: Request) {
             headers: agentRateLimitHeaders(e),
           }
         );
+      }
+      if (e instanceof AgentRecoveryHoldError) {
+        return apiError(e.message, 503);
       }
       if (e instanceof AgentPracticeNotFoundError) {
         return apiError(e.message, 404);

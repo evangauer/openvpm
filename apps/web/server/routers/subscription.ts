@@ -28,6 +28,7 @@ import {
 } from "@/lib/billing/subscription-sync";
 import { appBaseUrl } from "@/lib/app-url";
 import { billingContactEmail } from "@/lib/billing/contact";
+import { RECOVERY_HOLD_BLOCK_MESSAGE } from "@/lib/recovery-hold";
 
 const adminProcedure = protectedProcedure.use(requireRole("admin"));
 
@@ -152,13 +153,21 @@ export const subscriptionRouter = createRouter({
           email: practices.email,
           billingStatus: practices.billingStatus,
           trialEndsAt: practices.trialEndsAt,
+          recoveryHold: practices.recoveryHold,
         })
         .from(practices)
         .where(activePracticeWhere(ctx.practiceId))
-        .limit(1);
+        .limit(1)
+        .for("share", { of: practices });
 
       if (!practice) {
         throw practiceNotFound();
+      }
+      if (practice.recoveryHold) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: RECOVERY_HOLD_BLOCK_MESSAGE,
+        });
       }
 
       // A completed Checkout already owns the subscription lifecycle. Starting
@@ -224,13 +233,23 @@ export const subscriptionRouter = createRouter({
   /** Open the Stripe Billing Portal to manage/cancel an existing subscription. */
   openBillingPortal: adminProcedure.mutation(async ({ ctx }) => {
     const [practice] = await ctx.db
-      .select({ stripeCustomerId: practices.stripeCustomerId })
+      .select({
+        stripeCustomerId: practices.stripeCustomerId,
+        recoveryHold: practices.recoveryHold,
+      })
       .from(practices)
       .where(activePracticeWhere(ctx.practiceId))
-      .limit(1);
+      .limit(1)
+      .for("share", { of: practices });
 
     if (!practice) {
       throw practiceNotFound();
+    }
+    if (practice.recoveryHold) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: RECOVERY_HOLD_BLOCK_MESSAGE,
+      });
     }
 
     if (!practice.stripeCustomerId) {

@@ -16,7 +16,7 @@ const mocks = vi.hoisted(() => {
     const builder = {
       from: vi.fn(() => builder),
       where: vi.fn(() => builder),
-      limit: vi.fn(() => resultPromise()),
+      limit: vi.fn(() => builder),
       for: vi.fn(() => resultPromise()),
       then: (
         resolve: (value: unknown[]) => unknown,
@@ -488,6 +488,23 @@ describe("portal checkout route", () => {
     );
     // Self-host: the platform Stripe key IS the practice's account.
     expect(mocks.getChargeableStripeConnectAccountId).not.toHaveBeenCalled();
+  });
+
+  it("does not create portal checkout while the clinic is held", async () => {
+    mocks.selectResults.push(
+      [client()],
+      [invoice()],
+      [{ amount: "0.00" }],
+      [{ name: "Biscuit" }],
+      [practice({ recoveryHold: true })],
+    );
+
+    const response = await POST(
+      portalRequest({ token: "portal-token", invoiceId: INVOICE_ID }),
+    );
+
+    expect(response.status).toBe(503);
+    expect(mocks.createCheckoutSession).not.toHaveBeenCalled();
   });
 
   it("returns a controlled conflict when a linked visit is not ready", async () => {

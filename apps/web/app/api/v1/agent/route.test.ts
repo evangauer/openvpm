@@ -40,9 +40,17 @@ const mocks = vi.hoisted(() => {
     }
   }
 
+  class AgentRecoveryHoldError extends Error {
+    constructor() {
+      super("Practice recovery is in progress.");
+      this.name = "AgentRecoveryHoldError";
+    }
+  }
+
   return {
     AgentNotConfiguredError,
     AgentPracticeNotFoundError,
+    AgentRecoveryHoldError,
     AgentRateLimitedError,
     activePracticeRows,
     activePracticeSelectBuilders,
@@ -83,6 +91,7 @@ vi.mock("@/lib/agent", () => ({
   runAgent: mocks.runAgent,
   AgentNotConfiguredError: mocks.AgentNotConfiguredError,
   AgentPracticeNotFoundError: mocks.AgentPracticeNotFoundError,
+  AgentRecoveryHoldError: mocks.AgentRecoveryHoldError,
   AgentRateLimitedError: mocks.AgentRateLimitedError,
 }));
 

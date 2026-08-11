@@ -53,6 +53,10 @@ import {
   invoiceBalanceCents,
   moneyToCents,
 } from "@/lib/billing/invoice-balance";
+import {
+  lockPracticeForExternalSideEffects,
+  RECOVERY_HOLD_BLOCK_MESSAGE,
+} from "@/lib/recovery-hold";
 
 const DEFAULT_PRACTICE_NAME = "your clinic";
 
@@ -164,6 +168,18 @@ async function assertActivePractice(ctx: {
   }
 }
 
+async function assertNotificationsEnabled(ctx: {
+  db: NotificationsDb;
+  practiceId: string;
+}) {
+  if (!(await lockPracticeForExternalSideEffects(ctx.db, ctx.practiceId))) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: RECOVERY_HOLD_BLOCK_MESSAGE,
+    });
+  }
+}
+
 async function practiceNotificationSettings(ctx: {
   db: NotificationsDb;
   practiceId: string;
@@ -250,6 +266,7 @@ export const notificationsRouter = createRouter({
     .input(z.object({ appointmentId: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
+      await assertNotificationsEnabled(ctx);
       const [appt] = await ctx.db
         .select({
           id: appointments.id,
@@ -553,6 +570,7 @@ export const notificationsRouter = createRouter({
     .input(z.object({ invoiceId: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
+      await assertNotificationsEnabled(ctx);
       const [invoice] = await ctx.db
         .select({
           id: invoices.id,
@@ -782,6 +800,7 @@ export const notificationsRouter = createRouter({
     )
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
+      await assertNotificationsEnabled(ctx);
       if (input.appointmentIds.length === 0) return { sent: 0, failed: 0 };
       const appointmentIds = [...new Set(input.appointmentIds)];
 
@@ -1194,6 +1213,7 @@ export const notificationsRouter = createRouter({
     )
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
+      await assertNotificationsEnabled(ctx);
       const result = await sendVaccinationRecallReminders(
         ctx,
         input.patientIds,

@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   refundStripeCheckoutPayment: vi.fn(
     async (): Promise<{ refundId: string } | null> => null
   ),
+  lockPracticeForExternalSideEffects: vi.fn(async () => true),
 }));
 
 vi.mock("@/lib/audit", () => ({
@@ -30,6 +31,12 @@ vi.mock("@/lib/stripe", () => ({
   createConnectLoginLink: vi.fn(),
   refundStripeCheckoutPayment: mocks.refundStripeCheckoutPayment,
   retrieveConnectAccount: vi.fn(),
+}));
+
+vi.mock("@/lib/recovery-hold", () => ({
+  RECOVERY_HOLD_BLOCK_MESSAGE: "recovery hold",
+  lockPracticeForExternalSideEffects:
+    mocks.lockPracticeForExternalSideEffects,
 }));
 
 const { billingRouter } = await import("../routers/billing");
@@ -135,6 +142,22 @@ afterEach(() => {
 });
 
 describe("billing refunds", () => {
+  it("does not call Stripe or mutate money state while the practice is held", async () => {
+    mocks.lockPracticeForExternalSideEffects.mockResolvedValueOnce(false);
+    const { db, insertValues, updateSet } = createDb({ selectResults: [] });
+
+    await expect(
+      callerWithDb(db).refundPayment({
+        paymentId: PAYMENT_ID,
+        reason: "Owner cancelled",
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    expect(mocks.refundStripeCheckoutPayment).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
   it("refunds a card payment through Stripe and reopens the invoice", async () => {
     const { db, insertValues, updateSet } = createDb({
       selectResults: [

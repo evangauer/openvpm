@@ -17,11 +17,32 @@ import type { Database } from "@openpims/db/client";
 export async function withTenant<T>(
   db: Database,
   practiceId: string,
-  fn: (tx: Database) => Promise<T>
+  fn: (tx: Database) => Promise<T>,
 ): Promise<T> {
   return db.transaction(async (tx) => {
     await tx.execute(
-      sql`select set_config('app.current_practice_id', ${practiceId}, true)`
+      sql`select set_config('app.current_practice_id', ${practiceId}, true)`,
+    );
+    return fn(tx as unknown as Database);
+  });
+}
+
+/**
+ * Run a multi-query tenant export against one read-only MVCC snapshot. The
+ * transaction characteristics must be the first statement so Postgres applies
+ * them before the tenant GUC and any export reads.
+ */
+export async function withTenantReadOnlySnapshot<T>(
+  db: Database,
+  practiceId: string,
+  fn: (tx: Database) => Promise<T>,
+): Promise<T> {
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`set transaction isolation level repeatable read read only`,
+    );
+    await tx.execute(
+      sql`select set_config('app.current_practice_id', ${practiceId}, true)`,
     );
     return fn(tx as unknown as Database);
   });
@@ -34,7 +55,7 @@ export async function withTenant<T>(
  */
 export async function withSystem<T>(
   db: Database,
-  fn: (tx: Database) => Promise<T>
+  fn: (tx: Database) => Promise<T>,
 ): Promise<T> {
   return db.transaction(async (tx) => {
     await tx.execute(sql`select set_config('app.rls_bypass', 'on', true)`);

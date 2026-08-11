@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   createCheckoutSession: vi.fn(async () => ({ url: "https://stripe.example/checkout" })),
   recordAuditLog: vi.fn(async () => undefined),
+  lockPracticeForExternalSideEffects: vi.fn(async () => true),
 }));
 
 vi.mock("@/lib/stripe", () => ({
@@ -15,6 +16,12 @@ vi.mock("@/lib/app-url", () => ({
 
 vi.mock("@/lib/audit", () => ({
   recordAuditLog: mocks.recordAuditLog,
+}));
+
+vi.mock("@/lib/recovery-hold", () => ({
+  RECOVERY_HOLD_BLOCK_MESSAGE: "recovery hold",
+  lockPracticeForExternalSideEffects:
+    mocks.lockPracticeForExternalSideEffects,
 }));
 
 const { billingRouter } = await import("../routers/billing");
@@ -121,6 +128,18 @@ afterEach(() => {
 });
 
 describe("billing card checkout", () => {
+  it("does not call Stripe checkout while the practice is held", async () => {
+    mocks.lockPracticeForExternalSideEffects.mockResolvedValueOnce(false);
+    const { db, select } = createDb([]);
+
+    await expect(
+      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    expect(select).not.toHaveBeenCalled();
+    expect(mocks.createCheckoutSession).not.toHaveBeenCalled();
+  });
+
   it("keeps card checkout limited to billing roles", async () => {
     const { db, select } = createDb([[baseInvoice]]);
 

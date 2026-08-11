@@ -15,7 +15,12 @@ const mocks = vi.hoisted(() => {
       from: vi.fn(() => builder),
       innerJoin: vi.fn(() => builder),
       where: vi.fn(() => builder),
-      limit: vi.fn(async () => result),
+      limit: vi.fn(() => builder),
+      for: vi.fn(async () => result),
+      then: (
+        resolve: (value: unknown[]) => unknown,
+        reject?: (error: unknown) => unknown,
+      ) => Promise.resolve(result).then(resolve, reject),
     };
     return builder;
   });
@@ -23,13 +28,17 @@ const mocks = vi.hoisted(() => {
   const updateWhere = vi.fn(async (_condition: unknown) => undefined);
   const updateSet = vi.fn((_values: unknown) => ({ where: updateWhere }));
   const update = vi.fn(() => ({ set: updateSet }));
-  const tx = { select, update };
+  const insertReturning = vi.fn(async () => [{ id: "usage-held" }]);
+  const insertValues = vi.fn(() => ({ returning: insertReturning }));
+  const insert = vi.fn(() => ({ values: insertValues }));
+  const tx = { select, update, insert };
 
   return {
     selectResults,
     tx,
     updateSet,
     updateWhere,
+    insertValues,
     billingEnforced: vi.fn(() => true),
     recordMeterEvent: vi.fn(async () => true),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
@@ -54,7 +63,7 @@ vi.mock("../stripe-meters", () => ({
   recordMeterEvent: mocks.recordMeterEvent,
 }));
 
-const { reconcileUnmeteredUsage } = await import("../usage");
+const { reconcileUnmeteredUsage, recordUsage } = await import("../usage");
 
 beforeEach(() => {
   mocks.billingEnforced.mockReturnValue(true);
@@ -67,6 +76,24 @@ afterEach(() => {
 });
 
 describe("reconcileUnmeteredUsage", () => {
+  it("records held usage locally without calling the Stripe meter", async () => {
+    mocks.selectResults.push([
+      [{ id: "practice-held", recoveryHold: true }],
+    ]);
+
+    await expect(
+      recordUsage({ practiceId: "practice-held", kind: "ai_run" }),
+    ).resolves.toBeUndefined();
+
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: "practice-held",
+        kind: "ai_run",
+      }),
+    );
+    expect(mocks.recordMeterEvent).not.toHaveBeenCalled();
+  });
+
   it("does not query usage records when hosted billing is disabled", async () => {
     mocks.billingEnforced.mockReturnValue(false);
 

@@ -29,45 +29,59 @@ import {
 
 describe("patient detail UI states", () => {
   it("resolves merged source charts to the canonical identity with attribution", () => {
-    const source = readFileSync("app/(dashboard)/patients/[id]/page.tsx", "utf8");
+    const source = readFileSync(
+      "app/(dashboard)/patients/[id]/page.tsx",
+      "utf8",
+    );
 
-    expect(source).toContain("const canonicalPatientId = patient?.id ?? params.id");
+    expect(source).toContain(
+      "const canonicalPatientId = patient?.id ?? params.id",
+    );
     expect(source).toContain("patient?.mergeMetadata");
     expect(source).toContain("window.history.replaceState(");
     expect(source).toContain("?mergedFrom=${params.id}");
     expect(source).toContain(
-      "Opened the canonical chart for a merged patient identity"
+      "Opened the canonical chart for a merged patient identity",
     );
     expect(source).toContain("patient.mergeMetadata.sourceSnapshot.name");
     expect(source).toContain("patient.mergeMetadata.performedByName");
     expect(source).toContain("patient.mergeMetadata.reason");
     expect(source).toContain("{ patientId: canonicalPatientId }");
-    expect(source).toMatch(
-      /\{\s*id: canonicalPatientId,\s*photoUrl: data\.url,?\s*\}/,
+    expect(source).toContain(
+      'formData.append("patientId", canonicalPatientId)',
     );
     expect(source).toContain(
-      "Array.from(new Set([params.id, canonicalPatientId]))"
+      'headers: { "Idempotency-Key": attempt.idempotencyKey }',
+    );
+    expect(source).not.toContain("updatePhotoMutation");
+    expect(source).toContain(
+      "Array.from(new Set([params.id, canonicalPatientId]))",
     );
   });
 
   it("keeps viewer access read-only for patient detail writes", () => {
-    const source = readFileSync("app/(dashboard)/patients/[id]/page.tsx", "utf8");
+    const source = readFileSync(
+      "app/(dashboard)/patients/[id]/page.tsx",
+      "utf8",
+    );
 
     expect(source).toContain('import { useSession } from "next-auth/react"');
     expect(source).toContain(
-      "function canManagePatientDetailRole(role?: string | null): boolean"
+      "function canManagePatientDetailRole(role?: string | null): boolean",
     );
     expect(source).toContain(
-      "function canRecordVitalsRole(role?: string | null): boolean"
+      "function canRecordVitalsRole(role?: string | null): boolean",
     );
     expect(source).toContain("const { data: session } = useSession()");
     expect(source).toContain(
-      "const canManagePatientDetail = canManagePatientDetailRole("
+      "const canManagePatientDetail = canManagePatientDetailRole(",
     );
     expect(source).toContain("const canRecordVitals = canRecordVitalsRole(");
     expect(source).toContain("if (!canManagePatientDetail)");
     expect(source).toContain("{canManagePatientDetail && (");
-    expect(source).toContain("canManagePatientDetail &&\n    isPatientWeightInputValid");
+    expect(source).toContain(
+      "canManagePatientDetail &&\n    isPatientWeightInputValid",
+    );
     expect(source).toContain("canRecordVitals={canRecordVitals}");
     expect(source).toContain("canRecordVitals &&");
     expect(source).toContain("canRecordVitals: boolean");
@@ -78,7 +92,10 @@ describe("patient detail UI states", () => {
     expect(source).toContain('role === "front_desk"');
 
     const vitalsRoleStart = source.indexOf("function canRecordVitalsRole");
-    const vitalsRoleEnd = source.indexOf("type VitalsFormState", vitalsRoleStart);
+    const vitalsRoleEnd = source.indexOf(
+      "type VitalsFormState",
+      vitalsRoleStart,
+    );
     const vitalsRoleSource = source.slice(vitalsRoleStart, vitalsRoleEnd);
     expect(vitalsRoleSource).toContain('role === "admin"');
     expect(vitalsRoleSource).toContain('role === "veterinarian"');
@@ -87,9 +104,14 @@ describe("patient detail UI states", () => {
   });
 
   it("uses shared empty states for patient clinical-history tabs", () => {
-    const source = readFileSync("app/(dashboard)/patients/[id]/page.tsx", "utf8");
+    const source = readFileSync(
+      "app/(dashboard)/patients/[id]/page.tsx",
+      "utf8",
+    );
 
-    expect(source).toContain('import { EmptyState } from "@/components/common/empty-state"');
+    expect(source).toContain(
+      'import { EmptyState } from "@/components/common/empty-state"',
+    );
     expect(source).toContain('title="No weight records yet"');
     expect(source).toContain('title="No vitals recorded yet"');
     expect(source).toContain('title="No vaccination records yet"');
@@ -99,10 +121,13 @@ describe("patient detail UI states", () => {
   });
 
   it("gives the chart medical-history tabs backed by tenant-scoped queries", () => {
-    const source = readFileSync("app/(dashboard)/patients/[id]/page.tsx", "utf8");
+    const source = readFileSync(
+      "app/(dashboard)/patients/[id]/page.tsx",
+      "utf8",
+    );
     const appointmentsRouter = readFileSync(
       "server/routers/appointments.ts",
-      "utf8"
+      "utf8",
     );
 
     // The chart is the medical record: SOAP timeline, visit history, and
@@ -110,23 +135,28 @@ describe("patient detail UI states", () => {
     for (const label of ["Medical Records", "Appointments", "Invoices"]) {
       expect(source).toContain(`label: "${label}"`);
     }
-    expect(source).toContain("trpc.records.listSoapNotes.useQuery({ patientId })");
     expect(source).toContain(
-      "trpc.appointments.listByPatient.useQuery({ patientId })"
+      "trpc.records.listSoapNotes.useQuery({ patientId })",
+    );
+    expect(source).toContain(
+      "trpc.appointments.listByPatient.useQuery({ patientId })",
     );
     expect(source).toContain("trpc.billing.listInvoices.useQuery({");
     // listByPatient stays tenant-scoped like every appointments query.
     const listByPatient = appointmentsRouter.slice(
-      appointmentsRouter.indexOf("listByPatient:")
+      appointmentsRouter.indexOf("listByPatient:"),
     );
     expect(listByPatient).toContain(
-      "eq(appointments.practiceId, ctx.practiceId)"
+      "eq(appointments.practiceId, ctx.practiceId)",
     );
     expect(listByPatient).toContain("activePracticePredicate(ctx.practiceId)");
   });
 
   it("surfaces Vitals and Vaccinations load errors before empty states", () => {
-    const source = readFileSync("app/(dashboard)/patients/[id]/page.tsx", "utf8");
+    const source = readFileSync(
+      "app/(dashboard)/patients/[id]/page.tsx",
+      "utf8",
+    );
 
     expect(source).toContain("function PatientDetailErrorPanel");
     expect(source).toContain("function PatientDetailLoadingPanel");
@@ -134,18 +164,20 @@ describe("patient detail UI states", () => {
     expect(source).toContain("const loadError = error ?? recordsSettingsError");
     expect(source).toContain("const recordsSettingsMissing =");
     expect(source).toContain(
-      "const isPageLoading = !loadError && (isLoading || recordsSettingsLoading)"
+      "const isPageLoading = !loadError && (isLoading || recordsSettingsLoading)",
     );
     expect(source).toContain(
-      '<PatientDetailLoadingPanel label="Loading patient..." />'
+      '<PatientDetailLoadingPanel label="Loading patient..." />',
     );
     expect(source).toContain("if (\n    loadError ||");
     expect(source).toContain("!verifiedRecordsSettings ||\n    !patient");
     expect(source).toContain('title="Unable to load patient"');
-    expect(source).toContain("recordsSettingsMissing || !verifiedRecordsSettings");
+    expect(source).toContain(
+      "recordsSettingsMissing || !verifiedRecordsSettings",
+    );
     expect(source).toContain("Unable to load clinical settings. Please retry.");
     expect(source).toContain('label: "Back to Patients"');
-    expect(source).toContain("router.push(\"/patients\")");
+    expect(source).toContain('router.push("/patients")');
     expect(source).toMatch(
       /const \{\s*data: vitals,\s*isLoading,\s*error,?\s*\}/,
     );
@@ -154,29 +186,34 @@ describe("patient detail UI states", () => {
     expect(source).toContain("Unable to load vitals. ${error.message}");
     expect(source).toContain("Unable to load vitals. Please retry.");
     expect(source).toContain("const vaccinationsMissing =");
-    expect(source).toContain("Unable to load vaccination records. ${error.message}");
     expect(source).toContain(
-      "Unable to load vaccination records. Please retry."
+      "Unable to load vaccination records. ${error.message}",
+    );
+    expect(source).toContain(
+      "Unable to load vaccination records. Please retry.",
     );
     expect(source.indexOf("vitalsMissing ? (")).toBeLessThan(
-      source.indexOf('title="No vitals recorded yet"')
+      source.indexOf('title="No vitals recorded yet"'),
     );
     expect(source.indexOf("if (vaccinationsMissing)")).toBeLessThan(
-      source.indexOf('title="No vaccination records yet"')
+      source.indexOf('title="No vaccination records yet"'),
     );
     expect(source).not.toContain(
-      'className="text-center text-muted-foreground py-12"'
+      'className="text-center text-muted-foreground py-12"',
     );
     expect(source).not.toContain("if (!patient) return null");
   });
 
   it("fails closed when medical summary clinical payloads are incomplete", () => {
-    const source = readFileSync("app/(dashboard)/patients/[id]/page.tsx", "utf8");
+    const source = readFileSync(
+      "app/(dashboard)/patients/[id]/page.tsx",
+      "utf8",
+    );
 
     expect(source).toContain("const summaryError =");
     expect(source).toContain("throw summaryError");
     expect(source).toContain(
-      "Unable to load complete medical summary data. Please retry."
+      "Unable to load complete medical summary data. Please retry.",
     );
     expect(source).toMatch(/err instanceof Error\s*\?\s*err\.message/);
     expect(source).toContain("const problems = problemsResult.data;");
@@ -185,80 +222,94 @@ describe("patient detail UI states", () => {
     expect(source).toContain("const prescriptions = prescriptionsResult.data;");
     expect(source).not.toContain("if (!patient) return;");
     expect(source).not.toContain("const problems = problemsResult.data ?? []");
-    expect(source).not.toContain("const vaccinations = vaccinationsResult.data ?? []");
-    expect(source).not.toContain("const soapNotes = soapNotesResult.data ?? []");
-    expect(source).not.toContain("const prescriptions = prescriptionsResult.data ?? []");
+    expect(source).not.toContain(
+      "const vaccinations = vaccinationsResult.data ?? []",
+    );
+    expect(source).not.toContain(
+      "const soapNotes = soapNotesResult.data ?? []",
+    );
+    expect(source).not.toContain(
+      "const prescriptions = prescriptionsResult.data ?? []",
+    );
   });
 
   it("renders patient clinical dates through the practice timezone contract", () => {
-    const source = readFileSync("app/(dashboard)/patients/[id]/page.tsx", "utf8");
+    const source = readFileSync(
+      "app/(dashboard)/patients/[id]/page.tsx",
+      "utf8",
+    );
 
     expect(source).toContain(
-      'import {\n  formatClinicalDate,\n  formatClinicalDateTime,\n} from "@/lib/records/clinical-dates"'
+      'import {\n  formatClinicalDate,\n  formatClinicalDateTime,\n} from "@/lib/records/clinical-dates"',
     );
     expect(source).toContain("const verifiedRecordsSettings =");
     expect(source).toContain(
-      "const recordsSettingsTimeZone = verifiedRecordsSettings\n    ? verifiedRecordsSettings.timezone\n    : undefined"
+      "const recordsSettingsTimeZone = verifiedRecordsSettings\n    ? verifiedRecordsSettings.timezone\n    : undefined",
     );
     expect(source).toContain(
-      "buildWeightTrend(patient?.weights ?? [], recordsSettingsTimeZone)"
+      "buildWeightTrend(patient?.weights ?? [], recordsSettingsTimeZone)",
     );
     expect(source).toContain("const patientData = patient");
     expect(source).toContain(
-      "const recordsTimeZone = verifiedRecordsSettings.timezone"
+      "const recordsTimeZone = verifiedRecordsSettings.timezone",
     );
     expect(source).toContain(
-      'const recordsPracticeName =\n    verifiedRecordsSettings.name ?? "Veterinary Practice"'
+      'const recordsPracticeName =\n    verifiedRecordsSettings.name ?? "Veterinary Practice"',
     );
     expect(source).toContain(
-      "const recordsPracticePhone = verifiedRecordsSettings.phone"
+      "const recordsPracticePhone = verifiedRecordsSettings.phone",
     );
     expect(source).toContain("formatClinicalDate(patient.dob, recordsTimeZone");
     expect(source).toContain(
-      "formatClinicalDate(\n                              weight.recordedAt,\n                              recordsTimeZone"
+      "formatClinicalDate(\n                              weight.recordedAt,\n                              recordsTimeZone",
     );
     expect(source).toContain("<VitalsTab");
     expect(source).toContain("canRecordVitals={canRecordVitals}");
     expect(source).toContain("<VaccinationsTab");
     expect(source).toContain("timeZone={recordsTimeZone}");
     expect(source).toContain(
-      "canCorrectClinicalRecords={canCorrectClinicalRecords}"
+      "canCorrectClinicalRecords={canCorrectClinicalRecords}",
     );
     expect(source).toContain(
-      "(vitals ?? []).filter((vital) => !vital.correctionId)"
+      "(vitals ?? []).filter((vital) => !vital.correctionId)",
     );
-    expect(source).toContain(
-      "formatClinicalDateTime(v.recordedAt, timeZone"
-    );
-    expect(source).toContain(
-      "formatClinicalDate(vax.administeredAt, timeZone"
-    );
+    expect(source).toContain("formatClinicalDateTime(v.recordedAt, timeZone");
+    expect(source).toContain("formatClinicalDate(vax.administeredAt, timeZone");
     expect(source).toContain("formatClinicalDate(vax.nextDueDate, timeZone");
     expect(source).toContain(
-      "formatClinicalDate(v.administeredAt, recordsTimeZone"
+      "formatClinicalDate(v.administeredAt, recordsTimeZone",
     );
     expect(source).toContain("formatClinicalDate(n.createdAt, recordsTimeZone");
     expect(source).toContain("practiceName: recordsPracticeName");
-    expect(source).toContain("practicePhone: recordsPracticePhone ?? undefined");
     expect(source).toContain(
-      "generatedDate: formatClinicalDate(new Date(), recordsTimeZone)"
+      "practicePhone: recordsPracticePhone ?? undefined",
     );
-    expect(source).not.toContain("const recordsTimeZone = recordsSettings?.timezone");
-    expect(source).not.toContain("const recordsSettingsTimeZone = recordsSettings?.timezone");
+    expect(source).toContain(
+      "generatedDate: formatClinicalDate(new Date(), recordsTimeZone)",
+    );
+    expect(source).not.toContain(
+      "const recordsTimeZone = recordsSettings?.timezone",
+    );
+    expect(source).not.toContain(
+      "const recordsSettingsTimeZone = recordsSettings?.timezone",
+    );
     expect(source).not.toContain("recordsSettings?.name");
     expect(source).not.toContain("recordsSettings?.phone");
     expect(source).not.toContain('practiceName: ""');
     expect(source).not.toContain(
-      "new Date(weight.recordedAt).toLocaleDateString"
+      "new Date(weight.recordedAt).toLocaleDateString",
     );
     expect(source).not.toContain("new Date(v.recordedAt).toLocaleString");
     expect(source).not.toContain(
-      "new Date(vax.administeredAt).toLocaleDateString"
+      "new Date(vax.administeredAt).toLocaleDateString",
     );
   });
 
   it("bounds the vitals form before record mutation", () => {
-    const source = readFileSync("app/(dashboard)/patients/[id]/page.tsx", "utf8");
+    const source = readFileSync(
+      "app/(dashboard)/patients/[id]/page.tsx",
+      "utf8",
+    );
 
     expect(VITALS_TEMPERATURE_MIN_C).toBe(20);
     expect(VITALS_TEMPERATURE_MAX_C).toBe(45);
@@ -294,14 +345,21 @@ describe("patient detail UI states", () => {
     expect(source).toContain("step={VITALS_WEIGHT_STEP}");
     expect(source).toContain("maxLength={VITALS_MUCOUS_MEMBRANE_MAX_LENGTH}");
     expect(source).toContain("maxLength={VITALS_NOTES_MAX_LENGTH}");
-    expect(source).toContain("mucousMembrane: form.mucousMembrane.trim() || undefined");
-    expect(source).toContain("capillaryRefillSec: num(form.capillaryRefillSec)");
+    expect(source).toContain(
+      "mucousMembrane: form.mucousMembrane.trim() || undefined",
+    );
+    expect(source).toContain(
+      "capillaryRefillSec: num(form.capillaryRefillSec)",
+    );
     expect(source).toContain("disabled={!canSubmitVitals}");
     expect(source).not.toContain("disabled={record.isPending}");
   });
 
   it("bounds and wires the patient weight history form", () => {
-    const source = readFileSync("app/(dashboard)/patients/[id]/page.tsx", "utf8");
+    const source = readFileSync(
+      "app/(dashboard)/patients/[id]/page.tsx",
+      "utf8",
+    );
 
     expect(PATIENT_WEIGHT_MIN_KG).toBe(0.001);
     expect(PATIENT_WEIGHT_MAX_KG).toBe(99999.999);
@@ -310,7 +368,9 @@ describe("patient detail UI states", () => {
     expect(isPatientWeightInputValid("12.3456")).toBe(false);
     expect(isPatientWeightInputValid("0")).toBe(false);
     expect(isPatientWeightInputValid("100000")).toBe(false);
-    expect(source).toContain("const addWeight = trpc.patients.addWeight.useMutation");
+    expect(source).toContain(
+      "const addWeight = trpc.patients.addWeight.useMutation",
+    );
     expect(source).toContain("const canSubmitWeight =");
     expect(source).toContain("handleRecordWeight");
     expect(source).toContain("min={PATIENT_WEIGHT_MIN_KG}");
@@ -322,17 +382,22 @@ describe("patient detail UI states", () => {
   });
 
   it("keeps allergy reactions visible and uses permanent clinician corrections", () => {
-    const source = readFileSync("app/(dashboard)/patients/[id]/page.tsx", "utf8");
+    const source = readFileSync(
+      "app/(dashboard)/patients/[id]/page.tsx",
+      "utf8",
+    );
     // Add + correction both refresh the same getById payload the bar renders from.
     expect(source).toContain("trpc.patients.addAllergy.useMutation");
     expect(source).toContain(
-      "trpc.patients.markAllergyEnteredInError.useMutation"
+      "trpc.patients.markAllergyEnteredInError.useMutation",
     );
-    const refreshes = source.match(/void refreshPatientDetail\(\)/g);
+    const refreshes = source.match(/refreshPatientDetail\(\)/g);
     expect(refreshes && refreshes.length).toBeGreaterThanOrEqual(4);
     expect(source).toContain('triggerLabel="Mark allergy entered in error"');
     expect(source).toContain("canCorrect={canCorrectClinicalRecords}");
-    expect(source).toContain("Reaction: {allergy.reaction || \"Not documented\"}");
+    expect(source).toContain(
+      'Reaction: {allergy.reaction || "Not documented"}',
+    );
     expect(source).toContain("Allergy correction history");
     expect(source).toContain("Legacy removal retained.");
     expect(source).toContain("{canManagePatientDetail && !showAllergyForm ?");

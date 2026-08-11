@@ -6,6 +6,7 @@ export const CRON_HEARTBEAT_TIMEOUT_MS = 5_000;
 export const CRON_HEARTBEAT_JOBS = [
   "reminders",
   "backup",
+  "file-replicas",
   "usage-reconcile",
   "billing-lifecycle",
   "wellness-billing",

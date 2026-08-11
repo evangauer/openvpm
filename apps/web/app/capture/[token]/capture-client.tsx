@@ -6,6 +6,7 @@ import {
   IMAGE_UPLOAD_POLICY_MESSAGE,
   isImageUploadFileValid,
 } from "@/lib/upload-policy";
+import { isRetryableUploadStatus } from "@/lib/managed-upload-attempt";
 
 const EXPIRED_MESSAGE =
   "This link has expired. Ask the front desk for a new code.";
@@ -14,15 +15,21 @@ type UploadStatus = "uploading" | "done" | "error";
 
 interface UploadItem {
   id: string;
+  idempotencyKey: string;
+  file: File;
   name: string;
   progress: number;
   status: UploadStatus;
+  retryable: boolean;
   message?: string;
 }
 
 function errorMessageForStatus(status: number): string {
   if (status === 404) return EXPIRED_MESSAGE;
-  if (status === 429) return "Too many uploads right now. Wait a minute and try again.";
+  if (status === 429)
+    return "Too many uploads right now. Wait a minute and try again.";
+  if (status === 409)
+    return "This capture link cannot accept another photo. Ask the clinic for a new link.";
   if (status === 400 || status === 413) return IMAGE_UPLOAD_POLICY_MESSAGE;
   return "The upload failed. Please try again.";
 }
@@ -31,18 +38,23 @@ function errorMessageForStatus(status: number): string {
 function uploadWithProgress(
   url: string,
   file: File,
-  onProgress: (percent: number) => void
+  idempotencyKey: string,
+  onProgress: (percent: number) => void,
 ): Promise<{ ok: boolean; status: number }> {
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", url);
+    xhr.setRequestHeader("Idempotency-Key", idempotencyKey);
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable && event.total > 0) {
         onProgress(Math.round((event.loaded / event.total) * 100));
       }
     };
     xhr.onload = () =>
-      resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status });
+      resolve({
+        ok: xhr.status >= 200 && xhr.status < 300,
+        status: xhr.status,
+      });
     xhr.onerror = () => resolve({ ok: false, status: 0 });
     const formData = new FormData();
     formData.append("file", file);
@@ -62,49 +74,69 @@ export function CaptureClient({ token }: { token: string }) {
 
   function updateItem(id: string, patch: Partial<UploadItem>) {
     setItems((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, ...patch } : item))
+      prev.map((item) => (item.id === id ? { ...item, ...patch } : item)),
     );
   }
 
-  async function uploadOne(file: File) {
-    const id = `upload-${nextIdRef.current++}`;
-    if (!isImageUploadFileValid(file)) {
-      setItems((prev) => [
-        ...prev,
-        {
-          id,
-          name: file.name,
-          progress: 0,
-          status: "error",
-          message: IMAGE_UPLOAD_POLICY_MESSAGE,
-        },
-      ]);
-      return;
-    }
-
-    setItems((prev) => [
-      ...prev,
-      { id, name: file.name, progress: 0, status: "uploading" },
-    ]);
-
+  async function performUpload(item: UploadItem) {
+    updateItem(item.id, {
+      progress: 0,
+      status: "uploading",
+      message: undefined,
+    });
     const result = await uploadWithProgress(
       `/api/capture/${encodeURIComponent(token)}`,
-      file,
-      (percent) => updateItem(id, { progress: percent })
+      item.file,
+      item.idempotencyKey,
+      (percent) => updateItem(item.id, { progress: percent }),
     );
 
     if (result.ok) {
-      updateItem(id, { status: "done", progress: 100 });
+      updateItem(item.id, { status: "done", progress: 100 });
       return;
     }
 
     if (result.status === 404) {
       setLinkExpired(true);
     }
-    updateItem(id, {
+    updateItem(item.id, {
       status: "error",
+      retryable: isRetryableUploadStatus(result.status),
       message: errorMessageForStatus(result.status),
     });
+  }
+
+  async function uploadOne(file: File) {
+    const id = `upload-${nextIdRef.current++}`;
+    const idempotencyKey = crypto.randomUUID();
+    if (!isImageUploadFileValid(file)) {
+      setItems((prev) => [
+        ...prev,
+        {
+          id,
+          idempotencyKey,
+          file,
+          name: file.name,
+          progress: 0,
+          status: "error",
+          retryable: false,
+          message: IMAGE_UPLOAD_POLICY_MESSAGE,
+        },
+      ]);
+      return;
+    }
+
+    const item: UploadItem = {
+      id,
+      idempotencyKey,
+      file,
+      name: file.name,
+      progress: 0,
+      status: "uploading",
+      retryable: true,
+    };
+    setItems((prev) => [...prev, item]);
+    await performUpload(item);
   }
 
   function handleFilesSelected(event: React.ChangeEvent<HTMLInputElement>) {
@@ -191,7 +223,18 @@ export function CaptureClient({ token }: { token: string }) {
                 </div>
               )}
               {item.status === "error" && item.message && (
-                <p className="mt-1 text-xs text-red-600">{item.message}</p>
+                <div className="mt-1 flex items-center justify-between gap-3">
+                  <p className="text-xs text-red-600">{item.message}</p>
+                  {item.retryable && !linkExpired && (
+                    <button
+                      type="button"
+                      onClick={() => void performUpload(item)}
+                      className="shrink-0 text-xs font-medium text-teal-700 hover:text-teal-800"
+                    >
+                      Try again
+                    </button>
+                  )}
+                </div>
               )}
             </li>
           ))}

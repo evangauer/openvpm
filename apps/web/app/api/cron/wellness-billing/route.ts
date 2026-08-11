@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { isNull } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@openpims/db/client";
 import { practices } from "@openpims/db";
 import { alertOps } from "@/lib/alerts";
@@ -41,7 +41,12 @@ export async function GET(request: Request) {
       tx
         .select({ id: practices.id, timezone: practices.timezone })
         .from(practices)
-        .where(isNull(practices.deletedAt))
+        .where(
+          and(
+            isNull(practices.deletedAt),
+            eq(practices.recoveryHold, false),
+          ),
+        )
     );
 
     for (const practice of allPractices) {

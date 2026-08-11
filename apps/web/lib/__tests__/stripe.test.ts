@@ -3,7 +3,10 @@ import {
   buildInvoiceCheckoutSessionParams,
   buildSubscriptionCheckoutSessionParams,
   INVOICE_CHECKOUT_CAPTURE_MODE,
+  INVOICE_CHECKOUT_INTEGRATION_IDENTIFIER,
+  STRIPE_API_VERSION,
   STRIPE_TAX_ENABLED_ENV,
+  SUBSCRIPTION_CHECKOUT_INTEGRATION_IDENTIFIER,
 } from "../stripe";
 import { TRIAL_DAYS } from "../billing/plans";
 
@@ -27,10 +30,15 @@ async function importStripeWithMock() {
   const accountLinkCreate = vi.fn();
   const accountLoginLinkCreate = vi.fn();
   const constructEvent = vi.fn();
+  const stripeConstruct = vi.fn();
 
   vi.resetModules();
   vi.doMock("stripe", () => ({
     default: class StripeMock {
+      constructor(...args: unknown[]) {
+        stripeConstruct(...args);
+      }
+
       checkout = {
         sessions: { create: checkoutCreate, retrieve: checkoutRetrieve },
       };
@@ -67,6 +75,7 @@ async function importStripeWithMock() {
     accountLinkCreate,
     accountLoginLinkCreate,
     constructEvent,
+    stripeConstruct,
   };
 }
 
@@ -85,6 +94,9 @@ describe("buildSubscriptionCheckoutSessionParams", () => {
     });
 
     expect(params.mode).toBe("subscription");
+    expect(params.integration_identifier).toBe(
+      SUBSCRIPTION_CHECKOUT_INTEGRATION_IDENTIFIER
+    );
     expect(params.payment_method_collection).toBe("always");
     expect(params.customer_email).toBe("admin@example.com");
     expect(params.line_items).toEqual([
@@ -226,6 +238,7 @@ describe("buildInvoiceCheckoutSessionParams", () => {
 
     expect(params).toMatchObject({
       mode: "payment",
+      integration_identifier: INVOICE_CHECKOUT_INTEGRATION_IDENTIFIER,
       customer_email: "client@example.com",
       client_reference_id: "invoice_123",
       metadata: {
@@ -254,6 +267,9 @@ describe("buildInvoiceCheckoutSessionParams", () => {
         quantity: 1,
       },
     ]);
+    // Let Stripe dynamically show every eligible method for this currency and
+    // manual-capture flow (including wallets) instead of forcing card-only.
+    expect(params.payment_method_types).toBeUndefined();
   });
 
   it("omits customer email when a client has no email on file", () => {
@@ -346,6 +362,26 @@ describe("buildInvoiceCheckoutSessionParams", () => {
 });
 
 describe("create Stripe hosted sessions", () => {
+  it("pins the Stripe API contract used by every server-side request", async () => {
+    const { stripeConstruct } = await importStripeWithMock();
+
+    expect(stripeConstruct).toHaveBeenCalledExactlyOnceWith("sk_test_123", {
+      apiVersion: STRIPE_API_VERSION,
+    });
+  });
+
+  it("uses stable, distinct Checkout integration identifiers", () => {
+    expect(INVOICE_CHECKOUT_INTEGRATION_IDENTIFIER).toMatch(
+      /^openvpm_invoice_[a-z]{8}$/
+    );
+    expect(SUBSCRIPTION_CHECKOUT_INTEGRATION_IDENTIFIER).toMatch(
+      /^openvpm_subscription_[a-z]{8}$/
+    );
+    expect(INVOICE_CHECKOUT_INTEGRATION_IDENTIFIER).not.toBe(
+      SUBSCRIPTION_CHECKOUT_INTEGRATION_IDENTIFIER
+    );
+  });
+
   it("returns safe HTTPS redirect URLs from Stripe sessions", async () => {
     const { stripeModule, checkoutCreate, billingPortalCreate } =
       await importStripeWithMock();
@@ -485,9 +521,11 @@ describe("create Stripe hosted sessions", () => {
       })
     ).resolves.toEqual({ refundId: "re_123" });
 
-    expect(checkoutRetrieve).toHaveBeenCalledWith("cs_456", {
-      stripeAccount: "acct_9",
-    });
+    expect(checkoutRetrieve).toHaveBeenCalledWith(
+      "cs_456",
+      {},
+      { stripeAccount: "acct_9" }
+    );
     expect(refundCreate).toHaveBeenCalledWith(
       {
         payment_intent: "pi_123",
@@ -526,9 +564,11 @@ describe("create Stripe hosted sessions", () => {
       })
     ).resolves.toEqual({ amountCapturedCents: 5000 });
 
-    expect(paymentIntentRetrieve).toHaveBeenCalledWith("pi_123", {
-      stripeAccount: "acct_123",
-    });
+    expect(paymentIntentRetrieve).toHaveBeenCalledWith(
+      "pi_123",
+      {},
+      { stripeAccount: "acct_123" }
+    );
     expect(paymentIntentCapture).toHaveBeenCalledWith(
       "pi_123",
       { amount_to_capture: 5000, application_fee_amount: 49 },

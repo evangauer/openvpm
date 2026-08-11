@@ -18,7 +18,6 @@ import {
   PATIENT_COLOR_MAX_LENGTH,
   PATIENT_MICROCHIP_NUMBER_MAX_LENGTH,
   PATIENT_NAME_MAX_LENGTH,
-  PATIENT_PHOTO_URL_MAX_LENGTH,
   PATIENT_SEARCH_MAX_LENGTH,
   isOptionalPatientTextValid,
   isPatientSearchInputValid,
@@ -295,12 +294,12 @@ describe("client and patient form UI states", () => {
 
   it("keeps patient form policy aligned with server-side patient bounds", () => {
     const routerSource = readFileSync("server/routers/patients.ts", "utf8");
+    const uploadRouteSource = readFileSync("app/api/upload/route.ts", "utf8");
 
     expect(PATIENT_NAME_MAX_LENGTH).toBe(128);
     expect(PATIENT_BREED_MAX_LENGTH).toBe(128);
     expect(PATIENT_COLOR_MAX_LENGTH).toBe(64);
     expect(PATIENT_MICROCHIP_NUMBER_MAX_LENGTH).toBe(64);
-    expect(PATIENT_PHOTO_URL_MAX_LENGTH).toBe(512);
     expect(PATIENT_SEARCH_MAX_LENGTH).toBe(128);
 
     expect(isRequiredPatientTextValid(" Maple ", PATIENT_NAME_MAX_LENGTH)).toBe(
@@ -332,7 +331,6 @@ describe("client and patient form UI states", () => {
     expect(routerSource).toContain("PATIENT_BREED_MAX_LENGTH");
     expect(routerSource).toContain("PATIENT_COLOR_MAX_LENGTH");
     expect(routerSource).toContain("PATIENT_MICROCHIP_NUMBER_MAX_LENGTH");
-    expect(routerSource).toContain("PATIENT_PHOTO_URL_MAX_LENGTH");
     expect(routerSource).toContain("PATIENT_SEARCH_MAX_LENGTH");
     expect(routerSource).toContain(
       "optionalPatientString(\"Breed\", PATIENT_BREED_MAX_LENGTH)"
@@ -341,6 +339,25 @@ describe("client and patient form UI states", () => {
       "optionalPatientString(\"Color\", PATIENT_COLOR_MAX_LENGTH)"
     );
     expect(routerSource).toContain("PATIENT_MICROCHIP_NUMBER_MAX_LENGTH");
+
+    // Photo URLs are server-owned attachment bindings now. Patient form
+    // mutations cannot write arbitrary URLs; only a verified managed upload
+    // can atomically bind the manifest URL to the patient.
+    const mutableInputSource = routerSource.slice(
+      routerSource.indexOf("const patientMutableInput"),
+      routerSource.indexOf("const patientWeightInput")
+    );
+    const updateInputSource = routerSource.slice(
+      routerSource.indexOf("update: patientManagerProcedure"),
+      routerSource.indexOf("addWeight: patientManagerProcedure")
+    );
+    expect(mutableInputSource).not.toContain("photoUrl");
+    expect(updateInputSource).not.toContain("photoUrl");
+    expect(updateInputSource).toContain(".strict()");
+    expect(uploadRouteSource).toContain("finalizeManagedUploadManifest(");
+    expect(uploadRouteSource).toContain(
+      ".set({ photoUrl: reservation.fileUrl, updatedAt: new Date() })"
+    );
   });
 
   it("matches patient create/edit form controls to server input limits", () => {

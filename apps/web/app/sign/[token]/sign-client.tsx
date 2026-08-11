@@ -6,14 +6,16 @@ import { AlertCircle, CheckCircle2, Eraser, Loader2 } from "lucide-react";
 const EXPIRED_MESSAGE =
   "This link has expired. Ask the front desk for a new code.";
 
-type ConsentView = {
-  title: string;
-  bodyText: string;
-  patientName: string;
-  practiceName: string;
-  status: string;
-  signerName: string | null;
-};
+type ConsentView =
+  | {
+      status: "pending";
+      title: string;
+      bodyText: string;
+      patientName: string;
+      practiceName: string;
+    }
+  | { status: "signing" }
+  | { status: "signed" };
 
 type PageState =
   | { kind: "loading" }
@@ -168,25 +170,24 @@ export function SignClient({ token }: { token: string }) {
     };
   }, [token]);
 
-  async function handleSubmit() {
-    if (state.kind !== "ready" || !signature || !signerName.trim()) return;
+  async function submitSigningPayload(payload: Record<string, unknown>) {
+    if (state.kind !== "ready") return;
     setSubmitting(true);
     setSubmitError(null);
     try {
       const res = await fetch(`/api/sign/${token}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          signerName: signerName.trim(),
-          signaturePngDataUrl: signature,
-        }),
+        body: JSON.stringify(payload),
       });
       if (res.status === 404) {
         setState({ kind: "expired" });
         return;
       }
       if (res.status === 429) {
-        setSubmitError("Too many tries right now. Wait a minute and try again.");
+        setSubmitError(
+          "Too many tries right now. Wait a minute and try again.",
+        );
         return;
       }
       if (!res.ok) {
@@ -198,10 +199,24 @@ export function SignClient({ token }: { token: string }) {
       }
       setState({ kind: "submitted", consent: state.consent });
     } catch {
-      setSubmitError("Signing failed. Please check your connection and try again.");
+      setSubmitError(
+        "Signing failed. Please check your connection and try again.",
+      );
     } finally {
       setSubmitting(false);
     }
+  }
+
+  async function handleSubmit() {
+    if (!signature || !signerName.trim()) return;
+    await submitSigningPayload({
+      signerName: signerName.trim(),
+      signaturePngDataUrl: signature,
+    });
+  }
+
+  async function handleResume() {
+    await submitSigningPayload({ resume: true });
   }
 
   if (state.kind === "loading") {
@@ -239,6 +254,35 @@ export function SignClient({ token }: { token: string }) {
         <p className="text-sm text-gray-600">
           Thank you. The clinic has your signed form. You can close this page.
         </p>
+      </div>
+    );
+  }
+
+  if (state.consent.status === "signing") {
+    return (
+      <div className="flex flex-col items-center gap-4 py-16 text-center">
+        <CheckCircle2 className="h-10 w-10 text-teal-600" />
+        <h1 className="text-lg font-semibold text-gray-900">
+          Your signature is safe
+        </h1>
+        <p className="max-w-sm text-sm text-gray-600">
+          The clinic has your exact signature. Finish saving the signed document
+          without drawing it again.
+        </p>
+        {submitError && (
+          <p className="flex items-center gap-2 text-sm text-red-600">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            {submitError}
+          </p>
+        )}
+        <button
+          type="button"
+          disabled={submitting}
+          onClick={() => void handleResume()}
+          className="w-full max-w-sm rounded-lg bg-teal-600 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {submitting ? "Finishing…" : "Finish saving"}
+        </button>
       </div>
     );
   }

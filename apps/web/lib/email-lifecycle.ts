@@ -4,6 +4,11 @@ import { communications } from "@openpims/db";
 import { withSystem } from "@/lib/tenant-db";
 import { alertOps } from "@/lib/alerts";
 import { marketingEmailEnabledForRecipient } from "@/lib/platform-email-preferences";
+import {
+  lockPracticeForExternalSideEffects,
+  practiceAllowsExternalSideEffects,
+  RECOVERY_HOLD_BLOCK_MESSAGE,
+} from "@/lib/recovery-hold";
 
 type SendResult = { success: boolean; id?: string; error?: string };
 type ClaimedLifecycleEmail = { id: string };
@@ -39,6 +44,18 @@ export async function sendLifecycleEmail(
   // Never throw into the caller (Stripe webhook / cron). Any infra error
   // (incl. a not-yet-migrated dedupe column) degrades to "not sent" + an alert.
   try {
+    if (
+      !(await withSystem(db, (tx) =>
+        practiceAllowsExternalSideEffects(tx, opts.practiceId),
+      ))
+    ) {
+      await alertOps(
+        "Lifecycle email blocked by recovery hold",
+        `practice=${opts.practiceId} emailType=${opts.emailType}: ${RECOVERY_HOLD_BLOCK_MESSAGE}`,
+      );
+      return { sent: false, deduped: false, suppressed: true };
+    }
+
     if (opts.category === "marketing") {
       if (!(await marketingEmailEnabledForRecipient(opts.to))) {
         return { sent: false, deduped: false, suppressed: true };
@@ -56,7 +73,24 @@ export async function sendLifecycleEmail(
     // 2. Send.
     let result: SendResult;
     try {
-      result = await opts.send();
+      const delivery = await withSystem(db, async (tx) => {
+        if (
+          !(await lockPracticeForExternalSideEffects(tx, opts.practiceId))
+        ) {
+          return { blocked: true as const };
+        }
+        return { blocked: false as const, result: await opts.send() };
+      });
+      if (delivery.blocked) {
+        // The claim was created before recovery won the serialization race.
+        // Remove it because no provider request occurred; future cron/event
+        // retry can safely claim the same identity after recovery release.
+        await withSystem(db, (tx) =>
+          tx.delete(communications).where(eq(communications.id, row.id)),
+        );
+        return { sent: false, deduped: false, suppressed: true };
+      }
+      result = delivery.result;
     } catch (err) {
       result = {
         success: false,

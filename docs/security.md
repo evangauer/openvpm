@@ -18,9 +18,11 @@ The hosted application connects as `openpims_app`, a role with only `SELECT`, `I
 
 ## Backups and restore validation
 
-A scheduled job (`apps/web/app/api/cron/backup`, daily at 03:00 UTC) exports each practice's full data set to a private S3-compatible object storage bucket, one restorable snapshot per practice per day. The export includes the complete medical record: persisted SOAP drafts, immutable finalized SOAP attribution, correction and addendum evidence, clinical notes, problem lists, lab results, prescriptions, vaccination records, vital signs, and the controlled substance log, alongside scheduling, client, inventory, and billing data (`apps/web/lib/backup/export.ts`).
+A scheduled job (`apps/web/app/api/cron/backup`, daily at 03:00 UTC) exports each practice's full data set to a private S3-compatible object storage bucket, one restorable snapshot per practice per day. The export includes the complete medical record: persisted SOAP drafts, immutable finalized SOAP attribution, correction and addendum evidence, clinical notes, problem lists, lab results, prescriptions, vaccination records, vital signs, and the controlled substance log, alongside scheduling, client, inventory, and billing data (`apps/web/lib/backup/export.ts`). When the separately gated replica target is configured, the job also writes and read-back verifies each JSON snapshot in an independent failure domain.
 
 Restores are validated before anything is written: the backup file is checked against the expected sections and row shapes, and invalid or oversized files (over 50 MB) are rejected (`validatePracticeExportRestore`, `apps/web/lib/backup/policy.ts`). Backup failures page the operators through the ops alert webhook, and a dead-man heartbeat monitors that the job actually ran.
+
+Attachment objects carry SHA-256/size manifests. A leased background worker copies them asynchronously to content-addressed keys in independent object storage, reads every copy back before marking it available, records append-only transition evidence, and periodically re-verifies coverage. The application may fall back only to a checksum-verified replica; missing, corrupt, and provider-failure states remain distinct. Operational activation additionally requires separate-account IAM without runtime delete authority, versioning/immutable retention, full backfill, and a destructive recovery drill as documented in `docs/file-object-recovery-runbook.md`.
 
 ## Rate limiting
 

@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import {
   backupKey,
   coerceRowDates,
+  PRACTICE_RECOVERY_HOLD_REASON,
   PRACTICE_EXPORT_SECRET_REPLACEMENTS,
   PRACTICE_EXPORT_AUDIT_ONLY_SECTIONS,
   PRACTICE_EXPORT_FORMAT_VERSION,
@@ -198,6 +199,8 @@ describe("attachment manifest restore safety", () => {
     expect(source).toContain("activeFileRows(db, practiceId)");
     expect(source).not.toContain("activeRows(db, files, practiceId)");
     expect(source).toContain("fileUrl: canonicalFileUrl(row.fileKey)");
+    expect(source).not.toContain("objectEtag: files.objectEtag");
+    expect(source).not.toContain("objectVersionId: files.objectVersionId");
   });
 
   it("validates file namespace and integrity metadata", () => {
@@ -273,8 +276,21 @@ function emptyBackup(): Record<string, unknown[]> {
   );
 }
 
+function withCanonicalCounts<T extends Record<string, unknown>>(backup: T) {
+  return {
+    ...backup,
+    counts: Object.fromEntries(
+      PRACTICE_EXPORT_SECTIONS.map((section) => [
+        section,
+        Array.isArray(backup[section]) ? backup[section].length : 0,
+      ]),
+    ),
+  };
+}
+
 function restoreDb(executeResults: unknown[][] = []) {
   const inserted: { rows: Record<string, unknown>[] }[] = [];
+  const updates: Record<string, unknown>[] = [];
   const executed: unknown[] = [];
   const timeline: string[] = [];
   const pendingExecuteResults = [...executeResults];
@@ -305,8 +321,22 @@ function restoreDb(executeResults: unknown[][] = []) {
         })),
       })),
     })),
+    update: vi.fn(() => {
+      const builder = {
+        set: vi.fn((values: Record<string, unknown>) => {
+          updates.push(values);
+          return builder;
+        }),
+        where: vi.fn(() => builder),
+        returning: vi.fn(async () => {
+          timeline.push("recovery-hold");
+          return [{ id: "target-practice" }];
+        }),
+      };
+      return builder;
+    }),
   };
-  return { db, inserted, executed, timeline };
+  return { db, inserted, updates, executed, timeline };
 }
 
 const MERGE_OPERATION_ID = "00000000-0000-4000-8000-000000000011";
@@ -487,7 +517,7 @@ describe("summarizePracticeExport", () => {
 
   it("requires replacement lineage in current backups but accepts its legacy absence", () => {
     const currentMissing: Record<string, unknown> = {
-      formatVersion: 5,
+      formatVersion: PRACTICE_EXPORT_FORMAT_VERSION,
       ...emptyBackup(),
     };
     delete currentMissing["labResultReplacements"];
@@ -495,7 +525,7 @@ describe("summarizePracticeExport", () => {
       "labResultReplacements",
     );
     const currentSoapMissing: Record<string, unknown> = {
-      formatVersion: 5,
+      formatVersion: PRACTICE_EXPORT_FORMAT_VERSION,
       ...emptyBackup(),
     };
     delete currentSoapMissing["soapNoteReplacements"];
@@ -756,9 +786,10 @@ describe("location-aware scheduling backup compatibility", () => {
   const appointmentId = "appointment-1";
 
   function schedulingBackup() {
-    return {
+    return withCanonicalCounts({
       formatVersion: PRACTICE_EXPORT_FORMAT_VERSION,
       practiceId,
+      practice: { id: practiceId, name: "Recovery Clinic" },
       ...emptyBackup(),
       locations: [
         {
@@ -786,7 +817,7 @@ describe("location-aware scheduling backup compatibility", () => {
           roomId,
         },
       ],
-    };
+    });
   }
 
   it("requires explicit room and appointment locations in v5 backups", () => {
@@ -968,6 +999,69 @@ describe("exportPracticeData query scoping", () => {
   });
 });
 
+describe("independent recovery metadata", () => {
+  it("requires exact clinic identity metadata in current backup format", () => {
+    const backup = withCanonicalCounts({
+      formatVersion: PRACTICE_EXPORT_FORMAT_VERSION,
+      practiceId: "practice-1",
+      practice: { id: "practice-1", name: "Recovery Clinic" },
+      ...emptyBackup(),
+    });
+
+    expect(validatePracticeExportRestore(backup)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    expect(
+      validatePracticeExportRestore({ ...backup, practice: undefined }).errors,
+    ).toContain("practice recovery metadata is required in backup format v6.");
+    expect(
+      validatePracticeExportRestore({
+        ...backup,
+        practice: { id: "other-practice" },
+      }).errors,
+    ).toContain("practice recovery metadata must match practiceId exactly.");
+
+    expect(
+      validatePracticeExportRestore({
+        ...backup,
+        practice: {
+          id: "practice-1",
+          name: "Recovery Clinic",
+          billingStatus: "active",
+        },
+      }).errors,
+    ).toContain(
+      "practice recovery metadata contains unsupported keys: billingStatus.",
+    );
+    expect(
+      validatePracticeExportRestore({
+        ...backup,
+        formatVersion: PRACTICE_EXPORT_FORMAT_VERSION + 1,
+      }).errors,
+    ).toContain("backup format v7 is newer than this release supports.");
+    expect(
+      validatePracticeExportRestore({
+        ...backup,
+        counts: { locations: 1 },
+      }).errors,
+    ).toContain("backup count for locations does not match its rows.");
+    expect(
+      validatePracticeExportRestore({
+        ...backup,
+        counts: undefined,
+      }).errors,
+    ).toContain("canonical section counts are required in backup format v6.");
+    expect(
+      validatePracticeExportRestore({
+        ...backup,
+        counts: { ...backup.counts, unexpected: 0 },
+      }).errors,
+    ).toContain("backup counts contain unsupported sections: unexpected.");
+  });
+});
+
 describe("practice backup secret handling", () => {
   it("replaces credential material with restore-safe placeholders", () => {
     expect(
@@ -1023,6 +1117,38 @@ describe("practice backup secret handling", () => {
         id: "webhook-1",
         secret: PRACTICE_EXPORT_SECRET_REPLACEMENTS.webhookSecret,
         active: false,
+      },
+    ]);
+
+    expect(
+      sanitizePracticeExportRows("locationMessaging", [
+        {
+          id: "messaging-1",
+          messagingProfileId: "profile-live",
+          senderE164: "+15555550100",
+          numberSource: "openvpm_provisioned",
+          a2pBrandId: "brand-live",
+          a2pCampaignId: "campaign-live",
+          registrationStatus: "active",
+          registrationDetail: "provider-approved",
+          providerProfileReady: true,
+          providerProfileSyncedAt: new Date("2026-08-01T12:00:00Z"),
+          enabled: true,
+        },
+      ]),
+    ).toEqual([
+      {
+        id: "messaging-1",
+        messagingProfileId: null,
+        senderE164: null,
+        numberSource: null,
+        a2pBrandId: null,
+        a2pCampaignId: null,
+        registrationStatus: "not_started",
+        registrationDetail: null,
+        providerProfileReady: false,
+        providerProfileSyncedAt: null,
+        enabled: false,
       },
     ]);
 
@@ -1124,6 +1250,39 @@ describe("practice backup secret handling", () => {
 });
 
 describe("restorePracticeData", () => {
+  it("rejects an oversized restore before opening a transaction", async () => {
+    const rootDb = {
+      transaction: vi.fn(),
+    };
+
+    await expect(
+      restorePracticeData(
+        rootDb as never,
+        "target-practice",
+        { ...emptyBackup(), oversized: "x".repeat(200) },
+        { maxBytes: 100 },
+      ),
+    ).rejects.toThrow("Backup JSON restores must be 50 MB or less.");
+    expect(rootDb.transaction).not.toHaveBeenCalled();
+  });
+
+  it("never lets an internal maxBytes override exceed the global restore cap", async () => {
+    const rootDb = {
+      transaction: vi.fn(),
+    };
+    const oversized = {
+      ...emptyBackup(),
+      oversized: "x".repeat(PRACTICE_BACKUP_JSON_MAX_BYTES),
+    };
+
+    await expect(
+      restorePracticeData(rootDb as never, "target-practice", oversized, {
+        maxBytes: PRACTICE_BACKUP_JSON_MAX_BYTES * 2,
+      }),
+    ).rejects.toThrow("Backup JSON restores must be 50 MB or less.");
+    expect(rootDb.transaction).not.toHaveBeenCalled();
+  });
+
   it("restores immutable SOAP replacement history after later soft deletion", async () => {
     const activeBackup = validSoapReplacementBackup();
     const backup = {
@@ -2735,8 +2894,9 @@ describe("restorePracticeData", () => {
       ...emptyBackup(),
       clients: [{ id: "client-1", practiceId: "source-practice" }],
     };
-    const { db: tx, inserted } = restoreDb();
+    const { db: tx, inserted, updates, timeline } = restoreDb();
     const rootDb = {
+      update: tx.update,
       transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(tx)),
     };
 
@@ -2748,6 +2908,16 @@ describe("restorePracticeData", () => {
     const restoredRows = inserted.flatMap(({ rows }) => rows);
 
     expect(rootDb.transaction).toHaveBeenCalledTimes(1);
+    expect(updates[0]).toMatchObject({
+      recoveryHold: true,
+      recoveryHoldReason: PRACTICE_RECOVERY_HOLD_REASON,
+      recoveryHoldSetAt: expect.any(Date),
+      recoveryHoldReleasedAt: null,
+    });
+    expect(timeline[0]).toBe("recovery-hold");
+    expect(timeline.indexOf("recovery-hold")).toBeLessThan(
+      timeline.indexOf("insert:client-1"),
+    );
     expect(result.totalRows).toBe(1);
     expect(restoredRows).toContainEqual(
       expect.objectContaining({
@@ -2755,6 +2925,99 @@ describe("restorePracticeData", () => {
         practiceId: "target-practice",
       }),
     );
+  });
+
+  it("commits the recovery hold on an independent connection before the outer restore transaction", async () => {
+    const backup = {
+      ...emptyBackup(),
+      clients: [{ id: "client-1", practiceId: "source-practice" }],
+    };
+    const timeline: string[] = [];
+    const { db: holdTx, updates } = restoreDb();
+    const { db: bulkTx, inserted } = restoreDb();
+    const recoveryHoldDb = {
+      transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
+        timeline.push("hold-begin");
+        const result = await fn({
+          ...holdTx,
+          execute: vi.fn(async () => {
+            timeline.push("hold-system-context");
+            return [];
+          }),
+        });
+        timeline.push("hold-commit");
+        return result;
+      }),
+    };
+    const outerDb = {
+      transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
+        timeline.push("bulk-begin");
+        const result = await fn(bulkTx);
+        timeline.push("bulk-commit");
+        return result;
+      }),
+    };
+
+    await expect(
+      restorePracticeData(outerDb as never, "target-practice", backup, {
+        recoveryHoldDb: recoveryHoldDb as never,
+      }),
+    ).resolves.toMatchObject({ totalRows: 1 });
+
+    expect(recoveryHoldDb.transaction).toHaveBeenCalledOnce();
+    expect(outerDb.transaction).toHaveBeenCalledOnce();
+    expect(updates).toEqual([
+      expect.objectContaining({
+        recoveryHold: true,
+        recoveryHoldReason: PRACTICE_RECOVERY_HOLD_REASON,
+      }),
+    ]);
+    expect(timeline).toEqual([
+      "hold-begin",
+      "hold-system-context",
+      "hold-commit",
+      "bulk-begin",
+      "bulk-commit",
+    ]);
+    expect(inserted.flatMap(({ rows }) => rows)).toContainEqual(
+      expect.objectContaining({
+        id: "client-1",
+        practiceId: "target-practice",
+      }),
+    );
+  });
+
+  it("commits the recovery hold before bulk restore and leaves it set on failure", async () => {
+    const backup = emptyBackup();
+    const holdValues: Record<string, unknown>[] = [];
+    const returning = vi.fn(async () => [{ id: "target-practice" }]);
+    const where = vi.fn(() => ({ returning }));
+    const set = vi.fn((values: Record<string, unknown>) => {
+      holdValues.push(values);
+      return { where };
+    });
+    const transaction = vi.fn(async () => {
+      throw new Error("bulk restore failed");
+    });
+    const rootDb = {
+      update: vi.fn(() => ({ set })),
+      transaction,
+    };
+
+    await expect(
+      restorePracticeData(rootDb as never, "target-practice", backup),
+    ).rejects.toThrow("bulk restore failed");
+
+    expect(holdValues).toEqual([
+      expect.objectContaining({
+        recoveryHold: true,
+        recoveryHoldReason: PRACTICE_RECOVERY_HOLD_REASON,
+        recoveryHoldReleasedAt: null,
+      }),
+    ]);
+    expect(returning).toHaveBeenCalledOnce();
+    expect(transaction).toHaveBeenCalledOnce();
+    expect(rootDb.update).toHaveBeenCalledOnce();
   });
 
   it("rewrites practice-scoped rows and leaves parent-scoped child rows intact", async () => {
@@ -2766,6 +3029,16 @@ describe("restorePracticeData", () => {
           id: "location-messaging-1",
           practiceId: "source-practice",
           locationId: "location-1",
+          messagingProfileId: "profile-live",
+          senderE164: "+15555550100",
+          numberSource: "openvpm_provisioned",
+          a2pBrandId: "brand-live",
+          a2pCampaignId: "campaign-live",
+          registrationStatus: "active",
+          registrationDetail: "provider-approved",
+          providerProfileReady: true,
+          providerProfileSyncedAt: "2026-08-01T12:00:00.000Z",
+          enabled: true,
         },
       ],
       smsSuppressions: [
@@ -2887,6 +3160,16 @@ describe("restorePracticeData", () => {
     ).toMatchObject({
       id: "location-messaging-1",
       practiceId: "target-practice",
+      messagingProfileId: null,
+      senderE164: null,
+      numberSource: null,
+      a2pBrandId: null,
+      a2pCampaignId: null,
+      registrationStatus: "not_started",
+      registrationDetail: null,
+      providerProfileReady: false,
+      providerProfileSyncedAt: null,
+      enabled: false,
     });
     expect(
       restoredRows.find((row) => row.id === "suppression-1"),

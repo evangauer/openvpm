@@ -66,7 +66,6 @@ import {
   PATIENT_COLOR_MAX_LENGTH,
   PATIENT_MICROCHIP_NUMBER_MAX_LENGTH,
   PATIENT_NAME_MAX_LENGTH,
-  PATIENT_PHOTO_URL_MAX_LENGTH,
   PATIENT_SEARCH_MAX_LENGTH,
 } from "@/lib/patients/policy";
 import { listOffsetInput } from "./pagination";
@@ -97,7 +96,7 @@ const mergeMovableAppointmentStatuses = ["scheduled", "confirmed"] as const;
 const PATIENT_MERGE_REASON_MIN_LENGTH = 5;
 const PATIENT_MERGE_REASON_MAX_LENGTH = 500;
 const patientManagerProcedure = protectedProcedure.use(
-  requireRole("admin", "veterinarian", "technician", "front_desk")
+  requireRole("admin", "veterinarian", "technician", "front_desk"),
 );
 const patientDobInput = clinicalDateInput("Date of birth").optional();
 const patientDobUpdateInput = clinicalDateInput("Date of birth")
@@ -110,11 +109,11 @@ const patientSearchInput = z
   .optional();
 const patientSearchQueryInput = clinicalTextInput(
   "Search query",
-  PATIENT_SEARCH_MAX_LENGTH
+  PATIENT_SEARCH_MAX_LENGTH,
 );
 const patientNameInput = clinicalTextInput(
   "Patient name",
-  PATIENT_NAME_MAX_LENGTH
+  PATIENT_NAME_MAX_LENGTH,
 );
 const optionalPatientString = (label: string, maxLength: number) =>
   z
@@ -132,7 +131,7 @@ const patientMutableInput = {
   color: optionalPatientString("Color", PATIENT_COLOR_MAX_LENGTH),
   microchipNumber: optionalPatientString(
     "Microchip number",
-    PATIENT_MICROCHIP_NUMBER_MAX_LENGTH
+    PATIENT_MICROCHIP_NUMBER_MAX_LENGTH,
   ),
 };
 const patientWeightInput = z
@@ -356,7 +355,9 @@ function mergeReasons(counts: MergeBlockerCounts): string[] {
     reasons.push("The source patient was already merged.");
   }
   if (counts.targetWasPreviouslyMerged) {
-    reasons.push("The target patient is itself an alias; choose its canonical target.");
+    reasons.push(
+      "The target patient is itself an alias; choose its canonical target.",
+    );
   }
   if (counts.appointmentHistory) {
     reasons.push(
@@ -649,7 +650,7 @@ async function assertActivePractice(ctx: PatientsContext) {
 async function assertClientBelongsToPractice(
   db: Database,
   practiceId: string,
-  clientId: string
+  clientId: string,
 ) {
   const [client] = await db
     .select({ id: clients.id })
@@ -659,8 +660,8 @@ async function assertClientBelongsToPractice(
         eq(clients.id, clientId),
         eq(clients.practiceId, practiceId),
         activePracticePredicate(practiceId),
-        isNull(clients.deletedAt)
-      )
+        isNull(clients.deletedAt),
+      ),
     )
     .limit(1);
 
@@ -672,7 +673,7 @@ async function assertClientBelongsToPractice(
 async function assertPatientBelongsToPractice(
   db: Database,
   practiceId: string,
-  patientId: string
+  patientId: string,
 ) {
   const [patient] = await db
     .select({ id: patients.id })
@@ -682,8 +683,8 @@ async function assertPatientBelongsToPractice(
         eq(patients.id, patientId),
         eq(patients.practiceId, practiceId),
         activePracticePredicate(practiceId),
-        isNull(patients.deletedAt)
-      )
+        isNull(patients.deletedAt),
+      ),
     )
     .limit(1);
 
@@ -798,7 +799,7 @@ export const patientsRouter = createRouter({
         status: patientStatusInput.optional(),
         limit: z.number().int().min(1).max(100).default(25),
         offset: listOffsetInput,
-      })
+      }),
     )
     .query(async ({ ctx, input }) => {
       const conditions: ReturnType<typeof eq>[] = [
@@ -811,8 +812,8 @@ export const patientsRouter = createRouter({
         conditions.push(
           or(
             ilike(patients.name, `%${input.search}%`),
-            ilike(patients.breed, `%${input.search}%`)
-          )!
+            ilike(patients.breed, `%${input.search}%`),
+          )!,
         );
       }
       if (input.species) {
@@ -844,8 +845,8 @@ export const patientsRouter = createRouter({
             and(
               eq(patients.clientId, clients.id),
               eq(clients.practiceId, ctx.practiceId),
-              isNull(clients.deletedAt)
-            )
+              isNull(clients.deletedAt),
+            ),
           )
           .where(and(...conditions))
           .orderBy(desc(patients.createdAt))
@@ -868,7 +869,7 @@ export const patientsRouter = createRouter({
       z.object({
         query: patientSearchQueryInput,
         status: patientStatusInput.optional(),
-      })
+      }),
     )
     .query(async ({ ctx, input }) => {
       const conditions = [
@@ -877,7 +878,7 @@ export const patientsRouter = createRouter({
         isNull(patients.deletedAt),
         or(
           ilike(patients.name, `%${input.query}%`),
-          ilike(patients.breed, `%${input.query}%`)
+          ilike(patients.breed, `%${input.query}%`),
         )!,
       ];
       if (input.status) {
@@ -898,8 +899,8 @@ export const patientsRouter = createRouter({
           and(
             eq(patients.clientId, clients.id),
             eq(clients.practiceId, ctx.practiceId),
-            isNull(clients.deletedAt)
-          )
+            isNull(clients.deletedAt),
+          ),
         )
         .where(and(...conditions))
         .limit(10);
@@ -914,7 +915,10 @@ export const patientsRouter = createRouter({
         input.id,
       );
       if (!resolved) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Patient not found" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Patient not found",
+        });
       }
       const { patient, mergeMetadata } = resolved;
 
@@ -933,8 +937,8 @@ export const patientsRouter = createRouter({
                   and ${patients.deletedAt} is null
               )`,
               activePracticePredicate(ctx.practiceId),
-              isNull(patientWeights.deletedAt)
-            )
+              isNull(patientWeights.deletedAt),
+            ),
           )
           .orderBy(desc(patientWeights.recordedAt)),
         ctx.db
@@ -976,8 +980,8 @@ export const patientsRouter = createRouter({
                   and ${patients.practiceId} = ${ctx.practiceId}
                   and ${patients.deletedAt} is null
               )`,
-              activePracticePredicate(ctx.practiceId)
-            )
+              activePracticePredicate(ctx.practiceId),
+            ),
           )
           .orderBy(desc(patientAllergies.notedAt), desc(patientAllergies.id)),
       ]);
@@ -1002,11 +1006,15 @@ export const patientsRouter = createRouter({
       z.object({
         clientId: z.string().uuid(),
         ...patientMutableInput,
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
-      await assertClientBelongsToPractice(ctx.db, ctx.practiceId, input.clientId);
+      await assertClientBelongsToPractice(
+        ctx.db,
+        ctx.practiceId,
+        input.clientId,
+      );
       const [patient] = await ctx.db
         .insert(patients)
         .values({ ...input, practiceId: ctx.practiceId })
@@ -1026,21 +1034,19 @@ export const patientsRouter = createRouter({
 
   update: patientManagerProcedure
     .input(
-      z.object({
-        id: z.string().uuid(),
-        name: patientMutableInput.name.optional(),
-        species: patientMutableInput.species.optional(),
-        breed: patientMutableInput.breed,
-        sex: patientMutableInput.sex,
-        dob: patientDobUpdateInput,
-        color: patientMutableInput.color,
-        microchipNumber: patientMutableInput.microchipNumber,
-        status: patientStatusInput.optional(),
-        photoUrl: optionalPatientString(
-          "Photo URL",
-          PATIENT_PHOTO_URL_MAX_LENGTH
-        ),
-      })
+      z
+        .object({
+          id: z.string().uuid(),
+          name: patientMutableInput.name.optional(),
+          species: patientMutableInput.species.optional(),
+          breed: patientMutableInput.breed,
+          sex: patientMutableInput.sex,
+          dob: patientDobUpdateInput,
+          color: patientMutableInput.color,
+          microchipNumber: patientMutableInput.microchipNumber,
+          status: patientStatusInput.optional(),
+        })
+        .strict(),
     )
     .mutation(async ({ ctx, input }) => {
       const { id, ...data } = input;
@@ -1052,12 +1058,15 @@ export const patientsRouter = createRouter({
             eq(patients.id, id),
             eq(patients.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(patients.deletedAt)
-          )
+            isNull(patients.deletedAt),
+          ),
         )
         .returning();
       if (!patient) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Patient not found" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Patient not found",
+        });
       }
       return patient;
     }),
@@ -1075,13 +1084,16 @@ export const patientsRouter = createRouter({
               eq(patients.id, input.id),
               eq(patients.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(patients.deletedAt)
-            )
+              isNull(patients.deletedAt),
+            ),
           )
           .limit(1);
 
         if (!existingPatient) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Patient not found" });
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Patient not found",
+          });
         }
 
         const [activeAppointment] = await tx
@@ -1093,8 +1105,8 @@ export const patientsRouter = createRouter({
               eq(appointments.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
               isNull(appointments.deletedAt),
-              inArray(appointments.status, activeAppointmentStatuses)
-            )
+              inArray(appointments.status, activeAppointmentStatuses),
+            ),
           )
           .limit(1);
 
@@ -1115,8 +1127,8 @@ export const patientsRouter = createRouter({
               eq(appointmentWaitlist.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
               eq(appointmentWaitlist.status, "waiting"),
-              isNull(appointmentWaitlist.deletedAt)
-            )
+              isNull(appointmentWaitlist.deletedAt),
+            ),
           )
           .limit(1);
 
@@ -1158,12 +1170,15 @@ export const patientsRouter = createRouter({
               eq(patients.id, input.id),
               eq(patients.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(patients.deletedAt)
-            )
+              isNull(patients.deletedAt),
+            ),
           )
           .returning({ id: patients.id });
         if (!patient) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Patient not found" });
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Patient not found",
+          });
         }
       });
       return { success: true };
@@ -1174,10 +1189,14 @@ export const patientsRouter = createRouter({
       z.object({
         patientId: z.string().uuid(),
         weightKg: patientWeightInput,
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
-      await assertPatientBelongsToPractice(ctx.db, ctx.practiceId, input.patientId);
+      await assertPatientBelongsToPractice(
+        ctx.db,
+        ctx.practiceId,
+        input.patientId,
+      );
       const [weight] = await ctx.db
         .insert(patientWeights)
         .values({
@@ -1192,7 +1211,11 @@ export const patientsRouter = createRouter({
   addAllergy: patientManagerProcedure
     .input(patientAllergyInput)
     .mutation(async ({ ctx, input }) => {
-      await assertPatientBelongsToPractice(ctx.db, ctx.practiceId, input.patientId);
+      await assertPatientBelongsToPractice(
+        ctx.db,
+        ctx.practiceId,
+        input.patientId,
+      );
       const [allergy] = await ctx.db
         .insert(patientAllergies)
         .values({
@@ -1214,7 +1237,7 @@ export const patientsRouter = createRouter({
           .trim()
           .min(CLINICAL_CORRECTION_REASON_MIN_LENGTH)
           .max(CLINICAL_CORRECTION_REASON_MAX_LENGTH),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) =>
       ctx.db.transaction(async (tx) => {
@@ -1412,10 +1435,7 @@ export const patientsRouter = createRouter({
           .where(
             and(
               eq(appointmentWaitlist.patientId, input.mergeId),
-              eq(
-                appointmentWaitlist.clientId,
-                analysis.keepPatient.clientId,
-              ),
+              eq(appointmentWaitlist.clientId, analysis.keepPatient.clientId),
               eq(appointmentWaitlist.practiceId, ctx.practiceId),
               eq(appointmentWaitlist.status, "waiting"),
               isNull(appointmentWaitlist.deletedAt),
@@ -1492,7 +1512,8 @@ export const patientsRouter = createRouter({
         if (!retiredSource) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "The source patient changed during merge. Preview and retry.",
+            message:
+              "The source patient changed during merge. Preview and retry.",
           });
         }
 
@@ -1604,7 +1625,11 @@ export const patientsRouter = createRouter({
             isNull(duplicatePatient.deletedAt),
           ),
         )
-        .orderBy(asc(clients.lastName), asc(clients.firstName), asc(patients.name))
+        .orderBy(
+          asc(clients.lastName),
+          asc(clients.firstName),
+          asc(patients.name),
+        )
         .limit(200);
 
       type DuplicatePatient = {
@@ -1674,7 +1699,8 @@ export const patientsRouter = createRouter({
         clientFirstName: group.clientFirstName,
         clientLastName: group.clientLastName,
         patients: group.patients.map(
-          ({ hasImmutableHistory: _hasImmutableHistory, ...patient }) => patient,
+          ({ hasImmutableHistory: _hasImmutableHistory, ...patient }) =>
+            patient,
         ),
         blockerSummary: {
           patientsWithImmutableHistory: group.patients.filter(
@@ -1683,5 +1709,4 @@ export const patientsRouter = createRouter({
         },
       }));
     }),
-
 });

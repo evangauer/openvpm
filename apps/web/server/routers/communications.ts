@@ -29,6 +29,10 @@ import {
   COMMUNICATION_SUBJECT_MAX_LENGTH,
   SMS_COMMUNICATION_CONTENT_MAX_LENGTH,
 } from "@/lib/communications/policy";
+import {
+  lockPracticeForExternalSideEffects,
+  RECOVERY_HOLD_BLOCK_MESSAGE,
+} from "@/lib/recovery-hold";
 
 export {
   COMMUNICATION_CONTENT_MAX_LENGTH,
@@ -759,6 +763,20 @@ export const communicationsRouter = createRouter({
       const isDeliverableOutbound =
         input.direction === "outbound" &&
         (input.channel === "sms" || input.channel === "email");
+
+      if (isDeliverableOutbound) {
+        if (
+          !(await lockPracticeForExternalSideEffects(
+            ctx.db,
+            ctx.practiceId,
+          ))
+        ) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: RECOVERY_HOLD_BLOCK_MESSAGE,
+          });
+        }
+      }
 
       const [client] = await ctx.db
         .select({

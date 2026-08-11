@@ -56,6 +56,10 @@ import {
   clinicMessagingRegistrationActor,
   recordMessagingRegistrationEvent,
 } from "@/lib/messaging/registration-events";
+import {
+  lockPracticeForExternalSideEffects,
+  RECOVERY_HOLD_BLOCK_MESSAGE,
+} from "@/lib/recovery-hold";
 
 const adminOnly = protectedProcedure.use(requireRole("admin"));
 const MESSAGING_NUMBER_ORDERED_DETAIL =
@@ -1020,6 +1024,14 @@ export const messagingRouter = createRouter({
       assertProvisioningEnabled();
       assertProvisioningPracticeAllowed(ctx.practiceId);
       await assertActivePractice(ctx);
+      if (
+        !(await lockPracticeForExternalSideEffects(ctx.db, ctx.practiceId))
+      ) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: RECOVERY_HOLD_BLOCK_MESSAGE,
+        });
+      }
 
       const webhookUrl = telnyxWebhookUrl();
       const profileName = provisioningProfileName(input.locationId);
@@ -1510,6 +1522,14 @@ export const messagingRouter = createRouter({
       }
 
       if (input.enabled) {
+        if (
+          !(await lockPracticeForExternalSideEffects(ctx.db, ctx.practiceId))
+        ) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: RECOVERY_HOLD_BLOCK_MESSAGE,
+          });
+        }
         assertHostedSendingAllowed(ctx.practiceId, input.locationId);
         if (billingEnforced()) {
           await ctx.db.execute(

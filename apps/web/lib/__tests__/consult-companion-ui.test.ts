@@ -9,31 +9,31 @@ import { describe, expect, it } from "vitest";
 describe("consult companion UI states", () => {
   const patientPage = readFileSync(
     "app/(dashboard)/patients/[id]/page.tsx",
-    "utf8"
+    "utf8",
   );
   const soapPage = readFileSync(
     "app/(dashboard)/records/new-soap/[patientId]/page.tsx",
-    "utf8"
+    "utf8",
   );
   const capturePage = readFileSync("app/capture/[token]/page.tsx", "utf8");
   const captureClient = readFileSync(
     "app/capture/[token]/capture-client.tsx",
-    "utf8"
+    "utf8",
   );
   const captureLayout = readFileSync("app/capture/layout.tsx", "utf8");
   const captureModal = readFileSync(
     "components/records/capture-photos.tsx",
-    "utf8"
+    "utf8",
   );
   const middleware = readFileSync("middleware.ts", "utf8");
   const recordsRouter = readFileSync("server/routers/records.ts", "utf8");
 
   it("gates the capture button on the patient page behind patient management", () => {
     expect(patientPage).toContain(
-      'import { CapturePhotos } from "@/components/records/capture-photos"'
+      'import { CapturePhotos } from "@/components/records/capture-photos"',
     );
     expect(patientPage).toMatch(
-      /\{canManagePatientDetail && \(\s*<>\s*<CapturePhotos patientId=\{patient\.id\} \/>\s*<ConsentSign patientId=\{patient\.id\} \/>\s*<\/>\s*\)\}/
+      /\{canManagePatientDetail && \(\s*<>\s*<CapturePhotos patientId=\{patient\.id\} \/>\s*<ConsentSign patientId=\{patient\.id\} \/>\s*<\/>\s*\)\}/,
     );
   });
 
@@ -42,7 +42,7 @@ describe("consult companion UI states", () => {
     // Regression guard: the allowlist must stay inside PUBLIC_PATH_PREFIXES.
     const allowlist = middleware.slice(
       middleware.indexOf("PUBLIC_PATH_PREFIXES"),
-      middleware.indexOf("];")
+      middleware.indexOf("];"),
     );
     expect(allowlist).toContain('"/capture"');
   });
@@ -54,10 +54,19 @@ describe("consult companion UI states", () => {
     expect(capturePage).toContain("CaptureClient");
   });
 
+  it("keeps one client-generated idempotency key across upload retries", () => {
+    expect(captureClient).toContain("crypto.randomUUID()");
+    expect(captureClient).toContain(
+      'xhr.setRequestHeader("Idempotency-Key", idempotencyKey)',
+    );
+    expect(captureClient).toContain("performUpload(item)");
+    expect(captureClient).toContain("Try again");
+  });
+
   it("keeps the capture page PHI-minimal and failure-friendly", () => {
     expect(captureClient).toContain("Add photos to the visit record");
     expect(captureClient).toContain(
-      "This link has expired. Ask the front desk for a new code."
+      "This link has expired. Ask the front desk for a new code.",
     );
     // No patient identity ever reaches the no-login page.
     expect(captureClient).not.toContain("patientName");
@@ -70,7 +79,7 @@ describe("consult companion UI states", () => {
     expect(recordsRouter).toContain("generateCaptureToken()");
     expect(recordsRouter).toContain("CAPTURE_TOKEN_TTL_MS");
     expect(recordsRouter).toMatch(
-      /createCaptureSession: protectedProcedure\s*\.use\(\s*requireRole\("admin", "veterinarian", "technician", "front_desk"\)\s*\)/
+      /createCaptureSession: protectedProcedure\s*\.use\(\s*requireRole\("admin", "veterinarian", "technician", "front_desk"\)\s*\)/,
     );
   });
 
@@ -78,7 +87,7 @@ describe("consult companion UI states", () => {
     expect(captureModal).toContain("listCaptureFiles.useQuery");
     expect(captureModal).toContain("refetchInterval");
     expect(captureModal).toContain(
-      "Scan with any phone. The code works for 30 minutes."
+      "Scan with any phone. The code works for 30 minutes.",
     );
     expect(captureModal).toContain("photos added");
   });
@@ -88,23 +97,27 @@ describe("consult companion UI states", () => {
     expect(soapPage).toContain("trpc.ai.draftSoapNote.useMutation");
     expect(soapPage).toContain("trpc.agent.status.useQuery");
     // The draft only fills the editors; saving stays behind the Save button.
-    expect(soapPage).toContain("setSubjective(draftTextToHtml(draft.subjective))");
+    expect(soapPage).toContain(
+      "setSubjective(draftTextToHtml(draft.subjective))",
+    );
     expect(soapPage).toContain("setPlan(draftTextToHtml(draft.plan))");
     const draftSuccessHandler = soapPage.slice(
       soapPage.indexOf("trpc.ai.draftSoapNote.useMutation"),
-      soapPage.indexOf("function handleDraftWithAi")
+      soapPage.indexOf("function handleDraftWithAi"),
     );
     expect(draftSuccessHandler).not.toContain("createNote.mutate");
     expect(soapPage).toContain(
-      "Draft ready. Please review and edit before you save."
+      "Draft ready. Please review and edit before you save.",
     );
   });
 
   it("hides the AI draft affordance behind configuration with a gentle note", () => {
     expect(soapPage).toContain("agentStatus.data?.configured ?? false");
-    expect(soapPage).toContain("disabled={!isOnline || !aiConfigured || draftWithAi.isPending}");
     expect(soapPage).toContain(
-      "AI is not set up yet. Ask your admin to add an AI key."
+      "disabled={!isOnline || !aiConfigured || draftWithAi.isPending}",
+    );
+    expect(soapPage).toContain(
+      "AI is not set up yet. Ask your admin to add an AI key.",
     );
   });
 
@@ -118,28 +131,28 @@ describe("consult companion UI states", () => {
 describe("e-sign consent UI states", () => {
   const patientPage = readFileSync(
     "app/(dashboard)/patients/[id]/page.tsx",
-    "utf8"
+    "utf8",
   );
   const signPage = readFileSync("app/sign/[token]/page.tsx", "utf8");
   const signClient = readFileSync("app/sign/[token]/sign-client.tsx", "utf8");
   const signLayout = readFileSync("app/sign/layout.tsx", "utf8");
   const consentModal = readFileSync(
     "components/records/consent-sign.tsx",
-    "utf8"
+    "utf8",
   );
   const middleware = readFileSync("middleware.ts", "utf8");
   const recordsRouter = readFileSync("server/routers/records.ts", "utf8");
 
   it("gates the signature button behind patient management", () => {
     expect(patientPage).toContain(
-      'import { ConsentSign } from "@/components/records/consent-sign"'
+      'import { ConsentSign } from "@/components/records/consent-sign"',
     );
   });
 
   it("allows the no-login sign page through the middleware allowlist", () => {
     const allowlist = middleware.slice(
       middleware.indexOf("PUBLIC_PATH_PREFIXES"),
-      middleware.indexOf("];")
+      middleware.indexOf("];"),
     );
     expect(allowlist).toContain('"/sign"');
   });
@@ -165,15 +178,22 @@ describe("e-sign consent UI states", () => {
 
   it("requires both a name and drawn ink before submitting", () => {
     expect(signClient).toContain(
-      "Boolean(signature) && signerName.trim().length > 0"
+      "Boolean(signature) && signerName.trim().length > 0",
     );
     expect(signClient).toContain("Agree and sign");
     expect(signClient).toContain('toDataURL("image/png")');
   });
 
+  it("lets a refreshed in-progress signing page finish from persisted evidence", () => {
+    expect(signClient).toContain('state.consent.status === "signing"');
+    expect(signClient).toContain("Your signature is safe");
+    expect(signClient).toContain("submitSigningPayload({ resume: true })");
+    expect(signClient).toContain("Finish saving");
+  });
+
   it("shows the friendly expired copy on dead links", () => {
     expect(signClient).toContain(
-      "This link has expired. Ask the front desk for a new code."
+      "This link has expired. Ask the front desk for a new code.",
     );
   });
 
@@ -186,8 +206,22 @@ describe("e-sign consent UI states", () => {
 
   it("snapshots consent copy server-side so edits never rewrite signed forms", () => {
     expect(recordsRouter).toContain("createConsentRequest");
-    expect(recordsRouter).toContain("title: input.title ?? form.title");
-    expect(recordsRouter).toContain("bodyText: input.bodyText ?? form.body");
+    const createConsentSource = recordsRouter.slice(
+      recordsRouter.indexOf("createConsentRequest"),
+      recordsRouter.indexOf(
+        "listConsents",
+        recordsRouter.indexOf("createConsentRequest"),
+      ),
+    );
+    expect(createConsentSource).toContain(
+      "const title = input.title ?? form.title",
+    );
+    expect(createConsentSource).toContain(
+      "const bodyText = input.bodyText ?? form.body",
+    );
+    expect(createConsentSource).toMatch(
+      /\.values\(\{[\s\S]*?title,\s*bodyText,/,
+    );
   });
 
   it("keeps e-sign copy free of em dashes", () => {

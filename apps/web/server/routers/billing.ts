@@ -64,6 +64,10 @@ import {
   BILLING_SERVICE_NAME_MAX_LENGTH,
 } from "@/lib/billing/policy";
 import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
+import {
+  lockPracticeForExternalSideEffects,
+  RECOVERY_HOLD_BLOCK_MESSAGE,
+} from "@/lib/recovery-hold";
 import { POSTGRES_INTEGER_MAX } from "./storage-bounds";
 import type { Database } from "@openpims/db/client";
 import {
@@ -414,6 +418,16 @@ async function assertActivePractice(ctx: BillingContext) {
     .where(activePracticeWhere(ctx.practiceId))
     .limit(1);
   if (!practice) throw practiceNotFound();
+}
+
+async function assertBillingProviderActionsAllowed(ctx: BillingContext) {
+  if (await lockPracticeForExternalSideEffects(ctx.db as Database, ctx.practiceId)) {
+    return;
+  }
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message: RECOVERY_HOLD_BLOCK_MESSAGE,
+  });
 }
 
 async function throwServiceMutationMiss(
@@ -1671,6 +1685,7 @@ export const billingRouter = createRouter({
       if (!practice) {
         throw practiceNotFound();
       }
+      await assertBillingProviderActionsAllowed(ctx);
 
       try {
         const existing = await getStripeConnectPaymentAccount(ctx);
@@ -1720,6 +1735,7 @@ export const billingRouter = createRouter({
   refreshPaymentAccount: protectedProcedure
     .use(requireRole("admin"))
     .mutation(async ({ ctx }) => {
+      await assertBillingProviderActionsAllowed(ctx);
       if (!stripeConfigured()) {
         throw new TRPCError({
           code: "SERVICE_UNAVAILABLE",
@@ -1764,6 +1780,7 @@ export const billingRouter = createRouter({
   openPaymentAccountDashboard: protectedProcedure
     .use(requireRole("admin"))
     .mutation(async ({ ctx }) => {
+      await assertBillingProviderActionsAllowed(ctx);
       const existing = await getStripeConnectPaymentAccount(ctx);
       if (!existing) {
         throw new TRPCError({
@@ -3371,6 +3388,7 @@ export const billingRouter = createRouter({
       })
     )
     .mutation(async ({ ctx, input }) => {
+      await assertBillingProviderActionsAllowed(ctx);
       const [payment] = await ctx.db
         .select({
           id: payments.id,
@@ -3698,6 +3716,7 @@ export const billingRouter = createRouter({
     .use(requireRole("admin", "front_desk"))
     .input(z.object({ invoiceId: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
+      await assertBillingProviderActionsAllowed(ctx);
       const [invoice] = await ctx.db
         .select({
           id: invoices.id,

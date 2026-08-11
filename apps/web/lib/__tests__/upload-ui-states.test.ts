@@ -45,7 +45,7 @@ describe("upload UI states", () => {
 
     for (const source of imageUploadSources) {
       expect(source).toContain('from "@/lib/upload-policy"');
-      expect(source).toContain("isImageUploadFileValid(file)");
+      expect(source).toContain("isImageUploadFileValid(selectedFile)");
       expect(source).toContain("IMAGE_UPLOAD_POLICY_MESSAGE");
       expect(source).toContain('"/api/upload"');
       expect(source).toContain('accept="image/png,image/jpeg,image/webp"');
@@ -57,5 +57,27 @@ describe("upload UI states", () => {
       'formData.append("category", "patient-photos")'
     );
     expect(patientDetail).not.toContain('accept="image/*"');
+  });
+
+  it("keeps one upload operation across retryable dashboard and onboarding failures", () => {
+    for (const source of imageUploadSources) {
+      expect(source).toContain("selectManagedUploadFile(");
+      expect(source).toContain("settleManagedUploadAttempt(");
+      expect(source).toContain("attempt.idempotencyKey");
+      expect(source).toContain("kind: \"response\"");
+      expect(source).toContain("kind: \"success\"");
+      expect(source).toContain("kind: \"ambiguous\"");
+    }
+
+    expect(onboardingBranding).toContain("onClick={() => void handleFile()}");
+    expect(settingsPage).toContain(
+      "onClick={() => void handleLogoUpload()}",
+    );
+    expect(patientDetail).toContain(
+      "onClick={() => void uploadPatientPhoto()}",
+    );
+    expect(onboardingBranding).toContain("Try again");
+    expect(settingsPage).toContain("Try again");
+    expect(patientDetail).toContain("Try photo again");
   });
 });

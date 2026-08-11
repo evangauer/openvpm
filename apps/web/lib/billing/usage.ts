@@ -61,7 +61,10 @@ export async function recordUsage(opts: {
   try {
     const [activePractice] = await withSystem(db, (tx) =>
       tx
-        .select({ id: practices.id })
+        .select({
+          id: practices.id,
+          recoveryHold: practices.recoveryHold,
+        })
         .from(practices)
         .where(
           and(
@@ -82,6 +85,9 @@ export async function recordUsage(opts: {
       }).returning({ id: usageRecords.id })
     );
     if (!usageRecord) return;
+    // Keep the local usage ledger complete while a clinic is held, but defer
+    // all provider and ops delivery until recovery is explicitly released.
+    if (activePractice.recoveryHold) return;
     await maybeAlertOnSpike(opts.practiceId, opts.kind, periodMonth, quantity);
     await maybeMeterToStripe({
       usageRecordId: usageRecord.id,
@@ -108,9 +114,12 @@ async function maybeMeterToStripe(opts: {
   quantity: number;
 }): Promise<MeterUsageResult> {
   try {
-    const [practice] = await withSystem(db, (tx) =>
-      tx
-        .select({ stripeCustomerId: practices.stripeCustomerId })
+    return await withSystem(db, async (tx) => {
+      const [practice] = await tx
+        .select({
+          stripeCustomerId: practices.stripeCustomerId,
+          recoveryHold: practices.recoveryHold,
+        })
         .from(practices)
         .where(
           and(
@@ -119,18 +128,19 @@ async function maybeMeterToStripe(opts: {
           )
         )
         .limit(1)
-    );
-    if (!practice?.stripeCustomerId) return "skipped";
-    const identifier = meterIdentifierForUsageRecord(opts.usageRecordId);
-    const metered = await recordMeterEvent({
-      kind: opts.kind,
-      stripeCustomerId: practice.stripeCustomerId,
-      value: opts.quantity,
-      identifier,
-    });
-    if (metered) {
-      await withSystem(db, (tx) =>
-        tx
+        .for("share", { of: practices });
+      if (!practice?.stripeCustomerId || practice.recoveryHold) {
+        return "skipped";
+      }
+      const identifier = meterIdentifierForUsageRecord(opts.usageRecordId);
+      const metered = await recordMeterEvent({
+        kind: opts.kind,
+        stripeCustomerId: practice.stripeCustomerId,
+        value: opts.quantity,
+        identifier,
+      });
+      if (metered) {
+        await tx
           .update(usageRecords)
           .set({
             stripeMeterIdentifier: identifier,
@@ -141,11 +151,11 @@ async function maybeMeterToStripe(opts: {
               eq(usageRecords.id, opts.usageRecordId),
               isNull(usageRecords.deletedAt)
             )
-          )
-      );
-      return "metered";
-    }
-    return "failed";
+          );
+        return "metered";
+      }
+      return "failed";
+    });
   } catch (e) {
     console.error("[usage] meter event failed", opts.kind, e);
     return "failed";
@@ -171,6 +181,7 @@ export async function reconcileUnmeteredUsage(opts: {
         and(
           eq(practices.id, usageRecords.practiceId),
           isNull(practices.deletedAt),
+          eq(practices.recoveryHold, false),
           isNotNull(practices.stripeCustomerId)
         )
       )

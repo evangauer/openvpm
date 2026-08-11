@@ -169,8 +169,8 @@ importers:
         specifier: ^2.0.7
         version: 2.0.7(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       stripe:
-        specifier: ^20.4.1
-        version: 20.4.1(@types/node@20.19.37)
+        specifier: ^22.5.0
+        version: 22.5.0(@types/node@20.19.37)
       superjson:
         specifier: ^2.2.0
         version: 2.2.6
@@ -214,6 +214,9 @@ importers:
       tailwindcss-animate:
         specifier: ^1.0.7
         version: 1.0.7(tailwindcss@3.4.19(tsx@4.23.12))
+      tsx:
+        specifier: ^4.23.12
+        version: 4.23.12
       typescript:
         specifier: ^5.5.0
         version: 5.9.3
@@ -3399,11 +3402,11 @@ packages:
   strip-literal@3.1.0:
     resolution: {integrity: sha512-8r3mkIM/2+PpjHoOtiAW8Rg3jJLHaV7xPwG+YRGrv6FP0wwk/toTpATxWYOW0BKdWwl82VT2tFYi5DlROa0Mxg==}
 
-  stripe@20.4.1:
-    resolution: {integrity: sha512-axCguHItc8Sxt0HC6aSkdVRPffjYPV7EQqZRb2GkIa8FzWDycE7nHJM19C6xAIynH1Qp1/BHiopSi96jGBxT0w==}
-    engines: {node: '>=16'}
+  stripe@22.5.0:
+    resolution: {integrity: sha512-QVwMwriC0bbySx6R4dpsvJ0W//GojC1kwWVS6rPSoVqDUIZX4Hy3TaUrd2AZeXEAaKbfWIjQjvo3vKAReHZ0vQ==}
+    engines: {node: '>=18'}
     peerDependencies:
-      '@types/node': '>=16'
+      '@types/node': '>=18'
     peerDependenciesMeta:
       '@types/node':
         optional: true
@@ -6512,7 +6515,7 @@ snapshots:
     dependencies:
       js-tokens: 9.0.1
 
-  stripe@20.4.1(@types/node@20.19.37):
+  stripe@22.5.0(@types/node@20.19.37):
     optionalDependencies:
       '@types/node': 20.19.37
 

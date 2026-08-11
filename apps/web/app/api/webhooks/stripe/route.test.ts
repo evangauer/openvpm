@@ -542,6 +542,30 @@ describe("Stripe client invoice webhook", () => {
     expect(mocks.refundInvalidStripeCheckoutPayment).not.toHaveBeenCalled();
   });
 
+  it("leaves a held-practice event retryable without capturing money", async () => {
+    mocks.constructWebhookEvent.mockResolvedValue(
+      checkoutEvent({
+        payment_intent: "pi_held_123",
+        metadata: {
+          invoiceId: INVOICE_ID,
+          captureMode: "manual_v1",
+          source: "client_invoice",
+        },
+      }),
+    );
+    mocks.selectResults.push([
+      { ...activeInvoice, recoveryHold: true },
+    ]);
+
+    const response = await POST(stripeRequest());
+
+    expect(response.status).toBe(500);
+    expect(mocks.captureStripeCheckoutAuthorization).not.toHaveBeenCalled();
+    expect(mocks.insertValues).not.toHaveBeenCalledWith(
+      expect.objectContaining({ externalId: "stripe:checkout:cs_test_123" }),
+    );
+  });
+
   it("does not capture a manual Checkout after the invoice is voided", async () => {
     mocks.constructWebhookEvent.mockResolvedValue(
       checkoutEvent({

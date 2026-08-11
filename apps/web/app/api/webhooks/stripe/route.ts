@@ -167,6 +167,7 @@ export async function POST(req: NextRequest) {
             id: invoices.id,
             practiceId: invoices.practiceId,
             appointmentId: invoices.appointmentId,
+            recoveryHold: practices.recoveryHold,
           })
           .from(invoices)
           .innerJoin(
@@ -177,11 +178,20 @@ export async function POST(req: NextRequest) {
             ),
           )
           .where(and(eq(invoices.id, invoiceId), isNull(invoices.deletedAt)))
-          .limit(1);
+          .limit(1)
+          // Serialize provider capture against the committed recovery-hold
+          // update. If restore wins, this reads held and Stripe retries later;
+          // if capture wins, restore cannot begin until this transaction ends.
+          .for("share", { of: practices });
 
         if (!invoiceIdentity) {
           await resolveInvalidCheckout("invoice_not_found");
           return;
+        }
+        if (invoiceIdentity.recoveryHold) {
+          throw new Error(
+            `Stripe Checkout processing paused for held practice ${invoiceIdentity.practiceId}`,
+          );
         }
         resolutionPracticeId = invoiceIdentity.practiceId;
 

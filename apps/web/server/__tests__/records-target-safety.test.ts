@@ -1881,6 +1881,63 @@ describe("consent requests", () => {
     );
   });
 
+  it("blocks unresolved material blanks before minting a consent link", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [
+        patientRow,
+        [
+          {
+            id: FORM_ID,
+            title: "Dental consent",
+            body: "Approved extraction total: $____ (staff: fill in before sending)",
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).createConsentRequest({
+        patientId: PATIENT_ID,
+        formId: FORM_ID,
+      })
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringContaining("Fill in every blank"),
+    });
+
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("allows staff to replace every template blank before dispatch", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [
+        patientRow,
+        [
+          {
+            id: FORM_ID,
+            title: "Dental consent",
+            body: "Approved extraction total: $____",
+          },
+        ],
+      ],
+      insertedRows: [{ id: RECORD_ID }],
+    });
+
+    await expect(
+      callerWithDb(db).createConsentRequest({
+        patientId: PATIENT_ID,
+        formId: FORM_ID,
+        bodyText: "I approve dental extractions up to $850.",
+      })
+    ).resolves.toMatchObject({ id: RECORD_ID });
+
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bodyText: "I approve dental extractions up to $850.",
+      })
+    );
+  });
+
   it("rejects dispatch when the form is not in the practice library", async () => {
     const { db, insertValues } = createDb({
       selectResults: [patientRow, []],
@@ -1944,5 +2001,25 @@ describe("consent requests", () => {
     await expect(
       callerWithDb(db).listConsents({ patientId: PATIENT_ID })
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("publishes only available files and fully signed consent artifacts", () => {
+    const source = readFileSync("server/routers/records.ts", "utf8");
+    const captureList = source.slice(
+      source.indexOf("listCaptureFiles:"),
+      source.indexOf("listPatientFiles:"),
+    );
+    const patientFiles = source.slice(
+      source.indexOf("listPatientFiles:"),
+      source.indexOf("listConsentForms:"),
+    );
+    const consentList = source.slice(source.indexOf("listConsents:"));
+
+    expect(captureList).toContain('eq(files.storageStatus, "available")');
+    expect(patientFiles).toContain('eq(files.storageStatus, "available")');
+    expect(patientFiles).toContain('eq(consentRequests.status, "signed")');
+    expect(consentList).toContain(".innerJoin(");
+    expect(consentList).toContain('eq(files.storageStatus, "available")');
+    expect(consentList).toContain('eq(consentRequests.status, "signed")');
   });
 });

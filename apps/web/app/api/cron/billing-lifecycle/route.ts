@@ -73,6 +73,7 @@ export async function GET(request: Request) {
             isNotNull(practices.trialEndsAt),
             gte(practices.trialEndsAt, now),
             lte(practices.trialEndsAt, latestTrialEnd),
+            eq(practices.recoveryHold, false),
             isNull(practices.deletedAt),
           ),
         ),

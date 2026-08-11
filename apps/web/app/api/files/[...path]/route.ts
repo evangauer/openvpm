@@ -2,17 +2,25 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { db } from "@openpims/db/client";
-import { files, practices, users } from "@openpims/db";
+import { fileObjectReplicas, files, practices, users } from "@openpims/db";
 import { and, eq, isNull } from "drizzle-orm";
-import { getObject } from "@/lib/s3";
+import {
+  FILE_REPLICA_TARGET,
+  normalizeS3VersionId,
+  readPrimaryObject,
+  readReplicaObject,
+} from "@/lib/s3";
 import { withSystem } from "@/lib/tenant-db";
 import { hasBlankConfiguredNextAuthSecret } from "@/lib/auth-secret";
 import {
   contentDispositionForFile,
-  filenameFromObjectKey,
   isAllowedUploadCategory,
 } from "@/lib/upload-security";
 import { UPLOAD_FILE_MAX_BYTES } from "@/lib/upload-limits";
+import {
+  checksumSha256Hex,
+  schedulePrimaryRepair,
+} from "@/lib/file-replication";
 
 export const dynamic = "force-dynamic";
 
@@ -29,12 +37,30 @@ async function getActiveFileMetadata({
     tx
       .select({
         id: files.id,
+        fileName: files.fileName,
         mimeType: files.mimeType,
+        checksumSha256: files.checksumSha256,
+        fileSizeBytes: files.fileSizeBytes,
+        storageStatus: files.storageStatus,
+        replicaObjectKey: fileObjectReplicas.objectKey,
+        replicaObjectVersionId: fileObjectReplicas.objectVersionId,
+        replicaChecksumSha256: fileObjectReplicas.checksumSha256,
+        replicaFileSizeBytes: fileObjectReplicas.fileSizeBytes,
+        replicaStatus: fileObjectReplicas.status,
       })
       .from(files)
       .innerJoin(
         practices,
         and(eq(practices.id, files.practiceId), isNull(practices.deletedAt)),
+      )
+      .leftJoin(
+        fileObjectReplicas,
+        and(
+          eq(fileObjectReplicas.fileId, files.id),
+          eq(fileObjectReplicas.practiceId, files.practiceId),
+          eq(fileObjectReplicas.replicaTarget, FILE_REPLICA_TARGET),
+          isNull(fileObjectReplicas.deletedAt),
+        ),
       )
       .where(
         and(
@@ -142,21 +168,96 @@ export async function GET(
   if (!metadata) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
+  if (isPublic && !metadata.mimeType?.toLowerCase().startsWith("image/")) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
   if (
-    isPublic &&
-    !metadata.mimeType?.toLowerCase().startsWith("image/")
+    metadata.storageStatus === "pending_upload" ||
+    metadata.storageStatus === "cleanup_pending"
   ) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  const obj = await getObject(key, { maxBytes: UPLOAD_FILE_MAX_BYTES });
-  if (!obj) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
+  const primary = await readPrimaryObject(key, {
+    maxBytes: UPLOAD_FILE_MAX_BYTES,
+  });
+  const primaryMatchesManifest =
+    primary.status === "available" &&
+    (!metadata.checksumSha256 ||
+      (primary.body.byteLength === metadata.fileSizeBytes &&
+        checksumSha256Hex(primary.body) === metadata.checksumSha256));
+  let obj = primaryMatchesManifest
+    ? { body: primary.body, contentType: primary.contentType }
+    : null;
+  let replicaFallbackState:
+    | "not_attempted"
+    | "available"
+    | "missing"
+    | "failed"
+    | "corrupt" = "not_attempted";
+  const replicaObjectVersionId = normalizeS3VersionId(
+    metadata.replicaObjectVersionId,
+  );
+
   if (
-    isPublic &&
-    !obj.contentType?.toLowerCase().startsWith("image/")
+    !obj &&
+    metadata.replicaStatus === "available" &&
+    metadata.replicaObjectKey &&
+    replicaObjectVersionId
   ) {
+    const expectedChecksum =
+      metadata.checksumSha256 ?? metadata.replicaChecksumSha256;
+    const expectedSize =
+      metadata.fileSizeBytes ?? metadata.replicaFileSizeBytes;
+    if (expectedChecksum && expectedSize != null) {
+      const replica = await readReplicaObject(metadata.replicaObjectKey, {
+        maxBytes: UPLOAD_FILE_MAX_BYTES,
+        versionId: replicaObjectVersionId,
+      });
+      if (
+        replica.status === "available" &&
+        normalizeS3VersionId(replica.versionId) === replicaObjectVersionId &&
+        replica.body.byteLength === expectedSize &&
+        checksumSha256Hex(replica.body) === expectedChecksum
+      ) {
+        replicaFallbackState = "available";
+        obj = { body: replica.body, contentType: replica.contentType };
+        const observedState =
+          primary.status === "missing"
+            ? "missing"
+            : primary.status === "available"
+              ? "corrupt"
+              : "failed";
+        await schedulePrimaryRepair({
+          practiceId,
+          fileId: metadata.id,
+          fileKey: key,
+          checksumSha256: metadata.checksumSha256,
+          fileSizeBytes: metadata.fileSizeBytes,
+          storageStatus: metadata.storageStatus,
+          observedState,
+        });
+      } else {
+        replicaFallbackState =
+          replica.status === "available" ? "corrupt" : replica.status;
+      }
+    }
+  }
+
+  if (!obj) {
+    const definitiveMissing =
+      primary.status === "missing" &&
+      (replicaFallbackState === "not_attempted" ||
+        replicaFallbackState === "missing");
+    return NextResponse.json(
+      {
+        error: definitiveMissing ? "Not found" : "File temporarily unavailable",
+      },
+      { status: definitiveMissing ? 404 : 503 },
+    );
+  }
+  if (isPublic && !obj.contentType?.toLowerCase().startsWith("image/")) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
@@ -164,7 +265,7 @@ export async function GET(
     headers: {
       "Content-Type": obj.contentType ?? "application/octet-stream",
       "Content-Disposition": contentDispositionForFile({
-        filename: filenameFromObjectKey(key),
+        filename: metadata.fileName,
         contentType: obj.contentType,
         isPublic,
       }),

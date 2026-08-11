@@ -1,9 +1,15 @@
 import { eq, and, isNull, inArray, sql, getTableColumns } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
 import type { Database } from "@openpims/db/client";
+import { withSystem } from "@/lib/tenant-db";
 import { redactSecrets } from "@/lib/audit";
 import { normalizeE164 } from "@/lib/messaging/phone";
 import { rowsFromExecute } from "@/lib/db/execute-rows";
+import {
+  isPracticeBackupJsonSizeValid,
+  PRACTICE_BACKUP_JSON_MAX_BYTES,
+  PRACTICE_BACKUP_JSON_SIZE_MESSAGE,
+} from "@/lib/backup/policy";
 import {
   appointmentTypes,
   appointmentWaitlist,
@@ -38,6 +44,7 @@ import {
   prescriptionEvents,
   prescriptions,
   problemList,
+  practices,
   procedures,
   products,
   purchaseOrders,
@@ -103,6 +110,8 @@ export const PRACTICE_EXPORT_SYSTEM_EXCLUSIONS = {
     "Expiring QR photo-capture link tokens; restoring them would resurrect old capture URLs. The photos themselves are in the files section.",
   fileObjectReplicas:
     "Environment-bound object-replica verification state; rebuild it from the configured backup target instead of replaying provider keys or versions.",
+  fileStorageEvents:
+    "Append-only platform recovery evidence; rebuild operational projections from independently retained objects and catalogs.",
   consentRequests:
     "Expiring e-sign link tokens; the signed consent PDF is in the files section and the signing event is in the audit log.",
   messagingRegistrations:
@@ -223,10 +232,35 @@ export type PracticeExport = {
   formatVersion: number;
   practiceId: string;
   exportedAt: string;
+  /** Recovery-only clinic identity/configuration. Restore does not blindly
+   * apply billing authority, provider IDs, or capability tokens from it. */
+  practice: Record<string, unknown>;
   counts: Record<PracticeExportSection, number>;
 } & Record<PracticeExportSection, unknown[]>;
 
-export const PRACTICE_EXPORT_FORMAT_VERSION = 5;
+export const PRACTICE_EXPORT_FORMAT_VERSION = 6;
+export const PRACTICE_RECOVERY_HOLD_REASON =
+  "Practice data restore pending owner reconciliation";
+
+const PRACTICE_RECOVERY_SNAPSHOT_KEYS = new Set([
+  "id",
+  "createdAt",
+  "updatedAt",
+  "name",
+  "address",
+  "phone",
+  "email",
+  "website",
+  "timezone",
+  "logoUrl",
+  "brandColor",
+  "country",
+  "currency",
+  "taxRatePercent",
+  "vatNumber",
+  "appointmentRemindersEnabled",
+  "appointmentReminderLeadHours",
+]);
 
 type Row = Record<string, unknown>;
 
@@ -267,6 +301,20 @@ export function sanitizePracticeExportRows(
           ...row,
           secret: PRACTICE_EXPORT_SECRET_REPLACEMENTS.webhookSecret,
           active: false,
+        };
+      case "locationMessaging":
+        return {
+          ...row,
+          messagingProfileId: null,
+          senderE164: null,
+          numberSource: null,
+          a2pBrandId: null,
+          a2pCampaignId: null,
+          registrationStatus: "not_started",
+          registrationDetail: null,
+          providerProfileReady: false,
+          providerProfileSyncedAt: null,
+          enabled: false,
         };
       case "auditLog":
         return {
@@ -757,6 +805,72 @@ export function validatePracticeExportRestore(data: unknown): {
       errors.push(message);
     }
   };
+
+  const exportRecord = isRecord(data) ? data : {};
+  if (
+    typeof exportRecord.formatVersion === "number" &&
+    exportRecord.formatVersion > PRACTICE_EXPORT_FORMAT_VERSION
+  ) {
+    pushError(
+      `backup format v${exportRecord.formatVersion} is newer than this release supports.`,
+    );
+  }
+  if (exportRecord.formatVersion === PRACTICE_EXPORT_FORMAT_VERSION) {
+    if (!isRecord(exportRecord.practice)) {
+      pushError("practice recovery metadata is required in backup format v6.");
+    } else if (exportRecord.practice.id !== exportRecord.practiceId) {
+      pushError("practice recovery metadata must match practiceId exactly.");
+    } else {
+      const unknownKeys = Object.keys(exportRecord.practice).filter(
+        (key) => !PRACTICE_RECOVERY_SNAPSHOT_KEYS.has(key),
+      );
+      if (unknownKeys.length > 0) {
+        pushError(
+          `practice recovery metadata contains unsupported keys: ${unknownKeys.join(", ")}.`,
+        );
+      }
+      if (
+        typeof exportRecord.practice.name !== "string" ||
+        exportRecord.practice.name.trim().length === 0 ||
+        exportRecord.practice.name.length > 255
+      ) {
+        pushError("practice recovery metadata name must be 1-255 characters.");
+      }
+    }
+
+    if (!isRecord(exportRecord.counts)) {
+      pushError("canonical section counts are required in backup format v6.");
+    } else {
+      const countKeys = Object.keys(exportRecord.counts);
+      const missingCountKeys = PRACTICE_EXPORT_SECTIONS.filter(
+        (section) =>
+          !Object.prototype.hasOwnProperty.call(exportRecord.counts, section),
+      );
+      const unknownCountKeys = countKeys.filter(
+        (key) => !PRACTICE_EXPORT_SECTIONS.includes(key as never),
+      );
+      if (missingCountKeys.length > 0) {
+        pushError(
+          `backup counts are missing canonical sections: ${missingCountKeys.join(", ")}.`,
+        );
+      }
+      if (unknownCountKeys.length > 0) {
+        pushError(
+          `backup counts contain unsupported sections: ${unknownCountKeys.join(", ")}.`,
+        );
+      }
+      for (const section of PRACTICE_EXPORT_SECTIONS) {
+        const count = exportRecord.counts[section];
+        if (!Number.isSafeInteger(count) || (count as number) < 0) {
+          pushError(
+            `backup count for ${section} must be a non-negative integer.`,
+          );
+        } else if (count !== rowsFor(data, section).length) {
+          pushError(`backup count for ${section} does not match its rows.`);
+        }
+      }
+    }
+  }
 
   validateRestoreRows(data, pushError);
 
@@ -2121,12 +2235,8 @@ async function activeRows(db: Database, table: any, practiceId: string) {
     .where(and(eq(table.practiceId, practiceId), isNull(table.deletedAt)));
 }
 
-/**
- * Keep phase-one application reads compatible while migration 0076 is being
- * applied. New manifest columns are intentionally omitted until the dual-write
- * release starts populating them. Canonicalizing here also prevents a legacy
- * raw-storage or external URL from leaking into a newly generated backup.
- */
+/** Export the portable attachment manifest while keeping provider-specific
+ * replica projections and storage-event evidence out of clinic JSON. */
 async function activeFileRows(db: Database, practiceId: string) {
   const rows = await db
     .select({
@@ -2140,15 +2250,20 @@ async function activeFileRows(db: Database, practiceId: string) {
       fileKey: files.fileKey,
       mimeType: files.mimeType,
       fileSizeBytes: files.fileSizeBytes,
+      checksumSha256: files.checksumSha256,
       category: files.category,
+      title: files.title,
+      documentType: files.documentType,
+      documentDate: files.documentDate,
+      source: files.source,
+      idempotencyKey: files.idempotencyKey,
       entityType: files.entityType,
       entityId: files.entityId,
+      patientId: files.patientId,
       appointmentId: files.appointmentId,
     })
     .from(files)
-    .where(
-      and(eq(files.practiceId, practiceId), isNull(files.deletedAt)),
-    );
+    .where(and(eq(files.practiceId, practiceId), isNull(files.deletedAt)));
 
   return rows.map((row) => ({
     ...row,
@@ -2242,6 +2357,61 @@ export async function exportPracticeData(
   practiceId: string,
   exportedAt: string,
 ): Promise<PracticeExport> {
+  const [practiceRow] = await db
+    .select({
+      id: practices.id,
+      createdAt: practices.createdAt,
+      updatedAt: practices.updatedAt,
+      name: practices.name,
+      address: practices.address,
+      phone: practices.phone,
+      email: practices.email,
+      website: practices.website,
+      timezone: practices.timezone,
+      logoUrl: practices.logoUrl,
+      settings: practices.settings,
+      country: practices.country,
+      currency: practices.currency,
+      taxRatePercent: practices.taxRatePercent,
+      vatNumber: practices.vatNumber,
+      appointmentRemindersEnabled: practices.appointmentRemindersEnabled,
+      appointmentReminderLeadHours: practices.appointmentReminderLeadHours,
+    })
+    .from(practices)
+    .where(and(eq(practices.id, practiceId), isNull(practices.deletedAt)))
+    .limit(1);
+  if (!practiceRow) {
+    throw new Error("Practice is unavailable for backup");
+  }
+  const practiceSettings = isRecord(practiceRow.settings)
+    ? practiceRow.settings
+    : {};
+  const practiceSnapshot = {
+    id: practiceRow.id,
+    createdAt: practiceRow.createdAt,
+    updatedAt: practiceRow.updatedAt,
+    name: practiceRow.name,
+    address: practiceRow.address,
+    phone: practiceRow.phone,
+    email: practiceRow.email,
+    website: practiceRow.website,
+    timezone: practiceRow.timezone,
+    logoUrl: practiceRow.logoUrl,
+    brandColor:
+      typeof practiceSettings.brandColor === "string" &&
+      practiceSettings.brandColor.length <= 64
+        ? practiceSettings.brandColor
+        : null,
+    country: practiceRow.country,
+    currency: practiceRow.currency,
+    taxRatePercent: practiceRow.taxRatePercent,
+    vatNumber: practiceRow.vatNumber,
+    // Recovery never reactivates outbound reminders before provider and
+    // consent state are reconciled in the destination environment.
+    appointmentRemindersEnabled: false,
+    appointmentReminderLeadHours: practiceRow.appointmentReminderLeadHours,
+  };
+
   const [
     allLocationRows,
     locationMessagingRows,
@@ -2646,7 +2816,10 @@ export async function exportPracticeData(
 
   const sections: Record<PracticeExportSection, unknown[]> = {
     locations: locationRows,
-    locationMessaging: locationMessagingRows,
+    locationMessaging: sanitizePracticeExportRows(
+      "locationMessaging",
+      locationMessagingRows,
+    ),
     smsSuppressions: smsSuppressionRows,
     smsConsentEvents: smsConsentEventRows,
     smsSendAttempts: sanitizePracticeExportRows(
@@ -2721,6 +2894,7 @@ export async function exportPracticeData(
     formatVersion: PRACTICE_EXPORT_FORMAT_VERSION,
     practiceId,
     exportedAt,
+    practice: practiceSnapshot,
     counts: countsFor(sections),
     ...sections,
   };
@@ -2741,22 +2915,6 @@ async function restorePracticeDataRows(
   restored: Record<PracticeExportSection, number>;
   totalRows: number;
 }> {
-  const summary = summarizePracticeExport(data);
-  if (summary.missingSections.length > 0) {
-    throw new Error(
-      `Backup is missing required sections: ${summary.missingSections.join(", ")}`,
-    );
-  }
-  const validation = validatePracticeExportRestore(data);
-  if (!validation.valid) {
-    throw new Error(
-      `Backup contains invalid restore data: ${validation.errors.join("; ")}`,
-    );
-  }
-  const targetValidation = validatePracticeFileRestoreTarget(data, practiceId);
-  if (!targetValidation.valid) {
-    throw new Error(targetValidation.errors.join("; "));
-  }
   const backupRecord = isRecord(data) ? data : {};
   const schedulingRestore = prepareAppointmentLocationRestore(data);
   const hasDispenseChargeQueue = Object.prototype.hasOwnProperty.call(
@@ -2912,7 +3070,16 @@ async function restorePracticeDataRows(
   };
 
   await restorePracticeRows("locations", locations);
-  await restorePracticeRows("locationMessaging", locationMessaging);
+  restored.locationMessaging = await restoreRows(
+    db,
+    locationMessaging,
+    "locationMessaging",
+    sanitizePracticeExportRows(
+      "locationMessaging",
+      rowsFor(data, "locationMessaging"),
+    ),
+    { practiceId },
+  );
   await restorePracticeRows("smsSuppressions", smsSuppressions);
   await restorePracticeRows("emailSuppressions", emailSuppressions);
   await restorePracticeRows("webhooks", webhooks);
@@ -3216,10 +3383,69 @@ export async function restorePracticeData(
   db: Database,
   practiceId: string,
   data: unknown,
+  options: { maxBytes?: number; recoveryHoldDb?: Database } = {},
 ): Promise<{
   restored: Record<PracticeExportSection, number>;
   totalRows: number;
 }> {
+  const requestedMaxBytes = options.maxBytes;
+  const restoreMaxBytes =
+    typeof requestedMaxBytes === "number" && Number.isFinite(requestedMaxBytes)
+      ? Math.max(0, Math.min(PRACTICE_BACKUP_JSON_MAX_BYTES, requestedMaxBytes))
+      : PRACTICE_BACKUP_JSON_MAX_BYTES;
+  if (!isPracticeBackupJsonSizeValid(data, restoreMaxBytes)) {
+    throw new Error(PRACTICE_BACKUP_JSON_SIZE_MESSAGE);
+  }
+
+  // Complete all pure validation before pausing the clinic. Once the hold is
+  // set it is intentionally committed independently of the bulk restore so
+  // concurrent workers and requests can observe it for the entire mutation
+  // window, and a failed restore remains fail-closed for owner reconciliation.
+  const summary = summarizePracticeExport(data);
+  if (summary.missingSections.length > 0) {
+    throw new Error(
+      `Backup is missing required sections: ${summary.missingSections.join(", ")}`,
+    );
+  }
+  const validation = validatePracticeExportRestore(data);
+  if (!validation.valid) {
+    throw new Error(
+      `Backup contains invalid restore data: ${validation.errors.join("; ")}`,
+    );
+  }
+  const targetValidation = validatePracticeFileRestoreTarget(data, practiceId);
+  if (!targetValidation.valid) {
+    throw new Error(targetValidation.errors.join("; "));
+  }
+
+  const setRecoveryHold = async (holdDb: Database) => {
+    const holdSetAt = new Date();
+    const [heldPractice] = await holdDb
+      .update(practices)
+      .set({
+        recoveryHold: true,
+        recoveryHoldReason: PRACTICE_RECOVERY_HOLD_REASON,
+        recoveryHoldSetAt: holdSetAt,
+        recoveryHoldReleasedAt: null,
+        updatedAt: holdSetAt,
+      })
+      .where(and(eq(practices.id, practiceId), isNull(practices.deletedAt)))
+      .returning({ id: practices.id });
+    return heldPractice;
+  };
+  // A router passes the root pool here because its `db` argument is already
+  // the outer tenant transaction. withSystem opens and commits an independent
+  // transaction so the hold is visible before that outer transaction mutates
+  // restore rows. Direct/CLI callers use their autocommit database handle.
+  const heldPractice = options.recoveryHoldDb
+    ? await withSystem(options.recoveryHoldDb, setRecoveryHold)
+    : await setRecoveryHold(db);
+  if (!heldPractice) {
+    throw new Error(
+      "Restore target must be an existing active practice before recovery can begin.",
+    );
+  }
+
   const transaction = (
     db as unknown as {
       transaction?: (

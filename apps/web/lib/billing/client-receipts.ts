@@ -1,9 +1,11 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { clients, invoices, patients, practices } from "@openpims/db";
-import type { Database } from "@openpims/db/client";
+import { db as systemDb, type Database } from "@openpims/db/client";
 import { sendClientPaymentReceiptEmail } from "@/lib/email";
 import { formatCurrency } from "@/lib/locale/format";
 import { centsToMoney } from "@/lib/billing/invoice-balance";
+import { lockPracticeForExternalSideEffects } from "@/lib/recovery-hold";
+import { withSystem } from "@/lib/tenant-db";
 
 /**
  * Everything needed to email a pet owner a receipt after a payment lands —
@@ -11,6 +13,7 @@ import { centsToMoney } from "@/lib/billing/invoice-balance";
  * failed email never rolls back money state.
  */
 export type ClientReceipt = {
+  practiceId: string;
   to: string;
   clientName: string;
   patientName?: string;
@@ -37,6 +40,7 @@ export async function loadClientReceipt(
       clientFirstName: clients.firstName,
       clientLastName: clients.lastName,
       patientName: patients.name,
+      practiceId: practices.id,
       practiceName: practices.name,
       practicePhone: practices.phone,
       currency: practices.currency,
@@ -70,6 +74,7 @@ export async function loadClientReceipt(
   if (!row?.clientEmail) return null;
 
   return {
+    practiceId: row.practiceId,
     to: row.clientEmail,
     clientName: [row.clientFirstName, row.clientLastName]
       .filter(Boolean)
@@ -89,27 +94,39 @@ export async function deliverClientReceipt(
   receipt: ClientReceipt
 ): Promise<void> {
   try {
-    const result = await sendClientPaymentReceiptEmail({
-      to: receipt.to,
-      clientName: receipt.clientName,
-      patientName: receipt.patientName,
-      amountPaid: formatCurrency(
-        centsToMoney(receipt.amountPaidCents),
-        receipt.currency,
-        receipt.country
-      ),
-      balanceRemaining: formatCurrency(
-        centsToMoney(receipt.balanceRemainingCents),
-        receipt.currency,
-        receipt.country
-      ),
-      fullyPaid: receipt.balanceRemainingCents <= 0,
-      practiceName: receipt.practiceName,
-      practicePhone: receipt.practicePhone,
+    await withSystem(systemDb, async (tx) => {
+      const deliveryAllowed = await lockPracticeForExternalSideEffects(
+        tx,
+        receipt.practiceId
+      );
+      if (!deliveryAllowed) {
+        console.warn(
+          `[client-receipt] delivery paused by recovery hold practice=${receipt.practiceId}`
+        );
+        return;
+      }
+      const result = await sendClientPaymentReceiptEmail({
+        to: receipt.to,
+        clientName: receipt.clientName,
+        patientName: receipt.patientName,
+        amountPaid: formatCurrency(
+          centsToMoney(receipt.amountPaidCents),
+          receipt.currency,
+          receipt.country
+        ),
+        balanceRemaining: formatCurrency(
+          centsToMoney(receipt.balanceRemainingCents),
+          receipt.currency,
+          receipt.country
+        ),
+        fullyPaid: receipt.balanceRemainingCents <= 0,
+        practiceName: receipt.practiceName,
+        practicePhone: receipt.practicePhone,
+      });
+      if (!result.success) {
+        console.error("[client-receipt] send failed:", result.error);
+      }
     });
-    if (!result.success) {
-      console.error("[client-receipt] send failed:", result.error);
-    }
   } catch (err) {
     console.error("[client-receipt] send failed:", err);
   }

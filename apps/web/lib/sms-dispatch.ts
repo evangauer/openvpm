@@ -38,6 +38,11 @@ import {
   lockSmsDeliveryIdentity,
   processPendingDeliveryEvidenceForAcceptedSend,
 } from "@/lib/messaging/sms-delivery-ledger";
+import {
+  lockPracticeForExternalSideEffects,
+  practiceAllowsExternalSideEffects,
+  RECOVERY_HOLD_BLOCK_MESSAGE,
+} from "@/lib/recovery-hold";
 
 export const SMS_COMPLIANCE_FOOTER = "Reply STOP to opt out or HELP for help.";
 export const SMS_MAX_BODY_LENGTH = 1600;
@@ -604,6 +609,23 @@ async function dispatchWinner(
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`sms-attempt:${attempt.practiceId}:${attempt.id}`}, 0))`,
       );
+      if (
+        !(await lockPracticeForExternalSideEffects(
+          tx as unknown as Database,
+          attempt.practiceId,
+        ))
+      ) {
+        const rejected: SendMessageResult = {
+          status: "definite_failure",
+          error: RECOVERY_HOLD_BLOCK_MESSAGE,
+        };
+        await appendProviderResult(
+          tx as unknown as Database,
+          attempt,
+          rejected,
+        );
+        return rejected;
+      }
       if (hostedExternalSend) {
         const [practice] = await tx
           .select({
@@ -1038,6 +1060,10 @@ async function sendSmsInternal(
     return failure(
       "SMS source and idempotency values must be nonblank and bounded.",
     );
+  }
+
+  if (!(await practiceAllowsExternalSideEffects(db, options.practiceId))) {
+    return failure(RECOVERY_HOLD_BLOCK_MESSAGE);
   }
 
   const hostedExternalSend =

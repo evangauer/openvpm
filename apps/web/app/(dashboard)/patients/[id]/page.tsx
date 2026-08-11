@@ -43,6 +43,11 @@ import {
   isImageUploadFileValid,
 } from "@/lib/upload-policy";
 import {
+  selectManagedUploadFile,
+  settleManagedUploadAttempt,
+  type ManagedUploadAttempt,
+} from "@/lib/managed-upload-attempt";
+import {
   buildVitalTrend,
   buildWeightTrend,
 } from "@/lib/records/clinical-trends";
@@ -104,23 +109,23 @@ function PatientChartChunkLoading() {
 const WeightTrendChart = dynamic(
   () =>
     import("@/components/patients/patient-trend-charts").then(
-      (mod) => mod.WeightTrendChart
+      (mod) => mod.WeightTrendChart,
     ),
   {
     ssr: false,
     loading: PatientChartChunkLoading,
-  }
+  },
 );
 
 const VitalsTrendChart = dynamic(
   () =>
     import("@/components/patients/patient-trend-charts").then(
-      (mod) => mod.VitalsTrendChart
+      (mod) => mod.VitalsTrendChart,
     ),
   {
     ssr: false,
     loading: PatientChartChunkLoading,
-  }
+  },
 );
 
 const speciesEmoji: Record<string, string> = {
@@ -193,9 +198,7 @@ function canManagePatientDetailRole(role?: string | null): boolean {
 }
 
 function canRecordVitalsRole(role?: string | null): boolean {
-  return (
-    role === "admin" || role === "veterinarian" || role === "technician"
-  );
+  return role === "admin" || role === "veterinarian" || role === "technician";
 }
 
 function canCorrectClinicalRecordRole(role?: string | null): boolean {
@@ -252,25 +255,32 @@ export default function PatientDetailPage() {
   const [activeTab, setActiveTab] = useState<Tab>("overview");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const photoUploadAttemptRef = useRef<ManagedUploadAttempt | null>(null);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [photoUploadError, setPhotoUploadError] = useState<string | null>(null);
   const utils = trpc.useUtils();
   const canManagePatientDetail = canManagePatientDetailRole(
-    session?.user?.role
+    session?.user?.role,
   );
   const canRecordVitals = canRecordVitalsRole(session?.user?.role);
   const canCorrectClinicalRecords = canCorrectClinicalRecordRole(
-    session?.user?.role
+    session?.user?.role,
   );
 
-  const { data: patient, isLoading, error } = trpc.patients.getById.useQuery(
+  const {
+    data: patient,
+    isLoading,
+    error,
+  } = trpc.patients.getById.useQuery(
     { id: params.id },
-    { enabled: !!params.id }
+    { enabled: !!params.id },
   );
   const canonicalPatientId = patient?.id ?? params.id;
   const refreshPatientDetail = () =>
     Promise.all(
       Array.from(new Set([params.id, canonicalPatientId])).map((id) =>
-        utils.patients.getById.invalidate({ id })
-      )
+        utils.patients.getById.invalidate({ id }),
+      ),
     );
 
   useEffect(() => {
@@ -278,7 +288,7 @@ export default function PatientDetailPage() {
     window.history.replaceState(
       window.history.state,
       "",
-      `/patients/${patient.id}?mergedFrom=${params.id}`
+      `/patients/${patient.id}?mergedFrom=${params.id}`,
     );
   }, [params.id, patient?.id, patient?.mergeMetadata]);
   const {
@@ -287,76 +297,96 @@ export default function PatientDetailPage() {
     error: recordsSettingsError,
   } = trpc.records.settings.useQuery();
 
-  const updatePhotoMutation = trpc.patients.update.useMutation({
-    onSuccess: () => {
-      toast.success("Patient photo updated");
-      void refreshPatientDetail();
-    },
-    onError: (err) => {
-      toast.error(`Failed to update patient photo: ${err.message}`);
-    },
-  });
-
-  async function handlePhotoUpload(e: React.ChangeEvent<HTMLInputElement>) {
+  async function uploadPatientPhoto(selectedFile?: File) {
     if (!canManagePatientDetail) {
-      e.currentTarget.value = "";
       return;
     }
-    const file = e.target.files?.[0];
-    if (!file) return;
 
-    if (!isImageUploadFileValid(file)) {
+    if (selectedFile && !isImageUploadFileValid(selectedFile)) {
+      photoUploadAttemptRef.current = null;
+      setPhotoUploadError(null);
       toast.error(IMAGE_UPLOAD_POLICY_MESSAGE);
-      e.currentTarget.value = "";
       return;
     }
+
+    if (selectedFile) {
+      photoUploadAttemptRef.current = selectManagedUploadFile(
+        photoUploadAttemptRef.current,
+        selectedFile,
+      );
+    }
+    const attempt = photoUploadAttemptRef.current;
+    if (!attempt) return;
 
     const formData = new FormData();
-    formData.append("file", file);
+    formData.append("file", attempt.file);
     formData.append("category", "patient-photos");
+    formData.append("patientId", canonicalPatientId);
 
+    setUploadingPhoto(true);
+    setPhotoUploadError(null);
     try {
       const res = await fetchWithClientTimeout(
         "/api/upload",
         {
           method: "POST",
           body: formData,
+          headers: { "Idempotency-Key": attempt.idempotencyKey },
         },
-        CLIENT_UPLOAD_TIMEOUT_MS
+        CLIENT_UPLOAD_TIMEOUT_MS,
       );
 
+      const json = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) {
-        throw new Error("Upload failed");
+        photoUploadAttemptRef.current = settleManagedUploadAttempt(attempt, {
+          kind: "response",
+          status: res.status,
+        });
+        throw new Error(json.error ?? "Upload failed");
       }
 
-      const data = await res.json();
-      updatePhotoMutation.mutate({ id: canonicalPatientId, photoUrl: data.url });
-    } catch {
-      toast.error("Failed to upload photo");
+      photoUploadAttemptRef.current = settleManagedUploadAttempt(attempt, {
+        kind: "success",
+      });
+      await refreshPatientDetail();
+      toast.success("Patient photo updated");
+    } catch (err) {
+      if (photoUploadAttemptRef.current === attempt) {
+        photoUploadAttemptRef.current = settleManagedUploadAttempt(attempt, {
+          kind: "ambiguous",
+        });
+      }
+      const message =
+        err instanceof Error ? err.message : "Failed to upload photo";
+      setPhotoUploadError(message);
+      toast.error(message);
+    } finally {
+      setUploadingPhoto(false);
     }
+  }
 
-    // Reset file input so the same file can be re-selected
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
+  function handlePhotoUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.currentTarget.value = "";
+    if (file) void uploadPatientPhoto(file);
   }
 
   // Medical summary PDF data queries (lazy -- only fetched on demand)
   const problemsQuery = trpc.records.listProblems.useQuery(
     { patientId: canonicalPatientId },
-    { enabled: false }
+    { enabled: false },
   );
   const vaccinationsQuery = trpc.records.listVaccinations.useQuery(
     { patientId: canonicalPatientId },
-    { enabled: false }
+    { enabled: false },
   );
   const soapNotesQuery = trpc.records.listSoapNotes.useQuery(
     { patientId: canonicalPatientId },
-    { enabled: false }
+    { enabled: false },
   );
   const prescriptionsQuery = trpc.records.listPrescriptions.useQuery(
     { patientId: canonicalPatientId },
-    { enabled: false }
+    { enabled: false },
   );
   const recordsSettingsMissing =
     !recordsSettingsLoading && !recordsSettingsError && !recordsSettings;
@@ -369,7 +399,7 @@ export default function PatientDetailPage() {
     : undefined;
   const weightTrend = useMemo(
     () => buildWeightTrend(patient?.weights ?? [], recordsSettingsTimeZone),
-    [patient?.weights, recordsSettingsTimeZone]
+    [patient?.weights, recordsSettingsTimeZone],
   );
   const [weightKg, setWeightKg] = useState("");
   const addWeight = trpc.patients.addWeight.useMutation({
@@ -382,7 +412,8 @@ export default function PatientDetailPage() {
   });
   const canSubmitWeight =
     canManagePatientDetail &&
-    isPatientWeightInputValid(weightKg) && !addWeight.isPending;
+    isPatientWeightInputValid(weightKg) &&
+    !addWeight.isPending;
 
   function handleRecordWeight(e: React.FormEvent) {
     e.preventDefault();
@@ -475,13 +506,17 @@ export default function PatientDetailPage() {
 
   async function handleDownloadSummary() {
     try {
-      const [problemsResult, vaccinationsResult, soapNotesResult, prescriptionsResult] =
-        await Promise.all([
-          problemsQuery.refetch(),
-          vaccinationsQuery.refetch(),
-          soapNotesQuery.refetch(),
-          prescriptionsQuery.refetch(),
-        ]);
+      const [
+        problemsResult,
+        vaccinationsResult,
+        soapNotesResult,
+        prescriptionsResult,
+      ] = await Promise.all([
+        problemsQuery.refetch(),
+        vaccinationsQuery.refetch(),
+        soapNotesQuery.refetch(),
+        prescriptionsQuery.refetch(),
+      ]);
 
       const summaryError =
         problemsResult.error ??
@@ -498,7 +533,7 @@ export default function PatientDetailPage() {
         !prescriptionsResult.data
       ) {
         throw new Error(
-          "Unable to load complete medical summary data. Please retry."
+          "Unable to load complete medical summary data. Please retry.",
         );
       }
 
@@ -531,15 +566,17 @@ export default function PatientDetailPage() {
           status: p.status ?? "active",
           onsetDate: p.onsetDate ?? undefined,
         })),
-        vaccinations: vaccinations.filter((v) => !v.correctionId).map((v) => ({
-          name: v.vaccineName,
-          date: v.administeredAt
-            ? formatClinicalDate(v.administeredAt, recordsTimeZone, "Unknown")
-            : "Unknown",
-          nextDue: v.nextDueDate
-            ? formatClinicalDate(v.nextDueDate, recordsTimeZone)
-            : undefined,
-        })),
+        vaccinations: vaccinations
+          .filter((v) => !v.correctionId)
+          .map((v) => ({
+            name: v.vaccineName,
+            date: v.administeredAt
+              ? formatClinicalDate(v.administeredAt, recordsTimeZone, "Unknown")
+              : "Unknown",
+            nextDue: v.nextDueDate
+              ? formatClinicalDate(v.nextDueDate, recordsTimeZone)
+              : undefined,
+          })),
         recentNotes: soapNotes
           .filter((note) => note.status === "finalized" && !note.correctionId)
           .slice(0, 5)
@@ -589,13 +626,9 @@ export default function PatientDetailPage() {
                 "Unknown date",
               )}`,
               reason: allergy.correctionReason ?? "Reason unavailable",
-              correctedByName:
-                allergy.correctedByName ?? "Unknown clinician",
+              correctedByName: allergy.correctedByName ?? "Unknown clinician",
               correctedAt: allergy.correctedAt
-                ? formatClinicalDateTime(
-                    allergy.correctedAt,
-                    recordsTimeZone,
-                  )
+                ? formatClinicalDateTime(allergy.correctedAt, recordsTimeZone)
                 : "Unknown time",
             })),
           ...soapNotes
@@ -604,30 +637,31 @@ export default function PatientDetailPage() {
                 note.status === "finalized" && Boolean(note.correctionId),
             )
             .map((note) => ({
-            recordLabel: `SOAP note dated ${formatClinicalDate(
-              note.createdAt,
-              recordsTimeZone,
-              "Unknown date",
-            )}`,
-            reason: note.correctionReason ?? "Reason unavailable",
-            correctedByName: note.correctedByName ?? "Unknown clinician",
-            correctedAt: note.correctedAt
-              ? formatClinicalDateTime(note.correctedAt, recordsTimeZone)
-              : "Unknown time",
-            replacementLabel: note.replacementSoapNoteId
-              ? (() => {
-                  const replacement = soapNotes.find(
-                    (candidate) => candidate.id === note.replacementSoapNoteId,
-                  );
-                  return replacement
-                    ? `SOAP note dated ${formatClinicalDate(
-                        replacement.createdAt,
-                        recordsTimeZone,
-                        "unknown date",
-                      )}, finalized by ${replacement.finalizerName ?? "Unknown clinician"}`
-                    : "Replacement SOAP retained in chart";
-              })()
-              : undefined,
+              recordLabel: `SOAP note dated ${formatClinicalDate(
+                note.createdAt,
+                recordsTimeZone,
+                "Unknown date",
+              )}`,
+              reason: note.correctionReason ?? "Reason unavailable",
+              correctedByName: note.correctedByName ?? "Unknown clinician",
+              correctedAt: note.correctedAt
+                ? formatClinicalDateTime(note.correctedAt, recordsTimeZone)
+                : "Unknown time",
+              replacementLabel: note.replacementSoapNoteId
+                ? (() => {
+                    const replacement = soapNotes.find(
+                      (candidate) =>
+                        candidate.id === note.replacementSoapNoteId,
+                    );
+                    return replacement
+                      ? `SOAP note dated ${formatClinicalDate(
+                          replacement.createdAt,
+                          recordsTimeZone,
+                          "unknown date",
+                        )}, finalized by ${replacement.finalizerName ?? "Unknown clinician"}`
+                      : "Replacement SOAP retained in chart";
+                  })()
+                : undefined,
             })),
         ],
         prescriptions: prescriptions.map((rx) => ({
@@ -642,7 +676,9 @@ export default function PatientDetailPage() {
       toast.success("Medical summary downloaded");
     } catch (err) {
       toast.error(
-        err instanceof Error ? err.message : "Failed to generate medical summary"
+        err instanceof Error
+          ? err.message
+          : "Failed to generate medical summary",
       );
     }
   }
@@ -679,7 +715,7 @@ export default function PatientDetailPage() {
                 chart by {patient.mergeMetadata.performedByName} on{" "}
                 {formatClinicalDateTime(
                   patient.mergeMetadata.createdAt,
-                  recordsTimeZone
+                  recordsTimeZone,
                 )}
                 .
               </p>
@@ -695,37 +731,54 @@ export default function PatientDetailPage() {
       <div className="rounded-lg border border-border bg-card p-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex items-start gap-4">
-            <div className="group relative h-14 w-14">
-              {patient.photoUrl ? (
-                <img
-                  src={patient.photoUrl}
-                  alt={patient.name}
-                  className="h-14 w-14 rounded-full object-cover"
-                />
-              ) : (
-                <div className="flex h-14 w-14 items-center justify-center rounded-full bg-muted text-2xl">
-                  {speciesEmoji[patient.species ?? "other"] ?? "\uD83D\uDC3E"}
-                </div>
-              )}
-              {canManagePatientDetail && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="absolute inset-0 flex items-center justify-center rounded-full bg-black/50 opacity-0 transition-opacity group-hover:opacity-100"
-                    title="Upload photo"
-                  >
-                    <Camera className="h-5 w-5 text-white" />
-                  </button>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp"
-                    onChange={handlePhotoUpload}
-                    className="hidden"
+            <div className="space-y-1">
+              <div className="group relative h-14 w-14">
+                {patient.photoUrl ? (
+                  <img
+                    src={patient.photoUrl}
+                    alt={patient.name}
+                    className="h-14 w-14 rounded-full object-cover"
                   />
-                </>
-              )}
+                ) : (
+                  <div className="flex h-14 w-14 items-center justify-center rounded-full bg-muted text-2xl">
+                    {speciesEmoji[patient.species ?? "other"] ?? "\uD83D\uDC3E"}
+                  </div>
+                )}
+                {canManagePatientDetail && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={uploadingPhoto}
+                      onClick={() => fileInputRef.current?.click()}
+                      className="absolute inset-0 flex items-center justify-center rounded-full bg-black/50 opacity-0 transition-opacity group-hover:opacity-100 disabled:cursor-wait"
+                      title="Upload photo"
+                    >
+                      {uploadingPhoto ? (
+                        <Loader2 className="h-5 w-5 animate-spin text-white" />
+                      ) : (
+                        <Camera className="h-5 w-5 text-white" />
+                      )}
+                    </button>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      onChange={handlePhotoUpload}
+                      className="hidden"
+                    />
+                  </>
+                )}
+              </div>
+              {photoUploadError && photoUploadAttemptRef.current ? (
+                <button
+                  type="button"
+                  disabled={uploadingPhoto}
+                  onClick={() => void uploadPatientPhoto()}
+                  className="whitespace-nowrap text-xs font-medium text-destructive underline underline-offset-2 disabled:opacity-50"
+                >
+                  Try photo again
+                </button>
+              ) : null}
             </div>
             <div>
               <div className="flex items-center gap-2">
@@ -735,7 +788,7 @@ export default function PatientDetailPage() {
                 <span
                   className={cn(
                     "inline-block h-2.5 w-2.5 rounded-full",
-                    statusColor
+                    statusColor,
                   )}
                   title={patient.status ?? "active"}
                 />
@@ -774,11 +827,7 @@ export default function PatientDetailPage() {
                 <ConsentSign patientId={patient.id} />
               </>
             )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleDownloadSummary}
-            >
+            <Button variant="outline" size="sm" onClick={handleDownloadSummary}>
               <FileDown className="mr-2 h-4 w-4" />
               Download Summary
             </Button>
@@ -813,7 +862,7 @@ export default function PatientDetailPage() {
                       ? "border-red-300 bg-red-100 text-red-900 dark:border-red-800 dark:bg-red-950/60 dark:text-red-100"
                       : allergy.severity === "moderate"
                         ? "border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-100"
-                        : "border-yellow-300 bg-yellow-50 text-yellow-900 dark:border-yellow-800 dark:bg-yellow-950/50 dark:text-yellow-100"
+                        : "border-yellow-300 bg-yellow-50 text-yellow-900 dark:border-yellow-800 dark:bg-yellow-950/50 dark:text-yellow-100",
                   )}
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2">
@@ -903,7 +952,8 @@ export default function PatientDetailPage() {
       ) : null}
 
       {patient.allergyHistory.some(
-        (allergy) => Boolean(allergy.correctionId) || Boolean(allergy.deletedAt),
+        (allergy) =>
+          Boolean(allergy.correctionId) || Boolean(allergy.deletedAt),
       ) ? (
         <details className="mt-3 rounded-lg border border-border bg-card px-4 py-3">
           <summary className="cursor-pointer text-sm font-medium">
@@ -968,7 +1018,7 @@ export default function PatientDetailPage() {
                 "relative px-4 py-2.5 text-sm font-medium transition-colors",
                 activeTab === tab.id
                   ? "text-primary"
-                  : "text-muted-foreground hover:text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
               )}
             >
               {tab.label}
@@ -1124,7 +1174,7 @@ export default function PatientDetailPage() {
                             {formatClinicalDate(
                               weight.recordedAt,
                               recordsTimeZone,
-                              "\u2014"
+                              "\u2014",
                             )}
                           </td>
                           <td className="px-4 py-3 font-medium">
@@ -1175,10 +1225,7 @@ export default function PatientDetailPage() {
         )}
 
         {activeTab === "appointments" && (
-          <AppointmentsTab
-            patientId={patient.id}
-            timeZone={recordsTimeZone}
-          />
+          <AppointmentsTab patientId={patient.id} timeZone={recordsTimeZone} />
         )}
 
         {activeTab === "invoices" && <InvoicesTab patientId={patient.id} />}
@@ -1199,16 +1246,19 @@ function VitalsTab({
   canCorrectClinicalRecords: boolean;
 }) {
   const utils = trpc.useUtils();
-  const { data: vitals, isLoading, error } =
-    trpc.vitals.listByPatient.useQuery({ patientId });
+  const {
+    data: vitals,
+    isLoading,
+    error,
+  } = trpc.vitals.listByPatient.useQuery({ patientId });
   const vitalsMissing = !isLoading && !error && !vitals;
   const vitalTrend = useMemo(
     () =>
       buildVitalTrend(
         (vitals ?? []).filter((vital) => !vital.correctionId),
-        timeZone
+        timeZone,
       ),
-    [vitals, timeZone]
+    [vitals, timeZone],
   );
   const record = trpc.vitals.record.useMutation({
     onSuccess: () => {
@@ -1227,15 +1277,16 @@ function VitalsTab({
   });
 
   const [form, setForm] = useState<VitalsFormState>(() => initialVitalsForm());
-  const set = (k: keyof VitalsFormState) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    setForm((f) => ({ ...f, [k]: e.target.value }));
+  const set =
+    (k: keyof VitalsFormState) => (e: React.ChangeEvent<HTMLInputElement>) =>
+      setForm((f) => ({ ...f, [k]: e.target.value }));
   const num = (v?: string) => {
     if (v === undefined || v.trim() === "") return undefined;
     const n = Number(v);
     return Number.isFinite(n) ? n : undefined;
   };
   const hasVitalsFormContent = Object.values(form).some(
-    (value) => value.trim().length > 0
+    (value) => value.trim().length > 0,
   );
   const canSubmitVitals =
     canRecordVitals &&
@@ -1248,7 +1299,7 @@ function VitalsTab({
     isVitalsOptionalPainScoreInputValid(form.painScore) &&
     isVitalsOptionalTextInputValid(
       form.mucousMembrane,
-      VITALS_MUCOUS_MEMBRANE_MAX_LENGTH
+      VITALS_MUCOUS_MEMBRANE_MAX_LENGTH,
     ) &&
     isVitalsOptionalCapillaryRefillInputValid(form.capillaryRefillSec) &&
     isVitalsOptionalTextInputValid(form.notes, VITALS_NOTES_MAX_LENGTH) &&
@@ -1274,7 +1325,10 @@ function VitalsTab({
   return (
     <div className="space-y-6">
       {canRecordVitals && (
-        <form onSubmit={submit} className="rounded-lg border border-border bg-card p-4">
+        <form
+          onSubmit={submit}
+          className="rounded-lg border border-border bg-card p-4"
+        >
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">
@@ -1286,135 +1340,141 @@ function VitalsTab({
                 max={VITALS_TEMPERATURE_MAX_C}
                 step={VITALS_TEMPERATURE_STEP}
                 value={form.temperatureC}
-                aria-invalid={!isVitalsOptionalTemperatureInputValid(form.temperatureC)}
+                aria-invalid={
+                  !isVitalsOptionalTemperatureInputValid(form.temperatureC)
+                }
                 onChange={set("temperatureC")}
                 className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
               />
             </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">
-              HR (bpm)
-            </label>
-            <input
-              type="number"
-              min={VITALS_HEART_RATE_MIN_BPM}
-              max={VITALS_HEART_RATE_MAX_BPM}
-              step={1}
-              value={form.heartRateBpm}
-              aria-invalid={!isVitalsOptionalHeartRateInputValid(form.heartRateBpm)}
-              onChange={set("heartRateBpm")}
-              className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-            />
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                HR (bpm)
+              </label>
+              <input
+                type="number"
+                min={VITALS_HEART_RATE_MIN_BPM}
+                max={VITALS_HEART_RATE_MAX_BPM}
+                step={1}
+                value={form.heartRateBpm}
+                aria-invalid={
+                  !isVitalsOptionalHeartRateInputValid(form.heartRateBpm)
+                }
+                onChange={set("heartRateBpm")}
+                className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                RR (bpm)
+              </label>
+              <input
+                type="number"
+                min={VITALS_RESPIRATORY_RATE_MIN_BPM}
+                max={VITALS_RESPIRATORY_RATE_MAX_BPM}
+                step={1}
+                value={form.respiratoryRateBpm}
+                aria-invalid={
+                  !isVitalsOptionalRespiratoryRateInputValid(
+                    form.respiratoryRateBpm,
+                  )
+                }
+                onChange={set("respiratoryRateBpm")}
+                className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                Weight (kg)
+              </label>
+              <input
+                type="number"
+                min={VITALS_WEIGHT_MIN_KG}
+                max={VITALS_WEIGHT_MAX_KG}
+                step={VITALS_WEIGHT_STEP}
+                value={form.weightKg}
+                aria-invalid={!isVitalsOptionalWeightInputValid(form.weightKg)}
+                onChange={set("weightKg")}
+                className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                BCS (1-9)
+              </label>
+              <input
+                type="number"
+                min={VITALS_BODY_CONDITION_MIN}
+                max={VITALS_BODY_CONDITION_MAX}
+                step={1}
+                value={form.bodyConditionScore}
+                aria-invalid={
+                  !isVitalsOptionalBodyConditionInputValid(
+                    form.bodyConditionScore,
+                  )
+                }
+                onChange={set("bodyConditionScore")}
+                className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                Pain (0-10)
+              </label>
+              <input
+                type="number"
+                min={VITALS_PAIN_SCORE_MIN}
+                max={VITALS_PAIN_SCORE_MAX}
+                step={1}
+                value={form.painScore}
+                aria-invalid={
+                  !isVitalsOptionalPainScoreInputValid(form.painScore)
+                }
+                onChange={set("painScore")}
+                className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                CRT (sec)
+              </label>
+              <input
+                type="number"
+                min={VITALS_CAPILLARY_REFILL_MIN_SEC}
+                max={VITALS_CAPILLARY_REFILL_MAX_SEC}
+                step={VITALS_CAPILLARY_REFILL_STEP}
+                value={form.capillaryRefillSec}
+                aria-invalid={
+                  !isVitalsOptionalCapillaryRefillInputValid(
+                    form.capillaryRefillSec,
+                  )
+                }
+                onChange={set("capillaryRefillSec")}
+                className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+              />
+            </div>
+            <div className="col-span-2">
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                Mucous Membrane
+              </label>
+              <input
+                type="text"
+                value={form.mucousMembrane}
+                maxLength={VITALS_MUCOUS_MEMBRANE_MAX_LENGTH}
+                onChange={set("mucousMembrane")}
+                placeholder="e.g. Pink and moist"
+                className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+              />
+            </div>
           </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">
-              RR (bpm)
-            </label>
-            <input
-              type="number"
-              min={VITALS_RESPIRATORY_RATE_MIN_BPM}
-              max={VITALS_RESPIRATORY_RATE_MAX_BPM}
-              step={1}
-              value={form.respiratoryRateBpm}
-              aria-invalid={
-                !isVitalsOptionalRespiratoryRateInputValid(
-                  form.respiratoryRateBpm
-                )
-              }
-              onChange={set("respiratoryRateBpm")}
-              className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">
-              Weight (kg)
-            </label>
-            <input
-              type="number"
-              min={VITALS_WEIGHT_MIN_KG}
-              max={VITALS_WEIGHT_MAX_KG}
-              step={VITALS_WEIGHT_STEP}
-              value={form.weightKg}
-              aria-invalid={!isVitalsOptionalWeightInputValid(form.weightKg)}
-              onChange={set("weightKg")}
-              className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">
-              BCS (1-9)
-            </label>
-            <input
-              type="number"
-              min={VITALS_BODY_CONDITION_MIN}
-              max={VITALS_BODY_CONDITION_MAX}
-              step={1}
-              value={form.bodyConditionScore}
-              aria-invalid={
-                !isVitalsOptionalBodyConditionInputValid(
-                  form.bodyConditionScore
-                )
-              }
-              onChange={set("bodyConditionScore")}
-              className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">
-              Pain (0-10)
-            </label>
-            <input
-              type="number"
-              min={VITALS_PAIN_SCORE_MIN}
-              max={VITALS_PAIN_SCORE_MAX}
-              step={1}
-              value={form.painScore}
-              aria-invalid={!isVitalsOptionalPainScoreInputValid(form.painScore)}
-              onChange={set("painScore")}
-              className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">
-              CRT (sec)
-            </label>
-            <input
-              type="number"
-              min={VITALS_CAPILLARY_REFILL_MIN_SEC}
-              max={VITALS_CAPILLARY_REFILL_MAX_SEC}
-              step={VITALS_CAPILLARY_REFILL_STEP}
-              value={form.capillaryRefillSec}
-              aria-invalid={
-                !isVitalsOptionalCapillaryRefillInputValid(
-                  form.capillaryRefillSec
-                )
-              }
-              onChange={set("capillaryRefillSec")}
-              className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-            />
-          </div>
-          <div className="col-span-2">
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">
-              Mucous Membrane
-            </label>
-            <input
-              type="text"
-              value={form.mucousMembrane}
-              maxLength={VITALS_MUCOUS_MEMBRANE_MAX_LENGTH}
-              onChange={set("mucousMembrane")}
-              placeholder="e.g. Pink and moist"
-              className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-            />
-          </div>
-        </div>
-        <input
-          type="text"
-          value={form.notes ?? ""}
-          maxLength={VITALS_NOTES_MAX_LENGTH}
-          onChange={set("notes")}
-          placeholder="Notes (optional)"
-          className="mt-3 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-        />
+          <input
+            type="text"
+            value={form.notes ?? ""}
+            maxLength={VITALS_NOTES_MAX_LENGTH}
+            onChange={set("notes")}
+            placeholder="Notes (optional)"
+            className="mt-3 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+          />
           <div className="mt-3 flex justify-end">
             <Button type="submit" disabled={!canSubmitVitals}>
               {record.isPending ? "Saving..." : "Record vitals"}
@@ -1456,7 +1516,7 @@ function VitalsTab({
                     key={v.id}
                     className={cn(
                       "border-b border-border last:border-0",
-                      v.correctionId && "bg-destructive/5"
+                      v.correctionId && "bg-destructive/5",
                     )}
                   >
                     <td className="px-3 py-2">
@@ -1471,9 +1531,7 @@ function VitalsTab({
                     <td className="min-w-64 px-3 py-2">
                       <ClinicalCorrectionControl
                         correction={
-                          v.correctionId &&
-                          v.correctionReason &&
-                          v.correctedAt
+                          v.correctionId && v.correctionReason && v.correctedAt
                             ? {
                                 id: v.correctionId,
                                 reason: v.correctionReason,
@@ -1517,8 +1575,11 @@ function VaccinationsTab({
   canCorrectClinicalRecords: boolean;
 }) {
   const utils = trpc.useUtils();
-  const { data: vaccinations, isLoading, error } =
-    trpc.records.listVaccinations.useQuery({ patientId });
+  const {
+    data: vaccinations,
+    isLoading,
+    error,
+  } = trpc.records.listVaccinations.useQuery({ patientId });
   const correctVaccination =
     trpc.records.markVaccinationEnteredInError.useMutation({
       onSuccess: async () => {
@@ -1539,9 +1600,7 @@ function VaccinationsTab({
 
   if (vaccinationsMissing) {
     return (
-      <PatientDetailErrorPanel
-        message="Unable to load vaccination records. Please retry."
-      />
+      <PatientDetailErrorPanel message="Unable to load vaccination records. Please retry." />
     );
   }
 
@@ -1550,9 +1609,7 @@ function VaccinationsTab({
   }
 
   if (!vaccinations || vaccinations.length === 0) {
-    return (
-      <EmptyState icon={Shield} title="No vaccination records yet" />
-    );
+    return <EmptyState icon={Shield} title="No vaccination records yet" />;
   }
 
   return (
@@ -1586,7 +1643,7 @@ function VaccinationsTab({
               key={vax.id}
               className={cn(
                 "border-b border-border last:border-0",
-                vax.correctionId && "bg-destructive/5 text-muted-foreground"
+                vax.correctionId && "bg-destructive/5 text-muted-foreground",
               )}
             >
               <td className="px-4 py-3 font-medium">{vax.vaccineName}</td>
@@ -1606,13 +1663,13 @@ function VaccinationsTab({
                     Entered in error
                   </span>
                 ) : (
-                  <span className="text-xs text-muted-foreground">Recorded</span>
+                  <span className="text-xs text-muted-foreground">
+                    Recorded
+                  </span>
                 )}
                 <ClinicalCorrectionControl
                   correction={
-                    vax.correctionId &&
-                    vax.correctionReason &&
-                    vax.correctedAt
+                    vax.correctionId && vax.correctionReason && vax.correctedAt
                       ? {
                           id: vax.correctionId,
                           reason: vax.correctionReason,
@@ -1653,8 +1710,11 @@ function MedicalRecordsTab({
   canCorrectClinicalRecords: boolean;
 }) {
   const utils = trpc.useUtils();
-  const { data: notes, isLoading, error } =
-    trpc.records.listSoapNotes.useQuery({ patientId });
+  const {
+    data: notes,
+    isLoading,
+    error,
+  } = trpc.records.listSoapNotes.useQuery({ patientId });
   const correctSoap = trpc.records.markSoapNoteEnteredInError.useMutation({
     onSuccess: async () => {
       toast.success("SOAP note retained and marked entered in error");
@@ -1704,12 +1764,12 @@ function MedicalRecordsTab({
         );
         const hasAppointmentSoapDraft = Boolean(
           note.appointmentId &&
-            notes.some(
-              (candidate) =>
-                candidate.id !== note.id &&
-                candidate.appointmentId === note.appointmentId &&
-                candidate.status === "draft",
-            ),
+          notes.some(
+            (candidate) =>
+              candidate.id !== note.id &&
+              candidate.appointmentId === note.appointmentId &&
+              candidate.status === "draft",
+          ),
         );
         return (
           <div
@@ -1864,10 +1924,10 @@ function MedicalRecordsTab({
                       View signed replacement
                     </a>
                   </div>
-              ) : canCorrectClinicalRecords &&
-                (!note.correctionId ||
-                  (!hasOtherCurrentAppointmentSoap &&
-                    !hasAppointmentSoapDraft)) ? (
+                ) : canCorrectClinicalRecords &&
+                  (!note.correctionId ||
+                    (!hasOtherCurrentAppointmentSoap &&
+                      !hasAppointmentSoapDraft)) ? (
                   <div className="mt-3 flex justify-end">
                     <Button asChild size="sm">
                       <Link
@@ -1879,17 +1939,17 @@ function MedicalRecordsTab({
                       </Link>
                     </Button>
                   </div>
-              ) : hasAppointmentSoapDraft && note.appointmentId ? (
-                <div className="mt-3 flex justify-end">
-                  <Button asChild size="sm" variant="outline">
-                    <a
-                      href={`/records/new-soap/${encodeURIComponent(patientId)}?appointmentId=${encodeURIComponent(note.appointmentId)}`}
-                    >
-                      Review encounter SOAP draft
-                    </a>
-                  </Button>
-                </div>
-              ) : note.correctionId && hasOtherCurrentAppointmentSoap ? (
+                ) : hasAppointmentSoapDraft && note.appointmentId ? (
+                  <div className="mt-3 flex justify-end">
+                    <Button asChild size="sm" variant="outline">
+                      <a
+                        href={`/records/new-soap/${encodeURIComponent(patientId)}?appointmentId=${encodeURIComponent(note.appointmentId)}`}
+                      >
+                        Review encounter SOAP draft
+                      </a>
+                    </Button>
+                  </div>
+                ) : note.correctionId && hasOtherCurrentAppointmentSoap ? (
                   <p className="mt-3 text-right text-xs text-muted-foreground">
                     This encounter already has a current finalized SOAP.
                   </p>
@@ -2011,8 +2071,11 @@ function AppointmentsTab({
   patientId: string;
   timeZone?: string | null;
 }) {
-  const { data: visits, isLoading, error } =
-    trpc.appointments.listByPatient.useQuery({ patientId });
+  const {
+    data: visits,
+    isLoading,
+    error,
+  } = trpc.appointments.listByPatient.useQuery({ patientId });
   const visitsMissing = !isLoading && !error && !visits;
   const [expandedVisitId, setExpandedVisitId] = useState<string | null>(null);
 
@@ -2098,7 +2161,7 @@ function AppointmentsTab({
                       ? formatClinicalDateTime(
                           visit.startTime,
                           timeZone,
-                          "Unknown"
+                          "Unknown",
                         )
                       : "Unknown"}
                   </td>
@@ -2122,7 +2185,7 @@ function AppointmentsTab({
                       className={cn(
                         "inline-flex whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium capitalize",
                         appointmentStatusStyles[visit.status] ??
-                          "bg-gray-100 text-gray-600"
+                          "bg-gray-100 text-gray-600",
                       )}
                     >
                       {visit.status.replace(/_/g, " ")}
@@ -2279,8 +2342,8 @@ function VisitDocuments({
   if (photos.length === 0 && documents.length === 0) {
     return (
       <p className="text-xs text-muted-foreground">
-        Nothing attached to this visit yet. Photos and consents captured
-        during the visit show up here.
+        Nothing attached to this visit yet. Photos and consents captured during
+        the visit show up here.
       </p>
     );
   }
@@ -2369,12 +2432,10 @@ function DocumentsTab({
   }
 
   const visible = data.filter(
-    (file) => filter === "all" || patientFileKind(file) === filter
+    (file) => filter === "all" || patientFileKind(file) === filter,
   );
   const photos = visible.filter((file) => patientFileKind(file) === "photo");
-  const documents = visible.filter(
-    (file) => patientFileKind(file) !== "photo"
-  );
+  const documents = visible.filter((file) => patientFileKind(file) !== "photo");
 
   return (
     <div className="space-y-4">
@@ -2388,7 +2449,7 @@ function DocumentsTab({
               "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
               filter === option.id
                 ? "border-primary bg-primary/10 text-primary"
-                : "border-border text-muted-foreground hover:text-foreground"
+                : "border-border text-muted-foreground hover:text-foreground",
             )}
           >
             {option.label} ({counts[option.id]})
@@ -2503,7 +2564,7 @@ function InvoicesTab({ patientId }: { patientId: string }) {
                     "inline-flex whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium capitalize",
                     invoiceStatusStyles[
                       invoice.isEstimate ? "draft" : invoice.status
-                    ] ?? "bg-gray-100 text-gray-600"
+                    ] ?? "bg-gray-100 text-gray-600",
                   )}
                 >
                   {invoice.isEstimate ? "estimate" : invoice.status}
@@ -2580,7 +2641,7 @@ function AllergyForm({
           value={allergySeverity}
           onChange={(event) =>
             setAllergySeverity(
-              event.target.value as "mild" | "moderate" | "severe"
+              event.target.value as "mild" | "moderate" | "severe",
             )
           }
           className="rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"

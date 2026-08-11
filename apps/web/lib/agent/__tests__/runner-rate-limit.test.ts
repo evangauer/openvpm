@@ -5,6 +5,7 @@ import {
   AGENT_RUN_RATE_WINDOW_MS,
   AgentNotConfiguredError,
   AgentRateLimitedError,
+  AgentRecoveryHoldError,
   runAgent,
 } from "../runner";
 
@@ -28,6 +29,7 @@ const mocks = vi.hoisted(() => {
     tool: vi.fn((definition: unknown) => definition),
     rateLimit: vi.fn(),
     recordUsage: vi.fn(),
+    lockPracticeForExternalSideEffects: vi.fn(async () => true),
   };
 });
 
@@ -51,6 +53,12 @@ vi.mock("@/lib/rate-limit", () => ({
 
 vi.mock("@/lib/billing/usage", () => ({
   recordUsage: mocks.recordUsage,
+}));
+
+vi.mock("@/lib/recovery-hold", () => ({
+  RECOVERY_HOLD_BLOCK_MESSAGE: "recovery hold",
+  lockPracticeForExternalSideEffects:
+    mocks.lockPracticeForExternalSideEffects,
 }));
 
 const resetAt = new Date("2099-01-01T00:00:00.000Z");
@@ -79,6 +87,7 @@ beforeEach(() => {
     remaining: 19,
     resetAt,
   });
+  mocks.lockPracticeForExternalSideEffects.mockResolvedValue(true);
   mocks.generateText.mockResolvedValue({
     text: " Done ",
     steps: [{}],
@@ -92,6 +101,18 @@ afterEach(() => {
 });
 
 describe("runAgent rate limiting", () => {
+  it("does not call the model provider while the practice is held", async () => {
+    mocks.lockPracticeForExternalSideEffects.mockResolvedValueOnce(false);
+
+    await expect(
+      runAgent({ instruction: "Summarize today", context }),
+    ).rejects.toBeInstanceOf(AgentRecoveryHoldError);
+
+    expect(mocks.rateLimit).not.toHaveBeenCalled();
+    expect(mocks.generateText).not.toHaveBeenCalled();
+    expect(mocks.recordUsage).not.toHaveBeenCalled();
+  });
+
   it("checks actor and practice buckets before calling the provider", async () => {
     const result = await runAgent({
       instruction: "Summarize today's schedule",

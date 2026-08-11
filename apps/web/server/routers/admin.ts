@@ -90,6 +90,10 @@ import {
   type MessagingRegistrationEventActor,
   type MessagingRegistrationReasonCode,
 } from "@/lib/messaging/registration-events";
+import {
+  lockPracticeForExternalSideEffects,
+  RECOVERY_HOLD_BLOCK_MESSAGE,
+} from "@/lib/recovery-hold";
 
 /**
  * Platform-operator only. Crosses tenant boundaries deliberately, so it is
@@ -104,6 +108,21 @@ const platformAdminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
   }
   return next();
 });
+
+async function withMessagingProviderEffectsAllowed<T>(
+  practiceId: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  return withSystem(db, async (tx) => {
+    if (!(await lockPracticeForExternalSideEffects(tx, practiceId))) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: RECOVERY_HOLD_BLOCK_MESSAGE,
+      });
+    }
+    return action();
+  });
+}
 
 const MESSAGING_SUBMISSION_LOCK_STALE_MS = 15 * 60 * 1000;
 const MESSAGING_PROVIDER_PROFILE_ATTESTATION_MAX_AGE_MS = 15 * 60 * 1000;
@@ -1472,6 +1491,7 @@ export const adminRouter = createRouter({
     )
     .mutation(async ({ ctx, input }) => {
       assertMessagingProviderMutationsEnabled();
+      return withMessagingProviderEffectsAllowed(input.practiceId, async () => {
       const actor = platformMessagingRegistrationActor(ctx.session!.user);
       const sender = await messagingSenderForOperator(
         input.practiceId,
@@ -1601,6 +1621,7 @@ export const adminRouter = createRouter({
         if (error instanceof TRPCError) throw error;
         throw providerFailure(error);
       }
+      });
     }),
 
   /** Fee-bearing TCR brand creation; platform operator only and explicitly confirmed. */
@@ -1614,6 +1635,7 @@ export const adminRouter = createRouter({
     )
     .mutation(async ({ ctx, input }) => {
       assertMessagingProviderMutationsEnabled();
+      return withMessagingProviderEffectsAllowed(input.practiceId, async () => {
       const actor = platformMessagingRegistrationActor(ctx.session!.user);
       const registration = await registrationForOperator(input.practiceId);
       if (registration.providerBrandId) {
@@ -1680,6 +1702,7 @@ export const adminRouter = createRouter({
         });
         throw providerFailure(error);
       }
+      });
     }),
 
   /** Fee-bearing campaign submission with reference-id recovery before POST. */
@@ -1693,6 +1716,7 @@ export const adminRouter = createRouter({
     )
     .mutation(async ({ ctx, input }) => {
       assertMessagingProviderMutationsEnabled();
+      return withMessagingProviderEffectsAllowed(input.practiceId, async () => {
       const actor = platformMessagingRegistrationActor(ctx.session!.user);
       const registration = await registrationForOperator(input.practiceId);
       if (!registration.providerBrandId) {
@@ -1884,6 +1908,7 @@ export const adminRouter = createRouter({
         });
         throw providerFailure(error);
       }
+      });
     }),
 
   /** Idempotent number-to-campaign assignment; never enables sending. */
@@ -1896,6 +1921,7 @@ export const adminRouter = createRouter({
     )
     .mutation(async ({ ctx, input }) => {
       assertMessagingProviderMutationsEnabled();
+      return withMessagingProviderEffectsAllowed(input.practiceId, async () => {
       const actor = platformMessagingRegistrationActor(ctx.session!.user);
       const registration = await registrationForOperator(input.practiceId);
       if (!registration.providerCampaignId || !registration.providerBrandId) {
@@ -2040,6 +2066,7 @@ export const adminRouter = createRouter({
         });
         throw providerFailure(error);
       }
+      });
     }),
 
   smsDeliveryEventQueue: platformAdminProcedure

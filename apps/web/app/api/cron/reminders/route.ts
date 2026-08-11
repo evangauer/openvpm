@@ -33,6 +33,7 @@ import {
   currentAppointmentReminderEmailRecipient,
   claimAppointmentReminderCommunication,
 } from "@/lib/messaging/appointment-reminder";
+import { lockPracticeForExternalSideEffects } from "@/lib/recovery-hold";
 
 type ReminderChannel = "sms" | "email";
 
@@ -263,6 +264,7 @@ export async function GET(request: Request) {
             eq(clients.practiceId, appointments.practiceId),
             isNull(clients.deletedAt),
             eq(practices.appointmentRemindersEnabled, true),
+            eq(practices.recoveryHold, false),
             gte(appointments.startTime, now),
             lte(
               appointments.startTime,
@@ -391,21 +393,55 @@ export async function GET(request: Request) {
           });
           return false;
         }
-        let success = false;
-        let providerMessageId: string | undefined;
-        try {
-          const result = await sendAppointmentReminder({
-            to: clientEmail,
-            clientName: `${currentRecipient.clientFirstName} ${currentRecipient.clientLastName}`,
-            patientName: currentRecipient.patientName ?? "Unknown",
-            appointmentDate,
-            appointmentTime,
-            practiceName: currentRecipient.practiceName,
+        const providerResult = await withTenant(
+          db,
+          appt.practiceId,
+          async (tx) => {
+            // Hold this shared practice-row lock through the provider request.
+            // Restore's hold update therefore drains an already-started email,
+            // while a committed hold prevents any later provider request.
+            if (
+              !(await lockPracticeForExternalSideEffects(
+                tx,
+                appt.practiceId,
+              ))
+            ) {
+              return { held: true as const, success: false as const };
+            }
+            try {
+              const result = await sendAppointmentReminder({
+                to: clientEmail,
+                clientName: `${currentRecipient.clientFirstName} ${currentRecipient.clientLastName}`,
+                patientName: currentRecipient.patientName ?? "Unknown",
+                appointmentDate,
+                appointmentTime,
+                practiceName: currentRecipient.practiceName,
+              });
+              return {
+                held: false as const,
+                success: result.success,
+                providerMessageId: result.id,
+              };
+            } catch {
+              return { held: false as const, success: false as const };
+            }
+          },
+        );
+        const success = providerResult.success;
+        const providerMessageId =
+          "providerMessageId" in providerResult
+            ? providerResult.providerMessageId
+            : undefined;
+        if (providerResult.held) {
+          await recordReminderOutcome({
+            practiceId: appt.practiceId,
+            communicationId,
+            channel: "email",
+            content:
+              "Automated appointment reminder paused because practice recovery is in progress",
+            status: "failed",
           });
-          success = result.success;
-          providerMessageId = result.id;
-        } catch {
-          success = false;
+          return false;
         }
         if (success) {
           await recordReminderOutcome({

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CONSENT_BODY_MAX_LENGTH,
   CONSENT_TITLE_MAX_LENGTH,
+  hasUnresolvedConsentPlaceholders,
 } from "../consent-template";
 import { CONSENT_FORM_LIBRARY } from "../consent-form-library";
 
@@ -49,5 +50,28 @@ describe("consent form starter library", () => {
     ]) {
       expect(slugs.has(required)).toBe(true);
     }
+  });
+
+  it("detects unresolved material blanks and staff-only instructions", () => {
+    for (const unresolved of [
+      "Procedure: ____",
+      "Approved total: {{amount}}",
+      "Call ${phoneNumber}",
+      "Send records to [insert destination]",
+      "I choose (staff: circle before sending): CPR / no CPR.",
+    ]) {
+      expect(hasUnresolvedConsentPlaceholders(unresolved)).toBe(true);
+    }
+  });
+
+  it("allows completed consent copy and ordinary punctuation", () => {
+    expect(
+      hasUnresolvedConsentPlaceholders(
+        "Procedure: dental cleaning. I approve costs up to $850. Call 555-0100.",
+      ),
+    ).toBe(false);
+    expect(hasUnresolvedConsentPlaceholders("I agree [after review].")).toBe(
+      false,
+    );
   });
 });

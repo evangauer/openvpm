@@ -17,7 +17,14 @@ import {
 } from "@/lib/rls-assertion";
 import { cronHeartbeatConfigured } from "@/lib/cron-heartbeat";
 import { envFlagEnabled } from "@/lib/env-bool";
-import { checkObjectStorageHealth } from "@/lib/s3";
+import {
+  checkObjectStorageHealth,
+  checkReplicaStorageHealth,
+  replicaStorageReadiness,
+  replicaStorageRequired,
+  replicaStorageRolloutEnabled,
+} from "@/lib/s3";
+import { getFileReplicaCoverage } from "@/lib/file-replication";
 import { normalizeAppBaseUrl } from "@/lib/app-url";
 import { platformAdminEmails } from "@/lib/platform-admin";
 import { rowsFromExecute } from "@/lib/db/execute-rows";
@@ -521,6 +528,45 @@ export async function GET() {
     checks.hostedStorage = hostedStorageEnv.ok
       ? await checkObjectStorageHealth()
       : hostedStorageEnv;
+    const replicaReadiness = replicaStorageReadiness();
+    const replicaRequired = replicaStorageRequired();
+    const replicaEnabled = replicaStorageRolloutEnabled();
+    let replicaCheck: { ok: boolean; detail: string };
+    if (!replicaReadiness.ready) {
+      replicaCheck = { ok: false, detail: replicaReadiness.detail };
+    } else if (replicaRequired && !replicaEnabled) {
+      replicaCheck = {
+        ok: false,
+        detail: "Independent file replica is required but execution is disabled",
+      };
+    } else {
+      const storageCheck = await checkReplicaStorageHealth();
+      if (!storageCheck.ok || !replicaEnabled) {
+        replicaCheck = storageCheck;
+      } else {
+        try {
+          const coverage = await getFileReplicaCoverage();
+          const complete = coverage.backlog === 0 && coverage.coveragePct === 100;
+          replicaCheck = {
+            ok: replicaRequired ? complete : storageCheck.ok,
+            detail: `${coverage.available}/${coverage.activeFiles} active files independently available (${coverage.coveragePct}%); backlog ${coverage.backlog}`,
+          };
+        } catch {
+          replicaCheck = {
+            ok: false,
+            detail: "Independent file replica coverage check failed",
+          };
+        }
+      }
+    }
+    checks.hostedFileReplica = {
+      ...replicaCheck,
+      // Any rollout signal makes invalid/incomplete replica configuration a
+      // release gate. Only the intentionally absent, disabled default remains
+      // advisory; otherwise a mistyped cohort or partial credentials could
+      // hide behind FILE_REPLICA_REQUIRED=false and still return HTTP 200.
+      advisory: !(replicaReadiness.intended || replicaRequired),
+    };
     checks.hostedEmail = await hostedEmailCheck();
     checks.hostedAi = hostedAiCheck();
     checks.hostedOps = hostedOpsCheck();

@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 const mocks = vi.hoisted(() => ({
   createAuthToken: vi.fn(async () => "invite-token"),
   sendStaffInviteEmail: vi.fn(async () => ({ success: true })),
+  lockPracticeForExternalSideEffects: vi.fn(async () => true),
 }));
 
 const SETTINGS_SOURCE = readFileSync(
@@ -31,6 +32,12 @@ vi.mock("@/lib/billing/subscription-sync", () => ({
     locationCount: 1,
     billableSeatCount: 1,
   })),
+}));
+
+vi.mock("@/lib/recovery-hold", () => ({
+  RECOVERY_HOLD_BLOCK_MESSAGE: "recovery hold",
+  lockPracticeForExternalSideEffects:
+    mocks.lockPracticeForExternalSideEffects,
 }));
 
 const { settingsRouter } = await import("../routers/settings");
@@ -447,6 +454,24 @@ describe("settings admin stale target safety", () => {
 
     expect(insertValues).not.toHaveBeenCalled();
     expect(syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
+  });
+
+  it("does not create or deliver a staff invite while the practice is held", async () => {
+    mocks.lockPracticeForExternalSideEffects.mockResolvedValueOnce(false);
+    const { db, insertValues } = createDb({
+      selectResults: [[{ name: "Neighborhood Veterinary" }]],
+    });
+
+    await expect(
+      callerWithDb(db).inviteStaff({
+        email: "held-invite@example.com",
+        role: "front_desk",
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(mocks.createAuthToken).not.toHaveBeenCalled();
+    expect(mocks.sendStaffInviteEmail).not.toHaveBeenCalled();
   });
 
   it("reports provider refusal and safely retries the same pending staff invite", async () => {

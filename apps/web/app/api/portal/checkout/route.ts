@@ -295,17 +295,29 @@ export async function POST(req: NextRequest) {
           tier: practices.subscriptionTier,
           billingStatus: practices.billingStatus,
           trialEndsAt: practices.trialEndsAt,
+          recoveryHold: practices.recoveryHold,
         })
         .from(practices)
         .where(
           and(eq(practices.id, invoice.practiceId), isNull(practices.deletedAt)),
         )
-        .limit(1);
+        .limit(1)
+        .for("share", { of: practices });
 
       if (!practice) {
         return NextResponse.json(
           { error: "Invalid portal link" },
           { status: 404 },
+        );
+      }
+
+      if (practice.recoveryHold) {
+        return NextResponse.json(
+          {
+            error:
+              "Online payments are temporarily unavailable. Please call the clinic to pay.",
+          },
+          { status: 503 },
         );
       }
 

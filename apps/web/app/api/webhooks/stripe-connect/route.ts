@@ -228,6 +228,7 @@ export async function POST(req: NextRequest) {
         .select({
           practiceId: practicePaymentAccounts.practiceId,
           stripeAccountId: practicePaymentAccounts.stripeAccountId,
+          recoveryHold: practices.recoveryHold,
         })
         .from(practicePaymentAccounts)
         .innerJoin(
@@ -244,13 +245,21 @@ export async function POST(req: NextRequest) {
             isNull(practicePaymentAccounts.deletedAt)
           )
         )
-        .limit(1);
+        .limit(1)
+        // Serialize provider capture against the committed recovery-hold
+        // update for this practice.
+        .for("share", { of: practices });
 
       if (!paymentAccount) {
         await resolveInvalidCheckout("payment_account_not_found");
         return;
       }
       resolutionPracticeId = paymentAccount.practiceId;
+      if (paymentAccount.recoveryHold) {
+        throw new Error(
+          `Stripe Connect Checkout processing paused for held practice ${paymentAccount.practiceId}`,
+        );
+      }
 
       const [invoiceIdentity] = await tx
         .select({

@@ -111,15 +111,25 @@ export async function syncPracticeSubscriptionQuantities(opts: {
   const [practice] = await db
     .select({
       stripeSubscriptionId: practices.stripeSubscriptionId,
+      recoveryHold: practices.recoveryHold,
     })
     .from(practices)
     .where(and(eq(practices.id, practiceId), isNull(practices.deletedAt)))
-    .limit(1);
+    .limit(1)
+    .for("share", { of: practices });
 
   if (!practice) {
     return buildState(
       "skipped",
       "Practice is unavailable for billing sync.",
+      { locationCount: 0, billableSeatCount: 0 }
+    );
+  }
+
+  if (practice.recoveryHold) {
+    return buildState(
+      "skipped",
+      "Subscription quantity sync is paused during protected recovery.",
       { locationCount: 0, billableSeatCount: 0 }
     );
   }

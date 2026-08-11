@@ -37,6 +37,8 @@ const mocks = vi.hoisted(() => {
     updateSet,
     alertOps: vi.fn(async () => undefined),
     marketingEmailEnabledForRecipient: vi.fn(async () => true),
+    practiceAllowsExternalSideEffects: vi.fn(async () => true),
+    lockPracticeForExternalSideEffects: vi.fn(async () => true),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
       fn(db),
     ),
@@ -59,6 +61,13 @@ vi.mock("@/lib/platform-email-preferences", () => ({
   marketingEmailEnabledForRecipient: mocks.marketingEmailEnabledForRecipient,
 }));
 
+vi.mock("@/lib/recovery-hold", () => ({
+  RECOVERY_HOLD_BLOCK_MESSAGE: "recovery hold",
+  practiceAllowsExternalSideEffects: mocks.practiceAllowsExternalSideEffects,
+  lockPracticeForExternalSideEffects:
+    mocks.lockPracticeForExternalSideEffects,
+}));
+
 const { LIFECYCLE_EMAIL_PENDING_RECLAIM_MS, sendLifecycleEmail } =
   await import("../email-lifecycle");
 
@@ -75,6 +84,8 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-06-28T12:00:00Z"));
   mocks.marketingEmailEnabledForRecipient.mockResolvedValue(true);
+  mocks.practiceAllowsExternalSideEffects.mockResolvedValue(true);
+  mocks.lockPracticeForExternalSideEffects.mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -87,6 +98,35 @@ afterEach(() => {
 });
 
 describe("sendLifecycleEmail", () => {
+  it("does not claim or send while the practice is on recovery hold", async () => {
+    mocks.practiceAllowsExternalSideEffects.mockResolvedValueOnce(false);
+    const send = vi.fn(async () => ({ success: true, id: "email-1" }));
+
+    await expect(sendLifecycleEmail({ ...BASE_OPTS, send })).resolves.toEqual({
+      sent: false,
+      deduped: false,
+      suppressed: true,
+    });
+
+    expect(send).not.toHaveBeenCalled();
+    expect(mocks.insertValues).not.toHaveBeenCalled();
+  });
+
+  it("drops a safe claim if recovery wins immediately before provider send", async () => {
+    mocks.insertResults.push([{ id: "comm-race" }]);
+    mocks.lockPracticeForExternalSideEffects.mockResolvedValueOnce(false);
+    const send = vi.fn(async () => ({ success: true, id: "email-race" }));
+
+    await expect(sendLifecycleEmail({ ...BASE_OPTS, send })).resolves.toEqual({
+      sent: false,
+      deduped: false,
+      suppressed: true,
+    });
+
+    expect(send).not.toHaveBeenCalled();
+    expect(mocks.deleteWhere).toHaveBeenCalled();
+  });
+
   it("claims, sends, and marks a lifecycle email sent", async () => {
     mocks.insertResults.push([{ id: "comm-1" }]);
     const send = vi.fn(async () => ({ success: true, id: "email-1" }));

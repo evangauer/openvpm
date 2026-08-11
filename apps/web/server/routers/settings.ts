@@ -69,6 +69,10 @@ import {
 import { sendStaffInviteEmail } from "@/lib/email";
 import { appBaseUrl, exposeAuthLinksForPreview } from "@/lib/app-url";
 import {
+  lockPracticeForExternalSideEffects,
+  RECOVERY_HOLD_BLOCK_MESSAGE,
+} from "@/lib/recovery-hold";
+import {
   ONBOARDING_INTENTS,
   type OnboardingIntent,
 } from "@/lib/onboarding/intent";
@@ -683,36 +687,40 @@ export const settingsRouter = createRouter({
 
   updatePractice: adminProcedure
     .input(
-      z.object({
-        name: practiceNameInput.optional(),
-        address: addressInput,
-        phone: phoneInput,
-        email: optionalEmailInput,
-        website: optionalTrimmedString("Website", SETTINGS_WEBSITE_MAX_LENGTH),
-        timezone: timezoneInput.optional(),
-        // Region/locale (Phase 2). country is ISO 3166-1 alpha-2; currency is
-        // ISO 4217 lowercase; taxRatePercent is a percent string e.g. "20.00".
-        country: countryInput.optional(),
-        currency: currencyInput.optional(),
-        taxRatePercent: z
-          .string()
-          .trim()
-          .refine(
-            isValidSettingsTaxRate,
-            "Tax rate must be between 0 and 100 with at most two decimals",
-          )
-          .optional(),
-        vatNumber: optionalTrimmedString(
-          "VAT number",
-          SETTINGS_VAT_NUMBER_MAX_LENGTH,
-        ),
-        // Branding. logoUrl is a real column; brandColor lives in settings.
-        logoUrl: optionalTrimmedString("Logo URL", 512),
-        brandColor: z
-          .string()
-          .regex(/^#[0-9a-fA-F]{6}$/)
-          .optional(),
-      }),
+      z
+        .object({
+          name: practiceNameInput.optional(),
+          address: addressInput,
+          phone: phoneInput,
+          email: optionalEmailInput,
+          website: optionalTrimmedString(
+            "Website",
+            SETTINGS_WEBSITE_MAX_LENGTH,
+          ),
+          timezone: timezoneInput.optional(),
+          // Region/locale (Phase 2). country is ISO 3166-1 alpha-2; currency is
+          // ISO 4217 lowercase; taxRatePercent is a percent string e.g. "20.00".
+          country: countryInput.optional(),
+          currency: currencyInput.optional(),
+          taxRatePercent: z
+            .string()
+            .trim()
+            .refine(
+              isValidSettingsTaxRate,
+              "Tax rate must be between 0 and 100 with at most two decimals",
+            )
+            .optional(),
+          vatNumber: optionalTrimmedString(
+            "VAT number",
+            SETTINGS_VAT_NUMBER_MAX_LENGTH,
+          ),
+          // Logo bytes and the logoUrl link are managed atomically by /api/upload.
+          brandColor: z
+            .string()
+            .regex(/^#[0-9a-fA-F]{6}$/)
+            .optional(),
+        })
+        .strict(),
     )
     .mutation(async ({ ctx, input }) =>
       ctx.db.transaction(async (tx) => {
@@ -2152,6 +2160,14 @@ export const settingsRouter = createRouter({
 
       if (!practice) {
         throw practiceNotFound();
+      }
+      if (
+        !(await lockPracticeForExternalSideEffects(ctx.db, ctx.practiceId))
+      ) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: RECOVERY_HOLD_BLOCK_MESSAGE,
+        });
       }
 
       // The user identity and invite token are one atomic unit. The email lock

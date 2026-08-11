@@ -13,6 +13,11 @@ import {
   IMAGE_UPLOAD_POLICY_MESSAGE,
   isImageUploadFileValid,
 } from "@/lib/upload-policy";
+import {
+  selectManagedUploadFile,
+  settleManagedUploadAttempt,
+  type ManagedUploadAttempt,
+} from "@/lib/managed-upload-attempt";
 import { toast } from "sonner";
 import type { StepHandle } from "../journey-types";
 
@@ -23,7 +28,11 @@ const SUGGESTED_ACCENT = "#0d9488";
  * Step 2: optional logo upload and accent color. Both save right away through
  * updatePractice, so Continue has nothing extra to do.
  */
-export function BrandingStep({ register }: { register: (h: StepHandle) => void }) {
+export function BrandingStep({
+  register,
+}: {
+  register: (h: StepHandle) => void;
+}) {
   const {
     data: practice,
     error: practiceError,
@@ -41,7 +50,9 @@ export function BrandingStep({ register }: { register: (h: StepHandle) => void }
     (practice?.settings as { brandColor?: string } | null)?.brandColor ?? null;
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const uploadAttemptRef = useRef<ManagedUploadAttempt | null>(null);
 
   const currentLogo = logoUrl ?? practice?.logoUrl ?? null;
 
@@ -50,29 +61,67 @@ export function BrandingStep({ register }: { register: (h: StepHandle) => void }
     register({ onContinue: async () => true });
   }, [register]);
 
-  async function handleFile(file: File) {
-    if (!isImageUploadFileValid(file)) {
+  async function handleFile(selectedFile?: File) {
+    if (selectedFile && !isImageUploadFileValid(selectedFile)) {
+      uploadAttemptRef.current = null;
+      setUploadError(null);
       toast.error(IMAGE_UPLOAD_POLICY_MESSAGE);
       return;
     }
 
+    if (selectedFile) {
+      uploadAttemptRef.current = selectManagedUploadFile(
+        uploadAttemptRef.current,
+        selectedFile,
+      );
+    }
+    const attempt = uploadAttemptRef.current;
+    if (!attempt) return;
+
     setUploading(true);
+    setUploadError(null);
     try {
       const body = new FormData();
-      body.append("file", file);
+      body.append("file", attempt.file);
       body.append("category", "branding");
       const res = await fetchWithClientTimeout(
         "/api/upload",
-        { method: "POST", body },
-        CLIENT_UPLOAD_TIMEOUT_MS
+        {
+          method: "POST",
+          body,
+          headers: { "Idempotency-Key": attempt.idempotencyKey },
+        },
+        CLIENT_UPLOAD_TIMEOUT_MS,
       );
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? "Upload failed");
-      setLogoUrl(json.url);
-      await updatePractice.mutateAsync({ logoUrl: json.url });
+      const json = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        url?: string;
+      };
+      if (!res.ok) {
+        uploadAttemptRef.current = settleManagedUploadAttempt(attempt, {
+          kind: "response",
+          status: res.status,
+        });
+        throw new Error(json.error ?? "Upload failed");
+      }
+      uploadAttemptRef.current = settleManagedUploadAttempt(attempt, {
+        kind: "success",
+      });
+      if (json.url) setLogoUrl(json.url);
+      await Promise.all([
+        utils.settings.getPractice.invalidate(),
+        utils.settings.getBranding.invalidate(),
+      ]);
       toast.success("Logo saved");
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Upload failed");
+      if (uploadAttemptRef.current === attempt) {
+        uploadAttemptRef.current = settleManagedUploadAttempt(attempt, {
+          kind: "ambiguous",
+        });
+      }
+      const message = err instanceof Error ? err.message : "Upload failed";
+      setUploadError(message);
+      toast.error(message);
     } finally {
       setUploading(false);
     }
@@ -81,7 +130,7 @@ export function BrandingStep({ register }: { register: (h: StepHandle) => void }
   function pickColor(color: string) {
     updatePractice.mutate(
       { brandColor: color },
-      { onSuccess: () => toast.success("Color saved") }
+      { onSuccess: () => toast.success("Color saved") },
     );
   }
 
@@ -160,6 +209,21 @@ export function BrandingStep({ register }: { register: (h: StepHandle) => void }
             <p className="mt-1.5 text-xs text-slate-500">
               PNG, JPG, or WebP. Square images look best.
             </p>
+            {uploadError ? (
+              <div className="mt-2 flex items-center gap-2 text-xs text-red-600">
+                <span>{uploadError}</span>
+                {uploadAttemptRef.current ? (
+                  <button
+                    type="button"
+                    disabled={uploading}
+                    onClick={() => void handleFile()}
+                    className="font-medium underline underline-offset-2 disabled:opacity-50"
+                  >
+                    Try again
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </div>
       </div>

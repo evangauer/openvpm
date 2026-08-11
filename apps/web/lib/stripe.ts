@@ -11,6 +11,11 @@ import { envFlagEnabled } from "@/lib/env-bool";
 
 export const STRIPE_TAX_ENABLED_ENV = "STRIPE_TAX_ENABLED";
 export const INVOICE_CHECKOUT_CAPTURE_MODE = "manual_v1";
+export const STRIPE_API_VERSION = "2026-07-29.dahlia";
+export const INVOICE_CHECKOUT_INTEGRATION_IDENTIFIER =
+  "openvpm_invoice_jqkzrmnp";
+export const SUBSCRIPTION_CHECKOUT_INTEGRATION_IDENTIFIER =
+  "openvpm_subscription_vhtxcsla";
 
 function stripeIdempotencyKey(
   scope: string,
@@ -26,7 +31,7 @@ function stripeIdempotencyKey(
 
 const configuredStripeSecretKey = stripeSecretKey();
 const stripe = configuredStripeSecretKey
-  ? new Stripe(configuredStripeSecretKey)
+  ? new Stripe(configuredStripeSecretKey, { apiVersion: STRIPE_API_VERSION })
   : null;
 
 export async function createCheckoutSession(data: {
@@ -85,7 +90,11 @@ export async function captureStripeCheckoutAuthorization(data: {
 
   const accountOptions = checkoutAccountOptions(data.connectedAccountId);
   const current = accountOptions
-    ? await stripe.paymentIntents.retrieve(data.paymentIntentId, accountOptions)
+    ? await stripe.paymentIntents.retrieve(
+        data.paymentIntentId,
+        {},
+        accountOptions
+      )
     : await stripe.paymentIntents.retrieve(data.paymentIntentId);
 
   // A transaction may fail after Stripe accepted the capture. On retry, use
@@ -166,7 +175,11 @@ export async function refundInvalidStripeCheckoutPayment(data: {
 
   const accountOptions = checkoutAccountOptions(parsed.connectedAccountId);
   const session = accountOptions
-    ? await stripe.checkout.sessions.retrieve(parsed.sessionId, accountOptions)
+    ? await stripe.checkout.sessions.retrieve(
+        parsed.sessionId,
+        {},
+        accountOptions
+      )
     : await stripe.checkout.sessions.retrieve(parsed.sessionId);
   const paymentIntentId =
     typeof session.payment_intent === "string"
@@ -181,7 +194,11 @@ export async function refundInvalidStripeCheckoutPayment(data: {
     typeof session.payment_intent === "object" && session.payment_intent
       ? session.payment_intent
       : accountOptions
-        ? await stripe.paymentIntents.retrieve(paymentIntentId, accountOptions)
+        ? await stripe.paymentIntents.retrieve(
+            paymentIntentId,
+            {},
+            accountOptions
+          )
         : await stripe.paymentIntents.retrieve(paymentIntentId);
 
   if (paymentIntent.status === "requires_capture") {
@@ -282,7 +299,11 @@ export async function refundStripeCheckoutPayment(data: {
     ? { stripeAccount: parsed.connectedAccountId }
     : undefined;
   const session = accountOptions
-    ? await stripe.checkout.sessions.retrieve(parsed.sessionId, accountOptions)
+    ? await stripe.checkout.sessions.retrieve(
+        parsed.sessionId,
+        {},
+        accountOptions
+      )
     : await stripe.checkout.sessions.retrieve(parsed.sessionId);
   const paymentIntent =
     typeof session.payment_intent === "string"
@@ -345,8 +366,8 @@ export function buildInvoiceCheckoutSessionParams(data: {
   }
 
   return {
-    payment_method_types: ["card"],
     mode: "payment",
+    integration_identifier: INVOICE_CHECKOUT_INTEGRATION_IDENTIFIER,
     customer_email: checkoutCustomerEmail(data.clientEmail),
     client_reference_id: data.invoiceId,
     line_items: [{
@@ -520,6 +541,7 @@ export function buildSubscriptionCheckoutSessionParams(data: {
   const hasTrial = !!trialEnd || !!data.trialPeriodDays;
   return {
     mode: "subscription",
+    integration_identifier: SUBSCRIPTION_CHECKOUT_INTEGRATION_IDENTIFIER,
     // Hosted trials must collect a card up front so Stripe can charge
     // automatically at trial end instead of creating an uncollectible account.
     payment_method_collection: "always",

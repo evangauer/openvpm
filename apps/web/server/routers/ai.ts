@@ -30,6 +30,10 @@ import {
 import { rateLimit } from "@/lib/rate-limit";
 import { recordUsage } from "@/lib/billing/usage";
 import {
+  lockPracticeForExternalSideEffects,
+  RECOVERY_HOLD_BLOCK_MESSAGE,
+} from "@/lib/recovery-hold";
+import {
   dateInputUtcRangeForTimeZone,
   formatDateInputForTimeZone,
 } from "@/lib/date-input";
@@ -396,6 +400,15 @@ export const aiRouter = createRouter({
 
       if (!patient) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Patient not found" });
+      }
+
+      if (
+        !(await lockPracticeForExternalSideEffects(ctx.db, ctx.practiceId))
+      ) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: RECOVERY_HOLD_BLOCK_MESSAGE,
+        });
       }
 
       try {

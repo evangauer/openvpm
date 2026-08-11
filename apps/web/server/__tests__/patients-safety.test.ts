@@ -213,7 +213,7 @@ describe("patients mutation safety", () => {
       callerWithDb(db).update({
         id: PATIENT_ID,
         photoUrl: "p".repeat(513),
-      }),
+      } as never),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -398,7 +398,6 @@ describe("patients mutation safety", () => {
         breed: "   ",
         color: "  Tricolor  ",
         microchipNumber: "  985112003001234  ",
-        photoUrl: "  https://cdn.example.test/biscuit.jpg  ",
       }),
     ).resolves.toMatchObject({ id: PATIENT_ID });
 
@@ -407,7 +406,6 @@ describe("patients mutation safety", () => {
       breed: undefined,
       color: "Tricolor",
       microchipNumber: "985112003001234",
-      photoUrl: "https://cdn.example.test/biscuit.jpg",
     });
   });
 

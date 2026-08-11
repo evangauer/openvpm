@@ -9,6 +9,23 @@ export const CONSENT_TITLE_MAX_LENGTH = 200;
 export const CONSENT_BODY_MAX_LENGTH = 8_000;
 export const CONSENT_SIGNER_NAME_MAX_LENGTH = 120;
 
+/**
+ * Consent templates intentionally ship with fill-in prompts. They are useful
+ * while drafting, but a capability link must never be minted while a material
+ * choice, amount, contact, procedure, or destination is still blank.
+ */
+const HIGH_RISK_PLACEHOLDER_PATTERNS = [
+  /_{3,}/,
+  /\{\{[^}\n]+\}\}/,
+  /\$\{[^}\n]+\}/,
+  /\[(?:insert|enter|fill in|choose|select)[^\]\n]*\]/i,
+  /\bstaff\s*:\s*(?:fill|circle|choose|select|complete)\b/i,
+] as const;
+
+export function hasUnresolvedConsentPlaceholders(value: string): boolean {
+  return HIGH_RISK_PLACEHOLDER_PATTERNS.some((pattern) => pattern.test(value));
+}
+
 export const DEFAULT_CONSENT_TITLE = "Consent to treatment";
 
 export const DEFAULT_CONSENT_BODY = [

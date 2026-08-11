@@ -341,6 +341,40 @@ describe("Stripe Connect webhook", () => {
     expect(mocks.refundInvalidStripeCheckoutPayment).not.toHaveBeenCalled();
   });
 
+  it("leaves a held-practice Connect event retryable without capturing money", async () => {
+    mocks.constructConnectWebhookEvent.mockResolvedValueOnce({
+      id: "evt_connect_held",
+      account: "acct_123",
+      type: "checkout.session.completed",
+      data: {
+        object: {
+          id: "cs_connect_held",
+          payment_intent: "pi_connect_held",
+          amount_total: 12500,
+          metadata: {
+            invoiceId: "invoice_held",
+            captureMode: "manual_v1",
+            source: "client_invoice_connect",
+            stripeConnectAccountId: "acct_123",
+          },
+        },
+      },
+    });
+    mocks.selectResults.push([
+      {
+        practiceId: "practice_held",
+        stripeAccountId: "acct_123",
+        recoveryHold: true,
+      },
+    ]);
+
+    const response = await POST(stripeRequest());
+
+    expect(response.status).toBe(500);
+    expect(mocks.captureStripeCheckoutAuthorization).not.toHaveBeenCalled();
+    expect(mocks.insertValues).not.toHaveBeenCalled();
+  });
+
   it("settles a completed accounts-receivable closeout with a Connect payment", async () => {
     mocks.constructConnectWebhookEvent.mockResolvedValueOnce({
       id: "evt_connect_closeout",

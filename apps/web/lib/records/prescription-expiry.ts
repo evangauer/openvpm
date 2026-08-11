@@ -26,6 +26,7 @@ export async function expireDuePrescriptions(database: Database = db) {
         practices,
         and(
           eq(prescriptions.practiceId, practices.id),
+          eq(practices.recoveryHold, false),
           isNull(practices.deletedAt),
         ),
       )

@@ -82,6 +82,18 @@ S3_SECRET_KEY=...
 S3_BUCKET=...
 S3_REGION=...
 
+# Independent recovery storage. Stage a complete group with execution disabled,
+# then enable only an exact design-partner cohort after bucket controls pass.
+FILE_REPLICA_REQUIRED=false
+FILE_REPLICA_ENABLED=false
+FILE_REPLICA_ALL_PRACTICES=false
+FILE_REPLICA_PRACTICE_IDS=
+FILE_REPLICA_S3_ENDPOINT=
+FILE_REPLICA_S3_ACCESS_KEY=
+FILE_REPLICA_S3_SECRET_KEY=
+FILE_REPLICA_S3_BUCKET=
+FILE_REPLICA_S3_REGION=
+
 RESEND_API_KEY=...
 RESEND_WEBHOOK_SECRET=...
 EMAIL_PREFERENCE_IDENTITY_SECRET=... # stable `openssl rand -base64 32`; never rotate without migrating preference data
@@ -104,10 +116,23 @@ ANTHROPIC_API_KEY=...
 OPS_ALERT_WEBHOOK_URL=...
 CRON_SECRET=...
 CRON_HEARTBEAT_URL=...
+CRON_HEARTBEAT_FILE_REPLICAS_URL=...
 PLATFORM_ADMIN_EMAILS=...
 ```
 
 `STRIPE_PRICE_CLOUD_USER` and `STRIPE_PRICE_CLOUD` are legacy-only. They must not be used for new checkout or required hosted readiness.
+
+Any nonblank `FILE_REPLICA_*` value starts the replica readiness gate. Partial
+storage configuration makes `/api/health` fail, and a complete configuration
+must point to a different endpoint/bucket identity from primary storage.
+Credentials alone do not copy data. `FILE_REPLICA_ENABLED=true` additionally
+requires either an exact comma-separated UUID cohort in
+`FILE_REPLICA_PRACTICE_IDS` or `FILE_REPLICA_ALL_PRACTICES=true`, never both.
+Begin with the design-partner cohort and expand only after its recovery drill.
+Follow
+[`file-object-recovery-runbook.md`](file-object-recovery-runbook.md) for bucket
+controls, backfill, alert thresholds, and the required destructive drill before
+setting `FILE_REPLICA_REQUIRED=true`.
 
 Telnyx is the hosted SMS default. `TELNYX_PUBLIC_KEY` is required for the
 public webhook to verify inbound SMS and delivery-status callbacks. For a
@@ -318,6 +343,14 @@ Store this endpoint secret as `RESEND_WEBHOOK_SECRET`.
 
 ## Stripe Setup
 
+The server pins Stripe API version `2026-07-29.dahlia`. Configure all three
+Dashboard webhook endpoints below to that same version before deploying an SDK
+upgrade, then replay a signed test event for every subscribed event type.
+Checkout uses Stripe's dynamic eligible payment methods; do not force a
+card-only method list in Dashboard rules. Invoice Checkout still uses manual
+capture, so Stripe automatically filters out methods that cannot support the
+authorization-and-capture flow.
+
 Create one Stripe product for OpenVPM Cloud with these recurring monthly prices:
 
 - Cloud location: `$79/month`, env `STRIPE_PRICE_CLOUD_LOCATION` (flat per active location, unlimited staff).
@@ -352,10 +385,13 @@ Store this endpoint secret as `STRIPE_WEBHOOK_SECRET`.
 
 ### Stripe Connect for clinic-owned client payments
 
-OpenVPM Cloud uses Stripe Connect Express for clinics that want to bill pet
-owners by card. This is separate from the OpenVPM Cloud subscription above:
-Cloud subscription charges settle to OpenVPM, while client invoice payments are
-created on the clinic's connected account after onboarding is complete.
+OpenVPM Cloud uses controller-configured connected accounts with a full Stripe
+Dashboard for clinics that want to bill pet owners by card. Stripe owns ongoing
+requirements collection and negative-balance liability, while each clinic pays
+its processing fees. This is separate from the OpenVPM Cloud subscription
+above: Cloud subscription charges settle to OpenVPM, while client invoice
+payments are created on the clinic's connected account after onboarding is
+complete.
 
 Enable Connect in the platform Stripe account, then add the Connect webhook:
 

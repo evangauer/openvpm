@@ -87,6 +87,11 @@ import {
   isImageUploadFileValid,
 } from "@/lib/upload-policy";
 import {
+  selectManagedUploadFile,
+  settleManagedUploadAttempt,
+  type ManagedUploadAttempt,
+} from "@/lib/managed-upload-attempt";
+import {
   IMPORT_CSV_MAX_BYTES,
   isImportCsvSizeValid,
 } from "@/lib/import/policy";
@@ -461,31 +466,67 @@ function PracticeInfoTab() {
     });
 
   const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
+  const logoUploadAttemptRef = useRef<ManagedUploadAttempt | null>(null);
 
-  const handleLogoUpload = async (file: File) => {
-    if (!isImageUploadFileValid(file)) {
+  const handleLogoUpload = async (selectedFile?: File) => {
+    if (selectedFile && !isImageUploadFileValid(selectedFile)) {
+      logoUploadAttemptRef.current = null;
+      setLogoUploadError(null);
       toast.error(IMAGE_UPLOAD_POLICY_MESSAGE);
       return;
     }
 
+    if (selectedFile) {
+      logoUploadAttemptRef.current = selectManagedUploadFile(
+        logoUploadAttemptRef.current,
+        selectedFile,
+      );
+    }
+    const attempt = logoUploadAttemptRef.current;
+    if (!attempt) return;
+
     setUploadingLogo(true);
+    setLogoUploadError(null);
     try {
       const body = new FormData();
-      body.append("file", file);
+      body.append("file", attempt.file);
       body.append("category", "branding");
       const res = await fetchWithClientTimeout(
         "/api/upload",
-        { method: "POST", body },
+        {
+          method: "POST",
+          body,
+          headers: { "Idempotency-Key": attempt.idempotencyKey },
+        },
         CLIENT_UPLOAD_TIMEOUT_MS,
       );
-      const json = await res.json();
+      const json = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) {
+        logoUploadAttemptRef.current = settleManagedUploadAttempt(attempt, {
+          kind: "response",
+          status: res.status,
+        });
         throw new Error(json.error ?? "Upload failed");
       }
-      brandingMutation.mutate({ logoUrl: json.url });
+      logoUploadAttemptRef.current = settleManagedUploadAttempt(attempt, {
+        kind: "success",
+      });
+      await Promise.all([
+        utils.settings.getPractice.invalidate(),
+        utils.settings.getBranding.invalidate(),
+      ]);
+      toast.success("Logo saved");
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Upload failed");
+      if (logoUploadAttemptRef.current === attempt) {
+        logoUploadAttemptRef.current = settleManagedUploadAttempt(attempt, {
+          kind: "ambiguous",
+        });
+      }
+      const message = err instanceof Error ? err.message : "Upload failed";
+      setLogoUploadError(message);
+      toast.error(message);
     } finally {
       setUploadingLogo(false);
     }
@@ -757,6 +798,21 @@ function PracticeInfoTab() {
                   <p className="mt-1.5 text-xs text-muted-foreground">
                     PNG, JPG, or WebP. Square images work best.
                   </p>
+                  {logoUploadError ? (
+                    <div className="mt-2 flex items-center gap-2 text-xs text-destructive">
+                      <span>{logoUploadError}</span>
+                      {logoUploadAttemptRef.current ? (
+                        <button
+                          type="button"
+                          disabled={uploadingLogo}
+                          onClick={() => void handleLogoUpload()}
+                          className="font-medium underline underline-offset-2 disabled:opacity-50"
+                        >
+                          Try again
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>

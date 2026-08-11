@@ -86,6 +86,7 @@ const mocks = vi.hoisted(() => {
     deleteReturning,
     sendAppointmentReminder: vi.fn(),
     sendAppointmentReminderSms: vi.fn(),
+    lockPracticeForExternalSideEffects: vi.fn(async () => true),
     alertOps: vi.fn(async () => undefined),
     cronAuthError: vi.fn(() => null),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
@@ -117,6 +118,11 @@ vi.mock("@/lib/sms", () => ({
 
 vi.mock("@/lib/alerts", () => ({
   alertOps: mocks.alertOps,
+}));
+
+vi.mock("@/lib/recovery-hold", () => ({
+  lockPracticeForExternalSideEffects:
+    mocks.lockPracticeForExternalSideEffects,
 }));
 
 vi.mock("@/lib/cron-auth", () => ({
@@ -745,6 +751,35 @@ describe("appointment reminder cron", () => {
       expect.objectContaining({
         channel: "email",
         status: "failed",
+      }),
+    );
+  });
+
+  it("does not call the email provider if recovery begins after the sweep", async () => {
+    mocks.lockPracticeForExternalSideEffects.mockResolvedValueOnce(false);
+    mocks.selectResults.push([
+      appointment({
+        preferredContactMethod: "email",
+      }),
+    ]);
+
+    const response = await GET(
+      new Request("https://openvpm.test/api/cron/reminders"),
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      sent: 0,
+      failed: 1,
+      skipped: 0,
+      deduped: 0,
+      suppressed: 0,
+    });
+    expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
+    expect(mocks.updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "email",
+        status: "failed",
+        content: expect.stringContaining("recovery is in progress"),
       }),
     );
   });

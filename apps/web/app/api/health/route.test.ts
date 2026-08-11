@@ -30,6 +30,23 @@ const mocks = vi.hoisted(() => ({
     ok: true,
     detail: "Object storage bucket reachable",
   })),
+  checkReplicaStorageHealth: vi.fn(async () => ({
+    ok: true,
+    detail: "Replica object storage reachable",
+  })),
+  replicaStorageReadiness: vi.fn(() => ({
+    intended: false,
+    ready: false,
+    detail: "Independent object replica is not configured",
+  })),
+  replicaStorageRequired: vi.fn(() => false),
+  replicaStorageRolloutEnabled: vi.fn(() => false),
+  getFileReplicaCoverage: vi.fn(async () => ({
+    backlog: 0,
+    available: 1,
+    activeFiles: 1,
+    coveragePct: 100,
+  })),
   findSchemaDrift: vi.fn(async () => ({
     missingTables: [] as string[],
     missingColumns: [] as { table: string; column: string }[],
@@ -86,6 +103,14 @@ vi.mock("@/lib/cron-heartbeat", () => ({
 
 vi.mock("@/lib/s3", () => ({
   checkObjectStorageHealth: mocks.checkObjectStorageHealth,
+  checkReplicaStorageHealth: mocks.checkReplicaStorageHealth,
+  replicaStorageReadiness: mocks.replicaStorageReadiness,
+  replicaStorageRequired: mocks.replicaStorageRequired,
+  replicaStorageRolloutEnabled: mocks.replicaStorageRolloutEnabled,
+}));
+
+vi.mock("@/lib/file-replication", () => ({
+  getFileReplicaCoverage: mocks.getFileReplicaCoverage,
 }));
 
 vi.mock("@/lib/platform-email-preferences", () => ({
@@ -153,6 +178,23 @@ afterEach(() => {
   mocks.dbExecute.mockResolvedValue([{ ok: 1, scopeValid: true }]);
   mocks.withSystem.mockImplementation(async (database, fn) => fn(database));
   mocks.billingEnforced.mockReturnValue(false);
+  mocks.replicaStorageReadiness.mockReturnValue({
+    intended: false,
+    ready: false,
+    detail: "Independent object replica is not configured",
+  });
+  mocks.replicaStorageRequired.mockReturnValue(false);
+  mocks.replicaStorageRolloutEnabled.mockReturnValue(false);
+  mocks.getFileReplicaCoverage.mockResolvedValue({
+    backlog: 0,
+    available: 1,
+    activeFiles: 1,
+    coveragePct: 100,
+  });
+  mocks.checkReplicaStorageHealth.mockResolvedValue({
+    ok: true,
+    detail: "Replica object storage reachable",
+  });
   mocks.requiredMessagingEnvNames.mockReturnValue([
     "TELNYX_API_KEY",
     "TELNYX_PUBLIC_KEY",
@@ -931,6 +973,171 @@ describe("health route", () => {
     const body = JSON.stringify(json);
     expect(body).not.toContain("storage.example");
     expect(body).not.toContain("clinic-private-bucket");
+  });
+
+  it("keeps an intentionally absent file replica advisory", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.checks.hostedFileReplica).toEqual({
+      ok: false,
+      detail: "Independent object replica is not configured",
+      advisory: true,
+    });
+    expect(mocks.checkReplicaStorageHealth).not.toHaveBeenCalled();
+  });
+
+  it("fails hosted readiness once the replica rollout is intended but incomplete", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    mocks.replicaStorageReadiness.mockReturnValueOnce({
+      intended: true,
+      ready: false,
+      detail: "2 required replica storage values are missing",
+    });
+    mocks.replicaStorageRequired.mockReturnValueOnce(true);
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedFileReplica).toEqual({
+      ok: false,
+      detail: "2 required replica storage values are missing",
+      advisory: false,
+    });
+    expect(mocks.checkReplicaStorageHealth).not.toHaveBeenCalled();
+    const body = JSON.stringify(json);
+    expect(body).not.toContain("FILE_REPLICA_S3_ACCESS_KEY");
+    expect(body).not.toContain("FILE_REPLICA_S3_SECRET_KEY");
+  });
+
+  it("gates partial replica rollout even before it is marked required", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    mocks.replicaStorageReadiness.mockReturnValueOnce({
+      intended: true,
+      ready: false,
+      detail: "Replica rollout needs an exact practice cohort",
+    });
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedFileReplica).toEqual({
+      ok: false,
+      detail: "Replica rollout needs an exact practice cohort",
+      advisory: false,
+    });
+    expect(mocks.checkReplicaStorageHealth).not.toHaveBeenCalled();
+  });
+
+  it("checks replica reachability when its complete rollout is enabled", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    mocks.replicaStorageReadiness.mockReturnValueOnce({
+      intended: true,
+      ready: true,
+      detail: "Replica storage envs present",
+    });
+    mocks.replicaStorageRequired.mockReturnValueOnce(true);
+    mocks.replicaStorageRolloutEnabled.mockReturnValueOnce(true);
+    mocks.checkReplicaStorageHealth.mockResolvedValueOnce({
+      ok: false,
+      detail: "Replica object storage check failed",
+    });
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(mocks.checkReplicaStorageHealth).toHaveBeenCalledTimes(1);
+    expect(json.checks.hostedFileReplica).toEqual({
+      ok: false,
+      detail: "Replica object storage check failed",
+      advisory: false,
+    });
+  });
+
+  it("fails hosted readiness when required replica execution is disabled", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    mocks.replicaStorageReadiness.mockReturnValueOnce({
+      intended: true,
+      ready: true,
+      detail: "Replica storage envs present",
+    });
+    mocks.replicaStorageRequired.mockReturnValueOnce(true);
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedFileReplica).toEqual({
+      ok: false,
+      detail: "Independent file replica is required but execution is disabled",
+      advisory: false,
+    });
+    expect(mocks.checkReplicaStorageHealth).not.toHaveBeenCalled();
+  });
+
+  it("fails hosted readiness when required replica coverage is incomplete", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    mocks.replicaStorageReadiness.mockReturnValueOnce({
+      intended: true,
+      ready: true,
+      detail: "Replica storage envs present",
+    });
+    mocks.replicaStorageRequired.mockReturnValueOnce(true);
+    mocks.replicaStorageRolloutEnabled.mockReturnValueOnce(true);
+    mocks.getFileReplicaCoverage.mockResolvedValueOnce({
+      backlog: 1,
+      available: 2,
+      activeFiles: 3,
+      coveragePct: 66.67,
+    });
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedFileReplica).toEqual({
+      ok: false,
+      detail:
+        "2/3 active files independently available (66.67%); backlog 1",
+      advisory: false,
+    });
+  });
+
+  it("passes hosted readiness only after required replica coverage is complete", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    mocks.replicaStorageReadiness.mockReturnValueOnce({
+      intended: true,
+      ready: true,
+      detail: "Replica storage envs present",
+    });
+    mocks.replicaStorageRequired.mockReturnValueOnce(true);
+    mocks.replicaStorageRolloutEnabled.mockReturnValueOnce(true);
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.checks.hostedFileReplica).toEqual({
+      ok: true,
+      detail:
+        "1/1 active files independently available (100%); backlog 0",
+      advisory: false,
+    });
+    expect(mocks.checkReplicaStorageHealth).toHaveBeenCalledTimes(1);
+    expect(mocks.getFileReplicaCoverage).toHaveBeenCalledTimes(1);
   });
 
   it("does not expose the current database role when the hosted RLS check fails", async () => {

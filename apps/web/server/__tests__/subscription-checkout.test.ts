@@ -75,13 +75,17 @@ function createDb(selectResults: unknown[][]) {
   const results = [...selectResults];
   const select = vi.fn(() => {
     const result = results.shift() ?? [];
-    return {
-      from: () => ({
-        where: () => ({
-          limit: async () => result,
-        }),
-      }),
+    const builder = {
+      from: () => builder,
+      where: () => builder,
+      limit: () => builder,
+      for: async () => result,
+      then: (
+        resolve: (value: unknown[]) => unknown,
+        reject?: (error: unknown) => unknown,
+      ) => Promise.resolve(result).then(resolve, reject),
     };
+    return builder;
   });
 
   return {
@@ -212,6 +216,24 @@ describe("subscription checkout", () => {
     });
     expect(mocks.createSubscriptionCheckoutSession).not.toHaveBeenCalled();
     expect(mocks.countBillableLocationsAndSeats).not.toHaveBeenCalled();
+  });
+
+  it("does not call Stripe checkout or portal providers while held", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    const db = createDb([
+      [practice({ recoveryHold: true })],
+      [practice({ stripeCustomerId: "cus_123", recoveryHold: true })],
+    ]);
+    const caller = callerWithDb(db);
+
+    await expect(
+      caller.createCheckout({ tier: "cloud" }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    await expect(caller.openBillingPortal()).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+    expect(mocks.createSubscriptionCheckoutSession).not.toHaveBeenCalled();
+    expect(mocks.createBillingPortalSession).not.toHaveBeenCalled();
   });
 
   it("rejects billing reads and actions when the practice is missing or deleted", async () => {

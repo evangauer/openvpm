@@ -12,6 +12,7 @@ describe("Vercel cron schedule", () => {
       new Set([
         "/api/cron/reminders",
         "/api/cron/backup",
+        "/api/cron/file-replicas",
         "/api/cron/usage-reconcile",
         "/api/cron/billing-lifecycle",
         "/api/cron/wellness-billing",

@@ -328,9 +328,12 @@ describe("data full backup restore", () => {
     });
 
     expect(transaction).toHaveBeenCalledTimes(1);
-    expect(mocks.restorePracticeData).toHaveBeenCalledWith(tx, PRACTICE_ID, {
-      clients: [],
-    });
+    expect(mocks.restorePracticeData).toHaveBeenCalledWith(
+      tx,
+      PRACTICE_ID,
+      { clients: [] },
+      { recoveryHoldDb: expect.anything() },
+    );
     expect(mocks.recordActivationAfterAppointmentCreated).toHaveBeenCalledWith(
       tx,
       PRACTICE_ID,

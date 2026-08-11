@@ -15,6 +15,10 @@ import {
 } from "./tools";
 import { recordUsage } from "@/lib/billing/usage";
 import { rateLimit } from "@/lib/rate-limit";
+import {
+  lockPracticeForExternalSideEffects,
+  RECOVERY_HOLD_BLOCK_MESSAGE,
+} from "@/lib/recovery-hold";
 
 /**
  * Provider-agnostic agent runner (Vercel AI SDK). The active model is chosen by
@@ -70,6 +74,13 @@ export class AgentRateLimitedError extends Error {
   ) {
     super("Too many agent runs. Try again later.");
     this.name = "AgentRateLimitedError";
+  }
+}
+
+export class AgentRecoveryHoldError extends Error {
+  constructor() {
+    super(RECOVERY_HOLD_BLOCK_MESSAGE);
+    this.name = "AgentRecoveryHoldError";
   }
 }
 
@@ -258,6 +269,14 @@ export async function runAgent(opts: {
 }): Promise<AgentRunResult> {
   const modelId = activeModelId(opts.model);
   if (!hasProviderKey(modelId)) throw new AgentNotConfiguredError();
+  if (
+    !(await lockPracticeForExternalSideEffects(
+      opts.context.db,
+      opts.context.practiceId,
+    ))
+  ) {
+    throw new AgentRecoveryHoldError();
+  }
 
   const allowWrites = opts.allowWrites ?? false;
   await enforceAgentRunRateLimit(opts.context);

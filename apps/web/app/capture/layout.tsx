@@ -4,6 +4,8 @@ import { PawMark } from "@/components/brand/paw-mark";
 export const metadata: Metadata = {
   title: "Add Photos - OpenVPM",
   description: "Add photos to the visit record",
+  referrer: "no-referrer",
+  robots: { index: false, follow: false, nocache: true },
 };
 
 /**

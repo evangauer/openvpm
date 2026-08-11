@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => {
   };
   return {
     db,
+    select,
     selectResults,
     selectLimit,
     update,
@@ -55,6 +56,7 @@ const mocks = vi.hoisted(() => {
       (locationId: string) => `OpenVPM provision ${locationId}`,
     ),
     updateMessagingProfileEnabled: vi.fn(),
+    lockPracticeForExternalSideEffects: vi.fn(async () => true),
     MockTelnyxError,
     withTenant: vi.fn(
       async (
@@ -77,6 +79,11 @@ vi.mock("@/lib/tenant-db", () => ({
 }));
 vi.mock("@/lib/audit", () => ({
   recordAuditLog: vi.fn(async () => undefined),
+}));
+vi.mock("@/lib/recovery-hold", () => ({
+  RECOVERY_HOLD_BLOCK_MESSAGE: "recovery hold",
+  lockPracticeForExternalSideEffects:
+    mocks.lockPracticeForExternalSideEffects,
 }));
 vi.mock("@/lib/messaging/telnyx-provisioning", () => ({
   createA2pBrand: mocks.createA2pBrand,
@@ -372,6 +379,23 @@ describe("platform messaging operations", () => {
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     expect(mocks.withSystem).not.toHaveBeenCalled();
     expect(mocks.createA2pBrand).not.toHaveBeenCalled();
+  });
+
+  it("does not submit fee-bearing provider work while the clinic is held", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+    vi.stubEnv("MESSAGING_PROVISIONING_ENABLED", "true");
+    mocks.lockPracticeForExternalSideEffects.mockResolvedValueOnce(false);
+
+    await expect(
+      caller().submitMessagingBrand({
+        practiceId: PRACTICE_ID,
+        confirmProviderCharges: true,
+        retryAfterProviderReview: false,
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    expect(mocks.createA2pBrand).not.toHaveBeenCalled();
+    expect(mocks.select).not.toHaveBeenCalled();
   });
 
   it("requires the explicit charge acknowledgement in the validated input", async () => {

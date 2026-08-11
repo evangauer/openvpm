@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   alertOps: vi.fn(async () => undefined),
   durableDb: {} as Record<string, unknown>,
   withDurableSmsCommunication: vi.fn(),
+  lockPracticeForExternalSideEffects: vi.fn(async () => true),
 }));
 
 vi.mock("@/lib/email", () => ({
@@ -28,6 +29,12 @@ vi.mock("@/lib/alerts", () => ({
 
 vi.mock("@/lib/messaging/durable-sms-communication", () => ({
   withDurableSmsCommunication: mocks.withDurableSmsCommunication,
+}));
+
+vi.mock("@/lib/recovery-hold", () => ({
+  RECOVERY_HOLD_BLOCK_MESSAGE: "recovery hold",
+  lockPracticeForExternalSideEffects:
+    mocks.lockPracticeForExternalSideEffects,
 }));
 
 const {
