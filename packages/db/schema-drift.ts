@@ -367,6 +367,61 @@ export function criticalDatabaseContract(): DeclaredDatabaseObject[] {
       table: "sms_provider_event_conflict_reviews",
       name,
     })),
+    {
+      kind: "constraint",
+      table: "sms_provider_event_resolutions",
+      name: "sms_provider_event_resolutions_shape_check",
+    },
+    ...[
+      "sms_provider_event_resolutions_event_id_sms_provider_events_id_",
+      "sms_provider_event_resolutions_conflict_id_sms_provider_event_c",
+      "sms_provider_event_resolutions_practice_id_practices_id_fk",
+      "sms_provider_event_resolutions_inbound_communication_id_communi",
+      "sms_provider_event_resolutions_sms_consent_event_id_sms_consent",
+      "sms_provider_event_resolutions_sms_delivery_event_id_sms_delive",
+      "sms_provider_event_resolutions_messaging_registration_event_id_",
+    ].map((name) => ({
+      kind: "constraint" as const,
+      table: "sms_provider_event_resolutions",
+      name,
+    })),
+    ...[
+      "sms_provider_event_resolutions_base_event_uq",
+      "sms_provider_event_resolutions_event_idx",
+      "sms_provider_event_resolutions_conflict_uq",
+      "sms_provider_event_resolutions_operation_uq",
+      "sms_provider_event_resolutions_communication_evidence_idx",
+      "sms_provider_event_resolutions_consent_evidence_idx",
+      "sms_provider_event_resolutions_delivery_evidence_idx",
+      "sms_provider_event_resolutions_registration_evidence_idx",
+    ].map((name) => ({
+      kind: "index" as const,
+      table: "sms_provider_event_resolutions",
+      name,
+    })),
+    ...[
+      "sms_provider_event_resolutions_validate_insert",
+      "sms_provider_event_resolutions_immutable",
+    ].map((name) => ({
+      kind: "trigger" as const,
+      table: "sms_provider_event_resolutions",
+      name,
+    })),
+    {
+      kind: "rls_policy",
+      table: "sms_provider_event_resolutions",
+      name: "system_only",
+    },
+    ...["SELECT", "INSERT"].map((name) => ({
+      kind: "table_privilege" as const,
+      table: "sms_provider_event_resolutions",
+      name,
+    })),
+    ...["UPDATE", "DELETE"].map((name) => ({
+      kind: "forbidden_table_privilege" as const,
+      table: "sms_provider_event_resolutions",
+      name,
+    })),
   ];
 
   return objects;
@@ -513,7 +568,9 @@ export async function findSchemaDrift(db: Queryable): Promise<SchemaDrift> {
       ('sms_provider_event_conflicts'::text, 'UPDATE'::text),
       ('sms_provider_event_conflicts'::text, 'DELETE'::text),
       ('sms_provider_event_conflict_reviews'::text, 'UPDATE'::text),
-      ('sms_provider_event_conflict_reviews'::text, 'DELETE'::text)
+      ('sms_provider_event_conflict_reviews'::text, 'DELETE'::text),
+      ('sms_provider_event_resolutions'::text, 'UPDATE'::text),
+      ('sms_provider_event_resolutions'::text, 'DELETE'::text)
     ) required_absence(table_name, privilege_type)
   `);
 

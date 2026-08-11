@@ -26,8 +26,12 @@ import {
   recordMessagingRegistrationEvent,
   systemMessagingRegistrationActor,
 } from "./registration-events";
-import { recordSmsDeliveryCallbackInTransaction } from "./sms-delivery-ledger";
+import {
+  lockSmsDeliveryIdentity,
+  recordSmsDeliveryCallbackInTransaction,
+} from "./sms-delivery-ledger";
 import { acquireSmsRecipientLockInTransaction } from "./suppression";
+import { smsProviderEventQuarantineIsRemediatedSql } from "./sms-provider-event-resolution-status";
 
 const MAX_IDENTIFIER_LENGTH = 255;
 const MAX_EVENT_TYPE_LENGTH = 80;
@@ -105,6 +109,7 @@ export type SmsProviderEventBacklogSummary = {
   retry: number;
   blockedRecovery: number;
   quarantined: number;
+  conflicts: number;
   oldestUnresolvedAt: Date | null;
 };
 
@@ -667,7 +672,14 @@ export async function ingestSmsProviderEvent(
   });
 }
 
-type StoredSmsProviderEvent = typeof smsProviderEvents.$inferSelect;
+export type StoredSmsProviderEvent = typeof smsProviderEvents.$inferSelect;
+
+export type LockedSmsProviderEventRemediation = {
+  event: StoredSmsProviderEvent;
+  attribution: { practiceId: string; locationId: string | null } | null;
+  resolution: IntakeResolution;
+  inboundRecipientLockHeld: boolean;
+};
 
 function hostedInboundProjectionEnabled(): boolean {
   return (
@@ -679,6 +691,7 @@ function hostedInboundProjectionEnabled(): boolean {
 async function lockPracticeStatesInTransaction(
   tx: Database,
   practiceIds: string[],
+  options: { forUpdate?: boolean } = {},
 ): Promise<Map<string, boolean>> {
   if (practiceIds.length === 0) return new Map();
   const sorted = [...new Set(practiceIds)].sort();
@@ -687,11 +700,214 @@ async function lockPracticeStatesInTransaction(
     .from(practices)
     .where(and(inArray(practices.id, sorted), isNull(practices.deletedAt)))
     .orderBy(practices.id)
-    .for("share", { of: practices });
+    .for(options.forUpdate ? "update" : "share", { of: practices });
   if (rows.length !== sorted.length) {
     throw new Error("Provider event tenant changed before projection");
   }
   return new Map(rows.map((row) => [row.id, row.recoveryHold]));
+}
+
+async function lockAllProviderPracticeStatesInTransaction(
+  tx: Database,
+  provider: InboundSmsProvider,
+): Promise<Map<string, boolean>> {
+  const rows = await tx
+    .select({ id: practices.id, recoveryHold: practices.recoveryHold })
+    .from(practices)
+    .where(
+      and(
+        isNull(practices.deletedAt),
+        sql`(
+          exists (
+            select 1
+            from location_messaging sender
+            where sender.practice_id = ${practices.id}
+              and sender.provider = ${provider}
+              and sender.deleted_at is null
+          )
+          or exists (
+            select 1
+            from sms_send_attempts attempt
+            where attempt.practice_id = ${practices.id}
+              and attempt.provider = ${provider}
+          )
+        )`,
+      ),
+    )
+    .orderBy(practices.id)
+    .for("update", { of: practices });
+  return new Map(rows.map((row) => [row.id, row.recoveryHold]));
+}
+
+/**
+ * Lock and revalidate a terminal provider event for audited remediation. The
+ * event remains immutable; callers may only append durable resolution evidence
+ * in this same transaction. Inbound work follows the intake-compatible order:
+ * practice, exact sender identity, recipient advisory, then event row.
+ */
+export async function lockSmsProviderEventForRemediationInTransaction(
+  tx: Database,
+  eventId: string,
+  options: {
+    lockedPracticeId?: string;
+    allowGloballyUnattributedDelivery?: boolean;
+    allowImmutableInboundOptOut?: boolean;
+    allowRecoveryHeld?: boolean;
+  } = {},
+): Promise<LockedSmsProviderEventRemediation> {
+  const [peek] = await tx
+    .select()
+    .from(smsProviderEvents)
+    .where(eq(smsProviderEvents.id, eventId))
+    .limit(1);
+  if (!peek) throw new Error("SMS provider event not found.");
+  if (!terminalState(peek.state)) {
+    throw new Error("Only terminal provider events may be remediated.");
+  }
+
+  const initialResolution = await resolveStoredEventInTransaction(tx, peek);
+  const practiceIds = [
+    ...new Set([
+      ...initialResolution.practiceIds,
+      ...(peek.practiceId ? [peek.practiceId] : []),
+    ]),
+  ].sort();
+  const globalDeliveryNoProjectionCandidate =
+    options.allowGloballyUnattributedDelivery &&
+    peek.kind === "delivery" &&
+    !peek.practiceId &&
+    practiceIds.length === 0;
+  let practiceStates: Map<string, boolean>;
+  if (options.lockedPracticeId) {
+    if (
+      practiceIds.length !== 1 ||
+      practiceIds[0] !== options.lockedPracticeId
+    ) {
+      throw new Error(
+        "Provider event does not match the already-locked practice.",
+      );
+    }
+    practiceStates = new Map([[options.lockedPracticeId, false]]);
+  } else if (globalDeliveryNoProjectionCandidate) {
+    // A provider callback that currently has no tenant may race an accepted
+    // send whose provider result has not committed yet. Lock every practice
+    // that can or has sent through this provider before taking the canonical
+    // delivery identity lock and repeating attribution. This makes the final
+    // zero-owner proof stable through resolution commit.
+    practiceStates = await lockAllProviderPracticeStatesInTransaction(
+      tx,
+      peek.provider as InboundSmsProvider,
+    );
+  } else {
+    practiceStates = await lockPracticeStatesInTransaction(tx, practiceIds, {
+      forUpdate: true,
+    });
+  }
+  if (
+    !options.allowRecoveryHeld &&
+    [...practiceStates.values()].some(Boolean)
+  ) {
+    throw new Error(
+      "Provider event remediation is paused while the clinic is in recovery.",
+    );
+  }
+
+  if (peek.kind === "delivery") {
+    await lockSmsDeliveryIdentity(tx, peek.provider, peek.providerMessageId);
+  }
+
+  let inboundRecipientLockHeld = false;
+  const immutableInboundOptOut =
+    options.allowImmutableInboundOptOut &&
+    peek.kind === "inbound" &&
+    Boolean(peek.practiceId && peek.locationId && peek.fromE164);
+  if (immutableInboundOptOut) {
+    await acquireSmsRecipientLockInTransaction(
+      tx,
+      peek.practiceId!,
+      peek.fromE164!,
+    );
+    inboundRecipientLockHeld = true;
+  } else if (peek.kind === "inbound" && initialResolution.attribution) {
+    const identityLocked = await lockMessagingLocationIdentityInTransaction(
+      tx,
+      {
+        provider: peek.provider as InboundSmsProvider,
+        practiceId: initialResolution.attribution.practiceId,
+        locationId: initialResolution.attribution.locationId!,
+        senderE164: peek.toE164,
+        messagingProfileId: peek.messagingProfileId,
+      },
+    );
+    if (!identityLocked || !peek.fromE164) {
+      throw new Error(
+        "Inbound provider identity changed before remediation could be locked.",
+      );
+    }
+    await acquireSmsRecipientLockInTransaction(
+      tx,
+      initialResolution.attribution.practiceId,
+      peek.fromE164,
+    );
+    inboundRecipientLockHeld = true;
+  }
+
+  const [event] = await tx
+    .select()
+    .from(smsProviderEvents)
+    .where(eq(smsProviderEvents.id, eventId))
+    .limit(1)
+    .for("update");
+  if (!event) throw new Error("SMS provider event not found.");
+  if (!terminalState(event.state)) {
+    throw new Error("Provider event state changed during remediation.");
+  }
+  const resolution = await resolveStoredEventInTransaction(tx, event);
+  if (
+    !immutableInboundOptOut &&
+    !sameResolution(initialResolution, resolution)
+  ) {
+    throw new Error("Provider event attribution changed during remediation.");
+  }
+  if (
+    !immutableInboundOptOut &&
+    event.practiceId &&
+    (!resolution.attribution ||
+      resolution.attribution.practiceId !== event.practiceId ||
+      (event.locationId !== null &&
+        resolution.attribution.locationId !== event.locationId))
+  ) {
+    throw new Error(
+      "Current provider identity does not match immutable event attribution.",
+    );
+  }
+  const attribution = event.practiceId
+    ? { practiceId: event.practiceId, locationId: event.locationId }
+    : resolution.attribution;
+  if (!attribution) {
+    if (
+      options.allowGloballyUnattributedDelivery &&
+      event.kind === "delivery" &&
+      !event.practiceId &&
+      resolution.practiceIds.length === 0
+    ) {
+      return {
+        event,
+        attribution: null,
+        resolution,
+        inboundRecipientLockHeld,
+      };
+    }
+    throw new Error(
+      "Provider event remediation requires exact current tenant attribution.",
+    );
+  }
+  if (event.kind === "inbound" && !attribution.locationId) {
+    throw new Error(
+      "Inbound provider event remediation requires an exact sender location.",
+    );
+  }
+  return { event, attribution, resolution, inboundRecipientLockHeld };
 }
 
 async function resolveStoredEventInTransaction(
@@ -990,7 +1206,10 @@ async function projectLockedEventInTransaction(
   tx: Database,
   event: StoredSmsProviderEvent,
   resolution: IntakeResolution,
-  options: { allowDisabledInbound?: boolean } = {},
+  options: {
+    allowDisabledInbound?: boolean;
+    inboundRecipientLockAlreadyHeld?: boolean;
+  } = {},
 ): Promise<{ outcome: SmsProviderEventProjectionOutcome }> {
   const attribution = event.practiceId
     ? {
@@ -1032,6 +1251,8 @@ async function projectLockedEventInTransaction(
       providerMessageId: event.providerMessageId,
       classification: event.inboundClassification,
       occurredAt: event.occurredAt ?? event.receivedAt,
+      recipientLockAlreadyHeld:
+        options.inboundRecipientLockAlreadyHeld === true,
     });
     await markTerminalInTransaction(tx, event, {
       state: "projected",
@@ -1123,7 +1344,7 @@ async function projectLockedEventInTransaction(
   return { outcome: "projected" };
 }
 
-async function projectSmsProviderEventInTransaction(
+async function projectSmsProviderEventWithLocksInTransaction(
   tx: Database,
   eventId: string,
   options: { lockedPracticeId?: string; force?: boolean } = {},
@@ -1165,6 +1386,29 @@ async function projectSmsProviderEventInTransaction(
     practiceStates = await lockPracticeStatesInTransaction(tx, practiceIds);
   }
 
+  let inboundIdentityLocked = true;
+  let inboundRecipientLockHeld = false;
+  if (peek.kind === "inbound" && initialResolution.attribution) {
+    inboundIdentityLocked = await lockMessagingLocationIdentityInTransaction(
+      tx,
+      {
+        provider: peek.provider as InboundSmsProvider,
+        practiceId: initialResolution.attribution.practiceId,
+        locationId: initialResolution.attribution.locationId!,
+        senderE164: peek.toE164,
+        messagingProfileId: peek.messagingProfileId,
+      },
+    );
+    if (inboundIdentityLocked && peek.fromE164) {
+      await acquireSmsRecipientLockInTransaction(
+        tx,
+        initialResolution.attribution.practiceId,
+        peek.fromE164,
+      );
+      inboundRecipientLockHeld = true;
+    }
+  }
+
   const [event] = await tx
     .select()
     .from(smsProviderEvents)
@@ -1194,13 +1438,12 @@ async function projectSmsProviderEventInTransaction(
   if (
     event.kind === "inbound" &&
     resolution.attribution &&
-    !(await lockMessagingLocationIdentityInTransaction(tx, {
-      provider: event.provider as InboundSmsProvider,
-      practiceId: resolution.attribution.practiceId,
-      locationId: resolution.attribution.locationId!,
-      senderE164: event.toE164,
-      messagingProfileId: event.messagingProfileId,
-    }))
+    (!inboundIdentityLocked ||
+      !initialResolution.attribution ||
+      initialResolution.attribution.practiceId !==
+        resolution.attribution.practiceId ||
+      initialResolution.attribution.locationId !==
+        resolution.attribution.locationId)
   ) {
     await markTerminalInTransaction(tx, event, {
       state: "quarantined",
@@ -1244,6 +1487,7 @@ async function projectSmsProviderEventInTransaction(
   }
   return projectLockedEventInTransaction(tx, event, resolution, {
     allowDisabledInbound: Boolean(options.lockedPracticeId && options.force),
+    inboundRecipientLockAlreadyHeld: inboundRecipientLockHeld,
   });
 }
 
@@ -1252,7 +1496,7 @@ export async function projectSmsProviderEvent(
 ): Promise<{ outcome: SmsProviderEventProjectionOutcome }> {
   try {
     return await withSystem(db, (tx) =>
-      projectSmsProviderEventInTransaction(tx, eventId),
+      projectSmsProviderEventWithLocksInTransaction(tx, eventId),
     );
   } catch {
     return withSystem(db, async (tx) => {
@@ -1290,11 +1534,19 @@ export async function projectSmsProviderEvent(
   }
 }
 
+/** Transactional worker entry point used by recovery/concurrency orchestration. */
+export async function projectSmsProviderEventInTransaction(
+  tx: Database,
+  eventId: string,
+): Promise<{ outcome: SmsProviderEventProjectionOutcome }> {
+  return projectSmsProviderEventWithLocksInTransaction(tx, eventId);
+}
+
 export async function projectSmsProviderEventForLockedPracticeInTransaction(
   tx: Database,
   opts: { practiceId: string; eventId: string; force: true },
 ): Promise<{ outcome: SmsProviderEventProjectionOutcome }> {
-  return projectSmsProviderEventInTransaction(tx, opts.eventId, {
+  return projectSmsProviderEventWithLocksInTransaction(tx, opts.eventId, {
     lockedPracticeId: opts.practiceId,
     force: true,
   });
@@ -1359,7 +1611,8 @@ export async function processSmsProviderEventBatch(
     summary.pending +
     summary.retry +
     summary.blockedRecovery +
-    summary.quarantined;
+    summary.quarantined +
+    summary.conflicts;
   return result;
 }
 
@@ -1368,6 +1621,7 @@ type BacklogRow = {
   retry: number | string;
   blockedRecovery: number | string;
   quarantined: number | string;
+  conflicts: number | string;
   oldestUnresolvedAt: Date | string | null;
 };
 
@@ -1377,16 +1631,44 @@ export async function getSmsProviderEventBacklogSummary(
 ): Promise<SmsProviderEventBacklogSummary> {
   const load = async (database: Database) => {
     const result = await database.execute(sql`
+      with unresolved_conflicts as (
+        select conflict.received_at
+        from sms_provider_event_conflicts conflict
+        join sms_provider_events event
+          on event.id = conflict.original_event_id
+        where (
+            not exists (
+              select 1
+              from sms_provider_event_conflict_reviews review
+              where review.conflict_id = conflict.id
+            )
+            or not exists (
+              select 1
+              from sms_provider_event_resolutions resolution
+              where resolution.conflict_id = conflict.id
+            )
+          )
+          and (${opts.practiceId ?? null}::uuid is null or event.practice_id = ${opts.practiceId ?? null}::uuid)
+          and (${opts.since ?? null}::timestamptz is null or conflict.received_at >= ${opts.since ?? null}::timestamptz)
+      )
       select
         count(*) filter (where state = 'pending')::int as pending,
         count(*) filter (where state = 'retry')::int as retry,
         count(*) filter (where state = 'blocked_recovery')::int as "blockedRecovery",
         count(*) filter (where state = 'quarantined')::int as quarantined,
-        min(received_at) as "oldestUnresolvedAt"
-      from sms_provider_events
-      where state in ('pending', 'retry', 'blocked_recovery', 'quarantined')
-        and (${opts.practiceId ?? null}::uuid is null or practice_id = ${opts.practiceId ?? null}::uuid)
-        and (${opts.since ?? null}::timestamptz is null or received_at >= ${opts.since ?? null}::timestamptz)
+        (select count(*)::int from unresolved_conflicts) as conflicts,
+        least(
+          min(received_at),
+          (select min(received_at) from unresolved_conflicts)
+        ) as "oldestUnresolvedAt"
+      from sms_provider_events event
+      where event.state in ('pending', 'retry', 'blocked_recovery', 'quarantined')
+        and (
+          event.state <> 'quarantined'
+          or not ${smsProviderEventQuarantineIsRemediatedSql}
+        )
+        and (${opts.practiceId ?? null}::uuid is null or event.practice_id = ${opts.practiceId ?? null}::uuid)
+        and (${opts.since ?? null}::timestamptz is null or event.received_at >= ${opts.since ?? null}::timestamptz)
     `);
     const row = rowsFromExecute<BacklogRow>(result)[0];
     const oldest = row?.oldestUnresolvedAt;
@@ -1395,6 +1677,7 @@ export async function getSmsProviderEventBacklogSummary(
       retry: Number(row?.retry ?? 0),
       blockedRecovery: Number(row?.blockedRecovery ?? 0),
       quarantined: Number(row?.quarantined ?? 0),
+      conflicts: Number(row?.conflicts ?? 0),
       oldestUnresolvedAt:
         oldest instanceof Date ? oldest : oldest ? new Date(oldest) : null,
     };

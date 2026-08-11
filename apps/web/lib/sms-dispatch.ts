@@ -1,5 +1,15 @@
 import { createHash } from "node:crypto";
-import { and, desc, eq, gte, isNull, ne, sql } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gte,
+  isNotNull,
+  isNull,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
 import { db } from "@openpims/db/client";
 import type { Database } from "@openpims/db/client";
 import {
@@ -8,6 +18,9 @@ import {
   locationMessaging,
   messagingRegistrations,
   practices,
+  smsProviderEventConflicts,
+  smsProviderEventResolutions,
+  smsProviderEvents,
   smsSendAttemptEvents,
   smsSendAttempts,
   smsSuppressions,
@@ -50,6 +63,14 @@ export const SMS_COMPLIANCE_FOOTER = "Reply STOP to opt out or HELP for help.";
 export const SMS_MAX_BODY_LENGTH = 1600;
 export const SMS_AMBIGUITY_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
 export const SMS_RECONCILIATION_STALE_MS = 15 * 60 * 1000;
+
+class ProviderAttestedNoProjectionConflictError extends Error {
+  constructor() {
+    super(
+      "Accepted provider identity conflicts with audited no-projection evidence.",
+    );
+  }
+}
 
 const EMBEDDED_COMPLIANCE_COPY =
   /\breply\s+(?:stop|help)\b|\bstop\s+to\s+opt\s*out\b|\bhelp\s+for\s+help\b/i;
@@ -515,6 +536,11 @@ async function appendProviderResult(
   const normalized = normalizeProviderResult(result);
   if (normalized.status === "accepted") {
     await lockSmsDeliveryIdentity(tx, attempt.provider, normalized.id);
+    await assertAcceptedProviderIdentityAllowedInTransaction(
+      tx,
+      attempt.provider,
+      normalized.id,
+    );
   }
   await tx.insert(smsSendAttemptEvents).values({
     practiceId: attempt.practiceId,
@@ -560,6 +586,48 @@ async function appendProviderResult(
       { identityLockHeld: true },
     );
   }
+}
+
+async function assertAcceptedProviderIdentityAllowedInTransaction(
+  tx: Database,
+  provider: string,
+  providerMessageId: string,
+): Promise<void> {
+  const [blocked] = await tx
+    .select({ id: smsProviderEventResolutions.id })
+    .from(smsProviderEventResolutions)
+    .innerJoin(
+      smsProviderEvents,
+      eq(smsProviderEvents.id, smsProviderEventResolutions.eventId),
+    )
+    .leftJoin(
+      smsProviderEventConflicts,
+      eq(smsProviderEventConflicts.id, smsProviderEventResolutions.conflictId),
+    )
+    .where(
+      and(
+        eq(
+          smsProviderEventResolutions.resolution,
+          "provider_attested_no_projection",
+        ),
+        eq(smsProviderEvents.provider, provider),
+        or(
+          and(
+            isNull(smsProviderEventResolutions.conflictId),
+            eq(smsProviderEvents.providerMessageId, providerMessageId),
+          ),
+          and(
+            isNotNull(smsProviderEventResolutions.conflictId),
+            eq(
+              smsProviderEventConflicts.incomingProviderMessageId,
+              providerMessageId,
+            ),
+          ),
+        ),
+      ),
+    )
+    .limit(1);
+  if (blocked) throw new ProviderAttestedNoProjectionConflictError();
 }
 
 async function providerCall(
@@ -1344,6 +1412,11 @@ export async function reconcileSmsSendAttempt(options: {
           attempt.provider,
           providerMessageId,
         );
+        await assertAcceptedProviderIdentityAllowedInTransaction(
+          tx as unknown as Database,
+          attempt.provider,
+          providerMessageId,
+        );
       }
       const [event] = await tx
         .insert(smsSendAttemptEvents)
@@ -1430,6 +1503,12 @@ export async function reconcileSmsSendAttempt(options: {
     return result;
   } catch (error) {
     console.error("[messaging] SMS reconciliation failed", error);
+    if (error instanceof ProviderAttestedNoProjectionConflictError) {
+      return failure(
+        "Accepted provider identity conflicts with audited no-projection evidence; no reconciliation was recorded.",
+        { outcome: "outcome_unknown", attemptId: options.attemptId },
+      );
+    }
     return failure("Could not persist SMS reconciliation.");
   }
 }

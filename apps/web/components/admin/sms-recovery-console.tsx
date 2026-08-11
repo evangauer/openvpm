@@ -17,6 +17,7 @@ import { trpc } from "@/lib/trpc";
 const EMPTY_UUID = "00000000-0000-4000-8000-000000000000";
 const QUEUE_LIMIT = 25;
 const WITHHELD_PHONE_LIKE_OPERATIONAL_ID = "[withheld: phone-like identifier]";
+const PROVIDER_SUPPORT_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9_.:/#-]{2,254}$/;
 
 type AttemptSelection = {
   practiceId: string;
@@ -36,6 +37,32 @@ type DeliverySelection = {
     | "projection_miss";
   pendingHistoryId: string | null;
 };
+
+type ProviderEventSelection = {
+  eventId: string;
+  conflictId: string | null;
+  practiceId: string | null;
+  locationId: string | null;
+  provider: string;
+  kind: "inbound" | "delivery" | "a2p";
+  state:
+    | "pending"
+    | "retry"
+    | "blocked_recovery"
+    | "quarantined"
+    | "identity_conflict";
+  lastErrorCode: string | null;
+};
+
+type ProviderEventResolution =
+  | "authoritative_projection"
+  | "conservative_opt_out"
+  | "carrier_state_reconciled"
+  | "provider_attested_no_projection";
+
+type ProviderSupportReason =
+  | "provider_support_invalid_callback"
+  | "provider_support_duplicate_callback";
 
 type AttemptOutcome = "accepted" | "definite_failure";
 type DeliveryClassification = "sent" | "failed" | "delivered";
@@ -72,6 +99,72 @@ function safeProviderEvidenceId(value: string | null | undefined) {
   return looksLikePhoneNumber(value)
     ? WITHHELD_PHONE_LIKE_OPERATIONAL_ID
     : value;
+}
+
+function providerEventResolutionOptions(
+  selection: ProviderEventSelection | null,
+): Array<{ value: ProviderEventResolution; text: string }> {
+  if (!selection) return [];
+  const isConflict = Boolean(selection.conflictId);
+  if (!isConflict && selection.state !== "quarantined") return [];
+  if (selection.kind === "inbound") {
+    if (isConflict) {
+      return selection.practiceId && selection.locationId
+        ? [
+            {
+              value: "conservative_opt_out",
+              text: "Conservative opt-out for conflicting inbound evidence",
+            },
+          ]
+        : [];
+    }
+    if (!selection.practiceId || !selection.locationId) return [];
+    const options: Array<{
+      value: ProviderEventResolution;
+      text: string;
+    }> = [
+      {
+        value: "authoritative_projection",
+        text: "Repair and verify inbound projection",
+      },
+    ];
+    if (
+      selection.practiceId &&
+      selection.locationId &&
+      (selection.lastErrorCode === "sender_identity_drift" ||
+        selection.lastErrorCode === "immutable_attribution_drift")
+    ) {
+      options.push({
+        value: "conservative_opt_out",
+        text: "Conservative opt-out after sender identity drift",
+      });
+    }
+    return options;
+  }
+  if (selection.kind === "a2p") {
+    return selection.practiceId
+      ? [
+          {
+            value: "carrier_state_reconciled",
+            text: "Read back and reconcile current carrier state",
+          },
+        ]
+      : [];
+  }
+  return [
+    ...(selection.practiceId
+      ? [
+          {
+            value: "authoritative_projection" as const,
+            text: "Repair and verify delivery projection",
+          },
+        ]
+      : []),
+    {
+      value: "provider_attested_no_projection",
+      text: "Provider-attested invalid or duplicate callback",
+    },
+  ];
 }
 
 function EvidenceId({
@@ -174,6 +267,21 @@ export function SmsRecoveryConsole() {
     useState<AttemptSelection | null>(null);
   const [deliverySelection, setDeliverySelection] =
     useState<DeliverySelection | null>(null);
+  const [providerEventSelection, setProviderEventSelection] =
+    useState<ProviderEventSelection | null>(null);
+  const [providerEventResolution, setProviderEventResolution] = useState<
+    ProviderEventResolution | ""
+  >("");
+  const [providerEventOperationId, setProviderEventOperationId] = useState<
+    string | null
+  >(null);
+  const [providerEventReviewed, setProviderEventReviewed] = useState(false);
+  const [providerSupportReference, setProviderSupportReference] = useState("");
+  const [providerSupportReason, setProviderSupportReason] = useState<
+    ProviderSupportReason | ""
+  >("");
+  const [providerAttestationConfirmed, setProviderAttestationConfirmed] =
+    useState(false);
   const [attemptOutcome, setAttemptOutcome] = useState<AttemptOutcome | "">("");
   const [attemptEvidence, setAttemptEvidence] = useState("");
   const [providerMessageId, setProviderMessageId] = useState("");
@@ -209,6 +317,11 @@ export function SmsRecoveryConsole() {
     },
     { enabled: Boolean(deliverySelection), retry: false },
   );
+  const providerEventResolutionHistory =
+    trpc.admin.smsProviderEventResolutionHistory.useQuery(
+      { limit: QUEUE_LIMIT },
+      { retry: false },
+    );
 
   const effectiveAttemptEvent = useMemo(() => {
     const events = attemptDetail.data?.events ?? [];
@@ -226,6 +339,7 @@ export function SmsRecoveryConsole() {
       utils.admin.smsSendAttemptQueue.invalidate(),
       utils.admin.smsDeliveryEventQueue.invalidate(),
       utils.admin.smsProviderEventQueue.invalidate(),
+      utils.admin.smsProviderEventResolutionHistory.invalidate(),
       utils.admin.smsOperationsHealth.invalidate(),
     ]);
   };
@@ -307,10 +421,43 @@ export function SmsRecoveryConsole() {
       setActionError(error.message);
     },
   });
+  const resolveProviderEvent = trpc.admin.resolveSmsProviderEvent.useMutation({
+    onSuccess: (result) => {
+      setActionError(null);
+      setActionMessage(
+        `${result.duplicate ? "Existing" : "New"} audited ${label(result.resolution)} evidence is recorded for the exact provider incident.`,
+      );
+      setProviderEventReviewed(false);
+      setProviderAttestationConfirmed(false);
+      setProviderEventOperationId(operationId());
+      refreshQueues();
+    },
+    onError: (error) => {
+      setActionMessage(null);
+      setActionError(error.message);
+    },
+  });
+  const reconcileProviderA2p =
+    trpc.admin.reconcileMessagingRegistration.useMutation({
+      onSuccess: (result) => {
+        setActionError(null);
+        setActionMessage(
+          `Current carrier state was read back and ${result.resolutionId ? "audited resolution evidence was recorded" : "reconciliation evidence was recorded"}.`,
+        );
+        setProviderEventReviewed(false);
+        setProviderEventOperationId(operationId());
+        refreshQueues();
+      },
+      onError: (error) => {
+        setActionMessage(null);
+        setActionError(error.message);
+      },
+    });
 
   const selectAttempt = (selection: AttemptSelection) => {
     setAttemptSelection(selection);
     setDeliverySelection(null);
+    setProviderEventSelection(null);
     setAttemptOutcome("");
     setAttemptEvidence("");
     setProviderMessageId("");
@@ -326,10 +473,25 @@ export function SmsRecoveryConsole() {
   const selectDelivery = (selection: DeliverySelection) => {
     setDeliverySelection(selection);
     setAttemptSelection(null);
+    setProviderEventSelection(null);
     setDeliveryReason("");
     setDeliveryClassification("");
     setDeliveryReviewed(false);
     setDeliveryReconciliationId(operationId());
+    setActionMessage(null);
+    setActionError(null);
+  };
+
+  const selectProviderEvent = (selection: ProviderEventSelection) => {
+    setProviderEventSelection(selection);
+    setAttemptSelection(null);
+    setDeliverySelection(null);
+    setProviderEventResolution("");
+    setProviderEventOperationId(operationId());
+    setProviderEventReviewed(false);
+    setProviderSupportReference("");
+    setProviderSupportReason("");
+    setProviderAttestationConfirmed(false);
     setActionMessage(null);
     setActionError(null);
   };
@@ -389,6 +551,28 @@ export function SmsRecoveryConsole() {
     (deliveryReason !== "provider_portal_status_review" ||
       deliveryClassification) &&
     !reconcileDelivery.isPending,
+  );
+  const providerEventResolutionOptionsForSelection =
+    providerEventResolutionOptions(providerEventSelection);
+  const providerSupportReferenceInvalid = Boolean(
+    providerSupportReference &&
+    (!PROVIDER_SUPPORT_REFERENCE.test(providerSupportReference) ||
+      looksLikePhoneNumber(providerSupportReference)),
+  );
+  const providerAttestationReady =
+    providerEventResolution !== "provider_attested_no_projection" ||
+    (providerSupportReference.trim().length >= 3 &&
+      !providerSupportReferenceInvalid &&
+      Boolean(providerSupportReason) &&
+      providerAttestationConfirmed);
+  const canResolveProviderEvent = Boolean(
+    providerEventSelection &&
+    providerEventOperationId &&
+    providerEventResolution &&
+    providerEventReviewed &&
+    providerAttestationReady &&
+    !resolveProviderEvent.isPending &&
+    !reconcileProviderA2p.isPending,
   );
 
   return (
@@ -452,11 +636,14 @@ export function SmsRecoveryConsole() {
                     <th className="px-3 py-2 font-medium">Clinic / location</th>
                     <th className="px-3 py-2 font-medium">Kind / state</th>
                     <th className="px-3 py-2 font-medium">Redacted evidence</th>
+                    <th className="px-3 py-2 font-medium">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
                   {providerEventQueue.data.items.map((item, index) => (
-                    <tr key={`${item.eventId}:${item.state}:${index}`}>
+                    <tr
+                      key={`${item.eventId}:${item.conflictId ?? item.state}:${index}`}
+                    >
                       <td className="px-3 py-2 align-top">
                         <p>{formatTimestamp(item.receivedAt)}</p>
                         {item.stale ? (
@@ -481,16 +668,58 @@ export function SmsRecoveryConsole() {
                         <p className="break-all font-mono text-xs">
                           event {item.eventId}
                         </p>
+                        {item.conflictId ? (
+                          <p className="mt-1 break-all font-mono text-xs">
+                            conflict {item.conflictId}
+                          </p>
+                        ) : null}
                         <p className="mt-1 text-xs text-muted-foreground">
                           reason {item.lastErrorCode ?? "—"}
                         </p>
+                      </td>
+                      <td className="px-3 py-2 align-top">
+                        {providerEventResolutionOptions({
+                          eventId: item.eventId,
+                          conflictId: item.conflictId,
+                          practiceId: item.practiceId,
+                          locationId: item.locationId,
+                          provider: item.provider,
+                          kind: item.kind,
+                          state: item.state,
+                          lastErrorCode: item.lastErrorCode,
+                        }).length ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              selectProviderEvent({
+                                eventId: item.eventId,
+                                conflictId: item.conflictId,
+                                practiceId: item.practiceId,
+                                locationId: item.locationId,
+                                provider: item.provider,
+                                kind: item.kind,
+                                state: item.state,
+                                lastErrorCode: item.lastErrorCode,
+                              })
+                            }
+                          >
+                            Review incident
+                            <ChevronRight className="ml-1 h-4 w-4" />
+                          </Button>
+                        ) : (
+                          <span className="text-xs font-medium text-amber-700">
+                            Projection or attribution required
+                          </span>
+                        )}
                       </td>
                     </tr>
                   ))}
                   {providerEventQueue.data.items.length === 0 ? (
                     <tr>
                       <td
-                        colSpan={4}
+                        colSpan={5}
                         className="px-3 py-6 text-center text-muted-foreground"
                       >
                         No provider events need projection or operator review.
@@ -509,6 +738,296 @@ export function SmsRecoveryConsole() {
         ) : (
           <p className="mt-3 text-sm text-muted-foreground">
             Loading provider-event evidence…
+          </p>
+        )}
+      </div>
+
+      {providerEventSelection ? (
+        <div className="mt-6 rounded-md border border-amber-300 bg-amber-50 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="font-semibold text-amber-950">
+                Exact provider-event incident
+              </h3>
+              <p className="mt-1 break-all font-mono text-xs text-amber-900">
+                event {providerEventSelection.eventId}
+              </p>
+              {providerEventSelection.conflictId ? (
+                <p className="mt-1 break-all font-mono text-xs text-amber-900">
+                  conflict {providerEventSelection.conflictId}
+                </p>
+              ) : null}
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() => setProviderEventSelection(null)}
+            >
+              Close
+            </Button>
+          </div>
+          <p className="mt-3 text-xs text-amber-950">
+            {label(providerEventSelection.kind)} ·{" "}
+            {providerEventSelection.provider} ·{" "}
+            {label(providerEventSelection.state)} · reason{" "}
+            {providerEventSelection.lastErrorCode ?? "—"}. Only modes permitted
+            for this exact incident are shown. The backend re-locks and
+            revalidates attribution and evidence before recording a resolution.
+          </p>
+          <label className="mt-4 block text-xs font-medium text-amber-950">
+            Audited resolution
+            <select
+              className={`${selectClassName} mt-1 bg-background`}
+              value={providerEventResolution}
+              onChange={(event) => {
+                setProviderEventResolution(
+                  event.target.value as ProviderEventResolution | "",
+                );
+                setProviderEventReviewed(false);
+                setProviderAttestationConfirmed(false);
+              }}
+            >
+              <option value="">Choose an allowed resolution</option>
+              {providerEventResolutionOptionsForSelection.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.text}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {providerEventResolution === "carrier_state_reconciled" ? (
+            <p className="mt-3 rounded-md border border-amber-300 bg-background px-3 py-2 text-xs text-amber-950">
+              This performs a current carrier readback while the exact clinic is
+              recovery-locked, appends registration evidence under this
+              operation UUID, and keeps the sender disabled until ordinary
+              readiness checks pass.
+            </p>
+          ) : null}
+
+          {providerEventResolution === "provider_attested_no_projection" ? (
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
+              <label className="text-xs font-medium text-amber-950">
+                Provider support ticket/reference
+                <Input
+                  className="mt-1 bg-background font-mono"
+                  value={providerSupportReference}
+                  maxLength={255}
+                  autoComplete="off"
+                  aria-invalid={providerSupportReferenceInvalid}
+                  placeholder="TICKET-12345"
+                  onChange={(event) => {
+                    setProviderSupportReference(event.target.value);
+                    setProviderAttestationConfirmed(false);
+                  }}
+                />
+              </label>
+              <label className="text-xs font-medium text-amber-950">
+                Provider-supported finding
+                <select
+                  className={`${selectClassName} mt-1 bg-background`}
+                  value={providerSupportReason}
+                  onChange={(event) => {
+                    setProviderSupportReason(
+                      event.target.value as ProviderSupportReason | "",
+                    );
+                    setProviderAttestationConfirmed(false);
+                  }}
+                >
+                  <option value="">Choose provider finding</option>
+                  <option value="provider_support_invalid_callback">
+                    Invalid callback; no tenant projection
+                  </option>
+                  <option value="provider_support_duplicate_callback">
+                    Duplicate callback; no new tenant projection
+                  </option>
+                </select>
+              </label>
+              {providerSupportReferenceInvalid ? (
+                <p className="text-xs font-medium text-destructive md:col-span-2">
+                  Phone-like values cannot be used as provider support evidence.
+                </p>
+              ) : null}
+              <label className="flex items-start gap-2 text-xs text-amber-950 md:col-span-2">
+                <Checkbox
+                  checked={providerAttestationConfirmed}
+                  onChange={(event) =>
+                    setProviderAttestationConfirmed(event.target.checked)
+                  }
+                />
+                <span>
+                  I explicitly attest that provider support verified this exact
+                  delivery callback requires no tenant projection, and the
+                  reference contains no phone number, message, client name, or
+                  PHI.
+                </span>
+              </label>
+            </div>
+          ) : null}
+
+          <label className="mt-4 flex items-start gap-2 text-xs text-amber-950">
+            <Checkbox
+              checked={providerEventReviewed}
+              onChange={(event) =>
+                setProviderEventReviewed(event.target.checked)
+              }
+            />
+            <span>
+              I selected this exact event
+              {providerEventSelection.conflictId ? " and conflict" : ""},
+              reviewed the redacted incident state, and understand this appends
+              immutable resolution evidence. Conflict review alone does not
+              clear the incident.
+            </span>
+          </label>
+          <p className="mt-3 break-all font-mono text-[11px] text-amber-900">
+            Resolution UUID: {providerEventOperationId}
+          </p>
+          <Button
+            type="button"
+            className="mt-3"
+            disabled={!canResolveProviderEvent}
+            onClick={() => {
+              if (
+                !providerEventOperationId ||
+                !providerEventResolution ||
+                !providerEventSelection
+              ) {
+                return;
+              }
+              if (
+                !window.confirm(
+                  `Apply ${label(providerEventResolution)} to exact provider event ${providerEventSelection.eventId}${providerEventSelection.conflictId ? ` and conflict ${providerEventSelection.conflictId}` : ""}? This appends immutable audited evidence.`,
+                )
+              ) {
+                return;
+              }
+              setActionError(null);
+              setActionMessage(null);
+              if (providerEventResolution === "carrier_state_reconciled") {
+                if (!providerEventSelection.practiceId) return;
+                reconcileProviderA2p.mutate({
+                  practiceId: providerEventSelection.practiceId,
+                  remediation: {
+                    providerEventId: providerEventSelection.eventId,
+                    conflictId: providerEventSelection.conflictId ?? undefined,
+                    operationId: providerEventOperationId,
+                  },
+                });
+                return;
+              }
+              if (
+                providerEventResolution === "provider_attested_no_projection"
+              ) {
+                if (!providerSupportReason) return;
+                resolveProviderEvent.mutate({
+                  eventId: providerEventSelection.eventId,
+                  conflictId: providerEventSelection.conflictId,
+                  operationId: providerEventOperationId,
+                  resolution: providerEventResolution,
+                  externalEvidenceReference: providerSupportReference.trim(),
+                  reasonCode: providerSupportReason,
+                  providerAttestationConfirmed: true,
+                });
+                return;
+              }
+              resolveProviderEvent.mutate({
+                eventId: providerEventSelection.eventId,
+                conflictId: providerEventSelection.conflictId,
+                operationId: providerEventOperationId,
+                resolution: providerEventResolution,
+              });
+            }}
+          >
+            <ShieldCheck className="mr-2 h-4 w-4" />
+            Apply audited resolution
+          </Button>
+        </div>
+      ) : null}
+
+      <div className="mt-5">
+        <h3 className="text-sm font-semibold">
+          Provider-event resolution history
+        </h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Newest {QUEUE_LIMIT} immutable resolution records. This view contains
+          operational UUIDs and resolution classifications only; message,
+          sender, provider detail, and PHI fields are excluded server-side.
+        </p>
+        {providerEventResolutionHistory.error ? (
+          <QueueError>
+            Could not load provider-event resolution history.
+          </QueueError>
+        ) : providerEventResolutionHistory.data ? (
+          <>
+            <div className="mt-3 overflow-x-auto rounded-md border border-border">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-border bg-muted/30 text-left text-muted-foreground">
+                    <th className="px-3 py-2 font-medium">Resolved</th>
+                    <th className="px-3 py-2 font-medium">Incident</th>
+                    <th className="px-3 py-2 font-medium">
+                      Resolution / evidence
+                    </th>
+                    <th className="px-3 py-2 font-medium">Operator</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {providerEventResolutionHistory.data.events.map((item) => (
+                    <tr key={item.resolutionId}>
+                      <td className="px-3 py-2 align-top">
+                        {formatTimestamp(item.resolvedAt)}
+                      </td>
+                      <td className="px-3 py-2 align-top">
+                        <p className="break-all font-mono">
+                          event {item.eventId}
+                        </p>
+                        <p className="mt-1 break-all font-mono text-muted-foreground">
+                          conflict {item.conflictId ?? "—"}
+                        </p>
+                      </td>
+                      <td className="px-3 py-2 align-top capitalize">
+                        {label(item.kind)} · {label(item.resolution)}
+                        <p className="mt-1 text-muted-foreground">
+                          {label(item.reasonCode)} · {label(item.evidenceType)}
+                        </p>
+                        {item.externalEvidenceReference ? (
+                          <p className="mt-1 break-all font-mono text-muted-foreground">
+                            reference{" "}
+                            {safeProviderEvidenceId(
+                              item.externalEvidenceReference,
+                            )}
+                          </p>
+                        ) : null}
+                      </td>
+                      <td className="px-3 py-2 align-top">
+                        {item.operatorLabel}
+                      </td>
+                    </tr>
+                  ))}
+                  {providerEventResolutionHistory.data.events.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={4}
+                        className="px-3 py-5 text-center text-muted-foreground"
+                      >
+                        No provider-event resolutions are recorded.
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+            {providerEventResolutionHistory.data.truncated ? (
+              <p className="mt-2 text-xs font-medium text-amber-700">
+                Resolution history is bounded to the newest {QUEUE_LIMIT} rows.
+              </p>
+            ) : null}
+          </>
+        ) : (
+          <p className="mt-3 text-sm text-muted-foreground">
+            Loading provider-event resolution history…
           </p>
         )}
       </div>

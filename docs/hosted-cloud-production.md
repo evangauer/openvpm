@@ -278,10 +278,28 @@ Use these fixed thresholds and responses:
 - **Provider-event projection:** pending/retry work older than 15 minutes and
   recovery-blocked work are P1. A quarantined event or unreviewed provider-event
   identity conflict is P0 and keeps activation closed. A conflict review clears
-  only the identity-conflict alert: the original event remains quarantined and
-  still blocks activation/recovery release until a separate audited remediation
-  safely resolves the event. For STOP evidence, consent/suppression projection
-  must be authoritative before any remediation can reopen sending.
+  only the identity-conflict alert; it never clears the incident by itself. Use
+  the platform-admin **SMS evidence recovery** console to select the exact event
+  and, when present, the exact conflict. The console offers only the resolution
+  supported by durable evidence:
+
+  - inbound projection repair must produce the exact communication and any
+    required START/STOP consent event;
+  - conflicting inbound evidence is resolved conservatively as a system-actor
+    opt-out with an active suppression;
+  - A2P evidence requires a current read-only carrier reconciliation and leaves
+    every sender disabled and unready; and
+  - delivery-only closure requires an explicit provider-support finding and a
+    bounded reference containing no phone number, message, client name, or PHI.
+
+  Each action uses a fresh operation UUID and appends an immutable resolution
+  row; it never changes or deletes the terminal provider event. A later conflict
+  reopens the gate until that new conflict has both review and resolution
+  evidence. During practice recovery, audited remediation is serialized under
+  the practice row lock and may append proof while the hold remains set. Recovery
+  release, provider-profile activation, clinic sender enablement, and final SMS
+  dispatch all remain blocked until the base incident and every conflict have
+  their required evidence.
 
 Alerts contain only bounded counts and reason codes. They must not contain phone
 numbers, recipients, message bodies, clinic/patient/client names, raw provider

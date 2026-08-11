@@ -127,6 +127,11 @@ describe("SMS delivery evidence and monotone reducer", () => {
     expect(providerResult.indexOf("lockSmsDeliveryIdentity(")).toBeLessThan(
       providerResult.indexOf(".insert(smsSendAttemptEvents)"),
     );
+    expect(
+      providerResult.indexOf(
+        "assertAcceptedProviderIdentityAllowedInTransaction(",
+      ),
+    ).toBeLessThan(providerResult.indexOf(".insert(smsSendAttemptEvents)"));
     expect(providerResult).toContain("identityLockHeld: true");
 
     const reconciliation = SMS_DISPATCH_SOURCE.slice(
@@ -142,7 +147,31 @@ describe("SMS delivery evidence and monotone reducer", () => {
     );
     expect(lockAt).toBeGreaterThan(0);
     expect(acceptedInsertAt).toBeGreaterThan(lockAt);
+    expect(
+      reconciliation.indexOf(
+        "assertAcceptedProviderIdentityAllowedInTransaction(",
+        lockAt,
+      ),
+    ).toBeGreaterThan(lockAt);
     expect(reconciliation).toContain("identityLockHeld: true");
+  });
+
+  it("blocks base and conflict-scoped no-projection identities after the delivery lock", () => {
+    const guard = SMS_DISPATCH_SOURCE.slice(
+      SMS_DISPATCH_SOURCE.indexOf(
+        "async function assertAcceptedProviderIdentityAllowedInTransaction",
+      ),
+      SMS_DISPATCH_SOURCE.indexOf("async function providerCall"),
+    );
+    expect(guard).toContain('"provider_attested_no_projection"');
+    expect(guard).toContain("smsProviderEvents.providerMessageId");
+    expect(guard).toContain(
+      "smsProviderEventConflicts.incomingProviderMessageId",
+    );
+    expect(guard).toContain("isNull(smsProviderEventResolutions.conflictId)");
+    expect(guard).toContain(
+      "isNotNull(smsProviderEventResolutions.conflictId)",
+    );
   });
 
   it("defines the full reducer domain", () => {

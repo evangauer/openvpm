@@ -6,6 +6,7 @@ import { db } from "./client";
 // Order doesn't matter with CASCADE, but we TRUNCATE every table the seed touches.
 // RESTART IDENTITY resets any serial sequences (none in this schema, but cheap).
 const TABLES = [
+  "sms_provider_event_resolutions",
   "messaging_registration_events",
   "sms_provider_event_conflict_reviews",
   "sms_provider_event_conflicts",

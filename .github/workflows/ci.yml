@@ -87,6 +87,22 @@ jobs:
           SMS_QUEUE_DB_INTEGRATION: "1"
         run: pnpm --filter @openpims/web exec vitest run lib/messaging/__tests__/sms-operations-queues.integration.test.ts
 
+      # Execute the immutable provider-resolution insert validations and
+      # evidence assertions against the fully migrated disposable database.
+      - name: Execute SMS provider-resolution database contract
+        run: pnpm --filter @openpims/db db:sms-provider-resolutions:test
+
+      # Exercise real PostgreSQL row/advisory locks, savepoints, and durable
+      # event convergence with synthetic data only. No provider adapter is
+      # imported or called, and every hosted SMS capability remains disabled.
+      - name: Execute provider-free SMS concurrency drill
+        env:
+          SMS_CONCURRENCY_DB_INTEGRATION: "1"
+          MESSAGING_PROVISIONING_ENABLED: "false"
+          MESSAGING_INBOUND_ENABLED: "false"
+          MESSAGING_SENDING_ENABLED: "false"
+        run: pnpm --filter @openpims/web exec vitest run lib/messaging/__tests__/sms-concurrency-drill.integration.test.ts
+
       # The reminder sweep is a candidate list. Prove against real PostgreSQL
       # that dispatch-time revalidation honors clinic enablement, each clinic's
       # lead window, cancellation, and rescheduling before a provider claim.

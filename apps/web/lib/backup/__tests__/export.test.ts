@@ -572,6 +572,7 @@ describe("summarizePracticeExport", () => {
     expect(sections).not.toContain("smsProviderEvents");
     expect(sections).not.toContain("smsProviderEventConflicts");
     expect(sections).not.toContain("smsProviderEventConflictReviews");
+    expect(sections).not.toContain("smsProviderEventResolutions");
     expect(PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.usageRecords).toContain("billing");
     expect(
       PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.practiceConversionMilestones,
@@ -606,6 +607,9 @@ describe("summarizePracticeExport", () => {
     expect(
       PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.smsProviderEventConflictReviews,
     ).toContain("operator review evidence");
+    expect(
+      PRACTICE_EXPORT_SYSTEM_EXCLUSIONS.smsProviderEventResolutions,
+    ).toContain("remediation evidence");
   });
 
   it("counts present sections and reports missing sections", () => {

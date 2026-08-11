@@ -113,6 +113,26 @@ const base = {
 beforeEach(() => vi.clearAllMocks());
 
 describe("atomic inbound SMS projection", () => {
+  it("does not reacquire the recipient advisory after the provider event caller already holds it", async () => {
+    const { tx, state } = fakeTransaction({
+      selects: [[{ id: "client-1" }]],
+    });
+
+    await expect(
+      projectInboundSmsReplyInTransaction(tx, {
+        ...base,
+        text: "Can we move tomorrow's appointment?",
+        classification: "other",
+        recipientLockAlreadyHeld: true,
+      }),
+    ).resolves.toEqual({ ok: true, action: "logged" });
+
+    expect(state.executes).toHaveLength(0);
+    expect(state.inserts).toContainEqual(
+      expect.objectContaining({ table: "communications" }),
+    );
+  });
+
   it("applies STOP evidence, suppression, client revocation, and communication together", async () => {
     const { tx, state } = fakeTransaction({
       selects: [[], [{ id: "client-1" }]],

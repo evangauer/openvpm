@@ -167,21 +167,27 @@ describe("SMS provider event durability contracts", () => {
     expect(intake).not.toContain('original.state === "projected" ||');
   });
 
-  it("locks practice rows before event rows during projection", () => {
+  it("uses practice, sender identity, recipient, event lock order during inbound projection", () => {
     const projection = functionSource(
       SERVICE_SOURCE,
-      "async function projectSmsProviderEventInTransaction(",
+      "async function projectSmsProviderEventWithLocksInTransaction(",
       "export async function projectSmsProviderEvent(",
     );
     expect(projection.indexOf("lockPracticeStatesInTransaction")).toBeLessThan(
-      projection.indexOf('.for("update")'),
-    );
-    expect(projection.indexOf('.for("update")')).toBeLessThan(
       projection.indexOf("lockMessagingLocationIdentityInTransaction"),
     );
     expect(
       projection.indexOf("lockMessagingLocationIdentityInTransaction"),
-    ).toBeLessThan(projection.indexOf("projectLockedEventInTransaction"));
+    ).toBeLessThan(projection.indexOf("acquireSmsRecipientLockInTransaction"));
+    expect(
+      projection.indexOf("acquireSmsRecipientLockInTransaction"),
+    ).toBeLessThan(projection.indexOf('.for("update")'));
+    expect(projection.indexOf('.for("update")')).toBeLessThan(
+      projection.indexOf("resolveStoredEventInTransaction(tx, event)"),
+    );
+    expect(projection).toContain(
+      "inboundRecipientLockAlreadyHeld: inboundRecipientLockHeld",
+    );
   });
 
   it("never silently consumes supported unresolved inbound or A2P evidence", () => {
@@ -232,7 +238,7 @@ describe("SMS provider event durability contracts", () => {
 
   it("counts held and quarantined work in bounded-worker remaining", () => {
     expect(SERVICE_SOURCE).toMatch(
-      /result\.remaining\s*=\s*summary\.pending\s*\+\s*summary\.retry\s*\+\s*summary\.blockedRecovery\s*\+\s*summary\.quarantined/,
+      /result\.remaining\s*=\s*summary\.pending\s*\+\s*summary\.retry\s*\+\s*summary\.blockedRecovery\s*\+\s*summary\.quarantined\s*\+\s*summary\.conflicts/,
     );
   });
 });

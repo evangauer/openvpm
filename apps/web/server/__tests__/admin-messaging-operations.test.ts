@@ -46,6 +46,7 @@ const mocks = vi.hoisted(() => {
   return {
     db,
     select,
+    selectFor,
     selectResults,
     selectLimit,
     update,
@@ -72,6 +73,15 @@ const mocks = vi.hoisted(() => {
     ensureMessagingProfileAutoresponses: vi.fn(async () => []),
     messagingProfileAutoresponsesForClinic: vi.fn(() => []),
     lockPracticeForExternalSideEffects: vi.fn(async () => true),
+    resolveSmsProviderEvent: vi.fn(async () => ({
+      resolutionId: "00000000-0000-0000-0000-000000000020",
+      eventId: "00000000-0000-0000-0000-000000000021",
+      conflictId: null,
+      practiceId: "00000000-0000-0000-0000-0000000000aa",
+      resolution: "provider_attested_no_projection",
+      duplicate: false,
+    })),
+    loadSmsProviderEventResolutionHistory: vi.fn(),
     MockTelnyxError,
     withTenant: vi.fn(
       async (
@@ -98,6 +108,12 @@ vi.mock("@/lib/audit", () => ({
 vi.mock("@/lib/recovery-hold", () => ({
   RECOVERY_HOLD_BLOCK_MESSAGE: "recovery hold",
   lockPracticeForExternalSideEffects: mocks.lockPracticeForExternalSideEffects,
+}));
+vi.mock("@/lib/messaging/sms-provider-event-remediation", () => ({
+  resolveSmsProviderEvent: mocks.resolveSmsProviderEvent,
+  resolveSmsProviderEventInTransaction: mocks.resolveSmsProviderEvent,
+  loadSmsProviderEventResolutionHistory:
+    mocks.loadSmsProviderEventResolutionHistory,
 }));
 vi.mock("@/lib/messaging/telnyx-provisioning", () => ({
   createA2pBrand: mocks.createA2pBrand,
@@ -194,9 +210,82 @@ afterEach(() => {
   ]);
   mocks.db.execute.mockResolvedValue(undefined);
   mocks.selectResults.length = 0;
+  mocks.resolveSmsProviderEvent.mockResolvedValue({
+    resolutionId: "00000000-0000-0000-0000-000000000020",
+    eventId: "00000000-0000-0000-0000-000000000021",
+    conflictId: null,
+    practiceId: PRACTICE_ID,
+    resolution: "provider_attested_no_projection",
+    duplicate: false,
+  });
+  mocks.loadSmsProviderEventResolutionHistory.mockResolvedValue({
+    cacheControl: "no-store",
+    events: [],
+    truncated: false,
+  });
 });
 
 describe("platform messaging operations", () => {
+  it("binds provider-event remediation to a redacted platform operator and explicit attestation", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+    const eventId = "00000000-0000-0000-0000-000000000021";
+    const operationId = "00000000-0000-0000-0000-000000000022";
+
+    await expect(
+      caller().resolveSmsProviderEvent({
+        eventId,
+        operationId,
+        resolution: "provider_attested_no_projection",
+        reasonCode: "provider_support_invalid_callback",
+        externalEvidenceReference: "support-ticket:TEL-2048",
+        providerAttestationConfirmed: true,
+      }),
+    ).resolves.toMatchObject({ eventId, duplicate: false });
+
+    expect(mocks.resolveSmsProviderEvent).toHaveBeenCalledWith({
+      eventId,
+      conflictId: null,
+      operationId,
+      resolution: "provider_attested_no_projection",
+      reasonCode: "provider_support_invalid_callback",
+      externalEvidenceReference: "support-ticket:TEL-2048",
+      providerAttestationConfirmed: true,
+      actorIdentity: "o***@example.com",
+      actorName: "Ops",
+    });
+  });
+
+  it("rejects provider-event remediation without platform-admin authorization", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+    await expect(
+      caller("clinic@example.com").resolveSmsProviderEvent({
+        eventId: "00000000-0000-0000-0000-000000000021",
+        operationId: "00000000-0000-0000-0000-000000000022",
+        resolution: "conservative_opt_out",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.resolveSmsProviderEvent).not.toHaveBeenCalled();
+  });
+
+  it("returns PHI-free provider-event resolution history through no-store", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+    await expect(
+      caller().smsProviderEventResolutionHistory({
+        practiceId: PRACTICE_ID,
+        limit: 25,
+      }),
+    ).resolves.toEqual({
+      cacheControl: "no-store",
+      events: [],
+      truncated: false,
+    });
+    expect(mocks.loadSmsProviderEventResolutionHistory).toHaveBeenCalledWith(
+      mocks.db,
+      { practiceId: PRACTICE_ID, limit: 25 },
+    );
+    expect(mocks.noStore).toHaveBeenCalled();
+  });
+
   it("returns actionable SMS credential shapes without secret values", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
     vi.stubEnv("MESSAGING_PROVIDER", "telnyx");
@@ -600,7 +689,12 @@ describe("platform messaging operations", () => {
 
   it("fails reconciliation closed when attached provider identities do not match", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
-    mocks.selectResults.push([activeRegistration()], []);
+    mocks.selectResults.push(
+      [activeRegistration()],
+      [],
+      [],
+      [{ id: "00000000-0000-0000-0000-000000000012" }],
+    );
     mocks.getA2pBrand.mockResolvedValue({
       brandId: "brand-123",
       identityStatus: "VERIFIED",
@@ -637,6 +731,98 @@ describe("platform messaging operations", () => {
         providerProfileReady: false,
       }),
     );
+  });
+
+  it("allows exact A2P remediation while recovery is held and records operation-bound evidence", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+    const eventId = "00000000-0000-4000-8000-000000000021";
+    const operationId = "00000000-0000-4000-8000-000000000022";
+    const evidenceId = "00000000-0000-4000-8000-000000000023";
+    mocks.selectFor.mockResolvedValueOnce([{ recoveryHold: true }]);
+    mocks.selectResults.push(
+      [],
+      [
+        {
+          id: eventId,
+          practiceId: PRACTICE_ID,
+          kind: "a2p",
+          state: "quarantined",
+          lastErrorCode: "projection_retry_exhausted",
+          locationId: null,
+          a2pPhoneE164: null,
+        },
+      ],
+      [activeRegistration()],
+      [],
+      [],
+      [{ id: evidenceId }],
+    );
+    mocks.getA2pBrand.mockResolvedValue({
+      brandId: "brand-123",
+      identityStatus: "VERIFIED",
+      status: null,
+      failureReasons: null,
+      displayName: "Healthy Pets",
+      entityType: "PRIVATE_PROFIT",
+      country: "US",
+      companyName: "Healthy Pets LLC",
+      website: "https://healthy.example",
+    });
+    mocks.getA2pCampaign.mockResolvedValue({
+      campaignId: "campaign-123",
+      brandId: "brand-123",
+      referenceId: `openvpm-clinic-${PRACTICE_ID}`,
+      status: "ACTIVE",
+      campaignStatus: "MNO_PROVISIONED",
+      submissionStatus: null,
+      failureReasons: null,
+    });
+    mocks.resolveSmsProviderEvent.mockResolvedValueOnce({
+      resolutionId: "00000000-0000-4000-8000-000000000024",
+      eventId,
+      conflictId: null,
+      practiceId: PRACTICE_ID,
+      resolution: "carrier_state_reconciled",
+      duplicate: false,
+    });
+
+    await expect(
+      caller().reconcileMessagingRegistration({
+        practiceId: PRACTICE_ID,
+        remediation: { providerEventId: eventId, operationId },
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      messagingRegistrationEventId: evidenceId,
+      duplicate: false,
+    });
+
+    expect(mocks.resolveSmsProviderEvent).toHaveBeenCalledWith(
+      mocks.db,
+      expect.objectContaining({
+        eventId,
+        operationId,
+        resolution: "carrier_state_reconciled",
+        messagingRegistrationEventId: evidenceId,
+      }),
+      { lockedPracticeId: PRACTICE_ID },
+    );
+    expect(mocks.createA2pBrand).not.toHaveBeenCalled();
+    expect(mocks.createA2pCampaign).not.toHaveBeenCalled();
+    expect(mocks.ensureA2pNumberAssignment).not.toHaveBeenCalled();
+    expect(mocks.updateMessagingProfileEnabled).not.toHaveBeenCalled();
+  });
+
+  it("keeps ordinary carrier reconciliation blocked during recovery", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+    mocks.selectFor.mockResolvedValueOnce([{ recoveryHold: true }]);
+
+    await expect(
+      caller().reconcileMessagingRegistration({ practiceId: PRACTICE_ID }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(mocks.getA2pBrand).not.toHaveBeenCalled();
+    expect(mocks.getA2pCampaign).not.toHaveBeenCalled();
+    expect(mocks.resolveSmsProviderEvent).not.toHaveBeenCalled();
   });
 
   it("enables an exact safe provider profile but keeps clinic sending off", async () => {

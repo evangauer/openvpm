@@ -199,9 +199,18 @@ The successful `hold_released` audit stores before/after counts, projection
 outcomes, the event watermark, and whether the bounded drain filled.
 
 An identity-conflict review does not by itself make a quarantined original event
-safe. The review closes only that conflict incident; quarantine continues to
-block release and activation until a separate audited remediation establishes a
-safe projection. Never use a review to bypass unresolved STOP evidence.
+safe. From the platform-admin **SMS evidence recovery** console, select the exact
+event/conflict and use its evidence-specific remediation. Inbound conflicts are
+resolved conservatively as an opt-out; ordinary inbound quarantine requires an
+exact replayed communication/consent projection; A2P requires current read-only
+carrier reconciliation and leaves senders disabled; delivery-only no-projection
+requires a PHI-free provider-support reference and explicit attestation. The
+remediation transaction may run while the practice is held, but it takes the
+practice row `FOR UPDATE`, never clears the hold, and never sends or performs a
+fee-bearing provider mutation. Rerun the owner release only after the redacted
+queue and immutable resolution history show that the base incident and every
+conflict have durable evidence. A later conflict re-blocks release. Never use a
+review or support reference to bypass unresolved STOP evidence.
 
 While held, clinic email/SMS/webhook delivery, AI model calls, Stripe checkout,
 capture, refund, metering and subscription-quantity mutations, and Telnyx

@@ -10,6 +10,7 @@
     "type-check": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:sms-concurrency": "MESSAGING_PROVISIONING_ENABLED=false MESSAGING_INBOUND_ENABLED=false MESSAGING_SENDING_ENABLED=false SMS_CONCURRENCY_DB_INTEGRATION=1 vitest run lib/messaging/__tests__/sms-concurrency-drill.integration.test.ts",
     "backup:verify-evidence": "node scripts/verify-backup-evidence.mjs",
     "backup:recover-practice": "tsx scripts/recover-practice.ts"
   },

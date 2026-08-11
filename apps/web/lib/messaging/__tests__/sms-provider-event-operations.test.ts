@@ -31,7 +31,8 @@ describe("SMS provider-event operational gates", () => {
       "event.messaging_profile_id = sender.messaging_profile_id",
     );
     expect(barrier).toContain("event.kind = 'a2p'");
-    expect(barrier).toContain("or event.state = 'quarantined'");
+    expect(barrier).toContain("event.state = 'quarantined'");
+    expect(barrier).toContain("sms_provider_event_resolutions");
     expect(barrier).toContain("sms_provider_event_conflict_reviews");
   });
 

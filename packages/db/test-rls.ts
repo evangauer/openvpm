@@ -189,6 +189,18 @@ const aAttributedSmsProviderEvent = randomUUID();
 const aSmsProviderConflict = randomUUID();
 const aSmsProviderConflictReview = randomUUID();
 const aSmsProviderConflictReviewOperation = randomUUID();
+const resolutionBaseEvent = randomUUID();
+const resolutionBaseConflict = randomUUID();
+const resolutionBaseCommunication = randomUUID();
+const resolutionConflictConsent = randomUUID();
+const resolutionBase = randomUUID();
+const resolutionBaseOperation = randomUUID();
+const resolutionConflict = randomUUID();
+const resolutionConflictOperation = randomUUID();
+const resolutionGlobalDeliveryEvent = randomUUID();
+const resolutionGlobalDelivery = randomUUID();
+const resolutionGlobalDeliveryOperation = randomUUID();
+const resolutionOccurredAt = new Date(Date.now() - 5 * 60 * 1000);
 const funnelEventId = randomUUID();
 const platformEmailPreferenceId = randomUUID();
 const systemUpsertPlatformEmailPreferenceId = randomUUID();
@@ -373,6 +385,60 @@ try {
     values (${aSmsProviderConflict}, ${aSmsProviderEvent}, ${"5".repeat(64)},
       'message.received', ${`provider-conflict-${aSmsProviderConflict}`},
       ${`provider-message-${aSmsProviderEvent}`})`;
+  await owner`insert into sms_provider_events
+    (id, occurred_at, provider, kind, provider_event_id, provider_message_id,
+     provider_event_type, event_key, raw_body_fingerprint_sha256,
+     from_e164, to_e164, message_body, inbound_classification)
+    values (${resolutionBaseEvent}, ${resolutionOccurredAt}, 'telnyx', 'inbound',
+      ${`provider-event-${resolutionBaseEvent}`},
+      ${`provider-message-${resolutionBaseEvent}`}, 'message.received',
+      ${`telnyx:event:${resolutionBaseEvent}`}, ${"b".repeat(64)},
+      '+15555550121', '+15555550122', 'Resolution base projection', 'other')`;
+  await owner`update sms_provider_events
+    set practice_id = ${aId}, location_id = ${aLocation}, state = 'quarantined',
+        attempt_count = 1, next_attempt_at = null,
+        last_attempt_at = statement_timestamp(), processed_at = statement_timestamp(),
+        last_error_code = 'sender_identity_drift',
+        last_error_detail = 'Sender identity changed during projection.'
+    where id = ${resolutionBaseEvent}`;
+  await owner`insert into communications
+    (id, created_at, practice_id, channel, direction, content, status,
+     provider_message_id, dedupe_key)
+    values (${resolutionBaseCommunication}, ${resolutionOccurredAt}, ${aId},
+      'sms', 'inbound', 'Resolution base projection', 'delivered',
+      ${`provider-message-${resolutionBaseEvent}`},
+      ${`resolution:${resolutionBaseCommunication}`})`;
+  await owner`insert into sms_provider_event_conflicts
+    (id, original_event_id, incoming_raw_body_fingerprint_sha256,
+     incoming_provider_event_type, incoming_provider_event_id,
+     incoming_provider_message_id)
+    values (${resolutionBaseConflict}, ${resolutionBaseEvent}, ${"c".repeat(64)},
+      'message.received', ${`provider-conflict-${resolutionBaseConflict}`},
+      ${`provider-conflict-message-${resolutionBaseConflict}`})`;
+  await owner`insert into sms_consent_events
+    (id, practice_id, location_id, destination_e164, action, source, detail,
+     actor_type, event_key)
+    values (${resolutionConflictConsent}, ${aId}, ${aLocation}, '+15555550121',
+      'revoked', 'provider_event_resolution:v1',
+      'Conservative conflict opt-out for RLS verification.', 'system',
+      ${`provider_event_resolution:${resolutionConflictOperation}:${resolutionBaseConflict}:revoked`})`;
+  await owner`insert into sms_suppressions
+    (practice_id, location_id, phone, reason, detail)
+    values (${aId}, ${aLocation}, '+15555550121', 'stop',
+      'Provider event conflict resolved conservatively.')`;
+  await owner`insert into sms_provider_events
+    (id, provider, kind, provider_message_id, provider_event_type, event_key,
+     raw_body_fingerprint_sha256, delivery_classification)
+    values (${resolutionGlobalDeliveryEvent}, 'telnyx', 'delivery',
+      ${`global-provider-message-${resolutionGlobalDeliveryEvent}`},
+      'message.sent', ${`telnyx:event:${resolutionGlobalDeliveryEvent}`},
+      ${"d".repeat(64)}, 'sent')`;
+  await owner`update sms_provider_events
+    set state = 'quarantined', attempt_count = 1, next_attempt_at = null,
+        last_attempt_at = statement_timestamp(), processed_at = statement_timestamp(),
+        last_error_code = 'delivery_attribution_pending',
+        last_error_detail = 'No exact accepted send could be attributed.'
+    where id = ${resolutionGlobalDeliveryEvent}`;
   const [smsProviderPrivileges] = await owner<
     Array<{
       event_select: boolean;
@@ -387,6 +453,10 @@ try {
       review_insert: boolean;
       review_update: boolean;
       review_delete: boolean;
+      resolution_select: boolean;
+      resolution_insert: boolean;
+      resolution_update: boolean;
+      resolution_delete: boolean;
     }>
   >`select
       has_table_privilege('openpims_app', 'sms_provider_events', 'select') event_select,
@@ -400,7 +470,11 @@ try {
       has_table_privilege('openpims_app', 'sms_provider_event_conflict_reviews', 'select') review_select,
       has_table_privilege('openpims_app', 'sms_provider_event_conflict_reviews', 'insert') review_insert,
       has_table_privilege('openpims_app', 'sms_provider_event_conflict_reviews', 'update') review_update,
-      has_table_privilege('openpims_app', 'sms_provider_event_conflict_reviews', 'delete') review_delete`;
+      has_table_privilege('openpims_app', 'sms_provider_event_conflict_reviews', 'delete') review_delete,
+      has_table_privilege('openpims_app', 'sms_provider_event_resolutions', 'select') resolution_select,
+      has_table_privilege('openpims_app', 'sms_provider_event_resolutions', 'insert') resolution_insert,
+      has_table_privilege('openpims_app', 'sms_provider_event_resolutions', 'update') resolution_update,
+      has_table_privilege('openpims_app', 'sms_provider_event_resolutions', 'delete') resolution_delete`;
   check(
     "SMS provider inbox grants only projection privileges to the application role",
     smsProviderPrivileges?.event_select === true &&
@@ -414,7 +488,11 @@ try {
       smsProviderPrivileges.review_select === true &&
       smsProviderPrivileges.review_insert === true &&
       smsProviderPrivileges.review_update === false &&
-      smsProviderPrivileges.review_delete === false,
+      smsProviderPrivileges.review_delete === false &&
+      smsProviderPrivileges.resolution_select === true &&
+      smsProviderPrivileges.resolution_insert === true &&
+      smsProviderPrivileges.resolution_update === false &&
+      smsProviderPrivileges.resolution_delete === false,
   );
   await owner`insert into patients (id, practice_id, client_id, name, species)
     select ${aPatient}, ${aId}, id, 'RLS Pet A', 'canine'
@@ -1583,6 +1661,167 @@ try {
   check(
     "application role cannot delete provider conflicts even with maintenance GUCs",
     smsProviderConflictDeleteBlocked,
+  );
+
+  const reviewOnlyResolution = await appTransaction(async (tx) => {
+    await tx`select set_config('app.rls_bypass', 'on', true)`;
+    return tx`select id from sms_provider_event_resolutions
+      where conflict_id = ${aSmsProviderConflict}`;
+  });
+  check(
+    "a conflict review does not fabricate gate-clearing resolution evidence",
+    reviewOnlyResolution.length === 0,
+  );
+
+  const insertedBaseResolution = await appTransaction(async (tx) => {
+    await tx`select set_config('app.rls_bypass', 'on', true)`;
+    return tx`insert into sms_provider_event_resolutions
+      (id, event_id, operation_id, practice_id, resolution,
+       inbound_communication_id, reason_code, detail,
+       resolved_by_identity, resolved_by_name)
+      values (${resolutionBase}, ${resolutionBaseEvent},
+        ${resolutionBaseOperation}, ${aId}, 'authoritative_projection',
+        ${resolutionBaseCommunication}, 'projection_repaired',
+        'Exact inbound communication projection verified.',
+        'rls-operator', 'RLS Operator')
+      returning id`;
+  });
+  check(
+    "a non-conflict quarantine retains independent base resolution after a later conflict",
+    insertedBaseResolution.length === 1 &&
+      insertedBaseResolution[0]!.id === resolutionBase,
+  );
+
+  const insertedConflictResolution = await appTransaction(async (tx) => {
+    await tx`select set_config('app.rls_bypass', 'on', true)`;
+    return tx`insert into sms_provider_event_resolutions
+      (id, event_id, conflict_id, operation_id, practice_id, resolution,
+       sms_consent_event_id, reason_code, detail,
+       resolved_by_identity, resolved_by_name)
+      values (${resolutionConflict}, ${resolutionBaseEvent},
+        ${resolutionBaseConflict}, ${resolutionConflictOperation}, ${aId},
+        'conservative_opt_out', ${resolutionConflictConsent},
+        'provider_identity_conflict_opt_out',
+        'Conflicting inbound callback suppressed conservatively.',
+        'rls-operator', 'RLS Operator')
+      returning id`;
+  });
+  const baseAndConflictResolutions = await appTransaction(async (tx) => {
+    await tx`select set_config('app.rls_bypass', 'on', true)`;
+    return tx`select id, conflict_id from sms_provider_event_resolutions
+      where event_id = ${resolutionBaseEvent} order by conflict_id nulls first`;
+  });
+  check(
+    "base and later-conflict incidents each require fresh typed resolution evidence",
+    insertedConflictResolution.length === 1 &&
+      insertedConflictResolution[0]!.id === resolutionConflict &&
+      baseAndConflictResolutions.length === 2 &&
+      baseAndConflictResolutions.some(
+        (row) => row.id === resolutionBase && row.conflict_id === null,
+      ) &&
+      baseAndConflictResolutions.some(
+        (row) =>
+          row.id === resolutionConflict &&
+          row.conflict_id === resolutionBaseConflict,
+      ),
+  );
+
+  let duplicateConflictResolutionBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`insert into sms_provider_event_resolutions
+        (event_id, conflict_id, operation_id, practice_id, resolution,
+         sms_consent_event_id, reason_code,
+         resolved_by_identity, resolved_by_name)
+        values (${resolutionBaseEvent}, ${resolutionBaseConflict},
+          ${resolutionConflictOperation}, ${aId}, 'conservative_opt_out',
+          ${resolutionConflictConsent}, 'provider_identity_conflict_opt_out',
+          'rls-operator', 'RLS Operator')`;
+    });
+  } catch {
+    duplicateConflictResolutionBlocked = true;
+  }
+  check(
+    "conflict and operation identities are each append-only idempotency boundaries",
+    duplicateConflictResolutionBlocked,
+  );
+
+  let arbitraryGlobalResolutionPracticeBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`insert into sms_provider_event_resolutions
+        (event_id, operation_id, practice_id, resolution,
+         external_evidence_reference, reason_code,
+         resolved_by_identity, resolved_by_name)
+        values (${resolutionGlobalDeliveryEvent}, ${randomUUID()}, ${aId},
+          'provider_attested_no_projection', 'telnyx-support:case-invalid',
+          'provider_support_invalid_callback',
+          'rls-operator', 'RLS Operator')`;
+    });
+  } catch {
+    arbitraryGlobalResolutionPracticeBlocked = true;
+  }
+  check(
+    "an unattributed delivery incident cannot claim an arbitrary practice",
+    arbitraryGlobalResolutionPracticeBlocked,
+  );
+
+  const insertedGlobalResolution = await appTransaction(async (tx) => {
+    await tx`select set_config('app.rls_bypass', 'on', true)`;
+    return tx`insert into sms_provider_event_resolutions
+      (id, event_id, operation_id, resolution, external_evidence_reference,
+       reason_code, detail, resolved_by_identity, resolved_by_name)
+      values (${resolutionGlobalDelivery}, ${resolutionGlobalDeliveryEvent},
+        ${resolutionGlobalDeliveryOperation}, 'provider_attested_no_projection',
+        'telnyx-support:case-closed', 'provider_support_invalid_callback',
+        'Provider confirmed callback was invalid and had no accepted send.',
+        'rls-operator', 'RLS Operator')
+      returning id, practice_id`;
+  });
+  check(
+    "provider-attested no-projection can close a genuinely global delivery incident",
+    insertedGlobalResolution.length === 1 &&
+      insertedGlobalResolution[0]!.id === resolutionGlobalDelivery &&
+      insertedGlobalResolution[0]!.practice_id === null,
+  );
+
+  const hiddenSmsProviderResolutions = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id from sms_provider_event_resolutions
+      where id in (${resolutionBase}, ${resolutionConflict}, ${resolutionGlobalDelivery})`;
+  });
+  check(
+    "tenant context cannot read system-only SMS provider resolutions",
+    hiddenSmsProviderResolutions.length === 0,
+  );
+
+  let ownerSmsProviderResolutionMutationBlocked = false;
+  try {
+    await owner`update sms_provider_event_resolutions
+      set detail = detail where id = ${resolutionBase}`;
+  } catch {
+    ownerSmsProviderResolutionMutationBlocked = true;
+  }
+  check(
+    "SMS provider resolution evidence is immutable for the owner",
+    ownerSmsProviderResolutionMutationBlocked,
+  );
+
+  let appSmsProviderResolutionDeleteBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`select set_config('app.ledger_maintenance', 'on', true)`;
+      await tx`delete from sms_provider_event_resolutions where id = ${resolutionBase}`;
+    });
+  } catch {
+    appSmsProviderResolutionDeleteBlocked = true;
+  }
+  check(
+    "application role cannot delete resolution evidence even with maintenance GUCs",
+    appSmsProviderResolutionDeleteBlocked,
   );
 
   let tenantAuthEmailInsertBlocked = false;
@@ -3791,9 +4030,13 @@ try {
     if (createdPlatformEmailIdentity) {
       await cleanup`delete from platform_email_identity where key_slot = 1`;
     }
+    await cleanup`delete from sms_provider_event_resolutions
+      where id in (${resolutionBase}, ${resolutionConflict}, ${resolutionGlobalDelivery})`;
     await cleanup`delete from sms_provider_event_conflict_reviews where id = ${aSmsProviderConflictReview}`;
-    await cleanup`delete from sms_provider_event_conflicts where id = ${aSmsProviderConflict}`;
-    await cleanup`delete from sms_provider_events where id in (${aSmsProviderEvent}, ${aAttributedSmsProviderEvent})`;
+    await cleanup`delete from sms_provider_event_conflicts
+      where id in (${aSmsProviderConflict}, ${resolutionBaseConflict})`;
+    await cleanup`delete from sms_provider_events
+      where id in (${aSmsProviderEvent}, ${aAttributedSmsProviderEvent}, ${resolutionBaseEvent}, ${resolutionGlobalDeliveryEvent})`;
     await cleanup`delete from sms_delivery_event_history where id in (${aSmsDeliveryHistory}, ${bSmsDeliveryHistory}, ${bSmsDeliveryConflictHistory})`;
     await cleanup`delete from sms_delivery_events where id in (${aSmsDeliveryEvent}, ${bSmsDeliveryEvent}, ${unmatchedSmsDeliveryEvent})`;
     await cleanup`delete from lab_result_events where id in (${aLabResultEvent}, ${bLabResultEvent})`;
@@ -3806,8 +4049,12 @@ try {
     await cleanup`delete from lab_results where id in (${aLabResult}, ${bLabResult}, ${aReplacementLabResult}, ${bReplacementLabResult})`;
     await cleanup`delete from sms_send_attempt_events where id in (${aSmsSendAttemptEvent}, ${bSmsSendAttemptEvent}, ${aAppSmsSendAttemptEvent})`;
     await cleanup`delete from sms_send_attempts where id in (${aSmsSendAttempt}, ${bSmsSendAttempt}, ${aAppSmsSendAttempt})`;
-    await cleanup`delete from sms_consent_events where id in (${aSmsConsentEvent}, ${bSmsConsentEvent})`;
-    await cleanup`delete from communications where id in (${aCommunication}, ${bCommunication})`;
+    await cleanup`delete from sms_consent_events
+      where id in (${aSmsConsentEvent}, ${bSmsConsentEvent}, ${resolutionConflictConsent})`;
+    await cleanup`delete from sms_suppressions
+      where practice_id = ${aId} and phone = '+15555550121'`;
+    await cleanup`delete from communications
+      where id in (${aCommunication}, ${bCommunication}, ${resolutionBaseCommunication})`;
     await cleanup`delete from patient_merge_events where id in (${aPatientMergeEvent}, ${bPatientMergeEvent})`;
     await cleanup`delete from dispense_charge_queue where id in (${aDispenseCharge}, ${bDispenseCharge})`;
     await cleanup`delete from invoice_adjustments where invoice_id in (${aInvoice}, ${bInvoice})`;

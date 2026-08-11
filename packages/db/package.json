@@ -17,6 +17,7 @@
     "db:reset": "tsx reset.ts",
     "db:rls": "tsx apply-rls.ts",
     "db:rls:test": "tsx test-rls.ts",
+    "db:sms-provider-resolutions:test": "tsx test-sms-provider-event-resolutions.ts",
     "db:migration-runs:test": "tsx test-migration-runs.ts",
     "db:drift": "tsx check-drift.ts",
     "db:baseline": "tsx baseline.ts",

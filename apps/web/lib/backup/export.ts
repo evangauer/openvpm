@@ -112,6 +112,8 @@ export const PRACTICE_EXPORT_SYSTEM_EXCLUSIONS = {
     "Global immutable SMS provider idempotency conflict evidence; it is not clinic-owned restore data.",
   smsProviderEventConflictReviews:
     "Global immutable operator review evidence for SMS provider conflicts; it is not clinic-owned restore data.",
+  smsProviderEventResolutions:
+    "Global immutable SMS provider remediation evidence; it is not clinic-owned restore data and must remain bound to the operational provider inbox.",
   captureSessions:
     "Expiring QR photo-capture link tokens; restoring them would resurrect old capture URLs. The photos themselves are in the files section.",
   fileObjectReplicas:

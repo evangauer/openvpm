@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import type { Database } from "@openpims/db/client";
 import { rowsFromExecute } from "@/lib/db/execute-rows";
 import { withSystem } from "@/lib/tenant-db";
+import { smsProviderEventQuarantineIsRemediatedSql } from "./sms-provider-event-resolution-status";
 
 export const SMS_PROVIDER_EVENT_STALE_MINUTES = 15;
 
@@ -29,6 +30,7 @@ export interface SmsProviderEventGateSummary {
 
 export interface SmsProviderEventQueueItem {
   eventId: string;
+  conflictId: string | null;
   receivedAt: Date;
   practiceId: string | null;
   locationId: string | null;
@@ -121,17 +123,27 @@ export async function hasBlockingSmsProviderEventForDispatchInTransaction(
           )
           or (
             event.kind = 'a2p'
-            and event.state in ('pending', 'retry', 'blocked_recovery', 'quarantined')
+            and event.state in ('pending', 'retry', 'blocked_recovery')
           )
-          or event.state = 'quarantined'
+          or (
+            event.state = 'quarantined'
+            and not ${smsProviderEventQuarantineIsRemediatedSql}
+          )
           or exists (
             select 1
             from sms_provider_event_conflicts conflict
             where conflict.original_event_id = event.id
-              and not exists (
-                select 1
-                from sms_provider_event_conflict_reviews review
-                where review.conflict_id = conflict.id
+              and (
+                not exists (
+                  select 1
+                  from sms_provider_event_conflict_reviews review
+                  where review.conflict_id = conflict.id
+                )
+                or not exists (
+                  select 1
+                  from sms_provider_event_resolutions resolution
+                  where resolution.conflict_id = conflict.id
+                )
               )
           )
         )
@@ -205,6 +217,10 @@ export async function loadSmsProviderEventGateSummaryInTransaction(
       from sms_provider_events event
       where event.state in ('pending', 'retry', 'blocked_recovery', 'quarantined')
         and (
+          event.state <> 'quarantined'
+          or not ${smsProviderEventQuarantineIsRemediatedSql}
+        )
+        and (
           event.practice_id = ${input.practiceId}::uuid
           or (
             event.practice_id is null
@@ -257,10 +273,17 @@ export async function loadSmsProviderEventGateSummaryInTransaction(
       select conflict.received_at
       from sms_provider_event_conflicts conflict
       join sms_provider_events event on event.id = conflict.original_event_id
-      where not exists (
-          select 1
-          from sms_provider_event_conflict_reviews review
-          where review.conflict_id = conflict.id
+      where (
+          not exists (
+            select 1
+            from sms_provider_event_conflict_reviews review
+            where review.conflict_id = conflict.id
+          )
+          or not exists (
+            select 1
+            from sms_provider_event_resolutions resolution
+            where resolution.conflict_id = conflict.id
+          )
         )
         and (
           event.practice_id = ${input.practiceId}::uuid
@@ -366,15 +389,26 @@ export async function loadSmsProviderEventQueue(
         from sms_provider_events event
         where ${scope}
           and event.state in ('pending', 'retry', 'blocked_recovery', 'quarantined')
+          and (
+            event.state <> 'quarantined'
+            or not ${smsProviderEventQuarantineIsRemediatedSql}
+          )
       ), scoped_conflicts as (
         select conflict.id
         from sms_provider_event_conflicts conflict
         join sms_provider_events event on event.id = conflict.original_event_id
         where ${scope}
-          and not exists (
-            select 1
-            from sms_provider_event_conflict_reviews review
-            where review.conflict_id = conflict.id
+          and (
+            not exists (
+              select 1
+              from sms_provider_event_conflict_reviews review
+              where review.conflict_id = conflict.id
+            )
+            or not exists (
+              select 1
+              from sms_provider_event_resolutions resolution
+              where resolution.conflict_id = conflict.id
+            )
           )
       )
       select
@@ -396,6 +430,7 @@ export async function loadSmsProviderEventQueue(
       with queue as (
         select
           event.id as "eventId",
+          null::uuid as "conflictId",
           event.received_at as "receivedAt",
           event.practice_id as "practiceId",
           event.location_id as "locationId",
@@ -426,11 +461,16 @@ export async function loadSmsProviderEventQueue(
           and location.practice_id = event.practice_id
         where ${scope}
           and event.state in ('pending', 'retry', 'blocked_recovery', 'quarantined')
+          and (
+            event.state <> 'quarantined'
+            or not ${smsProviderEventQuarantineIsRemediatedSql}
+          )
 
         union all
 
         select
           event.id as "eventId",
+          conflict.id as "conflictId",
           conflict.received_at as "receivedAt",
           event.practice_id as "practiceId",
           event.location_id as "locationId",
@@ -452,10 +492,17 @@ export async function loadSmsProviderEventQueue(
           on location.id = event.location_id
           and location.practice_id = event.practice_id
         where ${scope}
-          and not exists (
-            select 1
-            from sms_provider_event_conflict_reviews review
-            where review.conflict_id = conflict.id
+          and (
+            not exists (
+              select 1
+              from sms_provider_event_conflict_reviews review
+              where review.conflict_id = conflict.id
+            )
+            or not exists (
+              select 1
+              from sms_provider_event_resolutions resolution
+              where resolution.conflict_id = conflict.id
+            )
           )
       )
       select *

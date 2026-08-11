@@ -18,6 +18,9 @@ describe("platform-admin SMS recovery console", () => {
     expect(source).toContain("{ staleMinutes: 15, limit: QUEUE_LIMIT }");
     expect(source).toContain("{ staleMinutes: 60, limit: QUEUE_LIMIT }");
     expect(source).toContain("historyLimit: 100");
+    expect(source).toContain("smsProviderEventResolutionHistory.useQuery");
+    expect(source).toContain("{ limit: QUEUE_LIMIT }");
+    expect(source).toContain("data.truncated");
     expect(source).toContain("candidateAttemptsTruncated");
     expect(source).toContain("!deliveryDetail.data.truncated");
   });
@@ -50,6 +53,35 @@ describe("platform-admin SMS recovery console", () => {
     expect(source).toContain("This is an external side effect.");
   });
 
+  it("offers only evidence-valid provider incident remediation modes", () => {
+    expect(source).toContain("providerEventResolutionOptions(");
+    expect(source).toContain('selection.state !== "quarantined"');
+    expect(source).toContain("Boolean(selection.conflictId)");
+    expect(source).toContain('selection.kind === "inbound"');
+    expect(source).toContain('selection.kind === "a2p"');
+    expect(source).toContain("selection.practiceId &&");
+    expect(source).toContain("selection.locationId &&");
+    expect(source).toContain('"sender_identity_drift"');
+    expect(source).toContain('"immutable_attribution_drift"');
+    expect(source).toContain('value: "conservative_opt_out"');
+    expect(source).toContain('value: "carrier_state_reconciled"');
+    expect(source).toContain('value: "provider_attested_no_projection"');
+    expect(source).toContain("conflictId: item.conflictId");
+  });
+
+  it("requires a fresh UUID, explicit attestation and confirmation", () => {
+    expect(source).toContain("setProviderEventOperationId(operationId())");
+    expect(source).toContain("providerEventReviewed &&");
+    expect(source).toContain("providerAttestationConfirmed");
+    expect(source).toContain("providerSupportReferenceInvalid");
+    expect(source).toContain("Phone-like values cannot be used");
+    expect(source).toContain("provider_support_invalid_callback");
+    expect(source).toContain("provider_support_duplicate_callback");
+    expect(source).toContain("reconcileProviderA2p.mutate");
+    expect(source).toContain("resolveProviderEvent.mutate");
+    expect(source).toMatch(/Apply \$\{label\(providerEventResolution\)\}/);
+  });
+
   it("does not render phone, body, raw payload, PHI, or operator identity fields", () => {
     expect(source).not.toContain("destinationE164");
     expect(source).not.toContain("senderE164");
@@ -69,6 +101,9 @@ describe("platform-admin SMS recovery console", () => {
     expect(source).toContain("sensitive content excluded");
     expect(source).toContain("omitted at the");
     expect(source).toContain("server boundary");
+    expect(source).toContain("operatorLabel");
+    expect(source).not.toContain("resolvedByIdentity");
+    expect(source).not.toContain("providerDetail");
   });
 
   it("masks carrier senders and never receives their full E.164 value", () => {

@@ -12,9 +12,15 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
+import { communications } from "./communications";
 import { messagingRegistrationStatusEnum } from "./messaging";
+import { messagingRegistrationEvents } from "./messaging-registration-events";
 import { locations, practices } from "./practices";
-import { smsDeliveryClassificationEnum } from "./sms-send-attempts";
+import { smsConsentEvents } from "./sms-consent-events";
+import {
+  smsDeliveryClassificationEnum,
+  smsDeliveryEvents,
+} from "./sms-send-attempts";
 
 export const smsProviderEventKindEnum = pgEnum("sms_provider_event_kind", [
   "inbound",
@@ -44,6 +50,28 @@ export const smsProviderEventConflictResolutionEnum = pgEnum(
     "incident_closed_no_projection",
   ],
 );
+
+export const smsProviderEventResolutionEnum = pgEnum(
+  "sms_provider_event_resolution",
+  [
+    "authoritative_projection",
+    "conservative_opt_out",
+    "carrier_state_reconciled",
+    "provider_attested_no_projection",
+  ],
+);
+
+/**
+ * System-only SMS provider evidence must never be included in clinic backup
+ * artifacts. Keeping the denylist beside the schema gives backup consumers a
+ * stable, exported contract instead of relying on an undocumented omission.
+ */
+export const smsProviderEventSystemOnlyBackupExcludedTables = [
+  "sms_provider_events",
+  "sms_provider_event_conflicts",
+  "sms_provider_event_conflict_reviews",
+  "sms_provider_event_resolutions",
+] as const;
 
 /**
  * Durable, provider-neutral inbox for signed SMS provider facts. The webhook
@@ -448,6 +476,147 @@ export const smsProviderEventConflictReviews = pgTable(
         and ${table.reviewedByName} = btrim(${table.reviewedByName})
         and length(${table.reviewedByName}) between 1 and 255
         and (${table.detail} is null or length(btrim(${table.detail})) between 1 and 2000)`,
+    ),
+  }),
+);
+
+/**
+ * Append-only, system-only evidence that a terminal provider incident has been
+ * handled. Base rows cover a non-conflict quarantine; conflict-scoped rows also
+ * cover conflicts appended after projection. The ledger never changes the
+ * inbox event itself: callers must present durable evidence.
+ */
+export const smsProviderEventResolutions = pgTable(
+  "sms_provider_event_resolutions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => smsProviderEvents.id),
+    conflictId: uuid("conflict_id").references(
+      () => smsProviderEventConflicts.id,
+    ),
+    operationId: uuid("operation_id").notNull(),
+    practiceId: uuid("practice_id").references(() => practices.id),
+    resolution: smsProviderEventResolutionEnum("resolution").notNull(),
+    inboundCommunicationId: uuid("inbound_communication_id").references(
+      () => communications.id,
+    ),
+    smsConsentEventId: uuid("sms_consent_event_id").references(
+      () => smsConsentEvents.id,
+    ),
+    smsDeliveryEventId: uuid("sms_delivery_event_id").references(
+      () => smsDeliveryEvents.id,
+    ),
+    messagingRegistrationEventId: uuid(
+      "messaging_registration_event_id",
+    ).references(() => messagingRegistrationEvents.id),
+    externalEvidenceReference: varchar("external_evidence_reference", {
+      length: 255,
+    }),
+    reasonCode: varchar("reason_code", { length: 64 }).notNull(),
+    detail: varchar("detail", { length: 2000 }),
+    resolvedByIdentity: varchar("resolved_by_identity", {
+      length: 255,
+    }).notNull(),
+    resolvedByName: varchar("resolved_by_name", { length: 255 }).notNull(),
+  },
+  (table) => ({
+    baseEventUq: uniqueIndex("sms_provider_event_resolutions_base_event_uq")
+      .on(table.eventId)
+      .where(sql`${table.conflictId} is null`),
+    eventIdx: index("sms_provider_event_resolutions_event_idx").on(
+      table.eventId,
+      table.resolvedAt,
+      table.id,
+    ),
+    conflictUq: uniqueIndex("sms_provider_event_resolutions_conflict_uq").on(
+      table.conflictId,
+    ),
+    operationUq: uniqueIndex("sms_provider_event_resolutions_operation_uq").on(
+      table.operationId,
+    ),
+    practiceHistoryIdx: index(
+      "sms_provider_event_resolutions_practice_history_idx",
+    ).on(table.practiceId, table.resolvedAt, table.id),
+    communicationEvidenceIdx: index(
+      "sms_provider_event_resolutions_communication_evidence_idx",
+    )
+      .on(table.inboundCommunicationId)
+      .where(sql`${table.inboundCommunicationId} is not null`),
+    consentEvidenceIdx: index(
+      "sms_provider_event_resolutions_consent_evidence_idx",
+    )
+      .on(table.smsConsentEventId)
+      .where(sql`${table.smsConsentEventId} is not null`),
+    deliveryEvidenceIdx: index(
+      "sms_provider_event_resolutions_delivery_evidence_idx",
+    )
+      .on(table.smsDeliveryEventId)
+      .where(sql`${table.smsDeliveryEventId} is not null`),
+    registrationEvidenceIdx: index(
+      "sms_provider_event_resolutions_registration_evidence_idx",
+    )
+      .on(table.messagingRegistrationEventId)
+      .where(sql`${table.messagingRegistrationEventId} is not null`),
+    shapeCheck: check(
+      "sms_provider_event_resolutions_shape_check",
+      sql`${table.reasonCode} ~ '^[a-z0-9_]{3,64}$'
+        and (${table.resolution} = 'provider_attested_no_projection' or ${table.practiceId} is not null)
+        and (
+          (${table.resolution} = 'authoritative_projection' and ${table.reasonCode} in (
+            'projection_repaired', 'delivery_reconciled'
+          ))
+          or (${table.resolution} = 'conservative_opt_out' and ${table.reasonCode} in (
+            'provider_identity_conflict_opt_out', 'sender_identity_drift_opt_out'
+          ))
+          or (${table.resolution} = 'carrier_state_reconciled'
+            and ${table.reasonCode} = 'carrier_state_readback_confirmed')
+          or (${table.resolution} = 'provider_attested_no_projection' and ${table.reasonCode} in (
+            'provider_support_invalid_callback', 'provider_support_duplicate_callback'
+          ))
+        )
+        and ${table.resolvedByIdentity} = btrim(${table.resolvedByIdentity})
+        and length(${table.resolvedByIdentity}) between 1 and 255
+        and ${table.resolvedByName} = btrim(${table.resolvedByName})
+        and length(${table.resolvedByName}) between 1 and 255
+        and (${table.detail} is null or length(btrim(${table.detail})) between 1 and 2000)
+        and (${table.externalEvidenceReference} is null or (
+          ${table.externalEvidenceReference} = btrim(${table.externalEvidenceReference})
+          and length(${table.externalEvidenceReference}) between 3 and 255
+          and ${table.externalEvidenceReference} ~ '^[A-Za-z0-9][A-Za-z0-9_.:/#-]{2,254}$'
+        ))
+        and (
+          (${table.resolution} = 'authoritative_projection'
+            and ${table.externalEvidenceReference} is null
+            and num_nonnulls(
+              ${table.inboundCommunicationId},
+              ${table.smsConsentEventId},
+              ${table.smsDeliveryEventId},
+              ${table.messagingRegistrationEventId}
+            ) between 1 and 2)
+          or (${table.resolution} = 'conservative_opt_out'
+            and ${table.inboundCommunicationId} is null
+            and ${table.smsConsentEventId} is not null
+            and ${table.smsDeliveryEventId} is null
+            and ${table.messagingRegistrationEventId} is null
+            and ${table.externalEvidenceReference} is null)
+          or (${table.resolution} = 'carrier_state_reconciled'
+            and ${table.inboundCommunicationId} is null
+            and ${table.smsConsentEventId} is null
+            and ${table.smsDeliveryEventId} is null
+            and ${table.messagingRegistrationEventId} is not null
+            and ${table.externalEvidenceReference} is null)
+          or (${table.resolution} = 'provider_attested_no_projection'
+            and ${table.inboundCommunicationId} is null
+            and ${table.smsConsentEventId} is null
+            and ${table.smsDeliveryEventId} is null
+            and ${table.messagingRegistrationEventId} is null
+            and ${table.externalEvidenceReference} is not null)
+        )`,
     ),
   }),
 );

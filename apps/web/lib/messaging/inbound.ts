@@ -555,8 +555,8 @@ export async function logInboundSmsCommunicationInTransaction(
 
 /**
  * Project an already-attributed inbound message inside the durable provider
- * event transaction. The caller must hold the practice row before calling;
- * this function then takes the recipient advisory lock before target rows.
+ * event transaction. The caller must hold the practice row before calling and
+ * may pass through the recipient advisory lock acquired before its event row.
  */
 export async function projectInboundSmsReplyInTransaction(
   tx: Database,
@@ -569,13 +569,16 @@ export async function projectInboundSmsReplyInTransaction(
     providerMessageId: string | null;
     classification: InboundSmsClassification;
     occurredAt: Date;
+    recipientLockAlreadyHeld?: boolean;
   },
 ): Promise<InboundProjectionResult> {
   const fromPhone = normalizeE164(opts.fromPhone);
   const text = opts.text.trim();
   if (!fromPhone || !text) return { ok: true, action: "ignored" };
 
-  await acquireSmsRecipientLockInTransaction(tx, opts.practiceId, fromPhone);
+  if (!opts.recipientLockAlreadyHeld) {
+    await acquireSmsRecipientLockInTransaction(tx, opts.practiceId, fromPhone);
+  }
   const latestDecision =
     opts.classification === "stop" || opts.classification === "start"
       ? await latestInboundConsentDecisionInTransaction(

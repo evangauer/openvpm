@@ -19,6 +19,9 @@ import {
   smsDeliveryEvents,
   smsSendAttemptEvents,
   smsSendAttempts,
+  smsProviderEventConflicts,
+  smsProviderEventResolutions,
+  smsProviderEvents,
 } from "@openpims/db";
 import { isPlatformAdmin } from "@/lib/platform-admin";
 import { computeActivationFunnel } from "@/lib/admin/activation-funnel";
@@ -81,6 +84,11 @@ import {
   loadSmsProviderEventGateSummaryInTransaction,
   loadSmsProviderEventQueue,
 } from "@/lib/messaging/sms-provider-event-operations";
+import {
+  loadSmsProviderEventResolutionHistory,
+  resolveSmsProviderEvent,
+  resolveSmsProviderEventInTransaction,
+} from "@/lib/messaging/sms-provider-event-remediation";
 import {
   decryptRegistrationTaxId,
   MessagingRegistrationEncryptionError,
@@ -168,6 +176,40 @@ async function withMessagingProviderEffectsAllowed<T>(
 const MESSAGING_SUBMISSION_LOCK_STALE_MS = 15 * 60 * 1000;
 const MESSAGING_PROVIDER_PROFILE_ATTESTATION_MAX_AGE_MS = 15 * 60 * 1000;
 const WITHHELD_PHONE_LIKE_OPERATIONAL_ID = "[withheld: phone-like identifier]";
+
+const smsProviderEventResolutionBaseInput = z
+  .object({
+    eventId: z.string().uuid(),
+    conflictId: z.string().uuid().nullable().optional(),
+    operationId: z.string().uuid(),
+  })
+  .strict();
+
+const smsProviderEventResolutionInput = z.discriminatedUnion("resolution", [
+  smsProviderEventResolutionBaseInput.extend({
+    resolution: z.literal("authoritative_projection"),
+  }),
+  smsProviderEventResolutionBaseInput.extend({
+    resolution: z.literal("conservative_opt_out"),
+  }),
+  smsProviderEventResolutionBaseInput.extend({
+    resolution: z.literal("carrier_state_reconciled"),
+    messagingRegistrationEventId: z.string().uuid(),
+  }),
+  smsProviderEventResolutionBaseInput.extend({
+    resolution: z.literal("provider_attested_no_projection"),
+    externalEvidenceReference: z
+      .string()
+      .min(3)
+      .max(255)
+      .regex(/^[A-Za-z0-9][A-Za-z0-9_.:/#-]{2,254}$/),
+    reasonCode: z.enum([
+      "provider_support_invalid_callback",
+      "provider_support_duplicate_callback",
+    ]),
+    providerAttestationConfirmed: z.literal(true),
+  }),
+]);
 
 const clinicPilotQualificationInput = z
   .object({
@@ -1422,6 +1464,54 @@ export const adminRouter = createRouter({
     .query(({ input }) => {
       noStore();
       return loadSmsProviderEventQueue(db, input);
+    }),
+
+  /** Append an audited, evidence-bound resolution for one exact incident. */
+  resolveSmsProviderEvent: platformAdminProcedure
+    .input(smsProviderEventResolutionInput)
+    .mutation(async ({ ctx, input }) => {
+      const actor = platformMessagingRegistrationActor(ctx.session!.user);
+      if (actor.actorType !== "platform_operator") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Platform admin access only.",
+        });
+      }
+      try {
+        return await resolveSmsProviderEvent({
+          ...input,
+          conflictId: input.conflictId ?? null,
+          actorIdentity: actor.actorIdentity,
+          actorName: actor.actorName,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        throw new TRPCError({
+          code:
+            message.includes("collision") ||
+            message.includes("already resolved")
+              ? "CONFLICT"
+              : "PRECONDITION_FAILED",
+          message:
+            message ||
+            "Provider-event resolution evidence could not be validated.",
+        });
+      }
+    }),
+
+  /** PHI-free append-only history; resolved work is separate from the live queue. */
+  smsProviderEventResolutionHistory: platformAdminProcedure
+    .input(
+      z
+        .object({
+          practiceId: z.string().uuid().optional(),
+          limit: z.number().int().min(1).max(100).default(50),
+        })
+        .strict(),
+    )
+    .query(({ input }) => {
+      noStore();
+      return loadSmsProviderEventResolutionHistory(db, input);
     }),
 
   /** Secret-free structural configuration state for the platform operator. */
@@ -2814,23 +2904,243 @@ export const adminRouter = createRouter({
 
   /** Read-only provider reconciliation. Safe to retry and never enables sending. */
   reconcileMessagingRegistration: platformAdminProcedure
-    .input(z.object({ practiceId: z.string().uuid() }))
+    .input(
+      z
+        .object({
+          practiceId: z.string().uuid(),
+          remediation: z
+            .object({
+              providerEventId: z.string().uuid(),
+              conflictId: z.string().uuid().nullable().optional(),
+              operationId: z.string().uuid(),
+            })
+            .strict()
+            .optional(),
+        })
+        .strict(),
+    )
     .mutation(async ({ ctx, input }) => {
       const actor = platformMessagingRegistrationActor(ctx.session!.user);
-      const registration = await registrationForOperator(input.practiceId);
-      if (!registration.providerBrandId) {
+      if (actor.actorType !== "platform_operator") {
         throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: "No provider brand has been submitted.",
+          code: "FORBIDDEN",
+          message: "Platform admin access only.",
         });
       }
+      const operationId = input.remediation?.operationId ?? randomUUID();
       try {
-        const brand = await getA2pBrand(registration.providerBrandId);
-        const campaign = registration.providerCampaignId
-          ? await getA2pCampaign(registration.providerCampaignId)
-          : null;
-        const senders = await withSystem(db, async (tx) =>
-          tx
+        return await withSystem(db, async (tx) => {
+          const [practice] = await tx
+            .select({ recoveryHold: practices.recoveryHold })
+            .from(practices)
+            .where(
+              and(
+                eq(practices.id, input.practiceId),
+                isNull(practices.deletedAt),
+              ),
+            )
+            .limit(1)
+            .for(input.remediation ? "update" : "share", { of: practices });
+          if (
+            !practice ||
+            (!input.remediation && practice.recoveryHold !== false)
+          ) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: RECOVERY_HOLD_BLOCK_MESSAGE,
+            });
+          }
+          await tx.execute(
+            sql`select pg_advisory_xact_lock(hashtextextended(${`sms-provider-resolution:${operationId}`}, 0))`,
+          );
+
+          let remediationEventLocationId: string | null = null;
+          if (input.remediation) {
+            const [priorResolution] = await tx
+              .select()
+              .from(smsProviderEventResolutions)
+              .where(eq(smsProviderEventResolutions.operationId, operationId))
+              .limit(1);
+            if (priorResolution) {
+              if (
+                priorResolution.eventId !== input.remediation.providerEventId ||
+                priorResolution.conflictId !==
+                  (input.remediation.conflictId ?? null) ||
+                priorResolution.practiceId !== input.practiceId ||
+                priorResolution.resolution !== "carrier_state_reconciled" ||
+                !priorResolution.messagingRegistrationEventId
+              ) {
+                throw new TRPCError({
+                  code: "CONFLICT",
+                  message: "Provider-event resolution operation id collision.",
+                });
+              }
+              return {
+                ok: true,
+                status: "reconciled" as const,
+                assignments: 0,
+                messagingRegistrationEventId:
+                  priorResolution.messagingRegistrationEventId,
+                resolutionId: priorResolution.id,
+                duplicate: true,
+              };
+            }
+
+            const [providerEvent] = await tx
+              .select({
+                id: smsProviderEvents.id,
+                practiceId: smsProviderEvents.practiceId,
+                kind: smsProviderEvents.kind,
+                state: smsProviderEvents.state,
+                lastErrorCode: smsProviderEvents.lastErrorCode,
+                locationId: smsProviderEvents.locationId,
+                a2pPhoneE164: smsProviderEvents.a2pPhoneE164,
+              })
+              .from(smsProviderEvents)
+              .where(
+                eq(smsProviderEvents.id, input.remediation.providerEventId),
+              )
+              .limit(1);
+            if (
+              !providerEvent ||
+              providerEvent.kind !== "a2p" ||
+              providerEvent.practiceId !== input.practiceId ||
+              !["quarantined", "projected", "ignored"].includes(
+                providerEvent.state,
+              )
+            ) {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message:
+                  "Carrier remediation requires an exact terminal A2P event for this clinic.",
+              });
+            }
+            if (
+              providerEvent.state !== "quarantined" &&
+              !input.remediation.conflictId
+            ) {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message:
+                  "A projected or ignored event requires its exact conflict id.",
+              });
+            }
+            if (
+              providerEvent.lastErrorCode === "provider_identity_conflict" &&
+              !input.remediation.conflictId
+            ) {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message:
+                  "Identity-conflict quarantine must resolve one exact conflict.",
+              });
+            }
+            if (input.remediation.conflictId) {
+              const [conflict] = await tx
+                .select({ id: smsProviderEventConflicts.id })
+                .from(smsProviderEventConflicts)
+                .where(
+                  and(
+                    eq(
+                      smsProviderEventConflicts.id,
+                      input.remediation.conflictId,
+                    ),
+                    eq(
+                      smsProviderEventConflicts.originalEventId,
+                      providerEvent.id,
+                    ),
+                  ),
+                )
+                .limit(1);
+              if (!conflict) {
+                throw new TRPCError({
+                  code: "PRECONDITION_FAILED",
+                  message:
+                    "Provider-event conflict does not belong to this event.",
+                });
+              }
+            }
+            if (providerEvent.a2pPhoneE164 && !providerEvent.locationId) {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message:
+                  "Phone-level carrier evidence requires an exact sender location.",
+              });
+            }
+            remediationEventLocationId = providerEvent.locationId;
+          }
+
+          const [registration] = await tx
+            .select()
+            .from(messagingRegistrations)
+            .where(
+              and(
+                eq(messagingRegistrations.practiceId, input.practiceId),
+                isNull(messagingRegistrations.deletedAt),
+              ),
+            )
+            .limit(1);
+          if (!registration) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "The clinic has not completed carrier registration details.",
+            });
+          }
+          if (!registration.providerBrandId) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: "No provider brand has been submitted.",
+            });
+          }
+
+          const [priorEvidence] = await tx
+            .select({ id: messagingRegistrationEvents.id })
+            .from(messagingRegistrationEvents)
+            .where(
+              and(
+                eq(messagingRegistrationEvents.practiceId, input.practiceId),
+                eq(messagingRegistrationEvents.operationId, operationId),
+                eq(
+                  messagingRegistrationEvents.eventType,
+                  "provider_state_observed",
+                ),
+                eq(
+                  messagingRegistrationEvents.operation,
+                  "registration_reconciliation",
+                ),
+              ),
+            )
+            .limit(1);
+          if (priorEvidence && input.remediation) {
+            const resolution = await resolveSmsProviderEventInTransaction(
+              tx,
+              {
+                eventId: input.remediation.providerEventId,
+                conflictId: input.remediation.conflictId ?? null,
+                operationId,
+                resolution: "carrier_state_reconciled",
+                messagingRegistrationEventId: priorEvidence.id,
+                actorIdentity: actor.actorIdentity,
+                actorName: actor.actorName,
+              },
+              { lockedPracticeId: input.practiceId },
+            );
+            return {
+              ok: true,
+              status: registration.status,
+              assignments: 0,
+              messagingRegistrationEventId: priorEvidence.id,
+              resolutionId: resolution.resolutionId,
+              duplicate: resolution.duplicate,
+            };
+          }
+
+          const brand = await getA2pBrand(registration.providerBrandId);
+          const campaign = registration.providerCampaignId
+            ? await getA2pCampaign(registration.providerCampaignId)
+            : null;
+          const senders = await tx
             .select({ phoneNumber: locationMessaging.senderE164 })
             .from(locationMessaging)
             .where(
@@ -2840,49 +3150,49 @@ export const adminRouter = createRouter({
                 isNull(locationMessaging.deletedAt),
                 sql`nullif(trim(${locationMessaging.senderE164}), '') is not null`,
               ),
-            ),
-        );
-        const assignments: Array<TelnyxNumberAssignment | null> = [];
-        if (campaign) {
-          for (const sender of senders) {
-            if (!sender.phoneNumber) continue;
-            assignments.push(await getA2pNumberAssignment(sender.phoneNumber));
+            );
+          const assignments: Array<TelnyxNumberAssignment | null> = [];
+          if (campaign) {
+            for (const sender of senders) {
+              if (!sender.phoneNumber) continue;
+              assignments.push(
+                await getA2pNumberAssignment(sender.phoneNumber),
+              );
+            }
           }
-        }
-        const providerIdentityMatches = providerRegistrationIdentityMatches({
-          practiceId: input.practiceId,
-          registration,
-          brand,
-          campaign,
-        });
-        const observed = providerIdentityMatches
-          ? observedRegistrationStatus({
-              brandIdentityStatus: brand.identityStatus,
-              brandStatus: brand.status,
-              campaignStatuses: [
-                campaign?.status,
-                campaign?.campaignStatus,
-                campaign?.submissionStatus,
-              ],
-              campaignSubmissionStatus: campaign?.submissionStatus,
-              assignmentStatuses: assignments.map(
-                (row) => row?.assignmentStatus,
-              ),
-            })
-          : ("action_required" as const);
-        const next = mergeRegistrationStatus(registration.status, observed);
-        const failureDetail = [
-          providerIdentityMatches
-            ? null
-            : "Provider registration identity does not match this clinic.",
-          brand.failureReasons,
-          campaign?.failureReasons,
-          ...assignments.map((row) => row?.failureReasons),
-        ]
-          .filter(Boolean)
-          .join("; ")
-          .slice(0, 1000);
-        await withSystem(db, async (tx) => {
+          const providerIdentityMatches = providerRegistrationIdentityMatches({
+            practiceId: input.practiceId,
+            registration,
+            brand,
+            campaign,
+          });
+          const observed = providerIdentityMatches
+            ? observedRegistrationStatus({
+                brandIdentityStatus: brand.identityStatus,
+                brandStatus: brand.status,
+                campaignStatuses: [
+                  campaign?.status,
+                  campaign?.campaignStatus,
+                  campaign?.submissionStatus,
+                ],
+                campaignSubmissionStatus: campaign?.submissionStatus,
+                assignmentStatuses: assignments.map(
+                  (row) => row?.assignmentStatus,
+                ),
+              })
+            : ("action_required" as const);
+          const next = mergeRegistrationStatus(registration.status, observed);
+          const failureDetail = [
+            providerIdentityMatches
+              ? null
+              : "Provider registration identity does not match this clinic.",
+            brand.failureReasons,
+            campaign?.failureReasons,
+            ...assignments.map((row) => row?.failureReasons),
+          ]
+            .filter(Boolean)
+            .join("; ")
+            .slice(0, 1000);
           const [updated] = await tx
             .update(messagingRegistrations)
             .set({
@@ -2924,9 +3234,10 @@ export const adminRouter = createRouter({
             eventType: "provider_state_observed",
             operation: "registration_reconciliation",
             statusBefore: registration.status,
-            operationId: randomUUID(),
+            operationId,
             reasonCode: "carrier_registration_reconciled",
             actor,
+            locationId: remediationEventLocationId,
           });
           await tx
             .update(locationMessaging)
@@ -2942,7 +3253,7 @@ export const adminRouter = createRouter({
                       next === "suspended"
                     ? "Carrier registration needs OpenVPM review."
                     : "Carrier registration is pending.",
-              ...(next === "active"
+              ...(next === "active" && !input.remediation
                 ? {}
                 : {
                     enabled: false,
@@ -2958,9 +3269,62 @@ export const adminRouter = createRouter({
                 isNull(locationMessaging.deletedAt),
               ),
             );
+          const [registrationEvidence] = await tx
+            .select({ id: messagingRegistrationEvents.id })
+            .from(messagingRegistrationEvents)
+            .where(
+              and(
+                eq(messagingRegistrationEvents.practiceId, input.practiceId),
+                eq(messagingRegistrationEvents.operationId, operationId),
+                eq(
+                  messagingRegistrationEvents.eventType,
+                  "provider_state_observed",
+                ),
+                eq(
+                  messagingRegistrationEvents.operation,
+                  "registration_reconciliation",
+                ),
+              ),
+            )
+            .limit(1);
+          if (!registrationEvidence) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "Carrier reconciliation evidence was not durable.",
+            });
+          }
+          const resolution = input.remediation
+            ? await resolveSmsProviderEventInTransaction(
+                tx,
+                {
+                  eventId: input.remediation.providerEventId,
+                  conflictId: input.remediation.conflictId ?? null,
+                  operationId,
+                  resolution: "carrier_state_reconciled",
+                  messagingRegistrationEventId: registrationEvidence.id,
+                  actorIdentity: actor.actorIdentity,
+                  actorName: actor.actorName,
+                },
+                { lockedPracticeId: input.practiceId },
+              )
+            : null;
+          return input.remediation
+            ? {
+                ok: true,
+                status: next,
+                assignments: assignments.length,
+                messagingRegistrationEventId: registrationEvidence.id,
+                resolutionId: resolution!.resolutionId,
+                duplicate: resolution!.duplicate,
+              }
+            : {
+                ok: true,
+                status: next,
+                assignments: assignments.length,
+              };
         });
-        return { ok: true, status: next, assignments: assignments.length };
       } catch (error) {
+        if (error instanceof TRPCError) throw error;
         throw providerFailure(error);
       }
     }),

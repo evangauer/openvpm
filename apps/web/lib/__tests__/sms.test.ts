@@ -162,6 +162,7 @@ function createLedgerDb() {
     },
   ];
   const suppressionRows: Array<Record<string, unknown>> = [];
+  const providerAttestedNoProjectionRows: Array<Record<string, unknown>> = [];
   const communicationRows: Array<Record<string, unknown>> = [
     { id: COMMUNICATION_ID, status: "pending" },
   ];
@@ -183,6 +184,9 @@ function createLedgerDb() {
     if (name === "location_messaging") return locationMessagingRows;
     if (name === "practices") return practiceRows;
     if (name === "sms_suppressions") return suppressionRows;
+    if (name === "sms_provider_event_resolutions") {
+      return providerAttestedNoProjectionRows;
+    }
     if (name === "users") {
       return [{ id: ACTOR_ID, name: "Operator", email: "ops@openvpm.com" }];
     }
@@ -252,6 +256,8 @@ function createLedgerDb() {
         table = value;
         return builder;
       },
+      innerJoin: () => builder,
+      leftJoin: () => builder,
       where(value: unknown) {
         condition = value;
         return builder;
@@ -359,6 +365,7 @@ function createLedgerDb() {
     practiceRows,
     clientRows,
     suppressionRows,
+    providerAttestedNoProjectionRows,
     communicationRows,
     communicationProjection,
     throwOnSelect,
@@ -729,6 +736,28 @@ describe("durable SMS dispatch", () => {
       status: "sent",
       providerMessageId: "sms-atomic-1",
     });
+  });
+
+  it("does not persist a live accepted result over provider-attested no-projection evidence", async () => {
+    state().providerAttestedNoProjectionRows.push({
+      id: "00000000-0000-4000-8000-0000000000b2",
+      conflictId: null,
+      resolution: "provider_attested_no_projection",
+    });
+    mocks.providerSend.mockResolvedValue({
+      status: "accepted",
+      id: "sms-provider-attested",
+    });
+
+    await expect(sendSms(sendOptions())).resolves.toMatchObject({
+      success: false,
+      outcome: "outcome_unknown",
+      error: expect.stringContaining("could not be persisted"),
+    });
+    expect(mocks.providerSend).toHaveBeenCalledOnce();
+    expect(state().events).toHaveLength(0);
+    expect(state().selectedTables).toContain("sms_provider_event_resolutions");
+    expect(mocks.recordUsage).not.toHaveBeenCalled();
   });
 
   it("returns unknown and alerts if an accepted outcome cannot project", async () => {
@@ -1441,6 +1470,65 @@ describe("durable SMS dispatch", () => {
       actorIdentity: "ops@openvpm.com",
     });
   });
+
+  it.each([
+    ["base event identity", null],
+    ["conflict identity", "00000000-0000-4000-8000-0000000000cf"],
+  ])(
+    "rejects accepted reconciliation after provider-attested no-projection for %s",
+    async (_label, conflictId) => {
+      const ledger = state();
+      const attemptId = "00000000-0000-4000-8000-0000000000a1";
+      ledger.attempts.push({
+        ...sendOptions(),
+        id: attemptId,
+        createdAt: new Date(Date.now() - 20 * 60 * 1000),
+        practiceId: PRACTICE_ID,
+        provider: "telnyx",
+        idempotencyKey: `sms:ambiguous:${conflictId ?? "base"}`,
+        resendOfAttemptId: null,
+      });
+      ledger.events.push({
+        id: "10000000-0000-4000-8000-0000000000a1",
+        createdAt: new Date(Date.now() - 19 * 60 * 1000),
+        practiceId: PRACTICE_ID,
+        attemptId,
+        kind: "provider_result",
+        outcome: "outcome_unknown",
+        providerMessageId: null,
+        detail: "timeout",
+        eventKey: `provider-result:${conflictId ?? "base"}`,
+      });
+      ledger.providerAttestedNoProjectionRows.push({
+        id: "00000000-0000-4000-8000-0000000000b1",
+        conflictId,
+        resolution: "provider_attested_no_projection",
+      });
+
+      await expect(
+        reconcileSmsSendAttempt({
+          practiceId: PRACTICE_ID,
+          attemptId,
+          outcome: "accepted",
+          providerMessageId: "msg-provider-attested",
+          detail: "Provider console reported acceptance.",
+          actorType: "platform_operator",
+          actorUserId: ACTOR_ID,
+          actorIdentity: "ops@openvpm.com",
+          actorName: "OpenVPM Ops",
+          reconciliationKey: `operator-reconciliation:${conflictId ?? "base"}`,
+        }),
+      ).resolves.toMatchObject({
+        success: false,
+        outcome: "outcome_unknown",
+        attemptId,
+        error: expect.stringContaining("no-projection evidence"),
+      });
+      expect(ledger.events).toHaveLength(1);
+      expect(ledger.selectedTables).toContain("sms_provider_event_resolutions");
+      expect(mocks.providerSend).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps reconciliation durable and alerts when communication projection misses", async () => {
     const ledger = state();
