@@ -82,6 +82,18 @@ describe("trial badge UI", () => {
     );
   });
 
+  it("states Cloud feature access and metered usage without claiming everything is unmetered", () => {
+    expect(settingsSource).toContain(
+      "Unlimited staff and all product features are",
+    );
+    expect(settingsSource).toContain("currentPlan.smsOveragePriceUsd");
+    expect(settingsSource).toContain("currentPlan.aiOveragePriceUsd");
+    expect(settingsSource).toContain("Additional usage is");
+    expect(settingsSource).toContain("/text");
+    expect(settingsSource).toContain("/AI action");
+    expect(settingsSource).not.toContain("staff, everything included");
+  });
+
   it("distinguishes retrying payments from terminal read-only billing", () => {
     expect(source).toContain('data.billingStatus === "past_due"');
     expect(source).toContain("Payment retrying · Manage billing");

@@ -1547,6 +1547,18 @@ function BillingTab() {
     data.billingSyncStatus &&
     (data.billingSyncStatus.status === "error" ||
       data.billingSyncStatus.status === "legacy");
+  const overageRates = [
+    currentPlan?.smsOveragePriceUsd != null
+      ? `$${currentPlan.smsOveragePriceUsd}/text`
+      : null,
+    currentPlan?.aiOveragePriceUsd != null
+      ? `$${currentPlan.aiOveragePriceUsd}/AI action`
+      : null,
+  ].filter((rate): rate is string => rate !== null);
+  const overageSentence =
+    overageRates.length > 0
+      ? `Additional usage is ${overageRates.join(" and ")}.`
+      : null;
   const checkoutConfirmationUnresolved =
     checkoutReturn === "success" && !billingSetupCompleted;
 
@@ -1682,13 +1694,13 @@ function BillingTab() {
                 {daysLeft} days
               </span>{" "}
               left. After that, {currentPlan?.name ?? "Cloud"} is{" "}
-              {priceSentence}. Unlimited staff, and everything you see today
-              stays on.
+              {priceSentence}. Unlimited staff and all product features are
+              included.
             </>
           ) : (
             <>
-              {currentPlan?.name ?? "Cloud"} is {priceSentence}. Unlimited
-              staff, everything included.
+              {currentPlan?.name ?? "Cloud"} is {priceSentence}. Unlimited staff
+              and all product features are included.
             </>
           )}
         </p>
@@ -1706,7 +1718,7 @@ function BillingTab() {
               {data.usage.aiRuns}
             </span>{" "}
             of {currentPlan?.includedAiRunsPerMonth?.toLocaleString()} included
-            AI actions
+            AI actions. {overageSentence}
           </p>
         )}
 
