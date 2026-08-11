@@ -58,6 +58,7 @@ import {
   isAppointmentPatientSearchInputValid,
 } from "@/lib/scheduling/appointment-policy";
 import { ServicePicker } from "@/components/billing/service-picker";
+import { ActionConfirmationDialog } from "@/components/common/action-confirmation-dialog";
 import { CapturePhotos } from "@/components/records/capture-photos";
 import { ConsentSign } from "@/components/records/consent-sign";
 import { EncounterVitalsCard } from "@/components/records/encounter-vitals-card";
@@ -811,10 +812,12 @@ export default function EncounterWorkspacePage() {
 
           <EncounterInvoices
             appointmentId={appointmentId}
+            patientName={appointment.patientName}
             invoicesQuery={invoicesQuery}
             visitInvoices={visitInvoices}
             canManage={
               canManageBilling(role) &&
+              appointment.status === "in_exam" &&
               closeoutQuery.data?.closeout?.status !== "completed"
             }
           />
@@ -2976,11 +2979,13 @@ function OperationalCloseoutForm({
 
 function EncounterInvoices({
   appointmentId,
+  patientName,
   invoicesQuery,
   visitInvoices,
   canManage,
 }: {
   appointmentId: string;
+  patientName: string | null;
   invoicesQuery: InvoiceQueryState;
   visitInvoices: Array<{
     id: string;
@@ -2989,85 +2994,189 @@ function EncounterInvoices({
     paidAmount: string;
     adjustedAmount: string;
     isEstimate: boolean;
+    updatedAt: Date | string;
   }>;
   canManage: boolean;
 }) {
+  const utils = trpc.useUtils();
   const fmt = useCurrencyFormatterWithConfig();
+  const [pendingEstimate, setPendingEstimate] = useState<{
+    id: string;
+    total: string;
+    updatedAt: Date | string;
+  } | null>(null);
+  const activeEstimates = visitInvoices.filter(
+    (invoice) => invoice.isEstimate && invoice.status !== "void",
+  );
+  const activeActualInvoices = visitInvoices.filter(
+    (invoice) => !invoice.isEstimate && invoice.status !== "void",
+  );
+  const eligibleEstimate =
+    activeEstimates.length === 1 &&
+    activeActualInvoices.length === 0 &&
+    (activeEstimates[0]?.status === "draft" ||
+      activeEstimates[0]?.status === "sent")
+      ? activeEstimates[0]
+      : null;
+  const convertEstimate = trpc.billing.convertEstimateToInvoice.useMutation({
+    onSuccess: async ({ id }) => {
+      setPendingEstimate(null);
+      toast.success("Estimate converted to a draft visit invoice");
+      await Promise.all([
+        utils.billing.listInvoices.invalidate({
+          appointmentId,
+          limit: 25,
+          offset: 0,
+        }),
+        utils.billing.getInvoice.invalidate({ id }),
+        utils.billing.listProducts.invalidate(),
+        utils.billing.listDispenseChargeQueue.invalidate(),
+        utils.inventory.list.invalidate(),
+        utils.encounters.getCloseout.invalidate({ appointmentId }),
+        utils.encounters.getVisitReconciliation.invalidate({ appointmentId }),
+      ]);
+    },
+    onError: async (error, variables) => {
+      setPendingEstimate(null);
+      toast.error(error.message);
+      await Promise.all([
+        utils.billing.listInvoices.invalidate({
+          appointmentId,
+          limit: 25,
+          offset: 0,
+        }),
+        utils.billing.getInvoice.invalidate({ id: variables.id }),
+        utils.billing.listProducts.invalidate(),
+        utils.billing.listDispenseChargeQueue.invalidate(),
+        utils.inventory.list.invalidate(),
+        utils.encounters.getCloseout.invalidate({ appointmentId }),
+        utils.encounters.getVisitReconciliation.invalidate({ appointmentId }),
+      ]);
+    },
+  });
+
+  function confirmEstimateConversion() {
+    if (!pendingEstimate) return;
+    convertEstimate.mutate({
+      id: pendingEstimate.id,
+      expectedUpdatedAt: new Date(pendingEstimate.updatedAt),
+    });
+  }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Invoice state</CardTitle>
-        <CardDescription>
-          Charges and payment status linked directly to this visit.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        {invoicesQuery.isLoading ? (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Loading visit invoices...
-          </div>
-        ) : invoicesQuery.error || !invoicesQuery.data ? (
-          <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
-            Unable to load invoice state. Do not create duplicate charges until
-            this is resolved.
-          </div>
-        ) : visitInvoices.length === 0 ? (
-          <EmptyState
-            icon={Receipt}
-            title="No active invoice for this visit"
-            description={
-              canManage
-                ? "Add all known services and products in Charge capture to create a visit-linked draft."
-                : "An admin or front desk teammate can create this visit's charges."
-            }
-            className="p-8"
-          />
-        ) : (
-          <div className="flex flex-col gap-3">
-            {visitInvoices.map((invoice) => {
-              const paid = Number(invoice.paidAmount ?? 0);
-              const adjusted = Number(invoice.adjustedAmount ?? 0);
-              const balance = Math.max(
-                0,
-                Number(invoice.total ?? 0) - paid - adjusted,
-              );
-              return (
-                <div
-                  key={invoice.id}
-                  className="flex flex-col gap-3 rounded-md border border-border p-4 sm:flex-row sm:items-center sm:justify-between"
-                >
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <p className="font-medium">
-                        {invoice.isEstimate ? "Estimate" : "Invoice"}
-                      </p>
-                      <Badge
-                        variant={
-                          invoice.status === "paid" ? "success" : "outline"
-                        }
-                      >
-                        {invoice.status}
-                      </Badge>
-                    </div>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Total {fmt(invoice.total)} · Balance {fmt(balance)}
-                    </p>
-                  </div>
-                  <Button size="sm" variant="outline" asChild>
-                    <Link href={`/billing?expand=${invoice.id}`}>
-                      Open invoice
-                    </Link>
-                  </Button>
+    <>
+      <Card>
+        <CardHeader>
+          <CardTitle>Invoice state</CardTitle>
+          <CardDescription>
+            Charges and payment status linked directly to this visit.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {invoicesQuery.isLoading ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading visit invoices...
+            </div>
+          ) : invoicesQuery.error || !invoicesQuery.data ? (
+            <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
+              Unable to load invoice state. Do not create duplicate charges
+              until this is resolved.
+            </div>
+          ) : visitInvoices.length === 0 ? (
+            <EmptyState
+              icon={Receipt}
+              title="No active invoice for this visit"
+              description={
+                canManage
+                  ? "Add all known services and products in Charge capture to create a visit-linked draft."
+                  : "An admin or front desk teammate can create this visit's charges."
+              }
+              className="p-8"
+            />
+          ) : (
+            <div className="flex flex-col gap-3">
+              {activeEstimates.length > 1 &&
+              activeActualInvoices.length === 0 ? (
+                <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-950 dark:text-amber-100">
+                  Multiple active estimates are linked to this visit. Review and
+                  void the extras in Billing before converting one to the visit
+                  invoice.
                 </div>
-              );
-            })}
-          </div>
-        )}
-        <span className="sr-only">Appointment {appointmentId}</span>
-      </CardContent>
-    </Card>
+              ) : null}
+              {visitInvoices.map((invoice) => {
+                const paid = Number(invoice.paidAmount ?? 0);
+                const adjusted = Number(invoice.adjustedAmount ?? 0);
+                const balance = Math.max(
+                  0,
+                  Number(invoice.total ?? 0) - paid - adjusted,
+                );
+                return (
+                  <div
+                    key={invoice.id}
+                    className="flex flex-col gap-3 rounded-md border border-border p-4 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <p className="font-medium">
+                          {invoice.isEstimate ? "Estimate" : "Invoice"}
+                        </p>
+                        <Badge
+                          variant={
+                            invoice.status === "paid" ? "success" : "outline"
+                          }
+                        >
+                          {invoice.status}
+                        </Badge>
+                      </div>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        Total {fmt(invoice.total)} · Balance {fmt(balance)}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {canManage && eligibleEstimate?.id === invoice.id ? (
+                        <Button
+                          size="sm"
+                          className="min-h-11"
+                          disabled={convertEstimate.isPending}
+                          onClick={() =>
+                            setPendingEstimate({
+                              id: invoice.id,
+                              total: invoice.total,
+                              updatedAt: invoice.updatedAt,
+                            })
+                          }
+                        >
+                          Review &amp; convert estimate
+                        </Button>
+                      ) : null}
+                      <Button size="sm" variant="outline" asChild>
+                        <Link href={`/billing?expand=${invoice.id}`}>
+                          Open {invoice.isEstimate ? "estimate" : "invoice"}
+                        </Link>
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <span className="sr-only">Appointment {appointmentId}</span>
+        </CardContent>
+      </Card>
+
+      <ActionConfirmationDialog
+        open={pendingEstimate !== null}
+        title="Convert estimate to a draft visit invoice?"
+        description={`The ${pendingEstimate ? fmt(pendingEstimate.total) : "selected"} estimate for ${patientName?.trim() || "this patient"} will become a draft visit invoice. Eligible product stock will be deducted. The client is not charged, and performed work is not automatically reconciled.`}
+        confirmLabel="Convert to draft invoice"
+        isPending={convertEstimate.isPending}
+        onCancel={() => {
+          if (!convertEstimate.isPending) setPendingEstimate(null);
+        }}
+        onConfirm={confirmEstimateConversion}
+      />
+    </>
   );
 }
 
@@ -3528,7 +3637,7 @@ function ChargeCapture({
           }),
       )
       .map((prescription) => ({
-        id: `prescription:${prescription.id}`,
+        id: `dispense:${prescription.dispenseChargeId}`,
         itemId: prescription.productId!,
         itemType: "product" as const,
         name: prescription.dispenseChargeDescription!,

@@ -56,7 +56,7 @@ function createDb(opts: {
     builder.for = vi.fn(async () => result);
     builder.then = (
       resolve: (value: unknown[]) => unknown,
-      reject?: (error: unknown) => unknown
+      reject?: (error: unknown) => unknown,
     ) => Promise.resolve(result).then(resolve, reject);
     return builder;
   });
@@ -177,7 +177,7 @@ describe("encounter closeout database locking", () => {
   it("locks only the appointment row when its optional type is left joined", () => {
     const source = readFileSync(
       new URL("../routers/encounters.ts", import.meta.url),
-      "utf8"
+      "utf8",
     );
 
     expect(source).toContain('.for("update", { of: appointments })');
@@ -186,14 +186,14 @@ describe("encounter closeout database locking", () => {
   it("preserves visit-work resolver attribution after staff deactivation", () => {
     const source = readFileSync(
       new URL("../routers/encounters.ts", import.meta.url),
-      "utf8"
+      "utf8",
     );
 
     expect(source).toMatch(
-      /leftJoin\(\s*users,\s*and\(\s*eq\(visitWorkItems\.resolvedBy, users\.id\),\s*eq\(users\.practiceId, ctx\.practiceId\)\s*,?\s*\)\s*,?\s*\)/s
+      /leftJoin\(\s*users,\s*and\(\s*eq\(visitWorkItems\.resolvedBy, users\.id\),\s*eq\(users\.practiceId, ctx\.practiceId\)\s*,?\s*\)\s*,?\s*\)/s,
     );
     expect(source).not.toMatch(
-      /eq\(visitWorkItems\.resolvedBy, users\.id\)[\s\S]{0,120}?isNull\(users\.deletedAt\)/s
+      /eq\(visitWorkItems\.resolvedBy, users\.id\)[\s\S]{0,120}?isNull\(users\.deletedAt\)/s,
     );
   });
 });
@@ -213,9 +213,11 @@ describe("encounter prescription lifecycle semantics", () => {
     expect(finalizeMedicationQuery).toContain("prescriptions.endDate");
     expect(finalizeMedicationQuery).toContain("appointment.practiceTimezone");
     expect(routerSource).toContain("medications: medicationHistory");
+    expect(routerSource).toContain("const chargeCaptureMedications = [");
     expect(routerSource).toContain(
-      'medication.effectiveStatus === "active"',
+      "eq(dispenseChargeQueue.appointmentId, input.appointmentId)",
     );
+    expect(routerSource).toContain('medication.effectiveStatus === "active"');
 
     const pageSource = readFileSync(
       new URL(
@@ -267,7 +269,7 @@ describe("encounter closeout safety", () => {
     });
     expect(error).toMatchObject({
       code: "PRECONDITION_FAILED",
-      message: expect.stringContaining("Resolve every performed vaccination"),
+      message: expect.stringContaining("medication dispense"),
     });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -300,7 +302,7 @@ describe("encounter closeout safety", () => {
         chargeDisposition: "no_charge",
         noChargeReason: "Complimentary postoperative recheck",
         handoffMethod: "verbal",
-      })
+      }),
     ).resolves.toEqual({ closeout: completed, appointment: checkedOut });
 
     expect(updateSet).toHaveBeenNthCalledWith(
@@ -309,7 +311,7 @@ describe("encounter closeout safety", () => {
         status: "completed",
         chargeDisposition: "no_charge",
         revision: 3,
-      })
+      }),
     );
     expect(updateSet).toHaveBeenNthCalledWith(2, { status: "checked_out" });
   });
@@ -335,7 +337,7 @@ describe("encounter closeout safety", () => {
         chargeDisposition: "no_charge",
         noChargeReason: "Complimentary recheck",
         handoffMethod: "print",
-      })
+      }),
     ).resolves.toEqual({ closeout: completed, appointment: checkedOut });
     expect(updateSet).not.toHaveBeenCalled();
   });
@@ -352,7 +354,7 @@ describe("encounter closeout safety", () => {
         chargeDisposition: "no_charge",
         noChargeReason: "Complimentary recheck",
         handoffMethod: "verbal",
-      })
+      }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message: "Finalize the clinical handoff before completing the visit.",
@@ -382,7 +384,7 @@ describe("encounter closeout safety", () => {
         chargeDisposition: "no_charge",
         noChargeReason: "Complimentary recheck",
         handoffMethod: "verbal",
-      })
+      }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message:
@@ -418,7 +420,7 @@ describe("encounter closeout safety", () => {
         chargeDisposition: "paid",
         noChargeReason: null,
         handoffMethod: "print",
-      })
+      }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message: "The visit invoice is not fully paid.",
@@ -463,7 +465,7 @@ describe("encounter closeout safety", () => {
         chargeDisposition,
         noChargeReason: null,
         handoffMethod: "print",
-      })
+      }),
     ).resolves.toEqual({ closeout: completed, appointment: checkedOut });
     expect(updateSet).toHaveBeenNthCalledWith(
       1,
@@ -471,7 +473,7 @@ describe("encounter closeout safety", () => {
         status: "completed",
         chargeDisposition,
         invoiceId: INVOICE_ID,
-      })
+      }),
     );
   });
 
@@ -614,8 +616,7 @@ describe("encounter closeout safety", () => {
       }),
     ).rejects.toMatchObject({
       code: "CONFLICT",
-      message:
-        "Invoice changed while preparing pay later. Refresh and retry.",
+      message: "Invoice changed while preparing pay later. Refresh and retry.",
     });
     expect(updateSet).toHaveBeenCalledTimes(1);
   });
@@ -629,7 +630,7 @@ describe("encounter closeout safety", () => {
       callerWithDb(db, "veterinarian").finalizeClinical({
         ...clinicalInput,
         documentationExceptionReason: null,
-      })
+      }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message: "Finalize the SOAP draft or document why SOAP is not required.",
@@ -695,7 +696,7 @@ describe("encounter closeout safety", () => {
     });
 
     await expect(
-      callerWithDb(db, "veterinarian").finalizeClinical(clinicalInput)
+      callerWithDb(db, "veterinarian").finalizeClinical(clinicalInput),
     ).resolves.toEqual(finalized);
     expect(insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -705,7 +706,7 @@ describe("encounter closeout safety", () => {
         clinicalFinalizerName: "Clinic User",
         medicationSnapshot: [],
         revision: 1,
-      })
+      }),
     );
   });
 
@@ -740,10 +741,10 @@ describe("encounter closeout safety", () => {
       callerWithDb(db, "veterinarian").finalizeClinical({
         ...clinicalInput,
         prescriptionDisposition: "prescribed",
-      })
+      }),
     ).resolves.toEqual(finalized);
     expect(insertValues).toHaveBeenCalledWith(
-      expect.objectContaining({ medicationSnapshot: [medication] })
+      expect.objectContaining({ medicationSnapshot: [medication] }),
     );
   });
 
@@ -769,7 +770,7 @@ describe("encounter closeout safety", () => {
     });
 
     await expect(
-      callerWithDb(db, "veterinarian").finalizeClinical(clinicalInput)
+      callerWithDb(db, "veterinarian").finalizeClinical(clinicalInput),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message:
@@ -786,7 +787,7 @@ describe("encounter closeout safety", () => {
       ],
     });
     await expect(
-      callerWithDb(db, "veterinarian").finalizeClinical(clinicalInput)
+      callerWithDb(db, "veterinarian").finalizeClinical(clinicalInput),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message: "Start the exam before preparing the clinical closeout.",
@@ -797,7 +798,7 @@ describe("encounter closeout safety", () => {
   it("keeps front desk users from authoring clinical content", async () => {
     const { db, select } = createDb({});
     await expect(
-      callerWithDb(db, "front_desk").finalizeClinical(clinicalInput)
+      callerWithDb(db, "front_desk").finalizeClinical(clinicalInput),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(select).not.toHaveBeenCalled();
   });
@@ -822,18 +823,18 @@ describe("encounter closeout safety", () => {
         appointmentId: APPOINTMENT_ID,
         expectedRevision: 2,
         reason: "Correct the dosage wording",
-      })
+      }),
     ).resolves.toEqual(reopened);
     expect(updateSet).toHaveBeenCalledWith(
       expect.objectContaining({
         revision: 3,
         amendmentDraft: expect.objectContaining({
-            baseRevision: 2,
-            reason: "Correct the dosage wording",
-            reopenedBy: USER_ID,
-            dischargeInstructions: "Give with food.",
-          }),
-      })
+          baseRevision: 2,
+          reason: "Correct the dosage wording",
+          reopenedBy: USER_ID,
+          dischargeInstructions: "Give with food.",
+        }),
+      }),
     );
     const values = updateSet.mock.calls[0]![0] as Record<string, unknown>;
     expect(values).not.toHaveProperty("status");
@@ -870,7 +871,7 @@ describe("encounter closeout safety", () => {
         ...clinicalInput,
         expectedRevision: 3,
         dischargeInstructions: "Give one tablet with food.",
-      })
+      }),
     ).resolves.toEqual(saved);
 
     expect(updateSet).toHaveBeenCalledWith({
@@ -916,7 +917,7 @@ describe("encounter closeout safety", () => {
         appointmentId: APPOINTMENT_ID,
         expectedRevision: 3,
         reason: "Correct the dosage wording",
-      })
+      }),
     ).resolves.toEqual(completedWithDraft);
     const openValues = openDb.updateSet.mock.calls[0]![0] as Record<
       string,
@@ -949,7 +950,7 @@ describe("encounter closeout safety", () => {
         ...clinicalInput,
         expectedRevision: 4,
         dischargeInstructions: "Give one tablet with food.",
-      })
+      }),
     ).resolves.toEqual(promoted);
 
     expect(promoteDb.updateSet).toHaveBeenCalledWith(
@@ -966,7 +967,7 @@ describe("encounter closeout safety", () => {
           }),
         ],
         revision: 5,
-      })
+      }),
     );
     const promoteValues = promoteDb.updateSet.mock.calls[0]![0] as Record<
       string,
@@ -979,8 +980,7 @@ describe("encounter closeout safety", () => {
 
   it("preserves operational resolution when an amendment leaves the needed follow-up unchanged", async () => {
     const checkedOut = { ...openAppointment, status: "checked_out" };
-    const resolutionAppointmentId =
-      "00000000-0000-0000-0000-000000000008";
+    const resolutionAppointmentId = "00000000-0000-0000-0000-000000000008";
     const resolvedAt = new Date("2026-08-09T17:00:00.000Z");
     const resolutionScheduledAt = new Date("2099-01-02T17:00:00.000Z");
     const completedWithDraft = {
@@ -1037,7 +1037,7 @@ describe("encounter closeout safety", () => {
         followUpDisposition: "needed",
         followUpDueDate: "2099-01-01",
         followUpAssignedTo: ASSIGNEE_ID,
-      })
+      }),
     ).resolves.toEqual(finalized);
     expect(updateSet).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1054,7 +1054,7 @@ describe("encounter closeout safety", () => {
             followUpResolvedBy: USER_ID,
           }),
         ],
-      })
+      }),
     );
   });
 
@@ -1086,7 +1086,7 @@ describe("encounter closeout safety", () => {
         followUpDisposition: "needed",
         followUpDueDate: "2099-01-01",
         followUpAssignedTo: ASSIGNEE_ID,
-      })
+      }),
     ).resolves.toEqual(finalized);
     expect(insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1096,7 +1096,7 @@ describe("encounter closeout safety", () => {
         followUpAssigneeName: "Alex Coordinator",
         followUpAppointmentId: null,
         followUpScheduledAt: null,
-      })
+      }),
     );
   });
 
@@ -1112,7 +1112,7 @@ describe("encounter closeout safety", () => {
     const { db } = createDb({ selectResults: [[pending]] });
 
     await expect(
-      callerWithDb(db, "front_desk").listPendingFollowUps()
+      callerWithDb(db, "front_desk").listPendingFollowUps(),
     ).resolves.toEqual([pending]);
   });
 
@@ -1163,7 +1163,7 @@ describe("encounter closeout safety", () => {
         resolution: "scheduled",
         resolutionAppointmentId: scheduledAppointment.id,
         notes: null,
-      })
+      }),
     ).resolves.toEqual(resolved);
     expect(updateSet).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1173,7 +1173,7 @@ describe("encounter closeout safety", () => {
         followUpResolvedBy: USER_ID,
         followUpResolverName: "Clinic User",
         revision: 5,
-      })
+      }),
     );
     const values = updateSet.mock.calls[0]![0] as Record<string, unknown>;
     expect(values).not.toHaveProperty("followUpDisposition");
@@ -1186,7 +1186,7 @@ describe("encounter closeout safety", () => {
       selectResults: [[openAppointment], [{ id: PATIENT_ID }]],
     });
     await expect(
-      callerWithDb(db, "technician").finalizeClinical(clinicalInput)
+      callerWithDb(db, "technician").finalizeClinical(clinicalInput),
     ).rejects.toMatchObject({
       code: "FORBIDDEN",
       message:
@@ -1241,7 +1241,7 @@ describe("encounter closeout safety", () => {
   it("fails closed for a missing or cross-tenant appointment", async () => {
     const { db, updateSet, insertValues } = createDb({ selectResults: [[]] });
     await expect(
-      callerWithDb(db).saveDraft(clinicalInput)
+      callerWithDb(db).saveDraft(clinicalInput),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
     expect(updateSet).not.toHaveBeenCalled();
     expect(insertValues).not.toHaveBeenCalled();

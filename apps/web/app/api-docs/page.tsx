@@ -558,8 +558,9 @@ const sections: Section[] = [
       {
         name: "billing.convertEstimateToInvoice",
         method: "POST",
-        description: "Convert an approved estimate into a billable invoice.",
-        input: `{ id: string }`,
+        description:
+          "Revalidate an eligible estimate and convert it into a draft invoice.",
+        input: `{ id: string, expectedUpdatedAt: Date }`,
         response: `Invoice`,
       },
       {

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -116,6 +117,27 @@ afterEach(() => {
 });
 
 describe("prescription lifecycle mutations", () => {
+  it("locks a visit-linked refill in appointment then prescription order", () => {
+    const source = readFileSync("server/routers/records.ts", "utf8");
+    const block = source.slice(
+      source.indexOf("recordPrescriptionRefill:"),
+      source.indexOf(
+        "cancelPrescription:",
+        source.indexOf("recordPrescriptionRefill:"),
+      ),
+    );
+    const routeRead = block.indexOf("const [prescriptionIdentity]");
+    const appointmentLock = block.indexOf("lockOpenAppointmentForClinicalWork");
+    const prescriptionLock = block.indexOf("lockPrescriptionForLifecycle");
+    const productWrite = block.indexOf("deductDispensedProductStock");
+
+    expect(routeRead).toBeGreaterThan(-1);
+    expect(appointmentLock).toBeGreaterThan(routeRead);
+    expect(prescriptionLock).toBeGreaterThan(appointmentLock);
+    expect(productWrite).toBeGreaterThan(prescriptionLock);
+    expect(block).toContain("prescription.patientId !== routedPatientId");
+  });
+
   it("deducts stock, decrements refills, and appends one attributed event", async () => {
     const updated = activePrescription({ refillsRemaining: 1 });
     const event = {

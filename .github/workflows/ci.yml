@@ -111,6 +111,15 @@ jobs:
           REMINDER_POLICY_DB_INTEGRATION: "1"
         run: pnpm --filter @openpims/web exec vitest run lib/messaging/__tests__/appointment-reminder-eligibility.integration.test.ts
 
+      # Prove the encounter-to-charge boundary with real row/advisory locks and
+      # database rollback. Fixtures are synthetic and the drill is restricted
+      # to the disposable local PostgreSQL service above.
+      - name: Execute billing estimate conversion concurrency drill
+        env:
+          BILLING_CONVERSION_DB_INTEGRATION: "1"
+          HOSTED_BILLING_ENABLED: "false"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/billing-estimate-conversion.integration.test.ts
+
       - run: pnpm --filter @openpims/db db:rls:test
 
       - run: pnpm --filter @openpims/db db:migration-runs:test

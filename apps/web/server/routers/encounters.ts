@@ -84,21 +84,27 @@ const optionalText = (label: string, max: number) =>
 const clinicalDraftInput = z.object({
   appointmentId: z.string().uuid(),
   expectedRevision: z.number().int().min(0),
-  diagnosisSummary: optionalText("Diagnosis summary", CLOSEOUT_DIAGNOSIS_MAX_LENGTH),
+  diagnosisSummary: optionalText(
+    "Diagnosis summary",
+    CLOSEOUT_DIAGNOSIS_MAX_LENGTH,
+  ),
   dischargeInstructions: optionalText(
     "Discharge instructions",
-    CLOSEOUT_INSTRUCTIONS_MAX_LENGTH
+    CLOSEOUT_INSTRUCTIONS_MAX_LENGTH,
   ),
-  warningSigns: optionalText("Warning signs", CLOSEOUT_WARNING_SIGNS_MAX_LENGTH),
+  warningSigns: optionalText(
+    "Warning signs",
+    CLOSEOUT_WARNING_SIGNS_MAX_LENGTH,
+  ),
   noInstructionsReason: optionalText(
     "No-instructions reason",
-    CLOSEOUT_REASON_MAX_LENGTH
+    CLOSEOUT_REASON_MAX_LENGTH,
   ),
   prescriptionDisposition: z.enum(["prescribed", "not_needed"]).nullable(),
   followUpDisposition: z.enum(["none", "needed", "scheduled"]).nullable(),
   followUpNotes: optionalText(
     "Follow-up notes",
-    CLOSEOUT_FOLLOW_UP_NOTES_MAX_LENGTH
+    CLOSEOUT_FOLLOW_UP_NOTES_MAX_LENGTH,
   ),
   followUpAppointmentId: z.string().uuid().nullable(),
   followUpDueDate: clinicalDateInput("Follow-up due date")
@@ -113,7 +119,7 @@ const clinicalDraftInput = z.object({
     .transform((value) => value ?? null),
   documentationExceptionReason: optionalText(
     "Documentation exception",
-    CLOSEOUT_REASON_MAX_LENGTH
+    CLOSEOUT_REASON_MAX_LENGTH,
   ),
 });
 
@@ -189,7 +195,10 @@ const completeVisitInput = z
     appointmentId: z.string().uuid(),
     expectedRevision: z.number().int().min(1),
     chargeDisposition: z.enum(["paid", "accounts_receivable", "no_charge"]),
-    noChargeReason: optionalText("No-charge reason", CLOSEOUT_REASON_MAX_LENGTH),
+    noChargeReason: optionalText(
+      "No-charge reason",
+      CLOSEOUT_REASON_MAX_LENGTH,
+    ),
     invoiceDueDate: clinicalDateInput("Invoice due date").nullish(),
     handoffMethod: z.enum(["print", "verbal", "declined"]),
   })
@@ -251,7 +260,10 @@ const resolveNeededFollowUpInput = z
       .nullable()
       .optional()
       .transform((value) => value ?? null),
-    notes: optionalText("Follow-up resolution notes", CLOSEOUT_REASON_MAX_LENGTH),
+    notes: optionalText(
+      "Follow-up resolution notes",
+      CLOSEOUT_REASON_MAX_LENGTH,
+    ),
   })
   .superRefine((input, ctx) => {
     if (input.resolution === "scheduled" && !input.resolutionAppointmentId) {
@@ -261,10 +273,7 @@ const resolveNeededFollowUpInput = z
         message: "Choose the scheduled follow-up appointment.",
       });
     }
-    if (
-      input.resolution !== "scheduled" &&
-      input.resolutionAppointmentId
-    ) {
+    if (input.resolution !== "scheduled" && input.resolutionAppointmentId) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["resolutionAppointmentId"],
@@ -350,10 +359,7 @@ async function isVeterinarianProvider(
   return Boolean(provider);
 }
 
-async function lockAppointment(
-  ctx: EncounterContext,
-  appointmentId: string
-) {
+async function lockAppointment(ctx: EncounterContext, appointmentId: string) {
   const [appointment] = await ctx.db
     .select({
       id: appointments.id,
@@ -370,30 +376,33 @@ async function lockAppointment(
       and(
         eq(appointments.practiceId, practices.id),
         eq(practices.id, ctx.practiceId),
-        isNull(practices.deletedAt)
-      )
+        isNull(practices.deletedAt),
+      ),
     )
     .leftJoin(
       appointmentTypes,
       and(
         eq(appointments.typeId, appointmentTypes.id),
         eq(appointmentTypes.practiceId, ctx.practiceId),
-        isNull(appointmentTypes.deletedAt)
-      )
+        isNull(appointmentTypes.deletedAt),
+      ),
     )
     .where(
       and(
         eq(appointments.id, appointmentId),
         eq(appointments.practiceId, ctx.practiceId),
         activePracticePredicate(ctx.practiceId),
-        isNull(appointments.deletedAt)
-      )
+        isNull(appointments.deletedAt),
+      ),
     )
     .limit(1)
     .for("update", { of: appointments });
 
   if (!appointment) {
-    throw new TRPCError({ code: "NOT_FOUND", message: "Appointment not found" });
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "Appointment not found",
+    });
   }
   if (!appointment.patientId || !appointment.clientId) {
     throw new TRPCError({
@@ -410,8 +419,8 @@ async function lockAppointment(
         eq(patients.id, appointment.patientId),
         eq(patients.clientId, appointment.clientId),
         eq(patients.practiceId, ctx.practiceId),
-        isNull(patients.deletedAt)
-      )
+        isNull(patients.deletedAt),
+      ),
     )
     .limit(1);
   if (!patient) {
@@ -420,7 +429,11 @@ async function lockAppointment(
       message: "The appointment patient and client no longer match.",
     });
   }
-  return { ...appointment, patientId: appointment.patientId, clientId: appointment.clientId };
+  return {
+    ...appointment,
+    patientId: appointment.patientId,
+    clientId: appointment.clientId,
+  };
 }
 
 async function getCloseoutRow(ctx: EncounterContext, appointmentId: string) {
@@ -431,8 +444,8 @@ async function getCloseoutRow(ctx: EncounterContext, appointmentId: string) {
       and(
         eq(visitCloseouts.appointmentId, appointmentId),
         eq(visitCloseouts.practiceId, ctx.practiceId),
-        isNull(visitCloseouts.deletedAt)
-      )
+        isNull(visitCloseouts.deletedAt),
+      ),
     )
     .limit(1);
   return closeout ?? null;
@@ -449,7 +462,7 @@ function assertOpenForClinical(status: string) {
 
 function sameClinicalPayload(
   row: typeof visitCloseouts.$inferSelect,
-  input: z.infer<typeof clinicalDraftInput>
+  input: z.infer<typeof clinicalDraftInput>,
 ) {
   return (
     row.diagnosisSummary === input.diagnosisSummary &&
@@ -484,7 +497,7 @@ function clinicalDraftValues(input: z.infer<typeof clinicalDraftInput>) {
 
 function assertAmendmentAppointmentState(
   appointmentStatus: string,
-  closeoutStatus: (typeof visitCloseouts.$inferSelect)["status"]
+  closeoutStatus: (typeof visitCloseouts.$inferSelect)["status"],
 ) {
   const isOpenFinalizedVisit =
     closeoutStatus === "clinical_finalized" && appointmentStatus === "in_exam";
@@ -504,7 +517,7 @@ async function appointmentInvoiceRows(
   appointmentId: string,
   patientId: string,
   clientId: string,
-  lock = false
+  lock = false,
 ) {
   const query = ctx.db
     .select({
@@ -523,8 +536,8 @@ async function appointmentInvoiceRows(
         eq(invoices.practiceId, ctx.practiceId),
         eq(invoices.isEstimate, false),
         ne(invoices.status, "void"),
-        isNull(invoices.deletedAt)
-      )
+        isNull(invoices.deletedAt),
+      ),
     )
     .orderBy(desc(invoices.createdAt));
   return lock ? query.for("update") : query;
@@ -532,17 +545,14 @@ async function appointmentInvoiceRows(
 
 async function invoiceReadiness(
   ctx: EncounterContext,
-  row: Awaited<ReturnType<typeof appointmentInvoiceRows>>[number]
+  row: Awaited<ReturnType<typeof appointmentInvoiceRows>>[number],
 ) {
   const [[itemsSummary], [adjustmentsSummary]] = await Promise.all([
     ctx.db
       .select({ itemCount: sql<number>`count(*)::int` })
       .from(invoiceItems)
       .where(
-        and(
-          eq(invoiceItems.invoiceId, row.id),
-          isNull(invoiceItems.deletedAt)
-        )
+        and(eq(invoiceItems.invoiceId, row.id), isNull(invoiceItems.deletedAt)),
       ),
     ctx.db
       .select({
@@ -552,8 +562,8 @@ async function invoiceReadiness(
       .where(
         and(
           eq(invoiceAdjustments.invoiceId, row.id),
-          isNull(invoiceAdjustments.deletedAt)
-        )
+          isNull(invoiceAdjustments.deletedAt),
+        ),
       ),
   ]);
   const adjustedAmount = adjustmentsSummary?.adjustedAmount ?? "0";
@@ -569,7 +579,7 @@ async function invoiceReadiness(
 async function lockInitialDispenseCharge(
   ctx: EncounterContext,
   prescriptionId: string,
-  appointmentId: string
+  appointmentId: string,
 ) {
   const [charge] = await ctx.db
     .select({
@@ -585,15 +595,15 @@ async function lockInitialDispenseCharge(
       and(
         eq(dispenseChargeQueue.prescriptionEventId, prescriptionEvents.id),
         eq(prescriptionEvents.practiceId, ctx.practiceId),
-        eq(prescriptionEvents.eventType, "created")
-      )
+        eq(prescriptionEvents.eventType, "created"),
+      ),
     )
     .where(
       and(
         eq(dispenseChargeQueue.practiceId, ctx.practiceId),
         eq(dispenseChargeQueue.prescriptionId, prescriptionId),
-        eq(dispenseChargeQueue.appointmentId, appointmentId)
-      )
+        eq(dispenseChargeQueue.appointmentId, appointmentId),
+      ),
     )
     .limit(1)
     .for("update");
@@ -613,8 +623,7 @@ export const encountersRouter = createRouter({
         assigneeName: visitCloseouts.followUpAssigneeName,
         followUpNotes: visitCloseouts.followUpNotes,
         resolution: visitCloseouts.followUpResolution,
-        resolutionAppointmentId:
-          visitCloseouts.followUpResolutionAppointmentId,
+        resolutionAppointmentId: visitCloseouts.followUpResolutionAppointmentId,
         resolutionScheduledAt: visitCloseouts.followUpResolutionScheduledAt,
         resolutionNotes: visitCloseouts.followUpResolutionNotes,
         resolvedAt: visitCloseouts.followUpResolvedAt,
@@ -633,16 +642,16 @@ export const encountersRouter = createRouter({
         and(
           eq(visitCloseouts.appointmentId, appointments.id),
           eq(appointments.practiceId, ctx.practiceId),
-          isNull(appointments.deletedAt)
-        )
+          isNull(appointments.deletedAt),
+        ),
       )
       .innerJoin(
         patients,
         and(
           eq(appointments.patientId, patients.id),
           eq(patients.practiceId, ctx.practiceId),
-          isNull(patients.deletedAt)
-        )
+          isNull(patients.deletedAt),
+        ),
       )
       .innerJoin(
         clients,
@@ -650,8 +659,8 @@ export const encountersRouter = createRouter({
           eq(appointments.clientId, clients.id),
           eq(patients.clientId, clients.id),
           eq(clients.practiceId, ctx.practiceId),
-          isNull(clients.deletedAt)
-        )
+          isNull(clients.deletedAt),
+        ),
       )
       .where(
         and(
@@ -660,10 +669,13 @@ export const encountersRouter = createRouter({
           inArray(visitCloseouts.status, ["clinical_finalized", "completed"]),
           isNull(visitCloseouts.followUpResolvedAt),
           activePracticePredicate(ctx.practiceId),
-          isNull(visitCloseouts.deletedAt)
-        )
+          isNull(visitCloseouts.deletedAt),
+        ),
       )
-      .orderBy(asc(visitCloseouts.followUpDueDate), asc(visitCloseouts.createdAt))
+      .orderBy(
+        asc(visitCloseouts.followUpDueDate),
+        asc(visitCloseouts.createdAt),
+      ),
   ),
 
   getCloseout: protectedProcedure
@@ -684,20 +696,23 @@ export const encountersRouter = createRouter({
           and(
             eq(appointments.practiceId, practices.id),
             eq(practices.id, ctx.practiceId),
-            isNull(practices.deletedAt)
-          )
+            isNull(practices.deletedAt),
+          ),
         )
         .where(
           and(
             eq(appointments.id, input.appointmentId),
             eq(appointments.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(appointments.deletedAt)
-          )
+            isNull(appointments.deletedAt),
+          ),
         )
         .limit(1);
       if (!appointment) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Appointment not found" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Appointment not found",
+        });
       }
       const [
         closeout,
@@ -705,6 +720,7 @@ export const encountersRouter = createRouter({
         soapDraftRows,
         missingSoapReplacementRows,
         medications,
+        visitDispenses,
         followUpAppointments,
         followUpAssignees,
       ] = await Promise.all([
@@ -823,51 +839,94 @@ export const encountersRouter = createRouter({
             ),
           )
           .orderBy(desc(prescriptions.createdAt)),
-          appointment.patientId && appointment.clientId
-            ? ctx.db
-                .select({
-                  id: appointments.id,
-                  startTime: appointments.startTime,
-                  status: appointments.status,
-                })
-                .from(appointments)
-                .where(
-                  and(
-                    eq(appointments.patientId, appointment.patientId),
-                    eq(appointments.clientId, appointment.clientId),
-                    eq(appointments.practiceId, ctx.practiceId),
-                    gt(appointments.startTime, new Date()),
-                    inArray(appointments.status, ["scheduled", "confirmed"]),
-                    isNull(appointments.deletedAt)
-                  )
-                )
-                .orderBy(appointments.startTime)
-                .limit(25)
-            : Promise.resolve([]),
-          ctx.db
-            .select({
-              id: users.id,
-              name: users.name,
-              email: users.email,
-              role: users.role,
-            })
-            .from(users)
-            .where(
-              and(
-                eq(users.practiceId, ctx.practiceId),
-                inArray(users.role, [
-                  "admin",
-                  "veterinarian",
-                  "technician",
-                  "front_desk",
-                ]),
-                activePracticePredicate(ctx.practiceId),
-                isNull(users.deletedAt)
+        ctx.db
+          .select({
+            id: prescriptions.id,
+            medicationName: prescriptions.medicationName,
+            dosage: prescriptions.dosage,
+            frequency: prescriptions.frequency,
+            instructions: prescriptions.instructions,
+            quantity: dispenseChargeQueue.quantity,
+            productId: dispenseChargeQueue.productId,
+            productName: products.name,
+            productTaxable: products.taxable,
+            productUnitPrice: dispenseChargeQueue.unitPriceSnapshot,
+            dispenseChargeId: dispenseChargeQueue.id,
+            dispenseChargeStatus: dispenseChargeQueue.status,
+            dispenseChargeDescription: dispenseChargeQueue.descriptionSnapshot,
+            status: prescriptions.status,
+            endDate: prescriptions.endDate,
+          })
+          .from(dispenseChargeQueue)
+          .innerJoin(
+            prescriptions,
+            and(
+              eq(dispenseChargeQueue.prescriptionId, prescriptions.id),
+              eq(prescriptions.practiceId, ctx.practiceId),
+            ),
+          )
+          .leftJoin(
+            products,
+            and(
+              eq(dispenseChargeQueue.productId, products.id),
+              eq(products.practiceId, ctx.practiceId),
+            ),
+          )
+          .where(
+            and(
+              eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+              eq(dispenseChargeQueue.appointmentId, input.appointmentId),
+            ),
+          )
+          .orderBy(
+            desc(dispenseChargeQueue.createdAt),
+            desc(dispenseChargeQueue.id),
+          ),
+        appointment.patientId && appointment.clientId
+          ? ctx.db
+              .select({
+                id: appointments.id,
+                startTime: appointments.startTime,
+                status: appointments.status,
+              })
+              .from(appointments)
+              .where(
+                and(
+                  eq(appointments.patientId, appointment.patientId),
+                  eq(appointments.clientId, appointment.clientId),
+                  eq(appointments.practiceId, ctx.practiceId),
+                  gt(appointments.startTime, new Date()),
+                  inArray(appointments.status, ["scheduled", "confirmed"]),
+                  isNull(appointments.deletedAt),
+                ),
               )
-            )
-            .orderBy(asc(users.name), asc(users.email))
-            .limit(100),
-        ]);
+              .orderBy(appointments.startTime)
+              .limit(25)
+          : Promise.resolve([]),
+        ctx.db
+          .select({
+            id: users.id,
+            name: users.name,
+            email: users.email,
+            role: users.role,
+          })
+          .from(users)
+          .where(
+            and(
+              eq(users.practiceId, ctx.practiceId),
+              inArray(users.role, [
+                "admin",
+                "veterinarian",
+                "technician",
+                "front_desk",
+              ]),
+              activePracticePredicate(ctx.practiceId),
+              isNull(users.deletedAt),
+            ),
+          )
+          .orderBy(asc(users.name), asc(users.email))
+          .limit(100),
+      ]);
 
       const rawInvoices =
         appointment.patientId && appointment.clientId
@@ -875,17 +934,30 @@ export const encountersRouter = createRouter({
               ctx,
               input.appointmentId,
               appointment.patientId,
-              appointment.clientId
+              appointment.clientId,
             )
           : [];
       const invoiceSummaries = await Promise.all(
-        rawInvoices.map((invoice) => invoiceReadiness(ctx, invoice))
+        rawInvoices.map((invoice) => invoiceReadiness(ctx, invoice)),
       );
       const practiceToday = formatDateInputForTimeZone(
         new Date(),
         appointment.practiceTimezone,
       );
-      const medicationHistory = medications.map((medication) => ({
+      const visitDispenseIdsAlreadyIncluded = new Set(
+        medications
+          .map((medication) => medication.dispenseChargeId)
+          .filter((id): id is string => Boolean(id)),
+      );
+      const chargeCaptureMedications = [
+        ...medications,
+        ...visitDispenses.filter(
+          (medication) =>
+            !medication.dispenseChargeId ||
+            !visitDispenseIdsAlreadyIncluded.has(medication.dispenseChargeId),
+        ),
+      ];
+      const medicationHistory = chargeCaptureMedications.map((medication) => ({
         ...medication,
         effectiveStatus: effectivePrescriptionStatus({
           status: medication.status,
@@ -893,6 +965,17 @@ export const encountersRouter = createRouter({
           today: practiceToday,
         }),
       }));
+      const activeMedications = [
+        ...medicationHistory
+          .filter((medication) => medication.effectiveStatus === "active")
+          .reduce((byPrescription, medication) => {
+            if (!byPrescription.has(medication.id)) {
+              byPrescription.set(medication.id, medication);
+            }
+            return byPrescription;
+          }, new Map<string, (typeof medicationHistory)[number]>())
+          .values(),
+      ];
 
       return {
         closeout,
@@ -912,9 +995,7 @@ export const encountersRouter = createRouter({
             ? (missingSoapReplacementRows[0] ?? null)
             : null,
         medications: medicationHistory,
-        activeMedications: medicationHistory.filter(
-          (medication) => medication.effectiveStatus === "active",
-        ),
+        activeMedications,
         followUpAppointments,
         followUpAssignees,
         invoices: invoiceSummaries,
@@ -932,8 +1013,8 @@ export const encountersRouter = createRouter({
             eq(appointments.id, input.appointmentId),
             eq(appointments.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(appointments.deletedAt)
-          )
+            isNull(appointments.deletedAt),
+          ),
         )
         .limit(1);
       if (!appointment) {
@@ -999,8 +1080,8 @@ export const encountersRouter = createRouter({
               eq(visitWorkItems.vaccinationRecordId, vaccinationRecords.id),
               eq(vaccinationRecords.practiceId, ctx.practiceId),
               eq(vaccinationRecords.appointmentId, input.appointmentId),
-              isNull(vaccinationRecords.deletedAt)
-            )
+              isNull(vaccinationRecords.deletedAt),
+            ),
           )
           .leftJoin(
             labResults,
@@ -1008,8 +1089,8 @@ export const encountersRouter = createRouter({
               eq(visitWorkItems.labResultId, labResults.id),
               eq(labResults.practiceId, ctx.practiceId),
               eq(labResults.appointmentId, input.appointmentId),
-              isNull(labResults.deletedAt)
-            )
+              isNull(labResults.deletedAt),
+            ),
           )
           .leftJoin(
             procedures,
@@ -1017,8 +1098,8 @@ export const encountersRouter = createRouter({
               eq(visitWorkItems.procedureId, procedures.id),
               eq(procedures.practiceId, ctx.practiceId),
               eq(procedures.appointmentId, input.appointmentId),
-              isNull(procedures.deletedAt)
-            )
+              isNull(procedures.deletedAt),
+            ),
           )
           .leftJoin(
             prescriptions,
@@ -1026,42 +1107,42 @@ export const encountersRouter = createRouter({
               eq(visitWorkItems.prescriptionId, prescriptions.id),
               eq(prescriptions.practiceId, ctx.practiceId),
               eq(prescriptions.appointmentId, input.appointmentId),
-              isNull(prescriptions.deletedAt)
-            )
+              isNull(prescriptions.deletedAt),
+            ),
           )
           .leftJoin(
             products,
             and(
               eq(prescriptions.productId, products.id),
               eq(products.practiceId, ctx.practiceId),
-              isNull(products.deletedAt)
-            )
+              isNull(products.deletedAt),
+            ),
           )
           .leftJoin(
             invoiceItems,
-            eq(visitWorkItems.invoiceItemId, invoiceItems.id)
+            eq(visitWorkItems.invoiceItemId, invoiceItems.id),
           )
           .leftJoin(
             invoices,
             and(
               eq(visitWorkItems.invoiceId, invoices.id),
               eq(invoices.practiceId, ctx.practiceId),
-              eq(invoices.appointmentId, input.appointmentId)
-            )
+              eq(invoices.appointmentId, input.appointmentId),
+            ),
           )
           .leftJoin(
             users,
             and(
               eq(visitWorkItems.resolvedBy, users.id),
-              eq(users.practiceId, ctx.practiceId)
-            )
+              eq(users.practiceId, ctx.practiceId),
+            ),
           )
           .where(
             and(
               eq(visitWorkItems.practiceId, ctx.practiceId),
               eq(visitWorkItems.appointmentId, input.appointmentId),
-              isNull(visitWorkItems.deletedAt)
-            )
+              isNull(visitWorkItems.deletedAt),
+            ),
           )
           .orderBy(asc(visitWorkItems.createdAt), asc(visitWorkItems.id)),
         ctx.db
@@ -1075,8 +1156,8 @@ export const encountersRouter = createRouter({
             and(
               eq(services.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(services.deletedAt)
-            )
+              isNull(services.deletedAt),
+            ),
           )
           .orderBy(asc(services.name), asc(services.id))
           .limit(500),
@@ -1099,15 +1180,15 @@ export const encountersRouter = createRouter({
               eq(invoices.appointmentId, input.appointmentId),
               eq(invoices.isEstimate, false),
               ne(invoices.status, "void"),
-              isNull(invoices.deletedAt)
-            )
+              isNull(invoices.deletedAt),
+            ),
           )
           .leftJoin(
             visitWorkItems,
             and(
               eq(invoiceItems.id, visitWorkItems.invoiceItemId),
-              isNull(visitWorkItems.deletedAt)
-            )
+              isNull(visitWorkItems.deletedAt),
+            ),
           )
           .where(and(isNull(invoiceItems.deletedAt), isNull(visitWorkItems.id)))
           .orderBy(asc(invoiceItems.createdAt), asc(invoiceItems.id)),
@@ -1130,7 +1211,7 @@ export const encountersRouter = createRouter({
               item.invoiceStatus !== "void"),
           suggestedService:
             servicesByName.get(
-              item.sourceLabel.trim().toLocaleLowerCase("en-US")
+              item.sourceLabel.trim().toLocaleLowerCase("en-US"),
             ) ?? null,
         })),
         invoiceItemOptions,
@@ -1141,7 +1222,7 @@ export const encountersRouter = createRouter({
               (item.invoiceItemDeletedAt !== null ||
                 item.invoiceDeletedAt !== null ||
                 !item.invoiceStatus ||
-                item.invoiceStatus === "void"))
+                item.invoiceStatus === "void")),
         ).length,
       };
     }),
@@ -1180,8 +1261,8 @@ export const encountersRouter = createRouter({
               eq(visitWorkItems.id, input.workItemId),
               eq(visitWorkItems.practiceId, ctx.practiceId),
               eq(visitWorkItems.appointmentId, input.appointmentId),
-              isNull(visitWorkItems.deletedAt)
-            )
+              isNull(visitWorkItems.deletedAt),
+            ),
           )
           .limit(1)
           .for("update");
@@ -1214,7 +1295,7 @@ export const encountersRouter = createRouter({
           ? await lockInitialDispenseCharge(
               txCtx,
               workItem.prescriptionId,
-              input.appointmentId
+              input.appointmentId,
             )
           : null;
 
@@ -1254,14 +1335,14 @@ export const encountersRouter = createRouter({
                 eq(invoices.appointmentId, input.appointmentId),
                 eq(invoices.isEstimate, false),
                 ne(invoices.status, "void"),
-                isNull(invoices.deletedAt)
-              )
+                isNull(invoices.deletedAt),
+              ),
             )
             .where(
               and(
                 eq(invoiceItems.id, input.resolution.invoiceItemId),
-                isNull(invoiceItems.deletedAt)
-              )
+                isNull(invoiceItems.deletedAt),
+              ),
             )
             .limit(1);
           if (!charge) {
@@ -1374,8 +1455,8 @@ export const encountersRouter = createRouter({
               and(
                 eq(dispenseChargeQueue.id, dispenseCharge.id),
                 eq(dispenseChargeQueue.practiceId, ctx.practiceId),
-                eq(dispenseChargeQueue.status, "pending")
-              )
+                eq(dispenseChargeQueue.status, "pending"),
+              ),
             )
             .returning({ id: dispenseChargeQueue.id });
           if (!waived) {
@@ -1395,8 +1476,8 @@ export const encountersRouter = createRouter({
               eq(visitWorkItems.practiceId, ctx.practiceId),
               eq(visitWorkItems.appointmentId, input.appointmentId),
               eq(visitWorkItems.status, "unresolved"),
-              isNull(visitWorkItems.deletedAt)
-            )
+              isNull(visitWorkItems.deletedAt),
+            ),
           )
           .returning();
         if (!resolved) {
@@ -1432,8 +1513,8 @@ export const encountersRouter = createRouter({
               eq(visitWorkItems.id, input.workItemId),
               eq(visitWorkItems.practiceId, ctx.practiceId),
               eq(visitWorkItems.appointmentId, input.appointmentId),
-              isNull(visitWorkItems.deletedAt)
-            )
+              isNull(visitWorkItems.deletedAt),
+            ),
           )
           .limit(1)
           .for("update");
@@ -1453,9 +1534,9 @@ export const encountersRouter = createRouter({
                 eq(clinicalRecordCorrections.practiceId, ctx.practiceId),
                 eq(
                   clinicalRecordCorrections.vaccinationRecordId,
-                  workItem.vaccinationRecordId
-                )
-              )
+                  workItem.vaccinationRecordId,
+                ),
+              ),
             )
             .limit(1);
           if (correction) {
@@ -1474,7 +1555,7 @@ export const encountersRouter = createRouter({
             ? await lockInitialDispenseCharge(
                 txCtx,
                 workItem.prescriptionId,
-                input.appointmentId
+                input.appointmentId,
               )
             : null;
         if (dispenseCharge && ctx.user.role !== "admin") {
@@ -1527,8 +1608,8 @@ export const encountersRouter = createRouter({
               and(
                 eq(dispenseChargeQueue.id, dispenseCharge.id),
                 eq(dispenseChargeQueue.practiceId, ctx.practiceId),
-                eq(dispenseChargeQueue.status, "waived")
-              )
+                eq(dispenseChargeQueue.status, "waived"),
+              ),
             )
             .returning({ id: dispenseChargeQueue.id });
           if (!reopenedCharge) {
@@ -1562,8 +1643,8 @@ export const encountersRouter = createRouter({
                 where ${clinicalRecordCorrections.practiceId} = ${ctx.practiceId}
                   and ${clinicalRecordCorrections.vaccinationRecordId} = ${visitWorkItems.vaccinationRecordId}
               )`,
-              isNull(visitWorkItems.deletedAt)
-            )
+              isNull(visitWorkItems.deletedAt),
+            ),
           )
           .returning();
         if (!reopened) {
@@ -1576,9 +1657,9 @@ export const encountersRouter = createRouter({
                   eq(clinicalRecordCorrections.practiceId, ctx.practiceId),
                   eq(
                     clinicalRecordCorrections.vaccinationRecordId,
-                    workItem.vaccinationRecordId
-                  )
-                )
+                    workItem.vaccinationRecordId,
+                  ),
+                ),
               )
               .limit(1);
             if (correction) {
@@ -1595,7 +1676,7 @@ export const encountersRouter = createRouter({
           });
         }
         return reopened;
-      })
+      }),
     ),
 
   saveDraft: protectedProcedure
@@ -1612,7 +1693,8 @@ export const encountersRouter = createRouter({
           if (existing.revision !== input.expectedRevision) {
             throw new TRPCError({
               code: "CONFLICT",
-              message: "Closeout changed in another session. Refresh before saving.",
+              message:
+                "Closeout changed in another session. Refresh before saving.",
             });
           }
           const [saved] = await tx
@@ -1631,8 +1713,8 @@ export const encountersRouter = createRouter({
                 eq(visitCloseouts.status, existing.status),
                 eq(visitCloseouts.revision, existing.revision),
                 sql`${visitCloseouts.amendmentDraft} is not null`,
-                isNull(visitCloseouts.deletedAt)
-              )
+                isNull(visitCloseouts.deletedAt),
+              ),
             )
             .returning();
           if (!saved) {
@@ -1656,7 +1738,8 @@ export const encountersRouter = createRouter({
         if (revision !== input.expectedRevision) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "Closeout changed in another session. Refresh before saving.",
+            message:
+              "Closeout changed in another session. Refresh before saving.",
           });
         }
         const values = {
@@ -1673,12 +1756,15 @@ export const encountersRouter = createRouter({
                 eq(visitCloseouts.practiceId, ctx.practiceId),
                 eq(visitCloseouts.status, "draft"),
                 eq(visitCloseouts.revision, revision),
-                isNull(visitCloseouts.deletedAt)
-              )
+                isNull(visitCloseouts.deletedAt),
+              ),
             )
             .returning();
           if (!saved) {
-            throw new TRPCError({ code: "CONFLICT", message: "Closeout changed; refresh and retry." });
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "Closeout changed; refresh and retry.",
+            });
           }
           return saved;
         }
@@ -1691,7 +1777,7 @@ export const encountersRouter = createRouter({
           })
           .returning();
         return saved!;
-      })
+      }),
     ),
 
   finalizeClinical: protectedProcedure
@@ -1729,7 +1815,8 @@ export const encountersRouter = createRouter({
         if (revision !== input.expectedRevision) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "Closeout changed in another session. Refresh before finalizing.",
+            message:
+              "Closeout changed in another session. Refresh before finalizing.",
           });
         }
 
@@ -1794,7 +1881,16 @@ export const encountersRouter = createRouter({
           .from(prescriptions)
           .where(
             and(
-              eq(prescriptions.appointmentId, input.appointmentId),
+              or(
+                eq(prescriptions.appointmentId, input.appointmentId),
+                sql`exists (
+                  select 1
+                  from ${dispenseChargeQueue}
+                  where ${dispenseChargeQueue.practiceId} = ${ctx.practiceId}
+                    and ${dispenseChargeQueue.appointmentId} = ${input.appointmentId}
+                    and ${dispenseChargeQueue.prescriptionId} = ${prescriptions.id}
+                )`,
+              ),
               eq(prescriptions.patientId, appointment.patientId),
               eq(prescriptions.practiceId, ctx.practiceId),
               eq(prescriptions.status, "active"),
@@ -1808,8 +1904,8 @@ export const encountersRouter = createRouter({
                   ),
                 ),
               ),
-              isNull(prescriptions.deletedAt)
-            )
+              isNull(prescriptions.deletedAt),
+            ),
           )
           .orderBy(prescriptions.createdAt);
         if (
@@ -1818,7 +1914,8 @@ export const encountersRouter = createRouter({
         ) {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
-            message: "Create and link the visit prescription before finalizing.",
+            message:
+              "Create and link the visit prescription before finalizing.",
           });
         }
         if (
@@ -1849,21 +1946,22 @@ export const encountersRouter = createRouter({
                 eq(appointments.practiceId, ctx.practiceId),
                 gt(appointments.startTime, new Date()),
                 inArray(appointments.status, ["scheduled", "confirmed"]),
-                isNull(appointments.deletedAt)
-              )
+                isNull(appointments.deletedAt),
+              ),
             )
             .limit(1);
           if (!followUp) {
             throw new TRPCError({
               code: "PRECONDITION_FAILED",
-              message: "The selected follow-up appointment is no longer available.",
+              message:
+                "The selected follow-up appointment is no longer available.",
             });
           }
           followUpScheduledAt = followUp.startTime;
         } else if (input.followUpDisposition === "needed") {
           const today = formatDateInputForTimeZone(
             new Date(),
-            appointment.practiceTimezone
+            appointment.practiceTimezone,
           );
           if (!input.followUpDueDate || input.followUpDueDate < today) {
             throw new TRPCError({
@@ -1885,8 +1983,8 @@ export const encountersRouter = createRouter({
                   "front_desk",
                 ]),
                 activePracticePredicate(ctx.practiceId),
-                isNull(users.deletedAt)
-              )
+                isNull(users.deletedAt),
+              ),
             )
             .limit(1);
           if (!assignee) {
@@ -1901,11 +1999,11 @@ export const encountersRouter = createRouter({
         const now = new Date();
         const preserveFollowUpResolution = Boolean(
           amendmentDraft &&
-            existing &&
-            input.followUpDisposition === "needed" &&
-            existing.followUpDisposition === "needed" &&
-            existing.followUpDueDate === input.followUpDueDate &&
-            existing.followUpAssignedTo === input.followUpAssignedTo
+          existing &&
+          input.followUpDisposition === "needed" &&
+          existing.followUpDisposition === "needed" &&
+          existing.followUpDueDate === input.followUpDueDate &&
+          existing.followUpAssignedTo === input.followUpAssignedTo,
         );
         const values = {
           ...clinicalDraftValues(input),
@@ -1924,25 +2022,25 @@ export const encountersRouter = createRouter({
               : null,
           followUpAssigneeName,
           followUpResolution: preserveFollowUpResolution
-            ? existing?.followUpResolution ?? null
+            ? (existing?.followUpResolution ?? null)
             : null,
           followUpResolutionAppointmentId: preserveFollowUpResolution
-            ? existing?.followUpResolutionAppointmentId ?? null
+            ? (existing?.followUpResolutionAppointmentId ?? null)
             : null,
           followUpResolutionScheduledAt: preserveFollowUpResolution
-            ? existing?.followUpResolutionScheduledAt ?? null
+            ? (existing?.followUpResolutionScheduledAt ?? null)
             : null,
           followUpResolutionNotes: preserveFollowUpResolution
-            ? existing?.followUpResolutionNotes ?? null
+            ? (existing?.followUpResolutionNotes ?? null)
             : null,
           followUpResolvedAt: preserveFollowUpResolution
-            ? existing?.followUpResolvedAt ?? null
+            ? (existing?.followUpResolvedAt ?? null)
             : null,
           followUpResolvedBy: preserveFollowUpResolution
-            ? existing?.followUpResolvedBy ?? null
+            ? (existing?.followUpResolvedBy ?? null)
             : null,
           followUpResolverName: preserveFollowUpResolution
-            ? existing?.followUpResolverName ?? null
+            ? (existing?.followUpResolverName ?? null)
             : null,
           medicationSnapshot,
           status:
@@ -2007,10 +2105,7 @@ export const encountersRouter = createRouter({
             .update(visitCloseouts)
             .set({
               ...values,
-              amendmentHistory: [
-                ...existing.amendmentHistory,
-                priorVersion,
-              ],
+              amendmentHistory: [...existing.amendmentHistory, priorVersion],
               amendmentDraft: null,
             })
             .where(
@@ -2020,8 +2115,8 @@ export const encountersRouter = createRouter({
                 eq(visitCloseouts.status, existing.status),
                 eq(visitCloseouts.revision, revision),
                 sql`${visitCloseouts.amendmentDraft} is not null`,
-                isNull(visitCloseouts.deletedAt)
-              )
+                isNull(visitCloseouts.deletedAt),
+              ),
             )
             .returning();
           if (!finalized) {
@@ -2042,12 +2137,15 @@ export const encountersRouter = createRouter({
                 eq(visitCloseouts.practiceId, ctx.practiceId),
                 eq(visitCloseouts.status, "draft"),
                 eq(visitCloseouts.revision, revision),
-                isNull(visitCloseouts.deletedAt)
-              )
+                isNull(visitCloseouts.deletedAt),
+              ),
             )
             .returning();
           if (!finalized) {
-            throw new TRPCError({ code: "CONFLICT", message: "Closeout changed; refresh and retry." });
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "Closeout changed; refresh and retry.",
+            });
           }
           return finalized;
         }
@@ -2060,7 +2158,7 @@ export const encountersRouter = createRouter({
           })
           .returning();
         return finalized!;
-      })
+      }),
     ),
 
   reopenClinical: protectedProcedure
@@ -2100,7 +2198,8 @@ export const encountersRouter = createRouter({
         if (closeout.revision !== input.expectedRevision) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "Closeout changed in another session. Refresh before amending.",
+            message:
+              "Closeout changed in another session. Refresh before amending.",
           });
         }
         if (
@@ -2112,7 +2211,8 @@ export const encountersRouter = createRouter({
         ) {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
-            message: "The finalized handoff is incomplete and cannot be amended safely.",
+            message:
+              "The finalized handoff is incomplete and cannot be amended safely.",
           });
         }
 
@@ -2147,8 +2247,8 @@ export const encountersRouter = createRouter({
               eq(visitCloseouts.status, closeout.status),
               eq(visitCloseouts.revision, closeout.revision),
               sql`${visitCloseouts.amendmentDraft} is null`,
-              isNull(visitCloseouts.deletedAt)
-            )
+              isNull(visitCloseouts.deletedAt),
+            ),
           )
           .returning();
         if (!reopened) {
@@ -2158,7 +2258,7 @@ export const encountersRouter = createRouter({
           });
         }
         return reopened;
-      })
+      }),
     ),
 
   resolveNeededFollowUp: protectedProcedure
@@ -2217,14 +2317,15 @@ export const encountersRouter = createRouter({
                 eq(appointments.practiceId, ctx.practiceId),
                 gt(appointments.startTime, new Date()),
                 inArray(appointments.status, ["scheduled", "confirmed"]),
-                isNull(appointments.deletedAt)
-              )
+                isNull(appointments.deletedAt),
+              ),
             )
             .limit(1);
           if (!followUp) {
             throw new TRPCError({
               code: "PRECONDITION_FAILED",
-              message: "The selected follow-up appointment is no longer available.",
+              message:
+                "The selected follow-up appointment is no longer available.",
             });
           }
           resolutionScheduledAt = followUp.startTime;
@@ -2254,8 +2355,8 @@ export const encountersRouter = createRouter({
               eq(visitCloseouts.followUpDisposition, "needed"),
               eq(visitCloseouts.revision, closeout.revision),
               isNull(visitCloseouts.followUpResolvedAt),
-              isNull(visitCloseouts.deletedAt)
-            )
+              isNull(visitCloseouts.deletedAt),
+            ),
           )
           .returning();
         if (!resolved) {
@@ -2265,7 +2366,7 @@ export const encountersRouter = createRouter({
           });
         }
         return resolved;
-      })
+      }),
     ),
 
   completeVisit: protectedProcedure
@@ -2288,10 +2389,13 @@ export const encountersRouter = createRouter({
           }
           throw new TRPCError({
             code: "CONFLICT",
-            message: "This visit is already checked out. Refresh to view its saved closeout.",
+            message:
+              "This visit is already checked out. Refresh to view its saved closeout.",
           });
         }
-        if (!canTransitionAppointmentStatus(appointment.status, "checked_out")) {
+        if (
+          !canTransitionAppointmentStatus(appointment.status, "checked_out")
+        ) {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
             message: "This appointment is not ready for checkout.",
@@ -2300,7 +2404,8 @@ export const encountersRouter = createRouter({
         if (!closeout || closeout.status !== "clinical_finalized") {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
-            message: "Finalize the clinical handoff before completing the visit.",
+            message:
+              "Finalize the clinical handoff before completing the visit.",
           });
         }
         if (closeout.amendmentDraft) {
@@ -2313,7 +2418,8 @@ export const encountersRouter = createRouter({
         if (closeout.revision !== input.expectedRevision) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "Closeout changed in another session. Refresh before completing the visit.",
+            message:
+              "Closeout changed in another session. Refresh before completing the visit.",
           });
         }
 
@@ -2325,12 +2431,13 @@ export const encountersRouter = createRouter({
           input.appointmentId,
           appointment.patientId,
           appointment.clientId,
-          true
+          true,
         );
         if (invoiceRows.length > 1) {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
-            message: "This visit has multiple active invoices. Resolve them before checkout.",
+            message:
+              "This visit has multiple active invoices. Resolve them before checkout.",
           });
         }
         const invoice = invoiceRows[0]
@@ -2341,7 +2448,8 @@ export const encountersRouter = createRouter({
           if (invoice) {
             throw new TRPCError({
               code: "PRECONDITION_FAILED",
-              message: "Void or resolve the active visit invoice before marking no charge.",
+              message:
+                "Void or resolve the active visit invoice before marking no charge.",
             });
           }
         } else {
@@ -2367,14 +2475,15 @@ export const encountersRouter = createRouter({
           ) {
             throw new TRPCError({
               code: "PRECONDITION_FAILED",
-              message: "Pay-later visits need an unpaid invoice with saved charges.",
+              message:
+                "Pay-later visits need an unpaid invoice with saved charges.",
             });
           }
           if (input.chargeDisposition === "accounts_receivable") {
             const invoiceDueDate = input.invoiceDueDate!;
             const practiceToday = formatDateInputForTimeZone(
               new Date(),
-              appointment.practiceTimezone
+              appointment.practiceTimezone,
             );
             if (invoiceDueDate < practiceToday) {
               throw new TRPCError({
@@ -2398,8 +2507,8 @@ export const encountersRouter = createRouter({
                     ? eq(invoices.dueDate, invoice.dueDate)
                     : isNull(invoices.dueDate),
                   eq(invoices.isEstimate, false),
-                  isNull(invoices.deletedAt)
-                )
+                  isNull(invoices.deletedAt),
+                ),
               )
               .returning({ id: invoices.id });
             if (!presentedInvoice) {
@@ -2437,12 +2546,15 @@ export const encountersRouter = createRouter({
               eq(visitCloseouts.practiceId, ctx.practiceId),
               eq(visitCloseouts.status, "clinical_finalized"),
               eq(visitCloseouts.revision, closeout.revision),
-              isNull(visitCloseouts.deletedAt)
-            )
+              isNull(visitCloseouts.deletedAt),
+            ),
           )
           .returning();
         if (!completed) {
-          throw new TRPCError({ code: "CONFLICT", message: "Closeout changed; refresh and retry." });
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Closeout changed; refresh and retry.",
+          });
         }
         const [checkedOut] = await tx
           .update(appointments)
@@ -2452,8 +2564,8 @@ export const encountersRouter = createRouter({
               eq(appointments.id, input.appointmentId),
               eq(appointments.practiceId, ctx.practiceId),
               eq(appointments.status, appointment.status),
-              isNull(appointments.deletedAt)
-            )
+              isNull(appointments.deletedAt),
+            ),
           )
           .returning();
         if (!checkedOut) {
@@ -2463,6 +2575,6 @@ export const encountersRouter = createRouter({
           });
         }
         return { closeout: completed, appointment: checkedOut };
-      })
+      }),
     ),
 });

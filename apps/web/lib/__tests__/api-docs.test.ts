@@ -307,4 +307,19 @@ describe("API reference docs", () => {
 
     expect(assignSection).toContain("expectedAssignedTo: string | null");
   });
+
+  it("documents estimate conversion optimistic concurrency", () => {
+    const source = readFileSync("app/api-docs/page.tsx", "utf8");
+    const conversionSection = source.slice(
+      source.indexOf('name: "billing.convertEstimateToInvoice"'),
+      source.indexOf(
+        'name: "billing.recordPayment"',
+        source.indexOf('name: "billing.convertEstimateToInvoice"'),
+      ),
+    );
+
+    expect(conversionSection).toContain(
+      "{ id: string, expectedUpdatedAt: Date }",
+    );
+  });
 });

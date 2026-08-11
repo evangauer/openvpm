@@ -143,6 +143,12 @@ describe("visit work reconciliation", () => {
     expect(integritySource).toMatch(
       /select \$\{labResults\.id\} as id[\s\S]*order by \$\{labResults\.id\}[\s\S]*\) as lab_source/,
     );
+    expect(integritySource).toContain(
+      "${dispenseChargeQueue.appointmentId} = ${appointmentId}",
+    );
+    expect(integritySource).toContain(
+      "${dispenseChargeQueue.status} = 'pending'",
+    );
   });
 
   it("does not create unresolved ledger work for a historical closed visit", async () => {
@@ -158,7 +164,7 @@ describe("visit work reconciliation", () => {
     await expect(
       callerWithDb(db).getVisitReconciliation({
         appointmentId: APPOINTMENT_ID,
-      })
+      }),
     ).resolves.toMatchObject({ unresolvedCount: 0, items: [] });
     // The tenant-context statement still runs, but no source upserts do.
     expect(execute).toHaveBeenCalledTimes(1);
@@ -167,32 +173,32 @@ describe("visit work reconciliation", () => {
   it("serializes vaccination correction and work materialization on the source row", () => {
     const integrity = readFileSync(
       new URL("../visit-billing-integrity.ts", import.meta.url),
-      "utf8"
+      "utf8",
     );
     const records = readFileSync(
       new URL("../routers/records.ts", import.meta.url),
-      "utf8"
+      "utf8",
     );
 
     const syncTransaction = integrity.indexOf("await ctx.db.transaction");
     const syncSourceLock = integrity.indexOf(
       "select ${vaccinationRecords.id}",
-      syncTransaction
+      syncTransaction,
     );
     const syncInsert = integrity.indexOf(
       "insert into ${visitWorkItems}",
-      syncSourceLock
+      syncSourceLock,
     );
     const freshCorrectionCheck = integrity.indexOf(
       "from ${clinicalRecordCorrections} as vaccination_correction",
-      syncInsert
+      syncInsert,
     );
     expect(syncTransaction).toBeGreaterThanOrEqual(0);
     expect(syncSourceLock).toBeGreaterThan(syncTransaction);
     expect(syncInsert).toBeGreaterThan(syncSourceLock);
     expect(freshCorrectionCheck).toBeGreaterThan(syncInsert);
     expect(integrity.slice(syncSourceLock, syncInsert)).toContain(
-      "order by ${vaccinationRecords.id}"
+      "order by ${vaccinationRecords.id}",
     );
     expect(integrity.slice(syncSourceLock, syncInsert)).toContain("for update");
 
@@ -200,13 +206,13 @@ describe("visit work reconciliation", () => {
     const correctionEnd = records.indexOf("createVaccination", correctionStart);
     const correctionMutation = records.slice(correctionStart, correctionEnd);
     const correctionSourceLock = correctionMutation.indexOf(
-      '.for("update", { of: vaccinationRecords })'
+      '.for("update", { of: vaccinationRecords })',
     );
     const correctionInsert = correctionMutation.indexOf(
-      ".insert(clinicalRecordCorrections)"
+      ".insert(clinicalRecordCorrections)",
     );
     const correctionWorkUpdate = correctionMutation.indexOf(
-      ".update(visitWorkItems)"
+      ".update(visitWorkItems)",
     );
     expect(correctionSourceLock).toBeGreaterThanOrEqual(0);
     expect(correctionInsert).toBeGreaterThan(correctionSourceLock);
@@ -411,12 +417,7 @@ describe("visit work reconciliation", () => {
     };
     const reopened = { ...unresolvedWork };
     const { db, updateSet, insertValues } = createDb({
-      selectResults: [
-        [openAppointment],
-        [{ id: PATIENT_ID }],
-        [],
-        [charged],
-      ],
+      selectResults: [[openAppointment], [{ id: PATIENT_ID }], [], [charged]],
       updateResults: [[reopened]],
     });
 
@@ -475,7 +476,7 @@ describe("visit work reconciliation", () => {
         appointmentId: APPOINTMENT_ID,
         workItemId: WORK_ITEM_ID,
         reason: "Review the reconciliation again",
-      })
+      }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message:
@@ -502,7 +503,7 @@ describe("visit work reconciliation", () => {
         appointmentId: APPOINTMENT_ID,
         workItemId: WORK_ITEM_ID,
         reason: "Linked the wrong invoice line",
-      })
+      }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message:

@@ -39,10 +39,10 @@ describe("billing invoice form UX", () => {
     expect(
       isBillingInvoiceSubtotalValid([
         { quantity: 100, unitPrice: "99999999.99" },
-      ])
+      ]),
     ).toBe(false);
     expect(source).toContain(
-      "maxLength={BILLING_INVOICE_LINE_DESCRIPTION_MAX_LENGTH}"
+      "maxLength={BILLING_INVOICE_LINE_DESCRIPTION_MAX_LENGTH}",
     );
     expect(source).toContain("min={BILLING_INVOICE_LINE_QUANTITY_MIN}");
     expect(source).toContain("max={BILLING_INVOICE_LINE_QUANTITY_MAX}");
@@ -60,13 +60,13 @@ describe("billing invoice form UX", () => {
 
   it("uses currency inputs for invoice unit prices", () => {
     expect(source).toMatch(
-      /type="number"[\s\S]*?step="0\.01"[\s\S]*?min=\{0\}[\s\S]*?max=\{BILLING_UNIT_PRICE_MAX\}[\s\S]*?placeholder="Unit Price"/
+      /type="number"[\s\S]*?step="0\.01"[\s\S]*?min=\{0\}[\s\S]*?max=\{BILLING_UNIT_PRICE_MAX\}[\s\S]*?placeholder="Unit Price"/,
     );
   });
 
   it("defaults invoice due dates from the practice timezone", () => {
     expect(source).toContain(
-      'import { formatDateInputForTimeZone } from "@/lib/date-input"'
+      'import { formatDateInputForTimeZone } from "@/lib/date-input"',
     );
     expect(source).toContain(
       "function defaultDueDate(timeZone?: string | null)",
@@ -91,7 +91,7 @@ describe("billing invoice form UX", () => {
     expect(source).toContain("setDueDateTouched(true)");
     expect(source).toContain("Loading practice date settings...");
     expect(source).toContain(
-      "Choose a due date manually. Practice settings could not load."
+      "Choose a due date manually. Practice settings could not load.",
     );
     expect(source).not.toContain("taxConfigQuery.data?.timezone");
     expect(source).not.toContain("formatDateInputLocal");
@@ -114,9 +114,9 @@ describe("billing invoice form UX", () => {
     expect(source).toContain("clientOptions.map((client)");
     expect(source).toContain("clientResults.error || clientResultsMissing");
     expect(source).toContain("Unable to search clients. Please retry.");
-    expect(source.indexOf("clientResults.error || clientResultsMissing")).toBeLessThan(
-      source.indexOf("No clients found")
-    );
+    expect(
+      source.indexOf("clientResults.error || clientResultsMissing"),
+    ).toBeLessThan(source.indexOf("No clients found"));
     expect(source).toContain("patientResults.error");
     expect(source).toContain("patientResults.isLoading");
     expect(source).toContain("const patientResultsMissing =");
@@ -134,7 +134,7 @@ describe("billing invoice form UX", () => {
     expect(source).toContain("services={serviceOptions}");
     expect(source).toContain("serviceOptions.find((s) => s.id === serviceId)");
     expect(source).toContain(
-      "serviceOptions.find((s) => s.id === selectedServiceId)"
+      "serviceOptions.find((s) => s.id === selectedServiceId)",
     );
     expect(source).toContain("servicesQuery.error || servicesMissing");
     expect(source).toContain("Unable to load billing services");
@@ -156,13 +156,13 @@ describe("billing invoice form UX", () => {
     expect(source).toContain("Loading practice tax settings...");
     expect(source).toContain("taxConfigQuery.error || taxConfigMissing");
     expect(source).toContain(
-      'taxConfigReady && taxConfig ? taxConfig.taxRatePercent : "0.00"'
+      'taxConfigReady && taxConfig ? taxConfig.taxRatePercent : "0.00"',
     );
     expect(source).toContain(
-      'taxConfigReady && taxConfig ? taxConfig.currency : "usd"'
+      'taxConfigReady && taxConfig ? taxConfig.currency : "usd"',
     );
     expect(source).toContain(
-      'taxConfigReady && taxConfig ? taxConfig.country : "US"'
+      'taxConfigReady && taxConfig ? taxConfig.country : "US"',
     );
     expect(source).not.toContain("taxConfigQuery.data?.taxRatePercent");
     expect(source).not.toContain("taxConfigQuery.data?.currency");
@@ -174,12 +174,10 @@ describe("billing invoice form UX", () => {
     expect(source).toContain("function canManageBillingRole");
     expect(source).toContain('role === "admin" || role === "front_desk"');
     expect(source).toContain("function NewInvoiceForm()");
-    expect(source).toContain(
-      "if (!canManageBillingRole(session?.user?.role))"
-    );
+    expect(source).toContain("if (!canManageBillingRole(session?.user?.role))");
     expect(source).toContain("Billing actions are read-only");
     expect(source).toContain(
-      "Only admins and front desk staff can create invoices or estimates."
+      "Only admins and front desk staff can create invoices or estimates.",
     );
   });
 });
@@ -192,7 +190,7 @@ describe("billing invoice payment actions", () => {
       'canManageBilling &&\n    (invoiceStatus === "sent" || invoiceStatus === "overdue") &&\n    remaining > 0',
     );
     expect(source).not.toContain(
-      'invoiceStatus !== "paid" && invoiceStatus !== "void" && remaining > 0'
+      'invoiceStatus !== "paid" && invoiceStatus !== "void" && remaining > 0',
     );
   });
 
@@ -207,38 +205,38 @@ describe("billing invoice payment actions", () => {
     expect(source).toContain("detail.data.appointmentId");
     expect(source).toContain("Back to visit");
     expect(source).toContain(
-      "`/encounters/${encodeURIComponent(detail.data.appointmentId)}#charge-capture`"
+      "`/encounters/${encodeURIComponent(detail.data.appointmentId)}#charge-capture`",
     );
   });
 
   it("stacks payment actions and forms at phone width", () => {
     expect(source).toContain(
-      'className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"'
+      'className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"',
     );
     expect(source).toContain(
-      'className="grid w-full grid-cols-1 gap-2 sm:w-auto sm:grid-cols-3"'
+      'className="grid w-full grid-cols-1 gap-2 sm:w-auto sm:grid-cols-3"',
     );
     expect(source.match(/grid grid-cols-1 gap-3 sm:grid-cols-3/g)).toHaveLength(
-      2
+      2,
     );
     expect(
-      source.match(
-        /flex flex-col-reverse gap-2 sm:flex-row sm:items-center/g
-      )
+      source.match(/flex flex-col-reverse gap-2 sm:flex-row sm:items-center/g),
     ).toHaveLength(2);
   });
 
   it("offers invoice email only while a balance-bearing invoice is sent or overdue", () => {
     expect(source).toContain(
-      '(invoice.status === "sent" ||\n                          invoice.status === "overdue")'
+      '(invoice.status === "sent" ||\n                          invoice.status === "overdue")',
     );
     expect(source).not.toContain(
-      'invoice.status === "overdue" ||\n                          invoice.status === "paid"'
+      'invoice.status === "overdue" ||\n                          invoice.status === "paid"',
     );
   });
 
   it("uses accessible in-app dialogs for irreversible billing actions", () => {
     expect(source).toContain("<ActionConfirmationDialog");
+    expect(source).toContain('title="Convert estimate to a draft invoice?"');
+    expect(source).toContain('confirmLabel="Convert to draft invoice"');
     expect(source).toContain('title="Void invoice?"');
     expect(source).toContain('label: "Reason for voiding"');
     expect(source).toContain('title="Refund payment?"');
@@ -247,11 +245,46 @@ describe("billing invoice payment actions", () => {
     expect(source).not.toContain("window.confirm");
   });
 
+  it("requires a fresh estimate snapshot and explicit confirmation before conversion", () => {
+    expect(source).toContain("pendingEstimateConversion");
+    expect(source).toContain("setPendingEstimateConversion(estimate)");
+    expect(source).toContain(
+      "expectedUpdatedAt: new Date(pendingEstimateConversion.updatedAt)",
+    );
+    expect(source).toContain(
+      'invoice.status === "draft" || invoice.status === "sent"',
+    );
+    expect(source).toContain("Review and convert to draft invoice");
+    expect(source).toContain(
+      'aria-label="Review and convert estimate to draft invoice"',
+    );
+    expect(source).toContain('className="min-h-11 min-w-11"');
+    expect(source).toContain(
+      "Eligible product stock will be deducted. The client is not charged, and performed work is not automatically reconciled.",
+    );
+    expect(source).toContain("pendingEstimateConversion?.patientName");
+    expect(source).toContain("updatedAt: detail.data!.updatedAt");
+    expect(source).toContain("appointmentId: detail.data!.appointmentId");
+    expect(source).toContain("setPendingEstimateConversion(null)");
+    expect(source).toContain("utils.billing.getInvoice.invalidate");
+    expect(source).toContain("utils.billing.listProducts.invalidate()");
+    expect(source).toContain("utils.inventory.list.invalidate()");
+    expect(source).toContain(
+      "utils.billing.listDispenseChargeQueue.invalidate()",
+    );
+    expect(source).toContain(
+      "utils.encounters.getVisitReconciliation.invalidate",
+    );
+    expect(source).not.toContain("convertEstimate.mutate({ id });");
+  });
+
   it("keeps one operation ID across payment and adjustment retries", () => {
-    expect(source).toContain("paymentOperationId.current ??= crypto.randomUUID()");
+    expect(source).toContain(
+      "paymentOperationId.current ??= crypto.randomUUID()",
+    );
     expect(source).toContain("operationId: paymentOperationId.current");
     expect(source).toContain(
-      "adjustmentOperationId.current ??= crypto.randomUUID()"
+      "adjustmentOperationId.current ??= crypto.randomUUID()",
     );
     expect(source).toContain("operationId: adjustmentOperationId.current");
   });
@@ -265,13 +298,11 @@ describe("billing invoice payment actions", () => {
     expect(source).toContain("!cardPaymentsEnabled");
     expect(source).toContain("Card payments are not configured");
     expect(source).toContain(
-      'import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect"'
+      'import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect"',
     );
     expect(source).toContain("if (!isSafeCheckoutRedirectUrl(url))");
     expect(source).not.toContain("cardPaymentStatus.data?.enabled");
-    expect(source).not.toContain(
-      "disabled={cardCheckout.isPending}"
-    );
+    expect(source).not.toContain("disabled={cardCheckout.isPending}");
   });
 
   it("hides write-only billing controls for non-billing roles", () => {
@@ -279,14 +310,14 @@ describe("billing invoice payment actions", () => {
     expect(source).toContain("function canManageBillingRole");
     expect(source).toContain('role === "admin" || role === "front_desk"');
     expect(source).toContain(
-      "const canManageBilling = canManageBillingRole(session?.user?.role)"
+      "const canManageBilling = canManageBillingRole(session?.user?.role)",
     );
     expect(source).toContain("{canManageBilling && (");
     expect(source).toContain("canManageBilling={canManageBilling}");
     expect(source).toContain("enabled: canManageBilling");
     expect(source).toContain("canManageBilling &&\n    (invoiceStatus");
     expect(source).toContain(
-      "canManageBilling &&\n    isBillingAmountWithinBalance(paymentAmount"
+      "canManageBilling &&\n    isBillingAmountWithinBalance(paymentAmount",
     );
     expect(source).toContain("<EmailInvoiceButton invoiceId={invoice.id} />");
   });
@@ -302,23 +333,23 @@ describe("billing invoice payment actions", () => {
     expect(source).toContain("const amountInputMax = Math.min");
     expect(source).toContain("const canRecordPayment =");
     expect(source).toContain(
-      "isBillingAmountWithinBalance(paymentAmount, invoiceBalanceDue)"
+      "isBillingAmountWithinBalance(paymentAmount, invoiceBalanceDue)",
     );
     expect(source).toContain(
-      "paymentNotes.trim().length <= BILLING_NOTES_MAX_LENGTH"
+      "paymentNotes.trim().length <= BILLING_NOTES_MAX_LENGTH",
     );
     expect(source).toContain("const canApplyAdjustment =");
     expect(source).toContain(
-      "isBillingAmountWithinBalance(adjustmentAmount, invoiceBalanceDue)"
+      "isBillingAmountWithinBalance(adjustmentAmount, invoiceBalanceDue)",
     );
     expect(source).toContain(
-      "adjustmentReason.trim().length <= BILLING_ADJUSTMENT_REASON_MAX_LENGTH"
+      "adjustmentReason.trim().length <= BILLING_ADJUSTMENT_REASON_MAX_LENGTH",
     );
     expect(source).toContain("min={BILLING_PAYMENT_AMOUNT_MIN}");
     expect(source).toContain("max={amountInputMax}");
     expect(source).toContain("maxLength={BILLING_NOTES_MAX_LENGTH}");
     expect(source).toContain(
-      "maxLength={BILLING_ADJUSTMENT_REASON_MAX_LENGTH}"
+      "maxLength={BILLING_ADJUSTMENT_REASON_MAX_LENGTH}",
     );
     expect(source).toContain("amount: paymentAmount.trim()");
     expect(source).toContain("notes: paymentNotes.trim() || undefined");
@@ -354,21 +385,19 @@ describe("billing invoice payment actions", () => {
       "formatBillingInstantDate(invoice.createdAt, billingTimeZone)",
     );
     expect(source).toMatch(/formatBillingDateInput\(\s*row\.nextBillingDate/);
-    expect(source).toMatch(
-      /formatBillingInstantDate\(\s*payment\.receivedAt/,
-    );
+    expect(source).toMatch(/formatBillingInstantDate\(\s*payment\.receivedAt/);
     expect(source).toMatch(
       /formatBillingInstantDate\(\s*adjustment\.createdAt/,
     );
     expect(source).toMatch(/formatBillingDateInput\(\s*d\.dueDate/);
     expect(source).not.toContain(
-      "new Date(invoice.dueDate).toLocaleDateString"
+      "new Date(invoice.dueDate).toLocaleDateString",
     );
     expect(source).not.toContain(
-      "new Date(payment.receivedAt).toLocaleDateString"
+      "new Date(payment.receivedAt).toLocaleDateString",
     );
     expect(source).not.toContain(
-      "new Date(adjustment.createdAt).toLocaleDateString"
+      "new Date(adjustment.createdAt).toLocaleDateString",
     );
     expect(source).not.toContain("billingConfig.data?.timezone");
   });
@@ -376,18 +405,18 @@ describe("billing invoice payment actions", () => {
   it("uses the loaded clinic name in both estimate and invoice PDFs", () => {
     const estimatePdfBlock = source.slice(
       source.indexOf("{/* Estimate Approval Card */}"),
-      source.indexOf('<div className="flex items-center gap-6 text-sm">')
+      source.indexOf('<div className="flex items-center gap-6 text-sm">'),
     );
     const invoicePdfBlock = source.slice(
       source.indexOf("{/* Balance Summary */}"),
-      source.indexOf("{/* Payment History & Record Payment */}")
+      source.indexOf("{/* Payment History & Record Payment */}"),
     );
 
     expect(source).toContain(
-      "data && verifiedBillingConfig && data.items.length > 0"
+      "data && verifiedBillingConfig && data.items.length > 0",
     );
     expect(source).toContain(
-      "practiceName={verifiedBillingConfig.practiceName}"
+      "practiceName={verifiedBillingConfig.practiceName}",
     );
     expect(estimatePdfBlock).toContain("practiceName,");
     expect(invoicePdfBlock).toContain("practiceName,");

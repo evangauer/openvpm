@@ -215,6 +215,43 @@ describe("clinic encounter workspace", () => {
     );
   });
 
+  it("converts exactly one active estimate through an explicit visit review", () => {
+    expect(workspaceSource).toContain(
+      "trpc.billing.convertEstimateToInvoice.useMutation",
+    );
+    expect(workspaceSource).toContain("activeEstimates.length === 1");
+    expect(workspaceSource).toContain("activeActualInvoices.length === 0");
+    expect(workspaceSource).toContain('activeEstimates[0]?.status === "draft"');
+    expect(workspaceSource).toContain('activeEstimates[0]?.status === "sent"');
+    expect(workspaceSource).toContain(
+      "Multiple active estimates are linked to this visit.",
+    );
+    expect(workspaceSource).toContain("Review &amp; convert estimate");
+    expect(workspaceSource).toContain('className="min-h-11"');
+    expect(workspaceSource).toContain(
+      'title="Convert estimate to a draft visit invoice?"',
+    );
+    expect(workspaceSource).toContain(
+      "expectedUpdatedAt: new Date(pendingEstimate.updatedAt)",
+    );
+    expect(workspaceSource).toContain(
+      "Eligible product stock will be deducted. The client is not charged, and performed work is not automatically reconciled.",
+    );
+    expect(workspaceSource).toContain("patientName={appointment.patientName}");
+    expect(workspaceSource).toContain("setPendingEstimate(null)");
+    expect(workspaceSource).toContain(
+      "utils.billing.listDispenseChargeQueue.invalidate()",
+    );
+    expect(workspaceSource).toContain(
+      "utils.billing.listProducts.invalidate()",
+    );
+    expect(workspaceSource).toContain("utils.inventory.list.invalidate()");
+    expect(workspaceSource).toContain(
+      "utils.encounters.getVisitReconciliation.invalidate({ appointmentId })",
+    );
+    expect(workspaceSource).toContain('appointment.status === "in_exam" &&');
+  });
+
   it("requires the durable two-stage closeout instead of a direct checkout", () => {
     expect(workspaceSource).toContain("trpc.encounters.getCloseout.useQuery");
     expect(workspaceSource).toContain(
@@ -257,6 +294,9 @@ describe("clinic encounter workspace", () => {
     expect(workspaceSource).toContain("tab=prescriptions&new=1");
     expect(workspaceSource).toContain("sourceDispenseChargeId");
     expect(workspaceSource).toContain('dispenseChargeStatus === "pending"');
+    expect(workspaceSource).toContain(
+      "id: `dispense:${prescription.dispenseChargeId}`",
+    );
     expect(workspaceSource).toContain("inventory already dispensed");
     expect(workspaceSource).toContain("expectedUpdatedAt");
   });

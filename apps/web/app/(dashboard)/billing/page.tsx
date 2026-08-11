@@ -80,7 +80,7 @@ function canManageBillingRole(role?: string | null): boolean {
 
 function formatBillingDateInput(
   value: Date | string,
-  timeZone?: string | null
+  timeZone?: string | null,
 ) {
   if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
     const [year, month, day] = value.split("-").map(Number) as [
@@ -90,7 +90,7 @@ function formatBillingDateInput(
     ];
     return new Date(Date.UTC(year, month - 1, day)).toLocaleDateString(
       "en-US",
-      { timeZone: "UTC" }
+      { timeZone: "UTC" },
     );
   }
 
@@ -99,7 +99,7 @@ function formatBillingDateInput(
 
 function formatBillingInstantDate(
   value: Date | string,
-  timeZone?: string | null
+  timeZone?: string | null,
 ) {
   const options: Intl.DateTimeFormatOptions = {
     dateStyle: "short",
@@ -138,7 +138,11 @@ function getDisplayStatus(invoice: {
   ) {
     return { label: "settled", style: STATUS_STYLES.settled };
   }
-  if (paid + adjusted > 0 && paid + adjusted < total && invoice.status !== "paid") {
+  if (
+    paid + adjusted > 0 &&
+    paid + adjusted < total &&
+    invoice.status !== "paid"
+  ) {
     return { label: "partial", style: STATUS_STYLES.partial };
   }
   return {
@@ -159,6 +163,15 @@ export default function BillingPage() {
   const [pendingInvoiceVoidId, setPendingInvoiceVoidId] = useState<
     string | null
   >(null);
+  const [pendingEstimateConversion, setPendingEstimateConversion] = useState<{
+    id: string;
+    updatedAt: Date | string;
+    appointmentId: string | null;
+    total: string | null;
+    clientFirstName: string | null;
+    clientLastName: string | null;
+    patientName: string | null;
+  } | null>(null);
   const [invoiceVoidReason, setInvoiceVoidReason] = useState("");
   const limit = 25;
 
@@ -212,13 +225,37 @@ export default function BillingPage() {
     },
   });
 
+  const refreshEstimateConversionData = async (
+    invoiceId: string,
+    appointmentId: string | null,
+  ) => {
+    await Promise.all([
+      utils.billing.listInvoices.invalidate(),
+      utils.billing.getInvoice.invalidate({ id: invoiceId }),
+      utils.billing.listProducts.invalidate(),
+      utils.billing.listDispenseChargeQueue.invalidate(),
+      utils.inventory.list.invalidate(),
+      appointmentId
+        ? utils.encounters.getCloseout.invalidate({ appointmentId })
+        : Promise.resolve(),
+      appointmentId
+        ? utils.encounters.getVisitReconciliation.invalidate({ appointmentId })
+        : Promise.resolve(),
+    ]);
+  };
+
   const convertEstimate = trpc.billing.convertEstimateToInvoice.useMutation({
-    onSuccess: () => {
-      toast.success("Estimate converted to invoice");
-      utils.billing.listInvoices.invalidate();
+    onSuccess: async (_, variables) => {
+      const appointmentId = pendingEstimateConversion?.appointmentId ?? null;
+      setPendingEstimateConversion(null);
+      toast.success("Estimate converted to a draft invoice");
+      await refreshEstimateConversionData(variables.id, appointmentId);
     },
-    onError: (err) => {
+    onError: async (err, variables) => {
+      const appointmentId = pendingEstimateConversion?.appointmentId ?? null;
+      setPendingEstimateConversion(null);
       toast.error(err.message);
+      await refreshEstimateConversionData(variables.id, appointmentId);
     },
   });
 
@@ -237,15 +274,39 @@ export default function BillingPage() {
   const handleStatusChange = (
     e: React.MouseEvent,
     id: string,
-    status: "sent"
+    status: "sent",
   ) => {
     e.stopPropagation();
     updateStatus.mutate({ id, status });
   };
 
-  const handleConvertEstimate = (e: React.MouseEvent, id: string) => {
+  const handleConvertEstimate = (
+    e: React.MouseEvent,
+    estimate: {
+      id: string;
+      updatedAt: Date | string;
+      appointmentId: string | null;
+      total: string | null;
+      clientFirstName: string | null;
+      clientLastName: string | null;
+      patientName: string | null;
+    },
+  ) => {
     e.stopPropagation();
-    convertEstimate.mutate({ id });
+    setPendingEstimateConversion(estimate);
+  };
+
+  const closeEstimateConversionDialog = () => {
+    if (convertEstimate.isPending) return;
+    setPendingEstimateConversion(null);
+  };
+
+  const confirmEstimateConversion = () => {
+    if (!pendingEstimateConversion) return;
+    convertEstimate.mutate({
+      id: pendingEstimateConversion.id,
+      expectedUpdatedAt: new Date(pendingEstimateConversion.updatedAt),
+    });
   };
 
   const handleVoidInvoice = (e: React.MouseEvent, id: string) => {
@@ -284,9 +345,7 @@ export default function BillingPage() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="font-heading text-xl font-semibold">Billing</h2>
-          <p className="text-sm text-muted-foreground">
-            Invoices and payments
-          </p>
+          <p className="text-sm text-muted-foreground">Invoices and payments</p>
         </div>
         {canManageBilling && (
           <Button asChild>
@@ -418,7 +477,7 @@ export default function BillingPage() {
                     isExpanded={expandedId === invoice.id}
                     onToggle={() =>
                       setExpandedId(
-                        expandedId === invoice.id ? null : invoice.id
+                        expandedId === invoice.id ? null : invoice.id,
                       )
                     }
                     onStatusChange={handleStatusChange}
@@ -493,6 +552,16 @@ export default function BillingPage() {
           }
         />
       )}
+
+      <ActionConfirmationDialog
+        open={pendingEstimateConversion !== null}
+        title="Convert estimate to a draft invoice?"
+        description={`The ${pendingEstimateConversion ? formatCurrency(pendingEstimateConversion.total) : "selected"} estimate for ${pendingEstimateConversion?.patientName?.trim() || [pendingEstimateConversion?.clientFirstName, pendingEstimateConversion?.clientLastName].filter(Boolean).join(" ") || "this client"} will become a draft invoice. Eligible product stock will be deducted. The client is not charged, and performed work is not automatically reconciled.`}
+        confirmLabel="Convert to draft invoice"
+        isPending={convertEstimate.isPending}
+        onCancel={closeEstimateConversionDialog}
+        onConfirm={confirmEstimateConversion}
+      />
 
       <ActionConfirmationDialog
         open={pendingInvoiceVoidId !== null}
@@ -681,7 +750,8 @@ function DispenseChargeQueuePanel({
                   {formatBillingInstantDate(item.createdAt, billingTimeZone)}
                   {item.appointmentId ? (
                     <>
-                      {" "}·{" "}
+                      {" "}
+                      ·{" "}
                       <Link
                         href={`/encounters/${item.appointmentId}#charge-capture`}
                         className="underline underline-offset-2"
@@ -783,7 +853,6 @@ function DispenseChargeQueuePanel({
         onCancel={closeWaiveDialog}
         onConfirm={confirmWaive}
       />
-
     </section>
   );
 }
@@ -805,8 +874,7 @@ function WellnessBillingPanel({
   });
   const dueMembershipsMissing =
     settingsReady && !dueQuery.isLoading && !dueQuery.error && !dueQuery.data;
-  const dueMembershipsUnavailable =
-    !!dueQuery.error || dueMembershipsMissing;
+  const dueMembershipsUnavailable = !!dueQuery.error || dueMembershipsMissing;
   const verifiedDueMemberships =
     dueQuery.isLoading || dueMembershipsUnavailable || !dueQuery.data
       ? null
@@ -815,7 +883,7 @@ function WellnessBillingPanel({
   const totalDue = verifiedDueMemberships
     ? verifiedDueMemberships.reduce(
         (sum, row) => sum + Number(row.price ?? 0),
-        0
+        0,
       )
     : 0;
 
@@ -867,12 +935,12 @@ function WellnessBillingPanel({
               {dueQuery.isLoading
                 ? "Checking due memberships..."
                 : dueQuery.error
-                ? dueQuery.error.message
-                : dueMembershipsMissing
-                ? "Unable to load due wellness memberships. Please retry."
-                : `${dueMemberships.length} scheduled invoice${
-                    dueMemberships.length === 1 ? "" : "s"
-                  } due, ${formatCurrency(totalDue)} before tax`}
+                  ? dueQuery.error.message
+                  : dueMembershipsMissing
+                    ? "Unable to load due wellness memberships. Please retry."
+                    : `${dueMemberships.length} scheduled invoice${
+                        dueMemberships.length === 1 ? "" : "s"
+                      } due, ${formatCurrency(totalDue)} before tax`}
             </p>
             {!dueMembershipsUnavailable && !dueQuery.isLoading && (
               <p className="mt-1 text-xs text-muted-foreground">
@@ -946,7 +1014,7 @@ function WellnessBillingPanel({
                   <td className="px-4 py-3 text-muted-foreground">
                     {formatBillingDateInput(
                       row.nextBillingDate,
-                      billingTimeZone
+                      billingTimeZone,
                     )}
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums">
@@ -984,6 +1052,7 @@ function InvoiceRow({
     adjustedAmount?: string | null;
     dueDate: string | null;
     createdAt: Date | string | null;
+    updatedAt: Date | string;
     isEstimate: boolean;
     appointmentId: string | null;
     clientFirstName: string | null;
@@ -992,12 +1061,19 @@ function InvoiceRow({
   };
   isExpanded: boolean;
   onToggle: () => void;
-  onStatusChange: (
+  onStatusChange: (e: React.MouseEvent, id: string, status: "sent") => void;
+  onConvertEstimate: (
     e: React.MouseEvent,
-    id: string,
-    status: "sent"
+    estimate: {
+      id: string;
+      updatedAt: Date | string;
+      appointmentId: string | null;
+      total: string | null;
+      clientFirstName: string | null;
+      clientLastName: string | null;
+      patientName: string | null;
+    },
   ) => void;
-  onConvertEstimate: (e: React.MouseEvent, id: string) => void;
   onVoidInvoice: (e: React.MouseEvent, id: string) => void;
   practiceName: string;
   billingTimeZone?: string | null;
@@ -1007,7 +1083,7 @@ function InvoiceRow({
   const formatCurrency = useCurrencyFormatter();
   const detail = trpc.billing.getInvoice.useQuery(
     { id: invoice.id },
-    { enabled: isExpanded }
+    { enabled: isExpanded },
   );
 
   const displayStatus = getDisplayStatus(invoice);
@@ -1062,30 +1138,34 @@ function InvoiceRow({
         </td>
         <td className="px-4 py-3 text-right">
           <div className="flex items-center justify-end gap-1">
-            {canManageBilling && invoice.isEstimate && (
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={isMutating}
-                onClick={(e) => onConvertEstimate(e, invoice.id)}
-                title="Convert to Invoice"
-              >
-                <ArrowRightLeft className="h-3.5 w-3.5" />
-              </Button>
-            )}
+            {canManageBilling &&
+              invoice.isEstimate &&
+              (invoice.status === "draft" || invoice.status === "sent") && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="min-h-11 min-w-11"
+                  disabled={isMutating}
+                  onClick={(e) => onConvertEstimate(e, invoice)}
+                  aria-label="Review and convert estimate to draft invoice"
+                  title="Review and convert to draft invoice"
+                >
+                  <ArrowRightLeft className="h-3.5 w-3.5" />
+                </Button>
+              )}
             {canManageBilling &&
               !invoice.isEstimate &&
               invoice.status === "draft" && (
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={isMutating}
-                onClick={(e) => onStatusChange(e, invoice.id, "sent")}
-                title="Mark as Sent"
-              >
-                <Send className="h-3.5 w-3.5" />
-              </Button>
-            )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={isMutating}
+                  onClick={(e) => onStatusChange(e, invoice.id, "sent")}
+                  title="Mark as Sent"
+                >
+                  <Send className="h-3.5 w-3.5" />
+                </Button>
+              )}
             {canManageBilling &&
               !invoice.isEstimate &&
               (invoice.status === "sent" || invoice.status === "overdue") && (
@@ -1121,7 +1201,11 @@ function InvoiceRow({
       </tr>
       {isExpanded && (
         <tr className="border-b border-border last:border-0">
-          <td colSpan={9} className="bg-muted/20 px-8 py-4" data-tour="invoice-detail">
+          <td
+            colSpan={9}
+            className="bg-muted/20 px-8 py-4"
+            data-tour="invoice-detail"
+          >
             {detail.isLoading ? (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -1155,10 +1239,14 @@ function InvoiceRow({
                         onClick={async (e) => {
                           e.stopPropagation();
                           const d = detail.data!;
-                          const clientName = [d.clientFirstName, d.clientLastName]
+                          const clientName = [
+                            d.clientFirstName,
+                            d.clientLastName,
+                          ]
                             .filter(Boolean)
                             .join(" ");
-                          const { generateInvoicePdf } = await import("@/lib/pdf");
+                          const { generateInvoicePdf } =
+                            await import("@/lib/pdf");
                           generateInvoicePdf({
                             practiceName,
                             clientName,
@@ -1167,16 +1255,16 @@ function InvoiceRow({
                             invoiceDate: d.createdAt
                               ? formatBillingInstantDate(
                                   d.createdAt,
-                                  billingTimeZone
+                                  billingTimeZone,
                                 )
                               : formatBillingInstantDate(
                                   new Date(),
-                                  billingTimeZone
+                                  billingTimeZone,
                                 ),
                             dueDate: d.dueDate
                               ? formatBillingDateInput(
                                   d.dueDate,
-                                  billingTimeZone
+                                  billingTimeZone,
                                 )
                               : undefined,
                             status: "estimate",
@@ -1197,16 +1285,28 @@ function InvoiceRow({
                         <Download className="mr-1 h-3.5 w-3.5" />
                         Present to Client
                       </Button>
-                      {canManageBilling && (
-                        <Button
-                          size="sm"
-                          disabled={isMutating}
-                          onClick={(e) => onConvertEstimate(e, invoice.id)}
-                        >
-                          <CheckCircle className="mr-1 h-3.5 w-3.5" />
-                          Approve &amp; Convert
-                        </Button>
-                      )}
+                      {canManageBilling &&
+                        (invoice.status === "draft" ||
+                          invoice.status === "sent") && (
+                          <Button
+                            size="sm"
+                            disabled={isMutating}
+                            onClick={(e) =>
+                              onConvertEstimate(e, {
+                                ...invoice,
+                                updatedAt: detail.data!.updatedAt,
+                                appointmentId: detail.data!.appointmentId,
+                                total: detail.data!.total,
+                                clientFirstName: detail.data!.clientFirstName,
+                                clientLastName: detail.data!.clientLastName,
+                                patientName: detail.data!.patientName,
+                              })
+                            }
+                          >
+                            <CheckCircle className="mr-1 h-3.5 w-3.5" />
+                            Review &amp; Convert
+                          </Button>
+                        )}
                     </div>
                   </div>
                 )}
@@ -1215,8 +1315,7 @@ function InvoiceRow({
                   <span className="text-muted-foreground">
                     Client:{" "}
                     <span className="text-foreground font-medium">
-                      {detail.data.clientFirstName}{" "}
-                      {detail.data.clientLastName}
+                      {detail.data.clientFirstName} {detail.data.clientLastName}
                     </span>
                   </span>
                   {detail.data.clientEmail && (
@@ -1228,73 +1327,80 @@ function InvoiceRow({
                 {detail.data.items.length > 0 ? (
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-border">
-                        <th className="py-2 text-left font-medium text-muted-foreground">
-                          Description
-                        </th>
-                        <th className="py-2 text-left font-medium text-muted-foreground">
-                          Type
-                        </th>
-                        <th className="py-2 text-right font-medium text-muted-foreground">
-                          Qty
-                        </th>
-                        <th className="py-2 text-right font-medium text-muted-foreground">
-                          Unit Price
-                        </th>
-                        <th className="py-2 text-right font-medium text-muted-foreground">
-                          Total
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {detail.data.items.map((item) => (
-                        <tr
-                          key={item.id}
-                          className="border-b border-border/50 last:border-0"
-                        >
-                          <td className="py-2">{item.description}</td>
-                          <td className="py-2 capitalize text-muted-foreground">
-                            {item.itemType} · {item.taxable ? "taxable" : "not taxable"}
+                      <thead>
+                        <tr className="border-b border-border">
+                          <th className="py-2 text-left font-medium text-muted-foreground">
+                            Description
+                          </th>
+                          <th className="py-2 text-left font-medium text-muted-foreground">
+                            Type
+                          </th>
+                          <th className="py-2 text-right font-medium text-muted-foreground">
+                            Qty
+                          </th>
+                          <th className="py-2 text-right font-medium text-muted-foreground">
+                            Unit Price
+                          </th>
+                          <th className="py-2 text-right font-medium text-muted-foreground">
+                            Total
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {detail.data.items.map((item) => (
+                          <tr
+                            key={item.id}
+                            className="border-b border-border/50 last:border-0"
+                          >
+                            <td className="py-2">{item.description}</td>
+                            <td className="py-2 capitalize text-muted-foreground">
+                              {item.itemType} ·{" "}
+                              {item.taxable ? "taxable" : "not taxable"}
+                            </td>
+                            <td className="py-2 text-right tabular-nums">
+                              {item.quantity}
+                            </td>
+                            <td className="py-2 text-right tabular-nums">
+                              {formatCurrency(item.unitPrice)}
+                            </td>
+                            <td className="py-2 text-right tabular-nums">
+                              {formatCurrency(item.total)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr className="border-t border-border">
+                          <td
+                            colSpan={4}
+                            className="py-2 text-right font-medium"
+                          >
+                            Subtotal
                           </td>
                           <td className="py-2 text-right tabular-nums">
-                            {item.quantity}
-                          </td>
-                          <td className="py-2 text-right tabular-nums">
-                            {formatCurrency(item.unitPrice)}
-                          </td>
-                          <td className="py-2 text-right tabular-nums">
-                            {formatCurrency(item.total)}
+                            {formatCurrency(detail.data.subtotal)}
                           </td>
                         </tr>
-                      ))}
-                    </tbody>
-                    <tfoot>
-                      <tr className="border-t border-border">
-                        <td colSpan={4} className="py-2 text-right font-medium">
-                          Subtotal
-                        </td>
-                        <td className="py-2 text-right tabular-nums">
-                          {formatCurrency(detail.data.subtotal)}
-                        </td>
-                      </tr>
-                      <tr>
-                        <td colSpan={4} className="py-1 text-right text-muted-foreground">
-                          Tax
-                        </td>
-                        <td className="py-1 text-right tabular-nums text-muted-foreground">
-                          {formatCurrency(detail.data.tax)}
-                        </td>
-                      </tr>
-                      <tr className="font-semibold">
-                        <td colSpan={4} className="py-2 text-right">
-                          Total
-                        </td>
-                        <td className="py-2 text-right tabular-nums">
-                          {formatCurrency(detail.data.total)}
-                        </td>
-                      </tr>
-                    </tfoot>
+                        <tr>
+                          <td
+                            colSpan={4}
+                            className="py-1 text-right text-muted-foreground"
+                          >
+                            Tax
+                          </td>
+                          <td className="py-1 text-right tabular-nums text-muted-foreground">
+                            {formatCurrency(detail.data.tax)}
+                          </td>
+                        </tr>
+                        <tr className="font-semibold">
+                          <td colSpan={4} className="py-2 text-right">
+                            Total
+                          </td>
+                          <td className="py-2 text-right tabular-nums">
+                            {formatCurrency(detail.data.total)}
+                          </td>
+                        </tr>
+                      </tfoot>
                     </table>
                   </div>
                 ) : (
@@ -1341,10 +1447,14 @@ function InvoiceRow({
                         onClick={async (e) => {
                           e.stopPropagation();
                           const d = detail.data!;
-                          const clientName = [d.clientFirstName, d.clientLastName]
+                          const clientName = [
+                            d.clientFirstName,
+                            d.clientLastName,
+                          ]
                             .filter(Boolean)
                             .join(" ");
-                          const { generateInvoicePdf } = await import("@/lib/pdf");
+                          const { generateInvoicePdf } =
+                            await import("@/lib/pdf");
                           generateInvoicePdf({
                             practiceName,
                             clientName,
@@ -1353,16 +1463,16 @@ function InvoiceRow({
                             invoiceDate: d.createdAt
                               ? formatBillingInstantDate(
                                   d.createdAt,
-                                  billingTimeZone
+                                  billingTimeZone,
                                 )
                               : formatBillingInstantDate(
                                   new Date(),
-                                  billingTimeZone
+                                  billingTimeZone,
                                 ),
                             dueDate: d.dueDate
                               ? formatBillingDateInput(
                                   d.dueDate,
-                                  billingTimeZone
+                                  billingTimeZone,
                                 )
                               : undefined,
                             status: d.status,
@@ -1386,8 +1496,8 @@ function InvoiceRow({
                       {canManageBilling &&
                         (invoice.status === "sent" ||
                           invoice.status === "overdue") && (
-                        <EmailInvoiceButton invoiceId={invoice.id} />
-                      )}
+                          <EmailInvoiceButton invoiceId={invoice.id} />
+                        )}
                     </div>
                   </div>
                 )}
@@ -1474,7 +1584,7 @@ function PaymentSection({
   const [paymentMethod, setPaymentMethod] = useState<string>("cash");
   const [paymentNotes, setPaymentNotes] = useState("");
   const [adjustmentType, setAdjustmentType] = useState<"credit" | "write_off">(
-    "credit"
+    "credit",
   );
   const [adjustmentAmount, setAdjustmentAmount] = useState("");
   const [adjustmentReason, setAdjustmentReason] = useState("");
@@ -1871,83 +1981,83 @@ function PaymentSection({
       ) : paymentsQuery.data && paymentsQuery.data.length > 0 ? (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border">
-              <th className="py-2 text-left font-medium text-muted-foreground">
-                Date
-              </th>
-              <th className="py-2 text-right font-medium text-muted-foreground">
-                Amount
-              </th>
-              <th className="py-2 text-left font-medium text-muted-foreground">
-                Method
-              </th>
-              <th className="py-2 text-left font-medium text-muted-foreground">
-                Received By
-              </th>
-              <th className="py-2 text-left font-medium text-muted-foreground">
-                Notes
-              </th>
-              {canRefund && <th className="py-2" />}
-            </tr>
-          </thead>
-          <tbody>
-            {paymentsQuery.data.map((payment) => (
-              <tr
-                key={payment.id}
-                className="border-b border-border/50 last:border-0"
-              >
-                <td className="py-2 text-muted-foreground">
-                  {payment.receivedAt
-                    ? formatBillingInstantDate(
-                        payment.receivedAt,
-                        billingTimeZone
-                      )
-                    : "\u2014"}
-                </td>
-                <td
-                  className={`py-2 text-right tabular-nums font-medium ${
-                    Number(payment.amount) < 0
-                      ? "text-destructive"
-                      : "text-green-600"
-                  }`}
-                >
-                  {formatCurrency(payment.amount)}
-                </td>
-                <td className="py-2 capitalize text-muted-foreground">
-                  {payment.method?.replace(/_/g, " ") ?? "\u2014"}
-                </td>
-                <td className="py-2 text-muted-foreground">
-                  {payment.receivedByName ?? "\u2014"}
-                </td>
-                <td className="py-2 text-muted-foreground">
-                  {payment.notes || "\u2014"}
-                </td>
-                {canRefund && (
-                  <td className="py-2 text-right">
-                    {Number(payment.amount) > 0 && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive"
-                        disabled={refundPayment.isPending}
-                        onClick={() => {
-                          setRefundReason("");
-                          setRefundDueDate(invoiceDueDate ?? "");
-                          setRefundTarget({
-                            paymentId: payment.id,
-                            amount: payment.amount,
-                          });
-                        }}
-                      >
-                        Refund
-                      </Button>
-                    )}
-                  </td>
-                )}
+            <thead>
+              <tr className="border-b border-border">
+                <th className="py-2 text-left font-medium text-muted-foreground">
+                  Date
+                </th>
+                <th className="py-2 text-right font-medium text-muted-foreground">
+                  Amount
+                </th>
+                <th className="py-2 text-left font-medium text-muted-foreground">
+                  Method
+                </th>
+                <th className="py-2 text-left font-medium text-muted-foreground">
+                  Received By
+                </th>
+                <th className="py-2 text-left font-medium text-muted-foreground">
+                  Notes
+                </th>
+                {canRefund && <th className="py-2" />}
               </tr>
-            ))}
-          </tbody>
+            </thead>
+            <tbody>
+              {paymentsQuery.data.map((payment) => (
+                <tr
+                  key={payment.id}
+                  className="border-b border-border/50 last:border-0"
+                >
+                  <td className="py-2 text-muted-foreground">
+                    {payment.receivedAt
+                      ? formatBillingInstantDate(
+                          payment.receivedAt,
+                          billingTimeZone,
+                        )
+                      : "\u2014"}
+                  </td>
+                  <td
+                    className={`py-2 text-right tabular-nums font-medium ${
+                      Number(payment.amount) < 0
+                        ? "text-destructive"
+                        : "text-green-600"
+                    }`}
+                  >
+                    {formatCurrency(payment.amount)}
+                  </td>
+                  <td className="py-2 capitalize text-muted-foreground">
+                    {payment.method?.replace(/_/g, " ") ?? "\u2014"}
+                  </td>
+                  <td className="py-2 text-muted-foreground">
+                    {payment.receivedByName ?? "\u2014"}
+                  </td>
+                  <td className="py-2 text-muted-foreground">
+                    {payment.notes || "\u2014"}
+                  </td>
+                  {canRefund && (
+                    <td className="py-2 text-right">
+                      {Number(payment.amount) > 0 && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive"
+                          disabled={refundPayment.isPending}
+                          onClick={() => {
+                            setRefundReason("");
+                            setRefundDueDate(invoiceDueDate ?? "");
+                            setRefundTarget({
+                              paymentId: payment.id,
+                              amount: payment.amount,
+                            });
+                          }}
+                        >
+                          Refund
+                        </Button>
+                      )}
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
           </table>
         </div>
       ) : (
@@ -1959,54 +2069,54 @@ function PaymentSection({
       ) : adjustmentsQuery.data && adjustmentsQuery.data.length > 0 ? (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border">
-              <th className="py-2 text-left font-medium text-muted-foreground">
-                Date
-              </th>
-              <th className="py-2 text-left font-medium text-muted-foreground">
-                Type
-              </th>
-              <th className="py-2 text-right font-medium text-muted-foreground">
-                Amount
-              </th>
-              <th className="py-2 text-left font-medium text-muted-foreground">
-                Created By
-              </th>
-              <th className="py-2 text-left font-medium text-muted-foreground">
-                Reason
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {adjustmentsQuery.data.map((adjustment) => (
-              <tr
-                key={adjustment.id}
-                className="border-b border-border/50 last:border-0"
-              >
-                <td className="py-2 text-muted-foreground">
-                  {adjustment.createdAt
-                    ? formatBillingInstantDate(
-                        adjustment.createdAt,
-                        billingTimeZone
-                      )
-                    : "\u2014"}
-                </td>
-                <td className="py-2 capitalize text-muted-foreground">
-                  {adjustment.type.replace(/_/g, " ")}
-                </td>
-                <td className="py-2 text-right tabular-nums font-medium text-teal-600">
-                  {formatCurrency(adjustment.amount)}
-                </td>
-                <td className="py-2 text-muted-foreground">
-                  {adjustment.createdByName ?? "\u2014"}
-                </td>
-                <td className="py-2 text-muted-foreground">
-                  {adjustment.reason || "\u2014"}
-                </td>
+            <thead>
+              <tr className="border-b border-border">
+                <th className="py-2 text-left font-medium text-muted-foreground">
+                  Date
+                </th>
+                <th className="py-2 text-left font-medium text-muted-foreground">
+                  Type
+                </th>
+                <th className="py-2 text-right font-medium text-muted-foreground">
+                  Amount
+                </th>
+                <th className="py-2 text-left font-medium text-muted-foreground">
+                  Created By
+                </th>
+                <th className="py-2 text-left font-medium text-muted-foreground">
+                  Reason
+                </th>
               </tr>
-            ))}
-          </tbody>
+            </thead>
+            <tbody>
+              {adjustmentsQuery.data.map((adjustment) => (
+                <tr
+                  key={adjustment.id}
+                  className="border-b border-border/50 last:border-0"
+                >
+                  <td className="py-2 text-muted-foreground">
+                    {adjustment.createdAt
+                      ? formatBillingInstantDate(
+                          adjustment.createdAt,
+                          billingTimeZone,
+                        )
+                      : "\u2014"}
+                  </td>
+                  <td className="py-2 capitalize text-muted-foreground">
+                    {adjustment.type.replace(/_/g, " ")}
+                  </td>
+                  <td className="py-2 text-right tabular-nums font-medium text-teal-600">
+                    {formatCurrency(adjustment.amount)}
+                  </td>
+                  <td className="py-2 text-muted-foreground">
+                    {adjustment.createdByName ?? "\u2014"}
+                  </td>
+                  <td className="py-2 text-muted-foreground">
+                    {adjustment.reason || "\u2014"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
           </table>
         </div>
       ) : (

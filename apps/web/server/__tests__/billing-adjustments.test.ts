@@ -28,12 +28,10 @@ const baseInvoice = {
   paidAmount: "20.00",
   status: "sent",
   isEstimate: false,
+  updatedAt: new Date("2026-08-11T12:00:00.000Z"),
 };
 
-function callerWithDb(
-  db: Record<string, unknown>,
-  injectOperationId = true
-) {
+function callerWithDb(db: Record<string, unknown>, injectOperationId = true) {
   const session = {
     user: {
       id: USER_ID,
@@ -66,7 +64,7 @@ function thenableRows(result: unknown[]) {
     for: vi.fn(async () => result),
     then: (
       resolve: (value: unknown[]) => unknown,
-      reject?: (e: unknown) => unknown
+      reject?: (e: unknown) => unknown,
     ) => Promise.resolve(result).then(resolve, reject),
   };
   return builder;
@@ -141,7 +139,7 @@ describe("billing invoice adjustments", () => {
         invoiceId: INVOICE_ID,
         type: "credit",
         amount: "10.00",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(select).not.toHaveBeenCalled();
@@ -156,7 +154,7 @@ describe("billing invoice adjustments", () => {
         invoiceId: INVOICE_ID,
         type: "credit",
         amount: "10.123",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -165,7 +163,7 @@ describe("billing invoice adjustments", () => {
         operationId: OPERATION_ID,
         type: "write_off",
         amount: "100000000",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(select).not.toHaveBeenCalled();
@@ -180,7 +178,7 @@ describe("billing invoice adjustments", () => {
         invoiceId: INVOICE_ID,
         type: "write_off",
         amount: "10.00",
-      })
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(insertValues).not.toHaveBeenCalled();
@@ -196,7 +194,7 @@ describe("billing invoice adjustments", () => {
         invoiceId: INVOICE_ID,
         type: "credit",
         amount: "10.00",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(insertValues).not.toHaveBeenCalled();
@@ -212,7 +210,7 @@ describe("billing invoice adjustments", () => {
         invoiceId: INVOICE_ID,
         type: "credit",
         amount: "10.00",
-      })
+      }),
     ).rejects.toMatchObject({
       code: "BAD_REQUEST",
       message: "Mark the invoice as sent before applying an adjustment.",
@@ -231,7 +229,7 @@ describe("billing invoice adjustments", () => {
         invoiceId: INVOICE_ID,
         type: "write_off",
         amount: "11.00",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(insertValues).not.toHaveBeenCalled();
@@ -249,7 +247,7 @@ describe("billing invoice adjustments", () => {
         type: "write_off",
         amount: "80.00",
         reason: "Bad debt",
-      })
+      }),
     ).resolves.toMatchObject({ amount: "80.00", balanceDue: "0.00" });
 
     expect(updateSet).toHaveBeenCalledWith({
@@ -265,7 +263,7 @@ describe("billing invoice adjustments", () => {
         createdBy: USER_ID,
         operationKey: `dashboard-adjustment:${PRACTICE_ID}:${OPERATION_ID}`,
         balanceAfter: "0.00",
-      })
+      }),
     );
     expect(mocks.dispatchWebhookEvent).toHaveBeenCalledWith(
       PRACTICE_ID,
@@ -278,7 +276,7 @@ describe("billing invoice adjustments", () => {
         adjustedAmount: "80.00",
         total: "100.00",
         source: "dashboard",
-      }
+      },
     );
   });
 
@@ -291,11 +289,13 @@ describe("billing invoice adjustments", () => {
         [linkedInvoice],
         [{ status: "completed" }],
         [],
-        [{
-          id: CLOSEOUT_ID,
-          chargeDisposition: "accounts_receivable",
-          revision: 6,
-        }],
+        [
+          {
+            id: CLOSEOUT_ID,
+            chargeDisposition: "accounts_receivable",
+            revision: 6,
+          },
+        ],
       ],
       updateReturns: [[{ id: INVOICE_ID }], [{ id: CLOSEOUT_ID }]],
     });
@@ -311,7 +311,7 @@ describe("billing invoice adjustments", () => {
       expect.objectContaining({
         chargeDisposition: "paid",
         revision: 7,
-      })
+      }),
     );
     expect(insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -324,7 +324,7 @@ describe("billing invoice adjustments", () => {
           priorRevision: 6,
           nextRevision: 7,
         }),
-      })
+      }),
     );
   });
 
@@ -350,7 +350,7 @@ describe("billing invoice adjustments", () => {
         type: "write_off",
         amount: "80.00",
         reason: "Bad debt",
-      })
+      }),
     ).resolves.toMatchObject({ ...replayAdjustment, balanceDue: "0.00" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -377,7 +377,7 @@ describe("billing invoice adjustments", () => {
         operationId: OPERATION_ID,
         type: "credit",
         amount: "30.00",
-      })
+      }),
     ).rejects.toMatchObject({ code: "CONFLICT" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -395,7 +395,7 @@ describe("billing invoice adjustments", () => {
         invoiceId: INVOICE_ID,
         type: "write_off",
         amount: "80.00",
-      })
+      }),
     ).rejects.toMatchObject({
       code: "BAD_REQUEST",
       message:
@@ -426,7 +426,7 @@ describe("billing invoice adjustments", () => {
         invoiceId: INVOICE_ID,
         type: "credit",
         amount: "25.00",
-      })
+      }),
     ).resolves.toMatchObject({ amount: "25.00", balanceDue: "55.00" });
 
     expect(updateSet).toHaveBeenCalledWith({
@@ -437,7 +437,7 @@ describe("billing invoice adjustments", () => {
         invoiceId: INVOICE_ID,
         type: "credit",
         amount: "25.00",
-      })
+      }),
     );
     expect(mocks.dispatchWebhookEvent).not.toHaveBeenCalled();
   });
@@ -449,7 +449,7 @@ describe("billing invoice adjustments", () => {
     });
 
     await expect(
-      callerWithDb(db).listAdjustments({ invoiceId: INVOICE_ID })
+      callerWithDb(db).listAdjustments({ invoiceId: INVOICE_ID }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(select).toHaveBeenCalledTimes(1);
@@ -466,10 +466,13 @@ describe("billing invoice adjustments", () => {
       callerWithDb(db).voidInvoice({
         id: INVOICE_ID,
         reason: "Duplicate invoice",
-      })
+      }),
     ).resolves.toMatchObject({ status: "void" });
 
-    expect(updateSet).toHaveBeenCalledWith({ status: "void" });
+    expect(updateSet).toHaveBeenCalledWith({
+      status: "void",
+      updatedAt: expect.any(Date),
+    });
   });
 
   it("does not void when invoice history changed concurrently", async () => {
@@ -483,13 +486,16 @@ describe("billing invoice adjustments", () => {
       callerWithDb(db).voidInvoice({
         id: INVOICE_ID,
         reason: "Duplicate invoice",
-      })
+      }),
     ).rejects.toMatchObject({
       code: "BAD_REQUEST",
       message: "Invoice changed while voiding. Refresh and try again.",
     });
 
-    expect(updateSet).toHaveBeenCalledWith({ status: "void" });
+    expect(updateSet).toHaveBeenCalledWith({
+      status: "void",
+      updatedAt: expect.any(Date),
+    });
   });
 
   it("rejects voiding invoices with payment history", async () => {
@@ -502,7 +508,7 @@ describe("billing invoice adjustments", () => {
       callerWithDb(db).voidInvoice({
         id: INVOICE_ID,
         reason: "Duplicate invoice",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();

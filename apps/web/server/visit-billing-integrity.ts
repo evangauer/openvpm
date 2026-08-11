@@ -10,6 +10,7 @@ import {
   prescriptions,
   procedures,
   vaccinationRecords,
+  dispenseChargeQueue,
   visitCloseouts,
   visitWorkItems,
 } from "@openpims/db";
@@ -30,12 +31,16 @@ export async function markCompletedVisitCloseoutPaid(
   input: {
     appointmentId: string | null | undefined;
     invoiceId: string;
-    source: "dashboard_payment" | "dashboard_adjustment" | "stripe" | "stripe_connect";
+    source:
+      | "dashboard_payment"
+      | "dashboard_adjustment"
+      | "stripe"
+      | "stripe_connect";
     userId?: string | null;
     paymentId?: string | null;
     adjustmentId?: string | null;
     paymentExternalId?: string | null;
-  }
+  },
 ) {
   if (!input.appointmentId) return null;
 
@@ -52,8 +57,8 @@ export async function markCompletedVisitCloseoutPaid(
         eq(visitCloseouts.appointmentId, input.appointmentId),
         eq(visitCloseouts.invoiceId, input.invoiceId),
         eq(visitCloseouts.status, "completed"),
-        isNull(visitCloseouts.deletedAt)
-      )
+        isNull(visitCloseouts.deletedAt),
+      ),
     )
     .limit(1)
     .for("update");
@@ -77,14 +82,15 @@ export async function markCompletedVisitCloseoutPaid(
         eq(visitCloseouts.status, "completed"),
         eq(visitCloseouts.chargeDisposition, "accounts_receivable"),
         eq(visitCloseouts.revision, closeout.revision),
-        isNull(visitCloseouts.deletedAt)
-      )
+        isNull(visitCloseouts.deletedAt),
+      ),
     )
     .returning({ id: visitCloseouts.id });
   if (!updatedCloseout) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "Visit closeout changed while settling payment. Retry the operation.",
+      message:
+        "Visit closeout changed while settling payment. Retry the operation.",
     });
   }
 
@@ -107,7 +113,11 @@ export async function markCompletedVisitCloseoutPaid(
     },
   });
 
-  return { closeoutId: closeout.id, priorRevision: closeout.revision, nextRevision };
+  return {
+    closeoutId: closeout.id,
+    priorRevision: closeout.revision,
+    nextRevision,
+  };
 }
 
 /**
@@ -115,7 +125,10 @@ export async function markCompletedVisitCloseoutPaid(
  * Callers intentionally invoke this only for an open visit; historical closed
  * visits must not acquire new unresolved work after the fact.
  */
-export async function syncVisitWorkItems(ctx: VisitBillingContext, appointmentId: string) {
+export async function syncVisitWorkItems(
+  ctx: VisitBillingContext,
+  appointmentId: string,
+) {
   await ctx.db.transaction(async (tx) => {
     // Correction and materialization serialize on the same source row. This
     // lock statement intentionally precedes the INSERT so READ COMMITTED takes
@@ -203,34 +216,43 @@ export async function syncVisitWorkItems(ctx: VisitBillingContext, appointmentId
 export async function assertNoUnresolvedVisitWork(
   ctx: VisitBillingContext,
   appointmentId: string,
-  message = "Resolve every performed vaccination, lab, procedure, and prescription as charged, no charge, or void/corrected before checkout."
+  message = "Resolve every performed vaccination, lab, procedure, prescription, and medication dispense as charged, no charge, waived, or void/corrected before checkout.",
 ) {
   const rows = await ctx.db.execute(sql`
-    select ${visitWorkItems.id}
-    from ${visitWorkItems}
-    left join ${invoiceItems}
-      on ${invoiceItems.id} = ${visitWorkItems.invoiceItemId}
-    left join ${invoices}
-      on ${invoices.id} = ${visitWorkItems.invoiceId}
-      and ${invoices.practiceId} = ${ctx.practiceId}
-      and ${invoices.appointmentId} = ${appointmentId}
-    where ${visitWorkItems.practiceId} = ${ctx.practiceId}
-      and ${visitWorkItems.appointmentId} = ${appointmentId}
-      and (
-        ${visitWorkItems.status} = 'unresolved'
-        or (
-          ${visitWorkItems.status} = 'charged'
-          and (
-            ${invoiceItems.id} is null
-            or ${invoiceItems.deletedAt} is not null
-            or ${invoices.id} is null
-            or ${invoices.deletedAt} is not null
-            or ${invoices.status} = 'void'
+    select unresolved.id
+    from (
+      select ${visitWorkItems.id} as id, ${visitWorkItems.createdAt} as created_at
+      from ${visitWorkItems}
+      left join ${invoiceItems}
+        on ${invoiceItems.id} = ${visitWorkItems.invoiceItemId}
+      left join ${invoices}
+        on ${invoices.id} = ${visitWorkItems.invoiceId}
+        and ${invoices.practiceId} = ${ctx.practiceId}
+        and ${invoices.appointmentId} = ${appointmentId}
+      where ${visitWorkItems.practiceId} = ${ctx.practiceId}
+        and ${visitWorkItems.appointmentId} = ${appointmentId}
+        and (
+          ${visitWorkItems.status} = 'unresolved'
+          or (
+            ${visitWorkItems.status} = 'charged'
+            and (
+              ${invoiceItems.id} is null
+              or ${invoiceItems.deletedAt} is not null
+              or ${invoices.id} is null
+              or ${invoices.deletedAt} is not null
+              or ${invoices.status} = 'void'
+            )
           )
         )
-      )
-      and ${visitWorkItems.deletedAt} is null
-    order by ${visitWorkItems.createdAt}, ${visitWorkItems.id}
+        and ${visitWorkItems.deletedAt} is null
+      union all
+      select ${dispenseChargeQueue.id} as id, ${dispenseChargeQueue.createdAt} as created_at
+      from ${dispenseChargeQueue}
+      where ${dispenseChargeQueue.practiceId} = ${ctx.practiceId}
+        and ${dispenseChargeQueue.appointmentId} = ${appointmentId}
+        and ${dispenseChargeQueue.status} = 'pending'
+    ) unresolved
+    order by unresolved.created_at, unresolved.id
     limit 1
   `);
   if (rowsFromExecute<{ id: string }>(rows).length > 0) {
@@ -244,7 +266,7 @@ export async function assertNoUnresolvedVisitWork(
  */
 export async function assertVisitInvoiceReadyForFinancialAction(
   ctx: VisitBillingContext,
-  appointmentId: string | null | undefined
+  appointmentId: string | null | undefined,
 ) {
   if (!appointmentId) return;
 
@@ -255,15 +277,19 @@ export async function assertVisitInvoiceReadyForFinancialAction(
       and(
         eq(visitCloseouts.practiceId, ctx.practiceId),
         eq(visitCloseouts.appointmentId, appointmentId),
-        isNull(visitCloseouts.deletedAt)
-      )
+        isNull(visitCloseouts.deletedAt),
+      ),
     )
     .limit(1);
 
-  if (closeout?.status !== "clinical_finalized" && closeout?.status !== "completed") {
+  if (
+    closeout?.status !== "clinical_finalized" &&
+    closeout?.status !== "completed"
+  ) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message: "Finalize the clinical handoff before sending or collecting this visit invoice.",
+      message:
+        "Finalize the clinical handoff before sending or collecting this visit invoice.",
     });
   }
 
@@ -273,7 +299,7 @@ export async function assertVisitInvoiceReadyForFinancialAction(
   await assertNoUnresolvedVisitWork(
     ctx,
     appointmentId,
-    "Resolve every performed vaccination, lab, procedure, and prescription before sending or collecting this visit invoice."
+    "Resolve every performed vaccination, lab, procedure, prescription, and medication dispense before sending or collecting this visit invoice.",
   );
 }
 
@@ -284,7 +310,7 @@ export async function assertVisitInvoiceReadyForFinancialAction(
  */
 export async function assertVisitReconciliationMutable(
   ctx: VisitBillingContext,
-  appointmentId: string
+  appointmentId: string,
 ) {
   const [invoice] = await ctx.db
     .select({ status: invoices.status })
@@ -295,8 +321,8 @@ export async function assertVisitReconciliationMutable(
         eq(invoices.appointmentId, appointmentId),
         eq(invoices.isEstimate, false),
         ne(invoices.status, "void"),
-        isNull(invoices.deletedAt)
-      )
+        isNull(invoices.deletedAt),
+      ),
     )
     .limit(1);
 
