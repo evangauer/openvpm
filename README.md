@@ -194,7 +194,10 @@ cp .env.example .env
 docker compose -f docker/docker-compose.yml up -d
 
 # Install dependencies
-pnpm install
+pnpm install --frozen-lockfile
+
+# Verify this clone contains only public release material
+pnpm verify:oss-release
 
 # Apply database schema
 pnpm db:push
@@ -222,6 +225,11 @@ Open [http://localhost:3000](http://localhost:3000) and sign in with the demo cr
 The seed data creates a complete demo practice — "Neighborhood Veterinary" — with 8 staff, 25 clients, 40 patients, 2 weeks of appointments, SOAP notes, vaccination records, invoices, and 50 inventory products.
 
 The Docker Compose stack includes a one-shot MinIO bootstrap container that creates the `openpims` bucket used by `S3_BUCKET`. When using an external S3-compatible store, create that bucket yourself and grant the app credentials read/write/delete/head access before uploads, backups, or file previews run.
+
+Before using a self-hosted installation with real clinic data, complete the
+[open-source release checklist](docs/open-source-release-checklist.md) and the
+[clinic pilot readiness guide](docs/clinic-pilot-readiness.md). A successful
+local build is not, by itself, a production-readiness assessment.
 
 ### Deploy with Docker
 

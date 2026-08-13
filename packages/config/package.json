@@ -2,6 +2,7 @@
   "name": "@openpims/config",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "exports": {
     "./tailwind": "./tailwind.config.ts",
     "./tsconfig.base.json": "./tsconfig.base.json",

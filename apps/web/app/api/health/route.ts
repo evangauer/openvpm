@@ -610,6 +610,9 @@ export async function GET() {
       checks,
       latencyMs: Date.now() - startedAt,
     },
-    { status: ok ? 200 : 503 },
+    {
+      status: ok ? 200 : 503,
+      headers: { "Cache-Control": "no-store, max-age=0" },
+    },
   );
 }

@@ -27,6 +27,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/common/empty-state";
 import type { AppRouter } from "@/server/routers/_app";
+import { MigrationReviewChecklist } from "@/components/migration/migration-review-checklist";
 
 const PAGE_SIZE = 50;
 
@@ -147,6 +148,39 @@ export default function MigrationArchivePage() {
           authorize client communication.
         </p>
       </header>
+
+      <MigrationReviewChecklist />
+
+      {summary.data ? (
+        <section aria-labelledby="practice-data-heading" className="space-y-3">
+          <div>
+            <h3 id="practice-data-heading" className="font-heading text-lg font-semibold">
+              Practice data snapshot
+            </h3>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Use these totals as a reasonableness check, then sample the records below.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+            {[
+              ["Clients", summary.data.practiceData.clients],
+              ["Patients", summary.data.practiceData.patients],
+              ["Open reminders", summary.data.practiceData.openReminders],
+              ["Services", summary.data.practiceData.services],
+              ["Products", summary.data.practiceData.products],
+            ].map(([label, value]) => (
+              <Card key={String(label)}>
+                <CardContent className="p-4">
+                  <p className="text-xs font-medium text-muted-foreground">{label}</p>
+                  <p className="mt-1 text-2xl font-semibold tabular-nums">
+                    {metric(value as number)}
+                  </p>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       {summary.isLoading ? (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">

@@ -12,7 +12,7 @@ OpenVPM is currently in early development. Security fixes are applied to the lat
 
 **Please do not report security vulnerabilities through public GitHub issues.**
 
-If you discover a security vulnerability, please report it by emailing **evan@gettalky.ai** with `[SECURITY]` in the subject line. We will acknowledge your report within 48 hours and provide a resolution timeline.
+If you discover a security vulnerability, please report it by emailing **security@openvpm.com** with `[SECURITY]` in the subject line. We will acknowledge your report within 48 hours and provide a resolution timeline.
 
 When reporting, please include:
 - A description of the vulnerability and its potential impact
@@ -34,9 +34,9 @@ If you deploy OpenVPM on your own infrastructure:
 
 ## Known Security Properties
 
-- Passwords are hashed with bcrypt (10 rounds)
+- Passwords are hashed with bcrypt using the repository's centrally configured cost
 - All dashboard routes require an authenticated session
-- Multi-tenant isolation is enforced via `practice_id` on every query
-- Role-based access control (Admin, Vet, Technician, Front Desk) is enforced at the API layer
+- Multi-tenant isolation combines tenant-scoped application queries with PostgreSQL row-level security
+- Role-based access control includes Admin, Veterinarian, Technician, Front Desk, and read-only Viewer roles
 - Security headers are set on all responses (X-Frame-Options, X-Content-Type-Options, etc.)
 - Controlled substance logs are append-only with witness requirements

@@ -7,6 +7,7 @@ import {
   API_KEY_PREFIX,
   API_SCOPES,
   apiScopesHaveValidDependencies,
+  apiScopeCanMutate,
 } from "../api-auth";
 
 describe("generateApiKey", () => {
@@ -77,6 +78,14 @@ describe("hasScope", () => {
 });
 
 describe("API_SCOPES", () => {
+  it("classifies every API surface that can write or invoke an agent", () => {
+    expect(apiScopeCanMutate("appointments:write")).toBe(true);
+    expect(apiScopeCanMutate("records:write")).toBe(true);
+    expect(apiScopeCanMutate("agent:run")).toBe(true);
+    expect(apiScopeCanMutate("appointments:read")).toBe(false);
+    expect(apiScopeCanMutate("clients:read")).toBe(false);
+  });
+
   it("includes separate agent run/write scopes and the wildcard", () => {
     expect(API_SCOPES).toContain("agent:run");
     expect(API_SCOPES).toContain("agent:write");

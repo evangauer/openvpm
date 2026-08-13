@@ -36,13 +36,15 @@ export default function LoginPage() {
 }
 
 function safeNextPath(value: string | null): string {
-  if (!value || !value.startsWith("/") || value.startsWith("//")) return "/";
+  if (!value || !value.startsWith("/") || value.startsWith("//")) {
+    return "/post-login";
+  }
   if (
     value.startsWith("/login") ||
     value.startsWith("/register") ||
     value.startsWith("/verify-email")
   ) {
-    return "/";
+    return "/post-login";
   }
   return value;
 }

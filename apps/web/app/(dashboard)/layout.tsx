@@ -13,6 +13,7 @@ import { BrandTheme } from "@/components/brand/brand-theme";
 import { VerifyEmailBanner } from "@/components/layout/verify-email-banner";
 import { DemoConversionBar } from "@/components/demo/demo-conversion-bar";
 import { DemoFunnelTracker } from "@/components/demo/demo-funnel-tracker";
+import { RecoveryReviewBanner } from "@/components/layout/recovery-review-banner";
 
 export default function DashboardLayout({
   children,
@@ -83,6 +84,7 @@ export default function DashboardLayout({
             <DemoConversionBar />
             <DemoFunnelTracker />
             <VerifyEmailBanner />
+            <RecoveryReviewBanner />
             <main id="main-content" className="flex-1 overflow-y-auto bg-surface p-4 sm:p-6">
               <ErrorBoundary>{children}</ErrorBoundary>
             </main>

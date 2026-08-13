@@ -13,6 +13,10 @@ const router = readFileSync(
   new URL("../../server/routers/migration-archive.ts", import.meta.url),
   "utf8",
 );
+const checklist = readFileSync(
+  new URL("../../components/migration/migration-review-checklist.tsx", import.meta.url),
+  "utf8",
+);
 
 describe("imported history workspace", () => {
   it("is discoverable and explains its non-operational safety boundary", () => {
@@ -53,5 +57,21 @@ describe("imported history workspace", () => {
     expect(page).toContain("Never restored automatically");
     expect(page).toContain("messaging consent");
     expect(page).toContain("stock counts require a fresh");
+  });
+
+  it("guides a privacy-safe, local-only validation workflow", () => {
+    expect(page).toContain("MigrationReviewChecklist");
+    expect(page).toContain("Practice data snapshot");
+    expect(router).toContain("eq(careReminders.practiceId, practiceId)");
+    expect(router).toContain("eq(services.practiceId, practiceId)");
+    expect(router).toContain("eq(products.practiceId, practiceId)");
+    expect(checklist).toContain("sessionStorage");
+    expect(checklist).not.toContain("useMutation");
+    expect(checklist).toContain("never paste names, contact information");
+    expect(checklist).toContain('href="/clients"');
+    expect(checklist).toContain('href="/patients"');
+    expect(checklist).toContain("OpenVPM remains responsible for the bulk reconciliation queue");
+    expect(checklist).toContain("never releases");
+    expect(checklist).toContain('role="progressbar"');
   });
 });

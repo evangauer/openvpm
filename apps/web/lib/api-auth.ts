@@ -33,6 +33,10 @@ export type AuthResult =
   | { ok: true; ctx: ApiKeyContext }
   | { ok: false; response: NextResponse };
 
+export function apiScopeCanMutate(requiredScope: string): boolean {
+  return requiredScope.endsWith(":write") || requiredScope === "agent:run";
+}
+
 /**
  * Generate a new API key. Returns the raw key (shown to the user exactly once),
  * the indexed lookup prefix, and the bcrypt hash to persist. The raw key is
@@ -182,6 +186,7 @@ export async function authenticateApiKey(
         tier: string | null;
         billingStatus: string | null;
         trialEndsAt: Date | string | null;
+        recoveryHold: boolean;
       }
     | undefined;
   try {
@@ -191,6 +196,7 @@ export async function authenticateApiKey(
           tier: practices.subscriptionTier,
           billingStatus: practices.billingStatus,
           trialEndsAt: practices.trialEndsAt,
+          recoveryHold: practices.recoveryHold,
         })
         .from(practices)
         .where(
@@ -215,11 +221,17 @@ export async function authenticateApiKey(
     return err(`API key missing required scope: ${requiredScope}`, 403);
   }
 
+  const writeLikeScope = apiScopeCanMutate(requiredScope);
+  if (writeLikeScope && practice.recoveryHold) {
+    return err(
+      "This clinic is in protected data review mode. API changes and agent runs remain paused.",
+      423,
+    );
+  }
+
   // Hosted read-only mode still allows read scopes. Write scopes and agent runs
   // require an active trial/subscription. Self-host skips this entirely.
   if (billingEnforced()) {
-    const writeLikeScope =
-      requiredScope.endsWith(":write") || requiredScope === "agent:run";
     if (writeLikeScope && !hasHostedFullAccess(
       practice.tier,
       practice.billingStatus,

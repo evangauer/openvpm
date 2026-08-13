@@ -3,6 +3,7 @@ import { z } from "zod";
 import { and, asc, count, desc, eq, ilike, isNull, or, sql } from "drizzle-orm";
 import {
   clientContacts,
+  careReminders,
   clients,
   externalLabObservations,
   externalLabReports,
@@ -16,6 +17,9 @@ import {
   legacyFinancialLineItems,
   legacyFinancialPayments,
   patients,
+  practices,
+  products,
+  services,
 } from "@openpims/db";
 import { createRouter, protectedProcedure } from "../trpc";
 
@@ -46,9 +50,32 @@ function searchPattern(query: string): string {
 }
 
 export const migrationArchiveRouter = createRouter({
+  reviewStatus: protectedProcedure.query(async ({ ctx }) => {
+    const [practice] = await ctx.db
+      .select({ recoveryHold: practices.recoveryHold })
+      .from(practices)
+      .where(
+        and(
+          eq(practices.id, ctx.practiceId),
+          isNull(practices.deletedAt),
+        ),
+      )
+      .limit(1);
+
+    if (!practice) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "Practice not found" });
+    }
+    return practice;
+  }),
+
   summary: protectedProcedure.query(async ({ ctx }) => {
     const practiceId = ctx.practiceId;
     const [
+      [clientCount],
+      [patientCount],
+      [reminderCount],
+      [serviceCount],
+      [productCount],
       [contacts],
       [appointments],
       [medications],
@@ -58,6 +85,32 @@ export const migrationArchiveRouter = createRouter({
       [payments],
       [documents],
     ] = await Promise.all([
+      ctx.db
+        .select({ total: count() })
+        .from(clients)
+        .where(and(eq(clients.practiceId, practiceId), isNull(clients.deletedAt))),
+      ctx.db
+        .select({ total: count() })
+        .from(patients)
+        .where(and(eq(patients.practiceId, practiceId), isNull(patients.deletedAt))),
+      ctx.db
+        .select({ total: count() })
+        .from(careReminders)
+        .where(
+          and(
+            eq(careReminders.practiceId, practiceId),
+            eq(careReminders.status, "open"),
+            isNull(careReminders.deletedAt),
+          ),
+        ),
+      ctx.db
+        .select({ total: count() })
+        .from(services)
+        .where(and(eq(services.practiceId, practiceId), isNull(services.deletedAt))),
+      ctx.db
+        .select({ total: count() })
+        .from(products)
+        .where(and(eq(products.practiceId, practiceId), isNull(products.deletedAt))),
       ctx.db
         .select({
           total: count(),
@@ -151,6 +204,13 @@ export const migrationArchiveRouter = createRouter({
     ]);
 
     return {
+      practiceData: {
+        clients: clientCount?.total ?? 0,
+        patients: patientCount?.total ?? 0,
+        openReminders: reminderCount?.total ?? 0,
+        services: serviceCount?.total ?? 0,
+        products: productCount?.total ?? 0,
+      },
       contacts: contacts ?? { total: 0, needsReview: 0 },
       appointments: appointments ?? { total: 0 },
       medications: {

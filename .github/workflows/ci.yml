@@ -22,6 +22,12 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Verify public release contents
+        run: pnpm verify:oss-release
+
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level high
+
       - run: pnpm type-check
 
       - run: pnpm test

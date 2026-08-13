@@ -19,7 +19,8 @@
     "db:studio": "pnpm --filter @openpims/db db:studio",
     "clean": "turbo clean",
     "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui"
+    "test:e2e:ui": "playwright test --ui",
+    "verify:oss-release": "node scripts/verify-oss-release.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

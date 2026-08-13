@@ -35,6 +35,7 @@ interface AppSession extends Session {
     name: string;
     role: UserRole;
     practiceId: string;
+    recoveryHold?: boolean;
   };
 }
 
@@ -88,7 +89,10 @@ async function activeSessionOrNull(
     session.user.practiceId,
     (tx) =>
       tx
-        .select({ id: users.id })
+        .select({
+          id: users.id,
+          recoveryHold: practices.recoveryHold,
+        })
         .from(users)
         .innerJoin(
           practices,
@@ -104,7 +108,15 @@ async function activeSessionOrNull(
         .limit(1),
   );
 
-  return activeUser ? session : null;
+  return activeUser
+    ? {
+        ...session,
+        user: {
+          ...session.user,
+          recoveryHold: activeUser.recoveryHold,
+        },
+      }
+    : null;
 }
 
 export async function createTRPCContext(opts?: {
@@ -203,6 +215,13 @@ export const protectedProcedure = t.procedure.use(
       throw new TRPCError({
         code: "FORBIDDEN",
         message: "Your account has read-only (viewer) access.",
+      });
+    }
+    if (type === "mutation" && ctx.session.user.recoveryHold === true) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message:
+          "This clinic is in protected data review mode. Changes remain paused until the recovery hold is released through the audited recovery process.",
       });
     }
     const user = ctx.session.user;
