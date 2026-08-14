@@ -49,6 +49,7 @@ import {
 } from "@/lib/locale/clinic-regions";
 import { safeAuthNextPath } from "@/lib/auth-redirect";
 import { ClinicIntentBuilder } from "@/components/onboarding/clinic-intent-builder";
+import { FirstDayRecommendations } from "@/components/onboarding/first-day-recommendations";
 import {
   CLINIC_MODELS,
   DEFAULT_CLINIC_MODEL,
@@ -60,7 +61,7 @@ import {
 } from "@/lib/onboarding/clinic-profile";
 
 type RegistrationCountry = ClinicRegionCode | "OTHER" | "";
-type RegistrationStage = "profile" | "account";
+type RegistrationStage = "profile" | "workflow" | "preview" | "account";
 
 const REGISTRATION_PROFILE_STORAGE_KEY = "openvpm:registration-profile:v1";
 
@@ -134,7 +135,16 @@ function RegisterPageInner() {
       ) {
         setFirstGoal(saved.firstGoal as FirstGoal);
       }
-      if (saved.stage === "account") setStage("account");
+      if (
+        saved.stage === "workflow" ||
+        saved.stage === "preview" ||
+        saved.stage === "account"
+      ) {
+        // Practice name and email intentionally stay out of sessionStorage.
+        // A refresh from the security step returns to the identity step so the
+        // user can re-enter them instead of landing on a hidden invalid state.
+        setStage("workflow");
+      }
     } catch {
       window.sessionStorage.removeItem(REGISTRATION_PROFILE_STORAGE_KEY);
     } finally {
@@ -156,6 +166,7 @@ function RegisterPageInner() {
 
   useEffect(() => {
     if (!profileRestored) return;
+    if (stage === "workflow" || stage === "preview") return;
     trackFunnelEvent(
       stage === "profile"
         ? FUNNEL_EVENTS.signupProfileViewed
@@ -242,6 +253,11 @@ function RegisterPageInner() {
     password.length >= AUTH_PASSWORD_MIN_LENGTH &&
     password.length <= AUTH_PASSWORD_MAX_LENGTH;
 
+  const canContinueFromWorkflow =
+    isRequiredAuthTextValid(practiceName, AUTH_PRACTICE_NAME_MAX_LENGTH, 2) &&
+    isAuthEmailLengthValid(email) &&
+    isValidEmail(email);
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const message = validate();
@@ -288,22 +304,46 @@ function RegisterPageInner() {
     trackFunnelEvent(FUNNEL_EVENTS.onboardingGoalSelected, {
       model: clinicModel,
       goal,
-      step: "profile",
+      step: "workflow",
     });
   }
 
-  function continueToAccount() {
+  function showStage(nextStage: RegistrationStage) {
+    window.scrollTo({ top: 0, behavior: "auto" });
+    setStage(nextStage);
+  }
+
+  function continueToWorkflow() {
+    setError("");
+    showStage("workflow");
+  }
+
+  function continueToPreview() {
+    if (!canContinueFromWorkflow) {
+      setError(
+        practiceName.trim().length < 2
+          ? "Add your practice name to continue."
+          : "Add a valid work email.",
+      );
+      return;
+    }
+    setError("");
     trackFunnelEvent(FUNNEL_EVENTS.signupProfileCompleted, {
       model: clinicModel,
       goal: firstGoal,
-      step: "profile",
+      step: "workflow",
     });
     trackFunnelEvent(FUNNEL_EVENTS.onboardingPlanBuilt, {
       model: clinicModel,
       goal: firstGoal,
-      step: "profile",
+      step: "workflow",
     });
-    setStage("account");
+    showStage("preview");
+  }
+
+  function continueToAccount() {
+    setError("");
+    showStage("account");
   }
 
   if (stage === "profile") {
@@ -320,11 +360,13 @@ function RegisterPageInner() {
               </span>
               OpenVPM
             </Link>
-            <div className="flex items-center gap-3 text-xs font-medium text-slate-500 sm:text-sm">
-              <span>Step 1 of 2</span>
+            <div className="flex items-center gap-2 text-xs font-medium text-slate-500 sm:gap-3 sm:text-sm">
+              <span className="whitespace-nowrap">Step 1 of 4</span>
               <span className="flex gap-1" aria-hidden="true">
-                <span className="h-1.5 w-10 rounded-full bg-primary" />
-                <span className="h-1.5 w-10 rounded-full bg-slate-200" />
+                <span className="h-1.5 w-6 rounded-full bg-primary sm:w-10" />
+                <span className="h-1.5 w-6 rounded-full bg-slate-200 sm:w-10" />
+                <span className="h-1.5 w-6 rounded-full bg-slate-200 sm:w-10" />
+                <span className="h-1.5 w-6 rounded-full bg-slate-200 sm:w-10" />
               </span>
             </div>
           </header>
@@ -345,7 +387,8 @@ function RegisterPageInner() {
               firstGoal={firstGoal}
               onClinicModelChange={selectClinicModel}
               onFirstGoalChange={selectFirstGoal}
-              intro="Two quick choices make the rest of setup feel like your clinic—not a generic software tour."
+              intro={null}
+              showFirstGoal={false}
             />
           </section>
 
@@ -355,12 +398,203 @@ function RegisterPageInner() {
             </p>
             <Button
               type="button"
-              onClick={continueToAccount}
+              onClick={continueToWorkflow}
               className="h-11 rounded-xl px-6 text-sm font-semibold shadow-[0_12px_28px_-16px_rgba(5,150,105,0.8)]"
             >
-              Build my first day
+              Show my workflows
               <ArrowRight className="ml-2 h-4 w-4" />
             </Button>
+          </footer>
+        </div>
+      </main>
+    );
+  }
+
+  if (stage === "workflow") {
+    return (
+      <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#fff7ed_0%,transparent_34%),radial-gradient(circle_at_top_right,#ede9fe_0%,transparent_36%),linear-gradient(180deg,#ffffff_0%,#f5fbf8_100%)] px-4 py-5 sm:px-6 sm:py-8">
+        <div className="mx-auto max-w-6xl overflow-hidden rounded-[28px] border border-white/80 bg-white/95 shadow-[0_30px_90px_-54px_rgba(15,23,42,0.48)] backdrop-blur">
+          <header className="flex items-center justify-between border-b border-slate-100 px-5 py-4 sm:px-9 sm:py-5">
+            <Link
+              href="/"
+              className="inline-flex items-center gap-3 font-heading text-lg font-semibold tracking-tight text-slate-950 sm:text-xl"
+            >
+              <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
+                <PawMark className="h-5 w-5" />
+              </span>
+              OpenVPM
+            </Link>
+            <div className="flex items-center gap-2 text-xs font-medium text-slate-500 sm:gap-3 sm:text-sm">
+              <span className="whitespace-nowrap">Step 2 of 4</span>
+              <span className="flex gap-1" aria-hidden="true">
+                <span className="h-1.5 w-6 rounded-full bg-primary sm:w-10" />
+                <span className="h-1.5 w-6 rounded-full bg-primary sm:w-10" />
+                <span className="h-1.5 w-6 rounded-full bg-slate-200 sm:w-10" />
+                <span className="h-1.5 w-6 rounded-full bg-slate-200 sm:w-10" />
+              </span>
+            </div>
+          </header>
+
+          <section className="px-5 py-7 sm:px-9 sm:py-10 lg:px-12">
+            <div className="mb-8 max-w-3xl">
+              <h1 className="font-heading text-3xl font-bold tracking-tight text-slate-950 sm:text-4xl">
+                What would you like to see?
+              </h1>
+              <p className="mt-3 text-sm leading-6 text-slate-600 sm:text-base">
+                Here are some useful workflows for your practice. Pick one and
+                we’ll shape the first day around it.
+              </p>
+            </div>
+
+            <ClinicIntentBuilder
+              clinicModel={clinicModel}
+              firstGoal={firstGoal}
+              onClinicModelChange={selectClinicModel}
+              onFirstGoalChange={selectFirstGoal}
+              intro={null}
+              showClinicModel={false}
+              goalLegend="Choose your first useful workflow"
+              afterChoices={
+                <div className="mt-8 border-t border-slate-100 pt-7">
+                  <p className="text-sm font-semibold text-slate-950 sm:text-base">
+                    Start your workspace
+                  </p>
+                  <p className="mt-1 text-sm leading-6 text-slate-600">
+                    Just your practice name and work email for now.
+                  </p>
+
+                  {error ? (
+                    <div className="mt-4 rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
+                      {error}
+                    </div>
+                  ) : null}
+
+                  <div className="mt-5 grid gap-4 sm:grid-cols-2">
+                    <FormField label="Practice name" htmlFor="practiceName">
+                      <Input
+                        id="practiceName"
+                        name="practiceName"
+                        value={practiceName}
+                        onChange={(event) => {
+                          setPracticeName(event.target.value);
+                          setError("");
+                        }}
+                        placeholder="Neighborhood Veterinary"
+                        autoComplete="organization"
+                        autoFocus
+                        maxLength={AUTH_PRACTICE_NAME_MAX_LENGTH}
+                        required
+                      />
+                    </FormField>
+                    <FormField label="Work email" htmlFor="email">
+                      <Input
+                        id="email"
+                        name="email"
+                        type="email"
+                        value={email}
+                        onChange={(event) => {
+                          setEmail(event.target.value);
+                          setError("");
+                        }}
+                        placeholder="you@clinic.com"
+                        autoComplete="email"
+                        maxLength={AUTH_EMAIL_MAX_LENGTH}
+                        required
+                      />
+                    </FormField>
+                  </div>
+                </div>
+              }
+            />
+          </section>
+
+          <footer className="flex flex-col-reverse gap-3 border-t border-slate-100 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-9">
+            <button
+              type="button"
+              onClick={() => {
+                setError("");
+                showStage("profile");
+              }}
+              className="inline-flex h-11 items-center justify-center gap-2 rounded-xl px-4 text-sm font-medium text-slate-600 transition hover:bg-slate-50 hover:text-primary"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Back
+            </button>
+            <Button
+              type="button"
+              onClick={continueToPreview}
+              className="h-11 rounded-xl px-6 text-sm font-semibold shadow-[0_12px_28px_-16px_rgba(5,150,105,0.8)]"
+            >
+              See my first day
+              <ArrowRight className="ml-2 h-4 w-4" />
+            </Button>
+          </footer>
+        </div>
+      </main>
+    );
+  }
+
+  if (stage === "preview") {
+    return (
+      <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#fff7ed_0%,transparent_34%),radial-gradient(circle_at_top_right,#ede9fe_0%,transparent_36%),linear-gradient(180deg,#ffffff_0%,#f5fbf8_100%)] px-4 py-5 sm:px-6 sm:py-8">
+        <div className="mx-auto max-w-6xl overflow-hidden rounded-[28px] border border-white/80 bg-white/95 shadow-[0_30px_90px_-54px_rgba(15,23,42,0.48)] backdrop-blur">
+          <header className="flex items-center justify-between border-b border-slate-100 px-5 py-4 sm:px-9 sm:py-5">
+            <Link
+              href="/"
+              className="inline-flex items-center gap-3 font-heading text-lg font-semibold tracking-tight text-slate-950 sm:text-xl"
+            >
+              <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
+                <PawMark className="h-5 w-5" />
+              </span>
+              OpenVPM
+            </Link>
+            <div className="flex items-center gap-2 text-xs font-medium text-slate-500 sm:gap-3 sm:text-sm">
+              <span className="whitespace-nowrap">Step 3 of 4</span>
+              <span className="flex gap-1" aria-hidden="true">
+                <span className="h-1.5 w-6 rounded-full bg-primary sm:w-10" />
+                <span className="h-1.5 w-6 rounded-full bg-primary sm:w-10" />
+                <span className="h-1.5 w-6 rounded-full bg-primary sm:w-10" />
+                <span className="h-1.5 w-6 rounded-full bg-slate-200 sm:w-10" />
+              </span>
+            </div>
+          </header>
+
+          <section className="px-5 py-7 sm:px-9 sm:py-10 lg:px-12">
+            <div className="mb-9 max-w-3xl">
+              <h1 className="font-heading text-3xl font-bold tracking-tight text-slate-950 sm:text-4xl">
+                Your first day is ready.
+              </h1>
+              <p className="mt-3 text-sm leading-6 text-slate-600 sm:text-base">
+                Here’s a useful starting point for {practiceName.trim()}. You
+                can change any of it once you’re inside.
+              </p>
+            </div>
+
+            <FirstDayRecommendations primaryGoal={firstGoal} />
+          </section>
+
+          <footer className="flex flex-col-reverse gap-3 border-t border-slate-100 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-9">
+            <button
+              type="button"
+              onClick={() => showStage("workflow")}
+              className="inline-flex h-11 items-center justify-center gap-2 rounded-xl px-4 text-sm font-medium text-slate-600 transition hover:bg-slate-50 hover:text-primary"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Back
+            </button>
+            <div className="flex flex-col items-stretch gap-2 sm:items-end">
+              <Button
+                type="button"
+                onClick={continueToAccount}
+                className="h-11 rounded-xl px-6 text-sm font-semibold shadow-[0_12px_28px_-16px_rgba(5,150,105,0.8)]"
+              >
+                Secure my workspace
+                <ArrowRight className="ml-2 h-4 w-4" />
+              </Button>
+              <p className="text-center text-xs text-slate-500 sm:text-right">
+                No card required.
+              </p>
+            </div>
           </footer>
         </div>
       </main>
@@ -370,7 +604,7 @@ function RegisterPageInner() {
   return (
     <div className="grid min-h-screen min-w-0 overflow-x-hidden lg:grid-cols-2">
       {/* Left pane: the form, on clean white */}
-      <div className="flex min-w-0 items-center justify-center bg-white px-6 py-10 sm:px-10">
+      <div className="flex min-w-0 items-start justify-center bg-white px-6 py-10 sm:px-10">
         <div className="min-w-0 w-full max-w-md">
           <div className="flex items-center justify-between gap-4">
             <Link
@@ -383,17 +617,16 @@ function RegisterPageInner() {
               OpenVPM {cloudIntent ? "Cloud" : ""}
             </Link>
             <span className="text-xs font-medium text-slate-500">
-              Step 2 of 2
+              Step 4 of 4
             </span>
           </div>
 
           <h1 className="mt-8 font-heading text-3xl font-bold tracking-tight text-slate-950">
-            Make it yours.
+            Secure your workspace.
           </h1>
           <p className="mt-2 text-sm leading-6 text-slate-600">
-            Create the workspace for your{" "}
-            {clinicModelOption(clinicModel).shortLabel.toLowerCase()} team. Your
-            first-day plan will be waiting inside.
+            One final step. Choose your clinic country and create a password. No
+            card required.
           </p>
 
           <form onSubmit={handleSubmit} className="mt-8 grid min-w-0 gap-4">
@@ -403,21 +636,28 @@ function RegisterPageInner() {
               </div>
             ) : null}
 
-            <FormField
-              label="Practice name"
-              htmlFor="practiceName"
-              className="min-w-0"
-            >
-              <Input
-                id="practiceName"
-                value={practiceName}
-                onChange={(e) => setPracticeName(e.target.value)}
-                placeholder="Neighborhood Veterinary"
-                autoFocus
-                maxLength={AUTH_PRACTICE_NAME_MAX_LENGTH}
-                required
-              />
-            </FormField>
+            <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-emerald-700">
+                Your workspace
+              </p>
+              <p className="mt-1 truncate text-sm font-semibold text-slate-950">
+                {practiceName.trim()}
+              </p>
+              <p className="mt-0.5 truncate text-xs text-slate-600">
+                {email.trim().toLowerCase()}
+              </p>
+            </div>
+
+            <input
+              type="email"
+              name="email"
+              value={email.trim().toLowerCase()}
+              autoComplete="username"
+              className="sr-only"
+              tabIndex={-1}
+              aria-hidden="true"
+              readOnly
+            />
 
             <FormField
               label="Clinic country"
@@ -427,8 +667,10 @@ function RegisterPageInner() {
             >
               <select
                 id="country"
+                name="country"
                 className={selectClass}
                 value={country}
+                autoComplete="country"
                 onChange={(event) => {
                   setCountry(event.target.value as RegistrationCountry);
                   setError("");
@@ -478,18 +720,6 @@ function RegisterPageInner() {
               </div>
             ) : null}
 
-            <FormField label="Work email" htmlFor="email" className="min-w-0">
-              <Input
-                id="email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@clinic.com"
-                maxLength={AUTH_EMAIL_MAX_LENGTH}
-                required
-              />
-            </FormField>
-
             <FormField
               label="Password"
               htmlFor="password"
@@ -498,10 +728,12 @@ function RegisterPageInner() {
             >
               <Input
                 id="password"
+                name="password"
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Create a password"
+                autoComplete="new-password"
                 minLength={AUTH_PASSWORD_MIN_LENGTH}
                 maxLength={AUTH_PASSWORD_MAX_LENGTH}
                 required
@@ -520,7 +752,7 @@ function RegisterPageInner() {
                 </>
               ) : (
                 <>
-                  Create workspace
+                  Start my free trial
                   <ArrowRight className="ml-2 h-4 w-4" />
                 </>
               )}
@@ -533,11 +765,11 @@ function RegisterPageInner() {
 
             <button
               type="button"
-              onClick={() => setStage("profile")}
+              onClick={() => showStage("preview")}
               className="mx-auto inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 transition hover:text-primary"
             >
               <ArrowLeft className="h-3.5 w-3.5" />
-              Change first-day plan
+              Back to my first day
             </button>
 
             <p className="text-center text-xs text-slate-500">

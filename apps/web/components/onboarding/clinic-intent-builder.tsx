@@ -1,5 +1,7 @@
 "use client";
 
+import type { ReactNode } from "react";
+
 import {
   Building2,
   CalendarCheck2,
@@ -70,12 +72,20 @@ export function ClinicIntentBuilder({
   onClinicModelChange,
   onFirstGoalChange,
   intro = "Start with one useful workflow. We’ll shape OpenVPM around the way your team works—and you stay in control.",
+  showClinicModel = true,
+  showFirstGoal = true,
+  goalLegend = "What would feel useful first?",
+  afterChoices,
 }: {
   clinicModel: ClinicModel;
   firstGoal: FirstGoal;
   onClinicModelChange: (model: ClinicModel) => void;
   onFirstGoalChange: (goal: FirstGoal) => void;
-  intro?: string;
+  intro?: string | null;
+  showClinicModel?: boolean;
+  showFirstGoal?: boolean;
+  goalLegend?: string;
+  afterChoices?: ReactNode;
 }) {
   const selectedModel = clinicModelOption(clinicModel);
   const tasks = firstDayTasks(clinicModel, firstGoal);
@@ -85,172 +95,187 @@ export function ClinicIntentBuilder({
       : FIRST_GOAL_OPTIONS;
 
   return (
-    <div className="grid gap-8 lg:grid-cols-[minmax(0,1.28fr)_minmax(340px,0.72fr)] lg:gap-12">
+    <div
+      className={cn(
+        "grid gap-8",
+        showFirstGoal &&
+          "lg:grid-cols-[minmax(0,1.28fr)_minmax(340px,0.72fr)] lg:gap-12",
+      )}
+    >
       <div className="min-w-0">
-        <p className="max-w-2xl text-[15px] leading-7 text-slate-600 sm:text-base">
-          {intro}
-        </p>
+        {intro ? (
+          <p className="max-w-2xl text-[15px] leading-7 text-slate-600 sm:text-base">
+            {intro}
+          </p>
+        ) : null}
 
-        <fieldset className="mt-7">
-          <legend className="text-sm font-semibold text-slate-950 sm:text-base">
-            What kind of care do you provide?
-          </legend>
-          <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-3">
-            {CLINIC_MODEL_OPTIONS.map((option) => {
-              const Icon = modelIcons[option.value];
-              const active = clinicModel === option.value;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  aria-pressed={active}
-                  onClick={() => onClinicModelChange(option.value)}
-                  className={cn(
-                    "group relative min-h-[104px] rounded-2xl border bg-white p-3 text-left transition duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 sm:min-h-[118px] sm:p-4",
-                    active
-                      ? "-translate-y-0.5 border-primary bg-primary/5 shadow-[0_12px_30px_-18px_rgba(5,150,105,0.65)]"
-                      : "border-slate-200 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-[0_10px_24px_-20px_rgba(15,23,42,0.45)]",
-                  )}
-                >
-                  <span
+        {showClinicModel ? (
+          <fieldset className={intro ? "mt-7" : undefined}>
+            <legend className="text-sm font-semibold text-slate-950 sm:text-base">
+              What kind of care do you provide?
+            </legend>
+            <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-3">
+              {CLINIC_MODEL_OPTIONS.map((option) => {
+                const Icon = modelIcons[option.value];
+                const active = clinicModel === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => onClinicModelChange(option.value)}
                     className={cn(
-                      "flex h-10 w-10 items-center justify-center rounded-xl transition-transform duration-200 group-hover:scale-105",
-                      toneClasses[option.tone],
+                      "group relative min-h-[104px] rounded-2xl border bg-white p-3 text-left transition duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 sm:min-h-[118px] sm:p-4",
+                      active
+                        ? "-translate-y-0.5 border-primary bg-primary/5 shadow-[0_12px_30px_-18px_rgba(5,150,105,0.65)]"
+                        : "border-slate-200 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-[0_10px_24px_-20px_rgba(15,23,42,0.45)]",
                     )}
                   >
-                    <Icon className="h-5 w-5" strokeWidth={1.8} />
-                  </span>
-                  <span className="mt-2.5 block max-w-[10rem] text-[13px] font-semibold leading-[1.3] text-slate-900 sm:text-sm">
-                    {option.label}
-                  </span>
-                  {active ? (
-                    <span className="absolute right-2.5 top-2.5 flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm">
-                      <Check className="h-3.5 w-3.5" strokeWidth={2.5} />
+                    <span
+                      className={cn(
+                        "flex h-10 w-10 items-center justify-center rounded-xl transition-transform duration-200 group-hover:scale-105",
+                        toneClasses[option.tone],
+                      )}
+                    >
+                      <Icon className="h-5 w-5" strokeWidth={1.8} />
                     </span>
-                  ) : null}
-                </button>
-              );
-            })}
-          </div>
-        </fieldset>
+                    <span className="mt-2.5 block max-w-[10rem] text-[13px] font-semibold leading-[1.3] text-slate-900 sm:text-sm">
+                      {option.label}
+                    </span>
+                    {active ? (
+                      <span className="absolute right-2.5 top-2.5 flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm">
+                        <Check className="h-3.5 w-3.5" strokeWidth={2.5} />
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          </fieldset>
+        ) : null}
 
-        <fieldset className="mt-7">
-          <legend className="text-sm font-semibold text-slate-950 sm:text-base">
-            What would feel useful first?
-          </legend>
-          <div className="mt-3 grid gap-2.5 sm:grid-cols-2">
-            {goalOptions.map((option) => {
-              const Icon = goalIcons[option.value];
-              const active = firstGoal === option.value;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  aria-pressed={active}
-                  onClick={() => onFirstGoalChange(option.value)}
-                  className={cn(
-                    "flex min-h-14 items-center gap-3 rounded-xl border px-3.5 py-3 text-left transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2",
-                    active
-                      ? "border-primary bg-primary/5 shadow-[0_8px_24px_-20px_rgba(5,150,105,0.7)]"
-                      : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/70",
-                  )}
-                >
-                  <span
+        {showFirstGoal ? (
+          <fieldset className={showClinicModel || intro ? "mt-7" : undefined}>
+            <legend className="text-sm font-semibold text-slate-950 sm:text-base">
+              {goalLegend}
+            </legend>
+            <div className="mt-3 grid gap-2.5 sm:grid-cols-2">
+              {goalOptions.map((option) => {
+                const Icon = goalIcons[option.value];
+                const active = firstGoal === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => onFirstGoalChange(option.value)}
                     className={cn(
-                      "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg",
+                      "flex min-h-14 items-center gap-3 rounded-xl border px-3.5 py-3 text-left transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2",
                       active
-                        ? "bg-primary/10 text-primary"
-                        : "bg-violet-50 text-violet-700",
+                        ? "border-primary bg-primary/5 shadow-[0_8px_24px_-20px_rgba(5,150,105,0.7)]"
+                        : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/70",
                     )}
                   >
-                    <Icon className="h-[18px] w-[18px]" strokeWidth={1.8} />
-                  </span>
-                  <span className="min-w-0 flex-1 text-[13px] font-medium leading-5 text-slate-800 sm:text-sm">
-                    {option.label}
-                  </span>
-                  <span
-                    className={cn(
-                      "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border",
-                      active
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : "border-slate-300 bg-white text-transparent",
-                    )}
-                  >
-                    <Check className="h-3 w-3" strokeWidth={2.5} />
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </fieldset>
+                    <span
+                      className={cn(
+                        "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg",
+                        active
+                          ? "bg-primary/10 text-primary"
+                          : "bg-violet-50 text-violet-700",
+                      )}
+                    >
+                      <Icon className="h-[18px] w-[18px]" strokeWidth={1.8} />
+                    </span>
+                    <span className="min-w-0 flex-1 text-[13px] font-medium leading-5 text-slate-800 sm:text-sm">
+                      {option.label}
+                    </span>
+                    <span
+                      className={cn(
+                        "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border",
+                        active
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "border-slate-300 bg-white text-transparent",
+                      )}
+                    >
+                      <Check className="h-3 w-3" strokeWidth={2.5} />
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </fieldset>
+        ) : null}
+
+        {afterChoices}
       </div>
 
-      <aside
-        aria-live="polite"
-        className="relative overflow-hidden rounded-[24px] border border-primary/15 bg-[linear-gradient(155deg,#ffffff_0%,#f5fbf8_72%,#f7f5ff_100%)] px-5 py-6 shadow-[0_24px_60px_-42px_rgba(5,150,105,0.55)] sm:px-7 sm:py-8 lg:min-h-[570px]"
-      >
-        <div
-          aria-hidden="true"
-          className="absolute -right-10 -top-10 h-32 w-32 rounded-full border border-violet-100/80"
-        />
-        <div
-          aria-hidden="true"
-          className="absolute -right-4 top-6 h-20 w-20 rounded-full border border-rose-100"
-        />
-        <div className="relative">
-          <div className="flex items-center gap-3 lg:justify-center">
-            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary lg:hidden">
-              <Sparkles className="h-5 w-5" strokeWidth={1.8} />
-            </span>
-            <div>
-              <h3 className="font-heading text-lg font-semibold text-slate-950 sm:text-xl">
-                Your first OpenVPM day
-              </h3>
-              <p className="mt-0.5 text-xs text-slate-500 lg:text-center">
-                Shaped for {selectedModel.shortLabel.toLowerCase()} care
-              </p>
+      {showFirstGoal ? (
+        <aside
+          aria-live="polite"
+          className="relative overflow-hidden rounded-[24px] border border-primary/15 bg-[linear-gradient(155deg,#ffffff_0%,#f5fbf8_72%,#f7f5ff_100%)] px-5 py-6 shadow-[0_24px_60px_-42px_rgba(5,150,105,0.55)] sm:px-7 sm:py-8 lg:min-h-[570px]"
+        >
+          <div
+            aria-hidden="true"
+            className="absolute -right-10 -top-10 h-32 w-32 rounded-full border border-violet-100/80"
+          />
+          <div
+            aria-hidden="true"
+            className="absolute -right-4 top-6 h-20 w-20 rounded-full border border-rose-100"
+          />
+          <div className="relative">
+            <div className="flex items-center gap-3 lg:justify-center">
+              <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary lg:hidden">
+                <Sparkles className="h-5 w-5" strokeWidth={1.8} />
+              </span>
+              <div>
+                <h3 className="font-heading text-lg font-semibold text-slate-950 sm:text-xl">
+                  Your first OpenVPM day
+                </h3>
+                <p className="mt-0.5 text-xs text-slate-500 lg:text-center">
+                  Shaped for {selectedModel.shortLabel.toLowerCase()} care
+                </p>
+              </div>
+            </div>
+
+            <ol key={`${clinicModel}-${firstGoal}`} className="mt-6 space-y-3">
+              {tasks.map((task, index) => {
+                const Icon = taskIcons[index] ?? PawPrint;
+                return (
+                  <li
+                    key={task}
+                    style={{ animationDelay: `${index * 90}ms` }}
+                    className="onboarding-task-in relative flex items-center gap-3 rounded-2xl border border-white bg-white/90 p-3 shadow-[0_12px_30px_-22px_rgba(15,23,42,0.4)] sm:p-4"
+                  >
+                    <span className="absolute -left-3 flex h-6 w-6 items-center justify-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground shadow-sm">
+                      {index + 1}
+                    </span>
+                    <span className="ml-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                      <Icon className="h-5 w-5" strokeWidth={1.8} />
+                    </span>
+                    <span className="text-sm font-medium leading-5 text-slate-800">
+                      {task}
+                    </span>
+                  </li>
+                );
+              })}
+            </ol>
+
+            {selectedModel.readiness === "design_partner" ? (
+              <div className="mt-5 flex gap-3 rounded-xl border border-violet-100 bg-white/75 p-3.5">
+                <HeartPulse className="mt-0.5 h-4 w-4 shrink-0 text-violet-600" />
+                <p className="text-xs leading-5 text-slate-600">
+                  We’ll validate one real workflow with you and be clear about
+                  anything that isn’t ready yet.
+                </p>
+              </div>
+            ) : null}
+
+            <div className="mt-6 flex items-center gap-2 text-xs text-primary">
+              <ShieldCheck className="h-4 w-4" strokeWidth={1.8} />
+              <span>Nothing moves until you review it.</span>
             </div>
           </div>
-
-          <ol key={`${clinicModel}-${firstGoal}`} className="mt-6 space-y-3">
-            {tasks.map((task, index) => {
-              const Icon = taskIcons[index] ?? PawPrint;
-              return (
-                <li
-                  key={task}
-                  style={{ animationDelay: `${index * 90}ms` }}
-                  className="onboarding-task-in relative flex items-center gap-3 rounded-2xl border border-white bg-white/90 p-3 shadow-[0_12px_30px_-22px_rgba(15,23,42,0.4)] sm:p-4"
-                >
-                  <span className="absolute -left-3 flex h-6 w-6 items-center justify-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground shadow-sm">
-                    {index + 1}
-                  </span>
-                  <span className="ml-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
-                    <Icon className="h-5 w-5" strokeWidth={1.8} />
-                  </span>
-                  <span className="text-sm font-medium leading-5 text-slate-800">
-                    {task}
-                  </span>
-                </li>
-              );
-            })}
-          </ol>
-
-          {selectedModel.readiness === "design_partner" ? (
-            <div className="mt-5 flex gap-3 rounded-xl border border-violet-100 bg-white/75 p-3.5">
-              <HeartPulse className="mt-0.5 h-4 w-4 shrink-0 text-violet-600" />
-              <p className="text-xs leading-5 text-slate-600">
-                We’ll validate one real workflow with you and be clear about
-                anything that isn’t ready yet.
-              </p>
-            </div>
-          ) : null}
-
-          <div className="mt-6 flex items-center gap-2 text-xs text-primary">
-            <ShieldCheck className="h-4 w-4" strokeWidth={1.8} />
-            <span>Nothing moves until you review it.</span>
-          </div>
-        </div>
-        <style>{`
+          <style>{`
           @keyframes onboarding-task-in {
             from { opacity: 0; transform: translateY(7px); }
             to { opacity: 1; transform: translateY(0); }
@@ -258,7 +283,8 @@ export function ClinicIntentBuilder({
           .onboarding-task-in { animation: onboarding-task-in 320ms ease-out backwards; }
           @media (prefers-reduced-motion: reduce) { .onboarding-task-in { animation: none; } }
         `}</style>
-      </aside>
+        </aside>
+      ) : null}
     </div>
   );
 }

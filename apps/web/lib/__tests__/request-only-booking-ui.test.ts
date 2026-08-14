@@ -16,6 +16,10 @@ describe("request-only booking UI", () => {
     "components/onboarding/steps/all-set.tsx",
     "utf8",
   );
+  const firstDayRecommendations = readFileSync(
+    "components/onboarding/first-day-recommendations.tsx",
+    "utf8",
+  );
 
   it("describes every public submission as a request that the clinic confirms", () => {
     expect(publicPage).toContain("Request an appointment");
@@ -147,12 +151,17 @@ describe("request-only booking UI", () => {
     expect(allSetStep).toContain(
       "Start with one real appointment, then decide what deserves a larger rollout.",
     );
-    expect(allSetStep).toContain("Here’s what I think will help first.");
-    expect(allSetStep).toContain("Make getting paid easy");
-    expect(allSetStep).toContain("Get paid faster");
-    expect(allSetStep).not.toContain("Useful for every clinic");
-    expect(allSetStep).toContain("pay by card from their private link");
-    expect(allSetStep).not.toContain("ACH");
+    expect(allSetStep).toContain("FirstDayRecommendations");
+    expect(firstDayRecommendations).toContain(
+      "Here’s what I think will help first.",
+    );
+    expect(firstDayRecommendations).toContain("Make getting paid easy");
+    expect(firstDayRecommendations).toContain("Get paid faster");
+    expect(firstDayRecommendations).not.toContain("Useful for every clinic");
+    expect(firstDayRecommendations).toContain(
+      "pay by card from their private link",
+    );
+    expect(firstDayRecommendations).not.toContain("ACH");
     expect(allSetStep).not.toContain("Your workspace is ready");
   });
 });
