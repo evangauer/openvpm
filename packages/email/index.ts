@@ -9,3 +9,4 @@ export type { TrialEndingEmailProps } from "./src/templates/TrialEndingEmail";
 export type { SetupRecoveryEmailProps } from "./src/templates/SetupRecoveryEmail";
 export type { PaymentReceiptEmailProps } from "./src/templates/PaymentReceiptEmail";
 export type { PaymentFailedEmailProps } from "./src/templates/PaymentFailedEmail";
+export type { FirstClinicWinEmailProps } from "./src/templates/FirstClinicWinEmail";

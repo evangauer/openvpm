@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({
   tx: {},
   insertFunnelEvent: vi.fn(async () => true),
   withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
-    fn({})
+    fn({}),
   ),
   rateLimit: vi.fn(async () => ({
     success: true,
@@ -67,7 +67,7 @@ describe("/api/funnel-event", () => {
 
     expect(response.status).toBe(202);
     expect(response.headers.get("access-control-allow-origin")).toBe(
-      "https://openvpm.com"
+      "https://openvpm.com",
     );
     expect(mocks.rateLimit).toHaveBeenCalledWith({
       key: "funnel-event:ip:203.0.113.10",
@@ -86,7 +86,7 @@ describe("/api/funnel-event", () => {
         metadata: {
           placement: "hero",
         },
-      })
+      }),
     );
   });
 
@@ -108,11 +108,11 @@ describe("/api/funnel-event", () => {
       new Request("https://app.openvpm.com/api/funnel-event", {
         method: "OPTIONS",
         headers: { origin: "https://openvpm.com" },
-      })
+      }),
     );
     expect(response.status).toBe(204);
     expect(response.headers.get("access-control-allow-origin")).toBe(
-      "https://openvpm.com"
+      "https://openvpm.com",
     );
   });
 
@@ -125,13 +125,13 @@ describe("/api/funnel-event", () => {
           path: "/login",
           source: undefined,
         },
-        "https://demo.openvpm.com"
-      )
+        "https://demo.openvpm.com",
+      ),
     );
 
     expect(response.status).toBe(202);
     expect(response.headers.get("access-control-allow-origin")).toBe(
-      "https://demo.openvpm.com"
+      "https://demo.openvpm.com",
     );
     expect(mocks.insertFunnelEvent).toHaveBeenCalledWith(
       {},
@@ -139,7 +139,87 @@ describe("/api/funnel-event", () => {
         eventName: "demo_gate_viewed",
         origin: "https://demo.openvpm.com",
         path: "/login",
-      })
+      }),
+    );
+  });
+
+  it("accepts only coarse onboarding dimensions", async () => {
+    const response = await POST(
+      request({
+        ...validEvent,
+        name: "onboarding_plan_built",
+        path: "/",
+        props: {
+          model: "mobile",
+          goal: "run_visit",
+          step: "workspace",
+          practiceName: "must not persist",
+          clientName: "must not persist",
+        },
+      }),
+    );
+
+    expect(response.status).toBe(202);
+    expect(mocks.insertFunnelEvent).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        eventName: "onboarding_plan_built",
+        metadata: {
+          model: "mobile",
+          goal: "run_visit",
+          step: "workspace",
+        },
+      }),
+    );
+  });
+
+  it("accepts the pre-account and in-app journey transitions", async () => {
+    for (const [name, step] of [
+      ["signup_profile_completed", "profile"],
+      ["onboarding_step_viewed", "basics"],
+      ["onboarding_step_completed", "data"],
+      ["onboarding_completed", "allSet"],
+      ["first_action_selected", "first_action"],
+    ] as const) {
+      mocks.insertFunnelEvent.mockClear();
+      const response = await POST(
+        request({
+          ...validEvent,
+          eventId: crypto.randomUUID(),
+          name,
+          props: { model: "mobile", goal: "run_visit", step },
+        }),
+      );
+
+      expect(response.status).toBe(202);
+      expect(mocks.insertFunnelEvent).toHaveBeenCalledWith(
+        {},
+        expect.objectContaining({
+          eventName: name,
+          metadata: { model: "mobile", goal: "run_visit", step },
+        }),
+      );
+    }
+  });
+
+  it("drops invented onboarding dimensions instead of storing free text", async () => {
+    const response = await POST(
+      request({
+        ...validEvent,
+        name: "onboarding_plan_built",
+        path: "/",
+        props: {
+          model: "clinic name must not persist",
+          goal: "patient detail must not persist",
+          step: "custom free text",
+        },
+      }),
+    );
+
+    expect(response.status).toBe(202);
+    expect(mocks.insertFunnelEvent).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({ metadata: {} }),
     );
   });
 });

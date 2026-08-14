@@ -10,6 +10,10 @@ export interface JourneyFunnelWeek {
   weekStart: string;
   visitors: number;
   demos: number;
+  signupProfileViewed: number;
+  signupProfileCompleted: number;
+  signupAccountViewed: number;
+  signupSubmitted: number;
   registrations: number;
   activated: number;
   paymentMethodCollected: number;
@@ -19,6 +23,10 @@ export interface JourneyFunnelWeek {
 export interface JourneyFunnelTotals {
   visitors: number;
   demos: number;
+  signupProfileViewed: number;
+  signupProfileCompleted: number;
+  signupAccountViewed: number;
+  signupSubmitted: number;
   registrations: number;
   activated: number;
   paymentMethodCollected: number;
@@ -33,6 +41,11 @@ export interface JourneyFunnelTotals {
   repairableAttributionGaps: number;
   clientErrors: number;
   demoRate: number;
+  profileViewRate: number;
+  profileCompletionRate: number;
+  accountViewRate: number;
+  signupSubmitRate: number;
+  signupSuccessRate: number;
   registrationRate: number;
   activationRate: number;
   paymentMethodRate: number;
@@ -49,6 +62,10 @@ interface JourneyRow {
   weekStart: string;
   visitors: number | string;
   demos: number | string;
+  signupProfileViewed: number | string;
+  signupProfileCompleted: number | string;
+  signupAccountViewed: number | string;
+  signupSubmitted: number | string;
   registrations: number | string;
   activated: number | string;
   paymentMethodCollected: number | string;
@@ -69,15 +86,17 @@ function rowsFromExecute<T>(result: unknown): T[] {
 export async function computeJourneyFunnel(
   db: Database,
   days: number,
-  now: Date = new Date()
+  now: Date = new Date(),
 ): Promise<JourneyFunnel> {
   const windowStart = new Date(now.getTime() - days * DAY_MS).toISOString();
   const abandonedBefore = new Date(
-    now.getTime() - ABANDONMENT_GRACE_DAYS * DAY_MS
+    now.getTime() - ABANDONMENT_GRACE_DAYS * DAY_MS,
   ).toISOString();
 
-  const { weeklyResult, unattributedResult, errorsResult } = await withSystem(db, async (tx) => {
-    const weeklyResult = await tx.execute(sql`
+  const { weeklyResult, unattributedResult, errorsResult } = await withSystem(
+    db,
+    async (tx) => {
+      const weeklyResult = await tx.execute(sql`
       with first_touch_all_time as (
         select
           fe.anonymous_id,
@@ -94,16 +113,47 @@ export async function computeJourneyFunnel(
         select anonymous_id, cohort_at
         from first_touch_all_time
         where cohort_at >= ${windowStart}::timestamptz
+      ), signup_event_times as (
+        select
+          ft.anonymous_id,
+          min(fe.created_at) filter (
+            where fe.event_name = 'signup_profile_viewed'
+          ) as signup_profile_viewed_at,
+          min(fe.created_at) filter (
+            where fe.event_name = 'signup_profile_completed'
+          ) as signup_profile_completed_at,
+          min(fe.created_at) filter (
+            where fe.event_name = 'signup_account_viewed'
+          ) as signup_account_viewed_at,
+          min(fe.created_at) filter (
+            where fe.event_name = 'signup_submitted'
+          ) as signup_submitted_at
+        from first_touch ft
+        left join funnel_events fe
+          on fe.anonymous_id = ft.anonymous_id
+         and fe.deleted_at is null
+         and fe.created_at >= ft.cohort_at
+         and fe.event_name in (
+           'signup_profile_viewed', 'signup_profile_completed',
+           'signup_account_viewed', 'signup_submitted'
+         )
+        group by ft.anonymous_id
       ), journeys as (
         select
           ft.anonymous_id,
           ft.cohort_at,
           date_trunc('week', ft.cohort_at) as week_start,
+          signup.signup_profile_viewed_at,
+          signup.signup_profile_completed_at,
+          signup.signup_account_viewed_at,
+          signup.signup_submitted_at,
           demo.demo_at,
           demo.demo_at is not null as tried_demo,
           registration.practice_id,
           registration.registered_at
         from first_touch ft
+        left join signup_event_times signup
+          on signup.anonymous_id = ft.anonymous_id
         left join lateral (
           select min(demo.created_at) as demo_at
           from funnel_events demo
@@ -157,15 +207,25 @@ export async function computeJourneyFunnel(
         to_char(s.week_start, 'YYYY-MM-DD') as "weekStart",
         count(*)::int as "visitors",
         count(*) filter (where s.tried_demo)::int as "demos",
+        count(*) filter (
+          where s.signup_profile_viewed_at is not null
+        )::int as "signupProfileViewed",
+        count(*) filter (
+          where s.signup_profile_completed_at is not null
+        )::int as "signupProfileCompleted",
+        count(*) filter (
+          where s.signup_account_viewed_at is not null
+        )::int as "signupAccountViewed",
+        count(*) filter (
+          where s.signup_submitted_at is not null
+        )::int as "signupSubmitted",
         count(*) filter (where s.practice_id is not null)::int as "registrations",
         count(*) filter (where s.activation_at is not null)::int as "activated",
         count(*) filter (
-          where s.activation_at is not null and s.payment_method_at is not null
+          where s.payment_method_at is not null
         )::int as "paymentMethodCollected",
         count(*) filter (
-          where s.activation_at is not null
-            and s.payment_method_at is not null
-            and s.positive_payment_at is not null
+          where s.positive_payment_at is not null
         )::int as "firstPositivePayment",
         count(*) filter (
           where not s.tried_demo
@@ -202,7 +262,7 @@ export async function computeJourneyFunnel(
       order by s.week_start
     `);
 
-    const unattributedResult = await tx.execute(sql`
+      const unattributedResult = await tx.execute(sql`
       select
         count(*) filter (
           where not (
@@ -231,21 +291,26 @@ export async function computeJourneyFunnel(
         and p.deleted_at is null
         and p.settings ->> 'analyticsExcluded' is distinct from 'true'
     `);
-    const errorsResult = await tx.execute(sql`
+      const errorsResult = await tx.execute(sql`
       select count(*)::int as count
       from funnel_events
       where event_name = 'client_error'
         and deleted_at is null
         and created_at >= ${windowStart}::timestamptz
     `);
-    return { weeklyResult, unattributedResult, errorsResult };
-  });
+      return { weeklyResult, unattributedResult, errorsResult };
+    },
+  );
 
   const rawWeeks = rowsFromExecute<JourneyRow>(weeklyResult);
   const weeks = rawWeeks.map((row) => ({
     weekStart: String(row.weekStart),
     visitors: Number(row.visitors) || 0,
     demos: Number(row.demos) || 0,
+    signupProfileViewed: Number(row.signupProfileViewed) || 0,
+    signupProfileCompleted: Number(row.signupProfileCompleted) || 0,
+    signupAccountViewed: Number(row.signupAccountViewed) || 0,
+    signupSubmitted: Number(row.signupSubmitted) || 0,
     registrations: Number(row.registrations) || 0,
     activated: Number(row.activated) || 0,
     paymentMethodCollected: Number(row.paymentMethodCollected) || 0,
@@ -256,6 +321,10 @@ export async function computeJourneyFunnel(
     rawWeeks.reduce((total, week) => total + (Number(week[key]) || 0), 0);
   const visitors = sum("visitors");
   const demos = sum("demos");
+  const signupProfileViewed = sum("signupProfileViewed");
+  const signupProfileCompleted = sum("signupProfileCompleted");
+  const signupAccountViewed = sum("signupAccountViewed");
+  const signupSubmitted = sum("signupSubmitted");
   const registrations = sum("registrations");
   const activated = sum("activated");
   const paymentMethodCollected = sum("paymentMethodCollected");
@@ -276,6 +345,10 @@ export async function computeJourneyFunnel(
     totals: {
       visitors,
       demos,
+      signupProfileViewed,
+      signupProfileCompleted,
+      signupAccountViewed,
+      signupSubmitted,
       registrations,
       activated,
       paymentMethodCollected,
@@ -291,9 +364,17 @@ export async function computeJourneyFunnel(
       repairableAttributionGaps,
       clientErrors: Number(errorRows[0]?.count) || 0,
       demoRate: funnelRate(demos, visitors),
+      profileViewRate: funnelRate(signupProfileViewed, visitors),
+      profileCompletionRate: funnelRate(
+        signupProfileCompleted,
+        signupProfileViewed,
+      ),
+      accountViewRate: funnelRate(signupAccountViewed, signupProfileCompleted),
+      signupSubmitRate: funnelRate(signupSubmitted, signupAccountViewed),
+      signupSuccessRate: funnelRate(registrations, signupSubmitted),
       registrationRate: funnelRate(registrations, visitors),
       activationRate: funnelRate(activated, registrations),
-      paymentMethodRate: funnelRate(paymentMethodCollected, activated),
+      paymentMethodRate: funnelRate(paymentMethodCollected, registrations),
       positivePaymentRate: funnelRate(
         firstPositivePayment,
         paymentMethodCollected,

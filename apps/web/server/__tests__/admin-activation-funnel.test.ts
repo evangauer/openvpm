@@ -113,6 +113,15 @@ describe("admin activation funnel", () => {
           unknownPaymentMethodPractices: 2,
         },
       ],
+      [
+        {
+          maturedFirstVisits: 8,
+          alreadyConnectedAtVisit: 2,
+          opportunities: 6,
+          convertedWithin24Hours: 2,
+          convertedWithin72Hours: 3,
+        },
+      ],
     );
 
     const result = await caller().activationFunnel({ days: 30 });
@@ -154,8 +163,8 @@ describe("admin activation funnel", () => {
       setupStartRate: 0.7,
       setupCompletionRate: 0.3,
       activationRate: 0.5,
-      firstVisitCompletionRate: 0.6,
-      paymentMethodRate: 1,
+      firstVisitCompletionRate: 0.3,
+      paymentMethodRate: 0.5,
       positivePaymentRate: 0.6,
       currentlyActiveRate: 0.3,
     });
@@ -176,6 +185,15 @@ describe("admin activation funnel", () => {
       unknownJurisdictionSignups: 0,
       legacyBusinessStageRows: 9,
       unknownPaymentMethodPractices: 2,
+    });
+    expect(result.firstVisitBillingConversion).toEqual({
+      maturedFirstVisits: 8,
+      alreadyConnectedAtVisit: 2,
+      opportunities: 6,
+      convertedWithin24Hours: 2,
+      convertedWithin72Hours: 3,
+      conversionWithin24HoursRate: 1 / 3,
+      conversionWithin72HoursRate: 0.5,
     });
     expect(mocks.withSystem).toHaveBeenCalledWith(
       mocks.db,
@@ -287,7 +305,7 @@ describe("admin activation funnel", () => {
     expect(result.totals.signups).toBe(2);
     expect(result.totals.activated).toBe(1);
     expect(result.totals.firstVisitCompleted).toBe(1);
-    expect(result.totals.firstVisitCompletionRate).toBe(1);
+    expect(result.totals.firstVisitCompletionRate).toBe(0.5);
     expect(result.totals.paymentMethodCollected).toBe(1);
     expect(result.totals.activationRate).toBe(0.5);
   });
@@ -308,6 +326,16 @@ describe("admin activation funnel", () => {
     expect(source).toContain("pcm.milestone = 'payment_method_collected'");
     expect(source).toContain("pcm.milestone = 'first_positive_payment'");
     expect(source).toContain("onboardingIntentSelectedAt");
+    expect(source).toContain(
+      "paymentMethodRate: funnelRate(paymentMethodCollected, signups)",
+    );
+    expect(source).toContain(
+      "firstVisitCompletionRate: funnelRate(firstVisitCompleted, signups)",
+    );
+    expect(source).toContain(
+      "frv.first_visit_at <= now() - interval '72 hours'",
+    );
+    expect(source).toContain("payment_method_at > first_visit_at");
 
     // First-visit completion requires a completed, tenant-owned closeout for a
     // real appointment and uses the same post-signup/demo exclusions.

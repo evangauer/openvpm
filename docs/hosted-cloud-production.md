@@ -69,6 +69,10 @@ Set these on the hosted app deployment:
 
 ```env
 HOSTED_BILLING_ENABLED=true
+# Default-off. Set both only after reviewing the verified-admin recipient
+# cohort; the timestamp is the prospective closeout eligibility boundary.
+FIRST_CLINIC_WIN_ENABLED=false
+FIRST_CLINIC_WIN_ROLLOUT_AT=
 NEXTAUTH_URL=https://app.openvpm.com
 NEXT_PUBLIC_APP_URL=https://app.openvpm.com
 NEXTAUTH_SECRET=...
@@ -522,6 +526,7 @@ one global `CRON_HEARTBEAT_URL` to receive every cron completion as POST JSON, o
 set job-specific URLs (`CRON_HEARTBEAT_REMINDERS_URL`,
 `CRON_HEARTBEAT_BACKUP_URL`, `CRON_HEARTBEAT_USAGE_RECONCILE_URL`,
 `CRON_HEARTBEAT_BILLING_LIFECYCLE_URL`,
+`CRON_HEARTBEAT_FIRST_CLINIC_WIN_URL`,
 `CRON_HEARTBEAT_SETUP_RECOVERY_URL`,
 `CRON_HEARTBEAT_WELLNESS_BILLING_URL`,
 `CRON_HEARTBEAT_RATE_LIMIT_CLEANUP_URL`,

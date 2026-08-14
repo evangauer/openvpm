@@ -25,6 +25,34 @@ const ALLOWED_PROP_KEYS = new Set([
   "placement",
   "role",
   "tool",
+  "model",
+  "goal",
+  "step",
+]);
+const ALLOWED_CLINIC_MODELS = new Set([
+  "companion",
+  "mobile",
+  "equine",
+  "specialty",
+  "shelter",
+  "exploring",
+]);
+const ALLOWED_FIRST_GOALS = new Set([
+  "run_visit",
+  "import_records",
+  "start_fresh",
+  "explore_sample",
+  "self_host",
+]);
+const ALLOWED_ONBOARDING_STEPS = new Set([
+  "profile",
+  "account",
+  "workspace",
+  "intent",
+  "basics",
+  "data",
+  "allSet",
+  "first_action",
 ]);
 const UUID_PATH_SEGMENT_RE =
   /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi;
@@ -42,6 +70,18 @@ const eventSchema = z
       "demo_tool_opened",
       "demo_cta_start_clinic",
       "signup_land",
+      "signup_profile_viewed",
+      "signup_profile_completed",
+      "signup_account_viewed",
+      "signup_submitted",
+      "signup_succeeded",
+      "onboarding_model_selected",
+      "onboarding_goal_selected",
+      "onboarding_plan_built",
+      "onboarding_step_viewed",
+      "onboarding_step_completed",
+      "onboarding_completed",
+      "first_action_selected",
     ]),
     source: z
       .string()
@@ -75,7 +115,7 @@ function corsHeaders(origin: string | null): HeadersInit {
 function json(
   request: Request,
   body: Record<string, unknown>,
-  init?: ResponseInit
+  init?: ResponseInit,
 ) {
   return NextResponse.json(body, {
     ...init,
@@ -87,12 +127,21 @@ function json(
 }
 
 function cleanProps(
-  props: Record<string, string | number | boolean> | undefined
+  props: Record<string, string | number | boolean> | undefined,
 ): Record<string, string | number | boolean> {
   if (!props) return {};
   const entries = Object.entries(props)
     .filter(([key, value]) => {
       if (!ALLOWED_PROP_KEYS.has(key)) return false;
+      if (key === "model") {
+        return typeof value === "string" && ALLOWED_CLINIC_MODELS.has(value);
+      }
+      if (key === "goal") {
+        return typeof value === "string" && ALLOWED_FIRST_GOALS.has(value);
+      }
+      if (key === "step") {
+        return typeof value === "string" && ALLOWED_ONBOARDING_STEPS.has(value);
+      }
       return typeof value !== "string" || value.length <= 200;
     })
     .slice(0, 20);
@@ -134,10 +183,14 @@ export async function POST(request: Request) {
     return json(request, { ok: false }, { status: 429 });
   }
   if (!limit.success) {
-    return json(request, { ok: false }, {
-      status: 429,
-      headers: rateLimitResponseHeaders(EVENT_LIMIT, limit),
-    });
+    return json(
+      request,
+      { ok: false },
+      {
+        status: 429,
+        headers: rateLimitResponseHeaders(EVENT_LIMIT, limit),
+      },
+    );
   }
 
   const body = await readJsonRequestBody(request);
@@ -145,7 +198,7 @@ export async function POST(request: Request) {
     return json(
       request,
       { ok: false },
-      { status: body.reason === "too_large" ? 413 : 400 }
+      { status: body.reason === "too_large" ? 413 : 400 },
     );
   }
   const parsed = eventSchema.safeParse(body.data);
@@ -163,7 +216,7 @@ export async function POST(request: Request) {
         path: cleanPath(parsed.data.path),
         origin: requestOrigin,
         metadata: cleanProps(parsed.data.props),
-      })
+      }),
     );
     return json(request, { ok: true }, { status: 202 });
   } catch (error) {

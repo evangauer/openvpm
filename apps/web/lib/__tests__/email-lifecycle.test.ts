@@ -37,6 +37,7 @@ const mocks = vi.hoisted(() => {
     updateSet,
     alertOps: vi.fn(async () => undefined),
     marketingEmailEnabledForRecipient: vi.fn(async () => true),
+    lockAndCheckMarketingEmailEnabled: vi.fn(async () => true),
     practiceAllowsExternalSideEffects: vi.fn(async () => true),
     lockPracticeForExternalSideEffects: vi.fn(async () => true),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
@@ -59,6 +60,11 @@ vi.mock("@/lib/alerts", () => ({
 
 vi.mock("@/lib/platform-email-preferences", () => ({
   marketingEmailEnabledForRecipient: mocks.marketingEmailEnabledForRecipient,
+  lockAndCheckMarketingEmailEnabled: mocks.lockAndCheckMarketingEmailEnabled,
+}));
+
+vi.mock("@/lib/email-preferences", () => ({
+  emailPreferenceRecipientHash: vi.fn(() => "a".repeat(64)),
 }));
 
 vi.mock("@/lib/recovery-hold", () => ({
@@ -83,6 +89,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-06-28T12:00:00Z"));
   mocks.marketingEmailEnabledForRecipient.mockResolvedValue(true);
+  mocks.lockAndCheckMarketingEmailEnabled.mockResolvedValue(true);
   mocks.practiceAllowsExternalSideEffects.mockResolvedValue(true);
   mocks.lockPracticeForExternalSideEffects.mockResolvedValue(true);
 });
@@ -197,7 +204,28 @@ describe("sendLifecycleEmail", () => {
     ).resolves.toEqual({ sent: true, deduped: false });
 
     expect(mocks.insertValues).toHaveBeenCalledTimes(1);
+    expect(mocks.lockAndCheckMarketingEmailEnabled).toHaveBeenCalledWith(
+      mocks.db,
+      "owner@example.com",
+    );
     expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops a safe claim when the recipient opts out before provider send", async () => {
+    mocks.insertResults.push([{ id: "comm-consent-race" }]);
+    mocks.lockAndCheckMarketingEmailEnabled.mockResolvedValueOnce(false);
+    const send = vi.fn(async () => ({ success: true, id: "email-1" }));
+
+    await expect(
+      sendLifecycleEmail({ ...BASE_OPTS, category: "marketing", send }),
+    ).resolves.toEqual({
+      sent: false,
+      deduped: false,
+      suppressed: true,
+    });
+
+    expect(send).not.toHaveBeenCalled();
+    expect(mocks.deleteWhere).toHaveBeenCalledTimes(1);
   });
 
   it("fails closed when optional-email preference lookup fails", async () => {
@@ -293,7 +321,10 @@ describe("sendLifecycleEmail", () => {
 
     expect(mocks.alertOps).toHaveBeenCalledWith(
       "Lifecycle email failed",
-      "trial-ending \u2192 owner@example.com: provider down",
+      `trial-ending practice=${PRACTICE_ID} recipient=${"a".repeat(12)}: provider down`,
+    );
+    expect(mocks.alertOps.mock.calls.flat().join(" ")).not.toContain(
+      "owner@example.com",
     );
     expect(mocks.deleteWhere).not.toHaveBeenCalled();
     expect(mocks.updateSet).toHaveBeenCalledWith({ status: "failed" });

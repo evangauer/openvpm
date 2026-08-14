@@ -15,8 +15,7 @@ import { trialCalendarDaysLeft } from "@/lib/billing/trial-days";
  */
 export function TrialBadge() {
   const { data: session, status } = useSession();
-  const isAdmin =
-    status === "authenticated" && session?.user?.role === "admin";
+  const isAdmin = status === "authenticated" && session?.user?.role === "admin";
 
   const { data, isLoading, error } = trpc.subscription.get.useQuery(undefined, {
     enabled: isAdmin,
@@ -55,6 +54,30 @@ export function TrialBadge() {
     return null;
   }
 
+  if (data.billingStatus === "past_due") {
+    return (
+      <Link
+        href="/settings?tab=billing"
+        className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-medium text-amber-800 transition-colors hover:bg-amber-100"
+      >
+        <CreditCard className="h-3.5 w-3.5" />
+        Payment retrying · Review billing
+      </Link>
+    );
+  }
+
+  if (data.billingStatus === "unpaid") {
+    return (
+      <Link
+        href="/settings?tab=billing"
+        className="inline-flex items-center gap-1.5 rounded-full border border-destructive/30 bg-destructive/10 px-3 py-1 text-xs font-medium text-destructive transition-colors hover:bg-destructive/20"
+      >
+        <CreditCard className="h-3.5 w-3.5" />
+        Payment unpaid · Read only
+      </Link>
+    );
+  }
+
   // A Stripe subscription can legitimately remain `trialing` after Checkout
   // while the saved card waits for the free trial to end. Never offer another
   // Checkout in that state; it could create a duplicate subscription.
@@ -65,15 +88,14 @@ export function TrialBadge() {
         className="inline-flex items-center gap-1.5 rounded-full border border-teal-200 bg-teal-50 px-3 py-1 text-xs font-medium text-teal-800 transition-colors hover:bg-teal-100"
       >
         <CreditCard className="h-3.5 w-3.5" />
-        Card on file · Manage billing
+        Billing connected · Manage billing
       </Link>
     );
   }
 
   const trialing = data.billingStatus === "trialing" && data.trialEndsAt;
   if (trialing) {
-    const days =
-      trialCalendarDaysLeft(data.trialEndsAt, data.timezone) ?? 0;
+    const days = trialCalendarDaysLeft(data.trialEndsAt, data.timezone) ?? 0;
     const urgent = days <= 3;
     return (
       <Link
@@ -83,11 +105,13 @@ export function TrialBadge() {
           "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors",
           urgent
             ? "border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100"
-            : "border-teal-200 bg-teal-50 text-teal-800 hover:bg-teal-100"
+            : "border-teal-200 bg-teal-50 text-teal-800 hover:bg-teal-100",
         )}
       >
         <Clock className="h-3.5 w-3.5" />
-        {days === 0 ? "Trial ends today" : `${days} day${days === 1 ? "" : "s"} left in trial`}
+        {days === 0
+          ? "Trial ends today"
+          : `${days} day${days === 1 ? "" : "s"} left in trial`}
         <span className="font-semibold">· Activate account</span>
       </Link>
     );

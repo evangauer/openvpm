@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { and, eq, gte, isNotNull, isNull, lte } from "drizzle-orm";
-import { db } from "@openpims/db/client";
+import { and, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { db, type Database } from "@openpims/db/client";
 import { practices } from "@openpims/db";
 import {
   billingEnforced,
@@ -65,6 +65,13 @@ export async function GET(request: Request) {
           email: practices.email,
           timezone: practices.timezone,
           trialEndsAt: practices.trialEndsAt,
+          stripeSubscriptionId: practices.stripeSubscriptionId,
+          billingSetupRecorded: sql<boolean>`exists (
+            select 1
+            from practice_conversion_milestones pcm
+            where pcm.practice_id = ${practices.id}
+              and pcm.milestone = 'payment_method_collected'
+          )`,
         })
         .from(practices)
         .where(
@@ -99,17 +106,38 @@ export async function GET(request: Request) {
         continue;
       }
 
+      const billingConnected =
+        Boolean(practice.stripeSubscriptionId) &&
+        practice.billingSetupRecorded === true;
+      const needsBilling =
+        !practice.stripeSubscriptionId &&
+        practice.billingSetupRecorded !== true;
+      if (!billingConnected && !needsBilling) {
+        // Conflicting local evidence is an operator reconciliation case. Do
+        // not guess whether the clinic needs a card or is already connected.
+        skipped++;
+        continue;
+      }
+
+      const dedupeKey = [
+        "lc:trial-ending",
+        practice.id,
+        formatDateKey(trialEndsAt, practice.timezone ?? undefined),
+        `t-${daysLeft}`,
+      ].join(":");
       const result = await sendOptionalPlatformEmail({
         practiceId: practice.id,
         to,
         emailType: "trial-ending",
-        dedupeKey: [
-          "lc:trial-ending",
-          practice.id,
-          formatDateKey(trialEndsAt, practice.timezone ?? undefined),
-          `t-${daysLeft}`,
-        ].join(":"),
+        dedupeKey,
         retryOnFail: true,
+        stillEligible: (tx) =>
+          trialReminderStillEligible(tx, {
+            practiceId: practice.id,
+            to,
+            trialEndsAt,
+            billingConnected,
+          }),
         send: () =>
           sendTrialEndingEmail({
             to,
@@ -120,6 +148,8 @@ export async function GET(request: Request) {
               practice.timezone ?? undefined,
             ),
             monthlyPrice: `$${CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD}`,
+            billingConnected,
+            idempotencyKey: dedupeKey,
           }),
       });
 
@@ -162,6 +192,52 @@ export async function GET(request: Request) {
       { status: 500 },
     );
   }
+}
+
+async function trialReminderStillEligible(
+  tx: Database,
+  input: {
+    practiceId: string;
+    to: string;
+    trialEndsAt: Date;
+    billingConnected: boolean;
+  },
+): Promise<boolean> {
+  const [practice] = await tx
+    .select({
+      email: practices.email,
+      stripeSubscriptionId: practices.stripeSubscriptionId,
+      billingStatus: practices.billingStatus,
+      trialEndsAt: practices.trialEndsAt,
+      billingSetupRecorded: sql<boolean>`exists (
+        select 1
+        from practice_conversion_milestones pcm
+        where pcm.practice_id = ${practices.id}
+          and pcm.milestone = 'payment_method_collected'
+      )`,
+    })
+    .from(practices)
+    .where(
+      and(
+        eq(practices.id, input.practiceId),
+        isNull(practices.deletedAt),
+        eq(practices.recoveryHold, false),
+      ),
+    )
+    .limit(1);
+  if (
+    !practice ||
+    practice.billingStatus !== "trialing" ||
+    !practice.trialEndsAt ||
+    new Date(practice.trialEndsAt).getTime() !== input.trialEndsAt.getTime() ||
+    billingContactEmail(practice.email) !== input.to
+  ) {
+    return false;
+  }
+  return input.billingConnected
+    ? Boolean(practice.stripeSubscriptionId) &&
+        practice.billingSetupRecorded === true
+    : !practice.stripeSubscriptionId && practice.billingSetupRecorded !== true;
 }
 
 function calendarDaysUntil(end: Date, now: Date, timeZone?: string): number {

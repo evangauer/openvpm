@@ -5,7 +5,9 @@ import { PgDialect } from "drizzle-orm/pg-core";
 
 const mocks = vi.hoisted(() => {
   const executeResults: unknown[][] = [];
-  const execute = vi.fn(async (_query: unknown) => executeResults.shift() ?? []);
+  const execute = vi.fn(
+    async (_query: unknown) => executeResults.shift() ?? [],
+  );
   const db = { execute };
   return {
     db,
@@ -13,7 +15,7 @@ const mocks = vi.hoisted(() => {
     executeResults,
     withSystem: vi.fn(
       async (database: unknown, fn: (tx: unknown) => Promise<unknown>) =>
-        fn(database)
+        fn(database),
     ),
   };
 });
@@ -35,6 +37,10 @@ describe("computeJourneyFunnel", () => {
           weekStart: "2026-07-27",
           visitors: "20",
           demos: "8",
+          signupProfileViewed: "6",
+          signupProfileCompleted: "5",
+          signupAccountViewed: "5",
+          signupSubmitted: "5",
           registrations: "5",
           activated: "2",
           paymentMethodCollected: "1",
@@ -47,7 +53,7 @@ describe("computeJourneyFunnel", () => {
         },
       ],
       [{ historicalUnknown: "2", repairableGap: "1" }],
-      [{ count: "4" }]
+      [{ count: "4" }],
     );
 
     const result = await computeJourneyFunnel(mocks.db as never, 30);
@@ -57,6 +63,10 @@ describe("computeJourneyFunnel", () => {
         weekStart: "2026-07-27",
         visitors: 20,
         demos: 8,
+        signupProfileViewed: 6,
+        signupProfileCompleted: 5,
+        signupAccountViewed: 5,
+        signupSubmitted: 5,
         registrations: 5,
         activated: 2,
         paymentMethodCollected: 1,
@@ -66,6 +76,10 @@ describe("computeJourneyFunnel", () => {
     expect(result.totals).toMatchObject({
       visitors: 20,
       demos: 8,
+      signupProfileViewed: 6,
+      signupProfileCompleted: 5,
+      signupAccountViewed: 5,
+      signupSubmitted: 5,
       registrations: 5,
       activated: 2,
       paymentMethodCollected: 1,
@@ -80,9 +94,14 @@ describe("computeJourneyFunnel", () => {
       repairableAttributionGaps: 1,
       clientErrors: 4,
       demoRate: 0.4,
+      profileViewRate: 0.3,
+      profileCompletionRate: 5 / 6,
+      accountViewRate: 1,
+      signupSubmitRate: 1,
+      signupSuccessRate: 1,
       registrationRate: 0.25,
       activationRate: 0.4,
-      paymentMethodRate: 0.5,
+      paymentMethodRate: 0.2,
       positivePaymentRate: 1,
     });
     expect(mocks.execute).toHaveBeenCalledTimes(3);
@@ -101,12 +120,21 @@ describe("computeJourneyFunnel", () => {
     expect(result.totals).toMatchObject({
       visitors: 0,
       demos: 0,
+      signupProfileViewed: 0,
+      signupProfileCompleted: 0,
+      signupAccountViewed: 0,
+      signupSubmitted: 0,
       registrations: 0,
       activated: 0,
       paymentMethodCollected: 0,
       firstPositivePayment: 0,
       clientErrors: 0,
       demoRate: 0,
+      profileViewRate: 0,
+      profileCompletionRate: 0,
+      accountViewRate: 0,
+      signupSubmitRate: 0,
+      signupSuccessRate: 0,
       registrationRate: 0,
       activationRate: 0,
       paymentMethodRate: 0,
@@ -119,25 +147,32 @@ describe("computeJourneyFunnel", () => {
 
     expect(source).toContain("export const ABANDONMENT_GRACE_DAYS = 7");
     expect(source).toContain("with first_touch_all_time as (");
-    expect(source).toMatch(
-      /first_touch_all_time[\s\S]*'demo_gate_submitted'/,
-    );
+    expect(source).toMatch(/first_touch_all_time[\s\S]*'demo_gate_submitted'/);
     expect(source).not.toContain(
       "fe.created_at >= ${windowStart}::timestamptz",
     );
-    expect(source).toContain(
-      "where cohort_at >= ${windowStart}::timestamptz",
-    );
+    expect(source).toContain("where cohort_at >= ${windowStart}::timestamptz");
     expect(source).toContain("select min(demo.created_at) as demo_at");
     expect(source).toContain("demo.created_at >= ft.cohort_at");
     expect(source).toContain("s.cohort_at < ${abandonedBefore}::timestamptz");
     expect(source).toContain("s.demo_at < ${abandonedBefore}::timestamptz");
-    expect(source).toContain("s.registered_at < ${abandonedBefore}::timestamptz");
-    expect(source).toContain("s.activation_at < ${abandonedBefore}::timestamptz");
-    expect(source).toContain("s.payment_method_at < ${abandonedBefore}::timestamptz");
+    expect(source).toContain(
+      "s.registered_at < ${abandonedBefore}::timestamptz",
+    );
+    expect(source).toContain(
+      "s.activation_at < ${abandonedBefore}::timestamptz",
+    );
+    expect(source).toContain(
+      "s.payment_method_at < ${abandonedBefore}::timestamptz",
+    );
     expect(source).toContain("s.stripe_subscription_id is not null");
     expect(source).toContain("s.billing_status = 'trialing'");
-    expect(source).toContain("s.trial_ends_at > ${now.toISOString()}::timestamptz");
+    expect(source).toContain(
+      "s.trial_ends_at > ${now.toISOString()}::timestamptz",
+    );
+    expect(source).toContain(
+      "paymentMethodRate: funnelRate(paymentMethodCollected, registrations)",
+    );
   });
 
   it("keeps the client-error aggregate as one valid select statement", () => {
@@ -147,7 +182,9 @@ describe("computeJourneyFunnel", () => {
     )?.[1];
 
     expect(errorQuery).toBeDefined();
-    expect(errorQuery?.match(/select count\(\*\)::int as count/g)).toHaveLength(1);
+    expect(errorQuery?.match(/select count\(\*\)::int as count/g)).toHaveLength(
+      1,
+    );
     expect(errorQuery).toMatch(
       /select count\(\*\)::int as count\s+from funnel_events\s+where event_name = 'client_error'/,
     );

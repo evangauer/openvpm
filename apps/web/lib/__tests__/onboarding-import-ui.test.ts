@@ -50,7 +50,9 @@ describe("onboarding import UI", () => {
     expect(source).toContain(
       "History attaches only to a safely matched real patient",
     );
-    expect(journeyPlanSource).toContain('title: "Bring your clinic records."');
+    expect(journeyPlanSource).toContain(
+      'title: "Bring your history with confidence."',
+    );
     expect(journeyPlanSource).not.toContain(
       'title: "Add your real clients and pets."',
     );

@@ -302,6 +302,29 @@ describe("auth router input validation", () => {
     await expect(
       caller.register({
         email: "owner@example.com",
+        password: "password123",
+        practiceName: "Neighborhood Veterinary",
+        country: "US",
+        onboardingDraft: { clinicModel: "mobile" },
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    await expect(
+      caller.register({
+        email: "owner@example.com",
+        password: "password123",
+        practiceName: "Neighborhood Veterinary",
+        country: "US",
+        onboardingDraft: {
+          clinicModel: "companion",
+          firstGoal: "self_host",
+        },
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    await expect(
+      caller.register({
+        email: "owner@example.com",
         password: "p".repeat(129),
         practiceName: "Neighborhood Veterinary",
         country: "US",
@@ -380,6 +403,8 @@ describe("auth router input validation", () => {
         onboardingDraft: {
           logoName: "  Neighborhood  ",
           brandColor: "#AABBCC",
+          clinicModel: "mobile",
+          firstGoal: "run_visit",
           teamMembers: [
             {
               name: "  Tech One  ",
@@ -434,6 +459,15 @@ describe("auth router input validation", () => {
           jurisdictionCountry: "IE",
           jurisdictionSelectedAt: expect.any(String),
           jurisdictionSource: "registration",
+          onboardingIntent: "alongside",
+          onboardingIntentSelectedAt: expect.any(String),
+          clinicModel: "mobile",
+          clinicModelSelectedAt: expect.any(String),
+          firstGoal: "run_visit",
+          firstGoalSelectedAt: expect.any(String),
+          journeyStepId: "basics",
+          journeyLastProgressAt: expect.any(String),
+          journeyDismissed: false,
         },
         acquisition: {
           source: "homepage_hero",
@@ -444,6 +478,8 @@ describe("auth router input validation", () => {
         onboardingDraft: {
           logoName: "Neighborhood",
           brandColor: "#aabbcc",
+          clinicModel: "mobile",
+          firstGoal: "run_visit",
           teamMembers: [
             {
               name: "Tech One",

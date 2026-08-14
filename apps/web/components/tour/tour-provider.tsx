@@ -113,6 +113,10 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
         ...prev,
         onboardingIntent: prev?.onboardingIntent ?? null,
         onboardingIntentSelectedAt: prev?.onboardingIntentSelectedAt ?? null,
+        clinicModel: prev?.clinicModel ?? null,
+        clinicModelSelectedAt: prev?.clinicModelSelectedAt ?? null,
+        firstGoal: prev?.firstGoal ?? null,
+        firstGoalSelectedAt: prev?.firstGoalSelectedAt ?? null,
         migrationHasCommittedChanges:
           prev?.migrationHasCommittedChanges ?? false,
         migrationLastCommittedAt: prev?.migrationLastCommittedAt ?? null,

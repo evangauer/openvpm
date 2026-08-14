@@ -50,7 +50,7 @@ describe("viewer read-only guard", () => {
   it("blocks mutations for a viewer with FORBIDDEN (before the resolver)", async () => {
     const caller = callerFor("viewer");
     await expect(
-      caller.clients.create({ firstName: "A", lastName: "B" })
+      caller.clients.create({ firstName: "A", lastName: "B" }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
@@ -60,7 +60,7 @@ describe("viewer read-only guard", () => {
     expect(res.drugs.length).toBeGreaterThan(0);
   });
 
-  it("blocks hosted lapsed accounts from protected mutations before resolver writes", async () => {
+  it("blocks hosted terminal-unpaid accounts from protected mutations before resolver writes", async () => {
     vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
     // The read-only guard now runs inside withTenant (a transaction) so the
     // practice lookup is RLS-scoped. The tx exposes execute() (for the
@@ -73,7 +73,7 @@ describe("viewer read-only guard", () => {
             limit: async () => [
               {
                 tier: "cloud",
-                billingStatus: "past_due",
+                billingStatus: "unpaid",
                 trialEndsAt: null,
               },
             ],
@@ -87,7 +87,7 @@ describe("viewer read-only guard", () => {
     };
     const caller = callerFor("front_desk", db);
     await expect(
-      caller.clients.create({ firstName: "A", lastName: "B" })
+      caller.clients.create({ firstName: "A", lastName: "B" }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
@@ -110,7 +110,7 @@ describe("viewer read-only guard", () => {
     const caller = callerFor("front_desk", db);
 
     await expect(
-      caller.clients.create({ firstName: "A", lastName: "B" })
+      caller.clients.create({ firstName: "A", lastName: "B" }),
     ).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
@@ -168,7 +168,7 @@ describe("viewer read-only guard", () => {
         contactEmail: "owner@example.com",
         confirmExportDownloaded: true,
         confirmManualReview: true,
-      })
+      }),
     ).resolves.toMatchObject({
       status: "requested",
       contactEmail: "owner@example.com",

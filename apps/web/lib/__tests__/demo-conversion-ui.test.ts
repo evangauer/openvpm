@@ -9,7 +9,7 @@ describe("demo conversion bridge UI", () => {
   const bar = readFileSync("components/demo/demo-conversion-bar.tsx", "utf8");
   const tracker = readFileSync(
     "components/demo/demo-funnel-tracker.tsx",
-    "utf8"
+    "utf8",
   );
 
   it("instruments the email gate and start-clinic CTA", () => {
@@ -17,7 +17,7 @@ describe("demo conversion bridge UI", () => {
     expect(login).toContain("FUNNEL_EVENTS.demoGateViewed");
     expect(login).toContain("anonymousId: visitorId ?? getFunnelVisitorId()");
     expect(login).not.toContain(
-      "trackFunnelEvent(FUNNEL_EVENTS.demoGateSubmitted)"
+      "trackFunnelEvent(FUNNEL_EVENTS.demoGateSubmitted)",
     );
     expect(demoAccessRoute).toContain('name: "demo_gate_submitted"');
     expect(demoAccessRoute).toContain("await recordAcceptedDemoGate");
@@ -36,6 +36,24 @@ describe("demo conversion bridge UI", () => {
     expect(register).toContain("acquisitionWithFunnelVisitorId");
     expect(register).toContain("getFunnelVisitorId()");
     expect(register).toContain("acquisition: registrationAcquisition");
+  });
+
+  it("continues from clinic intent into account creation without repeating the profile", () => {
+    expect(register).toContain("A platform truly built for your clinic.");
+    expect(register).toContain("<ClinicIntentBuilder");
+    expect(register).toContain(
+      'type RegistrationStage = "profile" | "account"',
+    );
+    expect(register).toContain("REGISTRATION_PROFILE_STORAGE_KEY");
+    expect(register).toContain("if (!profileRestored) return;");
+    expect(register).toContain("setProfileRestored(true)");
+    expect(register).toContain("onboardingDraft: { clinicModel, firstGoal }");
+    expect(register).toContain("FUNNEL_EVENTS.signupProfileCompleted");
+    expect(register).toContain("FUNNEL_EVENTS.signupSubmitted");
+    expect(register).toContain("FUNNEL_EVENTS.signupSucceeded");
+    expect(register).toContain(
+      "No patient or client information belongs here.",
+    );
   });
 
   it("mounts the demo bar and path tracker in the dashboard shell", () => {

@@ -135,6 +135,7 @@ function funnelSection(title: string, funnel: ActivationFunnel): string {
   </tr>
 </table>
 <p style="margin:8px 0 0;color:#374151;font-size:13px;line-height:1.5;"><strong>Jurisdiction cohorts:</strong> US ${funnel.jurisdictionCohorts.confirmedUs.signups} signup(s) → ${funnel.jurisdictionCohorts.confirmedUs.activated} activated (${pct(funnel.jurisdictionCohorts.confirmedUs.activationRate)}) · non-US ${funnel.jurisdictionCohorts.confirmedNonUs.signups} → ${funnel.jurisdictionCohorts.confirmedNonUs.activated} (${pct(funnel.jurisdictionCohorts.confirmedNonUs.activationRate)}) · historical unknown ${funnel.jurisdictionCohorts.unknown.signups} → ${funnel.jurisdictionCohorts.unknown.activated} (${pct(funnel.jurisdictionCohorts.unknown.activationRate)}).</p>
+<p style="margin:8px 0 0;color:#374151;font-size:13px;line-height:1.5;"><strong>First real visit → billing setup:</strong> ${funnel.firstVisitBillingConversion.convertedWithin24Hours}/${funnel.firstVisitBillingConversion.opportunities} within 24h (${pct(funnel.firstVisitBillingConversion.conversionWithin24HoursRate)}) · ${funnel.firstVisitBillingConversion.convertedWithin72Hours}/${funnel.firstVisitBillingConversion.opportunities} within 72h (${pct(funnel.firstVisitBillingConversion.conversionWithin72HoursRate)}) · ${funnel.firstVisitBillingConversion.alreadyConnectedAtVisit} already connected at first visit. Only first visits at least 72 hours old are included.</p>
 <p style="margin:8px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Evidence quality: ${funnel.dataQuality.legacyBusinessStageRows} excluded legacy stage row(s) · ${funnel.dataQuality.unknownPaymentMethodPractices} clinic(s) with unknown payment-method evidence · ${funnel.dataQuality.unknownPositivePaymentPractices} clinic(s) with unknown positive-payment evidence · ${funnel.dataQuality.missingRegistrationMilestones} missing registration projection(s) · ${funnel.dataQuality.missingActivationMilestones} missing activation projection(s) · ${funnel.dataQuality.unprojectedStripeEvidence} unprojected Stripe evidence row(s) · ${funnel.dataQuality.unmappedStripeEvidence} unmapped Stripe evidence row(s). Unknown is not zero and receives no synthetic date.</p>`;
 }
 
@@ -142,6 +143,10 @@ function journeySection(title: string, funnel: JourneyFunnel): string {
   const {
     visitors,
     demos,
+    signupProfileViewed,
+    signupProfileCompleted,
+    signupAccountViewed,
+    signupSubmitted,
     registrations,
     activated,
     paymentMethodCollected,
@@ -171,6 +176,7 @@ function journeySection(title: string, funnel: JourneyFunnel): string {
     <td style="padding:2px 0;">${firstPositivePayment} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(positivePaymentRate)}</span></td>
   </tr>
 </table>
+<p style="margin:8px 0 0;color:#374151;font-size:13px;line-height:1.5;"><strong>Signup path:</strong> ${signupProfileViewed} plan start(s) → ${signupProfileCompleted} plan(s) built → ${signupAccountViewed} account form(s) → ${signupSubmitted} submission(s) → ${registrations} registered.</p>
 <p style="margin:8px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Left before trying: ${funnel.totals.leftBeforeTrying} · Demo without signup: ${funnel.totals.demoAbandoned} · Signup without activation: ${funnel.totals.registrationAbandoned} · Activated without payment method: ${funnel.totals.activationAbandoned} · Payment method without positive payment after trial: ${funnel.totals.paymentAbandoned} · Client errors: ${funnel.totals.clientErrors}</p>
 <p style="margin:4px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Attribution quality: ${funnel.totals.historicalUnattributedRegistrations} historical/unknown registration(s) · ${funnel.totals.repairableAttributionGaps} captured-ID telemetry gap(s).</p>`;
 }
@@ -221,7 +227,7 @@ function digestHtml(
               ${funnelSection("Past 7 days", week)}
               ${funnelSection("Past 30 days", month)}
               ${pilotSection(pilots)}
-              <p style="margin:24px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Activated = added a real client and booked a real visit. First visit done = completed the clinical and billing closeout; its rate is measured from activated clinics. Payment method = signed subscription Checkout completion with collection required. First positive payment = signed positive subscription invoice payment. Currently active is current billing state, not a historical milestone. Legacy business-stage rows are excluded; demo data never counts.</p>
+              <p style="margin:24px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Activated = added a real client and booked a real visit. First visit done = completed the clinical and billing closeout; its rate is measured from signups. Payment method = signed subscription Checkout completion with collection required and is also measured from signups because billing can be connected before activation. First positive payment = signed positive subscription invoice payment. Currently active is current billing state, not a historical milestone. Legacy business-stage rows are excluded; demo data never counts.</p>
             </td>
           </tr>
           <tr>

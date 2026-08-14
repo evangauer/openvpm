@@ -15,6 +15,18 @@ export const FUNNEL_EVENTS = {
   demoToolOpened: "demo_tool_opened",
   demoCtaStartClinic: "demo_cta_start_clinic",
   signupLand: "signup_land",
+  signupProfileViewed: "signup_profile_viewed",
+  signupProfileCompleted: "signup_profile_completed",
+  signupAccountViewed: "signup_account_viewed",
+  signupSubmitted: "signup_submitted",
+  signupSucceeded: "signup_succeeded",
+  onboardingModelSelected: "onboarding_model_selected",
+  onboardingGoalSelected: "onboarding_goal_selected",
+  onboardingPlanBuilt: "onboarding_plan_built",
+  onboardingStepViewed: "onboarding_step_viewed",
+  onboardingStepCompleted: "onboarding_step_completed",
+  onboardingCompleted: "onboarding_completed",
+  firstActionSelected: "first_action_selected",
 } as const;
 
 export type FunnelEventName =

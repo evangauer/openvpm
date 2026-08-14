@@ -17,6 +17,10 @@ import {
   PaymentFailedEmail,
   type PaymentFailedEmailProps,
 } from "./templates/PaymentFailedEmail";
+import {
+  FirstClinicWinEmail,
+  type FirstClinicWinEmailProps,
+} from "./templates/FirstClinicWinEmail";
 
 export interface RenderedEmail {
   subject: string;
@@ -69,5 +73,14 @@ export async function renderPaymentFailedEmail(
   return {
     subject: "Action needed: your OpenVPM payment didn't go through",
     html: await render(<PaymentFailedEmail {...p} />),
+  };
+}
+
+export async function renderFirstClinicWinEmail(
+  p: FirstClinicWinEmailProps,
+): Promise<RenderedEmail> {
+  return {
+    subject: "Your first real OpenVPM visit is complete",
+    html: await render(<FirstClinicWinEmail {...p} />),
   };
 }

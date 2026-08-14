@@ -81,6 +81,12 @@ import {
   ONBOARDING_INTENTS,
   type OnboardingIntent,
 } from "@/lib/onboarding/intent";
+import {
+  CLINIC_MODELS,
+  FIRST_GOALS,
+  type ClinicModel,
+  type FirstGoal,
+} from "@/lib/onboarding/clinic-profile";
 import { isValidMigrationSource } from "@/lib/import/sources";
 import { parseBookingPageConfig } from "@/lib/booking/page-config";
 import { takeAppointmentSchedulingLock } from "@/lib/scheduling/location";
@@ -257,6 +263,8 @@ const journeyStepIdInput = z
   .max(64, "Journey step must be at most 64 characters")
   .nullish();
 const onboardingIntentInput = z.enum(ONBOARDING_INTENTS);
+const clinicModelInput = z.enum(CLINIC_MODELS);
+const firstGoalInput = z.enum(FIRST_GOALS);
 const migrationHelpSourceInput = z
   .string()
   .trim()
@@ -303,18 +311,47 @@ function settingsAndOnboardingStateMergePatch(
  * first time setup actually began. That timestamp is cohort evidence, not a
  * last-updated field.
  */
-function onboardingIntentStatePatch(intent: OnboardingIntent, now: string) {
+function onboardingProfileStatePatch(input: {
+  intent: OnboardingIntent;
+  clinicModel?: ClinicModel;
+  firstGoal?: FirstGoal;
+  now: string;
+}) {
   return sql`jsonb_set(
     coalesce(${practices.settings}, '{}'::jsonb),
     '{onboardingState}',
-    coalesce(${practices.settings}->'onboardingState', '{}'::jsonb) ||
+      coalesce(${practices.settings}->'onboardingState', '{}'::jsonb) ||
       jsonb_build_object(
-        'onboardingIntent', ${intent},
+        'onboardingIntent', ${input.intent}::text,
         'onboardingIntentSelectedAt', coalesce(
           nullif(${practices.settings}->'onboardingState'->>'onboardingIntentSelectedAt', ''),
-          ${now}
+          ${input.now}::text
         ),
-        'journeyLastProgressAt', ${now},
+        'clinicModel', coalesce(
+          ${input.clinicModel ?? null}::text,
+          nullif(${practices.settings}->'onboardingState'->>'clinicModel', '')
+        ),
+        'clinicModelSelectedAt', case
+          when ${input.clinicModel ?? null}::text is null then
+            nullif(${practices.settings}->'onboardingState'->>'clinicModelSelectedAt', '')
+          else coalesce(
+            nullif(${practices.settings}->'onboardingState'->>'clinicModelSelectedAt', ''),
+            ${input.now}::text
+          )
+        end,
+        'firstGoal', coalesce(
+          ${input.firstGoal ?? null}::text,
+          nullif(${practices.settings}->'onboardingState'->>'firstGoal', '')
+        ),
+        'firstGoalSelectedAt', case
+          when ${input.firstGoal ?? null}::text is null then
+            nullif(${practices.settings}->'onboardingState'->>'firstGoalSelectedAt', '')
+          else coalesce(
+            nullif(${practices.settings}->'onboardingState'->>'firstGoalSelectedAt', ''),
+            ${input.now}::text
+          )
+        end,
+        'journeyLastProgressAt', ${input.now}::text,
         'journeyDismissed', false
       )
   )`;
@@ -328,12 +365,12 @@ function onboardingCompletionPatch(now: string) {
       '{onboardingCompletedAt}',
       to_jsonb(coalesce(
         nullif(${practices.settings}->>'onboardingCompletedAt', ''),
-        ${now}
+        ${now}::text
       )::text)
     ),
     '{onboardingState}',
     coalesce(${practices.settings}->'onboardingState', '{}'::jsonb) ||
-      jsonb_build_object('journeyLastProgressAt', ${now})
+      jsonb_build_object('journeyLastProgressAt', ${now}::text)
   )`;
 }
 
@@ -508,6 +545,11 @@ interface PracticeSettings {
     /** Adoption pathway selected on the first guided-setup step. */
     onboardingIntent?: OnboardingIntent;
     onboardingIntentSelectedAt?: string;
+    /** Coarse, non-clinical personalization selected during setup. */
+    clinicModel?: ClinicModel;
+    clinicModelSelectedAt?: string;
+    firstGoal?: FirstGoal;
+    firstGoalSelectedAt?: string;
     /** Resume cursor for the "Make it yours" setup wizard (step id, not index). */
     journeyStepId?: string | null;
     /** Last successfully persisted journey action, used for stall recovery. */
@@ -1658,6 +1700,10 @@ export const settingsRouter = createRouter({
       setupDismissed: false,
       onboardingIntent: null,
       onboardingIntentSelectedAt: null,
+      clinicModel: null,
+      clinicModelSelectedAt: null,
+      firstGoal: null,
+      firstGoalSelectedAt: null,
       journeyStepId: null,
       journeyLastProgressAt: null,
       journeyDismissed: false,
@@ -1713,13 +1759,19 @@ export const settingsRouter = createRouter({
 
   /** Persist the selected adoption path for tailored setup and funnel review. */
   setOnboardingIntent: adminProcedure
-    .input(z.object({ intent: onboardingIntentInput }))
+    .input(
+      z.object({
+        intent: onboardingIntentInput,
+        clinicModel: clinicModelInput.optional(),
+        firstGoal: firstGoalInput.optional(),
+      }),
+    )
     .mutation(async ({ ctx, input }) => {
       const now = new Date().toISOString();
       const [updated] = await ctx.db
         .update(practices)
         .set({
-          settings: onboardingIntentStatePatch(input.intent, now),
+          settings: onboardingProfileStatePatch({ ...input, now }),
         })
         .where(activePracticeWhere(ctx.practiceId))
         .returning({ id: practices.id });

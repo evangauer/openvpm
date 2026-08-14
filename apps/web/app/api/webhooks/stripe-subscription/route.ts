@@ -77,6 +77,7 @@ export async function POST(req: NextRequest) {
   }
 
   const conversionEvidence = conversionEvidenceForEvent(event);
+  const postCommitEffects: Array<() => Promise<unknown>> = [];
   try {
     await withSystem(db, async (tx) => {
       const claimed = await claimStripeEvent(tx, {
@@ -98,15 +99,29 @@ export async function POST(req: NextRequest) {
               : (s.subscription?.id ?? null);
           let activePracticeId: string | null = null;
           if (practiceId && s.customer) {
+            const customerId =
+              typeof s.customer === "string" ? s.customer : s.customer.id;
             const [practice] = await tx
               .update(practices)
               .set({
-                stripeCustomerId:
-                  typeof s.customer === "string" ? s.customer : s.customer!.id,
+                stripeCustomerId: customerId,
                 stripeSubscriptionId: subscriptionId,
               })
               .where(
-                and(eq(practices.id, practiceId), isNull(practices.deletedAt)),
+                and(
+                  eq(practices.id, practiceId),
+                  isNull(practices.deletedAt),
+                  or(
+                    isNull(practices.stripeCustomerId),
+                    eq(practices.stripeCustomerId, customerId),
+                  ),
+                  subscriptionId
+                    ? or(
+                        isNull(practices.stripeSubscriptionId),
+                        eq(practices.stripeSubscriptionId, subscriptionId),
+                      )
+                    : isNull(practices.stripeSubscriptionId),
+                ),
               )
               .returning({ id: practices.id });
             activePracticeId = practice?.id ?? null;
@@ -145,7 +160,16 @@ export async function POST(req: NextRequest) {
 
         case "customer.subscription.created":
         case "customer.subscription.updated": {
-          await applySubscription(tx, event.data.object as Stripe.Subscription);
+          if (!stripe) {
+            throw new Error(
+              "Stripe is unavailable while reconciling a subscription event.",
+            );
+          }
+          const eventSubscription = event.data.object as Stripe.Subscription;
+          const currentSubscription = await stripe.subscriptions.retrieve(
+            eventSubscription.id,
+          );
+          await applySubscription(tx, currentSubscription);
           break;
         }
 
@@ -211,21 +235,25 @@ export async function POST(req: NextRequest) {
             const to = billingContactEmail(practice?.email);
             if (practice && to) {
               const practiceName = practice.name ?? "your practice";
-              await sendLifecycleEmail({
-                practiceId: practice.id,
-                to,
-                emailType: "receipt",
-                dedupeKey: `lc:receipt:${inv.id}`,
-                category: "transactional",
-                send: () =>
-                  sendPaymentReceiptEmail({
-                    to,
-                    practiceName,
-                    amount: formatMoney(inv.amount_paid, inv.currency),
-                    periodLabel: invoicePeriodLabel(inv, practice.timezone),
-                    invoiceUrl: inv.hosted_invoice_url ?? undefined,
-                  }),
-              });
+              const dedupeKey = `lc:receipt:${inv.id}`;
+              postCommitEffects.push(() =>
+                sendLifecycleEmail({
+                  practiceId: practice.id,
+                  to,
+                  emailType: "receipt",
+                  dedupeKey,
+                  category: "transactional",
+                  send: () =>
+                    sendPaymentReceiptEmail({
+                      to,
+                      practiceName,
+                      amount: formatMoney(inv.amount_paid, inv.currency),
+                      periodLabel: invoicePeriodLabel(inv, practice.timezone),
+                      invoiceUrl: inv.hosted_invoice_url ?? undefined,
+                      idempotencyKey: dedupeKey,
+                    }),
+                }),
+              );
             }
           }
           break;
@@ -233,44 +261,61 @@ export async function POST(req: NextRequest) {
 
         case "invoice.payment_failed": {
           const inv = event.data.object as Stripe.Invoice;
-          const customerId =
-            typeof inv.customer === "string" ? inv.customer : inv.customer?.id;
-          if (customerId) {
-            await tx
-              .update(practices)
-              .set({ billingStatus: "past_due" })
-              .where(
-                and(
-                  eq(practices.stripeCustomerId, customerId),
-                  isNull(practices.deletedAt),
-                ),
+          const subscriptionId = subscriptionIdForInvoice(inv);
+          if (subscriptionId) {
+            if (!stripe) {
+              throw new Error(
+                "Stripe is unavailable while reconciling a failed invoice.",
               );
-            await alertOps(
-              "Subscription payment failed",
-              `Stripe customer ${customerId} had a failed subscription payment; marked past_due.`,
+            }
+            const subscription =
+              await stripe.subscriptions.retrieve(subscriptionId);
+            const authoritativeStatus = normalizeBillingStatus(
+              subscription.status,
             );
-            const practice = await practiceForCustomer(tx, customerId);
+            const practiceId = await applySubscription(tx, subscription);
+            const practice = practiceId
+              ? await practiceById(tx, practiceId)
+              : null;
             const to = billingContactEmail(practice?.email);
-            if (practice && to) {
+            if (practice && to && authoritativeStatus === "past_due") {
               const practiceName = practice.name ?? "your practice";
-              await sendLifecycleEmail({
-                practiceId: practice.id,
-                to,
-                emailType: "dunning",
-                // One dunning email per Stripe retry attempt.
-                dedupeKey: `lc:dunning:${inv.id}:${inv.attempt_count ?? 0}`,
-                category: "transactional",
-                send: () =>
-                  sendPaymentFailedEmail({
-                    to,
-                    practiceName,
-                    amount: formatMoney(inv.amount_due, inv.currency),
-                    nextRetryDate: formatUnixDate(
-                      inv.next_payment_attempt,
-                      practice.timezone,
-                    ),
-                  }),
-              });
+              const dedupeKey = `lc:dunning:${inv.id}:${inv.attempt_count ?? 0}`;
+              postCommitEffects.push(() =>
+                sendLifecycleEmail({
+                  practiceId: practice.id,
+                  to,
+                  emailType: "dunning",
+                  dedupeKey,
+                  category: "transactional",
+                  stillEligible: async (emailTx) => {
+                    const [current] = await emailTx
+                      .select({ id: practices.id })
+                      .from(practices)
+                      .where(
+                        and(
+                          eq(practices.id, practice.id),
+                          eq(practices.billingStatus, "past_due"),
+                          eq(practices.stripeSubscriptionId, subscriptionId),
+                          isNull(practices.deletedAt),
+                        ),
+                      )
+                      .limit(1);
+                    return Boolean(current);
+                  },
+                  send: () =>
+                    sendPaymentFailedEmail({
+                      to,
+                      practiceName,
+                      amount: formatMoney(inv.amount_due, inv.currency),
+                      nextRetryDate: formatUnixDate(
+                        inv.next_payment_attempt,
+                        practice.timezone,
+                      ),
+                      idempotencyKey: dedupeKey,
+                    }),
+                }),
+              );
             }
           }
           break;
@@ -281,6 +326,9 @@ export async function POST(req: NextRequest) {
           break;
       }
     });
+    for (const effect of postCommitEffects) {
+      await effect();
+    }
   } catch (err) {
     console.error("[Stripe Subscription Webhook] handler error:", err);
     await alertOps(
@@ -329,17 +377,27 @@ async function applySubscription(
   const customerId =
     typeof sub.customer === "string" ? sub.customer : sub.customer?.id;
   const billingStatus = normalizeBillingStatus(sub.status);
+  const terminalWithoutSubscriptionIdentity = billingStatus === "canceled";
 
   const [practice] = await tx
     .update(practices)
     .set({
       ...(tier ? { subscriptionTier: tier } : {}),
       billingStatus,
-      stripeSubscriptionId: sub.id,
+      stripeSubscriptionId: terminalWithoutSubscriptionIdentity ? null : sub.id,
       ...(customerId ? { stripeCustomerId: customerId } : {}),
       trialEndsAt: sub.trial_end ? new Date(sub.trial_end * 1000) : null,
     })
-    .where(and(eq(practices.id, practiceId), isNull(practices.deletedAt)))
+    .where(
+      and(
+        eq(practices.id, practiceId),
+        isNull(practices.deletedAt),
+        or(
+          isNull(practices.stripeSubscriptionId),
+          eq(practices.stripeSubscriptionId, sub.id),
+        ),
+      ),
+    )
     .returning({ id: practices.id });
   if (!practice) {
     console.warn(
@@ -349,11 +407,13 @@ async function applySubscription(
     );
     return null;
   }
-  await syncPracticeSubscriptionQuantities({
-    db: tx,
-    practiceId: practice.id,
-    subscriptionId: sub.id,
-  });
+  if (!terminalWithoutSubscriptionIdentity) {
+    await syncPracticeSubscriptionQuantities({
+      db: tx,
+      practiceId: practice.id,
+      subscriptionId: sub.id,
+    });
+  }
   return practice.id;
 }
 

@@ -98,6 +98,8 @@ function practice(overrides: Record<string, unknown> = {}) {
     email: "owner@example.com",
     timezone: "America/New_York",
     trialEndsAt: new Date("2026-07-04T15:00:00Z"),
+    stripeSubscriptionId: null,
+    billingSetupRecorded: false,
     ...overrides,
   };
 }
@@ -194,6 +196,8 @@ describe("billing lifecycle cron", () => {
       daysLeft: 3,
       trialEndDate: "July 4, 2026",
       monthlyPrice: "$79",
+      billingConnected: false,
+      idempotencyKey: `lc:trial-ending:${PRACTICE_ID}:2026-07-04:t-3`,
     });
     expect(mocks.reportCronHeartbeat).toHaveBeenCalledWith({
       job: "billing-lifecycle",
@@ -266,6 +270,49 @@ describe("billing lifecycle cron", () => {
         to: "owner@example.com",
       }),
     );
+  });
+
+  it("reassures a signed billing-connected trial instead of asking for a card", async () => {
+    mocks.selectResults.push([
+      practice({
+        stripeSubscriptionId: "sub_connected",
+        billingSetupRecorded: true,
+      }),
+    ]);
+
+    const response = await GET(
+      new Request("https://openvpm.test/api/cron/billing-lifecycle"),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      sent: 1,
+      skipped: 0,
+    });
+    expect(mocks.sendTrialEndingEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        billingConnected: true,
+        idempotencyKey: `lc:trial-ending:${PRACTICE_ID}:2026-07-04:t-3`,
+      }),
+    );
+  });
+
+  it("suppresses contradictory subscription and signed milestone evidence", async () => {
+    mocks.selectResults.push([
+      practice({
+        stripeSubscriptionId: "sub_unprojected",
+        billingSetupRecorded: false,
+      }),
+    ]);
+
+    const response = await GET(
+      new Request("https://openvpm.test/api/cron/billing-lifecycle"),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      sent: 0,
+      skipped: 1,
+    });
+    expect(mocks.sendOptionalPlatformEmail).not.toHaveBeenCalled();
   });
 
   it("skips non-milestone trials and practices without billing email", async () => {

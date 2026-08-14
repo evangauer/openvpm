@@ -171,7 +171,7 @@ describe("dashboard onboarding UI states", () => {
     expect(settingsRouter).toContain("clearDemoData: adminProcedure.mutation");
     expect(settingsRouter).toContain("setOnboardingIntent: adminProcedure");
     expect(journeyPlanSource).toContain(
-      '{ id: "data", title: "Bring your clinic records." }',
+      '{ id: "data", title: "Bring your history with confidence." }',
     );
     expect(journeyProviderSource).toContain(
       "router.push(\n      state.hasImportedData",
@@ -179,6 +179,18 @@ describe("dashboard onboarding UI states", () => {
     expect(journeyProviderSource).toContain('"/clients/new?setup=first-visit"');
     expect(journeyProviderSource).not.toContain("<SetUpTextingStep");
     expect(journeyProviderSource).not.toContain("<AddACardStep");
+    expect(journeyProviderSource).toContain(
+      "FUNNEL_EVENTS.onboardingStepViewed",
+    );
+    expect(journeyProviderSource).toContain(
+      "FUNNEL_EVENTS.onboardingStepCompleted",
+    );
+    expect(journeyProviderSource).toContain(
+      "FUNNEL_EVENTS.onboardingCompleted",
+    );
+    expect(journeyProviderSource).toContain(
+      "FUNNEL_EVENTS.firstActionSelected",
+    );
   });
 
   it("uses the selected pathway to put a tailored first win first", () => {

@@ -247,17 +247,28 @@ async function updateProjection(
 export async function marketingEmailEnabledForRecipient(
   email: string,
 ): Promise<boolean> {
+  return withSystem(db, (tx) => lockAndCheckMarketingEmailEnabled(tx, email));
+}
+
+/**
+ * Serialize a marketing send with preference changes for this recipient and
+ * re-read the current preference in the caller's provider-call transaction.
+ * The lock order is practice row first, then recipient advisory lock.
+ */
+export async function lockAndCheckMarketingEmailEnabled(
+  tx: Database,
+  email: string,
+): Promise<boolean> {
   const identity = configuredIdentity();
   const emailHash = identity.emailHashFor(email);
-  return withSystem(db, async (tx) => {
-    await assertPersistedIdentityKey(tx, identity.fingerprint);
-    const preference = await currentPreference(
-      tx,
-      emailHash,
-      identity.fingerprint,
-    );
-    return preference?.marketingEnabled !== false;
-  });
+  await assertPersistedIdentityKey(tx, identity.fingerprint);
+  await lockRecipient(tx, emailHash);
+  const preference = await currentPreference(
+    tx,
+    emailHash,
+    identity.fingerprint,
+  );
+  return preference?.marketingEnabled !== false;
 }
 
 export async function setMarketingEmailPreferenceForRecipient(input: {

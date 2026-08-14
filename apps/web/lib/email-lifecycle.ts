@@ -4,7 +4,11 @@ import type { Database } from "@openpims/db/client";
 import { communications } from "@openpims/db";
 import { withSystem } from "@/lib/tenant-db";
 import { alertOps } from "@/lib/alerts";
-import { marketingEmailEnabledForRecipient } from "@/lib/platform-email-preferences";
+import { emailPreferenceRecipientHash } from "@/lib/email-preferences";
+import {
+  lockAndCheckMarketingEmailEnabled,
+  marketingEmailEnabledForRecipient,
+} from "@/lib/platform-email-preferences";
 import {
   lockPracticeForExternalSideEffects,
   practiceAllowsExternalSideEffects,
@@ -83,6 +87,12 @@ export async function sendLifecycleEmail(
         if (opts.stillEligible && !(await opts.stillEligible(tx))) {
           return { blocked: true as const };
         }
+        if (
+          opts.category === "marketing" &&
+          !(await lockAndCheckMarketingEmailEnabled(tx, opts.to))
+        ) {
+          return { blocked: true as const };
+        }
         return { blocked: false as const, result: await opts.send() };
       });
       if (delivery.blocked) {
@@ -122,7 +132,7 @@ export async function sendLifecycleEmail(
 
     await alertOps(
       "Lifecycle email failed",
-      `${opts.emailType} → ${opts.to}: ${result.error ?? "unknown error"}`,
+      `${opts.emailType} practice=${opts.practiceId} recipient=${recipientReference(opts.to)}: ${result.error ?? "unknown error"}`,
     );
 
     if (opts.retryOnFail) {
@@ -142,10 +152,14 @@ export async function sendLifecycleEmail(
   } catch (err) {
     await alertOps(
       "Lifecycle email error",
-      `${opts.emailType} → ${opts.to}: ${err instanceof Error ? err.message : String(err)}`,
+      `${opts.emailType} practice=${opts.practiceId} recipient=${recipientReference(opts.to)}: ${err instanceof Error ? err.message : String(err)}`,
     );
     return { sent: false, deduped: false };
   }
+}
+
+function recipientReference(email: string): string {
+  return emailPreferenceRecipientHash(email)?.slice(0, 12) ?? "unavailable";
 }
 
 /**

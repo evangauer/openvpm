@@ -34,6 +34,10 @@ describe("onboarding UI states", () => {
     "components/onboarding/steps/choose-path.tsx",
     "utf8",
   );
+  const clinicIntentBuilder = readFileSync(
+    "components/onboarding/clinic-intent-builder.tsx",
+    "utf8",
+  );
   const onboardingIntent = readFileSync("lib/onboarding/intent.ts", "utf8");
   const journeyOverlay = readFileSync(
     "components/onboarding/journey-overlay.tsx",
@@ -72,32 +76,48 @@ describe("onboarding UI states", () => {
     );
   });
 
-  it("starts with a persisted adoption pathway and recommends running alongside", () => {
+  it("starts with a persisted clinic model, first outcome, and adoption pathway", () => {
     expect(journeyPlan).toContain(
-      '{ id: "intent", title: "How do you want to start?" }',
+      '{ id: "intent", title: "A platform truly built for your clinic." }',
     );
     expect(journeyOverlay).toContain(
       "initialIntent={onboardingIntent ?? DEFAULT_ONBOARDING_INTENT}",
     );
+    expect(journeyOverlay).toContain("initialClinicModel={");
+    expect(journeyOverlay).toContain("initialFirstGoal={");
     expect(onboardingIntent).toContain(
       'label: "Run alongside my current PIMS"',
     );
-    expect(choosePath).toContain("Recommended");
-    expect(choosePath).toContain(
-      "saveIntent.mutateAsync({ intent: state.onboardingIntent })",
-    );
-    expect(choosePath).toContain("onboardingIntent: state.onboardingIntent");
+    expect(choosePath).toContain("clinicModel: state.clinicModel");
+    expect(choosePath).toContain("firstGoal: state.firstGoal");
+    expect(choosePath).toContain("Build my first day");
+    expect(clinicIntentBuilder).toContain("Your first OpenVPM day");
     expect(choosePath).toContain("journeyDismissed: false");
     expect(settingsRouter).toContain("onboardingIntentSelectedAt");
+    expect(settingsRouter).toContain("clinicModelSelectedAt");
+    expect(settingsRouter).toContain("firstGoalSelectedAt");
   });
 
-  it("shows honest hosted-pilot qualification after signup", () => {
-    expect(choosePath).toContain("HOSTED_CLINIC_PILOT");
-    expect(choosePath).toContain('state.onboardingIntent !== "self_host"');
-    expect(choosePath).toContain("Clinic pilot fit");
-    expect(choosePath).toContain("First useful day target");
-    expect(choosePath).toContain("HOSTED_CLINIC_PILOT.guardrails.map");
-    expect(choosePath).toContain('href="/clinic-fit"');
+  it("personalizes new care models without overstating pilot readiness", () => {
+    expect(clinicIntentBuilder).toContain(
+      'selectedModel.readiness === "design_partner"',
+    );
+    expect(clinicIntentBuilder).toContain("one real workflow");
+    expect(clinicIntentBuilder).toContain("anything that isn’t ready yet");
+    expect(clinicIntentBuilder).toContain("Nothing moves until you review it.");
+    expect(choosePath).toContain("FUNNEL_EVENTS.onboardingModelSelected");
+    expect(choosePath).toContain("FUNNEL_EVENTS.onboardingGoalSelected");
+    expect(choosePath).toContain("FUNNEL_EVENTS.onboardingPlanBuilt");
+  });
+
+  it("uses the canonical OpenVPM mark, typography, and primary color tokens", () => {
+    expect(journeyOverlay).toContain("import { BrandBadge }");
+    expect(journeyOverlay).toContain("<BrandBadge");
+    expect(journeyOverlay).toContain("font-heading text-[2.15rem]");
+    expect(journeyOverlay).not.toContain("[font-family:Georgia,serif]");
+    expect(journeyOverlay).not.toContain("<PawPrint");
+    expect(journeyOverlay).toContain('i <= index ? "bg-primary"');
+    expect(clinicIntentBuilder).toContain("focus-visible:ring-primary");
   });
 
   it("keeps imported-real-data cleanup sticky across setup resumes", () => {
@@ -135,9 +155,8 @@ describe("onboarding UI states", () => {
     expect(journeyOverlay).toContain(
       "onInteractOutside={(event) => event.preventDefault()}",
     );
-    expect(journeyOverlay).toContain(
-      "aria-describedby={\n                          state.hasPartialImport",
-    );
+    expect(journeyOverlay).toContain("aria-describedby={");
+    expect(journeyOverlay).toContain("state.hasPartialImport");
     expect(journeyOverlay).toContain('id="onboarding-back-disabled-reason"');
     expect(journeyOverlay).toContain("whitespace-normal");
     expect(journeyOverlay).toContain('"I\'ll finish later"');

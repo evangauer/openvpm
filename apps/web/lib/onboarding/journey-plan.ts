@@ -11,10 +11,10 @@ export interface OnboardingJourneyStep {
  * they do not stand between signup and a real client or appointment.
  */
 export const ONBOARDING_JOURNEY_STEPS: readonly OnboardingJourneyStep[] = [
-  { id: "intent", title: "How do you want to start?" },
-  { id: "basics", title: "Tell us about your clinic." },
-  { id: "data", title: "Bring your clinic records." },
-  { id: "allSet", title: "Start your first clinic day." },
+  { id: "intent", title: "A platform truly built for your clinic." },
+  { id: "basics", title: "Make it feel like your clinic." },
+  { id: "data", title: "Bring your history with confidence." },
+  { id: "allSet", title: "Your first day is ready." },
 ];
 
 const retiredStepIds = new Set([

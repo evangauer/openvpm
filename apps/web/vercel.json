@@ -27,6 +27,10 @@
       "schedule": "0 14 * * *"
     },
     {
+      "path": "/api/cron/first-clinic-win",
+      "schedule": "17 * * * *"
+    },
+    {
       "path": "/api/cron/setup-recovery",
       "schedule": "0 15 * * *"
     },

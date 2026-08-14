@@ -121,7 +121,8 @@ export const PLANS: Record<PlanTier, PlanDefinition> = {
     name: "Free (self-host)",
     locationUnitPriceMonthlyUsd: 0,
     seatUnitPriceMonthlyUsd: 0,
-    blurb: "Self-host OpenVPM on your own infrastructure. Free forever, no lock-in.",
+    blurb:
+      "Self-host OpenVPM on your own infrastructure. Free forever, no lock-in.",
     seatLimit: null,
     locationLimit: null,
     features: [],
@@ -176,7 +177,9 @@ export function getPlan(tier?: string | null): PlanDefinition {
 }
 
 /** Map a Stripe Price ID back to a plan tier (via the configured env vars). */
-export function tierForStripePrice(priceId: string | null | undefined): PlanTier | null {
+export function tierForStripePrice(
+  priceId: string | null | undefined,
+): PlanTier | null {
   const normalizedPriceId = nonBlank(priceId);
   if (!normalizedPriceId) return null;
   const cloudPriceEnvs = [
@@ -191,9 +194,7 @@ export function tierForStripePrice(priceId: string | null | undefined): PlanTier
   return null;
 }
 
-export function cloudCheckoutPriceIds(
-  cadence: BillingCadence = "month",
-): {
+export function cloudCheckoutPriceIds(cadence: BillingCadence = "month"): {
   locationPriceId?: string;
   seatPriceId?: string;
 } {
@@ -248,7 +249,7 @@ export function cloudMeteredPriceIds(): {
 
 export function estimatedCloudBaseMonthlyUsd(
   locationCount: number,
-  billableSeatCount: number
+  billableSeatCount: number,
 ): number {
   return (
     Math.max(1, locationCount) * CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD +
@@ -267,15 +268,18 @@ export function estimatedCloudBaseAnnualUsd(
 }
 
 /** Normalize a Stripe subscription status to our billingStatus values. */
-export function normalizeBillingStatus(status: string | null | undefined): string {
+export function normalizeBillingStatus(
+  status: string | null | undefined,
+): string {
   switch (status) {
     case "trialing":
       return "trialing";
     case "active":
       return "active";
     case "past_due":
-    case "unpaid":
       return "past_due";
+    case "unpaid":
+      return "unpaid";
     case "canceled":
     case "incomplete_expired":
       return "canceled";
@@ -285,7 +289,10 @@ export function normalizeBillingStatus(status: string | null | undefined): strin
 }
 
 /** Pure: does this tier include this feature? (With parity, every paid tier does.) */
-export function planHasFeature(tier: string | null | undefined, feature: Feature): boolean {
+export function planHasFeature(
+  tier: string | null | undefined,
+  feature: Feature,
+): boolean {
   return getPlan(tier).features.includes(feature);
 }
 
@@ -313,23 +320,27 @@ export function trialEndsAtFrom(from: Date = new Date()): Date {
 export function isTrialActive(
   billingStatus: string | null | undefined,
   trialEndsAt: Date | string | null | undefined,
-  now: Date = new Date()
+  now: Date = new Date(),
 ): boolean {
   if (billingStatus !== "trialing" || !trialEndsAt) return false;
   return new Date(trialEndsAt).getTime() > now.getTime();
 }
 
-/** Hosted write access: active trial or active paid/custom subscription only. */
+/**
+ * Hosted write access: active trial, active paid/custom subscription, or a
+ * paid/custom subscription in Stripe's retrying `past_due` state. Stripe's
+ * terminal `unpaid` state remains read-only.
+ */
 export function hasHostedFullAccess(
   tier: string | null | undefined,
   billingStatus: string | null | undefined,
   trialEndsAt: Date | string | null | undefined,
   now: Date = new Date(),
-  enforced: boolean = billingEnforced()
+  enforced: boolean = billingEnforced(),
 ): boolean {
   if (!enforced) return true;
   if (isTrialActive(billingStatus, trialEndsAt, now)) return true;
-  if (billingStatus !== "active") return false;
+  if (billingStatus !== "active" && billingStatus !== "past_due") return false;
   return getPlan(tier).tier !== "free";
 }
 
@@ -341,12 +352,12 @@ export function effectiveTier(
   tier: string | null | undefined,
   billingStatus: string | null | undefined,
   trialEndsAt: Date | string | null | undefined,
-  now: Date = new Date()
+  now: Date = new Date(),
 ): PlanTier {
   if (isTrialActive(billingStatus, trialEndsAt, now)) return "cloud";
   const t = tier ?? "free";
   if (LEGACY_CLOUD_TIERS.has(t)) return "cloud";
-  return (PLANS[t as PlanTier] ? (t as PlanTier) : "free");
+  return PLANS[t as PlanTier] ? (t as PlanTier) : "free";
 }
 
 /**
@@ -364,7 +375,7 @@ export function billingEnforced(): boolean {
 export function isEntitled(
   tier: string | null | undefined,
   feature: Feature,
-  enforced: boolean = billingEnforced()
+  enforced: boolean = billingEnforced(),
 ): boolean {
   if (!enforced) return true;
   return planHasFeature(tier, feature);
@@ -374,7 +385,7 @@ export function isEntitled(
 export function withinSeatLimit(
   tier: string | null | undefined,
   currentSeats: number,
-  enforced: boolean = billingEnforced()
+  enforced: boolean = billingEnforced(),
 ): boolean {
   if (!enforced) return true;
   const limit = getPlan(tier).seatLimit;
@@ -385,7 +396,7 @@ export function withinSeatLimit(
 export function withinLocationLimit(
   tier: string | null | undefined,
   currentLocations: number,
-  enforced: boolean = billingEnforced()
+  enforced: boolean = billingEnforced(),
 ): boolean {
   if (!enforced) return true;
   const limit = getPlan(tier).locationLimit;

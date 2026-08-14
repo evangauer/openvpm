@@ -6,6 +6,7 @@ import {
   renderTrialEndingEmail,
   renderPaymentReceiptEmail,
   renderPaymentFailedEmail,
+  renderFirstClinicWinEmail,
 } from "@openpims/email";
 import {
   createEmailPreferenceLinks,
@@ -689,6 +690,8 @@ export async function sendTrialEndingEmail(data: {
   trialEndDate: string;
   monthlyPrice?: string;
   billingUrl?: string;
+  billingConnected?: boolean;
+  idempotencyKey?: string;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   const brand = openvpmBrand();
   const billingUrl = data.billingUrl ?? `${brand.appUrl}/settings?tab=billing`;
@@ -716,6 +719,7 @@ export async function sendTrialEndingEmail(data: {
     trialEndDate: data.trialEndDate,
     monthlyPrice: data.monthlyPrice ?? "$79",
     billingUrl,
+    billingConnected: data.billingConnected,
     unsubscribeUrl: preferenceLinks.preferencesUrl,
   });
   return sendEmail({
@@ -727,6 +731,54 @@ export async function sendTrialEndingEmail(data: {
       "List-Unsubscribe": `<${preferenceLinks.oneClickUrl}>`,
       "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
     },
+    idempotencyKey: data.idempotencyKey,
+  });
+}
+
+/** First-real-visit celebration and optional billing handoff. */
+export async function sendFirstClinicWinEmail(data: {
+  to: string;
+  practiceName: string;
+  trialEndDate: string;
+  billingUrl?: string;
+  idempotencyKey: string;
+}): Promise<{ success: boolean; id?: string; error?: string }> {
+  const brand = openvpmBrand();
+  const billingUrl = data.billingUrl ?? `${brand.appUrl}/settings?tab=billing`;
+  const recipientHash = emailPreferenceRecipientHash(data.to);
+  if (!recipientHash) {
+    return {
+      success: false,
+      error: "Email preference signing is not configured.",
+    };
+  }
+  const preferenceLinks = createEmailPreferenceLinks({
+    kind: "recipient",
+    id: recipientHash,
+  });
+  if (!preferenceLinks) {
+    return {
+      success: false,
+      error: "Email preference signing is not configured.",
+    };
+  }
+  const { subject, html } = await renderFirstClinicWinEmail({
+    brand,
+    practiceName: data.practiceName,
+    trialEndDate: data.trialEndDate,
+    billingUrl,
+    unsubscribeUrl: preferenceLinks.preferencesUrl,
+  });
+  return sendEmail({
+    to: data.to,
+    subject,
+    html,
+    replyTo: brand.supportEmail,
+    headers: {
+      "List-Unsubscribe": `<${preferenceLinks.oneClickUrl}>`,
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    },
+    idempotencyKey: data.idempotencyKey,
   });
 }
 
@@ -737,6 +789,7 @@ export async function sendPaymentReceiptEmail(data: {
   amount: string;
   periodLabel: string;
   invoiceUrl?: string;
+  idempotencyKey?: string;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   const brand = openvpmBrand();
   const { subject, html } = await renderPaymentReceiptEmail({
@@ -746,7 +799,13 @@ export async function sendPaymentReceiptEmail(data: {
     periodLabel: data.periodLabel,
     invoiceUrl: data.invoiceUrl,
   });
-  return sendEmail({ to: data.to, subject, html, replyTo: brand.supportEmail });
+  return sendEmail({
+    to: data.to,
+    subject,
+    html,
+    replyTo: brand.supportEmail,
+    idempotencyKey: data.idempotencyKey,
+  });
 }
 
 /** Dunning email sent on a failed subscription payment. */
@@ -756,6 +815,7 @@ export async function sendPaymentFailedEmail(data: {
   amount: string;
   nextRetryDate?: string;
   billingUrl?: string;
+  idempotencyKey?: string;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   const brand = openvpmBrand();
   const billingUrl = data.billingUrl ?? `${brand.appUrl}/settings?tab=billing`;
@@ -766,5 +826,11 @@ export async function sendPaymentFailedEmail(data: {
     nextRetryDate: data.nextRetryDate,
     billingUrl,
   });
-  return sendEmail({ to: data.to, subject, html, replyTo: brand.supportEmail });
+  return sendEmail({
+    to: data.to,
+    subject,
+    html,
+    replyTo: brand.supportEmail,
+    idempotencyKey: data.idempotencyKey,
+  });
 }

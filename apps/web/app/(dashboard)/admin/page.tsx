@@ -1122,14 +1122,34 @@ export default function AdminPage() {
         </div>
         {journey ? (
           <>
-            <div className="mt-3 grid gap-4 sm:grid-cols-3 xl:grid-cols-6">
+            <div className="mt-3 grid gap-4 sm:grid-cols-3 xl:grid-cols-5">
               {[
                 ["Visit", journey.totals.visitors, null],
                 ["Demo", journey.totals.demos, journey.totals.demoRate],
                 [
+                  "Plan started",
+                  journey.totals.signupProfileViewed,
+                  journey.totals.profileViewRate,
+                ],
+                [
+                  "Plan built",
+                  journey.totals.signupProfileCompleted,
+                  journey.totals.profileCompletionRate,
+                ],
+                [
+                  "Account form",
+                  journey.totals.signupAccountViewed,
+                  journey.totals.accountViewRate,
+                ],
+                [
+                  "Signup submitted",
+                  journey.totals.signupSubmitted,
+                  journey.totals.signupSubmitRate,
+                ],
+                [
                   "Registered",
                   journey.totals.registrations,
-                  journey.totals.registrationRate,
+                  journey.totals.signupSuccessRate,
                 ],
                 [
                   "Activated",
@@ -1343,6 +1363,52 @@ export default function AdminPage() {
               payment. Currently active is current billing state, not a
               historical conversion milestone.
             </p>
+
+            <div className="mt-4 rounded-lg border border-primary/15 bg-primary/5 p-4">
+              <p className="text-sm font-medium">
+                First real visit → billing setup
+              </p>
+              <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                <div>
+                  <p className="text-xs text-muted-foreground">
+                    Conversion opportunities
+                  </p>
+                  <p className="mt-1 font-heading text-xl font-bold tabular-nums">
+                    {funnel.firstVisitBillingConversion.opportunities}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Within 24h</p>
+                  <p className="mt-1 font-heading text-xl font-bold tabular-nums">
+                    {funnel.firstVisitBillingConversion.convertedWithin24Hours}
+                    <span className="ml-2 text-sm font-normal text-muted-foreground">
+                      {formatPct(
+                        funnel.firstVisitBillingConversion
+                          .conversionWithin24HoursRate,
+                      )}
+                    </span>
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Within 72h</p>
+                  <p className="mt-1 font-heading text-xl font-bold tabular-nums">
+                    {funnel.firstVisitBillingConversion.convertedWithin72Hours}
+                    <span className="ml-2 text-sm font-normal text-muted-foreground">
+                      {formatPct(
+                        funnel.firstVisitBillingConversion
+                          .conversionWithin72HoursRate,
+                      )}
+                    </span>
+                  </p>
+                </div>
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Uses only first real visits at least 72 hours old. Clinics that
+                connected billing before that visit are reported separately (
+                {funnel.firstVisitBillingConversion.alreadyConnectedAtVisit})
+                and are not in the opportunity denominator.
+              </p>
+            </div>
             <div className="mt-4 rounded-md border border-amber-300/60 bg-amber-50/50 p-3 text-xs text-muted-foreground dark:bg-amber-950/10">
               <p className="font-medium text-foreground">
                 Conversion evidence quality

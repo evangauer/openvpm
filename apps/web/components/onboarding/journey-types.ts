@@ -1,9 +1,14 @@
 /** Shared collected state and the per-step contract for the onboarding journey. */
 
 import type { OnboardingIntent } from "@/lib/onboarding/intent";
+import type { ClinicModel, FirstGoal } from "@/lib/onboarding/clinic-profile";
 import type { MigrationImportMode } from "@/lib/import/sources";
 
 export interface JourneyState {
+  /** Care model used to personalize the setup language and first-day plan. */
+  clinicModel: ClinicModel;
+  /** The concrete outcome the clinic wants from its first OpenVPM session. */
+  firstGoal: FirstGoal;
   /** The adoption path selected on the first setup step. */
   onboardingIntent: OnboardingIntent;
   /** When true, the seeded sample data stays put instead of being cleared at finish. */

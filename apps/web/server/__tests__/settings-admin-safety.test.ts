@@ -36,8 +36,7 @@ vi.mock("@/lib/billing/subscription-sync", () => ({
 
 vi.mock("@/lib/recovery-hold", () => ({
   RECOVERY_HOLD_BLOCK_MESSAGE: "recovery hold",
-  lockPracticeForExternalSideEffects:
-    mocks.lockPracticeForExternalSideEffects,
+  lockPracticeForExternalSideEffects: mocks.lockPracticeForExternalSideEffects,
 }));
 
 const { settingsRouter } = await import("../routers/settings");
@@ -222,6 +221,20 @@ describe("settings admin stale target safety", () => {
       callerWithDb(db).setOnboardingIntent({ intent: "unknown" as never }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
+    await expect(
+      callerWithDb(db).setOnboardingIntent({
+        intent: "alongside",
+        clinicModel: "unknown" as never,
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    await expect(
+      callerWithDb(db).setOnboardingIntent({
+        intent: "alongside",
+        firstGoal: "unknown" as never,
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
     expect(updateSet).not.toHaveBeenCalled();
     expect(insertValues).not.toHaveBeenCalled();
   });
@@ -232,24 +245,36 @@ describe("settings admin stale target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).setOnboardingIntent({ intent: "alongside" }),
+      callerWithDb(db).setOnboardingIntent({
+        intent: "alongside",
+        clinicModel: "mobile",
+        firstGoal: "run_visit",
+      }),
     ).resolves.toEqual({ ok: true });
 
     expect(updateSet).toHaveBeenCalledTimes(1);
     expect(SETTINGS_SOURCE).toContain(
-      "onboardingIntentStatePatch(input.intent, now)",
+      "onboardingProfileStatePatch({ ...input, now })",
     );
-    expect(SETTINGS_SOURCE).toContain("'onboardingIntent', ${intent}");
+    expect(SETTINGS_SOURCE).toContain(
+      "'onboardingIntent', ${input.intent}::text",
+    );
+    expect(SETTINGS_SOURCE).toContain("${input.clinicModel ?? null}::text");
+    expect(SETTINGS_SOURCE).toContain("${input.firstGoal ?? null}::text");
+    expect(SETTINGS_SOURCE).toContain("${input.now}::text");
     expect(SETTINGS_SOURCE).toContain("onboardingIntentSelectedAt");
+    expect(SETTINGS_SOURCE).toContain("clinicModelSelectedAt");
+    expect(SETTINGS_SOURCE).toContain("firstGoalSelectedAt");
     expect(SETTINGS_SOURCE).toContain("journeyLastProgressAt");
   });
 
   it("keeps setup start and completion cohort timestamps first-write-wins", () => {
-    expect(SETTINGS_SOURCE).toContain("function onboardingIntentStatePatch");
+    expect(SETTINGS_SOURCE).toContain("function onboardingProfileStatePatch");
     expect(SETTINGS_SOURCE).toContain(
       "nullif(${practices.settings}->'onboardingState'->>'onboardingIntentSelectedAt', '')",
     );
     expect(SETTINGS_SOURCE).toContain("function onboardingCompletionPatch");
+    expect(SETTINGS_SOURCE).toContain("${now}::text");
     expect(SETTINGS_SOURCE).toContain(
       "nullif(${practices.settings}->>'onboardingCompletedAt', '')",
     );

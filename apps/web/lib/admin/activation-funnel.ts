@@ -49,6 +49,19 @@ export interface ActivationFunnelDataQuality {
   unmappedStripeEvidence: number;
 }
 
+export interface FirstVisitBillingConversion {
+  /** First real visits in the window that are at least 72 hours old. */
+  maturedFirstVisits: number;
+  /** Billing was already connected at or before the first real visit. */
+  alreadyConnectedAtVisit: number;
+  /** Matured first visits where billing was not connected at visit time. */
+  opportunities: number;
+  convertedWithin24Hours: number;
+  convertedWithin72Hours: number;
+  conversionWithin24HoursRate: number;
+  conversionWithin72HoursRate: number;
+}
+
 export interface ActivationFunnelTotals {
   signups: number;
   setupStarted: number;
@@ -64,9 +77,9 @@ export interface ActivationFunnelTotals {
   setupCompletionRate: number;
   /** activated / signups; 0 when there are no signups. */
   activationRate: number;
-  /** firstVisitCompleted / activated; 0 when there are no activated clinics. */
+  /** firstVisitCompleted / signups; 0 when there are no signups. */
   firstVisitCompletionRate: number;
-  /** paymentMethodCollected / activated; 0 when there are no activations. */
+  /** paymentMethodCollected / signups; billing may be connected before product activation. */
   paymentMethodRate: number;
   /** firstPositivePayment / paymentMethodCollected. */
   positivePaymentRate: number;
@@ -88,6 +101,7 @@ export interface ActivationFunnel {
     ActivationFunnelTotals
   >;
   dataQuality: ActivationFunnelDataQuality;
+  firstVisitBillingConversion: FirstVisitBillingConversion;
 }
 
 /** Rate guarded against divide-by-zero: no signups means a 0 rate, not NaN. */
@@ -116,6 +130,14 @@ interface DataQualityRow {
   missingActivationMilestones: number | string;
   unprojectedStripeEvidence: number | string;
   unmappedStripeEvidence: number | string;
+}
+
+interface FirstVisitBillingRow {
+  maturedFirstVisits: number | string;
+  alreadyConnectedAtVisit: number | string;
+  opportunities: number | string;
+  convertedWithin24Hours: number | string;
+  convertedWithin72Hours: number | string;
 }
 
 function rowsFromExecute<T>(result: unknown): T[] {
@@ -174,8 +196,8 @@ function summarizeWeeks(weeks: ActivationFunnelWeek[]): ActivationFunnelTotals {
     setupStartRate: funnelRate(setupStarted, signups),
     setupCompletionRate: funnelRate(setupCompleted, signups),
     activationRate: funnelRate(activated, signups),
-    firstVisitCompletionRate: funnelRate(firstVisitCompleted, activated),
-    paymentMethodRate: funnelRate(paymentMethodCollected, activated),
+    firstVisitCompletionRate: funnelRate(firstVisitCompleted, signups),
+    paymentMethodRate: funnelRate(paymentMethodCollected, signups),
     positivePaymentRate: funnelRate(
       firstPositivePayment,
       paymentMethodCollected,
@@ -193,14 +215,15 @@ function jurisdictionCohort(
 
 export async function computeActivationFunnel(
   db: Database,
-  days: number
+  days: number,
 ): Promise<ActivationFunnel> {
   const windowStart = new Date(Date.now() - days * DAY_MS).toISOString();
 
   // Cross-tenant read → system context (RLS bypass), same as the admin
   // overview. One grouped aggregate query — no per-practice N+1.
-  const { cohortResult, qualityResult } = await withSystem(db, async (tx) => {
-    const cohortResult = await tx.execute(sql`
+  const { cohortResult, qualityResult, firstVisitBillingResult } =
+    await withSystem(db, async (tx) => {
+      const cohortResult = await tx.execute(sql`
       with signups as (
         select
           p.id,
@@ -275,7 +298,6 @@ export async function computeActivationFunnel(
         )::int as "activated",
         count(*) filter (
           where mt.registered_at is not null
-            and mt.activated_at is not null
             and exists (
             select 1
             from visit_closeouts vc
@@ -295,13 +317,10 @@ export async function computeActivationFunnel(
         )::int as "firstVisitCompleted",
         count(*) filter (
           where mt.registered_at is not null
-            and mt.activated_at is not null
             and mt.payment_method_at is not null
         )::int as "paymentMethodCollected",
         count(*) filter (
           where mt.registered_at is not null
-            and mt.activated_at is not null
-            and mt.payment_method_at is not null
             and mt.positive_payment_at is not null
         )::int as "firstPositivePayment",
         count(*) filter (
@@ -313,7 +332,7 @@ export async function computeActivationFunnel(
       order by s.week_start, s.jurisdiction_cohort
     `);
 
-    const qualityResult = await tx.execute(sql`
+      const qualityResult = await tx.execute(sql`
       with cohort as (
         select p.*
         from practices p
@@ -412,8 +431,66 @@ export async function computeActivationFunnel(
             and se.practice_id is null
         )::int as "unmappedStripeEvidence"
     `);
-    return { cohortResult, qualityResult };
-  });
+      const firstVisitBillingResult = await tx.execute(sql`
+      with eligible_practices as (
+        select p.id, p.settings
+        from practices p
+        where p.deleted_at is null
+          and p.settings ->> 'analyticsExcluded' is distinct from 'true'
+      ), first_real_visits as (
+        select
+          p.id as practice_id,
+          min(vc.completed_at) as first_visit_at
+        from eligible_practices p
+        join visit_closeouts vc
+          on vc.practice_id = p.id
+         and vc.status = 'completed'
+         and vc.deleted_at is null
+        join appointments a
+          on a.id = vc.appointment_id
+         and a.practice_id = p.id
+         and a.status = 'checked_out'
+         and a.deleted_at is null
+        where not (
+          coalesce(p.settings -> 'demoData' -> 'appointmentIds', '[]'::jsonb)
+            @> to_jsonb(a.id::text)
+        )
+        group by p.id
+      ), first_payment_methods as (
+        select
+          pcm.practice_id,
+          min(pcm.occurred_at) as payment_method_at
+        from practice_conversion_milestones pcm
+        where pcm.milestone = 'payment_method_collected'
+        group by pcm.practice_id
+      ), mature_cohort as (
+        select frv.practice_id, frv.first_visit_at, fpm.payment_method_at
+        from first_real_visits frv
+        left join first_payment_methods fpm on fpm.practice_id = frv.practice_id
+        where frv.first_visit_at >= ${windowStart}::timestamptz
+          and frv.first_visit_at <= now() - interval '72 hours'
+      )
+      select
+        count(*)::int as "maturedFirstVisits",
+        count(*) filter (
+          where payment_method_at is not null
+            and payment_method_at <= first_visit_at
+        )::int as "alreadyConnectedAtVisit",
+        count(*) filter (
+          where payment_method_at is null or payment_method_at > first_visit_at
+        )::int as "opportunities",
+        count(*) filter (
+          where payment_method_at > first_visit_at
+            and payment_method_at <= first_visit_at + interval '24 hours'
+        )::int as "convertedWithin24Hours",
+        count(*) filter (
+          where payment_method_at > first_visit_at
+            and payment_method_at <= first_visit_at + interval '72 hours'
+        )::int as "convertedWithin72Hours"
+      from mature_cohort
+    `);
+      return { cohortResult, qualityResult, firstVisitBillingResult };
+    });
 
   const rawWeeks = rowsFromExecute<FunnelRow>(cohortResult).map((row) => ({
     ...emptyWeek(String(row.weekStart)),
@@ -459,6 +536,10 @@ export async function computeActivationFunnel(
       ] as const,
   );
   const quality = rowsFromExecute<DataQualityRow>(qualityResult)[0];
+  const firstVisitBilling = rowsFromExecute<FirstVisitBillingRow>(
+    firstVisitBillingResult,
+  )[0];
+  const opportunities = Number(firstVisitBilling?.opportunities) || 0;
   const jurisdictionCohorts = Object.fromEntries(
     cohortWeeks.map(([cohort, rows]) => [cohort, summarizeWeeks(rows)]),
   ) as Record<ActivationFunnelJurisdictionCohort, ActivationFunnelTotals>;
@@ -468,6 +549,24 @@ export async function computeActivationFunnel(
     weeks,
     totals: summarizeWeeks(weeks),
     jurisdictionCohorts,
+    firstVisitBillingConversion: {
+      maturedFirstVisits: Number(firstVisitBilling?.maturedFirstVisits) || 0,
+      alreadyConnectedAtVisit:
+        Number(firstVisitBilling?.alreadyConnectedAtVisit) || 0,
+      opportunities,
+      convertedWithin24Hours:
+        Number(firstVisitBilling?.convertedWithin24Hours) || 0,
+      convertedWithin72Hours:
+        Number(firstVisitBilling?.convertedWithin72Hours) || 0,
+      conversionWithin24HoursRate: funnelRate(
+        Number(firstVisitBilling?.convertedWithin24Hours) || 0,
+        opportunities,
+      ),
+      conversionWithin72HoursRate: funnelRate(
+        Number(firstVisitBilling?.convertedWithin72Hours) || 0,
+        opportunities,
+      ),
+    },
     dataQuality: {
       confirmedUsSignups: jurisdictionCohorts.confirmedUs.signups,
       confirmedNonUsSignups: jurisdictionCohorts.confirmedNonUs.signups,

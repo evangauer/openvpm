@@ -5,6 +5,7 @@ import { signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
+  ArrowLeft,
   ArrowRight,
   AlertTriangle,
   Bot,
@@ -47,8 +48,21 @@ import {
   type ClinicRegionCode,
 } from "@/lib/locale/clinic-regions";
 import { safeAuthNextPath } from "@/lib/auth-redirect";
+import { ClinicIntentBuilder } from "@/components/onboarding/clinic-intent-builder";
+import {
+  CLINIC_MODELS,
+  DEFAULT_CLINIC_MODEL,
+  DEFAULT_FIRST_GOAL,
+  FIRST_GOALS,
+  clinicModelOption,
+  type ClinicModel,
+  type FirstGoal,
+} from "@/lib/onboarding/clinic-profile";
 
 type RegistrationCountry = ClinicRegionCode | "OTHER" | "";
+type RegistrationStage = "profile" | "account";
+
+const REGISTRATION_PROFILE_STORAGE_KEY = "openvpm:registration-profile:v1";
 
 const selectClass =
   "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
@@ -73,6 +87,11 @@ function RegisterPageInner() {
   const cloudIntent = searchParams.get("intent") === "cloud";
   const nextPath = safeAuthNextPath(searchParams.get("next"), "/");
   const acquisition = acquisitionFromSearchParams(searchParams);
+  const [stage, setStage] = useState<RegistrationStage>("profile");
+  const [profileRestored, setProfileRestored] = useState(false);
+  const [clinicModel, setClinicModel] =
+    useState<ClinicModel>(DEFAULT_CLINIC_MODEL);
+  const [firstGoal, setFirstGoal] = useState<FirstGoal>(DEFAULT_FIRST_GOAL);
   const [practiceName, setPracticeName] = useState("");
   const [country, setCountry] = useState<RegistrationCountry>("");
   const [email, setEmail] = useState("");
@@ -90,8 +109,76 @@ function RegisterPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- signup attribution snapshot
   }, []);
 
+  useEffect(() => {
+    try {
+      const raw = window.sessionStorage.getItem(
+        REGISTRATION_PROFILE_STORAGE_KEY,
+      );
+      if (!raw) {
+        return;
+      }
+      const saved = JSON.parse(raw) as {
+        stage?: unknown;
+        clinicModel?: unknown;
+        firstGoal?: unknown;
+      };
+      if (
+        typeof saved.clinicModel === "string" &&
+        CLINIC_MODELS.includes(saved.clinicModel as ClinicModel)
+      ) {
+        setClinicModel(saved.clinicModel as ClinicModel);
+      }
+      if (
+        typeof saved.firstGoal === "string" &&
+        FIRST_GOALS.includes(saved.firstGoal as FirstGoal)
+      ) {
+        setFirstGoal(saved.firstGoal as FirstGoal);
+      }
+      if (saved.stage === "account") setStage("account");
+    } catch {
+      window.sessionStorage.removeItem(REGISTRATION_PROFILE_STORAGE_KEY);
+    } finally {
+      setProfileRestored(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!profileRestored) return;
+    try {
+      window.sessionStorage.setItem(
+        REGISTRATION_PROFILE_STORAGE_KEY,
+        JSON.stringify({ stage, clinicModel, firstGoal }),
+      );
+    } catch {
+      // Session continuity is helpful but must never block registration.
+    }
+  }, [profileRestored, stage, clinicModel, firstGoal]);
+
+  useEffect(() => {
+    if (!profileRestored) return;
+    trackFunnelEvent(
+      stage === "profile"
+        ? FUNNEL_EVENTS.signupProfileViewed
+        : FUNNEL_EVENTS.signupAccountViewed,
+      {
+        source: acquisition?.source ?? "none",
+        step: stage,
+      },
+    );
+  }, [acquisition?.source, profileRestored, stage]);
+
   const registerMutation = trpc.auth.register.useMutation({
     onSuccess: async (data) => {
+      trackFunnelEvent(FUNNEL_EVENTS.signupSucceeded, {
+        model: clinicModel,
+        goal: firstGoal,
+        step: "account",
+      });
+      try {
+        window.sessionStorage.removeItem(REGISTRATION_PROFILE_STORAGE_KEY);
+      } catch {
+        // The account is created even when storage is unavailable.
+      }
       if (data.checkoutUrl) {
         if (!isSafeCheckoutRedirectUrl(data.checkoutUrl)) {
           toast.error("Hosted checkout is unavailable. Please try again.");
@@ -164,6 +251,11 @@ function RegisterPageInner() {
     }
     setError("");
     setLoading(true);
+    trackFunnelEvent(FUNNEL_EVENTS.signupSubmitted, {
+      model: clinicModel,
+      goal: firstGoal,
+      step: "account",
+    });
     const registrationAcquisition = acquisitionWithFunnelVisitorId(
       acquisition,
       getFunnelVisitorId(),
@@ -173,41 +265,149 @@ function RegisterPageInner() {
       password,
       practiceName: practiceName.trim(),
       country: country as ClinicRegionCode,
+      onboardingDraft: { clinicModel, firstGoal },
       acquisition: registrationAcquisition,
     });
   }
 
+  function selectClinicModel(model: ClinicModel) {
+    const nextGoal =
+      model === "exploring" || firstGoal !== "self_host"
+        ? firstGoal
+        : "explore_sample";
+    setClinicModel(model);
+    setFirstGoal(nextGoal);
+    trackFunnelEvent(FUNNEL_EVENTS.onboardingModelSelected, {
+      model,
+      step: "profile",
+    });
+  }
+
+  function selectFirstGoal(goal: FirstGoal) {
+    setFirstGoal(goal);
+    trackFunnelEvent(FUNNEL_EVENTS.onboardingGoalSelected, {
+      model: clinicModel,
+      goal,
+      step: "profile",
+    });
+  }
+
+  function continueToAccount() {
+    trackFunnelEvent(FUNNEL_EVENTS.signupProfileCompleted, {
+      model: clinicModel,
+      goal: firstGoal,
+      step: "profile",
+    });
+    trackFunnelEvent(FUNNEL_EVENTS.onboardingPlanBuilt, {
+      model: clinicModel,
+      goal: firstGoal,
+      step: "profile",
+    });
+    setStage("account");
+  }
+
+  if (stage === "profile") {
+    return (
+      <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#fff7ed_0%,transparent_34%),radial-gradient(circle_at_top_right,#ede9fe_0%,transparent_36%),linear-gradient(180deg,#ffffff_0%,#f5fbf8_100%)] px-4 py-5 sm:px-6 sm:py-8">
+        <div className="mx-auto max-w-6xl overflow-hidden rounded-[28px] border border-white/80 bg-white/95 shadow-[0_30px_90px_-54px_rgba(15,23,42,0.48)] backdrop-blur">
+          <header className="flex items-center justify-between border-b border-slate-100 px-5 py-4 sm:px-9 sm:py-5">
+            <Link
+              href="/"
+              className="inline-flex items-center gap-3 font-heading text-lg font-semibold tracking-tight text-slate-950 sm:text-xl"
+            >
+              <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
+                <PawMark className="h-5 w-5" />
+              </span>
+              OpenVPM
+            </Link>
+            <div className="flex items-center gap-3 text-xs font-medium text-slate-500 sm:text-sm">
+              <span>Step 1 of 2</span>
+              <span className="flex gap-1" aria-hidden="true">
+                <span className="h-1.5 w-10 rounded-full bg-primary" />
+                <span className="h-1.5 w-10 rounded-full bg-slate-200" />
+              </span>
+            </div>
+          </header>
+
+          <section className="px-5 py-7 sm:px-9 sm:py-10 lg:px-12">
+            <div className="mb-8 max-w-3xl">
+              <h1 className="font-heading text-3xl font-bold tracking-tight text-slate-950 sm:text-4xl">
+                A platform truly built for your clinic.
+              </h1>
+              <p className="mt-3 text-sm leading-6 text-slate-600 sm:text-base">
+                Tell us what your team needs first. We’ll shape a useful first
+                day before asking you to create the workspace.
+              </p>
+            </div>
+
+            <ClinicIntentBuilder
+              clinicModel={clinicModel}
+              firstGoal={firstGoal}
+              onClinicModelChange={selectClinicModel}
+              onFirstGoalChange={selectFirstGoal}
+              intro="Two quick choices make the rest of setup feel like your clinic—not a generic software tour."
+            />
+          </section>
+
+          <footer className="flex flex-col-reverse gap-3 border-t border-slate-100 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-9">
+            <p className="text-center text-xs text-slate-500 sm:text-left">
+              No patient or client information belongs here.
+            </p>
+            <Button
+              type="button"
+              onClick={continueToAccount}
+              className="h-11 rounded-xl px-6 text-sm font-semibold shadow-[0_12px_28px_-16px_rgba(5,150,105,0.8)]"
+            >
+              Build my first day
+              <ArrowRight className="ml-2 h-4 w-4" />
+            </Button>
+          </footer>
+        </div>
+      </main>
+    );
+  }
+
   return (
-    <div className="grid min-h-screen lg:grid-cols-2">
+    <div className="grid min-h-screen min-w-0 overflow-x-hidden lg:grid-cols-2">
       {/* Left pane: the form, on clean white */}
-      <div className="flex items-center justify-center bg-white px-6 py-10 sm:px-10">
-        <div className="w-full max-w-md">
-          <Link
-            href="/"
-            className="inline-flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-primary"
-          >
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-              <PawMark className="h-4 w-4" />
+      <div className="flex min-w-0 items-center justify-center bg-white px-6 py-10 sm:px-10">
+        <div className="min-w-0 w-full max-w-md">
+          <div className="flex items-center justify-between gap-4">
+            <Link
+              href="/"
+              className="inline-flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-primary"
+            >
+              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+                <PawMark className="h-4 w-4" />
+              </span>
+              OpenVPM {cloudIntent ? "Cloud" : ""}
+            </Link>
+            <span className="text-xs font-medium text-slate-500">
+              Step 2 of 2
             </span>
-            OpenVPM {cloudIntent ? "Cloud" : ""}
-          </Link>
+          </div>
 
           <h1 className="mt-8 font-heading text-3xl font-bold tracking-tight text-slate-950">
-            Create your workspace
+            Make it yours.
           </h1>
           <p className="mt-2 text-sm leading-6 text-slate-600">
-            Start using OpenVPM in about a minute. You own your data, and smart
-            AI tools are built in.
+            Create the workspace for your{" "}
+            {clinicModelOption(clinicModel).shortLabel.toLowerCase()} team. Your
+            first-day plan will be waiting inside.
           </p>
 
-          <form onSubmit={handleSubmit} className="mt-8 grid gap-4">
+          <form onSubmit={handleSubmit} className="mt-8 grid min-w-0 gap-4">
             {error ? (
               <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
                 {error}
               </div>
             ) : null}
 
-            <FormField label="Practice name" htmlFor="practiceName">
+            <FormField
+              label="Practice name"
+              htmlFor="practiceName"
+              className="min-w-0"
+            >
               <Input
                 id="practiceName"
                 value={practiceName}
@@ -222,6 +422,7 @@ function RegisterPageInner() {
             <FormField
               label="Clinic country"
               htmlFor="country"
+              className="min-w-0"
               description="This sets your currency, tax defaults, time zone, and rollout eligibility."
             >
               <select
@@ -277,7 +478,7 @@ function RegisterPageInner() {
               </div>
             ) : null}
 
-            <FormField label="Work email" htmlFor="email">
+            <FormField label="Work email" htmlFor="email" className="min-w-0">
               <Input
                 id="email"
                 type="email"
@@ -292,6 +493,7 @@ function RegisterPageInner() {
             <FormField
               label="Password"
               htmlFor="password"
+              className="min-w-0"
               description={`At least ${AUTH_PASSWORD_MIN_LENGTH} characters.`}
             >
               <Input
@@ -328,6 +530,15 @@ function RegisterPageInner() {
               <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
               Free for 14 days. No credit card required.
             </p>
+
+            <button
+              type="button"
+              onClick={() => setStage("profile")}
+              className="mx-auto inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 transition hover:text-primary"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" />
+              Change first-day plan
+            </button>
 
             <p className="text-center text-xs text-slate-500">
               <Link
@@ -374,11 +585,13 @@ function RegisterPageInner() {
       <div className="relative hidden overflow-hidden bg-[linear-gradient(135deg,#fff7ed_0%,#fdf2f8_45%,#ecfdf5_100%)] lg:block">
         <div className="relative z-10 px-12 pt-16">
           <h2 className="max-w-md font-heading text-3xl font-bold tracking-tight text-slate-950">
-            The practice system you own.
+            Your first day, already taking shape.
           </h2>
           <p className="mt-3 max-w-md text-sm leading-6 text-slate-600">
-            Run your day, keep clean records, and send bills. Smart AI tools are
-            built in, and your data stays yours to export any time.
+            Built around{" "}
+            {clinicModelOption(clinicModel).shortLabel.toLowerCase()} care and
+            the first outcome you chose. You can change any of it once you’re
+            inside.
           </p>
         </div>
 

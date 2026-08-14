@@ -9,6 +9,7 @@ import {
   isTrialActive,
   effectiveTier,
   hasHostedFullAccess,
+  normalizeBillingStatus,
   billingEnforced,
   estimatedCloudBaseMonthlyUsd,
   estimatedCloudBaseAnnualUsd,
@@ -111,10 +112,10 @@ describe("PLANS pricing", () => {
     expect(PLANS.free.locationUnitPriceMonthlyUsd).toBe(0);
     expect(PLANS.free.seatUnitPriceMonthlyUsd).toBe(0);
     expect(PLANS.cloud.locationUnitPriceMonthlyUsd).toBe(
-      CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD
+      CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD,
     );
     expect(PLANS.cloud.seatUnitPriceMonthlyUsd).toBe(
-      CLOUD_SEAT_UNIT_PRICE_MONTHLY_USD
+      CLOUD_SEAT_UNIT_PRICE_MONTHLY_USD,
     );
     expect(PLANS.enterprise.locationUnitPriceMonthlyUsd).toBeNull();
     expect(PLANS.enterprise.seatUnitPriceMonthlyUsd).toBeNull();
@@ -148,15 +149,31 @@ describe("hosted full access", () => {
   });
 
   it("allows active trial and active paid subscription", () => {
-    expect(hasHostedFullAccess("free", "trialing", future, now, true)).toBe(true);
+    expect(hasHostedFullAccess("free", "trialing", future, now, true)).toBe(
+      true,
+    );
     expect(hasHostedFullAccess("cloud", "active", past, now, true)).toBe(true);
   });
 
-  it("blocks expired trials, canceled, past due, and no subscription on hosted", () => {
-    expect(hasHostedFullAccess("free", "trialing", past, now, true)).toBe(false);
-    expect(hasHostedFullAccess("cloud", "past_due", future, now, true)).toBe(false);
-    expect(hasHostedFullAccess("cloud", "canceled", future, now, true)).toBe(false);
+  it("keeps retrying paid subscriptions writable but blocks terminal billing states", () => {
+    expect(hasHostedFullAccess("free", "trialing", past, now, true)).toBe(
+      false,
+    );
+    expect(hasHostedFullAccess("cloud", "past_due", future, now, true)).toBe(
+      true,
+    );
+    expect(hasHostedFullAccess("cloud", "unpaid", future, now, true)).toBe(
+      false,
+    );
+    expect(hasHostedFullAccess("cloud", "canceled", future, now, true)).toBe(
+      false,
+    );
     expect(hasHostedFullAccess("free", "none", null, now, true)).toBe(false);
+  });
+
+  it("preserves retrying and terminal Stripe statuses distinctly", () => {
+    expect(normalizeBillingStatus("past_due")).toBe("past_due");
+    expect(normalizeBillingStatus("unpaid")).toBe("unpaid");
   });
 });
 
@@ -236,7 +253,9 @@ describe("Stripe price mapping", () => {
   it("returns undefined for blank Stripe price envs", () => {
     vi.stubEnv(STRIPE_PRICE_CLOUD_LOCATION_ENV, "   ");
 
-    expect(stripePriceIdFromEnv(STRIPE_PRICE_CLOUD_LOCATION_ENV)).toBeUndefined();
+    expect(
+      stripePriceIdFromEnv(STRIPE_PRICE_CLOUD_LOCATION_ENV),
+    ).toBeUndefined();
   });
 
   it("maps split Cloud prices and legacy Cloud price to the cloud tier", () => {

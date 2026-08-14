@@ -13,6 +13,7 @@ export interface TrialEndingEmailProps {
   trialEndDate: string; // e.g. "July 10, 2026"
   monthlyPrice: string; // e.g. "$79"
   billingUrl: string;
+  billingConnected?: boolean;
   unsubscribeUrl?: string;
 }
 
@@ -23,23 +24,30 @@ export function TrialEndingEmail({
   trialEndDate,
   monthlyPrice,
   billingUrl,
+  billingConnected = false,
   unsubscribeUrl,
 }: TrialEndingEmailProps) {
-  const whenLabel =
-    daysLeft <= 1 ? "tomorrow" : `in ${daysLeft} days`;
+  const whenLabel = daysLeft <= 1 ? "tomorrow" : `in ${daysLeft} days`;
   return (
     <EmailLayout
       brand={brand}
-      preview={`Your OpenVPM trial ends ${whenLabel}. Add a card and nothing changes.`}
+      preview={
+        billingConnected
+          ? `Your OpenVPM trial ends ${whenLabel}. Your billing setup is connected.`
+          : `Your OpenVPM trial ends ${whenLabel}. Add billing and nothing changes.`
+      }
       unsubscribeUrl={unsubscribeUrl}
       recipientReason={`This address is the OpenVPM billing contact for ${practiceName}.`}
     >
       <Heading>Your trial ends {whenLabel}</Heading>
       <Paragraph>
         Hi {practiceName}, your OpenVPM trial ends on{" "}
-        <strong>{trialEndDate}</strong>. Add a card now and nothing changes.
-        Your schedule, your records, and everything you&apos;ve set up stay
-        exactly as they are.
+        <strong>{trialEndDate}</strong>.{" "}
+        {billingConnected
+          ? "You already completed billing setup, so there is no need to add it again."
+          : "Add billing now and nothing changes."}{" "}
+        Your schedule, records, and everything you&apos;ve set up stay exactly
+        as they are.
       </Paragraph>
 
       <InfoCard tone="warning">
@@ -51,7 +59,9 @@ export function TrialEndingEmail({
       </InfoCard>
 
       <Section style={{ margin: "8px 0" }}>
-        <Button href={billingUrl}>Add billing</Button>
+        <Button href={billingUrl}>
+          {billingConnected ? "Review billing" : "Add billing"}
+        </Button>
       </Section>
 
       <Paragraph muted>

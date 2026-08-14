@@ -151,5 +151,25 @@ describe("FUNNEL_EVENTS", () => {
     expect(FUNNEL_EVENTS.demoToolOpened).toBe("demo_tool_opened");
     expect(FUNNEL_EVENTS.demoCtaStartClinic).toBe("demo_cta_start_clinic");
     expect(FUNNEL_EVENTS.signupLand).toBe("signup_land");
+    expect(FUNNEL_EVENTS.signupProfileViewed).toBe("signup_profile_viewed");
+    expect(FUNNEL_EVENTS.signupProfileCompleted).toBe(
+      "signup_profile_completed",
+    );
+    expect(FUNNEL_EVENTS.signupAccountViewed).toBe("signup_account_viewed");
+    expect(FUNNEL_EVENTS.signupSubmitted).toBe("signup_submitted");
+    expect(FUNNEL_EVENTS.signupSucceeded).toBe("signup_succeeded");
+    expect(FUNNEL_EVENTS.onboardingModelSelected).toBe(
+      "onboarding_model_selected",
+    );
+    expect(FUNNEL_EVENTS.onboardingGoalSelected).toBe(
+      "onboarding_goal_selected",
+    );
+    expect(FUNNEL_EVENTS.onboardingPlanBuilt).toBe("onboarding_plan_built");
+    expect(FUNNEL_EVENTS.onboardingStepViewed).toBe("onboarding_step_viewed");
+    expect(FUNNEL_EVENTS.onboardingStepCompleted).toBe(
+      "onboarding_step_completed",
+    );
+    expect(FUNNEL_EVENTS.onboardingCompleted).toBe("onboarding_completed");
+    expect(FUNNEL_EVENTS.firstActionSelected).toBe("first_action_selected");
   });
 });

@@ -1578,6 +1578,17 @@ function BillingTab() {
             </div>
           ) : null}
 
+          {data.billingStatus === "past_due" ? (
+            <div className="mb-5 flex gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <p>
+                Stripe is retrying this payment. Your clinic remains writable
+                during the retry window; review billing to avoid an unpaid,
+                read-only account.
+              </p>
+            </div>
+          ) : null}
+
           {firstActivation ? (
             <>
               <CloudBillingCadencePicker

@@ -100,6 +100,15 @@ function funnel(
       confirmedNonUs: jurisdictionTotals(1, 0),
       unknown: jurisdictionTotals(1, 0),
     },
+    firstVisitBillingConversion: {
+      maturedFirstVisits: 1,
+      alreadyConnectedAtVisit: 0,
+      opportunities: 1,
+      convertedWithin24Hours: 0,
+      convertedWithin72Hours: 1,
+      conversionWithin24HoursRate: 0,
+      conversionWithin72HoursRate: 1,
+    },
     dataQuality: {
       confirmedUsSignups: 3,
       confirmedNonUsSignups: 1,
@@ -122,6 +131,10 @@ function journey(days: number): JourneyFunnel {
     totals: {
       visitors: 20,
       demos: 8,
+      signupProfileViewed: 6,
+      signupProfileCompleted: 5,
+      signupAccountViewed: 5,
+      signupSubmitted: 5,
       registrations: 5,
       activated: 2,
       paymentMethodCollected: 1,
@@ -136,6 +149,11 @@ function journey(days: number): JourneyFunnel {
       repairableAttributionGaps: 0,
       clientErrors: 2,
       demoRate: 0.4,
+      profileViewRate: 0.3,
+      profileCompletionRate: 5 / 6,
+      accountViewRate: 1,
+      signupSubmitRate: 1,
+      signupSuccessRate: 1,
       registrationRate: 0.25,
       activationRate: 0.4,
       paymentMethodRate: 0.5,
@@ -257,9 +275,7 @@ describe("activation digest cron", () => {
     );
     expect(mocks.sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({
-        html: expect.stringContaining(
-          "its rate is measured from activated clinics",
-        ),
+        html: expect.stringContaining("its rate is measured from signups"),
       }),
     );
     expect(mocks.sendEmail).toHaveBeenCalledWith(

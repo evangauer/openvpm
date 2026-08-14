@@ -540,10 +540,12 @@ describe("lifecycle email branding", () => {
         practiceName: "Neighborhood Veterinary",
         daysLeft: 3,
         trialEndDate: "August 12, 2026",
+        billingConnected: true,
+        idempotencyKey: "lc:trial-ending:practice:t-3",
       }),
     ).resolves.toEqual({ success: true, id: "email-1" });
 
-    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    const [payload, providerOptions] = mocks.resendSend.mock.calls[0] ?? [];
     expect(payload.headers).toMatchObject({
       "List-Unsubscribe": expect.stringMatching(
         /^<https:\/\/app\.openvpm\.com\/api\/email-preferences\/unsubscribe\?token=.+>$/,
@@ -554,9 +556,58 @@ describe("lifecycle email branding", () => {
     expect(payload.html).toContain(
       "This address is the OpenVPM billing contact for Neighborhood Veterinary.",
     );
+    expect(payload.html).toContain("Review billing");
+    expect(payload.html).toContain("no need to add it again");
+    expect(payload.html).not.toContain(">Add billing<");
+    expect(providerOptions).toMatchObject({
+      idempotencyKey: "lc:trial-ending:practice:t-3",
+    });
     expect(payload.html).not.toContain(
       'href="https://app.openvpm.com/settings?tab=billing">Manage email preferences',
     );
+  });
+
+  it("sends the PHI-free first-clinic-win campaign with provider idempotency", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_SIGNING_SECRET",
+      "stable-signing-secret-at-least-32-bytes",
+    );
+    vi.stubEnv("EMAIL_PREFERENCE_BASE_URL", "https://app.openvpm.com");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.openvpm.com");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-first-win" } });
+    const { sendFirstClinicWinEmail } = await loadEmail();
+
+    await expect(
+      sendFirstClinicWinEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        trialEndDate: "August 28, 2026",
+        idempotencyKey: "lc:first-clinic-win:v1:practice",
+      }),
+    ).resolves.toEqual({ success: true, id: "email-first-win" });
+
+    const [payload, providerOptions] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload).toMatchObject({
+      to: "owner@example.com",
+      subject: "Your first real OpenVPM visit is complete",
+      headers: {
+        "List-Unsubscribe": expect.stringContaining(
+          "https://app.openvpm.com/api/email-preferences/unsubscribe?token=",
+        ),
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+      },
+    });
+    expect(providerOptions).toMatchObject({
+      idempotencyKey: "lc:first-clinic-win:v1:practice",
+    });
+    expect(payload.html).toContain("You ran your first real visit");
+    expect(payload.html).toContain("A card is not required");
+    expect(payload.html).not.toMatch(/patient|client name|invoice amount/i);
   });
 
   it("does not send optional mail without a dedicated preference secret", async () => {

@@ -43,6 +43,11 @@ import {
   CLINIC_REGION_CODES,
   explicitJurisdictionState,
 } from "@/lib/locale/clinic-regions";
+import {
+  CLINIC_MODELS,
+  FIRST_GOALS,
+  onboardingIntentForGoal,
+} from "@/lib/onboarding/clinic-profile";
 
 /** Display name from explicit input, else derived from the email local-part. */
 function deriveName(name: string | undefined, email: string): string {
@@ -102,21 +107,41 @@ const onboardingTeamMemberSchema = z.object({
   name: authTextInput(
     "Team member name",
     1,
-    AUTH_ONBOARDING_TEAM_MEMBER_NAME_MAX_LENGTH
+    AUTH_ONBOARDING_TEAM_MEMBER_NAME_MAX_LENGTH,
   ),
   email: authEmailInput,
   role: z.enum(["veterinarian", "technician", "front_desk", "viewer"]),
 });
 
-const onboardingDraftSchema = z.object({
-  logoName: authTextInput(
-    "Logo name",
-    1,
-    AUTH_ONBOARDING_LOGO_NAME_MAX_LENGTH,
-  ).optional(),
-  brandColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
-  teamMembers: z.array(onboardingTeamMemberSchema).max(8).optional(),
-});
+const onboardingDraftSchema = z
+  .object({
+    logoName: authTextInput(
+      "Logo name",
+      1,
+      AUTH_ONBOARDING_LOGO_NAME_MAX_LENGTH,
+    ).optional(),
+    brandColor: z
+      .string()
+      .regex(/^#[0-9a-fA-F]{6}$/)
+      .optional(),
+    teamMembers: z.array(onboardingTeamMemberSchema).max(8).optional(),
+    clinicModel: z.enum(CLINIC_MODELS).optional(),
+    firstGoal: z.enum(FIRST_GOALS).optional(),
+  })
+  .superRefine((draft, ctx) => {
+    if (Boolean(draft.clinicModel) !== Boolean(draft.firstGoal)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Clinic model and first goal must be selected together.",
+      });
+    }
+    if (draft.firstGoal === "self_host" && draft.clinicModel !== "exploring") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Self-hosting evaluation is available from the explore path.",
+      });
+    }
+  });
 
 const acquisitionValueSchema = z
   .string()
@@ -139,13 +164,17 @@ const authTokenSchema = z
   .regex(/^[a-f0-9]{64}$/i, "Invalid or expired link.");
 
 function cleanOnboardingDraft(
-  draft: z.infer<typeof onboardingDraftSchema> | undefined
+  draft: z.infer<typeof onboardingDraftSchema> | undefined,
 ): Record<string, unknown> | undefined {
   if (!draft) return undefined;
 
   const clean: Record<string, unknown> = {};
   if (draft.logoName?.trim()) clean.logoName = draft.logoName.trim();
   if (draft.brandColor) clean.brandColor = draft.brandColor.toLowerCase();
+  if (draft.clinicModel && draft.firstGoal) {
+    clean.clinicModel = draft.clinicModel;
+    clean.firstGoal = draft.firstGoal;
+  }
   const teamMembers = draft.teamMembers
     ?.map((member) => ({
       name: member.name.trim(),
@@ -170,17 +199,17 @@ export const authRouter = createRouter({
         practiceName: authTextInput(
           "Practice name",
           2,
-          AUTH_PRACTICE_NAME_MAX_LENGTH
+          AUTH_PRACTICE_NAME_MAX_LENGTH,
         ),
         country: z.enum(CLINIC_REGION_CODES),
         locationName: authTextInput(
           "Location name",
           2,
-          AUTH_LOCATION_NAME_MAX_LENGTH
+          AUTH_LOCATION_NAME_MAX_LENGTH,
         ).optional(),
         onboardingDraft: onboardingDraftSchema.optional(),
         acquisition: signupAcquisitionSchema.optional(),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const email = normalizeAuthEmail(input.email);
@@ -208,6 +237,13 @@ export const authRouter = createRouter({
       }
 
       const onboardingDraft = cleanOnboardingDraft(input.onboardingDraft);
+      const registrationProfile =
+        input.onboardingDraft?.clinicModel && input.onboardingDraft.firstGoal
+          ? {
+              clinicModel: input.onboardingDraft.clinicModel,
+              firstGoal: input.onboardingDraft.firstGoal,
+            }
+          : null;
       const hostedBilling = billingEnforced();
       // Card-free trial: skip the Stripe Checkout wall at signup and grant a
       // `trialing` window directly, so the clinic lands in the product and only
@@ -242,13 +278,29 @@ export const authRouter = createRouter({
       const passwordHash = await hash(input.password, PASSWORD_HASH_COST);
       const registeredAt = new Date().toISOString();
       const defaults = regionDefaults(input.country);
-      const practiceSettings: Record<string, unknown> = {
-        onboardingState: explicitJurisdictionState(
+      const onboardingState: Record<string, unknown> = {
+        ...explicitJurisdictionState(
           input.country,
           "registration",
           registeredAt,
         ),
       };
+      if (registrationProfile) {
+        Object.assign(onboardingState, {
+          onboardingIntent: onboardingIntentForGoal(
+            registrationProfile.firstGoal,
+          ),
+          onboardingIntentSelectedAt: registeredAt,
+          clinicModel: registrationProfile.clinicModel,
+          clinicModelSelectedAt: registeredAt,
+          firstGoal: registrationProfile.firstGoal,
+          firstGoalSelectedAt: registeredAt,
+          journeyStepId: "basics",
+          journeyLastProgressAt: registeredAt,
+          journeyDismissed: false,
+        });
+      }
+      const practiceSettings: Record<string, unknown> = { onboardingState };
       if (input.acquisition) {
         practiceSettings.acquisition = {
           ...input.acquisition,
@@ -262,8 +314,8 @@ export const authRouter = createRouter({
         practiceSettings.onboardingCompletedAt = null;
       }
 
-      const { practice, user, checkoutUrl } =
-        await ctx.db.transaction(async (tx) => {
+      const { practice, user, checkoutUrl } = await ctx.db.transaction(
+        async (tx) => {
           const [createdPractice] = await tx
             .insert(practices)
             .values({
@@ -396,14 +448,18 @@ export const authRouter = createRouter({
             user: createdUser,
             checkoutUrl: createdCheckoutUrl,
           };
-        });
+        },
+      );
 
       // Durable, privacy-safe registration stage. Non-fatal so telemetry can
       // never turn a successful account creation into a failed signup.
       try {
         await recordRegistration(ctx.db, practice.id);
       } catch (err) {
-        console.error("[register] conversion milestone projection failed:", err);
+        console.error(
+          "[register] conversion milestone projection failed:",
+          err,
+        );
       }
 
       // On the hosted service, request email verification without blocking the
@@ -473,7 +529,9 @@ export const authRouter = createRouter({
           } catch {
             // Signup is already committed. Keep verification soft and do not
             // log the auth link or recipient embedded in the closure.
-            console.error("[register] post-commit verification dispatch failed");
+            console.error(
+              "[register] post-commit verification dispatch failed",
+            );
           }
         });
       }
@@ -550,8 +608,8 @@ export const authRouter = createRouter({
         and(
           eq(users.id, ctx.user.id),
           eq(users.practiceId, ctx.practiceId),
-          isNull(users.deletedAt)
-        )
+          isNull(users.deletedAt),
+        ),
       )
       .limit(1);
 
@@ -689,7 +747,7 @@ export const authRouter = createRouter({
       z.object({
         token: authTokenSchema,
         password: authPasswordInput,
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const result = await consumeAuthToken(input.token, "password_reset", {
@@ -722,7 +780,7 @@ export const authRouter = createRouter({
       z.object({
         token: authTokenSchema,
         password: authPasswordInput,
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const result = await consumeAuthToken(input.token, "invite", {

@@ -12,16 +12,25 @@ import {
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { ArrowLeft, ArrowRight, Loader2, PawPrint } from "lucide-react";
+import { ArrowLeft, ArrowRight, Loader2, ShieldCheck } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { BrandBadge } from "@/components/brand/paw-mark";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { firstRunMode } from "@/lib/welcome/first-run";
+import { FUNNEL_EVENTS } from "@/lib/funnel-analytics";
+import { trackFunnelEvent } from "@/lib/track-funnel-event";
 import {
   DEFAULT_ONBOARDING_INTENT,
   type OnboardingIntent,
 } from "@/lib/onboarding/intent";
+import {
+  DEFAULT_CLINIC_MODEL,
+  DEFAULT_FIRST_GOAL,
+  type ClinicModel,
+  type FirstGoal,
+} from "@/lib/onboarding/clinic-profile";
 import type { JourneyState, StepHandle } from "./journey-types";
 import {
   ONBOARDING_JOURNEY_STEPS,
@@ -117,8 +126,8 @@ export function OnboardingJourneyProvider({
     if (opened.current || index !== null || !isAdmin) return;
     // In "welcome" first-run mode the Polaroid guide surface owns the
     // greeting; the wizard opens on demand (welcome footer, first-win
-    // offer, activation checklist). NEXT_PUBLIC_FIRST_RUN_MODE=wizard
-    // restores this auto-open exactly.
+    // offer, activation checklist). The personalized builder is the default;
+    // NEXT_PUBLIC_FIRST_RUN_MODE=welcome remains the rollback path.
     if (firstRunMode() === "welcome") return;
     // Wait until the setup state is loaded so the resume point is stable.
     if (!onboardingStatus.data || !onboardingState.data) {
@@ -152,6 +161,14 @@ export function OnboardingJourneyProvider({
           index={index!}
           setIndex={setIndex}
           initialIntent={onboardingIntent ?? DEFAULT_ONBOARDING_INTENT}
+          initialClinicModel={
+            (onboardingState.data?.clinicModel as ClinicModel | null) ??
+            DEFAULT_CLINIC_MODEL
+          }
+          initialFirstGoal={
+            (onboardingState.data?.firstGoal as FirstGoal | null) ??
+            DEFAULT_FIRST_GOAL
+          }
           initialMigrationHasCommittedChanges={
             onboardingState.data?.migrationHasCommittedChanges === true
           }
@@ -177,6 +194,8 @@ function JourneyShell({
   index,
   setIndex,
   initialIntent,
+  initialClinicModel,
+  initialFirstGoal,
   initialMigrationHasCommittedChanges,
   initialMigrationSource,
   initialMigrationSourceHasCommittedChanges,
@@ -186,6 +205,8 @@ function JourneyShell({
   index: number;
   setIndex: (i: number | null) => void;
   initialIntent: OnboardingIntent;
+  initialClinicModel: ClinicModel;
+  initialFirstGoal: FirstGoal;
   initialMigrationHasCommittedChanges: boolean;
   initialMigrationSource: JourneyState["migrationSource"];
   initialMigrationSourceHasCommittedChanges: boolean;
@@ -202,6 +223,8 @@ function JourneyShell({
   // Shared step state. Real imports replace sample data; otherwise the clinic
   // can keep the sample records while it adds its first real client.
   const [state, setStateRaw] = useState<JourneyState>({
+    clinicModel: initialClinicModel,
+    firstGoal: initialFirstGoal,
     onboardingIntent: initialIntent,
     keepSampleData: !initialMigrationHasCommittedChanges,
     hasPartialImport: false,
@@ -231,6 +254,14 @@ function JourneyShell({
   const total = steps.length;
   const step = steps[index]!;
   const isLast = index >= total - 1;
+
+  useEffect(() => {
+    trackFunnelEvent(FUNNEL_EVENTS.onboardingStepViewed, {
+      model: state.clinicModel,
+      goal: state.firstGoal,
+      step: step.id,
+    });
+  }, [state.clinicModel, state.firstGoal, step.id]);
 
   // Do not advance or close until the server accepts the cursor. A local-only
   // optimistic cursor can strand a clinic at an earlier step after a reload.
@@ -265,6 +296,16 @@ function JourneyShell({
       utils.settings.onboardingStatus.invalidate(),
       utils.settings.getOnboardingState.invalidate(),
     ]);
+    trackFunnelEvent(FUNNEL_EVENTS.onboardingCompleted, {
+      model: state.clinicModel,
+      goal: state.firstGoal,
+      step: "allSet",
+    });
+    trackFunnelEvent(FUNNEL_EVENTS.firstActionSelected, {
+      goal: state.firstGoal,
+      placement: state.hasImportedData ? "schedule" : "client",
+      step: "first_action",
+    });
     setIndex(null);
     router.push(
       state.hasImportedData
@@ -274,6 +315,8 @@ function JourneyShell({
   }, [
     completeOnboarding,
     clearDemoData,
+    state.clinicModel,
+    state.firstGoal,
     state.keepSampleData,
     state.hasImportedData,
     utils,
@@ -289,6 +332,11 @@ function JourneyShell({
         ? await handleRef.current.onContinue()
         : true;
       if (!advance) return;
+      trackFunnelEvent(FUNNEL_EVENTS.onboardingStepCompleted, {
+        model: state.clinicModel,
+        goal: state.firstGoal,
+        step: step.id,
+      });
       if (isLast) {
         await finish();
       } else {
@@ -312,6 +360,9 @@ function JourneyShell({
     isLast,
     finish,
     index,
+    state.clinicModel,
+    state.firstGoal,
+    step.id,
     steps,
     persistCursor,
     setIndex,
@@ -383,9 +434,9 @@ function JourneyShell({
       }}
     >
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="fixed inset-0 z-[80] bg-[linear-gradient(135deg,#fff7ed_0%,#fdf2f8_45%,#ecfdf5_100%)]" />
+        <DialogPrimitive.Overlay className="fixed inset-0 z-[80] bg-[linear-gradient(135deg,#fff8f5_0%,#f7f5ff_42%,#f2fbf7_100%)]" />
         <DialogPrimitive.Content
-          className="fixed inset-0 z-[80] overflow-y-auto p-4 text-slate-950 outline-none sm:p-6"
+          className="fixed inset-0 z-[80] overflow-y-auto text-slate-950 outline-none sm:p-4 lg:p-6"
           onInteractOutside={(event) => event.preventDefault()}
           onPointerDownOutside={(event) => event.preventDefault()}
         >
@@ -393,120 +444,154 @@ function JourneyShell({
             Guided setup for your OpenVPM clinic.
           </DialogPrimitive.Description>
           <div className="flex min-h-full items-center justify-center">
-            <div className="w-full max-w-2xl rounded-2xl border border-white/80 bg-white p-6 shadow-xl shadow-rose-200/30 sm:p-8">
-              {/* Brand mark + progress */}
-              <div className="flex items-center justify-between gap-4">
-                <div className="inline-flex items-center gap-2 text-sm font-medium text-emerald-700">
-                  <PawPrint className="h-4 w-4" />
-                  Make it yours
+            <div
+              className={cn(
+                "flex min-h-full w-full flex-col overflow-hidden bg-white shadow-[0_30px_90px_-38px_rgba(30,41,59,0.38)] sm:min-h-0 sm:rounded-[24px] sm:border sm:border-white/90",
+                step.id === "intent"
+                  ? "max-w-[1440px]"
+                  : step.id === "allSet"
+                    ? "max-w-5xl"
+                    : "max-w-3xl",
+              )}
+            >
+              <header className="flex items-center justify-between gap-5 border-b border-slate-100 px-5 py-4 sm:px-8 sm:py-5 lg:px-12">
+                <div className="inline-flex items-center gap-2.5 text-slate-950">
+                  <BrandBadge
+                    className="h-9 w-9 rounded-xl"
+                    pawClassName="h-5 w-5"
+                  />
+                  <span className="font-heading text-lg font-semibold tracking-tight">
+                    OpenVPM
+                  </span>
                 </div>
-                <span className="text-xs font-medium text-slate-500">
-                  Step {index + 1} of {total}
-                </span>
-              </div>
+                <div className="flex min-w-[132px] items-center gap-3 sm:min-w-[230px]">
+                  <span className="shrink-0 text-xs font-medium text-slate-500">
+                    Step {index + 1} of {total}
+                  </span>
+                  <div className="flex flex-1 gap-1.5" aria-hidden="true">
+                    {steps.map((s, i) => (
+                      <span
+                        key={s.id}
+                        className={cn(
+                          "h-1.5 flex-1 rounded-full transition-colors duration-300",
+                          i <= index ? "bg-primary" : "bg-slate-200",
+                        )}
+                      />
+                    ))}
+                  </div>
+                </div>
+              </header>
 
-              <div className="mt-3 flex gap-1.5" aria-hidden="true">
-                {steps.map((s, i) => (
-                  <span
-                    key={s.id}
+              <div
+                className={cn(
+                  "flex-1 px-5 py-7 sm:px-8 sm:py-9",
+                  step.id === "intent" || step.id === "allSet"
+                    ? "lg:px-12 lg:py-10"
+                    : "lg:px-10",
+                )}
+              >
+                <DialogPrimitive.Title asChild>
+                  <h2
                     className={cn(
-                      "h-1.5 flex-1 rounded-full transition-colors",
-                      i <= index ? "bg-emerald-500" : "bg-slate-200",
+                      "max-w-3xl tracking-[-0.035em] text-slate-950",
+                      step.id === "intent"
+                        ? "font-heading text-[2.15rem] font-bold leading-[1.08] sm:text-[2.65rem] lg:text-[3rem]"
+                        : "font-heading text-2xl font-bold sm:text-3xl",
                     )}
-                  />
-                ))}
+                  >
+                    {step.title}
+                  </h2>
+                </DialogPrimitive.Title>
+
+                <div className={step.id === "intent" ? "mt-3" : "mt-6"}>
+                  {step.id === "intent" ? (
+                    <ChoosePathStep
+                      register={register}
+                      state={state}
+                      setState={setState}
+                    />
+                  ) : null}
+                  {step.id === "basics" ? (
+                    <PracticeBasicsStep register={register} />
+                  ) : null}
+                  {step.id === "data" ? (
+                    <BringDataStep
+                      register={register}
+                      state={state}
+                      setState={setState}
+                    />
+                  ) : null}
+                  {step.id === "allSet" ? (
+                    <AllSetStep register={register} state={state} />
+                  ) : null}
+                </div>
               </div>
 
-              {/* Title */}
-              <DialogPrimitive.Title asChild>
-                <h2 className="mt-6 font-heading text-2xl font-bold tracking-tight text-slate-950">
-                  {step.title}
-                </h2>
-              </DialogPrimitive.Title>
-
-              {/* Active step */}
-              <div className="mt-5">
-                {step.id === "intent" ? (
-                  <ChoosePathStep
-                    register={register}
-                    state={state}
-                    setState={setState}
-                  />
-                ) : null}
-                {step.id === "basics" ? (
-                  <PracticeBasicsStep register={register} />
-                ) : null}
-                {step.id === "data" ? (
-                  <BringDataStep
-                    register={register}
-                    state={state}
-                    setState={setState}
-                  />
-                ) : null}
-                {step.id === "allSet" ? (
-                  <AllSetStep register={register} state={state} />
-                ) : null}
-              </div>
-
-              {/* Footer */}
-              <div className="mt-8 flex flex-col-reverse items-stretch gap-4 border-t border-slate-100 pt-5 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex flex-col gap-2">
-                  <div className="flex items-center justify-between gap-3 sm:justify-start">
-                    {index > 0 ? (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        onClick={handleBack}
-                        disabled={
-                          busy || continueDisabled || state.hasPartialImport
-                        }
-                        aria-describedby={
-                          state.hasPartialImport
-                            ? "onboarding-back-disabled-reason"
-                            : undefined
-                        }
+              <footer className="border-t border-slate-100 bg-white px-5 py-4 sm:px-8 sm:py-5 lg:px-12">
+                <div className="flex flex-col-reverse items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex min-w-0 flex-col gap-2">
+                    <div className="flex items-center justify-between gap-3 sm:justify-start">
+                      {index > 0 ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          onClick={handleBack}
+                          disabled={
+                            busy || continueDisabled || state.hasPartialImport
+                          }
+                          aria-describedby={
+                            state.hasPartialImport
+                              ? "onboarding-back-disabled-reason"
+                              : undefined
+                          }
+                        >
+                          <ArrowLeft className="mr-1.5 h-4 w-4" />
+                          Back
+                        </Button>
+                      ) : (
+                        <span className="hidden items-center gap-2 text-xs text-slate-500 sm:flex">
+                          <ShieldCheck className="h-4 w-4 text-primary" />
+                          You can change this later.
+                        </span>
+                      )}
+                      {!isLast ? (
+                        <button
+                          type="button"
+                          onClick={handleFinishLater}
+                          disabled={busy || continueDisabled}
+                          className="min-h-10 rounded-lg px-2 text-sm font-medium text-slate-500 transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50"
+                        >
+                          {state.hasPartialImport
+                            ? "Finish remaining import later"
+                            : "I'll finish later"}
+                        </button>
+                      ) : null}
+                    </div>
+                    {state.hasPartialImport ? (
+                      <p
+                        id="onboarding-back-disabled-reason"
+                        className="max-w-sm text-xs leading-5 text-slate-500"
                       >
-                        <ArrowLeft className="mr-1.5 h-4 w-4" />
-                        Back
-                      </Button>
-                    ) : null}
-                    {!isLast ? (
-                      <button
-                        type="button"
-                        onClick={handleFinishLater}
-                        disabled={busy || continueDisabled}
-                        className="text-sm font-medium text-slate-500 hover:text-slate-700 disabled:opacity-50"
-                      >
-                        {state.hasPartialImport
-                          ? "Finish remaining import later"
-                          : "I'll finish later"}
-                      </button>
+                        Back is unavailable after records are saved. Finish the
+                        remaining import now or continue it later.
+                      </p>
                     ) : null}
                   </div>
-                  {state.hasPartialImport ? (
-                    <p
-                      id="onboarding-back-disabled-reason"
-                      className="max-w-sm text-xs leading-5 text-slate-500"
-                    >
-                      Back is unavailable after records are saved. Finish the
-                      remaining import now or continue it later.
-                    </p>
-                  ) : null}
-                </div>
 
-                <Button
-                  type="button"
-                  onClick={handleContinue}
-                  disabled={busy || continueDisabled}
-                  className="h-auto min-h-10 w-full whitespace-normal py-2 text-center sm:w-auto"
-                >
-                  {busy ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : null}
-                  {continueLabel ?? (isLast ? "Finish" : "Continue")}
-                  {!busy ? <ArrowRight className="ml-2 h-4 w-4" /> : null}
-                </Button>
-              </div>
+                  <Button
+                    type="button"
+                    onClick={handleContinue}
+                    disabled={busy || continueDisabled}
+                    className="h-auto min-h-12 w-full whitespace-normal rounded-xl bg-primary px-6 py-3 text-center text-sm font-semibold shadow-[0_12px_24px_-14px_rgba(4,120,87,0.8)] transition hover:-translate-y-0.5 hover:bg-primary/90 sm:w-auto"
+                  >
+                    {busy ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : null}
+                    {continueLabel ?? (isLast ? "Finish" : "Continue")}
+                    {!busy ? <ArrowRight className="ml-2 h-4 w-4" /> : null}
+                  </Button>
+                </div>
+              </footer>
             </div>
           </div>
         </DialogPrimitive.Content>
