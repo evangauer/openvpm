@@ -1,11 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { CreditCard, Loader2, ShieldCheck } from "lucide-react";
+import { useEffect } from "react";
+import Link from "next/link";
+import { CreditCard, ShieldCheck } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
-import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
-import { toast } from "sonner";
 import type { StepHandle } from "../journey-types";
 
 /**
@@ -22,9 +21,6 @@ export function AddACardStep({
   const subscription = trpc.subscription.get.useQuery(undefined, {
     retry: false,
   });
-  const setJourneyProgress = trpc.settings.setJourneyProgress.useMutation();
-  const createCheckout = trpc.subscription.createCheckout.useMutation();
-  const [redirecting, setRedirecting] = useState(false);
 
   useEffect(() => {
     // Skippable: Continue never blocks.
@@ -32,35 +28,10 @@ export function AddACardStep({
   }, [register]);
 
   const unitPrice = subscription.data?.locationUnitPriceMonthlyUsd ?? 79;
+  const annualPrice = subscription.data?.annualLocationUnitPriceUsd ?? 790;
   const alreadyHasCard = Boolean(
     subscription.data?.hasSubscription || subscription.data?.hasBillingAccount
   );
-
-  async function addCard() {
-    if (redirecting) return;
-    setRedirecting(true);
-    try {
-      // Resume at the closing step when Stripe sends the user back.
-      await setJourneyProgress.mutateAsync({ stepId: "allSet" });
-      const result = await createCheckout.mutateAsync({
-        tier: "cloud",
-        // Stripe sends the admin back into the guided setup, not billing.
-        returnTo: "setup",
-      });
-      const url = result?.url;
-      if (!url || !isSafeCheckoutRedirectUrl(url)) {
-        toast.error("Checkout is unavailable right now. Please try again.");
-        setRedirecting(false);
-        return;
-      }
-      window.location.href = url;
-    } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : "Could not start checkout."
-      );
-      setRedirecting(false);
-    }
-  }
 
   return (
     <div className="space-y-5">
@@ -71,14 +42,17 @@ export function AddACardStep({
       </p>
 
       <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-4">
-        <div className="flex items-baseline justify-between">
+        <div className="flex items-start justify-between gap-4">
           <span className="text-sm text-slate-600">OpenVPM Cloud</span>
-          <span className="font-heading text-lg font-bold text-slate-900">
-            ${unitPrice}
-            <span className="text-sm font-normal text-slate-500">
-              /location / month
-            </span>
-          </span>
+          <div className="text-right">
+            <p className="font-heading text-lg font-bold text-slate-900">
+              ${unitPrice}
+              <span className="text-sm font-normal text-slate-500">/month</span>
+            </p>
+            <p className="text-sm font-medium text-emerald-700">
+              or ${annualPrice}/year
+            </p>
+          </div>
         </div>
         <p className="mt-1 text-xs text-slate-500">
           Unlimited staff included. Billed only after your free trial.
@@ -95,13 +69,11 @@ export function AddACardStep({
           A card is already on file. You are all set.
         </p>
       ) : (
-        <Button type="button" variant="outline" onClick={addCard} disabled={redirecting}>
-          {redirecting ? (
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          ) : (
+        <Button asChild type="button" variant="outline">
+          <Link href="/settings?tab=billing">
             <CreditCard className="mr-2 h-4 w-4" />
-          )}
-          Add a card
+            Choose billing plan
+          </Link>
         </Button>
       )}
     </div>

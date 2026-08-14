@@ -29,13 +29,12 @@ describe("trial badge UI", () => {
     );
   });
 
-  it("starts Stripe checkout directly from the trial badge", () => {
-    expect(source).toContain("trpc.subscription.createCheckout.useMutation");
-    expect(source).toContain('checkout.mutate({ tier: "cloud" })');
-    expect(source).toContain("isSafeCheckoutRedirectUrl(result.url)");
-    expect(source).toContain("window.location.href = result.url");
-    // The trial badge is a real action button now, not a link to settings.
-    expect(source).toContain("disabled={checkout.isPending}");
+  it("routes the trial badge to the native billing choice before Checkout", () => {
+    expect(source).toContain('href="/settings?tab=billing"');
+    expect(source).toContain('aria-label="Activate account"');
+    expect(source).toContain("· Activate account");
+    expect(source).not.toContain("createCheckout.useMutation");
+    expect(source).not.toContain("window.location.href");
   });
 
   it("routes card-on-file trialing accounts to billing instead of another Checkout", () => {
@@ -46,7 +45,7 @@ describe("trial badge UI", () => {
       source.indexOf("const trialing ="),
     );
     expect(settingsSource).toContain(
-      "data.hasSubscription || data.hasBillingAccount",
+      "const firstActivation = !data.hasSubscription",
     );
     expect(addCardSource).toContain(
       "subscription.data?.hasSubscription || subscription.data?.hasBillingAccount",

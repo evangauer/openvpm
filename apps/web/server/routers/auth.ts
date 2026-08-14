@@ -364,6 +364,8 @@ export const authRouter = createRouter({
                 practiceId: createdPractice.id,
                 customerEmail: email,
                 trialPeriodDays: TRIAL_DAYS,
+                billingCadence: "month",
+                source: "signup",
                 successUrl: `${base}/login?checkout=success`,
                 cancelUrl: `${base}/login?checkout=cancelled`,
               });

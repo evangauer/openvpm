@@ -46,6 +46,7 @@ import {
   CLINIC_REGION_OPTIONS,
   type ClinicRegionCode,
 } from "@/lib/locale/clinic-regions";
+import { safeAuthNextPath } from "@/lib/auth-redirect";
 
 type RegistrationCountry = ClinicRegionCode | "OTHER" | "";
 
@@ -70,6 +71,7 @@ function RegisterPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const cloudIntent = searchParams.get("intent") === "cloud";
+  const nextPath = safeAuthNextPath(searchParams.get("next"), "/");
   const acquisition = acquisitionFromSearchParams(searchParams);
   const [practiceName, setPracticeName] = useState("");
   const [country, setCountry] = useState<RegistrationCountry>("");
@@ -113,10 +115,10 @@ function RegisterPageInner() {
         // "/" while logged out, so the router cache holds a redirect to
         // /login for up to 30s and push would replay it, bouncing brand-new
         // accounts to the login page right after signup.
-        window.location.assign("/");
+        window.location.assign(nextPath);
       } else {
         toast.success("Account created. Please sign in.");
-        router.push("/login");
+        router.push(`/login?next=${encodeURIComponent(nextPath)}`);
       }
     },
     onError: (err) => {
@@ -359,7 +361,7 @@ function RegisterPageInner() {
           <p className="mt-8 text-center text-sm text-slate-500">
             Already have an account?{" "}
             <Link
-              href="/login"
+              href={`/login?next=${encodeURIComponent(nextPath)}`}
               className="font-medium text-primary hover:underline"
             >
               Sign in

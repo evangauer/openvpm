@@ -8,6 +8,7 @@ import {
   stripeWebhookSecret,
 } from "@/lib/stripe-config";
 import { envFlagEnabled } from "@/lib/env-bool";
+import type { BillingCadence } from "@/lib/billing/catalog";
 
 export const STRIPE_TAX_ENABLED_ENV = "STRIPE_TAX_ENABLED";
 export const INVOICE_CHECKOUT_CAPTURE_MODE = "manual_v1";
@@ -16,6 +17,8 @@ export const INVOICE_CHECKOUT_INTEGRATION_IDENTIFIER =
   "openvpm_invoice_jqkzrmnp";
 export const SUBSCRIPTION_CHECKOUT_INTEGRATION_IDENTIFIER =
   "openvpm_subscription_vhtxcsla";
+const EXCLUDED_SUBSCRIPTION_PAYMENT_METHODS: Stripe.Checkout.SessionCreateParams.ExcludedPaymentMethodType[] =
+  ["amazon_pay", "cashapp", "klarna"];
 
 function stripeIdempotencyKey(
   scope: string,
@@ -507,6 +510,8 @@ export async function createSubscriptionCheckoutSession(data: {
   cancelUrl: string;
   trialEnd?: Date | string | null;
   trialPeriodDays?: number;
+  billingCadence?: BillingCadence;
+  source?: "signup" | "settings";
 }): Promise<{ url: string | null } | null> {
   if (!stripe) {
     console.warn(
@@ -534,14 +539,27 @@ export function buildSubscriptionCheckoutSessionParams(data: {
   cancelUrl: string;
   trialEnd?: Date | string | null;
   trialPeriodDays?: number;
+  billingCadence?: BillingCadence;
+  source?: "signup" | "settings";
 }): Stripe.Checkout.SessionCreateParams {
   const trialEnd = data.trialEnd
     ? Math.floor(new Date(data.trialEnd).getTime() / 1000)
     : undefined;
   const hasTrial = !!trialEnd || !!data.trialPeriodDays;
+  const billingCadence = data.billingCadence ?? "month";
+  const metadata = {
+    practiceId: data.practiceId,
+    billingCadence,
+    source: data.source ?? "settings",
+  };
   return {
     mode: "subscription",
     integration_identifier: SUBSCRIPTION_CHECKOUT_INTEGRATION_IDENTIFIER,
+    // Keep the clinic subscription checkout to cards (including card wallets
+    // such as Apple Pay and Link) and U.S. bank accounts. Stripe still chooses
+    // the eligible methods dynamically; only the explicitly unwanted methods
+    // are removed.
+    excluded_payment_method_types: EXCLUDED_SUBSCRIPTION_PAYMENT_METHODS,
     // Hosted trials must collect a card up front so Stripe can charge
     // automatically at trial end instead of creating an uncollectible account.
     payment_method_collection: "always",
@@ -556,10 +574,13 @@ export function buildSubscriptionCheckoutSessionParams(data: {
       ? { customer: data.customerId }
       : { customer_email: checkoutCustomerEmail(data.customerEmail) }),
     client_reference_id: data.practiceId,
-    metadata: { practiceId: data.practiceId },
+    metadata,
     ...subscriptionTaxCheckoutParams(data.customerId),
     subscription_data: {
-      metadata: { practiceId: data.practiceId },
+      description: `OpenVPM Cloud — ${
+        billingCadence === "year" ? "annual" : "monthly"
+      }`,
+      metadata,
       ...(hasTrial
         ? {
             trial_settings: {

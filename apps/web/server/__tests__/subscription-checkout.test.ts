@@ -279,10 +279,34 @@ describe("subscription checkout", () => {
         customerEmail: "practice@example.com",
         trialEnd: null,
         trialPeriodDays: TRIAL_DAYS,
-        successUrl: "https://app.example.com/settings?tab=billing&checkout=success",
+        billingCadence: "month",
+        source: "settings",
+        successUrl:
+          "https://app.example.com/settings?tab=billing&checkout=success&plan=month",
         cancelUrl:
-          "https://app.example.com/settings?tab=billing&checkout=cancelled",
+          "https://app.example.com/settings?tab=billing&checkout=cancelled&plan=month",
       })
+    );
+  });
+
+  it("uses the configured annual price when annual billing is selected", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_monthly");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION_ANNUAL", "price_annual");
+    const db = createDb([[practice({ billingStatus: "trialing" })]]);
+
+    await expect(
+      callerWithDb(db).createCheckout({
+        tier: "cloud",
+        billingCadence: "year",
+      }),
+    ).resolves.toEqual({ url: "https://stripe.example/subscription-checkout" });
+
+    expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        lineItems: [{ priceId: "price_annual", quantity: 2 }],
+        billingCadence: "year",
+        source: "settings",
+      }),
     );
   });
 

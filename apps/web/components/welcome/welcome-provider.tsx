@@ -23,7 +23,10 @@ import {
   markWelcomeSeen,
   readWelcomeState,
 } from "@/lib/welcome/local-state";
-import { firstRunMode } from "@/lib/welcome/first-run";
+import {
+  firstRunMode,
+  suppressWelcomeForBilling,
+} from "@/lib/welcome/first-run";
 import { useTour } from "@/components/tour/tour-provider";
 import { useOnboardingJourney } from "@/components/onboarding/journey-overlay";
 import type { GuideContext } from "@/components/tour/guide-recipes";
@@ -79,10 +82,9 @@ export function WelcomeProvider({ children }: { children: React.ReactNode }) {
   const onboardingStatus = trpc.settings.onboardingStatus.useQuery(undefined, {
     enabled: isAdmin,
   });
-  const onboardingState = trpc.settings.getOnboardingState.useQuery(
-    undefined,
-    { enabled: isAdmin }
-  );
+  const onboardingState = trpc.settings.getOnboardingState.useQuery(undefined, {
+    enabled: isAdmin,
+  });
   const welcomeContext = trpc.settings.welcomeContext.useQuery(undefined, {
     enabled: authed,
   });
@@ -128,6 +130,17 @@ export function WelcomeProvider({ children }: { children: React.ReactNode }) {
       autoDecided.current = true;
       router.replace(pathname); // strip so refresh does not relaunch
       setOpen(true);
+      return;
+    }
+
+    if (
+      typeof window !== "undefined" &&
+      suppressWelcomeForBilling(
+        pathname,
+        new URLSearchParams(window.location.search),
+      )
+    ) {
+      autoDecided.current = true;
       return;
     }
 
@@ -196,7 +209,7 @@ export function WelcomeProvider({ children }: { children: React.ReactNode }) {
       setOpen(false);
       start(card, ctx);
     },
-    [start, userId]
+    [start, userId],
   );
 
   const skip = useCallback(() => {
@@ -218,15 +231,13 @@ export function WelcomeProvider({ children }: { children: React.ReactNode }) {
 
   const headline = isAdmin
     ? WELCOME_COPY.headlineAdmin(
-        welcomeContext.data?.practiceName ?? "your clinic"
+        welcomeContext.data?.practiceName ?? "your clinic",
       )
     : session?.user?.name
       ? WELCOME_COPY.headlineStaff(session.user.name.split(" ")[0]!)
       : WELCOME_COPY.headlineFallback;
 
-  const completed = new Set(
-    Object.keys(readWelcomeState(userId).guides ?? {})
-  );
+  const completed = new Set(Object.keys(readWelcomeState(userId).guides ?? {}));
 
   return (
     <WelcomeContext.Provider value={{ openWelcome, isOpen: open }}>
@@ -264,7 +275,7 @@ export function WelcomeProvider({ children }: { children: React.ReactNode }) {
 function resolveVariant(): WelcomeVariant {
   if (typeof window !== "undefined") {
     const param = new URLSearchParams(window.location.search).get(
-      "welcomeVariant"
+      "welcomeVariant",
     );
     if (param === "imagery" || param === "vignette") return param;
   }

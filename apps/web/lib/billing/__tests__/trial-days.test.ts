@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { trialCalendarDaysLeft } from "../trial-days";
+import { trialCalendarDaysLeft, trialEndOfCalendarDay } from "../trial-days";
 
 describe("trialCalendarDaysLeft", () => {
+  it("keeps a fourteen-day trial through the final clinic calendar day", () => {
+    const start = new Date("2026-08-13T23:17:00.000Z");
+    const end = trialEndOfCalendarDay(14, "America/New_York", start);
+
+    expect(end.toISOString()).toBe("2026-08-28T03:59:59.000Z");
+    expect(trialCalendarDaysLeft(end, "America/New_York", start)).toBe(14);
+  });
   it("counts practice-local calendar days instead of exact 24-hour blocks", () => {
     expect(
       trialCalendarDaysLeft(

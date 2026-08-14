@@ -76,7 +76,7 @@ export default function DashboardLayout({
               </div>
             </div>
           )}
-          <div className="flex flex-1 flex-col overflow-hidden">
+          <div className="flex min-w-0 w-full max-w-full flex-1 flex-col overflow-hidden">
             <TopBar
               onMenuOpen={() => setMobileNavOpen(true)}
               onSearchOpen={() => setSearchOpen(true)}
@@ -85,7 +85,10 @@ export default function DashboardLayout({
             <DemoFunnelTracker />
             <VerifyEmailBanner />
             <RecoveryReviewBanner />
-            <main id="main-content" className="flex-1 overflow-y-auto bg-surface p-4 sm:p-6">
+            <main
+              id="main-content"
+              className="min-w-0 w-full max-w-full flex-1 overflow-x-hidden overflow-y-auto bg-surface p-4 sm:p-6"
+            >
               <ErrorBoundary>{children}</ErrorBoundary>
             </main>
           </div>

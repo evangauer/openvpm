@@ -11,16 +11,20 @@ import {
   hasHostedFullAccess,
   billingEnforced,
   estimatedCloudBaseMonthlyUsd,
+  estimatedCloudBaseAnnualUsd,
   tierForStripePrice,
   cloudCheckoutPriceIds,
+  billingCadenceForStripePrice,
   cloudMeteredPriceIds,
   stripePriceIdFromEnv,
   STRIPE_PRICE_CLOUD_LOCATION_ENV,
+  STRIPE_PRICE_CLOUD_LOCATION_ANNUAL_ENV,
   STRIPE_PRICE_CLOUD_USER_ENV,
   STRIPE_PRICE_CLOUD_LEGACY_ENV,
   STRIPE_PRICE_AI_OVERAGE_ENV,
   STRIPE_PRICE_SMS_OVERAGE_ENV,
   CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD,
+  CLOUD_LOCATION_UNIT_PRICE_ANNUAL_USD,
   CLOUD_SEAT_UNIT_PRICE_MONTHLY_USD,
   CLOUD_AI_OVERAGE_PRICE_USD,
   CLOUD_SMS_OVERAGE_PRICE_USD,
@@ -120,6 +124,8 @@ describe("PLANS pricing", () => {
     // Flat per-location model: staff count does not affect the base.
     expect(estimatedCloudBaseMonthlyUsd(2, 5)).toBe(158);
     expect(estimatedCloudBaseMonthlyUsd(0, 0)).toBe(79);
+    expect(estimatedCloudBaseAnnualUsd(2, 5)).toBe(1580);
+    expect(CLOUD_LOCATION_UNIT_PRICE_ANNUAL_USD).toBe(790);
   });
 
   it("keeps customer-facing plan blurbs scoped to shipped hosted capabilities", () => {
@@ -215,6 +221,16 @@ describe("Stripe price mapping", () => {
       locationPriceId: "price_location",
       seatPriceId: undefined,
     });
+  });
+
+  it("selects and maps the annual Cloud location price", () => {
+    vi.stubEnv(STRIPE_PRICE_CLOUD_LOCATION_ENV, "price_monthly");
+    vi.stubEnv(STRIPE_PRICE_CLOUD_LOCATION_ANNUAL_ENV, " price_annual ");
+
+    expect(cloudCheckoutPriceIds("year").locationPriceId).toBe("price_annual");
+    expect(billingCadenceForStripePrice("price_monthly")).toBe("month");
+    expect(billingCadenceForStripePrice("price_annual")).toBe("year");
+    expect(tierForStripePrice("price_annual")).toBe("cloud");
   });
 
   it("returns undefined for blank Stripe price envs", () => {

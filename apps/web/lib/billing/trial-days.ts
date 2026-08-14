@@ -1,6 +1,21 @@
-import { formatDateInputForTimeZone } from "@/lib/date-input";
+import {
+  dateInputDayUtcRange,
+  formatDateInputForTimeZone,
+} from "@/lib/date-input";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** End a trial at the close of its final clinic calendar day. */
+export function trialEndOfCalendarDay(
+  days: number,
+  timeZone = "America/New_York",
+  now: Date = new Date(),
+): Date {
+  const nominalEnd = new Date(now.getTime() + Math.max(0, days) * DAY_MS);
+  const finalDay = formatDateInputForTimeZone(nominalEnd, timeZone);
+  const { end } = dateInputDayUtcRange(finalDay, timeZone);
+  return new Date(end.getTime() - 1_000);
+}
 
 function validTimeZone(timeZone?: string | null): string {
   const resolved = timeZone?.trim() || "UTC";

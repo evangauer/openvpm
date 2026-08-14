@@ -5,12 +5,16 @@ import { alertOps } from "@/lib/alerts";
 import { stripe } from "@/lib/stripe";
 import {
   STRIPE_PRICE_CLOUD_LEGACY_ENV,
+  billingCadenceForStripePrice,
   billingEnforced,
   cloudCheckoutPriceIds,
+  cloudLocationPriceIds,
   cloudMeteredPriceIds,
+  estimatedCloudBaseAnnualUsd,
   estimatedCloudBaseMonthlyUsd,
   stripePriceIdFromEnv,
 } from "./plans";
+import type { BillingCadence } from "./catalog";
 
 export type BillingSyncStatus = "ok" | "skipped" | "legacy" | "error";
 
@@ -20,6 +24,7 @@ export interface BillingSyncState {
   updatedAt: string;
   locationCount: number;
   billableSeatCount: number;
+  billingCadence?: BillingCadence;
 }
 
 export interface BillableCounts {
@@ -76,13 +81,15 @@ async function writeBillingSyncState(
 function buildState(
   status: BillingSyncStatus,
   message: string,
-  counts: BillableCounts
+  counts: BillableCounts,
+  billingCadence?: BillingCadence,
 ): BillingSyncState {
   return {
     status,
     message,
     updatedAt: new Date().toISOString(),
     ...counts,
+    ...(billingCadence ? { billingCadence } : {}),
   };
 }
 
@@ -147,8 +154,9 @@ export async function syncPracticeSubscriptionQuantities(opts: {
     return state;
   }
 
-  const { locationPriceId, seatPriceId } = cloudCheckoutPriceIds();
-  if (!locationPriceId) {
+  const locationPrices = cloudLocationPriceIds();
+  const { seatPriceId } = cloudCheckoutPriceIds();
+  if (locationPrices.length === 0) {
     const state = buildState(
       "error",
       "Stripe Cloud location price ID is not configured.",
@@ -167,7 +175,10 @@ export async function syncPracticeSubscriptionQuantities(opts: {
   try {
     const subscription = await stripe.subscriptions.retrieve(subscriptionId);
     const items = subscription.items.data;
-    const locationItem = items.find((item) => item.price?.id === locationPriceId);
+    const locationItem = items.find((item) =>
+      locationPrices.some((entry) => entry.priceId === item.price?.id),
+    );
+    const billingCadence = billingCadenceForStripePrice(locationItem?.price?.id);
     // Flat model bills locations only; legacy subscriptions may also carry a
     // per-seat item, which we keep in sync for back-compat when present.
     const seatItem = seatPriceId
@@ -213,7 +224,8 @@ export async function syncPracticeSubscriptionQuantities(opts: {
     // the subscription exists. Idempotent: only add what is missing, so this
     // also self-heals subscriptions created before overage prices existed.
     const { aiOveragePriceId, smsOveragePriceId } = cloudMeteredPriceIds();
-    for (const meteredPriceId of [aiOveragePriceId, smsOveragePriceId]) {
+    for (const meteredPriceId of
+      billingCadence === "year" ? [] : [aiOveragePriceId, smsOveragePriceId]) {
       if (
         meteredPriceId &&
         !items.some((item) => item.price?.id === meteredPriceId)
@@ -228,12 +240,17 @@ export async function syncPracticeSubscriptionQuantities(opts: {
     }
     await Promise.all(updates);
 
+    const estimatedBase =
+      billingCadence === "year"
+        ? `${estimatedCloudBaseAnnualUsd(counts.locationCount, counts.billableSeatCount)} USD/yr`
+        : `${estimatedCloudBaseMonthlyUsd(counts.locationCount, counts.billableSeatCount)} USD/mo`;
     const state = buildState(
       "ok",
       `Synced ${counts.locationCount} location(s)${
         seatItem ? ` and ${counts.billableSeatCount} staff seat(s)` : ", unlimited staff"
-      }. Estimated base ${estimatedCloudBaseMonthlyUsd(counts.locationCount, counts.billableSeatCount)} USD/mo.`,
-      counts
+      }. Estimated base ${estimatedBase}.`,
+      counts,
+      billingCadence ?? undefined,
     );
     await writeBillingSyncState(db, practiceId, state);
     return state;

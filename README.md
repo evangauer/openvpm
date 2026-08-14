@@ -300,10 +300,11 @@ Self-hosting stays fully unlocked and free. Leave `HOSTED_BILLING_ENABLED` unset
 OpenVPM Cloud is the hosted service for clinics that do not want to run infrastructure. It includes a 14-day free trial with no credit card required — clinics land in the product immediately and add a card only to convert, then bills one simple plan:
 
 - $79/month per active, non-deleted location, with unlimited staff (all roles included)
+- $790/year per active location (two months free), with unlimited staff
 - Included monthly AI allowance and, for activated texting pilots, an SMS allowance; configured overages use Stripe meters
 - Enterprise deployments are custom/contact-sales
 
-Hosted Stripe setup uses one recurring per-location price in `STRIPE_PRICE_CLOUD_LOCATION`. `STRIPE_PRICE_CLOUD_USER` and `STRIPE_PRICE_CLOUD` are legacy-only for existing subscriptions and are not used for new checkout.
+Hosted Stripe setup uses monthly and annual recurring per-location prices in `STRIPE_PRICE_CLOUD_LOCATION` and `STRIPE_PRICE_CLOUD_LOCATION_ANNUAL`. Checkout contains one customer-facing OpenVPM Cloud line item. `STRIPE_PRICE_CLOUD_USER` and `STRIPE_PRICE_CLOUD` are legacy-only for existing subscriptions and are not used for new checkout.
 
 For hosted deployment details, see [docs/hosted-cloud-production.md](docs/hosted-cloud-production.md).
 

@@ -13,13 +13,16 @@ import {
   PLAN_ORDER,
   billingEnforced,
   cloudCheckoutPriceIds,
-  cloudMeteredPriceIds,
+  cloudLocationPriceIds,
+  estimatedCloudBaseAnnualUsd,
   estimatedCloudBaseMonthlyUsd,
+  CLOUD_LOCATION_UNIT_PRICE_ANNUAL_USD,
   CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD,
   CLOUD_SEAT_UNIT_PRICE_MONTHLY_USD,
   TRIAL_DAYS,
   hasHostedFullAccess,
 } from "@/lib/billing/plans";
+import { BILLING_CADENCES, CLOUD_BILLING_OPTIONS } from "@/lib/billing/catalog";
 import { usageForPractice, currentPeriodMonth } from "@/lib/billing/usage";
 import {
   countBillableLocationsAndSeats,
@@ -43,8 +46,7 @@ function practiceNotFound(): TRPCError {
 /** Whether a tier can be bought self-serve (Stripe price configured). */
 function purchasable(tier: keyof typeof PLANS): boolean {
   if (tier !== "cloud") return false;
-  const { locationPriceId } = cloudCheckoutPriceIds();
-  return !!locationPriceId;
+  return cloudLocationPriceIds().length > 0;
 }
 
 export const subscriptionRouter = createRouter({
@@ -102,6 +104,26 @@ export const subscriptionRouter = createRouter({
         counts.locationCount,
         counts.billableSeatCount
       ),
+      estimatedAnnualBase: estimatedCloudBaseAnnualUsd(
+        counts.locationCount,
+        counts.billableSeatCount,
+      ),
+      annualLocationUnitPriceUsd: CLOUD_LOCATION_UNIT_PRICE_ANNUAL_USD,
+      currentBillingCadence: billingSync?.billingCadence ?? null,
+      billingOptions: CLOUD_BILLING_OPTIONS.map((option) => ({
+        ...option,
+        totalUsd:
+          option.cadence === "year"
+            ? estimatedCloudBaseAnnualUsd(
+                counts.locationCount,
+                counts.billableSeatCount,
+              )
+            : estimatedCloudBaseMonthlyUsd(
+                counts.locationCount,
+                counts.billableSeatCount,
+              ),
+        purchasable: !!cloudCheckoutPriceIds(option.cadence).locationPriceId,
+      })),
       billingSyncStatus: billingSync,
       usage: { period, sms: smsUsed, aiRuns: aiUsed },
       plans: PLAN_ORDER.map((t) => {
@@ -131,6 +153,7 @@ export const subscriptionRouter = createRouter({
     .input(
       z.object({
         tier: z.enum(["cloud"]).default("cloud"),
+        billingCadence: z.enum(BILLING_CADENCES).default("month"),
         // Where Stripe sends the admin back: the billing page (default) or
         // the guided setup, which resumes where they left off.
         returnTo: z.enum(["settings", "setup"]).default("settings"),
@@ -138,7 +161,7 @@ export const subscriptionRouter = createRouter({
     )
     .mutation(async ({ ctx, input }) => {
       const plan = PLANS[input.tier];
-      const { locationPriceId } = cloudCheckoutPriceIds();
+      const { locationPriceId } = cloudCheckoutPriceIds(input.billingCadence);
       if (!plan.selfServe || !locationPriceId) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
@@ -211,14 +234,16 @@ export const subscriptionRouter = createRouter({
         customerEmail,
         trialEnd: activeTrialEnd,
         trialPeriodDays: activeTrialEnd || practice.trialEndsAt ? undefined : TRIAL_DAYS,
+        billingCadence: input.billingCadence,
+        source: "settings",
         successUrl:
           input.returnTo === "setup"
             ? `${base}/?setup=resume&checkout=success`
-            : `${base}/settings?tab=billing&checkout=success`,
+            : `${base}/settings?tab=billing&checkout=success&plan=${input.billingCadence}`,
         cancelUrl:
           input.returnTo === "setup"
             ? `${base}/?setup=resume&checkout=cancelled`
-            : `${base}/settings?tab=billing&checkout=cancelled`,
+            : `${base}/settings?tab=billing&checkout=cancelled&plan=${input.billingCadence}`,
       });
       const checkoutUrl = result?.url;
       if (!isSafeCheckoutRedirectUrl(checkoutUrl)) {

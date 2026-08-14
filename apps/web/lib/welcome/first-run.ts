@@ -13,3 +13,11 @@ export function firstRunMode(): "welcome" | "wizard" {
     ? "wizard"
     : "welcome";
 }
+
+/** Keep conversion deep links focused; Guides still opens the welcome manually. */
+export function suppressWelcomeForBilling(
+  pathname: string,
+  searchParams: Pick<URLSearchParams, "get">,
+) {
+  return pathname === "/settings" && searchParams.get("tab") === "billing";
+}

@@ -85,9 +85,9 @@ export function VerifyEmailBanner() {
 
   return (
     // Wraps at phone widths so the resend button never clips off-screen.
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-900 sm:px-6">
+    <div className="flex w-full max-w-full flex-wrap items-center gap-x-3 gap-y-2 overflow-hidden border-b border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-900 sm:px-6">
       <Mail className="hidden h-4 w-4 shrink-0 sm:block" />
-      <p className="min-w-0 flex-1 basis-48">
+      <p className="min-w-0 flex-1 basis-48 break-words">
         {resend.isSuccess && resend.data ? (
           <span className="inline-flex items-center gap-1.5">
             {resend.data.verificationEmailSent ||

@@ -15,6 +15,7 @@ import {
   X,
   Loader2,
   ShieldAlert,
+  ShieldCheck,
   Database,
   Download,
   Upload,
@@ -59,6 +60,11 @@ import { useCurrencyFormatter } from "@/lib/locale/useCurrency";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
 import { trialCalendarDaysLeft } from "@/lib/billing/trial-days";
+import { CloudBillingCadencePicker } from "@/components/billing/cloud-billing-cadence-picker";
+import {
+  billingCadenceFromQuery,
+  type BillingCadence,
+} from "@/lib/billing/catalog";
 import {
   PRACTICE_BACKUP_JSON_MAX_BYTES,
   PRACTICE_BACKUP_JSON_SIZE_MESSAGE,
@@ -345,9 +351,9 @@ function SettingsPageInner() {
   }
 
   return (
-    <div>
-      <div className="flex items-center justify-between">
-        <div>
+    <div className="min-w-0 w-full max-w-full overflow-hidden">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
           <h2 className="font-heading text-xl font-semibold">Settings</h2>
           <p className="text-sm text-muted-foreground">
             Practice configuration and staff management
@@ -364,10 +370,13 @@ function SettingsPageInner() {
         </Button>
       </div>
 
-      <div className="mt-6 flex flex-col gap-6 lg:flex-row lg:gap-8">
+      <div className="mt-6 flex min-w-0 w-full max-w-full flex-col gap-6 lg:flex-row lg:gap-8">
         {/* Section nav: horizontal scroll on small screens, vertical on lg+ */}
-        <nav className="lg:w-56 lg:shrink-0" aria-label="Settings sections">
-          <div className="flex gap-1 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible lg:pb-0">
+        <nav
+          className="min-w-0 max-w-full overflow-hidden lg:w-56 lg:shrink-0"
+          aria-label="Settings sections"
+        >
+          <div className="flex w-full max-w-full gap-1 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible lg:pb-0">
             {tabs.map((tab) => {
               const Icon = tab.icon;
               return (
@@ -390,7 +399,7 @@ function SettingsPageInner() {
         </nav>
 
         {/* Tab content */}
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 w-full max-w-full flex-1">
           {activeTab === "practice" && <PracticeInfoTab />}
           {activeTab === "locations" && <LocationsTab />}
           {activeTab === "staff" && <StaffTab />}
@@ -1377,7 +1386,10 @@ function redirectToClientPaymentUrl(url: unknown) {
 
 function BillingTab() {
   const utils = trpc.useUtils();
-  const [showAllPlans, setShowAllPlans] = useState(false);
+  const searchParams = useSearchParams();
+  const [selectedCadence, setSelectedCadence] = useState<BillingCadence>(() =>
+    billingCadenceFromQuery(searchParams.get("plan")),
+  );
   const {
     data,
     isLoading,
@@ -1494,11 +1506,11 @@ function BillingTab() {
   const daysLeft = trialCalendarDaysLeft(data.trialEndsAt, data.timezone) ?? 0;
   const currentPlan = data.plans.find((p) => p.tier === data.tier);
   const showReadOnlyNotice = !data.hasFullAccess;
-  const perLocation = data.locationUnitPriceMonthlyUsd;
-  const multiLocation = data.locationCount > 1;
-  const priceSentence = multiLocation
-    ? `$${perLocation} a month for each of your ${data.locationCount} locations (about $${data.estimatedMonthlyBase} a month)`
-    : `$${perLocation} a month for your location`;
+  const availableCadences = data.billingOptions
+    .filter((option) => option.purchasable)
+    .map((option) => option.cadence);
+  const firstActivation = !data.hasSubscription;
+  const checkoutStatus = searchParams.get("checkout");
   // Only surface the sync note when something actually needs attention.
   const showSyncNote =
     data.billingSyncStatus &&
@@ -1506,38 +1518,124 @@ function BillingTab() {
       data.billingSyncStatus.status === "legacy");
 
   return (
-    <div className="space-y-6">
-      {/* One clear plan card: what you have, what it costs, what is included. */}
-      <div className="rounded-lg border border-border bg-card p-6">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p className="text-sm text-muted-foreground">Your plan</p>
-            <div className="flex items-center gap-3">
-              <h3 className="font-heading text-2xl font-semibold">
-                {currentPlan?.name ?? data.tier}
+    <div className="min-w-0 w-full max-w-full space-y-6">
+      {checkoutStatus === "cancelled" ? (
+        <div className="rounded-lg border border-border bg-muted/50 p-4 text-sm">
+          <p className="font-medium">Checkout was canceled</p>
+          <p className="mt-1 text-muted-foreground">
+            Nothing changed. Choose a schedule whenever you are ready.
+          </p>
+        </div>
+      ) : null}
+      {checkoutStatus === "success" ? (
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+          <p className="font-medium">Your billing details were received</p>
+          <p className="mt-1">OpenVPM is confirming the subscription now.</p>
+        </div>
+      ) : null}
+
+      <div className="min-w-0 w-full max-w-full overflow-hidden rounded-xl border border-primary/25 bg-card shadow-sm">
+        <div className="border-b border-primary/10 bg-gradient-to-br from-primary/10 via-card to-card p-6 sm:p-8">
+          <div className="flex flex-col items-start gap-4 sm:flex-row">
+            <span className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
+              <ShieldCheck className="size-5" aria-hidden="true" />
+            </span>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-sm font-medium text-primary">
+                  OpenVPM Cloud
+                </p>
+                <Badge
+                  variant={data.billingStatus === "active" ? "success" : "info"}
+                >
+                  {data.billingStatus === "trialing"
+                    ? `${daysLeft} trial day${daysLeft === 1 ? "" : "s"} left`
+                    : data.billingStatus.replace("_", " ")}
+                </Badge>
+              </div>
+              <h3 className="mt-2 font-heading text-2xl font-semibold tracking-tight">
+                {firstActivation
+                  ? "Activate your account"
+                  : "Your Cloud subscription"}
               </h3>
-              <span
-                className={cn(
-                  "rounded-full px-3 py-1 text-xs font-medium capitalize",
-                  data.billingStatus === "active" &&
-                    "bg-green-100 text-green-700",
-                  data.billingStatus === "trialing" &&
-                    "bg-blue-100 text-blue-700",
-                  data.billingStatus === "past_due" &&
-                    "bg-red-100 text-red-700",
-                  (data.billingStatus === "canceled" ||
-                    data.billingStatus === "none") &&
-                    "bg-gray-100 text-gray-600",
-                )}
-              >
-                {data.billingStatus === "trialing"
-                  ? `Trial · ${daysLeft} days left`
-                  : data.billingStatus.replace("_", " ")}
-              </span>
+              <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
+                {firstActivation
+                  ? "Choose a billing schedule, then add your payment details in secure Stripe Checkout. Your workspace and trial stay exactly as they are."
+                  : `${currentPlan?.name ?? "Cloud"} keeps your clinic workspace active with unlimited staff.`}
+              </p>
             </div>
           </div>
-          <div className="flex flex-wrap gap-2">
-            {data.hasSubscription || data.hasBillingAccount ? (
+        </div>
+
+        <div className="p-6 sm:p-8">
+          {showReadOnlyNotice ? (
+            <div className="mb-5 flex gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <p>
+                Cloud is in read-only mode. Activating billing restores full
+                access without changing your records.
+              </p>
+            </div>
+          ) : null}
+
+          {firstActivation ? (
+            <>
+              <CloudBillingCadencePicker
+                value={selectedCadence}
+                onValueChange={setSelectedCadence}
+                locationCount={data.locationCount}
+                availableCadences={availableCadences}
+                disabled={checkout.isPending}
+              />
+
+              <div className="mt-6 flex flex-col gap-4 border-t border-border pt-5 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-medium">
+                    {selectedCadence === "year"
+                      ? `$${data.estimatedAnnualBase} billed once per year`
+                      : `$${data.estimatedMonthlyBase} billed monthly`}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {data.billingStatus === "trialing"
+                      ? `No charge today. ${daysLeft} trial day${daysLeft === 1 ? "" : "s"} remaining.`
+                      : "Stripe securely collects and stores your payment method."}
+                  </p>
+                </div>
+                <Button
+                  className="w-full gap-2 sm:w-auto"
+                  disabled={
+                    checkout.isPending ||
+                    !availableCadences.includes(selectedCadence)
+                  }
+                  onClick={() =>
+                    checkout.mutate({
+                      tier: "cloud",
+                      billingCadence: selectedCadence,
+                    })
+                  }
+                >
+                  {checkout.isPending ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <CreditCard className="size-4" />
+                  )}
+                  Continue to secure checkout
+                </Button>
+              </div>
+            </>
+          ) : (
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-medium">
+                  {data.currentBillingCadence === "year"
+                    ? `$${data.estimatedAnnualBase} per year`
+                    : `$${data.estimatedMonthlyBase} per month`}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Update payment details, invoices, or cancellation securely in
+                  Stripe.
+                </p>
+              </div>
               <Button
                 variant="outline"
                 disabled={portal.isPending}
@@ -1550,87 +1648,47 @@ function BillingTab() {
                 )}
                 Manage billing
               </Button>
-            ) : (
-              <Button
-                disabled={checkout.isPending}
-                onClick={() => checkout.mutate({ tier: "cloud" })}
-              >
-                {checkout.isPending ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                ) : (
-                  <CreditCard className="mr-2 h-4 w-4" />
-                )}
-                Subscribe
-              </Button>
-            )}
-          </div>
-        </div>
-
-        <p className="mt-4 max-w-2xl text-sm text-muted-foreground">
-          {data.billingStatus === "trialing" ? (
-            <>
-              Your free trial has{" "}
-              <span className="font-medium text-foreground">
-                {daysLeft} days
-              </span>{" "}
-              left. After that, {currentPlan?.name ?? "Cloud"} is{" "}
-              {priceSentence}. Unlimited staff, and everything you see today
-              stays on.
-            </>
-          ) : (
-            <>
-              {currentPlan?.name ?? "Cloud"} is {priceSentence}. Unlimited
-              staff, everything included.
-            </>
+            </div>
           )}
-        </p>
 
-        {(currentPlan?.includedSmsPerMonth != null ||
-          currentPlan?.includedAiRunsPerMonth != null) && (
-          <p className="mt-2 text-sm text-muted-foreground">
-            This month:{" "}
-            <span className="font-medium text-foreground">
-              {data.usage.sms}
-            </span>{" "}
-            of {currentPlan?.includedSmsPerMonth?.toLocaleString()} included
-            texts ·{" "}
-            <span className="font-medium text-foreground">
-              {data.usage.aiRuns}
-            </span>{" "}
-            of {currentPlan?.includedAiRunsPerMonth?.toLocaleString()} included
-            AI actions
-          </p>
-        )}
+          <div className="mt-5 flex flex-wrap gap-x-5 gap-y-2 text-xs text-muted-foreground">
+            {[
+              "Powered by Stripe",
+              "Cancel anytime",
+              "Unlimited staff included",
+            ].map((item) => (
+              <span key={item} className="inline-flex items-center gap-1.5">
+                <Check className="size-3.5 text-primary" aria-hidden="true" />
+                {item}
+              </span>
+            ))}
+          </div>
 
-        {showReadOnlyNotice && (
-          <div className="mt-4 flex gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-            <p>
-              Cloud is in read-only mode. You can view records, manage billing,
-              and export data; writes resume when your trial or subscription is
-              active.
+          {(currentPlan?.includedSmsPerMonth != null ||
+            currentPlan?.includedAiRunsPerMonth != null) && (
+            <p className="mt-5 border-t border-border pt-4 text-xs text-muted-foreground">
+              This month: {data.usage.sms} of{" "}
+              {currentPlan?.includedSmsPerMonth?.toLocaleString()} included
+              texts · {data.usage.aiRuns} of{" "}
+              {currentPlan?.includedAiRunsPerMonth?.toLocaleString()} included
+              AI actions
             </p>
-          </div>
-        )}
-        {data.billingStatus === "past_due" && (
-          <p className="mt-3 text-sm text-red-600">
-            Your last payment failed. Update your payment method to restore
-            write access.
-          </p>
-        )}
-        {showSyncNote && (
-          <div
-            className={cn(
-              "mt-4 rounded-md border p-3 text-xs",
-              data.billingSyncStatus!.status === "error"
-                ? "border-red-200 bg-red-50 text-red-700"
-                : "border-amber-200 bg-amber-50 text-amber-800",
-            )}
-          >
-            <span className="font-medium">Billing sync: </span>
-            {data.billingSyncStatus!.message}
-          </div>
-        )}
+          )}
+
+          {showSyncNote ? (
+            <div
+              className={cn(
+                "mt-4 rounded-md border p-3 text-xs",
+                data.billingSyncStatus!.status === "error"
+                  ? "border-red-200 bg-red-50 text-red-700"
+                  : "border-amber-200 bg-amber-50 text-amber-800",
+              )}
+            >
+              <span className="font-medium">Billing sync: </span>
+              {data.billingSyncStatus!.message}
+            </div>
+          ) : null}
+        </div>
       </div>
 
       <ClientPaymentProcessingSection
@@ -1644,30 +1702,6 @@ function BillingTab() {
         onRefresh={() => refreshPaymentAccount.mutate()}
         onDashboard={() => openPaymentAccountDashboard.mutate()}
       />
-
-      {/* Plan comparison is reference material, collapsed by default. */}
-      <div>
-        <button
-          type="button"
-          className="text-sm font-medium text-primary underline-offset-4 hover:underline"
-          onClick={() => setShowAllPlans((v) => !v)}
-        >
-          {showAllPlans ? "Hide plan comparison" : "Compare all plans"}
-        </button>
-        {showAllPlans && (
-          <div className="mt-4">
-            <PlanGrid
-              plans={data.plans}
-              currentTier={data.tier}
-              enforced
-              onChoose={(tier) => checkout.mutate({ tier })}
-              busyTier={
-                checkout.isPending ? (checkout.variables?.tier ?? null) : null
-              }
-            />
-          </div>
-        )}
-      </div>
     </div>
   );
 }

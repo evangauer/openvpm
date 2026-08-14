@@ -6,13 +6,19 @@
  * hosted subscription gates. We monetize hosting + scale (locations) + heavy
  * usage, not by locking the open core.
  *
- * Pricing (managed Cloud): ONE simple self-serve tier — flat $79/mo per active
- * location, unlimited staff. Hosted entitlements are included while
+ * Pricing (managed Cloud): ONE simple self-serve tier — flat $79/mo or
+ * $790/yr per active location, unlimited staff. Hosted entitlements are included while
  * trialing/active, with generous included SMS / AI allowances and metered
  * overage beyond. Enterprise = custom.
  */
 
 import { envFlagEnabled } from "@/lib/env-bool";
+import {
+  CLOUD_ANNUAL_PRICE_USD,
+  CLOUD_MONTHLY_PRICE_USD,
+  type BillingCadence,
+} from "@/lib/billing/catalog";
+import { trialEndOfCalendarDay } from "@/lib/billing/trial-days";
 
 export type PlanTier = "free" | "cloud" | "enterprise";
 
@@ -41,7 +47,9 @@ export const ALL_FEATURES: Feature[] = [
 ];
 
 /** Managed Cloud list price: flat per active location, unlimited staff. */
-export const CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD = 79;
+export const CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD = CLOUD_MONTHLY_PRICE_USD;
+/** Annual founding price: two months free versus twelve monthly payments. */
+export const CLOUD_LOCATION_UNIT_PRICE_ANNUAL_USD = CLOUD_ANNUAL_PRICE_USD;
 /** No per-seat charge under the flat model (kept at 0 for type/back-compat). */
 export const CLOUD_SEAT_UNIT_PRICE_MONTHLY_USD = 0;
 
@@ -57,6 +65,8 @@ export const CLOUD_SMS_OVERAGE_PRICE_USD = 0.03;
 
 /** Env vars holding Stripe Price IDs for hosted billing (PRIVATE). */
 export const STRIPE_PRICE_CLOUD_LOCATION_ENV = "STRIPE_PRICE_CLOUD_LOCATION";
+export const STRIPE_PRICE_CLOUD_LOCATION_ANNUAL_ENV =
+  "STRIPE_PRICE_CLOUD_LOCATION_ANNUAL";
 export const STRIPE_PRICE_CLOUD_USER_ENV = "STRIPE_PRICE_CLOUD_USER";
 /** Legacy one-price Cloud env. Kept only for old subscription/webhook mapping. */
 export const STRIPE_PRICE_CLOUD_LEGACY_ENV = "STRIPE_PRICE_CLOUD";
@@ -127,7 +137,7 @@ export const PLANS: Record<PlanTier, PlanDefinition> = {
     locationUnitPriceMonthlyUsd: CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD,
     seatUnitPriceMonthlyUsd: CLOUD_SEAT_UNIT_PRICE_MONTHLY_USD,
     blurb:
-      "We host the managed PIMS: agent access, SMS-ready shared inbox, reporting, scoped API/webhooks, multi-location tools, and supported integration hooks. $79/mo per location, unlimited staff.",
+      "We host the managed PIMS: agent access, SMS-ready shared inbox, reporting, scoped API/webhooks, multi-location tools, and supported integration hooks. $79/mo or $790/yr per location, unlimited staff.",
     seatLimit: null, // unlimited staff under the flat model
     locationLimit: null, // billed by location quantity, not capped
     features: [...ALL_FEATURES],
@@ -171,6 +181,7 @@ export function tierForStripePrice(priceId: string | null | undefined): PlanTier
   if (!normalizedPriceId) return null;
   const cloudPriceEnvs = [
     STRIPE_PRICE_CLOUD_LOCATION_ENV,
+    STRIPE_PRICE_CLOUD_LOCATION_ANNUAL_ENV,
     STRIPE_PRICE_CLOUD_USER_ENV,
     STRIPE_PRICE_CLOUD_LEGACY_ENV,
   ];
@@ -180,14 +191,43 @@ export function tierForStripePrice(priceId: string | null | undefined): PlanTier
   return null;
 }
 
-export function cloudCheckoutPriceIds(): {
+export function cloudCheckoutPriceIds(
+  cadence: BillingCadence = "month",
+): {
   locationPriceId?: string;
   seatPriceId?: string;
 } {
   return {
-    locationPriceId: stripePriceIdFromEnv(STRIPE_PRICE_CLOUD_LOCATION_ENV),
+    locationPriceId: stripePriceIdFromEnv(
+      cadence === "year"
+        ? STRIPE_PRICE_CLOUD_LOCATION_ANNUAL_ENV
+        : STRIPE_PRICE_CLOUD_LOCATION_ENV,
+    ),
     seatPriceId: stripePriceIdFromEnv(STRIPE_PRICE_CLOUD_USER_ENV),
   };
+}
+
+/** Configured licensed Cloud prices that quantity sync may encounter. */
+export function cloudLocationPriceIds(): Array<{
+  cadence: BillingCadence;
+  priceId: string;
+}> {
+  return (["month", "year"] as const).flatMap((cadence) => {
+    const priceId = cloudCheckoutPriceIds(cadence).locationPriceId;
+    return priceId ? [{ cadence, priceId }] : [];
+  });
+}
+
+/** Map a configured Cloud location Price back to its billing cadence. */
+export function billingCadenceForStripePrice(
+  priceId: string | null | undefined,
+): BillingCadence | null {
+  const normalizedPriceId = nonBlank(priceId);
+  if (!normalizedPriceId) return null;
+  return (
+    cloudLocationPriceIds().find((entry) => entry.priceId === normalizedPriceId)
+      ?.cadence ?? null
+  );
 }
 
 /**
@@ -212,6 +252,16 @@ export function estimatedCloudBaseMonthlyUsd(
 ): number {
   return (
     Math.max(1, locationCount) * CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD +
+    Math.max(0, billableSeatCount) * CLOUD_SEAT_UNIT_PRICE_MONTHLY_USD
+  );
+}
+
+export function estimatedCloudBaseAnnualUsd(
+  locationCount: number,
+  billableSeatCount: number,
+): number {
+  return (
+    Math.max(1, locationCount) * CLOUD_LOCATION_UNIT_PRICE_ANNUAL_USD +
     Math.max(0, billableSeatCount) * CLOUD_SEAT_UNIT_PRICE_MONTHLY_USD
   );
 }
@@ -256,7 +306,7 @@ export function noCardTrialEnabled(): boolean {
 
 /** The trial-end timestamp for a trial starting now (or at `from`). */
 export function trialEndsAtFrom(from: Date = new Date()): Date {
-  return new Date(from.getTime() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
+  return trialEndOfCalendarDay(TRIAL_DAYS, "America/New_York", from);
 }
 
 /** Whether a practice is in an unexpired trial window. */

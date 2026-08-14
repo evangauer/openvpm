@@ -84,6 +84,8 @@ vi.mock("@openpims/db/schema-drift", async () => {
 });
 
 vi.mock("@/lib/billing/plans", () => ({
+  STRIPE_PRICE_CLOUD_LOCATION_ANNUAL_ENV:
+    "STRIPE_PRICE_CLOUD_LOCATION_ANNUAL",
   STRIPE_PRICE_CLOUD_LOCATION_ENV: "STRIPE_PRICE_CLOUD_LOCATION",
   billingEnforced: mocks.billingEnforced,
 }));
@@ -131,6 +133,7 @@ function stubHostedRequiredEnvs() {
   vi.stubEnv("STRIPE_CONNECT_WEBHOOK_SECRET", "whsec_connect");
   vi.stubEnv("STRIPE_SUBSCRIPTION_WEBHOOK_SECRET", "whsec_123");
   vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+  vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION_ANNUAL", "price_location_annual");
   vi.stubEnv("STRIPE_TAX_ENABLED", "true");
   vi.stubEnv("S3_ENDPOINT", "https://storage.example");
   vi.stubEnv("S3_ACCESS_KEY", "access");
@@ -334,7 +337,7 @@ describe("health route", () => {
       "2 required hosted app URL values are missing",
     );
     expect(json.checks.hostedBilling.detail).toBe(
-      "5 required hosted configuration values are missing",
+      "6 required hosted configuration values are missing",
     );
     expect(json.checks.hostedSubscriptionTax).toEqual({
       ok: false,
@@ -642,6 +645,21 @@ describe("health route", () => {
       detail: "Hosted app URLs are valid HTTPS origins",
     });
     expect(JSON.stringify(json)).not.toContain("STRIPE_PRICE_CLOUD_USER");
+  });
+
+  it("requires the annual Cloud price for hosted readiness", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION_ANNUAL", "");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedBilling).toEqual({
+      ok: false,
+      detail: "1 required hosted configuration value is missing",
+    });
   });
 
   it("requires the client invoice webhook secret for hosted billing readiness", async () => {

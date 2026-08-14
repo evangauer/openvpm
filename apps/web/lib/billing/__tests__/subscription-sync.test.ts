@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   retrieve: vi.fn(),
@@ -18,6 +18,11 @@ import {
   countBillableStaffRows,
   syncPracticeSubscriptionQuantities,
 } from "../subscription-sync";
+
+afterEach(() => {
+  vi.clearAllMocks();
+  vi.unstubAllEnvs();
+});
 
 describe("countBillableStaffRows", () => {
   it("counts every non-deleted staff user and excludes deleted users", () => {
@@ -111,6 +116,57 @@ describe("billing sync practice scoping", () => {
       /meteredPriceId &&\s*!items\.some\(\(item\) => item\.price\?\.id === meteredPriceId\)/
     );
     expect(syncState).toContain("stripe.subscriptionItems.create({");
+  });
+
+  it("syncs annual quantity without attaching monthly metered items", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_monthly");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION_ANNUAL", "price_annual");
+    vi.stubEnv("STRIPE_PRICE_AI_OVERAGE", "price_ai");
+    vi.stubEnv("STRIPE_PRICE_SMS_OVERAGE", "price_sms");
+    mocks.retrieve.mockResolvedValue({
+      items: {
+        data: [{ id: "si_annual", price: { id: "price_annual" } }],
+      },
+    });
+    mocks.update.mockResolvedValue({});
+
+    let selectCall = 0;
+    const select = vi.fn(() => {
+      const rows =
+        selectCall++ === 0
+          ? [{ stripeSubscriptionId: "sub_annual", recoveryHold: false }]
+          : [{ c: 1 }];
+      const builder: Record<string, unknown> = {};
+      builder.from = () => builder;
+      builder.where = () => builder;
+      builder.limit = () => builder;
+      builder.for = async () => rows;
+      builder.then = (
+        resolve: (value: unknown[]) => unknown,
+        reject?: (reason: unknown) => unknown,
+      ) => Promise.resolve(rows).then(resolve, reject);
+      return builder;
+    });
+    const writeWhere = vi.fn(async () => []);
+    const dbUpdate = vi.fn(() => ({
+      set: () => ({ where: writeWhere }),
+    }));
+
+    await expect(
+      syncPracticeSubscriptionQuantities({
+        db: { select, update: dbUpdate } as never,
+        practiceId: "practice-annual",
+      }),
+    ).resolves.toMatchObject({
+      status: "ok",
+      billingCadence: "year",
+      locationCount: 1,
+    });
+
+    expect(mocks.update).toHaveBeenCalledWith("si_annual", { quantity: 1 });
+    expect(mocks.create).not.toHaveBeenCalled();
+    expect(writeWhere).toHaveBeenCalledOnce();
   });
 
   it("resolves Stripe price IDs through trim-aware billing helpers", () => {

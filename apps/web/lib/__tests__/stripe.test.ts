@@ -98,6 +98,11 @@ describe("buildSubscriptionCheckoutSessionParams", () => {
       SUBSCRIPTION_CHECKOUT_INTEGRATION_IDENTIFIER
     );
     expect(params.payment_method_collection).toBe("always");
+    expect(params.excluded_payment_method_types).toEqual([
+      "amazon_pay",
+      "cashapp",
+      "klarna",
+    ]);
     expect(params.customer_email).toBe("admin@example.com");
     expect(params.line_items).toEqual([
       { price: "price_location", quantity: 2 },
@@ -143,7 +148,35 @@ describe("buildSubscriptionCheckoutSessionParams", () => {
 
     expect(params.payment_method_collection).toBe("always");
     expect(params.subscription_data).toEqual({
-      metadata: { practiceId: "practice_123" },
+      description: "OpenVPM Cloud — monthly",
+      metadata: {
+        practiceId: "practice_123",
+        billingCadence: "month",
+        source: "settings",
+      },
+    });
+  });
+
+  it("labels annual billing in Checkout and subscription metadata", () => {
+    const params = buildSubscriptionCheckoutSessionParams({
+      practiceId: "practice_123",
+      customerId: "cus_123",
+      billingCadence: "year",
+      source: "settings",
+      lineItems: [{ priceId: "price_annual", quantity: 1 }],
+      successUrl: "https://app.example.com/success",
+      cancelUrl: "https://app.example.com/cancel",
+    });
+
+    expect(params.line_items).toEqual([{ price: "price_annual", quantity: 1 }]);
+    expect(params.metadata).toEqual({
+      practiceId: "practice_123",
+      billingCadence: "year",
+      source: "settings",
+    });
+    expect(params.subscription_data).toMatchObject({
+      description: "OpenVPM Cloud — annual",
+      metadata: { billingCadence: "year" },
     });
   });
 

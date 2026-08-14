@@ -18,6 +18,7 @@ import {
 } from "@/lib/funnel-analytics";
 import { trackFunnelEvent } from "@/lib/track-funnel-event";
 import { getFunnelVisitorId, useFunnelVisitorId } from "@/lib/funnel-visitor";
+import { safeAuthNextPath } from "@/lib/auth-redirect";
 
 const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE?.trim() === "true";
 
@@ -35,25 +36,14 @@ export default function LoginPage() {
   );
 }
 
-function safeNextPath(value: string | null): string {
-  if (!value || !value.startsWith("/") || value.startsWith("//")) {
-    return "/post-login";
-  }
-  if (
-    value.startsWith("/login") ||
-    value.startsWith("/register") ||
-    value.startsWith("/verify-email")
-  ) {
-    return "/post-login";
-  }
-  return value;
-}
-
 function LoginPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const visitorId = useFunnelVisitorId();
-  const nextPath = safeNextPath(searchParams.get("next"));
+  const nextPath = safeAuthNextPath(
+    searchParams.get("next"),
+    "/post-login",
+  );
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -264,7 +254,14 @@ function LoginPageInner() {
               Start my clinic
             </a>
           ) : (
-            <Link href="/register" className="text-primary hover:underline">
+            <Link
+              href={
+                nextPath === "/post-login"
+                  ? "/register"
+                  : `/register?next=${encodeURIComponent(nextPath)}`
+              }
+              className="text-primary hover:underline"
+            >
               Register your practice
             </Link>
           )}
