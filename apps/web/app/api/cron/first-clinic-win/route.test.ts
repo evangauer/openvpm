@@ -181,6 +181,8 @@ describe("first clinic win cron", () => {
     expect(ROUTE_SOURCE).toContain("demoData");
     expect(ROUTE_SOURCE).toContain("payment_method_collected");
     expect(ROUTE_SOURCE).toContain("isNull(practices.stripeSubscriptionId)");
+    expect(ROUTE_SOURCE).toContain("c.dedupe_key = 'lc:first-clinic-win:v1:'");
+    expect(ROUTE_SOURCE).toContain("c.status <> 'pending'::comm_status");
     expect(ROUTE_SOURCE).not.toContain("clientName");
     expect(ROUTE_SOURCE).not.toContain("patientName");
   });

@@ -183,6 +183,16 @@ function firstClinicWinEligibility(rolloutAt: Date, now: Date): SQL {
       where pcm.practice_id = ${practices.id}
         and pcm.milestone = 'payment_method_collected'
     )`,
+    // Keep the bounded sweep moving forward. A terminal claim means this
+    // practice has already been handled; a pending claim remains eligible so
+    // sendLifecycleEmail can either observe the in-flight worker or reclaim a
+    // stale attempt after its bounded recovery window.
+    sql`not exists (
+      select 1
+      from communications c
+      where c.dedupe_key = 'lc:first-clinic-win:v1:' || ${practices.id}::text
+        and c.status <> 'pending'::comm_status
+    )`,
     sql`exists (
       select 1
       from visit_closeouts vc
