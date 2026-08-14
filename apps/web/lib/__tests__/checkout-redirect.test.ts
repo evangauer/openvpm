@@ -6,7 +6,7 @@ describe("checkout redirect URL safety", () => {
     expect(
       isSafeCheckoutRedirectUrl("https://checkout.stripe.com/c/pay_123")
     ).toBe(true);
-    expect(isSafeCheckoutRedirectUrl("https://stripe.example/session")).toBe(
+    expect(isSafeCheckoutRedirectUrl("https://billing.stripe.com/session")).toBe(
       true
     );
   });
@@ -22,6 +22,17 @@ describe("checkout redirect URL safety", () => {
     );
     expect(
       isSafeCheckoutRedirectUrl("https://user:pass@checkout.stripe.com")
+    ).toBe(false);
+    expect(isSafeCheckoutRedirectUrl("https://stripe.example/session")).toBe(
+      false
+    );
+    expect(
+      isSafeCheckoutRedirectUrl(
+        "https://checkout.stripe.com.example.org/session"
+      )
+    ).toBe(false);
+    expect(
+      isSafeCheckoutRedirectUrl("https://evil.example/stripe.com/session")
     ).toBe(false);
     expect(isSafeCheckoutRedirectUrl("not a url")).toBe(false);
     expect(isSafeCheckoutRedirectUrl(null)).toBe(false);

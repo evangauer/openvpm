@@ -572,6 +572,7 @@ export async function sendStaffInviteEmail(data: {
   inviterName: string;
   practiceName: string;
   inviteUrl: string;
+  idempotencyKey?: string;
 }): Promise<{ success: boolean }> {
   const body = `
     <p style="margin:0 0 8px;color:#111827;font-size:15px;line-height:1.6;"><strong>${data.inviterName}</strong> has invited you to join <strong>${data.practiceName}</strong> on OpenVPM.</p>
@@ -584,6 +585,7 @@ export async function sendStaffInviteEmail(data: {
     to: data.to,
     subject: `You're invited to join ${data.practiceName} on OpenVPM`,
     html,
+    idempotencyKey: data.idempotencyKey,
   });
   return { success: result.success };
 }

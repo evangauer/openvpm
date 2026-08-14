@@ -40,7 +40,8 @@ export type DeclaredDatabaseObject = {
     | "trigger"
     | "rls_policy"
     | "table_privilege"
-    | "forbidden_table_privilege";
+    | "forbidden_table_privilege"
+    | "forbidden_function_privilege";
   table: string;
   name: string;
 };
@@ -422,6 +423,11 @@ export function criticalDatabaseContract(): DeclaredDatabaseObject[] {
       table: "sms_provider_event_resolutions",
       name,
     })),
+    {
+      kind: "forbidden_function_privilege",
+      table: "validate_sms_provider_event_resolution_insert",
+      name: "EXECUTE",
+    },
     ...[
       "care_reminders_patient_tenant_fk",
       "care_reminders_creator_tenant_fk",
@@ -598,7 +604,8 @@ type SchemaObjectRow = {
     | "trigger"
     | "rls_policy"
     | "table_privilege"
-    | "forbidden_table_privilege";
+    | "forbidden_table_privilege"
+    | "forbidden_function_privilege";
   table_name: string;
   object_name: string;
   healthy: boolean;
@@ -717,6 +724,33 @@ export async function findSchemaDrift(db: Queryable): Promise<SchemaDrift> {
       ('sms_provider_event_resolutions'::text, 'UPDATE'::text),
       ('sms_provider_event_resolutions'::text, 'DELETE'::text)
     ) required_absence(table_name, privilege_type)
+    union all
+    select
+      'forbidden_function_privilege'::text,
+      function_object.proname::text,
+      'EXECUTE'::text,
+      not exists (
+        select 1
+        from aclexplode(
+          coalesce(
+            function_object.proacl,
+            acldefault('f', function_object.proowner)
+          )
+        ) function_acl
+        left join pg_catalog.pg_roles privilege_role
+          on privilege_role.oid = function_acl.grantee
+        where function_acl.privilege_type = 'EXECUTE'
+          and (
+            function_acl.grantee = 0
+            or privilege_role.rolname in ('anon', 'authenticated', 'openpims_app')
+          )
+      )
+    from pg_catalog.pg_proc function_object
+    join pg_catalog.pg_namespace function_namespace
+      on function_namespace.oid = function_object.pronamespace
+    where function_namespace.nspname = 'public'
+      and function_object.proname = 'validate_sms_provider_event_resolution_insert'
+      and function_object.pronargs = 0
   `);
 
   const live = new Map<string, Set<string>>();

@@ -3,10 +3,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   createSubscriptionCheckoutSession: vi.fn(async () => ({
-    url: "https://stripe.example/subscription-checkout",
+    url: "https://checkout.stripe.com/subscription-checkout",
   })),
   createBillingPortalSession: vi.fn(async () => ({
-    url: "https://stripe.example/billing-portal",
+    url: "https://billing.stripe.com/billing-portal",
   })),
   countBillableLocationsAndSeats: vi.fn(async () => ({
     locationCount: 2,
@@ -112,10 +112,10 @@ afterEach(() => {
   vi.clearAllMocks();
   vi.unstubAllEnvs();
   mocks.createSubscriptionCheckoutSession.mockResolvedValue({
-    url: "https://stripe.example/subscription-checkout",
+    url: "https://checkout.stripe.com/subscription-checkout",
   });
   mocks.createBillingPortalSession.mockResolvedValue({
-    url: "https://stripe.example/billing-portal",
+    url: "https://billing.stripe.com/billing-portal",
   });
   mocks.countBillableLocationsAndSeats.mockResolvedValue({
     locationCount: 2,
@@ -269,7 +269,7 @@ describe("subscription checkout", () => {
 
     await expect(
       callerWithDb(db).createCheckout({ tier: "cloud" })
-    ).resolves.toEqual({ url: "https://stripe.example/subscription-checkout" });
+    ).resolves.toEqual({ url: "https://checkout.stripe.com/subscription-checkout" });
 
     expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -299,7 +299,7 @@ describe("subscription checkout", () => {
         tier: "cloud",
         billingCadence: "year",
       }),
-    ).resolves.toEqual({ url: "https://stripe.example/subscription-checkout" });
+    ).resolves.toEqual({ url: "https://checkout.stripe.com/subscription-checkout" });
 
     expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -328,10 +328,10 @@ describe("subscription checkout", () => {
     const caller = callerWithDb(db);
 
     await expect(caller.createCheckout({ tier: "cloud" })).resolves.toEqual({
-      url: "https://stripe.example/subscription-checkout",
+      url: "https://checkout.stripe.com/subscription-checkout",
     });
     await expect(caller.createCheckout({ tier: "cloud" })).resolves.toEqual({
-      url: "https://stripe.example/subscription-checkout",
+      url: "https://checkout.stripe.com/subscription-checkout",
     });
 
     expect(mocks.createSubscriptionCheckoutSession).toHaveBeenNthCalledWith(
@@ -365,7 +365,7 @@ describe("subscription checkout", () => {
 
     await expect(
       callerWithDb(db).createCheckout({ tier: "cloud" })
-    ).resolves.toEqual({ url: "https://stripe.example/subscription-checkout" });
+    ).resolves.toEqual({ url: "https://checkout.stripe.com/subscription-checkout" });
 
     expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -391,7 +391,7 @@ describe("subscription checkout", () => {
 
     await expect(
       callerWithDb(db).createCheckout({ tier: "cloud" })
-    ).resolves.toEqual({ url: "https://stripe.example/subscription-checkout" });
+    ).resolves.toEqual({ url: "https://checkout.stripe.com/subscription-checkout" });
 
     expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   durableDb: {} as Record<string, unknown>,
   withDurableSmsCommunication: vi.fn(),
   lockPracticeForExternalSideEffects: vi.fn(async () => true),
+  assertOutboundEmailAllowed: vi.fn(async () => undefined),
 }));
 
 vi.mock("@/lib/email", () => ({
@@ -35,6 +36,10 @@ vi.mock("@/lib/recovery-hold", () => ({
   RECOVERY_HOLD_BLOCK_MESSAGE: "recovery hold",
   lockPracticeForExternalSideEffects:
     mocks.lockPracticeForExternalSideEffects,
+}));
+
+vi.mock("@/lib/outbound-email-security", () => ({
+  assertOutboundEmailAllowed: mocks.assertOutboundEmailAllowed,
 }));
 
 const {
@@ -66,6 +71,8 @@ function callerWithDb(db: Record<string, unknown>, role = "front_desk") {
       name: "Inbox User",
       role,
       practiceId: PRACTICE_ID,
+      emailVerifiedAt: new Date("2026-01-01T00:00:00Z"),
+      practiceCreatedAt: new Date("2025-01-01T00:00:00Z"),
     },
   };
   return communicationsRouter.createCaller({ db, session } as never);
@@ -148,6 +155,7 @@ function createDb(opts?: {
           name: "Neighborhood Veterinary",
           timezone: "America/New_York",
           email: "clinic@example.com",
+          createdAt: new Date("2025-01-01T00:00:00Z"),
         };
   const smsSender =
     opts && "smsSender" in opts ? opts.smsSender : { locationId: LOCATION_ID };
@@ -235,7 +243,7 @@ describe("communications.create delivery", () => {
     );
 
     expect(createBlock).toMatch(
-      /select\(\{\s*name: practices\.name,\s*timezone: practices\.timezone,\s*email: practices\.email,\s*\}\)[\s\S]+?where\(activePracticeWhere\(ctx\.practiceId\)\)/s,
+      /select\(\{\s*name: practices\.name,\s*timezone: practices\.timezone,\s*email: practices\.email,\s*createdAt: practices\.createdAt,\s*\}\)[\s\S]+?where\(activePracticeWhere\(ctx\.practiceId\)\)/s,
     );
     expect(createBlock).toContain("if (!practice)");
     expect(createBlock).toContain("throw practiceNotFound()");
@@ -264,6 +272,7 @@ describe("communications.create delivery", () => {
         channel: "email",
         direction: "outbound",
         content: "Hello",
+        requestId: REQUEST_ID,
       }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
@@ -284,6 +293,7 @@ describe("communications.create delivery", () => {
         direction: "outbound",
         subject: "A".repeat(COMMUNICATION_SUBJECT_MAX_LENGTH + 1),
         content: "Hello",
+        requestId: REQUEST_ID,
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
@@ -293,6 +303,7 @@ describe("communications.create delivery", () => {
         channel: "email",
         direction: "outbound",
         content: "A".repeat(COMMUNICATION_CONTENT_MAX_LENGTH + 1),
+        requestId: REQUEST_ID,
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
@@ -360,6 +371,7 @@ describe("communications.create delivery", () => {
         direction: "outbound",
         subject: "Follow up",
         content: "Hello\n<script>",
+        requestId: REQUEST_ID,
       }),
     ).resolves.toMatchObject({ status: "sent" });
 
@@ -372,6 +384,7 @@ describe("communications.create delivery", () => {
         subject: "Follow up",
         content: "Hello\n<script>",
         assignedTo: USER_ID,
+        dedupeKey: `email:inbox:${PRACTICE_ID}:${REQUEST_ID}`,
         status: "pending",
       }),
     );
@@ -380,6 +393,7 @@ describe("communications.create delivery", () => {
         to: "ada@example.com",
         subject: "Follow up",
         replyTo: "clinic@example.com",
+        idempotencyKey: `email:inbox:${PRACTICE_ID}:${REQUEST_ID}`,
         html: expect.stringContaining("Hello<br />&lt;script&gt;"),
       }),
     );
@@ -394,6 +408,13 @@ describe("communications.create delivery", () => {
       status: "sent",
       providerMessageId: "email-1",
     });
+    expect(mocks.assertOutboundEmailAllowed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: PRACTICE_ID,
+        userId: USER_ID,
+        operation: "inbox",
+      }),
+    );
   });
 
   it("preserves an existing conversation assignment when composing a reply", async () => {
@@ -409,6 +430,7 @@ describe("communications.create delivery", () => {
         direction: "outbound",
         subject: "Follow up",
         content: "Hello",
+        requestId: REQUEST_ID,
       }),
     ).resolves.toMatchObject({ status: "sent" });
 
@@ -420,6 +442,68 @@ describe("communications.create delivery", () => {
         direction: "outbound",
         assignedTo: OTHER_USER_ID,
         status: "pending",
+      }),
+    );
+  });
+
+  it("reuses one idempotent email request after a lost response", async () => {
+    mocks.sendEmail.mockResolvedValue({ success: true, id: "email-1" });
+    const client = {
+      id: CLIENT_ID,
+      firstName: "Ada",
+      lastName: "Lovelace",
+      email: "ada@example.com",
+      phone: null,
+      smsConsent: false,
+    };
+    const practice = {
+      name: "Neighborhood Veterinary",
+      timezone: "America/New_York",
+      email: "clinic@example.com",
+      createdAt: new Date("2025-01-01T00:00:00Z"),
+    };
+    const pending = {
+      id: COMM_ID,
+      practiceId: PRACTICE_ID,
+      clientId: CLIENT_ID,
+      channel: "email",
+      direction: "outbound",
+      subject: "Follow up",
+      content: "Hello",
+      status: "pending",
+    };
+    const sent = { ...pending, status: "sent", providerMessageId: "email-1" };
+    const { db } = createDb({
+      inserted: pending,
+      updated: sent,
+      insertResults: [[pending], []],
+      selectResults: [
+        [client],
+        [practice],
+        [],
+        [client],
+        [practice],
+        [],
+        [sent],
+      ],
+    });
+    const caller = callerWithDb(db);
+    const input = {
+      clientId: CLIENT_ID,
+      channel: "email" as const,
+      direction: "outbound" as const,
+      subject: "Follow up",
+      content: "Hello",
+      requestId: REQUEST_ID,
+    };
+
+    await expect(caller.create(input)).resolves.toMatchObject({ status: "sent" });
+    await expect(caller.create(input)).resolves.toMatchObject({ status: "sent" });
+
+    expect(mocks.sendEmail).toHaveBeenCalledOnce();
+    expect(mocks.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey: `email:inbox:${PRACTICE_ID}:${REQUEST_ID}`,
       }),
     );
   });
@@ -444,6 +528,7 @@ describe("communications.create delivery", () => {
         direction: "outbound",
         subject: "Follow up",
         content: "Hello",
+        requestId: REQUEST_ID,
       }),
     ).resolves.toMatchObject({ status: "sent" });
 
@@ -471,6 +556,7 @@ describe("communications.create delivery", () => {
         direction: "outbound",
         subject: "Follow up",
         content: "Hello",
+        requestId: REQUEST_ID,
       }),
     ).resolves.toMatchObject({ status: "sent" });
 
@@ -503,6 +589,7 @@ describe("communications.create delivery", () => {
         direction: "outbound",
         subject: "Follow up",
         content: "Hello",
+        requestId: REQUEST_ID,
       }),
     ).rejects.toMatchObject({
       code: "BAD_REQUEST",
@@ -525,6 +612,7 @@ describe("communications.create delivery", () => {
         direction: "outbound",
         subject: "Follow up",
         content: "Hello",
+        requestId: REQUEST_ID,
       }),
     ).rejects.toMatchObject({
       code: "NOT_FOUND",
@@ -569,6 +657,7 @@ describe("communications.create delivery", () => {
         direction: "outbound",
         subject: "Follow up",
         content: "Hello",
+        requestId: REQUEST_ID,
       }),
     ).resolves.toMatchObject({ status: "sent" });
 
@@ -732,6 +821,7 @@ describe("communications.create delivery", () => {
         channel: "email",
         direction: "outbound",
         content: "Hello",
+        requestId: REQUEST_ID,
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
@@ -749,6 +839,7 @@ describe("communications.create delivery", () => {
         direction: "outbound",
         subject: "Follow up",
         content: "Hello",
+        requestId: REQUEST_ID,
       }),
     ).rejects.toMatchObject({
       code: "INTERNAL_SERVER_ERROR",
@@ -778,6 +869,7 @@ describe("communications.create delivery", () => {
         channel: "email",
         direction: "outbound",
         content: "Hello",
+        requestId: REQUEST_ID,
       }),
     ).rejects.toMatchObject({
       code: "BAD_REQUEST",

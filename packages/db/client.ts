@@ -1,6 +1,7 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres, { type Sql } from "postgres";
 import * as schema from "./schema/index";
+import { isPooledDatabaseConnection } from "./connection-policy";
 
 type DbClient = ReturnType<typeof drizzle<typeof schema>>;
 type PostgresOptions = NonNullable<Parameters<typeof postgres>[1]>;
@@ -30,14 +31,6 @@ function getConnectionString() {
 // Supabase's transaction pooler (PgBouncer, port 6543) does not support the
 // prepared statements postgres-js uses by default, so disable them for pooled
 // connections. Direct/local connections keep prepares on for performance.
-function isPooledConnection(url: string): boolean {
-  return (
-    url.includes("pooler.supabase.com") ||
-    url.includes(":6543") ||
-    url.includes("pgbouncer=true")
-  );
-}
-
 function databasePoolMax(): number | undefined {
   const raw = process.env.DATABASE_POOL_MAX?.trim();
   if (!raw) return undefined;
@@ -50,7 +43,7 @@ function databasePoolMax(): number | undefined {
 }
 
 function createDb(url: string): CachedDb {
-  const options: PostgresOptions = isPooledConnection(url)
+  const options: PostgresOptions = isPooledDatabaseConnection(url)
     ? { prepare: false }
     : {};
   const max = databasePoolMax();

@@ -1,4 +1,5 @@
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
+import { randomUUID } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { db } from "@openpims/db/client";
 import {
@@ -44,7 +45,7 @@ test.describe("Multi-clinic launch readiness", () => {
   }) => {
     test.setTimeout(120_000);
 
-    const runId = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
+    const runId = `${Date.now()}-${randomUUID()}`;
     const clinics = await seedClinics(runId);
     const readyClinic = clinics[0]!;
     const setupClinic = clinics[1]!;

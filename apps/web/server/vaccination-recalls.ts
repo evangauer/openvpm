@@ -376,7 +376,11 @@ export async function getVaccinationRecallPreview(ctx: {
 }
 
 export async function sendVaccinationRecallReminders(
-  ctx: { db: Database; practiceId: string },
+  ctx: {
+    db: Database;
+    practiceId: string;
+    beforeEmail: () => Promise<void>;
+  },
   patientIds: string[],
 ) {
   if (patientIds.length === 0) {
@@ -445,6 +449,7 @@ export async function sendVaccinationRecallReminders(
         return { success: false as const };
       }
       try {
+        await ctx.beforeEmail();
         return await sendVaccinationReminder({
           to: clientEmail,
           clientName: recipient.clientName,

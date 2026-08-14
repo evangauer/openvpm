@@ -47,7 +47,7 @@ describe("portal payment helpers", () => {
       isSafePortalCheckoutRedirectUrl("https://checkout.stripe.com/c/pay_123")
     ).toBe(true);
     expect(
-      isSafePortalCheckoutRedirectUrl("https://stripe.example/session")
+      isSafePortalCheckoutRedirectUrl("https://billing.stripe.com/session")
     ).toBe(true);
 
     expect(isSafePortalCheckoutRedirectUrl("http://checkout.stripe.com")).toBe(
@@ -59,6 +59,14 @@ describe("portal payment helpers", () => {
     );
     expect(
       isSafePortalCheckoutRedirectUrl("https://user:pass@checkout.stripe.com")
+    ).toBe(false);
+    expect(
+      isSafePortalCheckoutRedirectUrl("https://stripe.example/session")
+    ).toBe(false);
+    expect(
+      isSafePortalCheckoutRedirectUrl(
+        "https://checkout.stripe.com.example.org/session"
+      )
     ).toBe(false);
     expect(isSafePortalCheckoutRedirectUrl("not a url")).toBe(false);
     expect(isSafePortalCheckoutRedirectUrl(null)).toBe(false);

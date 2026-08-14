@@ -824,6 +824,19 @@ function addReason(
   });
 }
 
+async function loadHealthStage<T>(
+  stage: string,
+  load: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await load();
+  } catch {
+    // Preserve a PHI-free stage code for production diagnosis without copying
+    // database/provider errors into logs or alerts.
+    throw new Error(`sms_operations_${stage}_failed`);
+  }
+}
+
 export async function getSmsOperationsHealth(
   db: Database,
   options: SmsOperationsOptions = {},
@@ -836,18 +849,24 @@ export async function getSmsOperationsHealth(
   const queueLimit = limit + 1;
   const [states, sendQueue, deliveryQueue, providerEventQueue] =
     await Promise.all([
-      loadMessagingStates(db),
-      loadSmsSendAttemptQueue(db, {
-        staleMinutes: SMS_OPERATIONS_THRESHOLDS.sendAttemptMinutes,
-        limit: queueLimit,
-        now,
-      }),
-      loadSmsDeliveryEventQueue(db, {
-        staleMinutes: SMS_OPERATIONS_THRESHOLDS.deliveryReceiptMinutes,
-        limit: queueLimit,
-        now,
-      }),
-      loadSmsProviderEventQueue(db, { limit: queueLimit, now }),
+      loadHealthStage("messaging_state", () => loadMessagingStates(db)),
+      loadHealthStage("send_queue", () =>
+        loadSmsSendAttemptQueue(db, {
+          staleMinutes: SMS_OPERATIONS_THRESHOLDS.sendAttemptMinutes,
+          limit: queueLimit,
+          now,
+        }),
+      ),
+      loadHealthStage("delivery_queue", () =>
+        loadSmsDeliveryEventQueue(db, {
+          staleMinutes: SMS_OPERATIONS_THRESHOLDS.deliveryReceiptMinutes,
+          limit: queueLimit,
+          now,
+        }),
+      ),
+      loadHealthStage("provider_event_queue", () =>
+        loadSmsProviderEventQueue(db, { limit: queueLimit, now }),
+      ),
     ]);
   const sendRows = hydrateQueueNames(
     sendQueue.items.map((item) => ({
@@ -884,7 +903,9 @@ export async function getSmsOperationsHealth(
   );
   // Provider GETs run only after the system transactions above have closed.
   const localIssues = classifySmsMessagingStates(states, now);
-  const inspectedIssues = await providerIssues(states, now, inspectProvider);
+  const inspectedIssues = await loadHealthStage("provider_readiness", () =>
+    providerIssues(states, now, inspectProvider),
+  );
   const stateIssues = [...localIssues, ...inspectedIssues];
 
   const sendItems = sendRows

@@ -330,6 +330,9 @@ describe("SMS operations cron", () => {
   });
 
   it("returns 200 and reports a failed heartbeat when the read fails", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
     mocks.getSmsOperationsHealth.mockRejectedValueOnce(
       new Error("provider response included +15555550123"),
     );
@@ -356,6 +359,13 @@ describe("SMS operations cron", () => {
       status: "failed",
       detail: "Read-only SMS operations health computation failed",
     });
+    expect(consoleError).toHaveBeenCalledWith(
+      "[sms-operations] health failure code=sms_operations_unclassified_failed",
+    );
+    expect(consoleError).not.toHaveBeenCalledWith(
+      expect.stringContaining("+15555550123"),
+    );
+    consoleError.mockRestore();
   });
 
   it("has no mutation, send, retry, or reconciliation dependency", () => {

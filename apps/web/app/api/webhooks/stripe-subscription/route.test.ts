@@ -536,6 +536,26 @@ describe("Stripe subscription webhook", () => {
     );
   });
 
+  it("acknowledges unrelated Stripe account subscriptions without retry noise", async () => {
+    const event = subscriptionUpdatedEvent();
+    event.data.object.metadata = {};
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(event);
+    mocks.retrieveSubscription.mockResolvedValueOnce(
+      stripeSubscription("active", {}),
+    );
+    mocks.selectResults.push([]);
+
+    const response = await POST(stripeRequest());
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      received: true,
+      ignored: true,
+    });
+    expect(mocks.updateSet).not.toHaveBeenCalled();
+    expect(mocks.alertOps).not.toHaveBeenCalled();
+  });
+
   it("alerts and retries when metadata-free mapping is ambiguous", async () => {
     const event = subscriptionUpdatedEvent();
     event.data.object.metadata = {};

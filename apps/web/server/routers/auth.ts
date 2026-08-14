@@ -221,6 +221,13 @@ export const authRouter = createRouter({
         message: "Too many registration attempts. Please try again later.",
         logContext: "register",
       });
+      await assertPreAuthRateLimit({
+        key: `register:ip:${ctx.ip ?? "unknown"}`,
+        limit: 5,
+        windowMs: 3600000,
+        message: "Too many registration attempts. Please try again later.",
+        logContext: "register",
+      });
 
       // Check if email already exists
       const [existing] = await ctx.db

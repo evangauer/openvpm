@@ -63,6 +63,8 @@ declare module "next-auth" {
       name: string;
       role: "admin" | "veterinarian" | "technician" | "front_desk" | "viewer";
       practiceId: string;
+      emailVerifiedAt?: Date | string | null;
+      practiceCreatedAt?: Date | string | null;
     };
   }
   interface User {

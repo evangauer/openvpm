@@ -26,6 +26,13 @@ import {
 } from "@/lib/stripe-webhook-limits";
 import { projectStripeConversionMilestonesForEvent } from "@/lib/conversion-milestones";
 
+class UnmanagedStripeSubscriptionError extends Error {
+  constructor(subscriptionId: string) {
+    super(`Stripe subscription ${subscriptionId} is not managed by OpenVPM.`);
+    this.name = "UnmanagedStripeSubscriptionError";
+  }
+}
+
 function payloadTooLargeResponse() {
   return NextResponse.json(
     { error: "Stripe webhook payload too large" },
@@ -330,6 +337,12 @@ export async function POST(req: NextRequest) {
       await effect();
     }
   } catch (err) {
+    if (err instanceof UnmanagedStripeSubscriptionError) {
+      console.info(
+        `[Stripe Subscription Webhook] ignored unmanaged event type=${event.type}`,
+      );
+      return NextResponse.json({ received: true, ignored: true });
+    }
     console.error("[Stripe Subscription Webhook] handler error:", err);
     await alertOps(
       "Subscription webhook handler error",
@@ -527,7 +540,10 @@ async function resolvePracticeIdForSubscription(
     .where(and(identity, isNull(practices.deletedAt)))
     .limit(2);
 
-  if (matches.length !== 1) {
+  if (matches.length === 0) {
+    throw new UnmanagedStripeSubscriptionError(sub.id);
+  }
+  if (matches.length > 1) {
     throw new Error(
       `Stripe subscription ${sub.id} could not be mapped unambiguously to a practice.`,
     );

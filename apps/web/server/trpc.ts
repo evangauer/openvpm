@@ -36,6 +36,8 @@ interface AppSession extends Session {
     role: UserRole;
     practiceId: string;
     recoveryHold?: boolean;
+    emailVerifiedAt?: Date | string | null;
+    practiceCreatedAt?: Date | string | null;
   };
 }
 
@@ -91,6 +93,8 @@ async function activeSessionOrNull(
       tx
         .select({
           id: users.id,
+          emailVerifiedAt: users.emailVerifiedAt,
+          practiceCreatedAt: practices.createdAt,
           recoveryHold: practices.recoveryHold,
         })
         .from(users)
@@ -113,6 +117,8 @@ async function activeSessionOrNull(
         ...session,
         user: {
           ...session.user,
+          emailVerifiedAt: activeUser.emailVerifiedAt,
+          practiceCreatedAt: activeUser.practiceCreatedAt,
           recoveryHold: activeUser.recoveryHold,
         },
       }
@@ -274,6 +280,7 @@ export const protectedProcedure = t.procedure.use(
           session: ctx.session,
           user,
           practiceId: user.practiceId,
+          ip: ctx.ip,
           db: tx,
           postCommitEffect: (effect: PostCommitEffect) => {
             if (type !== "mutation") {

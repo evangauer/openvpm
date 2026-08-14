@@ -265,6 +265,26 @@ REVOKE ALL ON sms_provider_events, sms_provider_event_conflicts, sms_provider_ev
 GRANT SELECT, INSERT, UPDATE ON sms_provider_events TO openpims_app;
 GRANT SELECT, INSERT ON sms_provider_event_conflicts, sms_provider_event_conflict_reviews, sms_provider_event_resolutions TO openpims_app;
 
+-- Trigger implementation only: never expose its SECURITY DEFINER authority as
+-- a directly callable function to public, API, or application roles.
+REVOKE ALL ON FUNCTION public.validate_sms_provider_event_resolution_insert() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.validate_sms_provider_event_resolution_insert() FROM openpims_app;
+DO $$
+DECLARE
+  role_name text;
+BEGIN
+  FOREACH role_name IN ARRAY ARRAY['anon', 'authenticated']
+  LOOP
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
+      EXECUTE format(
+        'REVOKE ALL ON FUNCTION public.validate_sms_provider_event_resolution_insert() FROM %I',
+        role_name
+      );
+    END IF;
+  END LOOP;
+END
+$$;
+
 -- Dispense charge snapshots are durable revenue work. The app may advance or
 -- reopen their attributed workflow status, while database triggers prevent
 -- snapshot changes and all deletion.

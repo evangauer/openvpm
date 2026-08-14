@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   durableDb: {} as Record<string, unknown>,
   withDurableSmsCommunication: vi.fn(),
   lockPracticeForExternalSideEffects: vi.fn(async () => true),
+  assertOutboundEmailAllowed: vi.fn(async () => undefined),
 }));
 
 vi.mock("@/lib/email", () => ({
@@ -59,6 +60,10 @@ vi.mock("@/lib/recovery-hold", () => ({
   RECOVERY_HOLD_BLOCK_MESSAGE: "recovery hold",
   lockPracticeForExternalSideEffects:
     mocks.lockPracticeForExternalSideEffects,
+}));
+
+vi.mock("@/lib/outbound-email-security", () => ({
+  assertOutboundEmailAllowed: mocks.assertOutboundEmailAllowed,
 }));
 
 const { REMINDER_BATCH_MAX_TARGETS, notificationsRouter } =

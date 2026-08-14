@@ -52,6 +52,19 @@ const state = {
 
 const summary: Record<string, unknown> = { runId, startedAt: new Date().toISOString() };
 
+function isStripeHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return normalized === "stripe.com" || normalized.endsWith(".stripe.com");
+}
+
+function isStripeUrl(value: string): boolean {
+  try {
+    return isStripeHostname(new URL(value).hostname);
+  } catch {
+    return false;
+  }
+}
+
 function record(key: string, value: unknown) {
   summary[key] = value;
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
@@ -260,7 +273,7 @@ test.describe.serial("Fresh clinic mock launch", () => {
 
     // Hosted signup creates the practice and sends the browser straight to
     // card-collected Stripe Checkout — reaching stripe.com is the proof.
-    await page.waitForURL((url) => url.hostname.endsWith("stripe.com"), { timeout: 90_000 });
+    await page.waitForURL((url) => isStripeHostname(url.hostname), { timeout: 90_000 });
     record("register", { reachedStripeCheckout: true });
     await completeStripeCheckout(page, "02-subscription");
     await page.waitForURL((url) => url.pathname.startsWith("/login"), { timeout: 90_000 });
@@ -333,12 +346,12 @@ test.describe.serial("Fresh clinic mock launch", () => {
 
     await page.getByRole("button", { name: /^(Set up|Resume setup)$/ }).click();
     await page
-      .waitForURL((url) => url.hostname.endsWith("stripe.com"), { timeout: 30_000 })
+      .waitForURL((url) => isStripeHostname(url.hostname), { timeout: 30_000 })
       .catch(() => undefined);
-    record("connectOnboarding", { reachedStripe: page.url().includes("stripe.com") });
+    record("connectOnboarding", { reachedStripe: isStripeUrl(page.url()) });
     await shot(page, "07-connect-onboarding-start");
 
-    if (!page.url().includes("stripe.com")) {
+    if (!isStripeUrl(page.url())) {
       // The onboarding mutation failed before Stripe. Two external Stripe
       // dashboard prerequisites gate connected-account creation, in order:
       //   1. Enable Connect (dashboard.stripe.com/connect) — DONE 2026-07-03.
@@ -375,7 +388,7 @@ test.describe.serial("Fresh clinic mock launch", () => {
     // fills whatever known test fields are visible, then advances.
     const actions: string[] = [];
     for (let step = 0; step < 25; step++) {
-      if (!page.url().includes("stripe.com")) break;
+      if (!isStripeUrl(page.url())) break;
       await page.waitForLoadState("domcontentloaded").catch(() => undefined);
       await page.waitForTimeout(2_000);
       await shot(page, `08-connect-step-${String(step).padStart(2, "0")}`);
@@ -470,7 +483,7 @@ test.describe.serial("Fresh clinic mock launch", () => {
 
     // Land back in the app (or bail), then let the app resync account state.
     await page
-      .waitForURL((url) => !url.hostname.endsWith("stripe.com"), { timeout: 30_000 })
+      .waitForURL((url) => !isStripeHostname(url.hostname), { timeout: 30_000 })
       .catch(() => undefined);
     await page.goto("/settings", { waitUntil: "domcontentloaded" });
     await page.getByText("Plan & Billing", { exact: true }).click();
@@ -685,7 +698,7 @@ test.describe.serial("Fresh clinic mock launch", () => {
       : page.locator("[title=\"Take card payment\"]").first();
     await payButton.click();
 
-    await page.waitForURL((url) => url.hostname.endsWith("stripe.com"), { timeout: 60_000 });
+    await page.waitForURL((url) => isStripeHostname(url.hostname), { timeout: 60_000 });
     await completeStripeCheckout(page, "15-client-payment");
     await page.waitForURL((url) => url.pathname.startsWith("/billing"), { timeout: 90_000 });
     await shot(page, "16-client-payment-returned");

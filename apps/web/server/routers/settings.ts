@@ -96,6 +96,7 @@ import {
   PlatformEmailPreferenceBlockedError,
   setMarketingEmailPreferenceForRecipient,
 } from "@/lib/platform-email-preferences";
+import { assertOutboundEmailAllowed } from "@/lib/outbound-email-security";
 
 const adminProcedure = protectedProcedure.use(requireRole("admin"));
 
@@ -2317,7 +2318,7 @@ export const settingsRouter = createRouter({
       const email = input.email.trim().toLowerCase();
 
       const [practice] = await ctx.db
-        .select({ name: practices.name })
+        .select({ name: practices.name, createdAt: practices.createdAt })
         .from(practices)
         .where(activePracticeWhere(ctx.practiceId))
         .limit(1);
@@ -2325,6 +2326,14 @@ export const settingsRouter = createRouter({
       if (!practice) {
         throw practiceNotFound();
       }
+      await assertOutboundEmailAllowed({
+        practiceId: ctx.practiceId,
+        practiceCreatedAt: practice.createdAt,
+        userId: ctx.user.id,
+        userEmailVerifiedAt: ctx.user.emailVerifiedAt,
+        ip: ctx.ip,
+        operation: "staff_invite",
+      });
       if (!(await lockPracticeForExternalSideEffects(ctx.db, ctx.practiceId))) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
@@ -2455,6 +2464,7 @@ export const settingsRouter = createRouter({
           inviterName: ctx.user.name,
           practiceName: practice.name,
           inviteUrl,
+          idempotencyKey: `staff-invite:${ctx.practiceId}:${createHash("sha256").update(token).digest("hex")}`,
         });
         if (!delivery.success) {
           console.error("[inviteStaff] email provider refused delivery");

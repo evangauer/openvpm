@@ -28,6 +28,7 @@ import { readFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import postgres from "postgres";
+import { isPooledDatabaseConnection } from "./connection-policy";
 import { describeDrift, driftIsClean, type SchemaDrift } from "./schema-drift";
 
 type JournalEntry = { idx: number; tag: string; when: number };
@@ -138,10 +139,7 @@ function migrationHash(tag: string): string {
   return createHash("sha256").update(sql).digest("hex");
 }
 
-const pooled =
-  url.includes("pooler.supabase.com") ||
-  url.includes(":6543") ||
-  url.includes("pgbouncer=true");
+const pooled = isPooledDatabaseConnection(url);
 const client = postgres(url, { max: 1, prepare: !pooled });
 
 function safeTarget(raw: string): string {

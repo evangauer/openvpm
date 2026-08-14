@@ -33,6 +33,7 @@ import {
   lockPracticeForExternalSideEffects,
   RECOVERY_HOLD_BLOCK_MESSAGE,
 } from "@/lib/recovery-hold";
+import { assertOutboundEmailAllowed } from "@/lib/outbound-email-security";
 
 export {
   COMMUNICATION_CONTENT_MAX_LENGTH,
@@ -214,14 +215,14 @@ const createCommunicationInput = z
       });
     }
     if (
-      input.channel === "sms" &&
+      (input.channel === "sms" || input.channel === "email") &&
       input.direction === "outbound" &&
       !input.requestId
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["requestId"],
-        message: "A stable request ID is required to send an SMS.",
+        message: "A stable request ID is required to send an external message.",
       });
     }
   });
@@ -817,6 +818,7 @@ export const communicationsRouter = createRouter({
           name: practices.name,
           timezone: practices.timezone,
           email: practices.email,
+          createdAt: practices.createdAt,
         })
         .from(practices)
         .where(activePracticeWhere(ctx.practiceId))
@@ -832,6 +834,17 @@ export const communicationsRouter = createRouter({
         input.channel === "email"
           ? input.subject?.trim() || `Message from ${practiceName}`
           : input.subject?.trim() || undefined;
+
+      if (input.direction === "outbound" && input.channel === "email") {
+        await assertOutboundEmailAllowed({
+          practiceId: ctx.practiceId,
+          practiceCreatedAt: practice.createdAt,
+          userId: ctx.user.id,
+          userEmailVerifiedAt: ctx.user.emailVerifiedAt,
+          ip: ctx.ip,
+          operation: "inbox",
+        });
+      }
 
       const [latestAssignment] = await ctx.db
         .select({ assignedTo: communications.assignedTo })
@@ -945,9 +958,8 @@ export const communicationsRouter = createRouter({
         });
       }
 
-      const inboxSmsDedupeKey =
-        isDeliverableOutbound && input.channel === "sms"
-          ? `sms:inbox:${ctx.practiceId}:${input.requestId!}`
+      const outboundDedupeKey = isDeliverableOutbound
+          ? `${input.channel}:inbox:${ctx.practiceId}:${input.requestId!}`
           : undefined;
       const insertCommunication = async (
         tx: Pick<Database, "insert" | "select">,
@@ -960,7 +972,7 @@ export const communicationsRouter = createRouter({
           subject,
           content,
           assignedTo,
-          dedupeKey: inboxSmsDedupeKey,
+          dedupeKey: outboundDedupeKey,
           readAt: input.status === "read" ? new Date() : undefined,
           status: isDeliverableOutbound
             ? "pending"
@@ -971,7 +983,7 @@ export const communicationsRouter = createRouter({
                   : "sent"
                 : "pending")),
         });
-        if (!inboxSmsDedupeKey) {
+        if (!outboundDedupeKey) {
           const [communication] = await insert.returning();
           return { communication, replayed: false };
         }
@@ -987,9 +999,9 @@ export const communicationsRouter = createRouter({
           .where(
             and(
               eq(communications.practiceId, ctx.practiceId),
-              eq(communications.dedupeKey, inboxSmsDedupeKey),
+              eq(communications.dedupeKey, outboundDedupeKey),
               eq(communications.clientId, input.clientId),
-              eq(communications.channel, "sms"),
+              eq(communications.channel, input.channel),
               eq(communications.direction, "outbound"),
               isNull(communications.deletedAt),
             ),
@@ -999,7 +1011,7 @@ export const communicationsRouter = createRouter({
         if (!existing) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "SMS request ID is already in use.",
+            message: "Message request ID is already in use.",
           });
         }
         if (
@@ -1009,7 +1021,7 @@ export const communicationsRouter = createRouter({
           throw new TRPCError({
             code: "CONFLICT",
             message:
-              "SMS request ID was already used for different message data.",
+              "Message request ID was already used for different message data.",
           });
         }
         return { communication: existing, replayed: true };
@@ -1038,7 +1050,7 @@ export const communicationsRouter = createRouter({
         throw new TRPCError({
           code: "BAD_REQUEST",
           message:
-            "This SMS request failed definitively. Start a new send to create a new request ID.",
+            "This message request failed definitively. Start a new send to create a new request ID.",
         });
       }
 
@@ -1063,7 +1075,7 @@ export const communicationsRouter = createRouter({
             communicationId: comm.id,
             source: "inbox",
             sourceId: input.requestId!,
-            idempotencyKey: inboxSmsDedupeKey!,
+            idempotencyKey: outboundDedupeKey!,
           });
           providerMessageId = deliveryResult.sid;
         } else {
@@ -1076,6 +1088,7 @@ export const communicationsRouter = createRouter({
               replyToEmail,
             }),
             ...(replyToEmail ? { replyTo: replyToEmail } : {}),
+            idempotencyKey: outboundDedupeKey!,
           });
           providerMessageId = deliveryResult.id;
         }

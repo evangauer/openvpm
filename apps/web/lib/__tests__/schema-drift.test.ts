@@ -21,7 +21,8 @@ type SchemaObjectRow = {
     | "trigger"
     | "rls_policy"
     | "table_privilege"
-    | "forbidden_table_privilege";
+    | "forbidden_table_privilege"
+    | "forbidden_function_privilege";
   table_name: string;
   object_name: string;
   healthy: boolean;

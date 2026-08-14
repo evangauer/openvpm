@@ -15,6 +15,7 @@ config({ path: "../../.env" });
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { findSchemaDrift, driftIsClean } from "./schema-drift";
+import { isPooledDatabaseConnection } from "./connection-policy";
 
 const url = process.env.DATABASE_URL?.trim();
 if (!url) {
@@ -24,10 +25,7 @@ if (!url) {
 
 // Supabase's transaction pooler rejects the prepared statements postgres-js
 // uses by default; mirror the app client's handling so this works everywhere.
-const pooled =
-  url.includes("pooler.supabase.com") ||
-  url.includes(":6543") ||
-  url.includes("pgbouncer=true");
+const pooled = isPooledDatabaseConnection(url);
 
 const client = postgres(url, { max: 1, prepare: !pooled });
 const db = drizzle(client);

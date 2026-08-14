@@ -6,6 +6,7 @@
   "exports": {
     ".": "./schema/index.ts",
     "./client": "./client.ts",
+    "./connection-policy": "./connection-policy.ts",
     "./schema-drift": "./schema-drift.ts"
   },
   "scripts": {

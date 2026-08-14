@@ -22,8 +22,10 @@ test.describe("Registration & First-Time Setup", () => {
     // in the app or on login.
     await expect(page).toHaveURL(
       (url) =>
-        url.hostname.endsWith("stripe.com") ||
-        url.hostname.endsWith("stripe.test") ||
+        url.hostname === "stripe.com" ||
+        url.hostname.endsWith(".stripe.com") ||
+        url.hostname === "stripe.test" ||
+        url.hostname.endsWith(".stripe.test") ||
         url.pathname === "/" ||
         url.pathname.startsWith("/login"),
       { timeout: 45_000 }

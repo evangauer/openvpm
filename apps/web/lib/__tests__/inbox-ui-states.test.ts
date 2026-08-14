@@ -266,20 +266,22 @@ describe("inbox UI states", () => {
     expect(source).not.toContain("{msg.status && (");
   });
 
-  it("keeps one client request ID across retries of the same SMS", () => {
-    expect(source).toContain("const smsComposeRequest = useRef<");
+  it("keeps one client request ID across retries of the same external message", () => {
+    expect(source).toContain("const externalComposeRequest = useRef<");
     expect(source).toContain("requestId: crypto.randomUUID()");
     expect(source).toContain(
-      "if (smsComposeRequest.current?.fingerprint !== fingerprint)",
+      "if (externalComposeRequest.current?.fingerprint !== fingerprint)",
     );
-    expect(source).toContain("requestId = smsComposeRequest.current.requestId");
+    expect(source).toContain(
+      "requestId = externalComposeRequest.current.requestId",
+    );
     expect(source).toContain("...(requestId ? { requestId } : {})");
-    expect(source).toContain("smsComposeRequest.current = null");
+    expect(source).toContain("externalComposeRequest.current = null");
     expect(routerSource).toContain(
-      "SMS request ID was already used for different message data.",
+      "Message request ID was already used for different message data.",
     );
     expect(routerSource).toContain(
-      "`sms:inbox:${ctx.practiceId}:${input.requestId!}`",
+      "`${input.channel}:inbox:${ctx.practiceId}:${input.requestId!}`",
     );
   });
 

@@ -161,8 +161,14 @@ export async function GET(request: Request) {
       reasonGroups: health.reasons.length,
       truncated: health.truncated,
     });
-  } catch {
+  } catch (error) {
     const detail = "Read-only SMS operations health computation failed";
+    const failureCode =
+      error instanceof Error &&
+      /^sms_operations_[a-z_]+_failed$/.test(error.message)
+        ? error.message
+        : "sms_operations_unclassified_failed";
+    console.error(`[sms-operations] health failure code=${failureCode}`);
     await alertOpsSafely(
       "SMS operations health check failed",
       `${detail}. Review application logs; no automated action was taken.`,

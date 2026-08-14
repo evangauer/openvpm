@@ -479,7 +479,7 @@ async function seed() {
           doctorId: vet.id,
           roomId: pickRandom(insertedRooms).id,
           status,
-          notes: Math.random() > 0.7 ? "Owner reports no concerns" : null,
+          notes: crypto.randomInt(10) > 6 ? "Owner reports no concerns" : null,
         });
       }
     }
@@ -651,7 +651,7 @@ async function seed() {
   for (let i = 0; i < 15; i++) {
     const rx = prescriptionData[i % prescriptionData.length]!;
     const patient = pickRandom(insertedPatients.slice(0, 20)); // mostly dogs/cats
-    const startDate = daysAgo(Math.floor(Math.random() * 60));
+    const startDate = daysAgo(crypto.randomInt(60));
     const endDate = new Date(startDate);
     endDate.setDate(endDate.getDate() + (rx.quantity / (rx.frequency.includes("BID") ? 2 : 1)));
 

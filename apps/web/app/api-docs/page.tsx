@@ -1340,7 +1340,7 @@ const sections: Section[] = [
   subject?: string,
   content: string,
   status?: "pending" | "sent" | "delivered" | "read" | "failed",
-  requestId?: string // Required UUID for outbound SMS; reuse for retries of the same send.
+  requestId?: string // Required UUID for outbound SMS/email; reuse for retries of the same send.
 }`,
         response: `Communication`,
       },

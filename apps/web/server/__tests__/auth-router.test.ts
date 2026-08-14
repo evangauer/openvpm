@@ -33,7 +33,7 @@ const mocks = vi.hoisted(() => ({
     },
   ),
   createSubscriptionCheckoutSession: vi.fn(async () => ({
-    url: "https://stripe.example/signup-checkout",
+    url: "https://checkout.stripe.com/signup-checkout",
   })),
   seedPractice: vi.fn(async () => undefined),
   seedDemoData: vi.fn(async () => ({})),
@@ -132,7 +132,11 @@ function sqlIncludesValue(
 }
 
 function callerWithDb(db: Record<string, unknown>) {
-  return authRouter.createCaller({ db, session: null } as never);
+  return authRouter.createCaller({
+    db,
+    session: null,
+    ip: "198.51.100.20",
+  } as never);
 }
 
 function callerWithSession(db: Record<string, unknown>) {
@@ -269,7 +273,7 @@ afterEach(() => {
     evidencePersisted: true,
   });
   mocks.createSubscriptionCheckoutSession.mockResolvedValue({
-    url: "https://stripe.example/signup-checkout",
+    url: "https://checkout.stripe.com/signup-checkout",
   });
   mocks.seedPractice.mockResolvedValue(undefined);
   mocks.seedDemoData.mockResolvedValue({});
@@ -614,7 +618,7 @@ describe("auth router input validation", () => {
     const { db, insertValues, isInTransaction } = createRegistrationDb();
     mocks.createSubscriptionCheckoutSession.mockImplementationOnce(async () => {
       expect(isInTransaction()).toBe(true);
-      return { url: "https://stripe.example/signup-checkout" };
+      return { url: "https://checkout.stripe.com/signup-checkout" };
     });
 
     await expect(
@@ -628,7 +632,7 @@ describe("auth router input validation", () => {
       id: "user-1",
       email: "owner@example.com",
       verificationRequired: true,
-      checkoutUrl: "https://stripe.example/signup-checkout",
+      checkoutUrl: "https://checkout.stripe.com/signup-checkout",
     });
 
     const practiceInsert = insertValues.mock.calls[0]?.[0] as Record<
@@ -856,6 +860,11 @@ describe("auth router email normalization", () => {
 
     expect(mocks.rateLimit).toHaveBeenCalledWith({
       key: "register:admin@example.com",
+      limit: 5,
+      windowMs: 3600000,
+    });
+    expect(mocks.rateLimit).toHaveBeenCalledWith({
+      key: "register:ip:198.51.100.20",
       limit: 5,
       windowMs: 3600000,
     });

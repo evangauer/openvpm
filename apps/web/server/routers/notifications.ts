@@ -57,8 +57,31 @@ import {
   lockPracticeForExternalSideEffects,
   RECOVERY_HOLD_BLOCK_MESSAGE,
 } from "@/lib/recovery-hold";
+import { assertOutboundEmailAllowed } from "@/lib/outbound-email-security";
 
 const DEFAULT_PRACTICE_NAME = "your clinic";
+
+function assertStaffOutboundEmailAllowed(
+  ctx: {
+    practiceId: string;
+    ip?: string | null;
+    user: {
+      id: string;
+      emailVerifiedAt?: Date | string | null;
+      practiceCreatedAt?: Date | string | null;
+    };
+  },
+  operation: "appointment_reminder" | "invoice" | "vaccination_recall",
+) {
+  return assertOutboundEmailAllowed({
+    practiceId: ctx.practiceId,
+    practiceCreatedAt: ctx.user.practiceCreatedAt,
+    userId: ctx.user.id,
+    userEmailVerifiedAt: ctx.user.emailVerifiedAt,
+    ip: ctx.ip,
+    operation,
+  });
+}
 
 function validVaccinationRecordPredicate(practiceId: string) {
   return sql`not exists (
@@ -422,6 +445,7 @@ export const notificationsRouter = createRouter({
             ),
           });
         }
+        await assertStaffOutboundEmailAllowed(ctx, "appointment_reminder");
         const result = await sendAppointmentReminder({
           to: clientEmail,
           clientName: `${appt.clientFirstName} ${appt.clientLastName}`,
@@ -688,6 +712,7 @@ export const notificationsRouter = createRouter({
         practice.country,
       );
 
+      await assertStaffOutboundEmailAllowed(ctx, "invoice");
       const emailResult = await sendInvoiceEmail({
         to: clientEmail,
         clientName: `${invoice.clientFirstName} ${invoice.clientLastName}`,
@@ -960,6 +985,10 @@ export const notificationsRouter = createRouter({
           if (!clientEmail) return false;
           if (appt.emailSuppressionReason) return false;
           try {
+            await assertStaffOutboundEmailAllowed(
+              ctx,
+              "appointment_reminder",
+            );
             const result = await sendAppointmentReminder({
               to: clientEmail,
               clientName: `${appt.clientFirstName} ${appt.clientLastName}`,
@@ -1215,7 +1244,11 @@ export const notificationsRouter = createRouter({
       await assertActivePractice(ctx);
       await assertNotificationsEnabled(ctx);
       const result = await sendVaccinationRecallReminders(
-        ctx,
+        {
+          ...ctx,
+          beforeEmail: () =>
+            assertStaffOutboundEmailAllowed(ctx, "vaccination_recall"),
+        },
         input.patientIds,
       );
       if (!result) throw practiceNotFound();

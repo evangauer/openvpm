@@ -14,10 +14,14 @@ export function isSafeCheckoutRedirectUrl(value: unknown): value is string {
 
   try {
     const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    const stripeOwnedHost =
+      hostname === "stripe.com" || hostname.endsWith(".stripe.com");
     return (
       url.protocol === "https:" &&
       url.username === "" &&
-      url.password === ""
+      url.password === "" &&
+      stripeOwnedHost
     );
   } catch {
     return false;

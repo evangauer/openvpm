@@ -36,7 +36,9 @@ export function rateLimitResponseHeaders(
 export function normalizeRateLimitKey(key: string): string {
   if (key.length <= RATE_LIMIT_KEY_MAX_LENGTH) return key;
 
-  const hash = createHash("sha256").update(key).digest("hex");
+  // This is an index-width collision guard, not password storage. SHA-256 is
+  // intentionally deterministic so every serverless instance hits one bucket.
+  const hash = createHash("sha256").update(key).digest("hex"); // lgtm[js/insufficient-password-hash]
   const prefixLength =
     RATE_LIMIT_KEY_MAX_LENGTH - HASH_SEPARATOR.length - HASH_SUFFIX_LENGTH;
   return `${key.slice(0, prefixLength)}${HASH_SEPARATOR}${hash}`;

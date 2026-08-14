@@ -31,7 +31,7 @@ const mocks = vi.hoisted(() => {
     db,
     selectResults,
     createCheckoutSession: vi.fn(async () => ({
-      url: "https://stripe.example/portal-checkout",
+      url: "https://checkout.stripe.com/portal-checkout",
     })),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
       fn(db)
@@ -169,7 +169,7 @@ afterEach(() => {
   vi.clearAllMocks();
   mocks.selectResults.length = 0;
   mocks.createCheckoutSession.mockResolvedValue({
-    url: "https://stripe.example/portal-checkout",
+    url: "https://checkout.stripe.com/portal-checkout",
   });
   mocks.billingEnforced.mockReturnValue(false);
   mocks.hasHostedFullAccess.mockReturnValue(true);
@@ -460,7 +460,7 @@ describe("portal checkout route", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
-      url: "https://stripe.example/portal-checkout",
+      url: "https://checkout.stripe.com/portal-checkout",
     });
     expect(mocks.rateLimit).toHaveBeenCalledWith({
       key: TOKEN_BUCKET,

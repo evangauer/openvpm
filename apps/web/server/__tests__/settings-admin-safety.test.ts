@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   createAuthToken: vi.fn(async () => "invite-token"),
   sendStaffInviteEmail: vi.fn(async () => ({ success: true })),
   lockPracticeForExternalSideEffects: vi.fn(async () => true),
+  assertOutboundEmailAllowed: vi.fn(async () => undefined),
 }));
 
 const SETTINGS_SOURCE = readFileSync(
@@ -37,6 +38,10 @@ vi.mock("@/lib/billing/subscription-sync", () => ({
 vi.mock("@/lib/recovery-hold", () => ({
   RECOVERY_HOLD_BLOCK_MESSAGE: "recovery hold",
   lockPracticeForExternalSideEffects: mocks.lockPracticeForExternalSideEffects,
+}));
+
+vi.mock("@/lib/outbound-email-security", () => ({
+  assertOutboundEmailAllowed: mocks.assertOutboundEmailAllowed,
 }));
 
 const { settingsRouter } = await import("../routers/settings");

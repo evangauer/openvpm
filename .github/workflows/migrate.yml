@@ -1,94 +1,118 @@
 name: Apply migrations
 
-# Schema changes ship with the code that needs them.
-#
-# Applying migrations by hand is how a deploy ended up running against a
-# database that never got its column: the pull request merged, the code went
-# live, and the migration sat unapplied until a customer reported the error.
-#
-# Every environment that serves traffic gets its migrations applied here, on
-# merge, in one place. Adding an environment means adding a secret — not
-# remembering a manual step.
+# Schema changes ship with the code that needs them. Each environment is an
+# explicit job so no matrix expression can receive broad access to repository
+# secrets or choose a secret name dynamically.
 
 on:
   push:
     branches: [main]
-  # Allow a re-run from the Actions tab if an environment was down at merge time.
   workflow_dispatch:
 
-# Never let two merges migrate the same database concurrently.
+permissions:
+  contents: read
+
 concurrency:
   group: apply-migrations
   cancel-in-progress: false
 
 jobs:
-  migrate:
-    name: ${{ matrix.environment }}
+  production:
+    name: production
     runs-on: ubuntu-latest
-    strategy:
-      # One environment failing must not stop the others from being migrated.
-      fail-fast: false
-      matrix:
-        include:
-          - environment: production
-            secret_name: PRODUCTION_DATABASE_URL
-          - environment: demo
-            secret_name: DEMO_DATABASE_URL
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: pnpm/action-setup@v6
-
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
           cache: "pnpm"
-
       - run: pnpm install --frozen-lockfile
 
-      # An environment is opted in by adding its secret. Until then this is a
-      # no-op rather than a red build, so adding the workflow does not require
-      # every environment to be wired up on day one.
       - name: Check environment is configured
         id: configured
         env:
-          DATABASE_URL: ${{ secrets[matrix.secret_name] }}
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
         run: |
           if [ -z "$DATABASE_URL" ]; then
-            echo "::notice::${{ matrix.secret_name }} is not set — skipping ${{ matrix.environment }}."
+            echo "::notice::PRODUCTION_DATABASE_URL is not set — skipping production."
             echo "ready=false" >> "$GITHUB_OUTPUT"
           else
             echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # Report drift before touching anything, so the log says what this run is
-      # about to change.
       - name: Schema state before
         if: steps.configured.outputs.ready == 'true'
         continue-on-error: true
         env:
-          DATABASE_URL: ${{ secrets[matrix.secret_name] }}
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
         run: pnpm db:drift
 
       - name: Apply migrations
         if: steps.configured.outputs.ready == 'true'
         env:
-          DATABASE_URL: ${{ secrets[matrix.secret_name] }}
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
         run: pnpm db:migrate
 
-      # New tables arrive without policies. Re-applying is idempotent and keeps
-      # tenant isolation from silently regressing the moment a table is added.
       - name: Re-apply row-level security
         if: steps.configured.outputs.ready == 'true'
         env:
-          DATABASE_URL: ${{ secrets[matrix.secret_name] }}
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
           OPENPIMS_APP_DB_PASSWORD: ${{ secrets.OPENPIMS_APP_DB_PASSWORD }}
         run: pnpm db:rls
 
-      # Fail the job if anything the code expects is still missing, so a partial
-      # or skipped migration cannot pass silently.
       - name: Verify schema matches the code
         if: steps.configured.outputs.ready == 'true'
         env:
-          DATABASE_URL: ${{ secrets[matrix.secret_name] }}
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: pnpm db:drift
+
+  demo:
+    name: demo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+
+      - name: Check environment is configured
+        id: configured
+        env:
+          DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::notice::DEMO_DATABASE_URL is not set — skipping demo."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Schema state before
+        if: steps.configured.outputs.ready == 'true'
+        continue-on-error: true
+        env:
+          DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
+        run: pnpm db:drift
+
+      - name: Apply migrations
+        if: steps.configured.outputs.ready == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
+        run: pnpm db:migrate
+
+      - name: Re-apply row-level security
+        if: steps.configured.outputs.ready == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
+          OPENPIMS_APP_DB_PASSWORD: ${{ secrets.OPENPIMS_APP_DB_PASSWORD }}
+        run: pnpm db:rls
+
+      - name: Verify schema matches the code
+        if: steps.configured.outputs.ready == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
         run: pnpm db:drift

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  createCheckoutSession: vi.fn(async () => ({ url: "https://stripe.example/checkout" })),
+  createCheckoutSession: vi.fn(async () => ({ url: "https://checkout.stripe.com/checkout" })),
   recordAuditLog: vi.fn(async () => undefined),
   lockPracticeForExternalSideEffects: vi.fn(async () => true),
 }));
@@ -123,7 +123,7 @@ afterEach(() => {
   vi.clearAllMocks();
   vi.unstubAllEnvs();
   mocks.createCheckoutSession.mockResolvedValue({
-    url: "https://stripe.example/checkout",
+    url: "https://checkout.stripe.com/checkout",
   });
 });
 
@@ -252,7 +252,7 @@ describe("billing card checkout", () => {
 
     await expect(
       callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID })
-    ).resolves.toEqual({ url: "https://stripe.example/checkout" });
+    ).resolves.toEqual({ url: "https://checkout.stripe.com/checkout" });
 
     expect(mocks.createCheckoutSession).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -280,7 +280,7 @@ describe("billing card checkout", () => {
 
     await expect(
       callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID })
-    ).resolves.toEqual({ url: "https://stripe.example/checkout" });
+    ).resolves.toEqual({ url: "https://checkout.stripe.com/checkout" });
 
     expect(mocks.createCheckoutSession).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -306,7 +306,7 @@ describe("billing card checkout", () => {
 
     await expect(
       callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID })
-    ).resolves.toEqual({ url: "https://stripe.example/checkout" });
+    ).resolves.toEqual({ url: "https://checkout.stripe.com/checkout" });
 
     expect(mocks.createCheckoutSession).toHaveBeenCalledWith(
       expect.objectContaining({

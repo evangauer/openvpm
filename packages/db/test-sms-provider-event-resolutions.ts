@@ -18,6 +18,9 @@ function requireText(source: string, text: string, contract: string): void {
 
 const schema = read("schema/sms-provider-events.ts");
 const migration = read("drizzle/0085_foamy_rick_jones.sql");
+const privilegeMigration = read(
+  "drizzle/0090_restrict_sms_resolution_function_execute.sql",
+);
 const snapshot = JSON.parse(read("drizzle/meta/0085_snapshot.json")) as {
   tables: Record<
     string,
@@ -137,11 +140,25 @@ if (
   throw new Error("Snapshot 0085 is missing the resolution shape constraint.");
 }
 requireText(journal, '"tag": "0085_foamy_rick_jones"', "migration journal");
+requireText(
+  journal,
+  '"tag": "0090_restrict_sms_resolution_function_execute"',
+  "function privilege migration journal",
+);
+
+for (const contract of [
+  "REVOKE ALL ON FUNCTION public.validate_sms_provider_event_resolution_insert() FROM PUBLIC",
+  "'anon', 'authenticated', 'openpims_app'",
+]) {
+  requireText(privilegeMigration, contract, `function privilege ${contract}`);
+}
 
 for (const contract of [
   "ALTER TABLE sms_provider_event_resolutions ENABLE ROW LEVEL SECURITY",
   "CREATE POLICY system_only ON sms_provider_event_resolutions",
   "GRANT SELECT, INSERT ON sms_provider_event_conflicts, sms_provider_event_conflict_reviews, sms_provider_event_resolutions TO openpims_app",
+  "REVOKE ALL ON FUNCTION public.validate_sms_provider_event_resolution_insert() FROM PUBLIC",
+  "REVOKE ALL ON FUNCTION public.validate_sms_provider_event_resolution_insert() FROM openpims_app",
 ]) {
   requireText(rls, contract, `RLS ${contract}`);
 }
@@ -154,6 +171,8 @@ for (const contract of [
   "sms_provider_event_resolutions_shape_check",
   "sms_provider_event_resolutions_validate_insert",
   "sms_provider_event_resolutions_immutable",
+  'kind: "forbidden_function_privilege"',
+  "validate_sms_provider_event_resolution_insert",
   'table: "sms_provider_event_resolutions"',
 ]) {
   requireText(drift, contract, `drift contract ${contract}`);

@@ -273,7 +273,7 @@ describe("API reference docs", () => {
     );
     expect(createSection).not.toContain("portal may only be logged inbound");
     expect(createSection).not.toContain('description: "Log a communication."');
-    expect(createSection).toContain("Required UUID for outbound SMS");
+    expect(createSection).toContain("Required UUID for outbound SMS/email");
     expect(createSection).toContain("reuse for retries of the same send");
   });
 
