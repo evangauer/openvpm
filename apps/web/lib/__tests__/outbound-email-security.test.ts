@@ -24,7 +24,7 @@ const BASE = {
   userId: "user-1",
   userEmailVerifiedAt: new Date("2026-08-14T17:00:00Z"),
   ip: "203.0.113.8",
-  operation: "inbox" as const,
+  operation: "staff_invite" as const,
   now: NOW,
 };
 
@@ -38,6 +38,18 @@ beforeEach(() => {
 });
 
 describe("outbound email abuse boundary", () => {
+  it("permanently blocks the free-form inbox relay before consuming quota", async () => {
+    await expect(
+      assertOutboundEmailAllowed({ ...BASE, operation: "inbox" }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message:
+        "Free-form email sending from the inbox is disabled for account safety.",
+    });
+
+    expect(mocks.rateLimit).not.toHaveBeenCalled();
+  });
+
   it("requires a verified staff identity before consuming quota", async () => {
     await expect(
       assertOutboundEmailAllowed({ ...BASE, userEmailVerifiedAt: null }),

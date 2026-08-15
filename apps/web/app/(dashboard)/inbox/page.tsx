@@ -184,7 +184,7 @@ export default function InboxPage() {
   const [linkClientSearch, setLinkClientSearch] = useState("");
 
   // Compose form state
-  const [composeChannel, setComposeChannel] = useState<Channel>("email");
+  const [composeChannel, setComposeChannel] = useState<Channel>("portal");
   const [composeSubject, setComposeSubject] = useState("");
   const [composeContent, setComposeContent] = useState("");
 
@@ -1177,7 +1177,6 @@ export default function InboxPage() {
                     className="rounded-md border border-input bg-background px-3 py-1.5 text-sm"
                   >
                     <option value="sms">SMS</option>
-                    <option value="email">Email</option>
                     <option value="portal">Portal</option>
                   </select>
 
@@ -1217,12 +1216,6 @@ export default function InboxPage() {
                   <p className="text-xs text-muted-foreground">
                     Unable to check texting setup. Retry from the inbox banner
                     before sending SMS.
-                  </p>
-                ) : composeChannel === "email" ? (
-                  <p className="text-xs text-muted-foreground">
-                    Outbound email is logged here. Replies go to the practice
-                    email when configured, but inbound email replies are not
-                    imported into OpenVPM yet.
                   </p>
                 ) : composeChannel === "portal" ? (
                   <p className="text-xs text-muted-foreground">

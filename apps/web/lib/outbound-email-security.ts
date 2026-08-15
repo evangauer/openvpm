@@ -67,6 +67,24 @@ function quotaDetail(
 export async function assertOutboundEmailAllowed(
   context: OutboundEmailSecurityContext,
 ): Promise<void> {
+  // The shared inbox previously accepted free-form email copy from any
+  // authenticated practice and delivered it with the platform Resend key.
+  // A bad actor could therefore register a tenant, edit a client's address,
+  // and use OpenVPM as an arbitrary mail relay. Keep historical email rows
+  // readable, but permanently fail closed for this untrusted compose surface.
+  // Templated product mail (invites, invoices, reminders, recalls, and account
+  // lifecycle messages) continues through its bounded, purpose-specific path.
+  if (context.operation === "inbox") {
+    console.warn(
+      `[security.outbound-email] blocked practice=${context.practiceId} user=${context.userId} ip=${context.ip ?? "unknown"} operation=inbox reason=free_form_email_disabled`,
+    );
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message:
+        "Free-form email sending from the inbox is disabled for account safety.",
+    });
+  }
+
   if (!validDate(context.userEmailVerifiedAt)) {
     throw new TRPCError({
       code: "FORBIDDEN",
