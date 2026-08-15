@@ -84,7 +84,7 @@ function RecommendationCard({
   return (
     <li
       className={cn(
-        "group flex min-w-0 flex-col rounded-sm bg-white p-3 pb-4 shadow-[0_18px_40px_-24px_rgba(15,23,42,0.55)] ring-1 ring-black/5",
+        "group flex min-h-[292px] min-w-0 flex-col rounded-sm bg-white p-3 pb-5 shadow-[0_18px_40px_-24px_rgba(15,23,42,0.55)] ring-1 ring-black/5",
         "transition duration-300 ease-out hover:z-10 hover:-translate-y-1.5 hover:rotate-0 hover:shadow-xl",
         "motion-reduce:transform-none motion-reduce:transition-none",
         tilt,
@@ -92,7 +92,7 @@ function RecommendationCard({
     >
       <div
         className={cn(
-          "flex min-h-32 flex-col justify-between overflow-hidden rounded-[3px] bg-gradient-to-br p-4",
+          "flex min-h-36 flex-col justify-between overflow-hidden rounded-[3px] bg-gradient-to-br p-4",
           palette.picture,
         )}
       >
@@ -131,23 +131,8 @@ export function FirstDayRecommendations({
     : FIRST_GOAL_RECOMMENDATIONS[primaryGoal];
 
   return (
-    <section aria-labelledby="first-day-recommendations-heading">
-      <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between sm:gap-6">
-        <div>
-          <h3
-            id="first-day-recommendations-heading"
-            className="font-heading text-xl font-semibold text-slate-950"
-          >
-            Here’s what I think will help first.
-          </h3>
-          <p className="mt-1 text-sm text-slate-500">
-            Pick one useful win. The rest will still be here when you’re ready.
-          </p>
-        </div>
-        <p className="text-xs text-slate-500">Nothing here blocks launch.</p>
-      </div>
-
-      <ul className="mt-6 grid gap-6 sm:grid-cols-3 sm:gap-5">
+    <section aria-label="Your first-day recommendations">
+      <ul className="grid gap-6 sm:grid-cols-3 sm:gap-5">
         <RecommendationCard
           title={primaryRecommendation.title}
           body={primaryRecommendation.body}

@@ -68,6 +68,15 @@ const REGISTRATION_PROFILE_STORAGE_KEY = "openvpm:registration-profile:v1";
 const selectClass =
   "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
 
+const onboardingStageMainClass =
+  "min-h-screen bg-[radial-gradient(circle_at_top_left,#fff7ed_0%,transparent_34%),radial-gradient(circle_at_top_right,#ede9fe_0%,transparent_36%),linear-gradient(180deg,#ffffff_0%,#f5fbf8_100%)] px-4 py-4 sm:px-6 sm:py-6";
+const onboardingStageFrameClass =
+  "mx-auto flex max-w-6xl flex-col overflow-hidden rounded-[28px] border border-white/80 bg-white/95 shadow-[0_30px_90px_-54px_rgba(15,23,42,0.48)] backdrop-blur sm:min-h-[650px] lg:h-[calc(100dvh-5rem)] lg:min-h-[680px] lg:max-h-[730px]";
+const onboardingStageHeaderClass =
+  "flex shrink-0 items-center justify-between border-b border-slate-100 px-5 py-4 sm:px-9";
+const onboardingStageFooterClass =
+  "relative flex shrink-0 flex-col-reverse gap-3 border-t border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-9";
+
 export default function RegisterPage() {
   return (
     <Suspense
@@ -348,9 +357,9 @@ function RegisterPageInner() {
 
   if (stage === "profile") {
     return (
-      <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#fff7ed_0%,transparent_34%),radial-gradient(circle_at_top_right,#ede9fe_0%,transparent_36%),linear-gradient(180deg,#ffffff_0%,#f5fbf8_100%)] px-4 py-5 sm:px-6 sm:py-8">
-        <div className="mx-auto max-w-6xl overflow-hidden rounded-[28px] border border-white/80 bg-white/95 shadow-[0_30px_90px_-54px_rgba(15,23,42,0.48)] backdrop-blur">
-          <header className="flex items-center justify-between border-b border-slate-100 px-5 py-4 sm:px-9 sm:py-5">
+      <main className={onboardingStageMainClass}>
+        <div className={onboardingStageFrameClass}>
+          <header className={onboardingStageHeaderClass}>
             <Link
               href="/"
               className="inline-flex items-center gap-3 font-heading text-lg font-semibold tracking-tight text-slate-950 sm:text-xl"
@@ -371,7 +380,7 @@ function RegisterPageInner() {
             </div>
           </header>
 
-          <section className="px-5 py-7 sm:px-9 sm:py-10 lg:px-12">
+          <section className="flex-1 px-5 py-7 sm:px-9 sm:py-10 lg:px-12">
             <div className="mb-8 max-w-3xl">
               <h1 className="font-heading text-3xl font-bold tracking-tight text-slate-950 sm:text-4xl">
                 A platform truly built for your clinic.
@@ -392,10 +401,7 @@ function RegisterPageInner() {
             />
           </section>
 
-          <footer className="flex flex-col-reverse gap-3 border-t border-slate-100 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-9">
-            <p className="text-center text-xs text-slate-500 sm:text-left">
-              No patient or client information belongs here.
-            </p>
+          <footer className={cn(onboardingStageFooterClass, "sm:justify-end")}>
             <Button
               type="button"
               onClick={continueToWorkflow}
@@ -412,9 +418,9 @@ function RegisterPageInner() {
 
   if (stage === "workflow") {
     return (
-      <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#fff7ed_0%,transparent_34%),radial-gradient(circle_at_top_right,#ede9fe_0%,transparent_36%),linear-gradient(180deg,#ffffff_0%,#f5fbf8_100%)] px-4 py-5 sm:px-6 sm:py-8">
-        <div className="mx-auto max-w-6xl overflow-hidden rounded-[28px] border border-white/80 bg-white/95 shadow-[0_30px_90px_-54px_rgba(15,23,42,0.48)] backdrop-blur">
-          <header className="flex items-center justify-between border-b border-slate-100 px-5 py-4 sm:px-9 sm:py-5">
+      <main className={onboardingStageMainClass}>
+        <div className={onboardingStageFrameClass}>
+          <header className={onboardingStageHeaderClass}>
             <Link
               href="/"
               className="inline-flex items-center gap-3 font-heading text-lg font-semibold tracking-tight text-slate-950 sm:text-xl"
@@ -435,17 +441,7 @@ function RegisterPageInner() {
             </div>
           </header>
 
-          <section className="px-5 py-7 sm:px-9 sm:py-10 lg:px-12">
-            <div className="mb-8 max-w-3xl">
-              <h1 className="font-heading text-3xl font-bold tracking-tight text-slate-950 sm:text-4xl">
-                What would you like to see?
-              </h1>
-              <p className="mt-3 text-sm leading-6 text-slate-600 sm:text-base">
-                Here are some useful workflows for your practice. Pick one and
-                we’ll shape the first day around it.
-              </p>
-            </div>
-
+          <section className="flex-1 px-5 py-6 sm:px-9 sm:py-7 lg:px-10">
             <ClinicIntentBuilder
               clinicModel={clinicModel}
               firstGoal={firstGoal}
@@ -454,13 +450,21 @@ function RegisterPageInner() {
               intro={null}
               showClinicModel={false}
               goalLegend="Choose your first useful workflow"
+              beforeChoices={
+                <div className="max-w-3xl">
+                  <h1 className="font-heading text-3xl font-bold tracking-tight text-slate-950 sm:text-4xl">
+                    What would you like to see?
+                  </h1>
+                  <p className="mt-2 text-sm leading-6 text-slate-600 sm:text-base">
+                    Pick one useful workflow and we’ll shape your first day
+                    around it.
+                  </p>
+                </div>
+              }
               afterChoices={
-                <div className="mt-8 border-t border-slate-100 pt-7">
+                <div className="mt-5 border-t border-slate-100 pt-5">
                   <p className="text-sm font-semibold text-slate-950 sm:text-base">
                     Start your workspace
-                  </p>
-                  <p className="mt-1 text-sm leading-6 text-slate-600">
-                    Just your practice name and work email for now.
                   </p>
 
                   {error ? (
@@ -469,7 +473,7 @@ function RegisterPageInner() {
                     </div>
                   ) : null}
 
-                  <div className="mt-5 grid gap-4 sm:grid-cols-2">
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
                     <FormField label="Practice name" htmlFor="practiceName">
                       <Input
                         id="practiceName"
@@ -508,7 +512,7 @@ function RegisterPageInner() {
             />
           </section>
 
-          <footer className="flex flex-col-reverse gap-3 border-t border-slate-100 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-9">
+          <footer className={onboardingStageFooterClass}>
             <button
               type="button"
               onClick={() => {
@@ -536,9 +540,9 @@ function RegisterPageInner() {
 
   if (stage === "preview") {
     return (
-      <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#fff7ed_0%,transparent_34%),radial-gradient(circle_at_top_right,#ede9fe_0%,transparent_36%),linear-gradient(180deg,#ffffff_0%,#f5fbf8_100%)] px-4 py-5 sm:px-6 sm:py-8">
-        <div className="mx-auto max-w-6xl overflow-hidden rounded-[28px] border border-white/80 bg-white/95 shadow-[0_30px_90px_-54px_rgba(15,23,42,0.48)] backdrop-blur">
-          <header className="flex items-center justify-between border-b border-slate-100 px-5 py-4 sm:px-9 sm:py-5">
+      <main className={onboardingStageMainClass}>
+        <div className={onboardingStageFrameClass}>
+          <header className={onboardingStageHeaderClass}>
             <Link
               href="/"
               className="inline-flex items-center gap-3 font-heading text-lg font-semibold tracking-tight text-slate-950 sm:text-xl"
@@ -559,8 +563,8 @@ function RegisterPageInner() {
             </div>
           </header>
 
-          <section className="px-5 py-7 sm:px-9 sm:py-10 lg:px-12">
-            <div className="mb-9 max-w-3xl">
+          <section className="flex-1 px-5 py-6 sm:px-9 sm:py-7 lg:px-10">
+            <div className="mb-6 max-w-3xl">
               <h1 className="font-heading text-3xl font-bold tracking-tight text-slate-950 sm:text-4xl">
                 Your first day is ready.
               </h1>
@@ -573,7 +577,7 @@ function RegisterPageInner() {
             <FirstDayRecommendations primaryGoal={firstGoal} />
           </section>
 
-          <footer className="flex flex-col-reverse gap-3 border-t border-slate-100 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-9">
+          <footer className={onboardingStageFooterClass}>
             <button
               type="button"
               onClick={() => showStage("workflow")}
@@ -582,7 +586,10 @@ function RegisterPageInner() {
               <ArrowLeft className="h-4 w-4" />
               Back
             </button>
-            <div className="flex flex-col items-stretch gap-2 sm:items-end">
+            <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:gap-4">
+              <p className="text-center text-xs text-slate-500">
+                No card required.
+              </p>
               <Button
                 type="button"
                 onClick={continueToAccount}
@@ -591,9 +598,6 @@ function RegisterPageInner() {
                 Secure my workspace
                 <ArrowRight className="ml-2 h-4 w-4" />
               </Button>
-              <p className="text-center text-xs text-slate-500 sm:text-right">
-                No card required.
-              </p>
             </div>
           </footer>
         </div>
@@ -771,16 +775,6 @@ function RegisterPageInner() {
               <ArrowLeft className="h-3.5 w-3.5" />
               Back to my first day
             </button>
-
-            <p className="text-center text-xs text-slate-500">
-              <Link
-                href="/clinic-fit"
-                className="font-medium text-primary underline underline-offset-2"
-              >
-                Check clinic fit and rollout limits
-              </Link>{" "}
-              before moving live work.
-            </p>
 
             <p className="text-center text-xs text-slate-400">
               By creating a workspace you agree to the{" "}

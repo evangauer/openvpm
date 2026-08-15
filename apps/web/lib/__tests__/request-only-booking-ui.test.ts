@@ -152,8 +152,14 @@ describe("request-only booking UI", () => {
       "Start with one real appointment, then decide what deserves a larger rollout.",
     );
     expect(allSetStep).toContain("FirstDayRecommendations");
-    expect(firstDayRecommendations).toContain(
+    expect(firstDayRecommendations).not.toContain(
       "Here’s what I think will help first.",
+    );
+    expect(firstDayRecommendations).not.toContain(
+      "Pick one useful win. The rest will still be here when you’re ready.",
+    );
+    expect(firstDayRecommendations).not.toContain(
+      "Nothing here blocks launch.",
     );
     expect(firstDayRecommendations).toContain("Make getting paid easy");
     expect(firstDayRecommendations).toContain("Get paid faster");

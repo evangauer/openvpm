@@ -22,9 +22,9 @@ describe("public clinic fit guidance", () => {
     expect(page.match(/href={clinicFitDemoUrl}/g)).toHaveLength(2);
   });
 
-  it("keeps the fit check optional and reachable before signup", () => {
-    expect(register).toContain('href="/clinic-fit"');
-    expect(register).toContain("Check clinic fit and rollout limits");
+  it("keeps the fit check public without adding friction to signup", () => {
+    expect(register).not.toContain('href="/clinic-fit"');
+    expect(register).not.toContain("Check clinic fit and rollout limits");
     expect(middleware).toContain('"/clinic-fit"');
   });
 });

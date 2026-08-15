@@ -98,12 +98,11 @@ describe("onboarding UI states", () => {
     expect(settingsRouter).toContain("firstGoalSelectedAt");
   });
 
-  it("personalizes new care models without overstating pilot readiness", () => {
-    expect(clinicIntentBuilder).toContain(
+  it("personalizes new care models with a compact review-first plan", () => {
+    expect(clinicIntentBuilder).not.toContain(
       'selectedModel.readiness === "design_partner"',
     );
-    expect(clinicIntentBuilder).toContain("one real workflow");
-    expect(clinicIntentBuilder).toContain("anything that isn’t ready yet");
+    expect(clinicIntentBuilder).not.toContain("HeartPulse className");
     expect(clinicIntentBuilder).toContain("Nothing moves until you review it.");
     expect(choosePath).toContain("FUNNEL_EVENTS.onboardingModelSelected");
     expect(choosePath).toContain("FUNNEL_EVENTS.onboardingGoalSelected");

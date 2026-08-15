@@ -53,8 +53,10 @@ describe("demo conversion bridge UI", () => {
     expect(register).toContain("Step 3 of 4");
     expect(register).toContain("Step 4 of 4");
     expect(register).toContain("What would you like to see?");
-    expect(register).toContain(
-      "Here are some useful workflows for your practice.",
+    expect(register).toContain("Pick one useful workflow and we’ll shape");
+    expect(register).toContain("around it.");
+    expect(register).not.toContain(
+      "Just your practice name and work email for now.",
     );
     expect(register).toContain('label="Practice name"');
     expect(register).toContain('label="Work email"');
@@ -87,7 +89,7 @@ describe("demo conversion bridge UI", () => {
     expect(register).toContain("FUNNEL_EVENTS.signupProfileCompleted");
     expect(register).toContain("FUNNEL_EVENTS.signupSubmitted");
     expect(register).toContain("FUNNEL_EVENTS.signupSucceeded");
-    expect(register).toContain(
+    expect(register).not.toContain(
       "No patient or client information belongs here.",
     );
   });

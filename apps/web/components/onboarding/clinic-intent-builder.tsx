@@ -75,6 +75,7 @@ export function ClinicIntentBuilder({
   showClinicModel = true,
   showFirstGoal = true,
   goalLegend = "What would feel useful first?",
+  beforeChoices,
   afterChoices,
 }: {
   clinicModel: ClinicModel;
@@ -85,6 +86,7 @@ export function ClinicIntentBuilder({
   showClinicModel?: boolean;
   showFirstGoal?: boolean;
   goalLegend?: string;
+  beforeChoices?: ReactNode;
   afterChoices?: ReactNode;
 }) {
   const selectedModel = clinicModelOption(clinicModel);
@@ -97,12 +99,14 @@ export function ClinicIntentBuilder({
   return (
     <div
       className={cn(
-        "grid gap-8",
+        "grid gap-6",
         showFirstGoal &&
-          "lg:grid-cols-[minmax(0,1.28fr)_minmax(340px,0.72fr)] lg:gap-12",
+          "lg:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.7fr)] lg:items-start lg:gap-8",
       )}
     >
       <div className="min-w-0">
+        {beforeChoices}
+
         {intro ? (
           <p className="max-w-2xl text-[15px] leading-7 text-slate-600 sm:text-base">
             {intro}
@@ -155,11 +159,15 @@ export function ClinicIntentBuilder({
         ) : null}
 
         {showFirstGoal ? (
-          <fieldset className={showClinicModel || intro ? "mt-7" : undefined}>
+          <fieldset
+            className={
+              showClinicModel || intro || beforeChoices ? "mt-6" : undefined
+            }
+          >
             <legend className="text-sm font-semibold text-slate-950 sm:text-base">
               {goalLegend}
             </legend>
-            <div className="mt-3 grid gap-2.5 sm:grid-cols-2">
+            <div className="mt-2.5 grid gap-2.5 sm:grid-cols-2">
               {goalOptions.map((option) => {
                 const Icon = goalIcons[option.value];
                 const active = firstGoal === option.value;
@@ -170,7 +178,7 @@ export function ClinicIntentBuilder({
                     aria-pressed={active}
                     onClick={() => onFirstGoalChange(option.value)}
                     className={cn(
-                      "flex min-h-14 items-center gap-3 rounded-xl border px-3.5 py-3 text-left transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2",
+                      "flex min-h-14 items-center gap-3 rounded-xl border px-3.5 py-2.5 text-left transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2",
                       active
                         ? "border-primary bg-primary/5 shadow-[0_8px_24px_-20px_rgba(5,150,105,0.7)]"
                         : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/70",
@@ -212,7 +220,7 @@ export function ClinicIntentBuilder({
       {showFirstGoal ? (
         <aside
           aria-live="polite"
-          className="relative overflow-hidden rounded-[24px] border border-primary/15 bg-[linear-gradient(155deg,#ffffff_0%,#f5fbf8_72%,#f7f5ff_100%)] px-5 py-6 shadow-[0_24px_60px_-42px_rgba(5,150,105,0.55)] sm:px-7 sm:py-8 lg:min-h-[570px]"
+          className="relative overflow-hidden rounded-[24px] border border-primary/15 bg-[linear-gradient(155deg,#ffffff_0%,#f5fbf8_72%,#f7f5ff_100%)] px-5 py-5 shadow-[0_24px_60px_-42px_rgba(5,150,105,0.55)] sm:px-6 sm:py-6 lg:min-h-[480px]"
         >
           <div
             aria-hidden="true"
@@ -223,7 +231,7 @@ export function ClinicIntentBuilder({
             className="absolute -right-4 top-6 h-20 w-20 rounded-full border border-rose-100"
           />
           <div className="relative">
-            <div className="flex items-center gap-3 lg:justify-center">
+            <div className="flex items-center gap-3">
               <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary lg:hidden">
                 <Sparkles className="h-5 w-5" strokeWidth={1.8} />
               </span>
@@ -231,26 +239,26 @@ export function ClinicIntentBuilder({
                 <h3 className="font-heading text-lg font-semibold text-slate-950 sm:text-xl">
                   Your first OpenVPM day
                 </h3>
-                <p className="mt-0.5 text-xs text-slate-500 lg:text-center">
+                <p className="mt-0.5 text-xs text-slate-500">
                   Shaped for {selectedModel.shortLabel.toLowerCase()} care
                 </p>
               </div>
             </div>
 
-            <ol key={`${clinicModel}-${firstGoal}`} className="mt-6 space-y-3">
+            <ol key={`${clinicModel}-${firstGoal}`} className="mt-4 space-y-2">
               {tasks.map((task, index) => {
                 const Icon = taskIcons[index] ?? PawPrint;
                 return (
                   <li
                     key={task}
                     style={{ animationDelay: `${index * 90}ms` }}
-                    className="onboarding-task-in relative flex items-center gap-3 rounded-2xl border border-white bg-white/90 p-3 shadow-[0_12px_30px_-22px_rgba(15,23,42,0.4)] sm:p-4"
+                    className="onboarding-task-in relative flex items-center gap-3 rounded-2xl border border-white bg-white/90 p-2.5 shadow-[0_12px_30px_-22px_rgba(15,23,42,0.4)] sm:p-3"
                   >
                     <span className="absolute -left-3 flex h-6 w-6 items-center justify-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground shadow-sm">
                       {index + 1}
                     </span>
-                    <span className="ml-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
-                      <Icon className="h-5 w-5" strokeWidth={1.8} />
+                    <span className="ml-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                      <Icon className="h-[18px] w-[18px]" strokeWidth={1.8} />
                     </span>
                     <span className="text-sm font-medium leading-5 text-slate-800">
                       {task}
@@ -260,17 +268,7 @@ export function ClinicIntentBuilder({
               })}
             </ol>
 
-            {selectedModel.readiness === "design_partner" ? (
-              <div className="mt-5 flex gap-3 rounded-xl border border-violet-100 bg-white/75 p-3.5">
-                <HeartPulse className="mt-0.5 h-4 w-4 shrink-0 text-violet-600" />
-                <p className="text-xs leading-5 text-slate-600">
-                  We’ll validate one real workflow with you and be clear about
-                  anything that isn’t ready yet.
-                </p>
-              </div>
-            ) : null}
-
-            <div className="mt-6 flex items-center gap-2 text-xs text-primary">
+            <div className="mt-4 flex items-center gap-2 text-xs text-primary">
               <ShieldCheck className="h-4 w-4" strokeWidth={1.8} />
               <span>Nothing moves until you review it.</span>
             </div>
