@@ -25,9 +25,9 @@
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
-    "dotenv": "^16.4.0",
+    "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
-    "postgres": "^3.4.0"
+    "postgres": "^3.4.9"
   },
   "devDependencies": {
     "@faker-js/faker": "^9.0.0",
