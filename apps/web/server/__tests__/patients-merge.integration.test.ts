@@ -6,6 +6,7 @@ import {
   appointments,
   auditLog,
   clients,
+  locations,
   patientMergeEvents,
   patients,
   practices,
@@ -58,6 +59,7 @@ async function seedMergeFixture(
   const practiceId = randomUUID();
   const userId = randomUUID();
   const clientId = randomUUID();
+  const locationId = randomUUID();
   const keepId = randomUUID();
   const mergeId = randomUUID();
   const appointmentId = randomUUID();
@@ -82,6 +84,12 @@ async function seedMergeFixture(
     firstName: "Synthetic",
     lastName: "Owner",
   });
+  await tx.insert(locations).values({
+    id: locationId,
+    practiceId,
+    name: "Synthetic Main Clinic",
+    isPrimary: true,
+  });
   await tx.insert(patients).values([
     {
       id: keepId,
@@ -101,6 +109,7 @@ async function seedMergeFixture(
   await tx.insert(appointments).values({
     id: appointmentId,
     practiceId,
+    locationId,
     clientId,
     patientId: mergeId,
     startTime: new Date(Date.now() + 24 * 60 * 60 * 1000),

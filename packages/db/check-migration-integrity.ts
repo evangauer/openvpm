@@ -47,15 +47,6 @@ if (!url) {
   process.exit(1);
 }
 
-function safeTarget(raw: string): string {
-  try {
-    const parsed = new URL(raw);
-    return `${parsed.host}${parsed.pathname}`;
-  } catch {
-    return "(unparseable DATABASE_URL)";
-  }
-}
-
 const client = postgres(url, {
   max: 1,
   prepare: !isPooledDatabaseConnection(url),
@@ -82,13 +73,15 @@ try {
     ? validateAppliedLedgerPrefix(expected, applied)
     : validateAppliedLedger(expected, applied);
   if (liveErrors.length > 0) {
-    console.error(`Migration ledger integrity failed for ${safeTarget(url)}:`);
+    console.error(
+      "Migration ledger integrity failed for the configured database:",
+    );
     fail(liveErrors);
   }
   console.log(
     verifyLivePrefix
-      ? `OK — live ledger at ${safeTarget(url)} is an exact committed prefix.`
-      : `OK — live ledger at ${safeTarget(url)} exactly matches committed order and hashes.`,
+      ? "OK — the configured live ledger is an exact committed prefix."
+      : "OK — the configured live ledger exactly matches committed order and hashes.",
   );
 } finally {
   await client.end();
