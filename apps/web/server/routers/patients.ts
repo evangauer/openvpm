@@ -1332,9 +1332,14 @@ export const patientsRouter = createRouter({
     .use(requireRole("admin"))
     .input(patientMergeInput)
     .mutation(async ({ ctx, input }) => {
+      // This savepoint keeps the multi-table merge atomic when tRPC converts a
+      // procedure exception into an error result for the outer tenant
+      // middleware. Do not issue SET TRANSACTION here: withTenant has already
+      // run the RLS context statement, and PostgreSQL rejects isolation changes
+      // from this nested savepoint. Deterministic patient-row locks below supply
+      // the required serialization boundary.
       return ctx.db.transaction(async (tx) => {
         const mergeDb = tx as unknown as Database;
-        await tx.execute(sql`set transaction isolation level serializable`);
         await assertActivePractice({ db: mergeDb, practiceId: ctx.practiceId });
 
         const [existingEvent] = await mergeDb
@@ -1405,7 +1410,7 @@ export const patientsRouter = createRouter({
           });
         }
 
-        const movedAppointments = await tx
+        const movedAppointments = await mergeDb
           .update(appointments)
           .set({ patientId: input.keepId })
           .where(
@@ -1429,7 +1434,7 @@ export const patientsRouter = createRouter({
           });
         }
 
-        const movedWaitlistEntries = await tx
+        const movedWaitlistEntries = await mergeDb
           .update(appointmentWaitlist)
           .set({ patientId: input.keepId })
           .where(
@@ -1454,7 +1459,7 @@ export const patientsRouter = createRouter({
         }
 
         const mergedAt = mergeNow;
-        const [event] = await tx
+        const [event] = await mergeDb
           .insert(patientMergeEvents)
           .values({
             practiceId: ctx.practiceId,
@@ -1480,7 +1485,7 @@ export const patientsRouter = createRouter({
           });
         }
 
-        await tx.insert(auditLog).values({
+        await mergeDb.insert(auditLog).values({
           practiceId: ctx.practiceId,
           userId: ctx.user.id,
           action: "merged",
@@ -1497,7 +1502,7 @@ export const patientsRouter = createRouter({
           },
         });
 
-        const [retiredSource] = await tx
+        const [retiredSource] = await mergeDb
           .update(patients)
           .set({ deletedAt: mergedAt })
           .where(

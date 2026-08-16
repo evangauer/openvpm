@@ -29,6 +29,9 @@ jobs:
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
 
+      - name: Verify committed migration order and lineage
+        run: pnpm db:migration-integrity
+
       - name: Check environment is configured
         id: configured
         env:
@@ -48,11 +51,23 @@ jobs:
           DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
         run: pnpm db:drift
 
+      - name: Verify current migration ledger prefix
+        if: steps.configured.outputs.ready == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: pnpm db:migration-integrity:prefix
+
       - name: Apply migrations
         if: steps.configured.outputs.ready == 'true'
         env:
           DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
         run: pnpm db:migrate
+
+      - name: Verify applied migration order and hashes
+        if: steps.configured.outputs.ready == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: pnpm db:migration-integrity:live
 
       - name: Re-apply row-level security
         if: steps.configured.outputs.ready == 'true'
@@ -79,6 +94,9 @@ jobs:
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
 
+      - name: Verify committed migration order and lineage
+        run: pnpm db:migration-integrity
+
       - name: Check environment is configured
         id: configured
         env:
@@ -98,11 +116,23 @@ jobs:
           DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
         run: pnpm db:drift
 
+      - name: Verify current migration ledger prefix
+        if: steps.configured.outputs.ready == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
+        run: pnpm db:migration-integrity:prefix
+
       - name: Apply migrations
         if: steps.configured.outputs.ready == 'true'
         env:
           DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
         run: pnpm db:migrate
+
+      - name: Verify applied migration order and hashes
+        if: steps.configured.outputs.ready == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
+        run: pnpm db:migration-integrity:live
 
       - name: Re-apply row-level security
         if: steps.configured.outputs.ready == 'true'

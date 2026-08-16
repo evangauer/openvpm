@@ -768,7 +768,7 @@ describe("patients mutation safety", () => {
       name: "Biscuit duplicate",
       createdAt: new Date("2026-08-01T00:00:00.000Z"),
     };
-    const { db, insertValues, updateSet, transaction, execute } = createDb({
+    const { db, insertValues, updateSet, transaction } = createDb({
       selectResults: [
         [{ id: PRACTICE_ID }],
         [],
@@ -799,8 +799,9 @@ describe("patients mutation safety", () => {
       },
     });
 
-    expect(transaction).toHaveBeenCalled();
-    expect(execute).toHaveBeenCalled();
+    // protectedProcedure owns the tenant transaction; merge owns one savepoint
+    // so a mid-merge failure rolls back all of its writes.
+    expect(transaction).toHaveBeenCalledTimes(2);
     expect(insertValues).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
@@ -837,7 +838,7 @@ describe("patients mutation safety", () => {
       name: "Biscuit",
       species: "canine",
     };
-    const { db, insertValues, updateSet, execute } = createDb({
+    const { db, insertValues, updateSet } = createDb({
       selectResults: [
         [{ id: PRACTICE_ID }],
         [
@@ -869,7 +870,6 @@ describe("patients mutation safety", () => {
       },
     });
 
-    expect(execute).toHaveBeenCalled();
     expect(insertValues).not.toHaveBeenCalled();
     expect(updateSet).not.toHaveBeenCalled();
   });

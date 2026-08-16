@@ -935,6 +935,26 @@ try {
     closedDraftDiscardBlocked,
   );
 
+  let finalizedSoapDeleteBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`delete from soap_notes where id = ${aSoapReplacement}`;
+    });
+  } catch {
+    finalizedSoapDeleteBlocked = true;
+  }
+  check(
+    "finalized SOAP cannot be deleted by the app role",
+    finalizedSoapDeleteBlocked,
+  );
+  const finalizedSoapStillExists =
+    await owner`select id from soap_notes where id = ${aSoapReplacement}`;
+  check(
+    "blocked finalized SOAP delete preserves the clinical record",
+    finalizedSoapStillExists.length === 1,
+  );
+
   const addendumContent = 'Owner said "8 AM".\nDose unchanged — café 🐾';
   const addendumHash = soapAddendumPayloadHash(
     aSoapReplacement,

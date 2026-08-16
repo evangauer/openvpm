@@ -13,7 +13,32 @@ describe("committed Drizzle migrations", () => {
     const ci = readRepoFile(".github/workflows/ci.yml");
 
     expect(ci).toContain("pnpm --filter @openpims/db db:migrate");
+    expect(ci).toContain("pnpm --filter @openpims/db db:migration-integrity");
+    expect(ci).toContain(
+      "pnpm --filter @openpims/db db:migration-integrity:live",
+    );
+    expect(ci.indexOf("db:migration-integrity\n")).toBeLessThan(
+      ci.indexOf("db:migrate\n"),
+    );
+    expect(ci.indexOf("db:migrate\n")).toBeLessThan(
+      ci.indexOf("db:migration-integrity:live\n"),
+    );
     expect(ci).not.toContain("drizzle-kit push --force");
+  });
+
+  it("gates production and demo migrations on static and live ledger integrity", () => {
+    const workflow = readRepoFile(".github/workflows/migrate.yml");
+
+    expect(workflow.match(/run: pnpm db:migration-integrity$/gm)).toHaveLength(
+      2,
+    );
+    expect(
+      workflow.match(/run: pnpm db:migration-integrity:live$/gm),
+    ).toHaveLength(2);
+    expect(
+      workflow.match(/run: pnpm db:migration-integrity:prefix$/gm),
+    ).toHaveLength(2);
+    expect(workflow.match(/run: pnpm db:migrate$/gm)).toHaveLength(2);
   });
 
   it("includes a baseline migration registered in the Drizzle journal", () => {

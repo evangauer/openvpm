@@ -72,7 +72,13 @@ jobs:
 
       # Apply committed migrations, apply RLS (+ least-priv role), then prove
       # tenant isolation against a real Postgres on every PR.
+      - run: pnpm --filter @openpims/db db:migration-integrity:test
+
+      - run: pnpm --filter @openpims/db db:migration-integrity
+
       - run: pnpm --filter @openpims/db db:migrate
+
+      - run: pnpm --filter @openpims/db db:migration-integrity:live
 
       # Schema drift guard: if drizzle-kit generate produces anything, a schema
       # change was committed without its migration (or a migration was written
@@ -87,6 +93,15 @@ jobs:
           fi
 
       - run: pnpm --filter @openpims/db db:rls
+
+      # Reproduce the real tenant transaction/savepoint boundary that clinic
+      # patient merges use. Synthetic rows prove both successful convergence
+      # and rollback after a deliberately injected immutable-evidence failure.
+      - name: Execute patient merge transaction safety contract
+        env:
+          PATIENT_MERGE_DB_INTEGRATION: "1"
+          HOSTED_BILLING_ENABLED: "false"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/patients-merge.integration.test.ts
 
       # Compile, bind, and execute the exact read-only SQL used by the shared
       # platform-admin and daily SMS operations queues. Unit tests cannot catch

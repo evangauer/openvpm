@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 const source = readFileSync(
   new URL("../routers/patients.ts", import.meta.url),
-  "utf8"
+  "utf8",
 );
 
 describe("patients query scoping", () => {
@@ -23,16 +23,16 @@ describe("patients query scoping", () => {
     expect(source).toContain("${practices.deletedAt} is null");
     expect(source).toContain("await assertActivePractice(ctx)");
     expect(
-      source.match(/activePracticePredicate\(ctx\.practiceId\)/g)?.length ?? 0
+      source.match(/activePracticePredicate\(ctx\.practiceId\)/g)?.length ?? 0,
     ).toBeGreaterThanOrEqual(10);
     expect(source).toMatch(
-      /eq\(patients\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(patients\.deletedAt\)/
+      /eq\(patients\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(patients\.deletedAt\)/,
     );
     expect(source).toMatch(
-      /eq\(appointments\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(appointments\.deletedAt\)/
+      /eq\(appointments\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(appointments\.deletedAt\)/,
     );
     expect(source).toMatch(
-      /eq\(appointmentWaitlist\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+eq\(appointmentWaitlist\.status, "waiting"\)/
+      /eq\(appointmentWaitlist\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+eq\(appointmentWaitlist\.status, "waiting"\)/,
     );
     expect(source).toContain(
       "from ${invoices} where ${invoices.practiceId} = ${practiceId} and ${invoices.patientId} = ${patientId}",
@@ -41,31 +41,33 @@ describe("patients query scoping", () => {
 
   it("scopes patient detail child reads through the tenant patient", () => {
     const weightsRead = source.match(
-      /\.from\(patientWeights\)[\s\S]+?\.orderBy\(desc\(patientWeights\.recordedAt\)\)/
+      /\.from\(patientWeights\)[\s\S]+?\.orderBy\(desc\(patientWeights\.recordedAt\)\)/,
     )?.[0];
     expect(weightsRead).toContain("eq(patientWeights.patientId, patient.id)");
     expect(weightsRead).toContain("from ${patients}");
-    expect(weightsRead).toContain("${patients.id} = ${patientWeights.patientId}");
+    expect(weightsRead).toContain(
+      "${patients.id} = ${patientWeights.patientId}",
+    );
     expect(weightsRead).toContain("${patients.practiceId} = ${ctx.practiceId}");
     expect(weightsRead).toContain("${patients.deletedAt} is null");
     expect(weightsRead).toContain("activePracticePredicate(ctx.practiceId)");
 
     const allergiesRead = source.match(
-      /\.from\(patientAllergies\)[\s\S]+?eq\(patientAllergies\.patientId, patient\.id\)[\s\S]+?\.orderBy\(desc\(patientAllergies\.notedAt\)/
+      /\.from\(patientAllergies\)[\s\S]+?eq\(patientAllergies\.patientId, patient\.id\)[\s\S]+?\.orderBy\(desc\(patientAllergies\.notedAt\)/,
     )?.[0];
     expect(allergiesRead).toContain(".leftJoin(");
     expect(allergiesRead).toContain(
-      "clinicalRecordCorrections.patientAllergyId"
+      "clinicalRecordCorrections.patientAllergyId",
     );
     expect(allergiesRead).toContain(
-      "eq(clinicalRecordCorrections.practiceId, ctx.practiceId)"
+      "eq(clinicalRecordCorrections.practiceId, ctx.practiceId)",
     );
     expect(allergiesRead).toContain("from ${patients}");
     expect(allergiesRead).toContain(
-      "${patients.id} = ${patientAllergies.patientId}"
+      "${patients.id} = ${patientAllergies.patientId}",
     );
     expect(allergiesRead).toContain(
-      "${patients.practiceId} = ${ctx.practiceId}"
+      "${patients.practiceId} = ${ctx.practiceId}",
     );
     expect(allergiesRead).toContain("${patients.deletedAt} is null");
     expect(allergiesRead).toContain("activePracticePredicate(ctx.practiceId)");
@@ -84,22 +86,27 @@ describe("patients query scoping", () => {
     expect(deleteBlock).toContain("eq(patients.practiceId, ctx.practiceId)");
     expect(deleteBlock).toContain("activePracticePredicate(ctx.practiceId)");
     expect(deleteBlock).toContain("eq(appointments.patientId, input.id)");
-    expect(deleteBlock).toContain("eq(appointments.practiceId, ctx.practiceId)");
     expect(deleteBlock).toContain(
-      "inArray(appointments.status, activeAppointmentStatuses)"
+      "eq(appointments.practiceId, ctx.practiceId)",
     );
     expect(deleteBlock).toContain(
-      "eq(appointmentWaitlist.patientId, input.id)"
+      "inArray(appointments.status, activeAppointmentStatuses)",
     );
     expect(deleteBlock).toContain(
-      "eq(appointmentWaitlist.practiceId, ctx.practiceId)"
+      "eq(appointmentWaitlist.patientId, input.id)",
+    );
+    expect(deleteBlock).toContain(
+      "eq(appointmentWaitlist.practiceId, ctx.practiceId)",
     );
     expect(deleteBlock).toContain('eq(appointmentWaitlist.status, "waiting")');
   });
 
-  it("keeps merge preview and execution admin-only, transactional, and fail-closed", () => {
+  it("keeps merge execution in an atomic savepoint without changing isolation", () => {
     const previewStart = source.indexOf("previewMerge: protectedProcedure");
-    const mergeStart = source.indexOf("merge: protectedProcedure", previewStart);
+    const mergeStart = source.indexOf(
+      "merge: protectedProcedure",
+      previewStart,
+    );
     const duplicatesStart = source.indexOf(
       "findDuplicates: protectedProcedure",
       mergeStart,
@@ -109,9 +116,8 @@ describe("patients query scoping", () => {
     expect(previewStart).toBeGreaterThanOrEqual(0);
     expect(mergeBlock).toContain('.use(requireRole("admin"))');
     expect(mergeBlock).toContain("ctx.db.transaction(async (tx) =>");
-    expect(mergeBlock).toContain(
-      "set transaction isolation level serializable",
-    );
+    expect(mergeBlock).not.toContain("set transaction isolation level");
+    expect(mergeBlock).toContain("const mergeDb = tx as unknown as Database");
     expect(source).toContain('.orderBy(asc(patients.id))\n    .for("update")');
     expect(source).toContain("sourceHasIncomingAliases");
     expect(source).toContain("sourceWasPreviouslyMerged");
@@ -186,5 +192,4 @@ describe("patients query scoping", () => {
     expect(source).toContain("requestedPatientId: input.id");
     expect(source).toContain("canonicalPatientId: patient.id");
   });
-
 });

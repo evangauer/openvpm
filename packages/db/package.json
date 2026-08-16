@@ -20,6 +20,10 @@
     "db:rls:test": "tsx test-rls.ts",
     "db:sms-provider-resolutions:test": "tsx test-sms-provider-event-resolutions.ts",
     "db:migration-runs:test": "tsx test-migration-runs.ts",
+    "db:migration-integrity": "tsx check-migration-integrity.ts",
+    "db:migration-integrity:prefix": "tsx check-migration-integrity.ts --live-prefix",
+    "db:migration-integrity:live": "tsx check-migration-integrity.ts --live",
+    "db:migration-integrity:test": "tsx test-migration-integrity.ts",
     "db:drift": "tsx check-drift.ts",
     "db:baseline": "tsx baseline.ts",
     "db:studio": "drizzle-kit studio"
