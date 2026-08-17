@@ -11,6 +11,7 @@ import {
 } from "@/lib/admin/activation-funnel";
 import {
   computeJourneyFunnel,
+  safeAcquisitionBucket,
   type JourneyFunnel,
 } from "@/lib/admin/journey-funnel";
 import { loadClinicPilotQueue } from "@/lib/admin/clinic-pilots";
@@ -93,6 +94,17 @@ function pct(rate: number): string {
   return `${Math.round(rate * 100)}%`;
 }
 
+function escapeHtml(value: string): string {
+  const replacements: Record<string, string> = {
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  };
+  return value.replace(/[&<>"']/g, (character) => replacements[character]!);
+}
+
 function funnelSection(title: string, funnel: ActivationFunnel): string {
   const {
     signups,
@@ -157,6 +169,22 @@ function journeySection(title: string, funnel: JourneyFunnel): string {
     paymentMethodRate,
     positivePaymentRate,
   } = funnel.totals;
+  const acquisitionRows = funnel.acquisitionOutcomes
+    .map(
+      (outcome) => `<tr style="font-size:13px;color:#111827;">
+    <td style="padding:5px 12px 5px 0;">${escapeHtml(safeAcquisitionBucket("source", outcome.source))}</td>
+    <td style="padding:5px 12px 5px 0;">${escapeHtml(safeAcquisitionBucket("medium", outcome.medium))}</td>
+    <td style="padding:5px 12px 5px 0;">${escapeHtml(safeAcquisitionBucket("campaign", outcome.campaign))}</td>
+    <td style="padding:5px 12px 5px 0;">${outcome.registrations}</td>
+    <td style="padding:5px 12px 5px 0;">${outcome.activated} <span style="color:#6b7280;">${pct(outcome.activationRate)}</span></td>
+    <td style="padding:5px 12px 5px 0;">${outcome.paymentMethodCollected} <span style="color:#6b7280;">${pct(outcome.paymentMethodRate)}</span></td>
+    <td style="padding:5px 0;">${outcome.firstPositivePayment} <span style="color:#6b7280;">${pct(outcome.positivePaymentRate)}</span></td>
+  </tr>`,
+    )
+    .join("");
+  const acquisitionBody =
+    acquisitionRows ||
+    `<tr><td colspan="7" style="padding:8px 0;color:#6b7280;font-size:13px;">No registered acquisition cohorts in this window.</td></tr>`;
   return `<h2 style="margin:24px 0 8px;font-size:16px;color:#111827;">${title}</h2>
 <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;">
   <tr style="text-align:left;color:#6b7280;font-size:13px;">
@@ -178,7 +206,24 @@ function journeySection(title: string, funnel: JourneyFunnel): string {
 </table>
 <p style="margin:8px 0 0;color:#374151;font-size:13px;line-height:1.5;"><strong>Signup path:</strong> ${signupProfileViewed} plan start(s) → ${signupProfileCompleted} plan(s) built → ${signupAccountViewed} account form(s) → ${signupSubmitted} submission(s) → ${registrations} registered.</p>
 <p style="margin:8px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Left before trying: ${funnel.totals.leftBeforeTrying} · Demo without signup: ${funnel.totals.demoAbandoned} · Signup without activation: ${funnel.totals.registrationAbandoned} · Activated without payment method: ${funnel.totals.activationAbandoned} · Payment method without positive payment after trial: ${funnel.totals.paymentAbandoned} · Client errors: ${funnel.totals.clientErrors}</p>
-<p style="margin:4px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Attribution quality: ${funnel.totals.historicalUnattributedRegistrations} historical/unknown registration(s) · ${funnel.totals.repairableAttributionGaps} captured-ID telemetry gap(s).</p>`;
+<p style="margin:4px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Attribution quality: ${funnel.totals.historicalUnattributedRegistrations} historical/unknown registration(s) · ${funnel.totals.repairableAttributionGaps} captured-ID telemetry gap(s).</p>
+<h3 style="margin:16px 0 4px;font-size:14px;color:#111827;">Acquisition outcomes · registered in this window</h3>
+<p style="margin:0 0 6px;color:#6b7280;font-size:12px;line-height:1.5;">Restricted aggregate cohorts use fixed product-owned channel buckets and canonical milestones. Rates use registrations as the denominator; missing values stay Unknown and unrecognized values become Other without being displayed.</p>
+<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;">
+  <tr style="text-align:left;color:#6b7280;font-size:12px;">
+    <th style="padding:4px 12px 4px 0;font-weight:500;">Source</th>
+    <th style="padding:4px 12px 4px 0;font-weight:500;">Medium</th>
+    <th style="padding:4px 12px 4px 0;font-weight:500;">Campaign</th>
+    <th style="padding:4px 12px 4px 0;font-weight:500;">Registered</th>
+    <th style="padding:4px 12px 4px 0;font-weight:500;">Activated</th>
+    <th style="padding:4px 12px 4px 0;font-weight:500;">Payment method</th>
+    <th style="padding:4px 0;font-weight:500;">Positive payment</th>
+  </tr>
+  ${acquisitionBody}
+</table>
+${funnel.acquisitionOutcomesTruncated ? `<p style="margin:4px 0 0;color:#6b7280;font-size:12px;line-height:1.5;">Showing the top ${funnel.acquisitionOutcomeRowLimit} bucket combinations in deterministic order; additional combinations are omitted.</p>` : ""}
+<p style="margin:10px 0 0;color:#374151;font-size:13px;line-height:1.5;"><strong>Period activity · milestone events in this window:</strong> ${funnel.periodActivity.registrations} registered · ${funnel.periodActivity.activated} activated · ${funnel.periodActivity.paymentMethodCollected} payment method · ${funnel.periodActivity.firstPositivePayment} first positive payment.</p>
+<p style="margin:4px 0 0;color:#6b7280;font-size:12px;line-height:1.5;">Period activity uses exact milestone occurrence time and is not a signup cohort conversion rate.</p>`;
 }
 
 type ClinicPilotQueue = Awaited<ReturnType<typeof loadClinicPilotQueue>>;

@@ -22,7 +22,11 @@ const mocks = vi.hoisted(() => {
 
 vi.mock("@/lib/tenant-db", () => ({ withSystem: mocks.withSystem }));
 
-const { computeJourneyFunnel } = await import("@/lib/admin/journey-funnel");
+const {
+  ACQUISITION_OUTCOME_ROW_LIMIT,
+  computeJourneyFunnel,
+  safeAcquisitionBucket,
+} = await import("@/lib/admin/journey-funnel");
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -54,6 +58,34 @@ describe("computeJourneyFunnel", () => {
       ],
       [{ historicalUnknown: "2", repairableGap: "1" }],
       [{ count: "4" }],
+      [
+        {
+          source: "demo",
+          medium: "product",
+          campaign: "demo_dashboard",
+          registrations: "4",
+          activated: "2",
+          paymentMethodCollected: "1",
+          firstPositivePayment: "1",
+        },
+        {
+          source: "clinic_alice",
+          medium: "",
+          campaign: "private_launch_name",
+          registrations: "1",
+          activated: "0",
+          paymentMethodCollected: "0",
+          firstPositivePayment: "0",
+        },
+      ],
+      [
+        {
+          registrations: "7",
+          activated: "3",
+          paymentMethodCollected: "2",
+          firstPositivePayment: "1",
+        },
+      ],
     );
 
     const result = await computeJourneyFunnel(mocks.db as never, 30);
@@ -73,6 +105,42 @@ describe("computeJourneyFunnel", () => {
         firstPositivePayment: 1,
       },
     ]);
+    expect(result.acquisitionOutcomes).toEqual([
+      {
+        source: "demo",
+        medium: "product",
+        campaign: "demo_dashboard",
+        registrations: 4,
+        activated: 2,
+        paymentMethodCollected: 1,
+        firstPositivePayment: 1,
+        activationRate: 0.5,
+        paymentMethodRate: 0.25,
+        positivePaymentRate: 0.25,
+      },
+      {
+        source: "Other",
+        medium: "Unknown",
+        campaign: "Other",
+        registrations: 1,
+        activated: 0,
+        paymentMethodCollected: 0,
+        firstPositivePayment: 0,
+        activationRate: 0,
+        paymentMethodRate: 0,
+        positivePaymentRate: 0,
+      },
+    ]);
+    expect(result.acquisitionOutcomeRowLimit).toBe(
+      ACQUISITION_OUTCOME_ROW_LIMIT,
+    );
+    expect(result.acquisitionOutcomesTruncated).toBe(false);
+    expect(result.periodActivity).toEqual({
+      registrations: 7,
+      activated: 3,
+      paymentMethodCollected: 2,
+      firstPositivePayment: 1,
+    });
     expect(result.totals).toMatchObject({
       visitors: 20,
       demos: 8,
@@ -104,7 +172,7 @@ describe("computeJourneyFunnel", () => {
       paymentMethodRate: 0.2,
       positivePaymentRate: 1,
     });
-    expect(mocks.execute).toHaveBeenCalledTimes(3);
+    expect(mocks.execute).toHaveBeenCalledTimes(5);
     const errorSql = new PgDialect().sqlToQuery(
       mocks.execute.mock.calls[2]![0] as SQL,
     ).sql;
@@ -115,8 +183,19 @@ describe("computeJourneyFunnel", () => {
   });
 
   it("returns safe zero rates when no journey has started", async () => {
-    mocks.executeResults.push([], [], []);
+    mocks.executeResults.push([], [], [], [], []);
     const result = await computeJourneyFunnel(mocks.db as never, 7);
+    expect(result.acquisitionOutcomes).toEqual([]);
+    expect(result.acquisitionOutcomeRowLimit).toBe(
+      ACQUISITION_OUTCOME_ROW_LIMIT,
+    );
+    expect(result.acquisitionOutcomesTruncated).toBe(false);
+    expect(result.periodActivity).toEqual({
+      registrations: 0,
+      activated: 0,
+      paymentMethodCollected: 0,
+      firstPositivePayment: 0,
+    });
     expect(result.totals).toMatchObject({
       visitors: 0,
       demos: 0,
@@ -188,5 +267,83 @@ describe("computeJourneyFunnel", () => {
     expect(errorQuery).toMatch(
       /select count\(\*\)::int as count\s+from funnel_events\s+where event_name = 'client_error'/,
     );
+  });
+
+  it("keeps acquisition cohorts aggregate, allowlisted, and canonical", async () => {
+    mocks.executeResults.push([], [], [], [], []);
+
+    await computeJourneyFunnel(mocks.db as never, 30);
+
+    const acquisitionSql = new PgDialect().sqlToQuery(
+      mocks.execute.mock.calls[3]![0] as SQL,
+    ).sql;
+    const periodSql = new PgDialect().sqlToQuery(
+      mocks.execute.mock.calls[4]![0] as SQL,
+    ).sql;
+
+    expect(acquisitionSql).toContain(
+      "from practice_conversion_milestones registered",
+    );
+    expect(acquisitionSql).toContain("registered.milestone = 'registered'");
+    expect(acquisitionSql).toContain(
+      "p.settings ->> 'analyticsExcluded' is distinct from 'true'",
+    );
+    expect(acquisitionSql).toContain("then 'Unknown'");
+    expect(acquisitionSql).toContain("else 'Other'");
+    expect(acquisitionSql).toContain("^[a-z0-9._:/-]{1,80}$");
+    expect(acquisitionSql).toContain("then 'homepage'");
+    expect(acquisitionSql).toContain("then 'solution'");
+    expect(acquisitionSql).toContain("then 'demo'");
+    expect(acquisitionSql).toContain("activated.milestone = 'activated'");
+    expect(acquisitionSql).toContain(
+      "payment_method.milestone = 'payment_method_collected'",
+    );
+    expect(acquisitionSql).toContain(
+      "positive_payment.milestone = 'first_positive_payment'",
+    );
+    expect(acquisitionSql).toContain(
+      "order by registrations desc, source, medium, campaign",
+    );
+    expect(acquisitionSql).toContain("limit $2");
+    expect(periodSql).toContain("where pcm.occurred_at >= $1::timestamptz");
+    expect(periodSql).not.toMatch(
+      /amount_cents|currency|email|patient|client/i,
+    );
+  });
+
+  it("never returns arbitrary acquisition tokens and caps row cardinality", async () => {
+    expect(safeAcquisitionBucket("source", "demo")).toBe("demo");
+    expect(safeAcquisitionBucket("source", "clinic_alice")).toBe("Other");
+    expect(safeAcquisitionBucket("source", "")).toBe("Unknown");
+
+    const rows = Array.from(
+      { length: ACQUISITION_OUTCOME_ROW_LIMIT + 1 },
+      (_, index) => ({
+        source: index === 0 ? "demo" : `private_clinic_${index}`,
+        medium: "product",
+        campaign: "demo_dashboard",
+        registrations: "1",
+        activated: "0",
+        paymentMethodCollected: "0",
+        firstPositivePayment: "0",
+      }),
+    );
+    mocks.executeResults.push([], [], [], rows, []);
+
+    const result = await computeJourneyFunnel(mocks.db as never, 30);
+
+    expect(result.acquisitionOutcomes).toHaveLength(
+      ACQUISITION_OUTCOME_ROW_LIMIT,
+    );
+    expect(result.acquisitionOutcomesTruncated).toBe(true);
+    expect(result.acquisitionOutcomes[0]?.source).toBe("demo");
+    expect(
+      result.acquisitionOutcomes
+        .slice(1)
+        .every((row) => row.source === "Other"),
+    ).toBe(true);
+    expect(
+      result.acquisitionOutcomes.some((row) => row.source.includes("clinic")),
+    ).toBe(false);
   });
 });

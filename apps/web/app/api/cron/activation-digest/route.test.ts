@@ -39,6 +39,18 @@ vi.mock("@/lib/admin/activation-funnel", () => ({
 
 vi.mock("@/lib/admin/journey-funnel", () => ({
   computeJourneyFunnel: mocks.computeJourneyFunnel,
+  safeAcquisitionBucket: (
+    dimension: "source" | "medium" | "campaign",
+    value: unknown,
+  ) => {
+    const known = {
+      source: new Set(["demo", "Other", "Unknown"]),
+      medium: new Set(["product", "Other", "Unknown"]),
+      campaign: new Set(["demo_dashboard", "Other", "Unknown"]),
+    }[dimension];
+    if (typeof value !== "string" || value.length === 0) return "Unknown";
+    return known.has(value) ? value : "Other";
+  },
 }));
 
 vi.mock("@/lib/admin/clinic-pilots", () => ({
@@ -128,6 +140,28 @@ function journey(days: number): JourneyFunnel {
   return {
     days,
     weeks: [],
+    acquisitionOutcomes: [
+      {
+        source: "demo<script>",
+        medium: "product",
+        campaign: "demo_dashboard",
+        registrations: 5,
+        activated: 2,
+        paymentMethodCollected: 1,
+        firstPositivePayment: 1,
+        activationRate: 0.4,
+        paymentMethodRate: 0.2,
+        positivePaymentRate: 0.2,
+      },
+    ],
+    acquisitionOutcomeRowLimit: 20,
+    acquisitionOutcomesTruncated: true,
+    periodActivity: {
+      registrations: 6,
+      activated: 3,
+      paymentMethodCollected: 2,
+      firstPositivePayment: 1,
+    },
     totals: {
       visitors: 20,
       demos: 8,
@@ -285,6 +319,20 @@ describe("activation digest cron", () => {
     );
     expect(mocks.sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({
+        html: expect.stringContaining(
+          "Acquisition outcomes · registered in this window",
+        ),
+      }),
+    );
+    expect(mocks.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        html: expect.stringContaining(
+          "Period activity · milestone events in this window:",
+        ),
+      }),
+    );
+    expect(mocks.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
         html: expect.stringContaining("Supported clinic cohort"),
       }),
     );
@@ -294,6 +342,10 @@ describe("activation digest cron", () => {
       )[0]?.[0].html ?? "";
     expect(html).not.toContain("North &lt;Clinic&gt;");
     expect(html).not.toContain("North <Clinic>");
+    expect(html).toContain(">Other</td>");
+    expect(html).not.toContain("demo&lt;script&gt;");
+    expect(html).not.toContain("demo<script>");
+    expect(html).toContain("Showing the top 20 bucket combinations");
     expect(html).toContain("aggregate-only");
     expect(mocks.sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({ to: "ops@openvpm.com" }),

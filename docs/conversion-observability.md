@@ -57,6 +57,23 @@ The platform admin funnel and weekly activation digest expose:
 - mapped Stripe evidence not yet projected; and
 - signed Stripe evidence that could not be mapped to an active practice.
 
+The restricted acquisition-outcomes table groups practices registered in the
+reporting window into fixed, product-owned `source`, `medium`, and `campaign`
+buckets. Empty or malformed dimensions are labeled `Unknown`. Syntactically
+valid values outside the fixed vocabulary are labeled `Other` and are never
+echoed into the admin UI or email. The query fetches at most 21 deterministic
+rows and the application exposes at most the top 20, with an explicit
+truncation marker. The table never includes clinic identity, contact data,
+payment amounts, or clinical data. Activation, payment-method, and
+positive-payment rates all use that registration cohort as their denominator.
+A separately labeled period-activity summary counts exact milestone occurrence
+timestamps in the window, so cohort outcomes and recent event volume cannot be
+mistaken for each other.
+
+GA4/GTM remains a marketing acquisition and site-behavior layer. It is not the
+source of truth for registration, activation, card collection, payment, or
+revenue, and canonical milestone evidence is never exported to it.
+
 Journey cohorts are anchored to each anonymous visitor's all-time first-party
 touch, then filtered to the reporting window. Returning visitors are not
 re-cohorted. Abandonment ages from the exact stage event: first touch before a
