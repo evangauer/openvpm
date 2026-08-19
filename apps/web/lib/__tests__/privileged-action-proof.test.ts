@@ -42,11 +42,13 @@ describe("privileged action proofs", () => {
   it("rejects expired and modified proofs", () => {
     vi.stubEnv("MFA_ENCRYPTION_KEY", Buffer.alloc(32, 8).toString("base64"));
     const proof = issuePrivilegedActionProof({ ...identity, nowMs: 2_000_000 });
+    const replacement = proof.endsWith("x") ? "y" : "x";
+    const modifiedProof = `${proof.slice(0, -1)}${replacement}`;
     expect(
       verifyPrivilegedActionProof(proof, { ...identity, nowMs: 2_600_000 }),
     ).toBe(false);
     expect(
-      verifyPrivilegedActionProof(`${proof.slice(0, -1)}x`, {
+      verifyPrivilegedActionProof(modifiedProof, {
         ...identity,
         nowMs: 2_001_000,
       }),

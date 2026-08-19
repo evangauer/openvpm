@@ -34,9 +34,9 @@ describe("signup billing copy", () => {
       expect(source).not.toContain("card-collected trial");
       expect(source).not.toContain("billing secured through Stripe");
     }
-    expect(registerSource).toContain("No payment method required");
+    expect(registerSource).toContain("No credit card required");
     expect(welcomeEmailSource).toContain("no credit card");
-    expect(readmeSource).toContain("no payment method required");
+    expect(readmeSource).toContain("no credit card required");
     expect(activationChecklistSource).toContain("Confirm billing is connected");
   });
 

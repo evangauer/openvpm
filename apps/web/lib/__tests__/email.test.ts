@@ -564,7 +564,7 @@ describe("lifecycle email branding", () => {
       },
     });
     expect(payload.html).toContain("https://app.openvpm.com/?setup=resume");
-    expect(payload.html).toContain("no call or payment method required");
+    expect(payload.html).toContain("no call or credit card required");
     expect(payload.html).toContain("do not email patient files");
     expect(payload.html).toContain("/email-preferences?token=");
   });
