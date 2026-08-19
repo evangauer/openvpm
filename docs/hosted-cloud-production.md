@@ -2,7 +2,8 @@
 
 Clinic onboarding and graduation are governed by the
 [controlled clinic pilot operations runbook](clinic-pilot-operations.md) and
-the [clinic readiness boundary](clinic-pilot-readiness.md).
+[security incident response runbook](security-incident-response.md), plus the
+[clinic readiness boundary](clinic-pilot-readiness.md).
 
 OpenVPM has two operating modes:
 
@@ -19,7 +20,7 @@ This boundary is intentional. Do not add hosted-only requirements to the self-ho
 - `Try the Live Demo` -> `${NEXT_PUBLIC_DEMO_URL}/login`
 - `Self-host OpenVPM` -> `/install` and GitHub
 
-Cloud signup creates a practice, a primary location, the owner admin user, default configuration, and hosted first-run demo data. By default, signup grants a 14-day trial immediately with no card and the clinic lands in the product (adding a card converts to paid); email verification is a soft prompt, not a login gate. Set `HOSTED_NO_CARD_TRIAL=false` to reinstate the legacy card-collected checkout wall at signup.
+Cloud signup creates a practice, a primary location, the owner admin user, default configuration, and hosted first-run demo data. By default, signup grants a 14-day trial immediately with no payment method and the clinic lands in the product (adding billing converts to paid); email verification is a soft prompt, not a login gate. Set `HOSTED_NO_CARD_TRIAL=false` to reinstate the legacy payment-method-collected checkout wall at signup.
 
 For a direct customer handoff, use
 `https://app.openvpm.com/register?next=%2Fsettings%3Ftab%3Dbilling`. After
@@ -76,23 +77,39 @@ FIRST_CLINIC_WIN_ROLLOUT_AT=
 NEXTAUTH_URL=https://app.openvpm.com
 NEXT_PUBLIC_APP_URL=https://app.openvpm.com
 NEXTAUTH_SECRET=...
+# Distinct base64-encoded 32-byte key. Encrypts TOTP seeds, verifies recovery
+# codes, and signs short-lived privileged-action proofs; never reuse NEXTAUTH_SECRET.
+MFA_ENCRYPTION_KEY=...
 DATABASE_URL=...
 
 STRIPE_SECRET_KEY=...
+STRIPE_EXPECTED_ACCOUNT_ID=...
 STRIPE_WEBHOOK_SECRET=...
 STRIPE_CONNECT_WEBHOOK_SECRET=...
-# Optional; leave unset/0 for v1 if OpenVPM does not take a fee on clinic client payments.
-STRIPE_CONNECT_APPLICATION_FEE_BPS=
+STRIPE_CONNECT_V2_WEBHOOK_SECRET=...
+STRIPE_CONNECT_V2_ENABLED=true
+# Required for hosted client payments. Approved launch rate: 25 = 0.25%.
+STRIPE_CONNECT_APPLICATION_FEE_BPS=25
 STRIPE_SUBSCRIPTION_WEBHOOK_SECRET=...
 STRIPE_PRICE_CLOUD_LOCATION=...
 STRIPE_PRICE_CLOUD_LOCATION_ANNUAL=...
+STRIPE_SUBSCRIPTION_PAYMENT_METHOD_CONFIGURATION=...
+STRIPE_BILLING_PORTAL_CONFIGURATION=...
 STRIPE_TAX_ENABLED=true
+STRIPE_CLOUD_PRODUCT_TAX_CODE=txcd_10103001
+STRIPE_REQUIRED_TAX_REGISTRATIONS=US-NY:state_sales_tax
+
+# Production deployment lock; never configure in Preview.
+PRODUCTION_RELEASE_SHA=<exact-approved-40-character-git-commit>
 
 S3_ENDPOINT=...
 S3_ACCESS_KEY=...
 S3_SECRET_KEY=...
 S3_BUCKET=...
 S3_REGION=...
+# Use these instead of S3 values for a private Blob primary (preview only).
+FILE_STORAGE_PROVIDER=s3
+BLOB_READ_WRITE_TOKEN=
 
 # Independent recovery storage. Stage a complete group with execution disabled,
 # then enable only an exact design-partner cohort after bucket controls pass.
@@ -100,6 +117,8 @@ FILE_REPLICA_REQUIRED=false
 FILE_REPLICA_ENABLED=false
 FILE_REPLICA_ALL_PRACTICES=false
 FILE_REPLICA_PRACTICE_IDS=
+FILE_REPLICA_PROVIDER=s3
+FILE_REPLICA_BLOB_READ_WRITE_TOKEN=
 FILE_REPLICA_S3_ENDPOINT=
 FILE_REPLICA_S3_ACCESS_KEY=
 FILE_REPLICA_S3_SECRET_KEY=
@@ -138,6 +157,47 @@ PLATFORM_ADMIN_EMAILS=...
 ```
 
 `STRIPE_PRICE_CLOUD_USER` and `STRIPE_PRICE_CLOUD` are legacy-only. They must not be used for new checkout or required hosted readiness.
+
+### Identity and privileged-action controls
+
+Every staff role can enroll an authenticator from **Account Security**. TOTP
+seeds are encrypted with AES-256-GCM, recovery codes are stored only as
+one-way HMACs and consumed once, and a successfully used TOTP time-step cannot
+be replayed. Enabling, disabling, or replacing recovery codes increments the
+user's session generation and immediately invalidates every existing session.
+
+Hosted refunds, payment-account changes, subscription changes, staff access
+changes, bulk exports, backup restore, account deletion, and API/webhook
+credential changes require a separate password plus fresh MFA confirmation.
+The resulting proof is HttpOnly, SameSite Strict, expires after ten minutes,
+and is bound to the exact user, clinic, and session generation. A normal login
+session without that proof fails these procedures with
+`PRECONDITION_FAILED`. Verify this boundary in Preview before every production
+identity release: an unconfirmed sensitive action must fail, confirmation must
+allow it, expiry or session revocation must fail it again, and no password,
+TOTP seed, recovery code, or proof may appear in logs or audit metadata.
+
+### Production release lock
+
+Production Vercel builds fail closed unless `PRODUCTION_RELEASE_SHA` in the
+Vercel **Production** environment equals the candidate's exact 40-character
+`VERCEL_GIT_COMMIT_SHA`. Do not set this variable in Preview. The release order
+is:
+
+1. merge a fully green revision; its automatic production candidate remains
+   blocked by the SHA lock;
+2. manually dispatch **Apply migrations** for `production` and type the exact
+   confirmation `MIGRATE_PRODUCTION`;
+3. confirm the migration and schema-drift checks pass;
+4. set `PRODUCTION_RELEASE_SHA` to that exact commit, then redeploy that exact
+   candidate;
+5. confirm health and smoke checks before shifting any clinic workflow; and
+6. clear or rotate `PRODUCTION_RELEASE_SHA` so a later commit cannot inherit the
+   approval.
+
+The GitHub `Production` environment should require an independent reviewer.
+Repository code cannot create that reviewer rule; verify it in GitHub before
+the first release.
 
 Any nonblank `FILE_REPLICA_*` value starts the replica readiness gate. Partial
 storage configuration makes `/api/health` fail, and a complete configuration
@@ -442,6 +502,62 @@ card-only method list in Dashboard rules. Invoice Checkout still uses manual
 capture, so Stripe automatically filters out methods that cannot support the
 authorization-and-capture flow.
 
+Set `STRIPE_EXPECTED_ACCOUNT_ID` to the explicitly approved platform account.
+Get Talky Inc. is the temporary launch account; a dedicated OpenVPM account is
+a later controlled cutover. The
+hosted health check retrieves the account behind `STRIPE_SECRET_KEY` and fails
+closed when it does not match, without returning either identifier publicly.
+
+Create an active Payment Method Configuration for hosted subscriptions with
+only Cards and ACH Direct Debit enabled. Store its `pmc_...` ID in
+`STRIPE_SUBSCRIPTION_PAYMENT_METHOD_CONFIGURATION`. Checkout passes this pinned
+configuration on every Cloud subscription session so account-level Dashboard
+changes cannot silently add wallets or pay-over-time methods to this flow.
+
+Create and review one Stripe Billing Portal configuration for OpenVPM. Pin its
+`bpc_...` ID in `STRIPE_BILLING_PORTAL_CONFIGURATION` so invoice history,
+payment-method updates, cancellation behavior, and branding cannot silently
+switch to another portal configuration.
+
+Before deploying a production cutover, verify both the presence and Vercel
+secrecy class of every Stripe value without printing its contents:
+
+```bash
+pnpm --dir apps/web billing:verify-vercel-project
+npx --yes vercel@latest env ls production --json --cwd "$(pwd)" \
+  | pnpm --dir apps/web billing:verify-vercel-env
+```
+
+Run this from the repository root. The root is linked to the production
+`openvpm-app` project; the nested `apps/web/.vercel` link is a different Vercel
+project and must not be used for billing changes. The identity verifier checks
+the exact project, organization, and project name before any cutover work.
+
+The API key and all three webhook signing secrets must be Vercel `Sensitive`
+values. The expected account, pinned payment/portal configurations, live Cloud
+prices, hosted billing flag, and tax flag must be present. Legacy Cloud price
+variables must be removed only after the existing subscriptions are migrated.
+Store those non-secret IDs and flags as non-sensitive encrypted configuration.
+The list policy confirms presence and secrecy class. Vercel Sensitive values
+cannot be downloaded or injected by `vercel env run`, so run
+`billing:verify-stripe` with the restricted key before storing it in Vercel.
+After deployment, `/api/health` performs the account-identity and feature-gate
+checks in the Vercel runtime without returning either the expected or observed
+account identifier. The Stripe preflight and production runtime both require
+`STRIPE_TAX_ENABLED=true`; presence alone is not sufficient.
+
+The restricted live key must cover every Stripe resource used by the runtime
+and preflight, with no broader access: Accounts write, Account Links write,
+Checkout Sessions write, Payment Intents write, Refunds write, Customers read,
+Subscriptions read, Subscription Items write, Subscription Schedules write,
+Prices read, Products read,
+Billing Meter Events write, Billing Meters read, Payment Method Configurations
+read, Billing Portal Sessions write, Billing Portal Configurations read, Tax
+Settings read, and Tax Registrations read.
+Webhook verification uses endpoint signing secrets and does not require API-key
+access to webhook configuration. Run `billing:verify-stripe` with the restricted
+key before storing it in Vercel so missing read permissions fail before cutover.
+
 Create one Stripe product for OpenVPM Cloud with these recurring prices:
 
 - Cloud location: `$79/month`, env `STRIPE_PRICE_CLOUD_LOCATION` (flat per active location, unlimited staff).
@@ -449,6 +565,44 @@ Create one Stripe product for OpenVPM Cloud with these recurring prices:
 - Legacy `$0/month` seat price, env `STRIPE_PRICE_CLOUD_USER` — kept only so existing split-price subscriptions can still map to Cloud during webhook and quantity-sync processing. It is not added to new checkout and is not required by `/api/health`.
 - AI overage metered price, env `STRIPE_PRICE_AI_OVERAGE`.
 - SMS overage metered price, env `STRIPE_PRICE_SMS_OVERAGE`.
+
+### Moving existing subscriptions between Stripe accounts
+
+Do not clear a practice's Stripe IDs or ask a paid clinic to check out again.
+For a Stripe-to-Stripe account migration:
+
+1. Use Stripe's partial customer-data copy for the exact OpenVPM customers.
+   Stripe preserves their `cus_...` IDs and securely copies supported card and
+   US ACH payment methods into the destination account.
+2. Use Stripe's Billing migration toolkit to recreate each subscription on the
+   destination Cloud price at its existing paid-through or trial-end date.
+3. Schedule the source subscription to cancel at period end before cutover.
+4. Put a private `0600` migration manifest outside the repository and run
+   `pnpm --dir apps/web billing:rebind-stripe-subscriptions --manifest /absolute/path.json`.
+   The dry run verifies both Stripe account identities, both subscriptions,
+   the unchanged customer and default payment method, destination price and
+   location quantity, the exact monthly base + AI + SMS item topology (or the
+   intentionally flat annual topology), source cancellation, renewal
+   alignment, automatic-tax policy, collection pause state, and the current
+   database identity.
+5. Execute only with the manifest-digest confirmation printed by the dry run.
+   The tool atomically replaces each subscription ID and writes a durable audit
+   record without logging raw subscription identifiers.
+
+Keep the source subscriptions recoverable through the first cutover validation
+window; do not immediately cancel them outright. For rollback, first remove the
+source `cancel_at_period_end` schedule and schedule the destination subscriptions
+to stop. Then run the same private manifest with `--rollback` in dry-run mode.
+Rollback refuses to proceed unless the source is active/trialing and renewable,
+the destination is canceled or scheduled to stop, the database still points to
+the destination, billing policy/item topology still match, and the destination
+has not charged. Execute only with the printed `ROLLBACK:<manifest digest>`
+confirmation. Any destination charge requires manual reconciliation and must
+not use the automated rollback path.
+
+Keep the source account and invoice history available after migration. Disable
+its OpenVPM webhook endpoints only after destination events and database
+reconciliation are proven.
 
 `STRIPE_PRICE_CLOUD` (legacy single price) is only kept for mapping existing subscriptions; new checkout never uses it. Set `STRIPE_PRICE_AI_OVERAGE` and `STRIPE_PRICE_SMS_OVERAGE` when overage billing should be active; if either is omitted, usage is still recorded locally and reconciliation can report it, but Stripe will not bill that overage line.
 
@@ -460,6 +614,17 @@ The Cloud plan includes **1,000 AI actions + 1,000 SMS per month**, then bills *
 2. Create a graduated metered price per meter with the included allowance as the $0 first tier: tiers `[{ up_to: 1000, unit_amount: 0 }, { up_to: inf, unit_amount: 5 }]` for AI (cents) and `… unit_amount: 3` for SMS, each with `recurring.usage_type=metered` and `recurring.meter=<meter id>`. Wire to `STRIPE_PRICE_AI_OVERAGE` / `STRIPE_PRICE_SMS_OVERAGE`.
 
 Monthly and annual Checkout each show one customer-facing OpenVPM Cloud item (quantity = active non-deleted locations, kept current by quantity sync). Monthly subscription sync can attach configured quantity-less metered items after Checkout; annual founding subscriptions remain flat-rate so the first purchase and invoice stay simple. `recordUsage()` writes the local `usage_records` row (display/reconcile source of truth) and, once the practice has a Stripe customer, reports a meter event where metered billing is active. Before the conversion Stripe checkout completes, there is no customer to meter against, so any pre-checkout usage stays local. Leaving the overage price envs unset keeps usage recorded but unbilled.
+
+An existing monthly subscriber changes to annual from Plan & Billing. OpenVPM
+uses a Stripe Subscription Schedule whose annual phase starts at the end of the
+current monthly phase, so the confirmation creates no immediate invoice or
+proration. The operation must verify the platform account, Stripe customer,
+subscription metadata, current monthly price, subscription status, and absence
+of an unrelated/custom schedule. Quantity sync updates both the live monthly
+phase and the future annual phase when the clinic's active location count
+changes. Prove active, trialing, past-due, already-annual, duplicate-request,
+and conflicting-schedule behavior in Stripe Sandbox before enabling the action
+in production.
 
 Stripe Tax gates hosted readiness. Complete Stripe Tax registrations and origin-address setup in Stripe, then set `STRIPE_TAX_ENABLED=true` so subscription checkout collects billing address/tax IDs and lets Stripe calculate tax on the Cloud subscription. Client invoice payments stay on OpenVPM's already-totaled invoice amounts and do not add Stripe Tax again.
 
@@ -485,7 +650,11 @@ above: Cloud subscription charges settle to OpenVPM, while client invoice
 payments are created on the clinic's connected account after onboarding is
 complete.
 
-Enable Connect in the platform Stripe account, then add the Connect webhook:
+Enable Connect in the platform Stripe account. OpenVPM creates Accounts v2
+merchant configurations with the full Stripe Dashboard, direct charges, and
+Stripe responsible for fees, losses, and hosted requirement collection.
+
+Add a snapshot Connect event destination for clinic Checkout payments:
 
 ```text
 https://app.openvpm.com/api/webhooks/stripe-connect
@@ -493,14 +662,63 @@ https://app.openvpm.com/api/webhooks/stripe-connect
 
 Subscribe to:
 
-- `account.updated`
 - `checkout.session.completed`
+- `refund.created`
+- `refund.updated`
+- `refund.failed`
+- `charge.dispute.created`
+- `charge.dispute.updated`
+- `charge.dispute.closed`
+- `payout.created`
+- `payout.updated`
+- `payout.paid`
+- `payout.failed`
+- `payout.canceled`
+- `payout.reconciliation_completed`
 
 Store this endpoint secret as `STRIPE_CONNECT_WEBHOOK_SECRET`.
 
-`STRIPE_CONNECT_APPLICATION_FEE_BPS` is optional and defaults to `0`. Leave it
-unset for v1 if OpenVPM should not take a percentage fee from clinic client
-payments.
+These lifecycle events back the clinic financial statement. OpenVPM persists
+Stripe's charge balance transaction for gross/processing-fee/application-fee/
+clinic-net proof, refreshes refund and dispute states, records actual payout
+amounts, and maps settlements to automatic payouts only after Stripe reports
+reconciliation complete. A daily close is blocked while any Connect payment or
+refund in that clinic day lacks successful processor evidence. The launch scope
+is online payment links; integrated card-present Stripe Terminal is not enabled.
+
+Add a separate thin Connect event destination for Accounts v2 state:
+
+```text
+https://app.openvpm.com/api/webhooks/stripe-connect-v2
+```
+
+Choose events from connected accounts and subscribe to:
+
+- `v2.core.account.updated`
+- `v2.core.account.closed`
+- `v2.core.account[requirements].updated`
+- `v2.core.account[configuration.merchant].capability_status_updated`
+
+Store this destination's distinct signing secret as
+`STRIPE_CONNECT_V2_WEBHOOK_SECRET`. Never reuse the snapshot destination's
+secret. The handler verifies the thin notification, retrieves the current
+include-expanded Account from Stripe, and fails client-card readiness closed
+unless both card payments and payouts are active.
+
+`STRIPE_CONNECT_APPLICATION_FEE_BPS` is required for hosted client payments and
+must be a whole number from 1 through 9999. OpenVPM deducts this percentage from
+clinic proceeds on each Connect direct charge; it is not added to the pet
+owner's invoice. Missing or invalid configuration pauses new card checkout.
+
+Connected accounts belong to the Stripe platform that created them and cannot
+be reused under a different platform credential. After a platform-account
+cutover, OpenVPM may reprovision an existing database record only when its
+persisted state proves onboarding never became operational: no submitted
+details, no charges, no payouts, and no rejection reason. The clinic admin must
+still initiate the new Stripe-hosted onboarding flow. The replacement is
+recorded in `audit_log` without copying either Stripe account ID into the audit
+payload. Any submitted, enabled, payout-capable, or rejected account requires a
+manual review and must never be replaced automatically.
 
 Hosted subscription webhook endpoint:
 
@@ -549,7 +767,12 @@ set job-specific URLs (`CRON_HEARTBEAT_REMINDERS_URL`,
 `CRON_HEARTBEAT_SMS_PROVIDER_EVENTS_URL`,
 `CRON_HEARTBEAT_CONVERSION_RECONCILE_URL`,
 `CRON_HEARTBEAT_PRESCRIPTION_EXPIRY_URL`) when your external monitor expects one URL
-per scheduled job. URL templates may include `{job}` and `{status}` tokens.
+per scheduled job. URL templates may include `{job}`, `{status}`, and
+`{exitCode}` tokens. `{exitCode}` is `0` for `ok` and `1` for `degraded` or
+`failed`, allowing a single Healthchecks.io Ping Key template such as
+`https://hc-ping.com/<ping-key>/{job}/{exitCode}` to actively report both
+success and failure. Create all checks with schedules matching `vercel.json`;
+do not rely on ping auto-provisioning's default daily schedule.
 
 ## Demo Mode
 

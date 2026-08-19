@@ -21,6 +21,11 @@ import {
   type Feature,
 } from "@/lib/billing/plans";
 import { readHostedAiAccess } from "@/lib/billing/ai-access";
+import {
+  cookieValue,
+  PRIVILEGED_ACTION_COOKIE,
+  verifyPrivilegedActionProof,
+} from "@/lib/privileged-action-proof";
 
 type UserRole =
   | "admin"
@@ -36,6 +41,7 @@ interface AppSession extends Session {
     name: string;
     role: UserRole;
     practiceId: string;
+    sessionVersion: number;
     recoveryHold?: boolean;
     emailVerifiedAt?: Date | string | null;
     practiceCreatedAt?: Date | string | null;
@@ -46,6 +52,7 @@ export type TRPCContext = {
   db: Database;
   session: AppSession | null;
   ip?: string | null;
+  privilegedActionProof?: string | null;
   /**
    * Queue a mutation side effect that must begin only after the procedure's
    * outer RLS transaction commits. The callback receives the root pool, not
@@ -94,6 +101,7 @@ async function activeSessionOrNull(
       tx
         .select({
           id: users.id,
+          sessionVersion: users.sessionVersion,
           emailVerifiedAt: users.emailVerifiedAt,
           practiceCreatedAt: practices.createdAt,
           recoveryHold: practices.recoveryHold,
@@ -113,7 +121,9 @@ async function activeSessionOrNull(
         .limit(1),
   );
 
-  return activeUser
+  return activeUser &&
+    Number.isInteger(session.user.sessionVersion) &&
+    activeUser.sessionVersion === session.user.sessionVersion
     ? {
         ...session,
         user: {
@@ -134,7 +144,15 @@ export async function createTRPCContext(opts?: {
     ? null
     : ((await getServerSession(authOptions)) as AppSession | null);
   const session = await activeSessionOrNull(db, rawSession);
-  return { db, session, ip: clientIp(opts?.req) };
+  return {
+    db,
+    session,
+    ip: clientIp(opts?.req),
+    privilegedActionProof: cookieValue(
+      opts?.req?.headers.get("cookie"),
+      PRIVILEGED_ACTION_COOKIE,
+    ),
+  };
 }
 
 const t = initTRPC.context<TRPCContext>().create({
@@ -159,6 +177,13 @@ const HOSTED_READ_ONLY_MUTATION_ALLOWLIST = new Set([
   "settings.setMarketingEmailPreference",
   "subscription.createCheckout",
   "subscription.openBillingPortal",
+  // A lapsed clinic must be able to connect and inspect its own payment
+  // processor while reactivating service. These procedures only manage the
+  // clinic's Stripe account/readiness; invoice, payment, and clinical writes
+  // remain blocked by the global hosted read-only guard.
+  "billing.createPaymentAccountOnboarding",
+  "billing.refreshPaymentAccount",
+  "billing.openPaymentAccountDashboard",
   // Platform-operator tooling must keep working even when the operator's own
   // practice trial has lapsed; the procedure itself gates on the
   // PLATFORM_ADMIN_EMAILS allowlist.
@@ -175,6 +200,40 @@ const HOSTED_READ_ONLY_MUTATION_ALLOWLIST = new Set([
   "admin.reconcileSmsSendAttempt",
   "admin.resendSmsSendAttempt",
   "admin.reconcileSmsDeliveryEvent",
+]);
+
+// A normal authenticated session is not enough for actions that can move
+// money, expose a bulk clinical dataset, change access, or rotate external
+// credentials. Hosted users must reconfirm password + MFA and receive a
+// short-lived, HttpOnly proof bound to the current session generation.
+const HOSTED_PRIVILEGED_ACTION_PATHS = new Set([
+  "billing.createPaymentAccountOnboarding",
+  "billing.openPaymentAccountDashboard",
+  "billing.refundPayment",
+  "billing.applyInvoiceAdjustment",
+  "billing.voidInvoice",
+  "subscription.createCheckout",
+  "subscription.scheduleAnnualAtRenewal",
+  "subscription.openBillingPortal",
+  "settings.requestAccountDeletion",
+  "settings.clearDemoData",
+  "settings.reseedDemoData",
+  "settings.createUser",
+  "settings.inviteStaff",
+  "settings.updateUser",
+  "settings.deactivateUser",
+  "settings.restoreUser",
+  "data.exportFullBackup",
+  "data.exportClients",
+  "data.exportPatients",
+  "data.exportAppointments",
+  "data.exportInvoices",
+  "data.restoreBackup",
+  "apiKeys.create",
+  "apiKeys.revoke",
+  "webhooks.create",
+  "webhooks.toggle",
+  "webhooks.delete",
 ]);
 
 function practiceNotFound(): TRPCError {
@@ -232,6 +291,21 @@ export const protectedProcedure = t.procedure.use(
       });
     }
     const user = ctx.session.user;
+    if (
+      billingEnforced() &&
+      HOSTED_PRIVILEGED_ACTION_PATHS.has(path) &&
+      !verifyPrivilegedActionProof(ctx.privilegedActionProof, {
+        userId: user.id,
+        practiceId: user.practiceId,
+        sessionVersion: user.sessionVersion,
+      })
+    ) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message:
+          "Confirm your password and authentication code in Account Security, then retry this sensitive action within 10 minutes.",
+      });
+    }
     // Run the whole request in a tenant DB context so Postgres RLS scopes every
     // query to this practice (defense-in-depth behind the app-layer filters).
     const effects: PostCommitEffect[] = [];

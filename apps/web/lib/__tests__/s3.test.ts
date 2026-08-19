@@ -2,6 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
   const send = vi.fn();
+  const blobPut = vi.fn();
+  const blobGet = vi.fn();
+  const blobDel = vi.fn();
+  const blobList = vi.fn();
 
   return {
     send,
@@ -11,6 +15,11 @@ const mocks = vi.hoisted(() => {
     DeleteObjectCommand: vi.fn((input: unknown) => ({ input })),
     HeadBucketCommand: vi.fn((input: unknown) => ({ input })),
     getSignedUrl: vi.fn(),
+    blobPut,
+    blobGet,
+    blobDel,
+    blobList,
+    BlobNotFoundError: class BlobNotFoundError extends Error {},
   };
 });
 
@@ -24,6 +33,14 @@ vi.mock("@aws-sdk/client-s3", () => ({
 
 vi.mock("@aws-sdk/s3-request-presigner", () => ({
   getSignedUrl: mocks.getSignedUrl,
+}));
+
+vi.mock("@vercel/blob", () => ({
+  BlobNotFoundError: mocks.BlobNotFoundError,
+  put: mocks.blobPut,
+  get: mocks.blobGet,
+  del: mocks.blobDel,
+  list: mocks.blobList,
 }));
 
 const {
@@ -41,6 +58,8 @@ const {
   replicaStorageRolloutEnabled,
   uploadFile,
   uploadManagedFile,
+  uploadReplicaFile,
+  readReplicaObject,
 } = await import("../s3");
 
 afterEach(() => {
@@ -279,6 +298,96 @@ describe("S3 object reads", () => {
   });
 });
 
+describe("private Blob storage", () => {
+  it("stores an immutable replica and uses the ETag as exact version evidence", async () => {
+    vi.stubEnv("FILE_REPLICA_PROVIDER", "vercel_blob");
+    vi.stubEnv("FILE_REPLICA_BLOB_READ_WRITE_TOKEN", "replica-blob-token");
+    mocks.blobPut.mockResolvedValueOnce({
+      url: "https://store.private.blob.vercel-storage.com/attachments/file",
+      etag: "blob-etag-1",
+    });
+
+    await expect(
+      uploadReplicaFile(
+        "attachments/file",
+        Buffer.from("clinic-file"),
+        "application/pdf",
+        "a".repeat(64),
+      ),
+    ).resolves.toEqual({
+      url: "https://store.private.blob.vercel-storage.com/attachments/file",
+      etag: "blob-etag-1",
+      versionId: "blob-etag-1",
+    });
+    expect(mocks.blobPut).toHaveBeenCalledWith(
+      "attachments/file",
+      Buffer.from("clinic-file"),
+      expect.objectContaining({
+        access: "private",
+        token: "replica-blob-token",
+        addRandomSuffix: false,
+        allowOverwrite: false,
+        maximumSizeInBytes: 11,
+        abortSignal: expect.any(AbortSignal),
+      }),
+    );
+  });
+
+  it("reads private Blob objects from origin and verifies the requested ETag", async () => {
+    vi.stubEnv("FILE_REPLICA_PROVIDER", "vercel_blob");
+    vi.stubEnv("FILE_REPLICA_BLOB_READ_WRITE_TOKEN", "replica-blob-token");
+    const body = new Uint8Array([1, 2, 3]);
+    mocks.blobGet.mockResolvedValueOnce({
+      statusCode: 200,
+      stream: new Response(body).body,
+      blob: {
+        size: body.byteLength,
+        contentType: "application/pdf",
+        etag: "blob-etag-1",
+      },
+    });
+
+    await expect(
+      readReplicaObject("attachments/file", {
+        maxBytes: 10,
+        versionId: "blob-etag-1",
+      }),
+    ).resolves.toMatchObject({
+      status: "available",
+      body,
+      contentType: "application/pdf",
+      etag: "blob-etag-1",
+      versionId: "blob-etag-1",
+    });
+    expect(mocks.blobGet).toHaveBeenCalledWith(
+      "attachments/file",
+      expect.objectContaining({
+        access: "private",
+        token: "replica-blob-token",
+        useCache: false,
+      }),
+    );
+  });
+
+  it("requires a distinct configured private Blob store for replica rollout", () => {
+    vi.stubEnv("FILE_STORAGE_PROVIDER", "vercel_blob");
+    vi.stubEnv("BLOB_READ_WRITE_TOKEN", "same-store-token");
+    vi.stubEnv("FILE_REPLICA_PROVIDER", "vercel_blob");
+    vi.stubEnv("FILE_REPLICA_BLOB_READ_WRITE_TOKEN", "same-store-token");
+    expect(replicaStorageReadiness()).toEqual({
+      intended: true,
+      ready: false,
+      detail: "Replica storage must use a different storage target",
+    });
+
+    vi.stubEnv("FILE_REPLICA_BLOB_READ_WRITE_TOKEN", "independent-token");
+    expect(replicaStorageReadiness()).toMatchObject({
+      intended: true,
+      ready: true,
+    });
+  });
+});
+
 describe("S3 health checks", () => {
   it("requires an explicit all-practice flag or valid UUID cohort before rollout", () => {
     vi.stubEnv("S3_ENDPOINT", "https://primary.example");
@@ -345,7 +454,7 @@ describe("S3 health checks", () => {
     expect(replicaStorageReadiness()).toEqual({
       intended: true,
       ready: false,
-      detail: "Replica storage must use a different endpoint or bucket",
+      detail: "Replica storage must use a different storage target",
     });
   });
 

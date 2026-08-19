@@ -23,7 +23,11 @@ export async function claimStripeEvent(
   db: Database,
   opts: {
     eventId: string;
-    endpoint: "client-invoice" | "client-invoice-connect" | "subscription";
+    endpoint:
+      | "client-invoice"
+      | "client-invoice-connect"
+      | "connect-account-v2"
+      | "subscription";
     eventType: string;
     evidence?: StripeConversionEvidenceInput;
   }

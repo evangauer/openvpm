@@ -53,8 +53,8 @@ DECLARE
   tbls text[] := array[
     'api_keys','appointment_types','appointment_waitlist','appointments','audit_log','booking_pages',
     'capture_sessions','care_reminders','cases','client_contacts','clients','clinical_notes','clinical_record_corrections','communications','consent_forms','consent_requests','controlled_substance_log','dispense_charge_queue','email_suppressions',
-    'external_lab_observations','external_lab_reports','external_prescription_fills','external_prescriptions','files','historical_appointments','historical_documents','insurance_claims','insurance_policies','invoices','lab_result_events','lab_result_replacements','lab_results','legacy_financial_allocations','legacy_financial_documents','legacy_financial_line_items','legacy_financial_payments','location_messaging','messaging_registration_events','messaging_registrations','migration_runs',
-    'locations','patient_merge_events','patients','practice_payment_accounts','prescription_events','prescriptions','problem_list','procedures','products','purchase_orders',
+    'external_lab_observations','external_lab_reports','external_prescription_fills','external_prescriptions','files','financial_closes','historical_appointments','historical_documents','insurance_claims','insurance_policies','invoices','lab_result_events','lab_result_replacements','lab_results','legacy_financial_allocations','legacy_financial_documents','legacy_financial_line_items','legacy_financial_payments','location_messaging','messaging_registration_events','messaging_registrations','migration_runs',
+    'locations','patient_merge_events','payment_disputes','payment_processor_payouts','payment_processor_refunds','payment_processor_settlements','patients','practice_payment_accounts','prescription_events','prescriptions','problem_list','procedures','products','purchase_orders',
     'recurring_series','rooms','services','sms_consent_events','sms_send_attempt_events','sms_send_attempts','sms_suppressions','soap_note_addenda','soap_note_replacements','soap_notes','staff_schedules','suppliers',
     'treatment_plans','treatment_templates','usage_records','users','vaccination_records',
     'visit_closeouts','visit_work_items','vital_signs','webhooks','wellness_enrollments','wellness_plans'
@@ -71,6 +71,13 @@ BEGIN
     );
   END LOOP;
 END$$;
+
+-- Processor projections may converge as Stripe makes funds available and
+-- assigns payouts, but they are never deleted. Clinic-day closes are immutable
+-- snapshots: later refunds or disputes belong to later operational periods.
+REVOKE ALL ON payment_processor_settlements, payment_processor_refunds, payment_processor_payouts, payment_disputes, financial_closes FROM openpims_app;
+GRANT SELECT, INSERT, UPDATE ON payment_processor_settlements, payment_processor_refunds, payment_processor_payouts, payment_disputes TO openpims_app;
+GRANT SELECT, INSERT ON financial_closes TO openpims_app;
 
 -- Object-replica evidence is operational recovery state, not clinic-editable
 -- data. Only an explicit system context may read or write it; the composite

@@ -6,6 +6,8 @@ import {
   text,
   timestamp,
   boolean,
+  integer,
+  jsonb,
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
@@ -30,6 +32,20 @@ export const users = pgTable(
     ...baseColumns(),
     email: varchar("email", { length: 255 }).notNull().unique(),
     passwordHash: varchar("password_hash", { length: 255 }).notNull(),
+    /** Increment to revoke every JWT issued for an older identity generation. */
+    sessionVersion: integer("session_version").notNull().default(1),
+    /** AES-GCM encrypted TOTP seed; plaintext is never persisted. */
+    mfaSecretEncrypted: text("mfa_secret_encrypted"),
+    mfaEnabledAt: timestamp("mfa_enabled_at", { withTimezone: true }),
+    /** Reject reuse of an authenticator code within the same time step. */
+    mfaLastUsedTotpCounter: integer("mfa_last_used_totp_counter"),
+    /** One-way hashes of the user's remaining single-use recovery codes. */
+    mfaRecoveryCodeHashes: jsonb("mfa_recovery_code_hashes").$type<string[]>(),
+    /** Short-lived enrollment material, also encrypted at rest. */
+    mfaPendingSecretEncrypted: text("mfa_pending_secret_encrypted"),
+    mfaPendingExpiresAt: timestamp("mfa_pending_expires_at", {
+      withTimezone: true,
+    }),
     name: varchar("name", { length: 255 }).notNull(),
     role: userRoleEnum("role").notNull().default("front_desk"),
     // Authorization and clinical identity are intentionally separate. A

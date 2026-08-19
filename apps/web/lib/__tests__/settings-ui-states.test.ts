@@ -88,6 +88,44 @@ describe("settings UI states", () => {
     expect(billingTab).not.toContain("if (isLoading || !data)");
   });
 
+  it("refreshes the clinic payment account after Stripe onboarding returns", () => {
+    const billingTab = source.slice(
+      source.indexOf("function BillingTab"),
+      source.indexOf("function PlanGrid"),
+    );
+
+    expect(billingTab).toContain("const connectReturnHandled = useRef(false)");
+    expect(billingTab).toContain('searchParams.get("connect") !== "return"');
+    expect(billingTab).toContain("connectReturnHandled.current = true");
+    expect(billingTab).toContain("refreshPaymentAccount.mutate()");
+  });
+
+  it("discloses the Connect fee as a deduction from clinic proceeds", () => {
+    const paymentSection = source.slice(
+      source.indexOf("function ClientPaymentProcessingSection"),
+      source.indexOf("function PlanGrid"),
+    );
+
+    expect(paymentSection).toContain("OpenVPM fee");
+    expect(paymentSection).toContain("% from clinic proceeds");
+    expect(paymentSection).toContain("Missing — payments paused");
+  });
+
+  it("prepares nontechnical clinic admins for Stripe onboarding", () => {
+    const paymentSection = source.slice(
+      source.indexOf("function ClientPaymentProcessingSection"),
+      source.indexOf("function PlanGrid"),
+    );
+
+    expect(paymentSection).toContain("Have these ready for Stripe");
+    expect(paymentSection).toContain("Legal business and tax details");
+    expect(paymentSection).toContain("representative identification");
+    expect(paymentSection).toContain("Bank account for clinic payouts");
+    expect(paymentSection).toContain(
+      'data?.connectRequired && data.status !== "active"',
+    );
+  });
+
   it("uses the public support address for enterprise contact links", () => {
     expect(source).toContain(
       "mailto:support@openvpm.com?subject=OpenVPM%20Enterprise",

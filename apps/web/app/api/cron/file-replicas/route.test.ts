@@ -295,9 +295,14 @@ describe("file replica reconciliation cron", () => {
   });
 
   it("returns 500 and reports a failed heartbeat when the worker crashes", async () => {
-    mocks.reconcileFileReplicas.mockRejectedValueOnce(
-      new Error("database unavailable"),
-    );
+    const cause = Object.assign(new Error("permission denied for relation"), {
+      code: "42501",
+    });
+    const failure = new Error("database unavailable", { cause });
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    mocks.reconcileFileReplicas.mockRejectedValueOnce(failure);
 
     const response = await GET(request());
 
@@ -314,5 +319,14 @@ describe("file replica reconciliation cron", () => {
       status: "failed",
       detail: "File replica reconciliation crashed",
     });
+    expect(consoleError).toHaveBeenCalledWith(
+      "[file-replicas] crash diagnostic",
+      expect.objectContaining({
+        causeName: "Error",
+        causeCode: "42501",
+        causeMessage: "permission denied for relation",
+      }),
+    );
+    consoleError.mockRestore();
   });
 });

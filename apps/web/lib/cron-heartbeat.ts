@@ -131,7 +131,10 @@ function renderCronHeartbeatUrl(
   template: string,
   payload: CronHeartbeatPayload,
 ): string {
+  const exitCode = payload.status === "ok" ? "0" : "1";
+
   return template
     .replaceAll("{job}", encodeURIComponent(payload.job))
-    .replaceAll("{status}", encodeURIComponent(payload.status));
+    .replaceAll("{status}", encodeURIComponent(payload.status))
+    .replaceAll("{exitCode}", exitCode);
 }

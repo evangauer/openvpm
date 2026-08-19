@@ -58,8 +58,11 @@ vi.mock("@/lib/messaging/durable-sms-communication", () => ({
 
 vi.mock("@/lib/recovery-hold", () => ({
   RECOVERY_HOLD_BLOCK_MESSAGE: "recovery hold",
-  lockPracticeForExternalSideEffects:
-    mocks.lockPracticeForExternalSideEffects,
+  lockPracticeForExternalSideEffects: mocks.lockPracticeForExternalSideEffects,
+}));
+
+vi.mock("@/lib/outbound-email-security", () => ({
+  assertOutboundEmailAllowed: mocks.assertOutboundEmailAllowed,
 }));
 
 vi.mock("@/lib/outbound-email-security", () => ({
@@ -85,6 +88,7 @@ const COMMUNICATION_ID = "00000000-0000-0000-0000-000000000011";
 const PRACTICE_SETTINGS = {
   name: "Neighborhood Veterinary",
   phone: "555-0100",
+  email: "clinic@example.com",
   timezone: "America/Los_Angeles",
   currency: "usd",
   country: "US",
@@ -111,6 +115,7 @@ function callerWithDb(db: Record<string, unknown>) {
 function createDb(opts?: {
   selectResults?: unknown[][];
   practiceRows?: unknown[];
+  updateResults?: unknown[][];
 }) {
   const selectResults = [
     opts?.practiceRows ?? [{ id: PRACTICE_ID }],
@@ -147,7 +152,15 @@ function createDb(opts?: {
     ) => Promise.resolve(undefined).then(resolve, reject),
   }));
   const insert = vi.fn(() => ({ values: insertValues }));
-  const updateWhere = vi.fn(async () => undefined);
+  const updateResults = [...(opts?.updateResults ?? [])];
+  const updateReturning = vi.fn(async () => updateResults.shift() ?? []);
+  const updateWhere = vi.fn(() => ({
+    returning: updateReturning,
+    then: (
+      resolve: (value: undefined) => unknown,
+      reject?: (error: unknown) => unknown,
+    ) => Promise.resolve(undefined).then(resolve, reject),
+  }));
   const updateSet = vi.fn(() => ({ where: updateWhere }));
   const update = vi.fn(() => ({ set: updateSet }));
 
@@ -163,12 +176,14 @@ function createDb(opts?: {
 }
 
 beforeEach(() => {
+  vi.stubEnv("NEXTAUTH_SECRET", "test-secret-at-least-32-characters-long");
   vi.useFakeTimers();
   // Noon in Los Angeles / 3 PM in New York: outside SMS quiet hours.
   vi.setSystemTime(new Date("2026-07-01T19:00:00Z"));
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.useRealTimers();
   vi.clearAllMocks();
 });
@@ -1371,6 +1386,7 @@ describe("notification target safety", () => {
             clientFirstName: "Ada",
             clientLastName: "Lovelace",
             clientEmail: "ada@example.com",
+            clientAccessToken: "private-portal-token",
           },
         ],
       ],
@@ -1401,6 +1417,7 @@ describe("notification target safety", () => {
             clientFirstName: "Ada",
             clientLastName: "Lovelace",
             clientEmail: "ada@example.com",
+            clientAccessToken: "private-portal-token",
           },
         ],
       ],
@@ -1433,6 +1450,7 @@ describe("notification target safety", () => {
             clientFirstName: "Ada",
             clientLastName: "Lovelace",
             clientEmail: " Ada@Example.COM ",
+            clientAccessToken: "private-portal-token",
           },
         ],
         [{ amount: "10.00" }],
@@ -1452,6 +1470,8 @@ describe("notification target safety", () => {
         dueDate: "Jul 1, 2026",
         practiceName: "Neighborhood Veterinary",
         practicePhone: "555-0100",
+        practiceEmail: "clinic@example.com",
+        portalUrl: expect.stringMatching(/^http:\/\/localhost:3000\/pay\/v1\./),
       }),
     );
     expect(insertValues).toHaveBeenCalledWith(
@@ -1463,6 +1483,41 @@ describe("notification target safety", () => {
         content: "Invoice sent — amount due: $88.45",
         status: "sent",
         providerMessageId: "email-invoice-1",
+      }),
+    );
+  });
+
+  it("creates an invoice-scoped payment link without changing portal access", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [
+          {
+            id: INVOICE_ID,
+            total: "123.45",
+            paidAmount: "0.00",
+            dueDate: "2026-07-01",
+            status: "sent",
+            isEstimate: false,
+            clientId: CLIENT_ID,
+            clientFirstName: "Ada",
+            clientLastName: "Lovelace",
+            clientEmail: "ada@example.com",
+            clientAccessToken: null,
+          },
+        ],
+        [],
+        [PRACTICE_SETTINGS],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).sendInvoiceEmail({ invoiceId: INVOICE_ID }),
+    ).resolves.toEqual({ success: true });
+
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(mocks.sendInvoiceEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        portalUrl: expect.stringMatching(/^http:\/\/localhost:3000\/pay\/v1\./),
       }),
     );
   });
@@ -1482,6 +1537,7 @@ describe("notification target safety", () => {
             clientFirstName: "Ada",
             clientLastName: "Lovelace",
             clientEmail: "ada@example.com",
+            clientAccessToken: "private-portal-token",
             emailSuppressionReason: "suppressed",
           },
         ],
@@ -1519,6 +1575,7 @@ describe("notification target safety", () => {
             clientFirstName: "Ada",
             clientLastName: "Lovelace",
             clientEmail: "ada@example.com",
+            clientAccessToken: "private-portal-token",
           },
         ],
         [],

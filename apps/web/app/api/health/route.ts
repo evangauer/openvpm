@@ -11,6 +11,11 @@ import {
   STRIPE_PRICE_CLOUD_LOCATION_ENV,
   billingEnforced,
 } from "@/lib/billing/plans";
+import { verifyStripeAccountIdentity } from "@/lib/stripe";
+import {
+  stripeConnectApplicationFeeBps,
+  stripeConnectApplicationFeeConfigured,
+} from "@/lib/stripe-config";
 import {
   hostedRlsRoleViolations,
   inspectHostedRlsRole,
@@ -39,6 +44,7 @@ import {
 } from "@/lib/email-preferences";
 import { platformEmailIdentityConfigurationReady } from "@/lib/platform-email-preferences";
 import { hostedSmsCredentialIssueCount } from "@/lib/messaging/hosted-sms-readiness";
+import { mfaEncryptionConfigured } from "@/lib/mfa";
 
 export const dynamic = "force-dynamic";
 
@@ -57,13 +63,34 @@ function envValue(name: string): string | undefined {
 // even when overage billing is intentionally off). See lib/billing/usage.ts.
 const HOSTED_BILLING_ENV_NAMES = [
   "STRIPE_SECRET_KEY",
+  "STRIPE_EXPECTED_ACCOUNT_ID",
   "STRIPE_WEBHOOK_SECRET",
   "STRIPE_CONNECT_WEBHOOK_SECRET",
+  "STRIPE_CONNECT_V2_WEBHOOK_SECRET",
+  "STRIPE_CONNECT_V2_ENABLED",
+  "STRIPE_CONNECT_APPLICATION_FEE_BPS",
   "STRIPE_SUBSCRIPTION_WEBHOOK_SECRET",
+  "STRIPE_SUBSCRIPTION_PAYMENT_METHOD_CONFIGURATION",
+  "STRIPE_BILLING_PORTAL_CONFIGURATION",
   STRIPE_PRICE_CLOUD_LOCATION_ENV,
   STRIPE_PRICE_CLOUD_LOCATION_ANNUAL_ENV,
+  "STRIPE_CLOUD_PRODUCT_TAX_CODE",
+  "STRIPE_REQUIRED_TAX_REGISTRATIONS",
 ];
 const HOSTED_SUBSCRIPTION_TAX_ENV_NAME = "STRIPE_TAX_ENABLED";
+
+function hostedConnectApplicationFeeCheck() {
+  if (!stripeConnectApplicationFeeConfigured()) {
+    return {
+      ok: false,
+      detail: "Hosted Connect application fee is missing or invalid",
+    };
+  }
+  return {
+    ok: true,
+    detail: `Hosted Connect application fee is ${stripeConnectApplicationFeeBps()} basis points`,
+  };
+}
 
 const HOSTED_CORE_ENV_NAMES = [
   "NEXTAUTH_URL",
@@ -81,6 +108,16 @@ const HOSTED_STORAGE_ENV_NAMES = [
   "S3_BUCKET",
   "S3_REGION",
 ];
+
+function hostedStorageEnvCheck(): { ok: boolean; detail: string } {
+  if (envValue("FILE_STORAGE_PROVIDER") === "vercel_blob") {
+    return hostedEnvCheck(
+      ["BLOB_READ_WRITE_TOKEN"],
+      "Hosted private Blob storage env present",
+    );
+  }
+  return hostedEnvCheck(HOSTED_STORAGE_ENV_NAMES, "Hosted storage envs present");
+}
 
 const HOSTED_EMAIL_ENV_NAMES = [
   "RESEND_API_KEY",
@@ -522,16 +559,27 @@ export async function GET() {
       HOSTED_CORE_ENV_NAMES,
       "Hosted core envs present",
     );
+    checks.hostedMfaEncryption = {
+      ok: mfaEncryptionConfigured(),
+      detail: mfaEncryptionConfigured()
+        ? "Hosted MFA encryption configured"
+        : "Hosted MFA encryption is missing or invalid",
+    };
     checks.hostedAppUrls = hostedAppUrlCheck();
     checks.hostedBilling = hostedEnvCheck(
       HOSTED_BILLING_ENV_NAMES,
       "Hosted billing envs present",
     );
+    checks.hostedConnectApplicationFee = hostedConnectApplicationFeeCheck();
+    checks.hostedStripeAccount = checks.hostedBilling.ok
+      ? await verifyStripeAccountIdentity()
+      : {
+          ok: false,
+          detail:
+            "Stripe account identity check skipped because billing configuration is incomplete",
+        };
     checks.hostedSubscriptionTax = hostedSubscriptionTaxCheck();
-    const hostedStorageEnv = hostedEnvCheck(
-      HOSTED_STORAGE_ENV_NAMES,
-      "Hosted storage envs present",
-    );
+    const hostedStorageEnv = hostedStorageEnvCheck();
     checks.hostedStorage = hostedStorageEnv.ok
       ? await checkObjectStorageHealth()
       : hostedStorageEnv;

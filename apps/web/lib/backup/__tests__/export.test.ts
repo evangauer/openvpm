@@ -1014,6 +1014,56 @@ describe("exportPracticeData query scoping", () => {
     expect(source).toContain("restored.smsConsentEvents = await restoreRows(");
     expect(source).toContain("smsConsentRestore.smsConsentEvents");
   });
+
+  it("retains every deactivated staff identity required by restore references", () => {
+    const retentionBlock = source.match(
+      /const referencedUserIds = new Set\([\s\S]+?const userRows =/,
+    )?.[0];
+
+    expect(retentionBlock).toBeTruthy();
+    for (const reference of [
+      "weight.recordedBy",
+      "allergy.notedBy",
+      "entry.createdBy",
+      "schedule.userId",
+      "payment.receivedBy",
+      "adjustment.createdBy",
+      "procedure.performedBy",
+      "note.authorId",
+      "caseRow.primaryVetId",
+      "plan.createdBy",
+      "charge.resolvedBy",
+      "closeout.clinicalFinalizedBy",
+      "closeout.completedBy",
+      "entry.performedBy",
+      "entry.witnessedBy",
+      "communication.assignedTo",
+      "entry.userId",
+    ]) {
+      expect(retentionBlock).toContain(reference);
+    }
+  });
+
+  it("retains deactivated locations named by restorable records", () => {
+    const retentionBlock = source.match(
+      /const referencedLocationIds = new Set\([\s\S]+?const locationRows =/,
+    )?.[0];
+
+    expect(retentionBlock).toBeTruthy();
+    for (const reference of [
+      "messaging.locationId",
+      "suppression.locationId",
+      "event.locationId",
+      "attempt.locationId",
+      "user.locationId",
+      "room.locationId",
+      "appointment.locationId",
+      "schedule.locationId",
+      "product.locationId",
+    ]) {
+      expect(retentionBlock).toContain(reference);
+    }
+  });
 });
 
 describe("independent recovery metadata", () => {

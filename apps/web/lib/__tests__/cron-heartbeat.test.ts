@@ -152,7 +152,7 @@ describe("reportCronHeartbeat", () => {
     vi.stubGlobal("fetch", fetchMock);
     vi.stubEnv(
       CRON_HEARTBEAT_URL_ENV,
-      " https://heartbeat.example/{job}/{status} "
+      " https://heartbeat.example/{job}/{status}/{exitCode} "
     );
 
     await reportCronHeartbeat({
@@ -162,7 +162,7 @@ describe("reportCronHeartbeat", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://heartbeat.example/usage-reconcile/ok",
+      "https://heartbeat.example/usage-reconcile/ok/0",
       expect.objectContaining({
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -171,6 +171,25 @@ describe("reportCronHeartbeat", () => {
       })
     );
   });
+
+  it.each(["degraded", "failed"] as const)(
+    "renders %s as a non-zero monitor exit code",
+    async (status) => {
+      const fetchMock = vi.fn(async () => new Response("ok"));
+      vi.stubGlobal("fetch", fetchMock);
+      vi.stubEnv(
+        CRON_HEARTBEAT_URL_ENV,
+        "https://heartbeat.example/{job}/{exitCode}"
+      );
+
+      await reportCronHeartbeat({ job: "backup", status });
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://heartbeat.example/backup/1",
+        expect.any(Object)
+      );
+    }
+  );
 
   it("alerts ops when heartbeat delivery fails", async () => {
     const consoleError = vi

@@ -14,6 +14,7 @@ import {
 } from "@/lib/email-preferences";
 import { billingEnforced } from "@/lib/billing/plans";
 import {
+  clinicEmailFrom,
   defaultEmailFrom,
   emailDemoMode,
   emailEnv,
@@ -133,6 +134,22 @@ function ctaButton(label: string, url: string): string {
     </td>
   </tr>
 </table>`;
+}
+
+function escapeEmailHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function safeEmailHeaderText(value: string): string {
+  return value
+    .replace(/[\r\n]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -392,6 +409,23 @@ export async function sendVaccinationReminder(data: {
 // Invoice email
 // ---------------------------------------------------------------------------
 
+export function invoiceEmailEnvelope(data: {
+  practiceName: string;
+  invoiceTotal: string;
+  practiceEmail?: string;
+}) {
+  const practiceName = safeEmailHeaderText(data.practiceName) || "Your clinic";
+  const candidateReplyTo = nonBlankEmailValue(data.practiceEmail);
+  return {
+    from: clinicEmailFrom(practiceName),
+    replyTo:
+      candidateReplyTo && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidateReplyTo)
+        ? candidateReplyTo
+        : undefined,
+    subject: `Invoice from ${practiceName} – ${safeEmailHeaderText(data.invoiceTotal)}`,
+  };
+}
+
 export async function sendInvoiceEmail(data: {
   to: string;
   clientName: string;
@@ -401,42 +435,62 @@ export async function sendInvoiceEmail(data: {
   portalUrl?: string;
   practiceName: string;
   practicePhone?: string;
+  practiceEmail?: string;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
-  const patientLine = data.patientName
-    ? ` for <strong>${data.patientName}</strong>`
+  const safeClientName = escapeEmailHtml(data.clientName);
+  const safePatientName = data.patientName
+    ? escapeEmailHtml(data.patientName)
+    : undefined;
+  const safeInvoiceTotal = escapeEmailHtml(data.invoiceTotal);
+  const safeDueDate = data.dueDate ? escapeEmailHtml(data.dueDate) : undefined;
+  const safePracticeName = escapeEmailHtml(data.practiceName);
+  const safePracticePhone = data.practicePhone
+    ? escapeEmailHtml(data.practicePhone)
+    : undefined;
+  const safePortalUrl = data.portalUrl
+    ? escapeEmailHtml(data.portalUrl)
+    : undefined;
+  const patientLine = safePatientName
+    ? ` for <strong>${safePatientName}</strong>`
     : "";
 
-  const dueDateBlock = data.dueDate
+  const dueDateBlock = safeDueDate
     ? `<p style="margin:0 0 4px;color:#6b7280;font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;">Due Date</p>
-       <p style="margin:0;color:#0f172a;font-size:16px;font-weight:600;">${data.dueDate}</p>`
+       <p style="margin:0;color:#0f172a;font-size:16px;font-weight:600;">${safeDueDate}</p>`
     : "";
 
   const body = `
-    <p style="margin:0 0 16px;color:#111827;font-size:15px;line-height:1.6;">Hi ${data.clientName},</p>
-    <p style="margin:0 0 24px;color:#111827;font-size:15px;line-height:1.6;">Here is your invoice${patientLine} from ${data.practiceName}.</p>
+    <p style="margin:0 0 16px;color:#111827;font-size:15px;line-height:1.6;">Hi ${safeClientName},</p>
+    <p style="margin:0 0 24px;color:#111827;font-size:15px;line-height:1.6;">Here is your invoice${patientLine} from ${safePracticeName}.</p>
     <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;background-color:#f0fdf4;border:1px solid #dcfce7;border-radius:8px;margin-bottom:24px;">
       <tr>
         <td style="padding:20px 24px;">
           <p style="margin:0 0 4px;color:#6b7280;font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;">Amount Due</p>
-          <p style="margin:0${data.dueDate ? " 0 16px" : ""};color:#0f172a;font-size:28px;font-weight:700;">${data.invoiceTotal}</p>
+          <p style="margin:0${safeDueDate ? " 0 16px" : ""};color:#0f172a;font-size:28px;font-weight:700;">${safeInvoiceTotal}</p>
           ${dueDateBlock}
         </td>
       </tr>
     </table>
-    ${data.portalUrl ? ctaButton("View in Portal", data.portalUrl) : ""}
-    <p style="margin:0;color:#111827;font-size:15px;line-height:1.6;">If you have any questions about this invoice, please contact us${data.practicePhone ? ` at <strong>${data.practicePhone}</strong>` : ""}.</p>
+    ${safePortalUrl ? ctaButton("View invoice and pay", safePortalUrl) : ""}
+    ${
+      safePortalUrl
+        ? '<p style="margin:0 0 24px;color:#6b7280;font-size:13px;line-height:1.5;">No account or password is required. This private link opens only this invoice and expires after 30 days, so please do not forward it.</p>'
+        : ""
+    }
+    <p style="margin:0;color:#111827;font-size:15px;line-height:1.6;">If you have any questions about this invoice, please contact us${safePracticePhone ? ` at <strong>${safePracticePhone}</strong>` : ""}.</p>
   `;
 
   const footer = practiceFooter({
-    practiceName: data.practiceName,
-    practicePhone: data.practicePhone,
+    practiceName: safePracticeName,
+    practicePhone: safePracticePhone,
   });
 
-  const html = emailLayout(data.practiceName, body, footer);
+  const html = emailLayout(safePracticeName, body, footer);
 
+  const envelope = invoiceEmailEnvelope(data);
   const result = await sendEmail({
     to: data.to,
-    subject: `Invoice from ${data.practiceName} – ${data.invoiceTotal}`,
+    ...envelope,
     html,
   });
 

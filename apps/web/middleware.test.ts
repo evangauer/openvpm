@@ -33,7 +33,16 @@ function request(path: string) {
 
 function expectSecurityHeaders(response: Response) {
   for (const { key, value } of securityHeaders) {
-    expect(response.headers.get(key)).toBe(value);
+    const observed = response.headers.get(key);
+    if (key === "Content-Security-Policy") {
+      expect(observed).toContain("script-src 'self' 'nonce-");
+      expect(observed).toContain("style-src 'self' 'nonce-");
+      expect(observed).toContain("style-src-attr 'unsafe-inline'");
+      expect(observed).not.toContain("script-src 'self' 'unsafe-inline'");
+      expect(observed).not.toContain("style-src 'self' 'unsafe-inline'");
+    } else {
+      expect(observed).toBe(value);
+    }
   }
 }
 
@@ -52,6 +61,10 @@ describe("middleware security headers", () => {
 
     expect(mocks.getToken).not.toHaveBeenCalled();
     expect(response.headers.get("location")).toBeNull();
+    expect(response.headers.get("x-middleware-request-x-nonce")).toBeTruthy();
+    expect(
+      response.headers.get("x-middleware-request-content-security-policy"),
+    ).toContain("script-src 'self' 'nonce-");
     expectSecurityHeaders(response);
   });
 
@@ -89,6 +102,38 @@ describe("middleware security headers", () => {
     expectSecurityHeaders(lookalikeResponse);
   });
 
+  it("keeps staff guides public without exposing lookalike routes", async () => {
+    mocks.getToken.mockResolvedValue(null);
+
+    const guideResponse = await middleware(request("/help/take-a-payment"));
+    const lookalikeResponse = await middleware(request("/helpdesk"));
+
+    expect(mocks.getToken).toHaveBeenCalledTimes(1);
+    expect(guideResponse.headers.get("location")).toBeNull();
+    expect(lookalikeResponse.headers.get("location")).toBe(
+      "https://openvpm.test/login?next=%2Fhelpdesk",
+    );
+    expectSecurityHeaders(guideResponse);
+    expectSecurityHeaders(lookalikeResponse);
+  });
+
+  it("keeps the staff copilot demo public without exposing lookalike routes", async () => {
+    mocks.getToken.mockResolvedValue(null);
+
+    const demoResponse = await middleware(request("/staff-copilot-demo"));
+    const lookalikeResponse = await middleware(
+      request("/staff-copilot-demo-old"),
+    );
+
+    expect(mocks.getToken).toHaveBeenCalledTimes(1);
+    expect(demoResponse.headers.get("location")).toBeNull();
+    expect(lookalikeResponse.headers.get("location")).toBe(
+      "https://openvpm.test/login?next=%2Fstaff-copilot-demo-old",
+    );
+    expectSecurityHeaders(demoResponse);
+    expectSecurityHeaders(lookalikeResponse);
+  });
+
   it("adds security headers to API routes without middleware auth redirects", async () => {
     const response = await middleware(request("/api/health"));
 
@@ -109,6 +154,21 @@ describe("middleware security headers", () => {
       "https://openvpm.test/login?next=%2Fbookish",
     );
     expectSecurityHeaders(bookingResponse);
+    expectSecurityHeaders(lookalikeResponse);
+  });
+
+  it("keeps invoice payment links public without exposing lookalike routes", async () => {
+    mocks.getToken.mockResolvedValue(null);
+
+    const paymentResponse = await middleware(request("/pay/v1.signed.token"));
+    const lookalikeResponse = await middleware(request("/payments"));
+
+    expect(mocks.getToken).toHaveBeenCalledTimes(1);
+    expect(paymentResponse.headers.get("location")).toBeNull();
+    expect(lookalikeResponse.headers.get("location")).toBe(
+      "https://openvpm.test/login?next=%2Fpayments",
+    );
+    expectSecurityHeaders(paymentResponse);
     expectSecurityHeaders(lookalikeResponse);
   });
 
@@ -208,6 +268,20 @@ describe("middleware security headers", () => {
     expect(config.matcher).toEqual(["/((?!_next).*)"]);
   });
 
+  it("keeps the root layout dynamic so Next can nonce its bootstrap scripts", () => {
+    const layout = readFileSync("./app/layout.tsx", "utf8");
+
+    expect(layout).toContain('import { headers } from "next/headers"');
+    expect(layout).toContain("export default async function RootLayout");
+    expect(layout).toContain("const requestHeaders = await headers()");
+    expect(layout).toContain('requestHeaders.get("x-nonce")');
+    expect(layout).toContain("<Providers nonce={nonce}>");
+
+    const providers = readFileSync("./lib/providers.tsx", "utf8");
+    expect(providers).toContain("nonce?: string");
+    expect(providers).toContain("nonce={nonce}");
+  });
+
   it("also configures app-wide headers for static and framework assets", async () => {
     const [globalHeaders] = await nextConfig.headers();
 
@@ -228,6 +302,14 @@ describe("middleware security headers", () => {
     );
     expect(contentSecurityPolicy).toContain("default-src 'self'");
     expect(contentSecurityPolicy).toContain("object-src 'none'");
+    expect(contentSecurityPolicy).not.toContain(
+      "script-src 'self' 'unsafe-inline'",
+    );
+    expect(contentSecurityPolicy).toContain("style-src 'self'");
+    expect(contentSecurityPolicy).toContain("style-src-attr 'unsafe-inline'");
+    expect(contentSecurityPolicy).not.toContain(
+      "style-src 'self' 'unsafe-inline'",
+    );
   });
 
   it("keeps README security header claims aligned with the global policy", () => {

@@ -3,12 +3,10 @@
 import { useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { AlertCircle, Receipt } from "lucide-react";
+import { AlertCircle, CreditCard, Receipt } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { EmptyState } from "@/components/common/empty-state";
-import {
-  formatCurrency as formatCurrencyBase,
-} from "@/lib/locale/format";
+import { formatCurrency as formatCurrencyBase } from "@/lib/locale/format";
 import { formatPortalDate } from "@/lib/portal/date";
 import {
   isSafePortalCheckoutRedirectUrl,
@@ -28,7 +26,7 @@ const statusStyles: Record<string, string> = {
 function formatDate(
   d: string | Date | null,
   country?: string | null,
-  timeZone?: string | null
+  timeZone?: string | null,
 ): string {
   return formatPortalDate(d, country, timeZone);
 }
@@ -36,7 +34,7 @@ function formatDate(
 function formatCurrency(
   amount: string | number | null,
   currency: string = "usd",
-  country?: string | null
+  country?: string | null,
 ): string {
   return formatCurrencyBase(amount, currency, country);
 }
@@ -66,23 +64,30 @@ function PayButton({ token, invoiceId }: { token: string; invoiceId: string }) {
   };
 
   return (
-    <div className="inline-flex flex-col items-start gap-1">
+    <div className="flex w-full flex-col items-start gap-1 sm:w-auto">
       <button
         onClick={handlePay}
         disabled={loading}
-        className="inline-flex items-center gap-1 rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-700 disabled:opacity-50 transition-colors"
+        className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-teal-600 px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-teal-700 disabled:opacity-50 sm:w-auto"
       >
-        {loading ? "Redirecting..." : "Pay Online"}
+        <CreditCard className="h-4 w-4" aria-hidden="true" />
+        {loading ? "Opening secure checkout..." : "Pay securely online"}
       </button>
-      {error && <span className="text-xs text-red-600">{error}</span>}
+      <span className="text-xs text-gray-500">Powered by Stripe</span>
+      {error && (
+        <span role="alert" className="text-xs text-red-600">
+          {error}
+        </span>
+      )}
     </div>
   );
 }
 
 function PaymentUnavailable() {
   return (
-    <p className="text-xs text-gray-500">
-      Online payments are not configured for this clinic.
+    <p className="text-sm text-gray-600">
+      Online payment is temporarily unavailable. Please contact the clinic to
+      pay.
     </p>
   );
 }
@@ -94,10 +99,12 @@ export default function InvoicesPage() {
   const returnedInvoiceId = searchParams.get("invoice");
   const paymentBanner = portalPaymentBanner(
     searchParams.get("payment"),
-    returnedInvoiceId
+    returnedInvoiceId,
   );
 
-  const { data, isLoading, error } = trpc.portal.getInvoices.useQuery({ token });
+  const { data, isLoading, error } = trpc.portal.getInvoices.useQuery({
+    token,
+  });
 
   if (isLoading) {
     return (
@@ -126,8 +133,18 @@ export default function InvoicesPage() {
         href={`/portal/${token}`}
         className="inline-flex items-center gap-1 text-sm text-teal-600 hover:text-teal-700 mb-6"
       >
-        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+        <svg
+          className="h-4 w-4"
+          fill="none"
+          viewBox="0 0 24 24"
+          strokeWidth={1.5}
+          stroke="currentColor"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M15.75 19.5L8.25 12l7.5-7.5"
+          />
         </svg>
         Back to portal
       </Link>
@@ -178,7 +195,9 @@ export default function InvoicesPage() {
                 >
                   <div className="flex items-start justify-between mb-2">
                     <div>
-                      <p className="font-medium text-gray-900">{formatCurrency(inv.total, inv.currency, inv.country)}</p>
+                      <p className="font-medium text-gray-900">
+                        {formatCurrency(inv.total, inv.currency, inv.country)}
+                      </p>
                       <p className="text-sm text-gray-500">
                         {formatDate(inv.createdAt, inv.country, inv.timezone)}
                       </p>
@@ -192,20 +211,33 @@ export default function InvoicesPage() {
                     </span>
                   </div>
                   {inv.patientName && (
-                    <p className="text-sm text-gray-500">Patient: {inv.patientName}</p>
+                    <p className="text-sm text-gray-500">
+                      Patient: {inv.patientName}
+                    </p>
                   )}
                   <div className="flex justify-between mt-2 text-sm">
                     <span className="text-gray-400">
-                      Paid: {formatCurrency(inv.paidAmount, inv.currency, inv.country)}
+                      Paid:{" "}
+                      {formatCurrency(
+                        inv.paidAmount,
+                        inv.currency,
+                        inv.country,
+                      )}
                     </span>
                     {adjusted > 0 && (
                       <span className="text-gray-400">
-                        Adjusted: {formatCurrency(inv.adjustedAmount, inv.currency, inv.country)}
+                        Adjusted:{" "}
+                        {formatCurrency(
+                          inv.adjustedAmount,
+                          inv.currency,
+                          inv.country,
+                        )}
                       </span>
                     )}
                     {balance > 0 && (
                       <span className="font-medium text-red-600">
-                        Balance: {formatCurrency(balance, inv.currency, inv.country)}
+                        Balance:{" "}
+                        {formatCurrency(balance, inv.currency, inv.country)}
                       </span>
                     )}
                   </div>
@@ -265,19 +297,32 @@ export default function InvoicesPage() {
                       <td className="py-3 pr-4 text-gray-600">
                         {formatDate(inv.createdAt, inv.country, inv.timezone)}
                       </td>
-                      <td className="py-3 pr-4 text-gray-900">{inv.patientName || "-"}</td>
+                      <td className="py-3 pr-4 text-gray-900">
+                        {inv.patientName || "-"}
+                      </td>
                       <td className="py-3 pr-4 text-right font-medium text-gray-900">
                         {formatCurrency(inv.total, inv.currency, inv.country)}
                       </td>
                       <td className="py-3 pr-4 text-right text-gray-600">
-                        {formatCurrency(inv.paidAmount, inv.currency, inv.country)}
+                        {formatCurrency(
+                          inv.paidAmount,
+                          inv.currency,
+                          inv.country,
+                        )}
                         {adjusted > 0 && (
                           <span className="block text-xs text-gray-400">
-                            Adj {formatCurrency(inv.adjustedAmount, inv.currency, inv.country)}
+                            Adj{" "}
+                            {formatCurrency(
+                              inv.adjustedAmount,
+                              inv.currency,
+                              inv.country,
+                            )}
                           </span>
                         )}
                       </td>
-                      <td className={`py-3 text-right font-medium ${balance > 0 ? "text-red-600" : "text-green-600"}`}>
+                      <td
+                        className={`py-3 text-right font-medium ${balance > 0 ? "text-red-600" : "text-green-600"}`}
+                      >
                         {formatCurrency(balance, inv.currency, inv.country)}
                       </td>
                       <td className="py-3 pl-6 pr-4">

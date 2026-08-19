@@ -1,25 +1,38 @@
-const contentSecurityPolicy = [
-  "default-src 'self'",
-  "base-uri 'self'",
-  "object-src 'none'",
-  "frame-ancestors 'none'",
-  "form-action 'self'",
-  "img-src 'self' data: blob: https:",
-  "font-src 'self' data:",
-  "style-src 'self' 'unsafe-inline'",
-  [
-    "script-src 'self' 'unsafe-inline'",
-    process.env.NODE_ENV === "development" ? "'unsafe-eval'" : null,
-    "https://va.vercel-scripts.com",
+function buildContentSecurityPolicy(nonce) {
+  return [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "form-action 'self'",
+    "img-src 'self' data: blob: https:",
+    "font-src 'self' data:",
+    ["style-src 'self'", nonce ? `'nonce-${nonce}'` : null]
+      .filter(Boolean)
+      .join(" "),
+    // React components still use narrowly scoped style attributes for values
+    // such as progress widths. Keep that compatibility separate from
+    // style-src so injected <style> elements must carry the request nonce.
+    "style-src-attr 'unsafe-inline'",
+    [
+      "script-src 'self'",
+      nonce ? `'nonce-${nonce}'` : null,
+      process.env.NODE_ENV === "development" ? "'unsafe-eval'" : null,
+      "https://va.vercel-scripts.com",
+    ]
+      .filter(Boolean)
+      .join(" "),
+    "connect-src 'self' https://app.openvpm.com https://vitals.vercel-insights.com https://va.vercel-scripts.com",
+    "worker-src 'self' blob:",
+    process.env.NODE_ENV === "production"
+      ? "upgrade-insecure-requests"
+      : null,
   ]
     .filter(Boolean)
-    .join(" "),
-  "connect-src 'self' https://app.openvpm.com https://vitals.vercel-insights.com https://va.vercel-scripts.com",
-  "worker-src 'self' blob:",
-  process.env.NODE_ENV === "production" ? "upgrade-insecure-requests" : null,
-]
-  .filter(Boolean)
-  .join("; ");
+    .join("; ");
+}
+
+const contentSecurityPolicy = buildContentSecurityPolicy();
 
 const securityHeaders = [
   {
@@ -53,15 +66,21 @@ const securityHeaders = [
   },
 ];
 
-function applySecurityHeaders(response) {
+function applySecurityHeaders(response, options = {}) {
   for (const { key, value } of securityHeaders) {
-    response.headers.set(key, value);
+    response.headers.set(
+      key,
+      key === "Content-Security-Policy" && options.nonce
+        ? buildContentSecurityPolicy(options.nonce)
+        : value,
+    );
   }
   return response;
 }
 
 module.exports = {
   contentSecurityPolicy,
+  buildContentSecurityPolicy,
   securityHeaders,
   applySecurityHeaders,
 };

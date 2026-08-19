@@ -2,7 +2,11 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { locations, practices, users } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import { alertOps } from "@/lib/alerts";
-import { stripe } from "@/lib/stripe";
+import {
+  requireVerifiedStripeAccount,
+  stripe,
+  syncOpenVpmAnnualScheduleLocationQuantity,
+} from "@/lib/stripe";
 import {
   STRIPE_PRICE_CLOUD_LEGACY_ENV,
   billingCadenceForStripePrice,
@@ -173,6 +177,7 @@ export async function syncPracticeSubscriptionQuantities(opts: {
   }
 
   try {
+    await requireVerifiedStripeAccount();
     const subscription = await stripe.subscriptions.retrieve(subscriptionId);
     const items = subscription.items.data;
     const locationItem = items.find((item) =>
@@ -206,12 +211,24 @@ export async function syncPracticeSubscriptionQuantities(opts: {
       return state;
     }
 
-    const updates: Promise<unknown>[] = [
-      stripe.subscriptionItems.update(locationItem.id, {
-        quantity: counts.locationCount,
-      }),
-    ];
-    if (seatItem) {
+    const { locationPriceId: monthlyPriceId } = cloudCheckoutPriceIds("month");
+    const { locationPriceId: annualPriceId } = cloudCheckoutPriceIds("year");
+    const scheduleSync = await syncOpenVpmAnnualScheduleLocationQuantity({
+      subscription,
+      practiceId,
+      monthlyPriceId,
+      annualPriceId,
+      locationCount: counts.locationCount,
+    });
+    const updates: Promise<unknown>[] = [];
+    if (scheduleSync === "none") {
+      updates.push(
+        stripe.subscriptionItems.update(locationItem.id, {
+          quantity: counts.locationCount,
+        }),
+      );
+    }
+    if (seatItem && scheduleSync === "none") {
       updates.push(
         stripe.subscriptionItems.update(seatItem.id, {
           quantity: counts.billableSeatCount,

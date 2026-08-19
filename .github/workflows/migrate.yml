@@ -8,17 +8,32 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      target:
+        description: Environment to migrate
+        required: true
+        type: choice
+        default: demo
+        options:
+          - demo
+          - production
+      production_confirmation:
+        description: Type MIGRATE_PRODUCTION for a production run
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: apply-migrations
+  group: apply-migrations-${{ inputs.target || 'demo' }}
   cancel-in-progress: false
 
 jobs:
   production:
     name: production
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production'
+    environment: Production
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -28,6 +43,15 @@ jobs:
           node-version: 24
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
+
+      - name: Require explicit production confirmation
+        env:
+          PRODUCTION_CONFIRMATION: ${{ inputs.production_confirmation }}
+        run: |
+          if [ "$PRODUCTION_CONFIRMATION" != "MIGRATE_PRODUCTION" ]; then
+            echo "::error::Production migration confirmation did not match MIGRATE_PRODUCTION."
+            exit 1
+          fi
 
       - name: Check environment is configured
         id: configured
@@ -69,6 +93,7 @@ jobs:
 
   demo:
     name: demo
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.target == 'demo')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

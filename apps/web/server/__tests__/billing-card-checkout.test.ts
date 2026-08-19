@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  createCheckoutSession: vi.fn(async () => ({ url: "https://checkout.stripe.com/checkout" })),
+  createCheckoutSession: vi.fn(async () => ({
+    url: "https://checkout.stripe.com/checkout",
+  })),
   recordAuditLog: vi.fn(async () => undefined),
   lockPracticeForExternalSideEffects: vi.fn(async () => true),
 }));
@@ -20,8 +22,7 @@ vi.mock("@/lib/audit", () => ({
 
 vi.mock("@/lib/recovery-hold", () => ({
   RECOVERY_HOLD_BLOCK_MESSAGE: "recovery hold",
-  lockPracticeForExternalSideEffects:
-    mocks.lockPracticeForExternalSideEffects,
+  lockPracticeForExternalSideEffects: mocks.lockPracticeForExternalSideEffects,
 }));
 
 const { billingRouter } = await import("../routers/billing");
@@ -69,7 +70,7 @@ const activeHostedPractice = {
 
 function callerWithDb(
   db: Record<string, unknown>,
-  role: "admin" | "front_desk" | "veterinarian" = "front_desk"
+  role: "admin" | "front_desk" | "veterinarian" = "front_desk",
 ) {
   const session = {
     user: {
@@ -89,7 +90,7 @@ function thenableRows(result: unknown[]) {
     for: vi.fn(async () => result),
     then: (
       resolve: (value: unknown[]) => unknown,
-      reject?: (e: unknown) => unknown
+      reject?: (e: unknown) => unknown,
     ) => Promise.resolve(result).then(resolve, reject),
   };
   return rows;
@@ -146,7 +147,7 @@ describe("billing card checkout", () => {
     await expect(
       callerWithDb(db, "veterinarian").createCardPaymentCheckout({
         invoiceId: INVOICE_ID,
-      })
+      }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     expect(select).not.toHaveBeenCalled();
@@ -182,6 +183,7 @@ describe("billing card checkout", () => {
   it("requires an active Stripe Connect account for hosted card checkout status", async () => {
     vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
     vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_123");
+    vi.stubEnv("STRIPE_CONNECT_APPLICATION_FEE_BPS", "100");
 
     const { db } = createDb([[activePaymentAccount]]);
 
@@ -192,6 +194,21 @@ describe("billing card checkout", () => {
       status: "active",
       chargesEnabled: true,
       payoutsEnabled: true,
+      applicationFeeConfigured: true,
+      applicationFeeBps: 100,
+    });
+  });
+
+  it("reports an active Connect account as not ready when the fee is missing", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_123");
+    const { db } = createDb([[activePaymentAccount]]);
+
+    await expect(callerWithDb(db).cardPaymentStatus()).resolves.toMatchObject({
+      enabled: false,
+      status: "active",
+      applicationFeeConfigured: false,
+      applicationFeeBps: null,
     });
   });
 
@@ -199,7 +216,7 @@ describe("billing card checkout", () => {
     const { db } = createDb([[]]);
 
     await expect(
-      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID })
+      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(mocks.createCheckoutSession).not.toHaveBeenCalled();
@@ -209,7 +226,7 @@ describe("billing card checkout", () => {
     const { db } = createDb([[{ ...baseInvoice, isEstimate: true }]]);
 
     await expect(
-      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID })
+      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(mocks.createCheckoutSession).not.toHaveBeenCalled();
@@ -219,7 +236,7 @@ describe("billing card checkout", () => {
     const { db } = createDb([[{ ...baseInvoice, status: "draft" }]]);
 
     await expect(
-      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID })
+      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID }),
     ).rejects.toMatchObject({
       code: "BAD_REQUEST",
       message: "Mark the invoice as sent before recording payment.",
@@ -238,7 +255,7 @@ describe("billing card checkout", () => {
     ]);
 
     await expect(
-      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID })
+      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message:
@@ -251,7 +268,7 @@ describe("billing card checkout", () => {
     const { db } = createDb([[baseInvoice], [{ amount: "30.00" }]]);
 
     await expect(
-      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID })
+      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID }),
     ).resolves.toEqual({ url: "https://checkout.stripe.com/checkout" });
 
     expect(mocks.createCheckoutSession).toHaveBeenCalledWith(
@@ -264,7 +281,7 @@ describe("billing card checkout", () => {
         currency: "usd",
         successUrl: `https://app.example.com/billing?payment=success&invoice=${INVOICE_ID}`,
         cancelUrl: `https://app.example.com/billing?payment=cancelled&invoice=${INVOICE_ID}`,
-      })
+      }),
     );
   });
 
@@ -279,7 +296,7 @@ describe("billing card checkout", () => {
     ]);
 
     await expect(
-      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID })
+      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID }),
     ).resolves.toEqual({ url: "https://checkout.stripe.com/checkout" });
 
     expect(mocks.createCheckoutSession).toHaveBeenCalledWith(
@@ -290,11 +307,36 @@ describe("billing card checkout", () => {
         cancelUrl:
           `https://app.example.com/encounters/${APPOINTMENT_ID}` +
           `?payment=cancelled&invoice=${INVOICE_ID}#charge-capture`,
-      })
+      }),
     );
   });
 
   it("starts hosted Stripe Checkout on the clinic connected account", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_123");
+    vi.stubEnv("STRIPE_CONNECT_APPLICATION_FEE_BPS", "100");
+    const { db } = createDb([
+      [activeHostedPractice],
+      [baseInvoice],
+      [],
+      [activePaymentAccount],
+    ]);
+
+    await expect(
+      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID }),
+    ).resolves.toEqual({ url: "https://checkout.stripe.com/checkout" });
+
+    expect(mocks.createCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        invoiceId: INVOICE_ID,
+        amount: 7500,
+        connectedAccountId: "acct_123",
+        applicationFeeAmount: 75,
+      }),
+    );
+  });
+
+  it("fails closed when the hosted platform fee is missing", async () => {
     vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
     vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_123");
     const { db } = createDb([
@@ -305,17 +347,14 @@ describe("billing card checkout", () => {
     ]);
 
     await expect(
-      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID })
-    ).resolves.toEqual({ url: "https://checkout.stripe.com/checkout" });
+      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID }),
+    ).rejects.toMatchObject({
+      code: "SERVICE_UNAVAILABLE",
+      message:
+        "Client card payments are paused until the OpenVPM payment fee is configured.",
+    });
 
-    expect(mocks.createCheckoutSession).toHaveBeenCalledWith(
-      expect.objectContaining({
-        invoiceId: INVOICE_ID,
-        amount: 7500,
-        connectedAccountId: "acct_123",
-        applicationFeeAmount: undefined,
-      })
-    );
+    expect(mocks.createCheckoutSession).not.toHaveBeenCalled();
   });
 
   it("rejects hosted card checkout until Stripe Connect setup is active", async () => {
@@ -324,7 +363,7 @@ describe("billing card checkout", () => {
     const { db } = createDb([[activeHostedPractice], [baseInvoice], [], []]);
 
     await expect(
-      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID })
+      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID }),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
     expect(mocks.createCheckoutSession).not.toHaveBeenCalled();
@@ -334,7 +373,7 @@ describe("billing card checkout", () => {
     const { db } = createDb([[baseInvoice], [{ amount: "75.00" }]]);
 
     await expect(
-      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID })
+      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(mocks.createCheckoutSession).not.toHaveBeenCalled();
@@ -345,7 +384,7 @@ describe("billing card checkout", () => {
     const { db } = createDb([[baseInvoice], []]);
 
     await expect(
-      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID })
+      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID }),
     ).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
   });
 
@@ -356,7 +395,7 @@ describe("billing card checkout", () => {
     const { db } = createDb([[baseInvoice], []]);
 
     await expect(
-      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID })
+      callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID }),
     ).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
   });
 });

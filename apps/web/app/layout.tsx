@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Inter, DM_Sans } from "next/font/google";
+import { headers } from "next/headers";
 import { Providers } from "@/lib/providers";
 import "@/styles/globals.css";
 
@@ -22,11 +23,19 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  // A per-request CSP nonce cannot be attached to a statically generated
+  // document. Reading the request headers opts the root layout into dynamic
+  // rendering so Next.js can apply the nonce forwarded by middleware to its
+  // bootstrap and page scripts. Without this, the strict CSP correctly blocks
+  // hydration and leaves otherwise visible clinic forms unusable.
+  const requestHeaders = await headers();
+  const nonce = requestHeaders.get("x-nonce") ?? undefined;
+
   return (
     <html lang="en" suppressHydrationWarning>
       <body
@@ -38,7 +47,7 @@ export default function RootLayout({
         >
           Skip to main content
         </a>
-        <Providers>{children}</Providers>
+        <Providers nonce={nonce}>{children}</Providers>
       </body>
     </html>
   );

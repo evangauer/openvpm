@@ -16,6 +16,7 @@ import {
   practices,
   users,
 } from "@openpims/db";
+import { withSystem, withTenant } from "../apps/web/lib/tenant-db";
 
 /**
  * Fresh-clinic mock launch flow (2026-07-01 readiness pass).
@@ -23,8 +24,9 @@ import {
  * Simulates a brand-new clinic joining the hosted service end to end, in
  * Stripe TEST mode, against a local hosted-mode server with `stripe listen`
  * forwarding webhooks:
- *   signup UI → Stripe Checkout (4242 card) → subscription webhook →
- *   email verification → login → Connect Express onboarding attempt →
+ *   personalized signup UI → card-free trial → email verification →
+ *   billing-plan selection → Stripe Checkout (4242 card) → subscription
+ *   webhook → Accounts v2 Connect onboarding attempt →
  *   clinic-day writes → client card payment via Connect checkout →
  *   patient photo upload (object storage) → cross-clinic isolation.
  *
@@ -35,7 +37,7 @@ import {
 const RESULTS_DIR = path.join(process.cwd(), "test-results", "fresh-clinic-launch");
 const SUMMARY_PATH = path.join(RESULTS_DIR, "summary.json");
 
-const runId = `${Date.now()}`;
+const runId = process.env.FRESH_CLINIC_RUN_ID ?? `${Date.now()}`;
 const password = "LaunchReady123!";
 const state = {
   runId,
@@ -51,6 +53,7 @@ const state = {
 };
 
 const summary: Record<string, unknown> = { runId, startedAt: new Date().toISOString() };
+let browserContextSequence = 0;
 
 function isStripeHostname(hostname: string): boolean {
   const normalized = hostname.toLowerCase();
@@ -62,6 +65,19 @@ function isStripeUrl(value: string): boolean {
     return isStripeHostname(new URL(value).hostname);
   } catch {
     return false;
+  }
+}
+
+function safeProviderEndpoint(value: string): string {
+  try {
+    const url = new URL(value);
+    const path = url.hostname === "checkout.stripe.com" ? "/c/pay/[redacted]" : url.pathname;
+    if (url.hostname === "api.stripe.com" && path.includes("/payment_pages/")) {
+      return `${url.hostname}/v1/payment_pages/[redacted]`;
+    }
+    return `${url.hostname}${path}`;
+  } catch {
+    return "unparseable-provider-url";
   }
 }
 
@@ -98,9 +114,34 @@ async function waitUntil<T>(
 }
 
 async function suppressCookieBanner(context: BrowserContext) {
+  browserContextSequence += 1;
+  const testIpLastOctet =
+    1 + ((Number(runId.slice(-6)) + browserContextSequence) % 254);
+  await context.setExtraHTTPHeaders({
+    "x-forwarded-for": `198.51.100.${testIpLastOctet}`,
+  });
   await context.addInitScript(() => {
     window.localStorage.setItem("openvpm.cookie-consent.v1", "essential");
   });
+}
+
+async function stopSendingAppTestHeaders(context: BrowserContext) {
+  // The synthetic X-Forwarded-For value is only for the app's registration
+  // rate-limit bucket. Never forward it to Stripe-hosted pages: browser-level
+  // extra headers apply cross-origin and can interfere with provider requests.
+  await context.setExtraHTTPHeaders({});
+}
+
+async function dismissGuidedSetup(page: Page, timeout = 3_000) {
+  const finishLater = page.getByRole("button", { name: /i'll finish later/i });
+  const visible = await finishLater
+    .waitFor({ state: "visible", timeout })
+    .then(() => true)
+    .catch(() => false);
+  if (visible) {
+    await finishLater.click();
+    await expect(page.getByRole("dialog")).toBeHidden({ timeout: 10_000 });
+  }
 }
 
 async function login(page: Page, email: string, pass = password) {
@@ -116,6 +157,11 @@ async function login(page: Page, email: string, pass = password) {
   await page.getByRole("button", { name: /^sign in$/i }).click();
   await page.waitForURL((url) => !url.pathname.startsWith("/login"), { timeout: 30_000 });
   await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => undefined);
+
+  // Fresh clinics may resume the guided setup after authentication. This
+  // walkthrough is specifically proving billing and clinic-day workflows, so
+  // take the product's explicit safe exit and continue without changing data.
+  await dismissGuidedSetup(page);
 }
 
 /** Fill a value into the first visible match across the page and all iframes. */
@@ -132,6 +178,33 @@ async function fillAnywhere(page: Page, selectors: string[], value: string): Pro
       } catch {
         // keep looking in other frames
       }
+    }
+  }
+  return false;
+}
+
+/** Click a visible button across the top page and embedded provider frames. */
+async function clickButtonAnywhere(page: Page, name: RegExp): Promise<boolean> {
+  for (const frame of page.frames()) {
+    const button = frame.getByRole("button", { name }).first();
+    if ((await button.count()) > 0 && (await button.isVisible().catch(() => false))) {
+      await button.click({ timeout: 5_000 }).catch(() => undefined);
+      return true;
+    }
+  }
+  return false;
+}
+
+async function stripeHumanVerificationVisible(page: Page): Promise<boolean> {
+  for (const frame of page.frames()) {
+    if (/captcha/i.test(frame.url())) return true;
+    const body = await frame.locator("body").innerText().catch(() => "");
+    if (
+      /drag the shape into its outline|click on all objects smaller than|verification challenge/i.test(
+        body
+      )
+    ) {
+      return true;
     }
   }
   return false;
@@ -225,6 +298,37 @@ async function completeStripeCheckout(page: Page, tag: string) {
   if ((await country.count()) > 0 && (await country.isVisible().catch(() => false))) {
     await country.selectOption("US").catch(() => undefined);
   }
+  const addressFilled = await fillAnywhere(
+    page,
+    [
+      '#billingAddressLine1, input[name="billingAddressLine1"]',
+      'input[name="addressLine1"], input[name="line1"]',
+      'input[autocomplete="address-line1"]',
+    ],
+    "123 Launch Street"
+  );
+  expect(addressFilled, "billing address is required for automatic tax").toBe(true);
+  const cityFilled = await fillAnywhere(
+    page,
+    [
+      '#billingLocality, input[name="billingLocality"]',
+      'input[name="city"], input[name="locality"]',
+      'input[autocomplete="address-level2"]',
+    ],
+    "San Francisco"
+  );
+  expect(cityFilled, "billing city is required for automatic tax").toBe(true);
+  for (const frame of page.frames()) {
+    const stateSelect = frame
+      .locator(
+        '#billingAdministrativeArea, select[name="billingAdministrativeArea"], select[name="state"], select[autocomplete="address-level1"]'
+      )
+      .first();
+    if ((await stateSelect.count()) > 0 && (await stateSelect.isVisible().catch(() => false))) {
+      await stateSelect.selectOption({ label: "California" }).catch(() => undefined);
+      break;
+    }
+  }
   await fillAnywhere(
     page,
     ['#billingPostalCode, input[name="billingPostalCode"]', 'input[name="postalCode"]'],
@@ -244,7 +348,7 @@ async function completeStripeCheckout(page: Page, tag: string) {
 test.skip(!process.env.DATABASE_URL, "DATABASE_URL is required for the fresh-clinic launch E2E");
 
 test.describe.serial("Fresh clinic mock launch", () => {
-  test("1. hosted signup reaches Stripe Checkout and test card activates the subscription", async ({
+  test("1. card-free signup then secure checkout activates the subscription", async ({
     browser,
   }) => {
     test.setTimeout(330_000);
@@ -252,92 +356,224 @@ test.describe.serial("Fresh clinic mock launch", () => {
     await suppressCookieBanner(context);
     const page = await context.newPage();
     page.setDefaultTimeout(20_000);
-
-    await page.goto("/register", { waitUntil: "domcontentloaded" });
-    await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => undefined);
-
-    // Re-fill until React hydration has caught the values and enabled submit —
-    // filling before hydration leaves the button permanently disabled.
-    const submitButton = page.getByRole("button", { name: /create workspace/i });
-    for (let attempt = 0; attempt < 4; attempt++) {
-      await page.getByLabel(/practice name/i).fill(state.practiceName);
-      await page.getByLabel(/work email/i).fill(state.ownerEmail);
-      await page.getByLabel(/password/i).fill(password);
-      const enabled = await submitButton.isEnabled({ timeout: 4_000 }).catch(() => false);
-      if (enabled) break;
-      await page.waitForTimeout(2_000);
-    }
-    await expect(submitButton).toBeEnabled({ timeout: 5_000 });
-    await shot(page, "01-register-filled");
-    await submitButton.click();
-
-    // Hosted signup creates the practice and sends the browser straight to
-    // card-collected Stripe Checkout — reaching stripe.com is the proof.
-    await page.waitForURL((url) => isStripeHostname(url.hostname), { timeout: 90_000 });
-    record("register", { reachedStripeCheckout: true });
-    await completeStripeCheckout(page, "02-subscription");
-    await page.waitForURL((url) => url.pathname.startsWith("/login"), { timeout: 90_000 });
-    await shot(page, "03-checkout-complete-back-at-login");
-    record("subscriptionCheckout", { completed: true, returnedTo: page.url() });
-
-    // Email verification: Resend is not configured locally, so mint a token
-    // exactly the way lib/auth-tokens.ts does (raw random hex, sha256 stored)
-    // and click through /verify-email like the emailed link would.
-    const [freshUser] = await db
-      .select({ id: users.id, email: users.email })
-      .from(users)
-      .where(and(eq(users.email, state.ownerEmail), isNull(users.deletedAt)))
-      .limit(1);
-    expect(freshUser, "signup must have created the owner user").toBeTruthy();
-    const rawToken = randomBytes(32).toString("hex");
-    await db.insert(authTokens).values({
-      userId: freshUser!.id,
-      email: freshUser!.email.toLowerCase(),
-      tokenHash: createHash("sha256").update(rawToken).digest("hex"),
-      type: "email_verify",
-      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+    const providerNetworkIssues: Array<Record<string, unknown>> = [];
+    page.on("requestfailed", (request) => {
+      if (!isStripeUrl(request.url())) return;
+      providerNetworkIssues.push({
+        kind: "request-failed",
+        endpoint: safeProviderEndpoint(request.url()),
+        method: request.method(),
+        reason: request.failure()?.errorText ?? "unknown",
+      });
     });
-    state.verificationUrl = `/verify-email?token=${rawToken}`;
-    await page.goto(state.verificationUrl, { waitUntil: "domcontentloaded" });
-    await expect(page.getByText(/your email is verified/i)).toBeVisible({ timeout: 30_000 });
-    await shot(page, "04-email-verified");
-    record("emailVerification", { verified: true });
+    page.on("response", (response) => {
+      if (!isStripeUrl(response.url()) || response.status() < 400) return;
+      providerNetworkIssues.push({
+        kind: "http-error",
+        endpoint: safeProviderEndpoint(response.url()),
+        method: response.request().method(),
+        status: response.status(),
+    });
+    });
 
-    await login(page, state.ownerEmail);
-    await shot(page, "05-first-login");
-
-    // The subscription webhook (stripe listen forwarder) must activate the practice.
-    const practice = await waitUntil(
-      async () => {
-        const [row] = await db
+    if (process.env.REUSE_EXISTING_FRESH_CLINIC === "true") {
+      await login(page, state.ownerEmail);
+      const session = await page.evaluate(async () => {
+        const response = await fetch("/api/auth/session", { cache: "no-store" });
+        if (!response.ok) throw new Error(`Session request failed: ${response.status}`);
+        return response.json() as Promise<{ user?: { practiceId?: string } }>;
+      });
+      expect(session.user?.practiceId, "existing clinic session must expose its tenant id").toBeTruthy();
+      state.practiceId = session.user!.practiceId!;
+      const [practice] = await withTenant(db, state.practiceId, (tx) =>
+        tx
           .select({
             id: practices.id,
             billingStatus: practices.billingStatus,
             subscriptionTier: practices.subscriptionTier,
-            stripeCustomerId: practices.stripeCustomerId,
             stripeSubscriptionId: practices.stripeSubscriptionId,
           })
           .from(practices)
-          .where(and(eq(practices.email, state.ownerEmail), isNull(practices.deletedAt)))
-          .limit(1);
+          .where(and(eq(practices.id, state.practiceId), isNull(practices.deletedAt)))
+          .limit(1)
+      );
+      record("register", {
+        reusedExistingSyntheticClinic: true,
+        signedIn: true,
+        billingStatus: practice?.billingStatus ?? null,
+      });
+      record("subscriptionCheckout", {
+        completed: Boolean(practice?.stripeSubscriptionId),
+        actionRequired: practice?.stripeSubscriptionId
+          ? null
+          : "Complete Stripe's human-verification challenge in a real browser",
+      });
+      await shot(page, "02-existing-card-free-trial");
+      await context.close();
+      test.skip(true, "Reusing the authenticated synthetic clinic after the registration rate limit");
+    }
+
+    await page.goto("/register", { waitUntil: "domcontentloaded" });
+    await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => undefined);
+
+    await page.getByRole("button", { name: /show my workflows/i }).click();
+    await expect(page.getByText("Step 2 of 4")).toBeVisible();
+
+    // Re-fill until React hydration has caught the values. Filling before
+    // hydration can leave controlled fields empty.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await page.getByLabel(/practice name/i).fill(state.practiceName);
+      await page.getByLabel(/work email/i).fill(state.ownerEmail);
+      if ((await page.getByLabel(/practice name/i).inputValue()) === state.practiceName) break;
+      await page.waitForTimeout(2_000);
+    }
+    await page.getByRole("button", { name: /see my first day/i }).click();
+    await expect(page.getByText("Step 3 of 4")).toBeVisible();
+    await expect(page.getByRole("heading", { name: /your first day is ready/i })).toBeVisible();
+    await page.getByRole("button", { name: /secure my workspace/i }).click();
+    await expect(page.getByText("Step 4 of 4")).toBeVisible();
+    await page.getByLabel(/clinic country/i).selectOption("US");
+    await page.getByLabel(/^password$/i).fill(password);
+    const submitButton = page.getByRole("button", { name: /start my free trial/i });
+    await expect(submitButton).toBeEnabled({ timeout: 5_000 });
+    await shot(page, "01-register-filled");
+    await submitButton.click();
+
+    // Hosted signup grants the intended card-free trial and signs the clinic
+    // straight into its workspace. Billing is connected explicitly below.
+    await page.waitForURL(
+      (url) => !url.pathname.startsWith("/register") && !url.pathname.startsWith("/login"),
+      { timeout: 90_000 }
+    );
+    record("register", { cardFreeTrialEntered: true, returnedTo: page.url() });
+    await shot(page, "02-card-free-trial-entered");
+
+    // The hosted preview connects with the least-privilege application role.
+    // Capture the signed-in tenant from the authenticated session before any
+    // direct verification query so the E2E harness is subject to the same RLS
+    // boundary as the application.
+    const session = await page.evaluate(async () => {
+      const response = await fetch("/api/auth/session", { cache: "no-store" });
+      if (!response.ok) throw new Error(`Session request failed: ${response.status}`);
+      return response.json() as Promise<{ user?: { practiceId?: string } }>;
+    });
+    expect(session.user?.practiceId, "signup session must expose its tenant id").toBeTruthy();
+    state.practiceId = session.user!.practiceId!;
+
+    // Email verification: Resend is not configured locally, so mint a token
+    // exactly the way lib/auth-tokens.ts does (raw random hex, sha256 stored)
+    // and click through /verify-email like the emailed link would. This proves
+    // the product link flow, not external mailbox delivery; that remains an
+    // explicit launch gate and is recorded as such below.
+    const [freshUser] = await withTenant(db, state.practiceId, (tx) =>
+      tx
+        .select({ id: users.id, email: users.email })
+        .from(users)
+        .where(and(eq(users.email, state.ownerEmail), isNull(users.deletedAt)))
+        .limit(1)
+    );
+    expect(freshUser, "signup must have created the owner user").toBeTruthy();
+    const rawToken = randomBytes(32).toString("hex");
+    await withTenant(db, state.practiceId, (tx) =>
+      tx.insert(authTokens).values({
+        userId: freshUser!.id,
+        email: freshUser!.email.toLowerCase(),
+        tokenHash: createHash("sha256").update(rawToken).digest("hex"),
+        type: "email_verify",
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      })
+    );
+    state.verificationUrl = `/verify-email?token=${rawToken}`;
+    await page.goto(state.verificationUrl, { waitUntil: "domcontentloaded" });
+    await expect(page.getByText(/email confirmed/i)).toBeVisible({ timeout: 30_000 });
+    await shot(page, "03-email-verified");
+    record("emailVerification", {
+      verified: true,
+      delivery: "simulated-link-only",
+      launchGate: "Real Gmail, Outlook, and clinic-domain delivery/header tests remain required",
+    });
+
+    await login(page, state.ownerEmail);
+    await stopSendingAppTestHeaders(context);
+    await shot(page, "04-first-login");
+
+    // The clinic deliberately chooses a billing schedule and adds its card
+    // after entering the trial. Stripe keeps the card; no charge is due today.
+    await page.goto("/settings?tab=billing", { waitUntil: "domcontentloaded" });
+    await dismissGuidedSetup(page, 10_000);
+    await page.getByText("Plan & Billing", { exact: true }).click();
+    await page.waitForSelector("text=Activate your account", { timeout: 30_000 });
+    const monthlyCadence = page.locator(
+      'input[name="billing-cadence"][value="month"]'
+    );
+    await monthlyCadence.evaluate((input: HTMLInputElement) => input.click());
+    await expect(monthlyCadence).toBeChecked();
+    await shot(page, "05-plan-and-billing-before");
+    await page.getByRole("button", { name: /continue to secure checkout/i }).click();
+    await page.waitForURL((url) => isStripeHostname(url.hostname), { timeout: 90_000 });
+    await completeStripeCheckout(page, "06-subscription");
+    const checkoutOutcome = await waitUntil(
+      async () => {
+        if (new URL(page.url()).pathname.startsWith("/settings")) return "returned" as const;
+        if (await stripeHumanVerificationVisible(page)) return "human-verification" as const;
+        return false;
+      },
+      { timeoutMs: 90_000, intervalMs: 1_000, label: "Checkout return or human verification" }
+    ).catch((error: unknown) => {
+      record("subscriptionCheckoutFailure", {
+        providerPage: safeProviderEndpoint(page.url()),
+        networkIssues: providerNetworkIssues.slice(-40),
+      });
+      throw error;
+    });
+    if (checkoutOutcome === "human-verification") {
+      record("subscriptionCheckout", {
+        completed: false,
+        actionRequired: "Complete Stripe's human-verification challenge in a real browser",
+        providerPage: safeProviderEndpoint(page.url()),
+      });
+      await shot(page, "07-subscription-human-verification-required");
+      await context.close();
+      test.skip(true, "Stripe Checkout requires a human-verification challenge");
+    }
+    await shot(page, "07-subscription-checkout-returned");
+    record("subscriptionCheckout", { completed: true, returnedTo: page.url() });
+
+    // The subscription webhook (stripe listen forwarder) must activate the practice.
+    const practice = await waitUntil(
+      async () => {
+        const [row] = await withTenant(db, state.practiceId, (tx) =>
+          tx
+            .select({
+              id: practices.id,
+              billingStatus: practices.billingStatus,
+              subscriptionTier: practices.subscriptionTier,
+              stripeCustomerId: practices.stripeCustomerId,
+              stripeSubscriptionId: practices.stripeSubscriptionId,
+            })
+            .from(practices)
+            .where(and(eq(practices.id, state.practiceId), isNull(practices.deletedAt)))
+            .limit(1)
+        );
         return row?.stripeSubscriptionId ? row : null;
       },
       { timeoutMs: 90_000, label: "subscription webhook to set stripeSubscriptionId" }
     );
-    state.practiceId = practice.id;
+    expect(practice.id).toBe(state.practiceId);
     record("subscriptionState", practice);
     expect(["active", "trialing"]).toContain(practice.billingStatus ?? "");
 
     await context.close();
   });
 
-  test("2. Stripe Connect Express onboarding attempt", async ({ browser }) => {
+  test("2. Stripe Connect Accounts v2 onboarding attempt", async ({ browser }) => {
     test.setTimeout(300_000);
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     await suppressCookieBanner(context);
     const page = await context.newPage();
     page.setDefaultTimeout(20_000);
     await login(page, state.ownerEmail);
+    await stopSendingAppTestHeaders(context);
 
     await page.goto("/settings", { waitUntil: "domcontentloaded" });
     await page.getByText("Plan & Billing", { exact: true }).click();
@@ -360,16 +596,18 @@ test.describe.serial("Fresh clinic mock launch", () => {
       //      (dashboard.stripe.com/settings/connect/platform-profile) — until
       //      this is filled in, accounts.create returns a platform-profile
       //      error even though Connect is enabled.
-      const [blockedAccount] = await db
-        .select({ id: practicePaymentAccounts.id })
-        .from(practicePaymentAccounts)
-        .where(
-          and(
-            eq(practicePaymentAccounts.practiceId, state.practiceId),
-            isNull(practicePaymentAccounts.deletedAt)
+      const [blockedAccount] = await withTenant(db, state.practiceId, (tx) =>
+        tx
+          .select({ id: practicePaymentAccounts.id })
+          .from(practicePaymentAccounts)
+          .where(
+            and(
+              eq(practicePaymentAccounts.practiceId, state.practiceId),
+              isNull(practicePaymentAccounts.deletedAt)
+            )
           )
-        )
-        .limit(1);
+          .limit(1)
+      );
       if (!blockedAccount) {
         record("connectAccount", {
           blocked:
@@ -384,9 +622,11 @@ test.describe.serial("Fresh clinic mock launch", () => {
       }
     }
 
-    // Best-effort walk through Express test-mode onboarding. Every iteration
+    // Best-effort walk through Accounts v2 test-mode onboarding for a clinic
+    // with full Stripe Dashboard access. Every iteration
     // fills whatever known test fields are visible, then advances.
     const actions: string[] = [];
+    let manualVerificationRequired = false;
     for (let step = 0; step < 25; step++) {
       if (!isStripeUrl(page.url())) break;
       await page.waitForLoadState("domcontentloaded").catch(() => undefined);
@@ -414,6 +654,15 @@ test.describe.serial("Fresh clinic mock launch", () => {
       };
 
       // Test-mode shortcuts first.
+      if (await clickButtonAnywhere(page, /^skip$/i)) {
+        actions.push(`${step}:skip-test-verification`);
+        await page.waitForTimeout(2_000);
+      }
+      if (await stripeHumanVerificationVisible(page)) {
+        manualVerificationRequired = true;
+        actions.push(`${step}:manual-human-verification-required`);
+        break;
+      }
       if (
         await clickIfVisible(
           page.getByRole("link", { name: /skip this form|use test data/i }),
@@ -482,31 +731,39 @@ test.describe.serial("Fresh clinic mock launch", () => {
     }
 
     // Land back in the app (or bail), then let the app resync account state.
-    await page
-      .waitForURL((url) => !isStripeHostname(url.hostname), { timeout: 30_000 })
-      .catch(() => undefined);
+    if (!manualVerificationRequired) {
+      await page
+        .waitForURL((url) => !isStripeHostname(url.hostname), { timeout: 30_000 })
+        .catch(() => undefined);
+    }
     await page.goto("/settings", { waitUntil: "domcontentloaded" });
     await page.getByText("Plan & Billing", { exact: true }).click();
     await page.waitForSelector("text=Client payment processing", { timeout: 20_000 });
     await page.waitForTimeout(5_000);
     await shot(page, "09-payment-settings-after");
 
-    const [account] = await db
-      .select({
-        onboardingStatus: practicePaymentAccounts.onboardingStatus,
-        chargesEnabled: practicePaymentAccounts.chargesEnabled,
-        payoutsEnabled: practicePaymentAccounts.payoutsEnabled,
-        detailsSubmitted: practicePaymentAccounts.detailsSubmitted,
-      })
-      .from(practicePaymentAccounts)
-      .where(
-        and(
-          eq(practicePaymentAccounts.practiceId, state.practiceId),
-          isNull(practicePaymentAccounts.deletedAt)
+    const [account] = await withTenant(db, state.practiceId, (tx) =>
+      tx
+        .select({
+          onboardingStatus: practicePaymentAccounts.onboardingStatus,
+          chargesEnabled: practicePaymentAccounts.chargesEnabled,
+          payoutsEnabled: practicePaymentAccounts.payoutsEnabled,
+          detailsSubmitted: practicePaymentAccounts.detailsSubmitted,
+        })
+        .from(practicePaymentAccounts)
+        .where(
+          and(
+            eq(practicePaymentAccounts.practiceId, state.practiceId),
+            isNull(practicePaymentAccounts.deletedAt)
+          )
         )
-      )
-      .limit(1);
-    record("connectAccount", { actions, account: account ?? null });
+        .limit(1)
+    );
+    record("connectAccount", {
+      actions,
+      manualVerificationRequired,
+      account: account ?? null,
+    });
     expect(account, "a Connect payment account row should exist after Set up").toBeTruthy();
 
     await context.close();
@@ -521,6 +778,7 @@ test.describe.serial("Fresh clinic mock launch", () => {
     const page = await context.newPage();
     page.setDefaultTimeout(20_000);
     await login(page, state.ownerEmail);
+    await stopSendingAppTestHeaders(context);
 
     // Client
     await page.goto("/clients/new", { waitUntil: "domcontentloaded" });
@@ -529,7 +787,9 @@ test.describe.serial("Fresh clinic mock launch", () => {
     await page.fill("#email", state.clientEmail);
     await page.fill("#phone", "555-0142");
     await page.getByRole("button", { name: /^Create Client$/ }).click();
-    await page.waitForURL("**/clients", { timeout: 20_000 });
+    await page.waitForURL(/\/clients\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:\?.*)?$/i, {
+      timeout: 60_000,
+    });
     await expect(page.getByText(state.clientLastName)).toBeVisible();
     await shot(page, "10-client-created");
 
@@ -545,21 +805,27 @@ test.describe.serial("Fresh clinic mock launch", () => {
     await page.selectOption("#species", "canine");
     await page.fill("#breed", "Fresh Launch Mix");
     await page.getByRole("button", { name: /^Create Patient$/ }).click();
-    await page.waitForURL("**/patients", { timeout: 20_000 });
-    await expect(page.getByText(state.patientName)).toBeVisible();
+    await page.waitForURL(/\/patients\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:\?.*)?$/i, {
+      timeout: 60_000,
+    });
+    await expect(
+      page.getByRole("heading", { name: state.patientName, exact: true })
+    ).toBeVisible({ timeout: 30_000 });
     await shot(page, "11-patient-created");
 
-    const [patientRow] = await db
-      .select({ id: patients.id })
-      .from(patients)
-      .where(
-        and(
-          eq(patients.practiceId, state.practiceId),
-          eq(patients.name, state.patientName),
-          isNull(patients.deletedAt)
+    const [patientRow] = await withTenant(db, state.practiceId, (tx) =>
+      tx
+        .select({ id: patients.id })
+        .from(patients)
+        .where(
+          and(
+            eq(patients.practiceId, state.practiceId),
+            eq(patients.name, state.patientName),
+            isNull(patients.deletedAt)
+          )
         )
-      )
-      .limit(1);
+        .limit(1)
+    );
     expect(patientRow, "fresh patient must exist in DB").toBeTruthy();
 
     // Appointment via the schedule panel
@@ -571,37 +837,55 @@ test.describe.serial("Fresh clinic mock launch", () => {
       .getByRole("button", { name: new RegExp(state.patientName) })
       .first()
       .click();
-    // Appointment type and doctor are optional for save; set them when the
-    // fresh clinic has options (scoped by their labels, NOT page-wide selects).
+    // Use the seeded team vaccination workflow. A fresh owner has not created
+    // a provider profile yet, so doctor-required visit types must correctly
+    // remain blocked from check-in.
     await page
       .locator('div:has(> label:text("Appointment Type")) select')
       .first()
-      .selectOption({ index: 1 }, { timeout: 5_000 })
-      .catch(() => undefined);
+      .selectOption({ label: "Vaccination (15 min)" });
+    // Signup intentionally seeds a realistic sample day. Choose an explicit
+    // open same-day slot so this visit can proceed through check-in and exam.
+    const appointmentDate = new Date();
+    const appointmentDateValue = [
+      appointmentDate.getFullYear(),
+      String(appointmentDate.getMonth() + 1).padStart(2, "0"),
+      String(appointmentDate.getDate()).padStart(2, "0"),
+    ].join("-");
+    await page.locator('input[type="date"]').last().fill(appointmentDateValue);
     await page
-      .locator('div:has(> label:text("Doctor")) select')
+      .locator('div:has(> label:text("Start Time")) select')
       .first()
-      .selectOption({ index: 1 }, { timeout: 5_000 })
-      .catch(() => undefined);
+      .selectOption("17:00");
     await page.getByRole("button", { name: /^Save$/ }).click();
-    await page.getByRole("button", { name: "Open visit" }).click();
-    await page.waitForURL("**/encounters/**", { timeout: 20_000 });
-    await expect(
-      page.getByRole("button", { name: "Check in" })
-    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "Open visit" })
+      .click({ noWaitAfter: true });
+    await page.waitForURL("**/encounters/**", { timeout: 60_000 });
+    await page.getByRole("button", { name: "Check in" }).click();
+    await expect(page.getByRole("button", { name: "Start exam" })).toBeVisible({
+      timeout: 20_000,
+    });
+    await page.getByRole("button", { name: "Start exam" }).click();
+    const writeSoapLink = page
+      .getByRole("link", { name: "Write SOAP note" })
+      .first();
+    await expect(writeSoapLink).toBeVisible({ timeout: 20_000 });
     // Hosted signup seeds demo appointments, so assert on OUR patient's row.
     const appointmentRow = await waitUntil(
       async () => {
-        const rows = await db
-          .select({ id: appointments.id })
-          .from(appointments)
-          .where(
-            and(
-              eq(appointments.practiceId, state.practiceId),
-              eq(appointments.patientId, patientRow!.id),
-              isNull(appointments.deletedAt)
+        const rows = await withTenant(db, state.practiceId, (tx) =>
+          tx
+            .select({ id: appointments.id })
+            .from(appointments)
+            .where(
+              and(
+                eq(appointments.practiceId, state.practiceId),
+                eq(appointments.patientId, patientRow!.id),
+                isNull(appointments.deletedAt)
+              )
             )
-          );
+        );
         return rows.length > 0 ? rows : null;
       },
       { timeoutMs: 20_000, label: "fresh patient appointment row in DB" }
@@ -609,14 +893,35 @@ test.describe.serial("Fresh clinic mock launch", () => {
     record("appointment", { countForFreshPatient: appointmentRow.length });
     await shot(page, "12-appointment-saved");
 
-    // SOAP note — the sections are rich-text editors, so populate them the way
-    // a clinic would: apply the preselected "Wellness Exam" template.
-    await page.goto(`/records/new-soap/${patientRow!.id}`, { waitUntil: "domcontentloaded" });
+    // SOAP note — enter through the active visit so the note is linked to the
+    // clinical encounter, then populate it with the preselected template.
+    await writeSoapLink.click();
+    await page.waitForURL("**/records/new-soap/**", { timeout: 60_000 });
     await page.getByRole("button", { name: /apply template/i }).click();
-    await page.waitForTimeout(1_500);
-    await page.getByRole("button", { name: /save note/i }).click();
+    const finalizeSoap = page.getByRole("button", {
+      name: /finalize soap note/i,
+    });
+    await expect(
+      page.getByText(/draft still contains template prompts/i)
+    ).toBeVisible();
+    await expect(finalizeSoap).toBeDisabled();
+
+    const soapEditors = page.locator(".ProseMirror");
+    await expect(soapEditors).toHaveCount(4);
+    const syntheticSections = [
+      "Synthetic test owner reports the patient presented for a scheduled vaccination and has been eating, drinking, and acting normally.",
+      "Synthetic test patient is alert and responsive. Injection site was inspected before vaccination.",
+      "Synthetic test assessment: appropriate for the scheduled vaccination based on the documented visit findings.",
+      "Synthetic test plan: vaccination workflow completed; owner-facing monitoring guidance and return precautions reviewed.",
+    ];
+    for (let index = 0; index < syntheticSections.length; index++) {
+      await soapEditors.nth(index).fill(syntheticSections[index]!);
+    }
+    await expect(finalizeSoap).toBeEnabled({ timeout: 30_000 });
+    page.once("dialog", (dialog) => dialog.accept());
+    await finalizeSoap.click();
     await page.waitForURL((url) => !url.pathname.startsWith("/records/new-soap"), {
-      timeout: 20_000,
+      timeout: 60_000,
     });
     await shot(page, "13-soap-saved");
 
@@ -640,17 +945,21 @@ test.describe.serial("Fresh clinic mock launch", () => {
       .locator("select")
       .nth(0)
       .selectOption({ label: `${state.patientName} (canine)` });
-    await page.locator("select").nth(1).selectOption({ index: 1 });
+    await page.getByRole("button", { name: "Search services..." }).click();
+    await page.getByRole("textbox", { name: "Search services" }).fill("Wellness Exam");
+    await page.getByRole("option", { name: /Wellness Exam/ }).click();
     await page.getByRole("button", { name: /^Add$/ }).click();
     await page.waitForSelector("text=Subtotal", { timeout: 15_000 });
     await page.getByRole("button", { name: /^Create Invoice$/ }).click();
-    await page.waitForURL("**/billing", { timeout: 20_000 });
+    await page.waitForURL("**/billing", { timeout: 60_000 });
     await shot(page, "14-invoice-created");
 
-    const rows = await db
-      .select({ id: invoices.id, status: invoices.status, total: invoices.total })
-      .from(invoices)
-      .where(and(eq(invoices.practiceId, state.practiceId), isNull(invoices.deletedAt)));
+    const rows = await withTenant(db, state.practiceId, (tx) =>
+      tx
+        .select({ id: invoices.id, status: invoices.status, total: invoices.total })
+        .from(invoices)
+        .where(and(eq(invoices.practiceId, state.practiceId), isNull(invoices.deletedAt)))
+    );
     record("clinicDay", {
       client: state.clientLastName,
       patient: state.patientName,
@@ -664,16 +973,18 @@ test.describe.serial("Fresh clinic mock launch", () => {
   test("4. client invoice card payment through Stripe test checkout", async ({ browser }) => {
     test.setTimeout(240_000);
 
-    const [account] = await db
-      .select({ chargesEnabled: practicePaymentAccounts.chargesEnabled })
-      .from(practicePaymentAccounts)
-      .where(
-        and(
-          eq(practicePaymentAccounts.practiceId, state.practiceId),
-          isNull(practicePaymentAccounts.deletedAt)
+    const [account] = await withTenant(db, state.practiceId, (tx) =>
+      tx
+        .select({ chargesEnabled: practicePaymentAccounts.chargesEnabled })
+        .from(practicePaymentAccounts)
+        .where(
+          and(
+            eq(practicePaymentAccounts.practiceId, state.practiceId),
+            isNull(practicePaymentAccounts.deletedAt)
+          )
         )
-      )
-      .limit(1);
+        .limit(1)
+    );
     record("cardPaymentPrecondition", { chargesEnabled: account?.chargesEnabled ?? false });
     test.skip(
       !account?.chargesEnabled,
@@ -685,6 +996,7 @@ test.describe.serial("Fresh clinic mock launch", () => {
     const page = await context.newPage();
     page.setDefaultTimeout(20_000);
     await login(page, state.ownerEmail);
+    await stopSendingAppTestHeaders(context);
 
     await page.goto("/billing", { waitUntil: "domcontentloaded" });
     await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => undefined);
@@ -705,10 +1017,12 @@ test.describe.serial("Fresh clinic mock launch", () => {
 
     const paid = await waitUntil(
       async () => {
-        const rows = await db
-          .select({ id: invoices.id, status: invoices.status, paidAmount: invoices.paidAmount })
-          .from(invoices)
-          .where(and(eq(invoices.practiceId, state.practiceId), isNull(invoices.deletedAt)));
+        const rows = await withTenant(db, state.practiceId, (tx) =>
+          tx
+            .select({ id: invoices.id, status: invoices.status, paidAmount: invoices.paidAmount })
+            .from(invoices)
+            .where(and(eq(invoices.practiceId, state.practiceId), isNull(invoices.deletedAt)))
+        );
         return rows.find((row) => row.status === "paid") ?? null;
       },
       { timeoutMs: 90_000, label: "connect webhook to mark the invoice paid" }
@@ -726,17 +1040,19 @@ test.describe.serial("Fresh clinic mock launch", () => {
     page.setDefaultTimeout(20_000);
     await login(page, state.ownerEmail);
 
-    const [patientRow] = await db
-      .select({ id: patients.id })
-      .from(patients)
-      .where(
-        and(
-          eq(patients.practiceId, state.practiceId),
-          eq(patients.name, state.patientName),
-          isNull(patients.deletedAt)
+    const [patientRow] = await withTenant(db, state.practiceId, (tx) =>
+      tx
+        .select({ id: patients.id })
+        .from(patients)
+        .where(
+          and(
+            eq(patients.practiceId, state.practiceId),
+            eq(patients.name, state.patientName),
+            isNull(patients.deletedAt)
+          )
         )
-      )
-      .limit(1);
+        .limit(1)
+    );
     expect(patientRow).toBeTruthy();
 
     await page.goto(`/patients/${patientRow!.id}`, { waitUntil: "domcontentloaded" });
@@ -750,15 +1066,35 @@ test.describe.serial("Fresh clinic mock launch", () => {
       mimeType: "image/png",
       buffer: Buffer.from(pngBase64, "base64"),
     });
-    await page.waitForTimeout(6_000);
+    const uploadedPatient = await waitUntil(
+      async () => {
+        const [row] = await withTenant(db, state.practiceId, (tx) =>
+          tx
+            .select({ photoUrl: patients.photoUrl })
+            .from(patients)
+            .where(
+              and(
+                eq(patients.id, patientRow!.id),
+                eq(patients.practiceId, state.practiceId),
+                isNull(patients.deletedAt)
+              )
+            )
+            .limit(1)
+        );
+        return row?.photoUrl ? row : null;
+      },
+      { timeoutMs: 20_000, label: "patient photo URL to persist" }
+    );
+    await expect(
+      page.getByRole("img", { name: state.patientName, exact: true })
+    ).toBeVisible({ timeout: 20_000 });
     await shot(page, "17-photo-uploaded");
 
-    const uploadedVisible = await page
-      .locator("img[src*=\"/api/\"], img[src*=\"files\"], img[alt*=\"photo\" i]")
-      .first()
-      .isVisible()
-      .catch(() => false);
-    record("photoUpload", { uploadedVisible });
+    record("photoUpload", {
+      persisted: true,
+      servedThroughAuthenticatedRoute: uploadedPatient.photoUrl.startsWith("/api/files/"),
+    });
+    expect(uploadedPatient.photoUrl).toMatch(/^\/api\/files\//);
 
     await context.close();
   });
@@ -769,29 +1105,32 @@ test.describe.serial("Fresh clinic mock launch", () => {
     // Seed a minimal second clinic (verified owner) for the isolation probe.
     const otherEmail = `owner.other.${runId}@example.com`;
     const passwordHash = await bcrypt.hash(password, 10);
-    const [otherPractice] = await db
-      .insert(practices)
-      .values({
-        name: `Isolation Probe Clinic ${runId}`,
-        email: `hello.other.${runId}@example.com`,
-        subscriptionTier: "cloud",
-        billingStatus: "active",
-        stripeCustomerId: `cus_e2e_other_${runId}`,
-        stripeSubscriptionId: `sub_e2e_other_${runId}`,
-      })
-      .returning();
-    const [otherLocation] = await db
-      .insert(locations)
-      .values({ practiceId: otherPractice!.id, name: "Main Clinic", isPrimary: true })
-      .returning();
-    await db.insert(users).values({
-      email: otherEmail,
-      passwordHash,
-      name: "Dr. Isolation Probe",
-      role: "admin",
-      practiceId: otherPractice!.id,
-      locationId: otherLocation!.id,
-      emailVerifiedAt: new Date(),
+    const { otherPractice } = await withSystem(db, async (tx) => {
+      const [createdPractice] = await tx
+        .insert(practices)
+        .values({
+          name: `Isolation Probe Clinic ${runId}`,
+          email: `hello.other.${runId}@example.com`,
+          subscriptionTier: "cloud",
+          billingStatus: "active",
+          stripeCustomerId: `cus_e2e_other_${runId}`,
+          stripeSubscriptionId: `sub_e2e_other_${runId}`,
+        })
+        .returning();
+      const [createdLocation] = await tx
+        .insert(locations)
+        .values({ practiceId: createdPractice!.id, name: "Main Clinic", isPrimary: true })
+        .returning();
+      await tx.insert(users).values({
+        email: otherEmail,
+        passwordHash,
+        name: "Dr. Isolation Probe",
+        role: "admin",
+        practiceId: createdPractice!.id,
+        locationId: createdLocation!.id,
+        emailVerifiedAt: new Date(),
+      });
+      return { otherPractice: createdPractice! };
     });
 
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   criticalDatabaseContract,
@@ -6,6 +7,11 @@ import {
   driftIsClean,
   findSchemaDrift,
 } from "@openpims/db/schema-drift";
+
+const SCHEMA_DRIFT_SOURCE = readFileSync(
+  new URL("../../../../packages/db/schema-drift.ts", import.meta.url),
+  "utf8",
+);
 
 /**
  * Regression cover for the failure that reached a customer: the deployed code
@@ -79,6 +85,19 @@ describe("declaredSchema", () => {
 });
 
 describe("findSchemaDrift", () => {
+  it("queries every immutable finance privilege required by the contract", () => {
+    for (const row of [
+      "('payment_disputes'::text, 'DELETE'::text)",
+      "('payment_processor_payouts'::text, 'DELETE'::text)",
+      "('payment_processor_refunds'::text, 'DELETE'::text)",
+      "('payment_processor_settlements'::text, 'DELETE'::text)",
+      "('financial_closes'::text, 'UPDATE'::text)",
+      "('financial_closes'::text, 'DELETE'::text)",
+    ]) {
+      expect(SCHEMA_DRIFT_SOURCE).toContain(row);
+    }
+  });
+
   it("reports no drift when the database matches the code", async () => {
     const drift = await findSchemaDrift(fakeDb(liveSchemaWithout(() => false)));
     expect(drift).toEqual({

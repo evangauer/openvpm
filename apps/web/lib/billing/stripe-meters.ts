@@ -1,4 +1,4 @@
-import { stripe } from "@/lib/stripe";
+import { requireVerifiedStripeAccount } from "@/lib/stripe";
 import type { UsageKind } from "./usage";
 
 /**
@@ -31,8 +31,8 @@ export async function recordMeterEvent(opts: {
   value?: number;
   identifier?: string;
 }): Promise<boolean> {
-  if (!stripe) return false;
   try {
+    const stripe = await requireVerifiedStripeAccount();
     await stripe.billing.meterEvents.create({
       event_name: meterEventName(opts.kind),
       payload: {

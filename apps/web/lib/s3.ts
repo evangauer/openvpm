@@ -6,6 +6,14 @@ import {
   HeadBucketCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl as awsGetSignedUrl } from "@aws-sdk/s3-request-presigner";
+import {
+  BlobNotFoundError,
+  del as deleteBlob,
+  get as getBlob,
+  list as listBlobs,
+  put as putBlob,
+} from "@vercel/blob";
+import { createHash } from "node:crypto";
 
 export const FILE_REPLICA_TARGET = "independent-v1";
 
@@ -13,20 +21,30 @@ const REPLICA_ENV_NAMES = [
   "FILE_REPLICA_ENABLED",
   "FILE_REPLICA_ALL_PRACTICES",
   "FILE_REPLICA_PRACTICE_IDS",
+  "FILE_REPLICA_PROVIDER",
   "FILE_REPLICA_S3_ENDPOINT",
   "FILE_REPLICA_S3_REGION",
   "FILE_REPLICA_S3_ACCESS_KEY",
   "FILE_REPLICA_S3_SECRET_KEY",
   "FILE_REPLICA_S3_BUCKET",
+  "FILE_REPLICA_BLOB_READ_WRITE_TOKEN",
 ] as const;
 
-interface StorageConfig {
+interface S3StorageConfig {
+  provider: "s3";
   endpoint?: string;
   region: string;
   accessKeyId: string;
   secretAccessKey: string;
   bucket: string;
 }
+
+interface BlobStorageConfig {
+  provider: "vercel_blob";
+  token: string;
+}
+
+type StorageConfig = S3StorageConfig | BlobStorageConfig;
 
 export interface StoredObjectWrite {
   url: string;
@@ -65,7 +83,15 @@ function storageEnv(name: string): string | undefined {
 }
 
 function primaryStorageConfig(): StorageConfig {
+  if (storageEnv("FILE_STORAGE_PROVIDER") === "vercel_blob") {
+    return {
+      provider: "vercel_blob",
+      token: storageEnv("BLOB_READ_WRITE_TOKEN") ?? "",
+    };
+  }
+
   return {
+    provider: "s3",
     endpoint: storageEnv("S3_ENDPOINT"),
     region: storageEnv("S3_REGION") ?? "us-east-1",
     accessKeyId: storageEnv("S3_ACCESS_KEY") ?? "",
@@ -78,7 +104,15 @@ function replicaStorageConfig(): StorageConfig | null {
   const readiness = replicaStorageReadiness();
   if (!readiness.ready) return null;
 
+  if (storageEnv("FILE_REPLICA_PROVIDER") === "vercel_blob") {
+    return {
+      provider: "vercel_blob",
+      token: replicaBlobToken()!,
+    };
+  }
+
   return {
+    provider: "s3",
     endpoint: storageEnv("FILE_REPLICA_S3_ENDPOINT"),
     region: storageEnv("FILE_REPLICA_S3_REGION") ?? "us-east-1",
     accessKeyId: storageEnv("FILE_REPLICA_S3_ACCESS_KEY")!,
@@ -88,10 +122,16 @@ function replicaStorageConfig(): StorageConfig | null {
 }
 
 function publicStorageEndpoint(config: StorageConfig): string {
+  if (config.provider !== "s3") {
+    throw new Error("Public S3 endpoint requested for non-S3 storage");
+  }
   return config.endpoint ?? "https://s3.amazonaws.com";
 }
 
 function s3Client(config: StorageConfig): S3Client {
+  if (config.provider !== "s3") {
+    throw new Error("S3 client requested for non-S3 storage");
+  }
   return new S3Client({
     endpoint: config.endpoint,
     region: config.region,
@@ -104,6 +144,9 @@ function s3Client(config: StorageConfig): S3Client {
 }
 
 function canonicalStorageIdentity(config: StorageConfig): string {
+  if (config.provider === "vercel_blob") {
+    return `vercel_blob/${createHash("sha256").update(config.token).digest("hex")}`;
+  }
   const endpoint = (config.endpoint ?? "https://s3.amazonaws.com")
     .replace(/\/+$/, "")
     .toLowerCase();
@@ -112,6 +155,16 @@ function canonicalStorageIdentity(config: StorageConfig): string {
 
 function envFlag(name: string): boolean {
   return /^(1|true|yes|on)$/i.test(process.env[name]?.trim() ?? "");
+}
+
+function replicaBlobToken(): string | undefined {
+  const dedicated = storageEnv("FILE_REPLICA_BLOB_READ_WRITE_TOKEN");
+  if (dedicated) return dedicated;
+  // The Vercel CLI injects this standard name when a Blob store is connected.
+  // It is safe for replica use only while the primary remains on S3.
+  return storageEnv("FILE_STORAGE_PROVIDER") === "vercel_blob"
+    ? undefined
+    : storageEnv("BLOB_READ_WRITE_TOKEN");
 }
 
 export function replicaStorageRolloutIntended(): boolean {
@@ -162,12 +215,23 @@ export function replicaStorageReadiness(): {
   detail: string;
 } {
   const intended = replicaStorageRolloutIntended();
+  const provider = storageEnv("FILE_REPLICA_PROVIDER") ?? "s3";
+  if (provider !== "s3" && provider !== "vercel_blob") {
+    return {
+      intended,
+      ready: false,
+      detail: "Replica storage provider is unsupported",
+    };
+  }
+
   const accessKeyId = storageEnv("FILE_REPLICA_S3_ACCESS_KEY");
   const secretAccessKey = storageEnv("FILE_REPLICA_S3_SECRET_KEY");
   const bucket = storageEnv("FILE_REPLICA_S3_BUCKET");
-  const missing = [accessKeyId, secretAccessKey, bucket].filter(
-    (value) => !value,
-  ).length;
+  const blobToken = replicaBlobToken();
+  const missing =
+    provider === "vercel_blob"
+      ? Number(!blobToken)
+      : [accessKeyId, secretAccessKey, bucket].filter((value) => !value).length;
 
   if (missing > 0) {
     return {
@@ -179,13 +243,17 @@ export function replicaStorageReadiness(): {
     };
   }
 
-  const replica: StorageConfig = {
-    endpoint: storageEnv("FILE_REPLICA_S3_ENDPOINT"),
-    region: storageEnv("FILE_REPLICA_S3_REGION") ?? "us-east-1",
-    accessKeyId: accessKeyId!,
-    secretAccessKey: secretAccessKey!,
-    bucket: bucket!,
-  };
+  const replica: StorageConfig =
+    provider === "vercel_blob"
+      ? { provider, token: blobToken! }
+      : {
+          provider,
+          endpoint: storageEnv("FILE_REPLICA_S3_ENDPOINT"),
+          region: storageEnv("FILE_REPLICA_S3_REGION") ?? "us-east-1",
+          accessKeyId: accessKeyId!,
+          secretAccessKey: secretAccessKey!,
+          bucket: bucket!,
+        };
   if (
     canonicalStorageIdentity(replica) ===
     canonicalStorageIdentity(primaryStorageConfig())
@@ -193,7 +261,7 @@ export function replicaStorageReadiness(): {
     return {
       intended,
       ready: false,
-      detail: "Replica storage must use a different endpoint or bucket",
+      detail: "Replica storage must use a different storage target",
     };
   }
 
@@ -228,6 +296,9 @@ export function replicaStorageReadiness(): {
 }
 
 function objectUrl(config: StorageConfig, key: string): string {
+  if (config.provider !== "s3") {
+    throw new Error("S3 object URL requested for non-S3 storage");
+  }
   return `${publicStorageEndpoint(config)}/${config.bucket}/${key}`;
 }
 
@@ -247,6 +318,25 @@ async function putObject(
   );
 
   try {
+    if (config.provider === "vercel_blob") {
+      const result = await putBlob(key, body, {
+        access: "private",
+        token: config.token,
+        contentType,
+        addRandomSuffix: false,
+        allowOverwrite: false,
+        maximumSizeInBytes: body.byteLength,
+        abortSignal: controller.signal,
+      });
+      return {
+        url: result.url,
+        etag: result.etag,
+        // Private Blob pathnames are immutable because overwrite is disabled.
+        // The provider ETag is therefore the exact immutable version evidence.
+        versionId: result.etag,
+      };
+    }
+
     const result = await s3Client(config).send(
       new PutObjectCommand({
         Bucket: config.bucket,
@@ -346,6 +436,41 @@ async function readObject(
   );
 
   try {
+    if (config.provider === "vercel_blob") {
+      const res = await getBlob(key, {
+        access: "private",
+        token: config.token,
+        useCache: false,
+        abortSignal: controller.signal,
+      });
+      if (!res) return { status: "missing" };
+      if (res.statusCode !== 200 || !res.stream) return { status: "failed" };
+      if (requestedVersionId && res.blob.etag !== requestedVersionId) {
+        return { status: "failed" };
+      }
+      if (
+        typeof options.maxBytes === "number" &&
+        res.blob.size > options.maxBytes
+      ) {
+        await res.stream.cancel().catch(() => undefined);
+        return { status: "failed" };
+      }
+      const body = new Uint8Array(await new Response(res.stream).arrayBuffer());
+      if (
+        typeof options.maxBytes === "number" &&
+        body.byteLength > options.maxBytes
+      ) {
+        return { status: "failed" };
+      }
+      return {
+        status: "available",
+        body,
+        contentType: res.blob.contentType,
+        etag: res.blob.etag,
+        versionId: res.blob.etag,
+      };
+    }
+
     const res = await s3Client(config).send(
       new GetObjectCommand({
         Bucket: config.bucket,
@@ -382,7 +507,12 @@ async function readObject(
       ...(responseVersionId ? { versionId: responseVersionId } : {}),
     };
   } catch (error) {
-    return { status: isMissingObjectError(error) ? "missing" : "failed" };
+    return {
+      status:
+        error instanceof BlobNotFoundError || isMissingObjectError(error)
+          ? "missing"
+          : "failed",
+    };
   } finally {
     clearTimeout(timeout);
   }
@@ -434,12 +564,18 @@ export async function getSignedUrl(
   key: string,
   expiresIn = 3600,
 ): Promise<string> {
+  const config = primaryStorageConfig();
+  if (config.provider !== "s3") {
+    throw new Error(
+      "Direct signed URLs are unavailable for private Blob storage; use the authenticated file proxy.",
+    );
+  }
   const command = new GetObjectCommand({
-    Bucket: primaryStorageConfig().bucket,
+    Bucket: config.bucket,
     Key: key,
   });
 
-  return awsGetSignedUrl(s3Client(primaryStorageConfig()), command, {
+  return awsGetSignedUrl(s3Client(config), command, {
     expiresIn,
   });
 }
@@ -458,6 +594,13 @@ export async function deleteFile(key: string): Promise<void> {
   );
 
   try {
+    if (config.provider === "vercel_blob") {
+      await deleteBlob(key, {
+        token: config.token,
+        abortSignal: controller.signal,
+      });
+      return;
+    }
     await s3Client(config).send(
       new DeleteObjectCommand({
         Bucket: config.bucket,
@@ -481,6 +624,14 @@ export async function checkObjectStorageHealth(
 
   try {
     const config = primaryStorageConfig();
+    if (config.provider === "vercel_blob") {
+      await listBlobs({
+        token: config.token,
+        limit: 1,
+        abortSignal: controller.signal,
+      });
+      return { ok: true, detail: "Object storage bucket reachable" };
+    }
     await s3Client(config).send(
       new HeadBucketCommand({
         Bucket: config.bucket,
@@ -510,6 +661,14 @@ export async function checkReplicaStorageHealth(
   );
 
   try {
+    if (config.provider === "vercel_blob") {
+      await listBlobs({
+        token: config.token,
+        limit: 1,
+        abortSignal: controller.signal,
+      });
+      return { ok: true, detail: "Replica object storage reachable" };
+    }
     await s3Client(config).send(
       new HeadBucketCommand({ Bucket: config.bucket }),
       { abortSignal: controller.signal },

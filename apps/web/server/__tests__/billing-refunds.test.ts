@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
   loadClientReceipt: vi.fn(async (): Promise<unknown> => null),
   deliverClientReceipt: vi.fn(async () => undefined),
   refundStripeCheckoutPayment: vi.fn(
-    async (): Promise<{ refundId: string } | null> => null
+    async (): Promise<Record<string, unknown> | null> => null,
   ),
   lockPracticeForExternalSideEffects: vi.fn(async () => true),
 }));
@@ -93,10 +93,27 @@ function createDb(opts: {
   selectResults: unknown[][];
   refundRow?: Record<string, unknown>;
   updateReturns?: unknown[][];
+  processorSettlement?: Record<string, unknown> | null;
 }) {
   const selectResults = [...opts.selectResults];
-  const select = vi.fn(() => {
-    const result = selectResults.shift() ?? [];
+  const select = vi.fn((projection?: Record<string, unknown>) => {
+    const isProcessorSettlementLookup =
+      projection &&
+      Object.keys(projection).length === 2 &&
+      "id" in projection &&
+      "connectedAccountId" in projection;
+    const settlement =
+      opts.processorSettlement === null
+        ? []
+        : [
+            opts.processorSettlement ?? {
+              id: "00000000-0000-0000-0000-000000000010",
+              connectedAccountId: "acct_9",
+            },
+          ];
+    const result = isProcessorSettlementLookup
+      ? settlement
+      : (selectResults.shift() ?? []);
     const afterWhere = thenableRows(result);
     const builder = {
       from: vi.fn(() => builder),
@@ -169,6 +186,15 @@ describe("billing refunds", () => {
     });
     mocks.refundStripeCheckoutPayment.mockResolvedValue({
       refundId: "re_123",
+      connectedAccountId: "acct_9",
+      amountCents: 10000,
+      currency: "usd",
+      status: "succeeded",
+      balanceTransactionId: "txn_refund_123",
+      balanceAmountCents: -10000,
+      balanceFeeCents: 0,
+      balanceNetCents: -10000,
+      providerCreatedAt: new Date("2026-08-18T12:00:00Z"),
     });
 
     await callerWithDb(db).refundPayment({

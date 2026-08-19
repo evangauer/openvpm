@@ -71,9 +71,10 @@ describe("portal public read scoping", () => {
   });
 
   it("keeps portal appointment and invoice patient display rows scoped to the token client", () => {
-    const appointmentsPatientJoin = src.match(
-      /\.from\(appointments\)[\s\S]+?\.leftJoin\(\s*patients,[\s\S]+?\)\s*\)\s*\.leftJoin\(\s*users,/
-    )?.[0];
+    const appointmentsPatientJoin = src.slice(
+      src.indexOf("  getAppointments: publicProcedure"),
+      src.indexOf("  getMessages: publicProcedure"),
+    );
     expect(appointmentsPatientJoin).toContain(
       "eq(appointments.patientId, patients.id)"
     );
@@ -83,9 +84,10 @@ describe("portal public read scoping", () => {
     );
     expect(appointmentsPatientJoin).toContain("isNull(patients.deletedAt)");
 
-    const invoicesPatientJoin = src.match(
-      /\.from\(invoices\)[\s\S]+?\.leftJoin\(\s*patients,[\s\S]+?\)\s*\)\s*\.where\(\s*and\(/
-    )?.[0];
+    const invoicesPatientJoin = src.slice(
+      src.indexOf("  getInvoices: publicProcedure"),
+      src.indexOf("  getAppointmentTypes: publicProcedure"),
+    );
     expect(invoicesPatientJoin).toContain("eq(invoices.patientId, patients.id)");
     expect(invoicesPatientJoin).toContain("eq(patients.clientId, client.id)");
     expect(invoicesPatientJoin).toContain(
@@ -95,7 +97,11 @@ describe("portal public read scoping", () => {
   });
 
   it("keeps portal invoice adjustment totals scoped through the token client invoice", () => {
-    const adjustmentLookup = src.match(
+    const invoicesBlock = src.slice(
+      src.indexOf("  getInvoices: publicProcedure"),
+      src.indexOf("  getAppointmentTypes: publicProcedure"),
+    );
+    const adjustmentLookup = invoicesBlock.match(
       /select sum\(\$\{invoiceAdjustments\.amount\}\)[\s\S]+?\$\{invoiceAdjustments\.deletedAt\} is null/
     )?.[0];
 
@@ -236,7 +242,7 @@ describe("portal public read scoping", () => {
 
   it("keeps portal doctor history tenant scoped after staff deactivation", () => {
     expect(src).toMatch(
-      /leftJoin\(\s*users,\s*and\(\s*eq\(appointments\.doctorId, users\.id\),\s*eq\(users\.practiceId, client\.practiceId\)\s*\)\s*\)/s
+      /leftJoin\(\s*users,\s*and\(\s*eq\(appointments\.doctorId, users\.id\),\s*eq\(users\.practiceId, client\.practiceId\),?\s*\),?\s*\)/s
     );
     expect(src).not.toMatch(
       /eq\(appointments\.doctorId, users\.id\)[\s\S]{0,120}?isNull\(users\.deletedAt\)/s

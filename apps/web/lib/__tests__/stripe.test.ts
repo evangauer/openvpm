@@ -17,19 +17,32 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-async function importStripeWithMock() {
+async function importStripeWithMock(
+  options: { preserveStripeKey?: boolean } = {},
+) {
   const checkoutCreate = vi.fn();
   const checkoutRetrieve = vi.fn();
   const refundCreate = vi.fn();
+  const refundRetrieve = vi.fn();
   const paymentIntentCapture = vi.fn();
   const paymentIntentCancel = vi.fn();
   const paymentIntentRetrieve = vi.fn();
+  const chargeRetrieve = vi.fn();
+  const balanceTransactionRetrieve = vi.fn();
+  const balanceTransactionList = vi.fn();
+  const payoutRetrieve = vi.fn();
   const billingPortalCreate = vi.fn();
+  const subscriptionRetrieve = vi.fn();
+  const subscriptionScheduleCreate = vi.fn();
+  const subscriptionScheduleRetrieve = vi.fn();
+  const subscriptionScheduleUpdate = vi.fn();
   const accountCreate = vi.fn();
   const accountRetrieve = vi.fn();
+  const accountRetrieveCurrent = vi.fn();
   const accountLinkCreate = vi.fn();
   const accountLoginLinkCreate = vi.fn();
   const constructEvent = vi.fn();
+  const parseEventNotification = vi.fn();
   const stripeConstruct = vi.fn();
 
   vi.resetModules();
@@ -42,23 +55,44 @@ async function importStripeWithMock() {
       checkout = {
         sessions: { create: checkoutCreate, retrieve: checkoutRetrieve },
       };
-      refunds = { create: refundCreate };
+      refunds = { create: refundCreate, retrieve: refundRetrieve };
       paymentIntents = {
         cancel: paymentIntentCancel,
         capture: paymentIntentCapture,
         retrieve: paymentIntentRetrieve,
       };
+      charges = { retrieve: chargeRetrieve };
+      balanceTransactions = {
+        retrieve: balanceTransactionRetrieve,
+        list: balanceTransactionList,
+      };
+      payouts = { retrieve: payoutRetrieve };
       billingPortal = { sessions: { create: billingPortalCreate } };
+      subscriptions = { retrieve: subscriptionRetrieve };
+      subscriptionSchedules = {
+        create: subscriptionScheduleCreate,
+        retrieve: subscriptionScheduleRetrieve,
+        update: subscriptionScheduleUpdate,
+      };
+      v2 = {
+        core: {
+          accounts: { create: accountCreate, retrieve: accountRetrieve },
+          accountLinks: { create: accountLinkCreate },
+        },
+      };
       accounts = {
-        create: accountCreate,
-        retrieve: accountRetrieve,
+        retrieveCurrent: accountRetrieveCurrent,
         createLoginLink: accountLoginLinkCreate,
       };
-      accountLinks = { create: accountLinkCreate };
       webhooks = { constructEvent };
+      parseEventNotification = parseEventNotification;
     },
   }));
-  vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_123");
+  if (!options.preserveStripeKey) {
+    vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_123");
+  }
+  vi.stubEnv("STRIPE_EXPECTED_ACCOUNT_ID", "acct_openvpm");
+  accountRetrieveCurrent.mockResolvedValue({ id: "acct_openvpm" });
 
   const stripeModule = await import("../stripe");
   return {
@@ -66,15 +100,26 @@ async function importStripeWithMock() {
     checkoutCreate,
     checkoutRetrieve,
     refundCreate,
+    refundRetrieve,
     paymentIntentCapture,
     paymentIntentCancel,
     paymentIntentRetrieve,
+    chargeRetrieve,
+    balanceTransactionRetrieve,
+    balanceTransactionList,
+    payoutRetrieve,
     billingPortalCreate,
+    subscriptionRetrieve,
+    subscriptionScheduleCreate,
+    subscriptionScheduleRetrieve,
+    subscriptionScheduleUpdate,
     accountCreate,
     accountRetrieve,
+    accountRetrieveCurrent,
     accountLinkCreate,
     accountLoginLinkCreate,
     constructEvent,
+    parseEventNotification,
     stripeConstruct,
   };
 }
@@ -95,7 +140,7 @@ describe("buildSubscriptionCheckoutSessionParams", () => {
 
     expect(params.mode).toBe("subscription");
     expect(params.integration_identifier).toBe(
-      SUBSCRIPTION_CHECKOUT_INTEGRATION_IDENTIFIER
+      SUBSCRIPTION_CHECKOUT_INTEGRATION_IDENTIFIER,
     );
     expect(params.payment_method_collection).toBe("always");
     expect(params.excluded_payment_method_types).toEqual([
@@ -135,6 +180,24 @@ describe("buildSubscriptionCheckoutSessionParams", () => {
       { price: "price_ai_overage" },
       { price: "price_sms_overage" },
     ]);
+  });
+
+  it("uses the pinned subscription payment method configuration when present", () => {
+    vi.stubEnv(
+      "STRIPE_SUBSCRIPTION_PAYMENT_METHOD_CONFIGURATION",
+      " pmc_openvpm ",
+    );
+
+    const params = buildSubscriptionCheckoutSessionParams({
+      practiceId: "practice_123",
+      customerEmail: "admin@example.com",
+      lineItems: [{ priceId: "price_location", quantity: 1 }],
+      successUrl: "https://app.example.com/success",
+      cancelUrl: "https://app.example.com/cancel",
+    });
+
+    expect(params.payment_method_configuration).toBe("pmc_openvpm");
+    expect(params.payment_method_types).toBeUndefined();
   });
 
   it("requires payment collection when no trial is passed", () => {
@@ -241,7 +304,7 @@ describe("buildSubscriptionCheckoutSessionParams", () => {
         lineItems: [{ priceId: "price_location", quantity: 1 }],
         successUrl: "https://app.example.com/success",
         cancelUrl: "https://app.example.com/cancel",
-      }).customer_email
+      }).customer_email,
     ).toBe("admin@example.com");
 
     expect(
@@ -251,8 +314,52 @@ describe("buildSubscriptionCheckoutSessionParams", () => {
         lineItems: [{ priceId: "price_location", quantity: 1 }],
         successUrl: "https://app.example.com/success",
         cancelUrl: "https://app.example.com/cancel",
-      }).customer_email
+      }).customer_email,
     ).toBeUndefined();
+  });
+});
+
+describe("verifyStripeAccountIdentity", () => {
+  it("verifies the configured credential without exposing account identifiers", async () => {
+    vi.stubEnv("STRIPE_EXPECTED_ACCOUNT_ID", "acct_openvpm");
+    const { stripeModule, accountRetrieveCurrent } =
+      await importStripeWithMock();
+    accountRetrieveCurrent.mockResolvedValue({ id: "acct_openvpm" });
+
+    await expect(stripeModule.verifyStripeAccountIdentity()).resolves.toEqual({
+      ok: true,
+      detail: "Stripe account identity verified",
+    });
+    expect(accountRetrieveCurrent).toHaveBeenCalledWith();
+  });
+
+  it("rejects a live Stripe credential before any Preview API call", async () => {
+    vi.stubEnv("VERCEL_ENV", "preview");
+    vi.stubEnv("STRIPE_SECRET_KEY", "sk_live_crossed_environment");
+    vi.stubEnv("STRIPE_EXPECTED_ACCOUNT_ID", "acct_openvpm");
+    const { stripeModule, accountRetrieveCurrent } =
+      await importStripeWithMock({ preserveStripeKey: true });
+
+    await expect(stripeModule.verifyStripeAccountIdentity()).resolves.toEqual({
+      ok: false,
+      detail: "Stripe credential mode does not match this deployment",
+    });
+    expect(accountRetrieveCurrent).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the configured credential belongs to another account", async () => {
+    vi.stubEnv("STRIPE_EXPECTED_ACCOUNT_ID", "acct_openvpm");
+    const { stripeModule, accountRetrieveCurrent } =
+      await importStripeWithMock();
+    accountRetrieveCurrent.mockResolvedValue({ id: "acct_other" });
+
+    const result = await stripeModule.verifyStripeAccountIdentity();
+    expect(result).toEqual({
+      ok: false,
+      detail: "Stripe account identity does not match",
+    });
+    expect(JSON.stringify(result)).not.toContain("acct_openvpm");
+    expect(JSON.stringify(result)).not.toContain("acct_other");
   });
 });
 
@@ -329,7 +436,7 @@ describe("buildInvoiceCheckoutSessionParams", () => {
         description: "Invoice payment",
         successUrl: "https://app.example.com/success",
         cancelUrl: "https://app.example.com/cancel",
-      }).customer_email
+      }).customer_email,
     ).toBe("client@example.com");
 
     expect(
@@ -341,7 +448,7 @@ describe("buildInvoiceCheckoutSessionParams", () => {
         description: "Invoice payment",
         successUrl: "https://app.example.com/success",
         cancelUrl: "https://app.example.com/cancel",
-      }).customer_email
+      }).customer_email,
     ).toBeUndefined();
   });
 
@@ -380,6 +487,7 @@ describe("buildInvoiceCheckoutSessionParams", () => {
       captureMode: INVOICE_CHECKOUT_CAPTURE_MODE,
       source: "client_invoice_connect",
       stripeConnectAccountId: "acct_123",
+      openvpmApplicationFeeAmount: "125",
     });
     expect(params.payment_intent_data).toEqual({
       metadata: {
@@ -387,6 +495,7 @@ describe("buildInvoiceCheckoutSessionParams", () => {
         captureMode: INVOICE_CHECKOUT_CAPTURE_MODE,
         source: "client_invoice_connect",
         stripeConnectAccountId: "acct_123",
+        openvpmApplicationFeeAmount: "125",
       },
       capture_method: "manual",
       application_fee_amount: 125,
@@ -405,17 +514,36 @@ describe("create Stripe hosted sessions", () => {
 
   it("uses stable, distinct Checkout integration identifiers", () => {
     expect(INVOICE_CHECKOUT_INTEGRATION_IDENTIFIER).toMatch(
-      /^openvpm_invoice_[a-z]{8}$/
+      /^openvpm_invoice_[a-z]{8}$/,
     );
     expect(SUBSCRIPTION_CHECKOUT_INTEGRATION_IDENTIFIER).toMatch(
-      /^openvpm_subscription_[a-z]{8}$/
+      /^openvpm_subscription_[a-z]{8}$/,
     );
     expect(INVOICE_CHECKOUT_INTEGRATION_IDENTIFIER).not.toBe(
-      SUBSCRIPTION_CHECKOUT_INTEGRATION_IDENTIFIER
+      SUBSCRIPTION_CHECKOUT_INTEGRATION_IDENTIFIER,
+    );
+  });
+
+  it("verifies the platform identity before reading connected account state", async () => {
+    const { stripeModule, accountRetrieve, accountRetrieveCurrent } =
+      await importStripeWithMock();
+    accountRetrieve.mockResolvedValue({ id: "acct_clinic" });
+
+    await expect(
+      stripeModule.retrieveConnectAccount("acct_clinic"),
+    ).resolves.toEqual({ id: "acct_clinic" });
+
+    expect(accountRetrieveCurrent).toHaveBeenCalledTimes(1);
+    expect(accountRetrieve).toHaveBeenCalledWith("acct_clinic", {
+      include: ["configuration.merchant", "identity", "requirements"],
+    });
+    expect(accountRetrieveCurrent.mock.invocationCallOrder[0]).toBeLessThan(
+      accountRetrieve.mock.invocationCallOrder[0]!,
     );
   });
 
   it("returns safe HTTPS redirect URLs from Stripe sessions", async () => {
+    vi.stubEnv("STRIPE_BILLING_PORTAL_CONFIGURATION", "bpc_openvpm");
     const { stripeModule, checkoutCreate, billingPortalCreate } =
       await importStripeWithMock();
     checkoutCreate
@@ -433,7 +561,7 @@ describe("create Stripe hosted sessions", () => {
         description: "Invoice payment",
         successUrl: "https://app.example.com/billing?payment=success",
         cancelUrl: "https://app.example.com/billing?payment=cancelled",
-      })
+      }),
     ).resolves.toEqual({ url: "https://checkout.stripe.com/c/pay_123" });
     expect(checkoutCreate).toHaveBeenNthCalledWith(
       1,
@@ -446,9 +574,9 @@ describe("create Stripe hosted sessions", () => {
       }),
       expect.objectContaining({
         idempotencyKey: expect.stringMatching(
-          /^openvpm:invoice-checkout:invoice_123:/
+          /^openvpm:invoice-checkout:invoice_123:/,
         ),
-      })
+      }),
     );
 
     await expect(
@@ -458,7 +586,7 @@ describe("create Stripe hosted sessions", () => {
         lineItems: [{ priceId: "price_location", quantity: 1 }],
         successUrl: "https://app.example.com/settings?checkout=success",
         cancelUrl: "https://app.example.com/settings?checkout=cancelled",
-      })
+      }),
     ).resolves.toEqual({ url: "https://checkout.stripe.com/c/sub_123" });
     expect(checkoutCreate).toHaveBeenNthCalledWith(
       2,
@@ -467,18 +595,23 @@ describe("create Stripe hosted sessions", () => {
       }),
       expect.objectContaining({
         idempotencyKey: expect.stringMatching(
-          /^openvpm:subscription-checkout:practice_123:/
+          /^openvpm:subscription-checkout:practice_123:/,
         ),
-      })
+      }),
     );
 
     await expect(
       stripeModule.createBillingPortalSession({
         customerId: "cus_123",
         returnUrl: "https://app.example.com/settings?tab=billing",
-      })
+      }),
     ).resolves.toEqual({
       url: "https://billing.stripe.com/session/portal_123",
+    });
+    expect(billingPortalCreate).toHaveBeenCalledWith({
+      customer: "cus_123",
+      return_url: "https://app.example.com/settings?tab=billing",
+      configuration: "bpc_openvpm",
     });
   });
 
@@ -497,7 +630,7 @@ describe("create Stripe hosted sessions", () => {
         connectedAccountId: "acct_123",
         successUrl: "https://app.example.com/billing?payment=success",
         cancelUrl: "https://app.example.com/billing?payment=cancelled",
-      })
+      }),
     ).resolves.toEqual({ url: "https://checkout.stripe.com/c/pay_123" });
 
     expect(checkoutCreate).toHaveBeenCalledWith(
@@ -509,10 +642,10 @@ describe("create Stripe hosted sessions", () => {
       }),
       expect.objectContaining({
         idempotencyKey: expect.stringMatching(
-          /^openvpm:invoice-checkout:invoice_123:/
+          /^openvpm:invoice-checkout:invoice_123:/,
         ),
         stripeAccount: "acct_123",
-      })
+      }),
     );
   });
 
@@ -544,49 +677,114 @@ describe("create Stripe hosted sessions", () => {
     const { stripeModule, checkoutRetrieve, refundCreate } =
       await importStripeWithMock();
     checkoutRetrieve.mockResolvedValue({ payment_intent: "pi_123" });
-    refundCreate.mockResolvedValue({ id: "re_123" });
+    refundCreate.mockResolvedValue({
+      id: "re_123",
+      amount: 12550,
+      currency: "usd",
+      status: "succeeded",
+      created: 1_787_000_000,
+      balance_transaction: {
+        id: "txn_refund_123",
+        amount: -12550,
+        fee: 0,
+        net: -12550,
+      },
+    });
 
     await expect(
       stripeModule.refundStripeCheckoutPayment({
         externalId: "stripe:connect:acct_9:checkout:cs_456",
         amountCents: 12550,
         idempotencyKey: "refund:payment:payment_123",
-      })
-    ).resolves.toEqual({ refundId: "re_123" });
+      }),
+    ).resolves.toEqual({
+      refundId: "re_123",
+      connectedAccountId: "acct_9",
+      amountCents: 12550,
+      currency: "usd",
+      status: "succeeded",
+      balanceTransactionId: "txn_refund_123",
+      balanceAmountCents: -12550,
+      balanceFeeCents: 0,
+      balanceNetCents: -12550,
+      providerCreatedAt: new Date(1_787_000_000_000),
+    });
 
     expect(checkoutRetrieve).toHaveBeenCalledWith(
       "cs_456",
       {},
-      { stripeAccount: "acct_9" }
+      { stripeAccount: "acct_9" },
     );
     expect(refundCreate).toHaveBeenCalledWith(
       {
         payment_intent: "pi_123",
         amount: 12550,
+        expand: ["balance_transaction"],
         refund_application_fee: true,
       },
       expect.objectContaining({
         idempotencyKey: expect.stringMatching(
-          /^openvpm:refund:refund:payment:payment_123:/
+          /^openvpm:refund:refund:payment:payment_123:/,
         ),
         stripeAccount: "acct_9",
-      })
+      }),
+    );
+  });
+
+  it("retrieves an exact completed payout-to-balance-transaction mapping", async () => {
+    const {
+      stripeModule,
+      payoutRetrieve,
+      balanceTransactionList,
+    } = await importStripeWithMock();
+    payoutRetrieve.mockResolvedValue({
+      id: "po_123",
+      amount: 4800,
+      currency: "usd",
+      status: "paid",
+      automatic: true,
+      reconciliation_status: "completed",
+      arrival_date: 1_787_100_000,
+      created: 1_787_000_000,
+      failure_code: null,
+      failure_message: null,
+    });
+    balanceTransactionList.mockReturnValue([
+      { id: "txn_charge_1" },
+      { id: "txn_charge_2" },
+    ]);
+
+    await expect(
+      stripeModule.retrieveStripePayoutReconciliation({
+        connectedAccountId: "acct_123",
+        payoutId: "po_123",
+      }),
+    ).resolves.toMatchObject({
+      payoutId: "po_123",
+      amountCents: 4800,
+      status: "paid",
+      reconciliationComplete: true,
+      balanceTransactionIds: ["txn_charge_1", "txn_charge_2"],
+    });
+    expect(balanceTransactionList).toHaveBeenCalledWith(
+      { payout: "po_123", limit: 100 },
+      { stripeAccount: "acct_123" },
     );
   });
 
   it("captures only the live invoice balance from a manual authorization", async () => {
-    const {
-      stripeModule,
-      paymentIntentCapture,
-      paymentIntentRetrieve,
-    } = await importStripeWithMock();
+    const { stripeModule, paymentIntentCapture, paymentIntentRetrieve } =
+      await importStripeWithMock();
     paymentIntentRetrieve.mockResolvedValue({
       status: "requires_capture",
       amount: 12550,
       amount_capturable: 12550,
       application_fee_amount: 125,
     });
-    paymentIntentCapture.mockResolvedValue({ amount_received: 5000 });
+    paymentIntentCapture.mockResolvedValue({
+      amount_received: 5000,
+      application_fee_amount: 49,
+    });
 
     await expect(
       stripeModule.captureStripeCheckoutAuthorization({
@@ -594,45 +792,50 @@ describe("create Stripe hosted sessions", () => {
         amountCents: 5000,
         checkoutSessionId: "cs_123",
         connectedAccountId: "acct_123",
-      })
-    ).resolves.toEqual({ amountCapturedCents: 5000 });
+        expectedApplicationFeeAmount: 125,
+      }),
+    ).resolves.toEqual({
+      amountCapturedCents: 5000,
+      applicationFeeAmountCents: 49,
+    });
 
     expect(paymentIntentRetrieve).toHaveBeenCalledWith(
       "pi_123",
       {},
-      { stripeAccount: "acct_123" }
+      { stripeAccount: "acct_123" },
     );
     expect(paymentIntentCapture).toHaveBeenCalledWith(
       "pi_123",
       { amount_to_capture: 5000, application_fee_amount: 49 },
       expect.objectContaining({
         idempotencyKey: expect.stringMatching(
-          /^openvpm:invoice-capture:cs_123:/
+          /^openvpm:invoice-capture:cs_123:/,
         ),
         stripeAccount: "acct_123",
-      })
+      }),
     );
   });
 
   it("overrides a partial Connect capture fee to zero for a one-cent balance", async () => {
-    const {
-      stripeModule,
-      paymentIntentCapture,
-      paymentIntentRetrieve,
-    } = await importStripeWithMock();
+    const { stripeModule, paymentIntentCapture, paymentIntentRetrieve } =
+      await importStripeWithMock();
     paymentIntentRetrieve.mockResolvedValue({
       status: "requires_capture",
       amount: 10000,
       amount_capturable: 10000,
       application_fee_amount: 250,
     });
-    paymentIntentCapture.mockResolvedValue({ amount_received: 1 });
+    paymentIntentCapture.mockResolvedValue({
+      amount_received: 1,
+      application_fee_amount: 0,
+    });
 
     await stripeModule.captureStripeCheckoutAuthorization({
       paymentIntentId: "pi_one_cent",
       amountCents: 1,
       checkoutSessionId: "cs_one_cent",
       connectedAccountId: "acct_123",
+      expectedApplicationFeeAmount: 250,
     });
 
     expect(paymentIntentCapture).toHaveBeenCalledWith(
@@ -640,11 +843,33 @@ describe("create Stripe hosted sessions", () => {
       { amount_to_capture: 1, application_fee_amount: 0 },
       expect.objectContaining({
         idempotencyKey: expect.stringMatching(
-          /^openvpm:invoice-capture:cs_one_cent:/
+          /^openvpm:invoice-capture:cs_one_cent:/,
         ),
         stripeAccount: "acct_123",
-      })
+      }),
     );
+  });
+
+  it("refuses to capture a Connect authorization with a missing application fee", async () => {
+    const { stripeModule, paymentIntentCapture, paymentIntentRetrieve } =
+      await importStripeWithMock();
+    paymentIntentRetrieve.mockResolvedValue({
+      status: "requires_capture",
+      amount: 10_000,
+      amount_capturable: 10_000,
+      application_fee_amount: null,
+    });
+
+    await expect(
+      stripeModule.captureStripeCheckoutAuthorization({
+        paymentIntentId: "pi_missing_fee",
+        amountCents: 10_000,
+        checkoutSessionId: "cs_missing_fee",
+        connectedAccountId: "acct_123",
+        expectedApplicationFeeAmount: 100,
+      }),
+    ).rejects.toThrow("does not contain the expected OpenVPM application fee");
+    expect(paymentIntentCapture).not.toHaveBeenCalled();
   });
 
   it("cancels an invalid manual Checkout authorization immediately", async () => {
@@ -666,16 +891,16 @@ describe("create Stripe hosted sessions", () => {
         externalId: "stripe:checkout:cs_123",
         amountCents: 12550,
         idempotencyKey: "invalid:cs_123",
-      })
+      }),
     ).resolves.toEqual({ outcome: "authorization_canceled" });
     expect(paymentIntentCancel).toHaveBeenCalledWith(
       "pi_123",
       { cancellation_reason: "abandoned" },
       expect.objectContaining({
         idempotencyKey: expect.stringMatching(
-          /^openvpm:invalid-checkout-cancel:invalid:cs_123:/
+          /^openvpm:invalid-checkout-cancel:invalid:cs_123:/,
         ),
-      })
+      }),
     );
     expect(refundCreate).not.toHaveBeenCalled();
   });
@@ -698,7 +923,7 @@ describe("create Stripe hosted sessions", () => {
         externalId: "stripe:checkout:cs_canceled",
         amountCents: 12550,
         idempotencyKey: "invalid:cs_canceled",
-      })
+      }),
     ).resolves.toEqual({ outcome: "no_funds" });
     expect(paymentIntentCancel).not.toHaveBeenCalled();
   });
@@ -722,17 +947,17 @@ describe("create Stripe hosted sessions", () => {
         externalId: "stripe:connect:acct_9:checkout:cs_connect_cancel",
         amountCents: 12550,
         idempotencyKey: "invalid:cs_connect_cancel",
-      })
+      }),
     ).resolves.toEqual({ outcome: "authorization_canceled" });
     expect(paymentIntentCancel).toHaveBeenCalledWith(
       "pi_connect_cancel",
       { cancellation_reason: "abandoned" },
       expect.objectContaining({
         idempotencyKey: expect.stringMatching(
-          /^openvpm:invalid-checkout-cancel:invalid:cs_connect_cancel:/
+          /^openvpm:invalid-checkout-cancel:invalid:cs_connect_cancel:/,
         ),
         stripeAccount: "acct_9",
-      })
+      }),
     );
   });
 
@@ -757,7 +982,7 @@ describe("create Stripe hosted sessions", () => {
         // reversal of funds Stripe says were captured.
         amountCents: 0,
         idempotencyKey: "invalid:cs_legacy",
-      })
+      }),
     ).resolves.toEqual({
       outcome: "refunded",
       refundId: "re_legacy",
@@ -771,10 +996,10 @@ describe("create Stripe hosted sessions", () => {
       },
       expect.objectContaining({
         idempotencyKey: expect.stringMatching(
-          /^openvpm:invalid-checkout-refund:invalid:cs_legacy:/
+          /^openvpm:invalid-checkout-refund:invalid:cs_legacy:/,
         ),
         stripeAccount: "acct_9",
-      })
+      }),
     );
   });
 
@@ -796,7 +1021,7 @@ describe("create Stripe hosted sessions", () => {
         description: "Invoice payment",
         successUrl: "https://app.example.com/billing?payment=success",
         cancelUrl: "https://app.example.com/billing?payment=cancelled",
-      })
+      }),
     ).resolves.toEqual({ url: null });
 
     await expect(
@@ -806,15 +1031,261 @@ describe("create Stripe hosted sessions", () => {
         lineItems: [{ priceId: "price_location", quantity: 1 }],
         successUrl: "https://app.example.com/settings?checkout=success",
         cancelUrl: "https://app.example.com/settings?checkout=cancelled",
-      })
+      }),
     ).resolves.toEqual({ url: null });
 
     await expect(
       stripeModule.createBillingPortalSession({
         customerId: "cus_123",
         returnUrl: "https://app.example.com/settings?tab=billing",
-      })
+      }),
     ).resolves.toEqual({ url: null });
+  });
+});
+
+describe("Stripe Connect settlement evidence", () => {
+  it("proves gross, processor fee, application fee, and clinic net", async () => {
+    const { stripeModule, paymentIntentRetrieve } =
+      await importStripeWithMock();
+    paymentIntentRetrieve.mockResolvedValue({
+      id: "pi_123",
+      status: "succeeded",
+      amount_received: 10000,
+      application_fee_amount: 25,
+      latest_charge: {
+        id: "ch_123",
+        balance_transaction: {
+          id: "txn_123",
+          amount: 10000,
+          fee: 315,
+          net: 9685,
+          currency: "usd",
+          status: "pending",
+          available_on: 1787184000,
+        },
+      },
+    });
+
+    await expect(
+      stripeModule.retrieveStripeCheckoutSettlement({
+        connectedAccountId: "acct_clinic",
+        checkoutSessionId: "cs_123",
+        paymentIntentId: "pi_123",
+        expectedGrossCents: 10000,
+        expectedApplicationFeeCents: 25,
+      }),
+    ).resolves.toEqual({
+      connectedAccountId: "acct_clinic",
+      checkoutSessionId: "cs_123",
+      paymentIntentId: "pi_123",
+      chargeId: "ch_123",
+      balanceTransactionId: "txn_123",
+      currency: "usd",
+      grossAmountCents: 10000,
+      processorFeeCents: 290,
+      applicationFeeCents: 25,
+      clinicNetCents: 9685,
+      balanceStatus: "pending",
+      availableOn: new Date(1787184000 * 1000),
+    });
+    expect(paymentIntentRetrieve).toHaveBeenCalledWith(
+      "pi_123",
+      { expand: ["latest_charge.balance_transaction"] },
+      { stripeAccount: "acct_clinic" },
+    );
+  });
+
+  it("rejects a settlement whose Stripe fee identity does not balance", async () => {
+    const { stripeModule, paymentIntentRetrieve } =
+      await importStripeWithMock();
+    paymentIntentRetrieve.mockResolvedValue({
+      id: "pi_bad",
+      status: "succeeded",
+      amount_received: 10000,
+      application_fee_amount: 25,
+      latest_charge: {
+        id: "ch_bad",
+        balance_transaction: {
+          id: "txn_bad",
+          amount: 10000,
+          fee: 315,
+          net: 9700,
+          currency: "usd",
+          status: "available",
+          available_on: 1787184000,
+        },
+      },
+    });
+
+    await expect(
+      stripeModule.retrieveStripeCheckoutSettlement({
+        connectedAccountId: "acct_clinic",
+        checkoutSessionId: "cs_bad",
+        paymentIntentId: "pi_bad",
+        expectedGrossCents: 10000,
+        expectedApplicationFeeCents: 25,
+      }),
+    ).rejects.toThrow("balance identity is inconsistent");
+  });
+});
+
+describe("subscription cadence scheduling", () => {
+  function phase(input: {
+    price: string;
+    start: number;
+    end: number;
+    quantity?: number;
+    cadence: "month" | "year";
+  }) {
+    return {
+      add_invoice_items: [],
+      application_fee_percent: null,
+      automatic_tax: { enabled: true, liability: null },
+      billing_cycle_anchor: "phase_start",
+      billing_thresholds: null,
+      collection_method: "charge_automatically",
+      currency: "usd",
+      default_payment_method: "pm_123",
+      default_tax_rates: [],
+      description: `OpenVPM Cloud — ${input.cadence === "year" ? "annual" : "monthly"}`,
+      discounts: [],
+      end_date: input.end,
+      invoice_settings: null,
+      items: [
+        {
+          billing_thresholds: null,
+          discounts: [],
+          metadata: null,
+          plan: input.price,
+          price: input.price,
+          quantity: input.quantity,
+          tax_rates: [],
+        },
+      ],
+      metadata: {
+        practiceId: "practice_123",
+        billingCadence: input.cadence,
+      },
+      on_behalf_of: null,
+      proration_behavior: "none",
+      start_date: input.start,
+      transfer_data: null,
+      trial_end: null,
+    };
+  }
+
+  it("schedules annual billing at renewal without changing the live phase", async () => {
+    const {
+      stripeModule,
+      subscriptionRetrieve,
+      subscriptionScheduleCreate,
+      subscriptionScheduleUpdate,
+    } = await importStripeWithMock();
+    const current = phase({
+      price: "price_monthly",
+      start: 1_785_000_000,
+      end: 1_787_678_400,
+      quantity: 2,
+      cadence: "month",
+    });
+    const annual = phase({
+      price: "price_annual",
+      start: current.end_date,
+      end: 1_819_214_400,
+      quantity: 2,
+      cadence: "year",
+    });
+    subscriptionRetrieve.mockResolvedValue({
+      id: "sub_123",
+      status: "active",
+      customer: "cus_123",
+      metadata: { practiceId: "practice_123" },
+      schedule: null,
+      items: { data: [{ price: { id: "price_monthly" } }] },
+    });
+    subscriptionScheduleCreate.mockResolvedValue({
+      id: "sub_sched_123",
+      metadata: {},
+      current_phase: {
+        start_date: current.start_date,
+        end_date: current.end_date,
+      },
+      phases: [current],
+    });
+    subscriptionScheduleUpdate.mockResolvedValue({
+      id: "sub_sched_123",
+      metadata: {
+        practiceId: "practice_123",
+        openvpmCadenceChange: "monthly_to_annual_at_renewal",
+      },
+      phases: [current, annual],
+    });
+
+    await expect(
+      stripeModule.scheduleSubscriptionAnnualAtRenewal({
+        subscriptionId: "sub_123",
+        customerId: "cus_123",
+        practiceId: "practice_123",
+        monthlyPriceId: "price_monthly",
+        annualPriceId: "price_annual",
+        locationCount: 2,
+      }),
+    ).resolves.toEqual({
+      effectiveAt: new Date(current.end_date * 1000).toISOString(),
+      alreadyScheduled: false,
+    });
+    expect(subscriptionScheduleCreate).toHaveBeenCalledWith(
+      { from_subscription: "sub_123" },
+      expect.objectContaining({ idempotencyKey: expect.any(String) }),
+    );
+    expect(subscriptionScheduleUpdate).toHaveBeenCalledWith(
+      "sub_sched_123",
+      expect.objectContaining({
+        end_behavior: "release",
+        proration_behavior: "none",
+        phases: [
+          expect.objectContaining({
+            start_date: current.start_date,
+            end_date: current.end_date,
+          }),
+          expect.objectContaining({
+            start_date: current.end_date,
+            duration: { interval: "year", interval_count: 1 },
+            items: [{ price: "price_annual", quantity: 2 }],
+            proration_behavior: "none",
+          }),
+        ],
+      }),
+      expect.objectContaining({ idempotencyKey: expect.any(String) }),
+    );
+  });
+
+  it("fails closed when the Stripe subscription belongs to another clinic", async () => {
+    const {
+      stripeModule,
+      subscriptionRetrieve,
+      subscriptionScheduleCreate,
+    } = await importStripeWithMock();
+    subscriptionRetrieve.mockResolvedValue({
+      id: "sub_123",
+      status: "active",
+      customer: "cus_other",
+      metadata: { practiceId: "practice_other" },
+      schedule: null,
+      items: { data: [{ price: { id: "price_monthly" } }] },
+    });
+
+    await expect(
+      stripeModule.scheduleSubscriptionAnnualAtRenewal({
+        subscriptionId: "sub_123",
+        customerId: "cus_123",
+        practiceId: "practice_123",
+        monthlyPriceId: "price_monthly",
+        annualPriceId: "price_annual",
+        locationCount: 1,
+      }),
+    ).rejects.toThrow("does not belong to this clinic");
+    expect(subscriptionScheduleCreate).not.toHaveBeenCalled();
   });
 });
 
@@ -823,57 +1294,72 @@ describe("construct Stripe webhook events", () => {
     const { stripeModule, constructEvent } = await importStripeWithMock();
     vi.stubEnv("STRIPE_WEBHOOK_SECRET", "   ");
     vi.stubEnv("STRIPE_CONNECT_WEBHOOK_SECRET", "\n");
+    vi.stubEnv("STRIPE_CONNECT_V2_WEBHOOK_SECRET", " ");
     vi.stubEnv("STRIPE_SUBSCRIPTION_WEBHOOK_SECRET", "\t");
 
     await expect(
-      stripeModule.constructWebhookEvent("{}", "sig_client")
+      stripeModule.constructWebhookEvent("{}", "sig_client"),
     ).resolves.toBeNull();
     await expect(
-      stripeModule.constructConnectWebhookEvent("{}", "sig_connect")
+      stripeModule.constructConnectWebhookEvent("{}", "sig_connect"),
     ).resolves.toBeNull();
     await expect(
-      stripeModule.constructSubscriptionWebhookEvent("{}", "sig_sub")
+      stripeModule.constructConnectV2EventNotification("{}", "sig_connect_v2"),
+    ).resolves.toBeNull();
+    await expect(
+      stripeModule.constructSubscriptionWebhookEvent("{}", "sig_sub"),
     ).resolves.toBeNull();
     expect(constructEvent).not.toHaveBeenCalled();
   });
 
   it("passes trimmed endpoint secrets to Stripe verification", async () => {
-    const { stripeModule, constructEvent } = await importStripeWithMock();
+    const { stripeModule, constructEvent, parseEventNotification } =
+      await importStripeWithMock();
     vi.stubEnv("STRIPE_WEBHOOK_SECRET", " whsec_client ");
     vi.stubEnv("STRIPE_CONNECT_WEBHOOK_SECRET", " whsec_connect ");
+    vi.stubEnv("STRIPE_CONNECT_V2_WEBHOOK_SECRET", " whsec_connect_v2 ");
     vi.stubEnv("STRIPE_SUBSCRIPTION_WEBHOOK_SECRET", " whsec_subscription ");
     constructEvent
       .mockReturnValueOnce({ id: "evt_client" })
       .mockReturnValueOnce({ id: "evt_connect" })
       .mockReturnValueOnce({ id: "evt_subscription" });
+    parseEventNotification.mockReturnValueOnce({ id: "evt_connect_v2" });
 
     await expect(
-      stripeModule.constructWebhookEvent("{}", "sig_client")
+      stripeModule.constructWebhookEvent("{}", "sig_client"),
     ).resolves.toEqual({ id: "evt_client" });
     await expect(
-      stripeModule.constructConnectWebhookEvent("{}", "sig_connect")
+      stripeModule.constructConnectWebhookEvent("{}", "sig_connect"),
     ).resolves.toEqual({ id: "evt_connect" });
     await expect(
-      stripeModule.constructSubscriptionWebhookEvent("{}", "sig_sub")
+      stripeModule.constructSubscriptionWebhookEvent("{}", "sig_sub"),
     ).resolves.toEqual({ id: "evt_subscription" });
+    await expect(
+      stripeModule.constructConnectV2EventNotification("{}", "sig_connect_v2"),
+    ).resolves.toEqual({ id: "evt_connect_v2" });
 
     expect(constructEvent).toHaveBeenNthCalledWith(
       1,
       "{}",
       "sig_client",
-      "whsec_client"
+      "whsec_client",
     );
     expect(constructEvent).toHaveBeenNthCalledWith(
       2,
       "{}",
       "sig_connect",
-      "whsec_connect"
+      "whsec_connect",
     );
     expect(constructEvent).toHaveBeenNthCalledWith(
       3,
       "{}",
       "sig_sub",
-      "whsec_subscription"
+      "whsec_subscription",
+    );
+    expect(parseEventNotification).toHaveBeenCalledWith(
+      "{}",
+      "sig_connect_v2",
+      "whsec_connect_v2",
     );
   });
 });
@@ -886,7 +1372,7 @@ describe("parseStripeCheckoutExternalId", () => {
       sessionId: "cs_123",
     });
     expect(
-      parseStripeCheckoutExternalId("stripe:connect:acct_9:checkout:cs_456")
+      parseStripeCheckoutExternalId("stripe:connect:acct_9:checkout:cs_456"),
     ).toEqual({ connectedAccountId: "acct_9", sessionId: "cs_456" });
   });
 
@@ -897,5 +1383,34 @@ describe("parseStripeCheckoutExternalId", () => {
     expect(parseStripeCheckoutExternalId(undefined)).toBeNull();
     expect(parseStripeCheckoutExternalId("refund:payment:abc")).toBeNull();
     expect(parseStripeCheckoutExternalId("stripe:refund:re_1")).toBeNull();
+  });
+});
+
+describe("isMissingStripeConnectedAccountError", () => {
+  it("accepts only Stripe resource-missing account lookup errors", async () => {
+    const { isMissingStripeConnectedAccountError } =
+      await import("@/lib/stripe");
+
+    expect(
+      isMissingStripeConnectedAccountError({
+        code: "resource_missing",
+        statusCode: 404,
+      }),
+    ).toBe(true);
+    expect(
+      isMissingStripeConnectedAccountError({
+        code: "not_found",
+        statusCode: 404,
+      }),
+    ).toBe(true);
+    expect(
+      isMissingStripeConnectedAccountError({
+        code: "resource_missing",
+        statusCode: 500,
+      }),
+    ).toBe(false);
+    expect(
+      isMissingStripeConnectedAccountError({ code: "api_connection_error" }),
+    ).toBe(false);
   });
 });

@@ -59,6 +59,7 @@ function session() {
       name: "Front Desk",
       role: "front_desk",
       practiceId: PRACTICE_ID,
+      sessionVersion: 1,
     },
   };
 }
@@ -142,7 +143,7 @@ describe("createTRPCContext session hardening", () => {
 
   it("keeps active sessions and verifies the user and practice inside the tenant", async () => {
     mocks.getServerSession.mockResolvedValueOnce(session());
-    const lookup = mockActiveUserLookup([{ id: USER_ID }]);
+    const lookup = mockActiveUserLookup([{ id: USER_ID, sessionVersion: 1 }]);
 
     const ctx = await createTRPCContext({
       req: new Request("https://app.example.test/api/trpc", {
@@ -185,5 +186,14 @@ describe("createTRPCContext session hardening", () => {
       PRACTICE_ID,
       expect.any(Function)
     );
+  });
+
+  it("drops a JWT issued for an older session generation", async () => {
+    mocks.getServerSession.mockResolvedValueOnce(session());
+    mockActiveUserLookup([{ id: USER_ID, sessionVersion: 2 }]);
+
+    const ctx = await createTRPCContext();
+
+    expect(ctx.session).toBeNull();
   });
 });

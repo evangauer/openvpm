@@ -14,7 +14,13 @@ import { trpc } from "./trpc";
 
 export const ACTIVE_THEME = "light";
 
-export function Providers({ children }: { children: React.ReactNode }) {
+export function Providers({
+  children,
+  nonce,
+}: {
+  children: React.ReactNode;
+  nonce?: string;
+}) {
   const [queryClient] = useState(() => createAppQueryClient());
   const [trpcClient] = useState(() =>
     trpc.createClient({
@@ -36,6 +42,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
             defaultTheme={ACTIVE_THEME}
             forcedTheme={ACTIVE_THEME}
             enableSystem={false}
+            nonce={nonce}
           >
             {children}
             <Toaster richColors position="bottom-right" />

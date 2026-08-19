@@ -50,8 +50,9 @@ export type DeclaredDatabaseObject = {
  * Release-critical database controls that cannot be inferred from the mere
  * presence of a table or column. Keep this deliberately narrow: these are the
  * controls whose absence would let the attachment recovery worker cross a
- * tenant boundary, accept unverifiable recovery evidence, or expose its
- * operational state to a clinic session.
+ * tenant boundary, accept unverifiable recovery evidence, expose operational
+ * state to a clinic session, or make the clinic financial ledger mutable or
+ * cross-tenant.
  *
  * A constraint that exists but remains NOT VALID and an index that exists but
  * is not valid/ready both count as drift. This makes the application release
@@ -573,6 +574,81 @@ export function criticalDatabaseContract(): DeclaredDatabaseObject[] {
       table,
       name,
     })),
+    ...[
+      "financial_closes",
+      "payment_disputes",
+      "payment_processor_payouts",
+      "payment_processor_refunds",
+      "payment_processor_settlements",
+    ].map((table) => ({
+      kind: "rls_policy" as const,
+      table,
+      name: "tenant_isolation",
+    })),
+    ...[
+      ["financial_closes", "financial_closes_receipt_identity_check"],
+      ["financial_closes", "financial_closes_processor_identity_check"],
+      ["payment_processor_payouts", "payment_processor_payouts_amount_check"],
+      ["payment_processor_payouts", "payment_processor_payouts_status_check"],
+      ["payment_processor_refunds", "payment_processor_refunds_amount_check"],
+      ["payment_processor_refunds", "payment_processor_refunds_status_check"],
+      [
+        "payment_processor_settlements",
+        "payment_processor_settlements_amounts_check",
+      ],
+      [
+        "payment_processor_settlements",
+        "payment_processor_settlements_status_check",
+      ],
+    ].map(([table, name]) => ({
+      kind: "constraint" as const,
+      table,
+      name,
+    })),
+    ...[
+      "financial_closes_practice_day_uq",
+      "payment_processor_payouts_external_uq",
+      "payment_processor_refunds_payment_uq",
+      "payment_processor_refunds_external_uq",
+      "payment_processor_settlements_payment_uq",
+      "payment_processor_settlements_charge_uq",
+      "payment_processor_settlements_balance_transaction_uq",
+    ].map((name) => ({
+      kind: "index" as const,
+      table: name.startsWith("financial_closes")
+        ? "financial_closes"
+        : name.startsWith("payment_processor_payouts")
+          ? "payment_processor_payouts"
+          : name.startsWith("payment_processor_refunds")
+            ? "payment_processor_refunds"
+            : "payment_processor_settlements",
+      name,
+    })),
+    ...[
+      "payment_disputes",
+      "payment_processor_payouts",
+      "payment_processor_refunds",
+      "payment_processor_settlements",
+    ].flatMap((table) => [
+      { kind: "table_privilege" as const, table, name: "SELECT" },
+      { kind: "table_privilege" as const, table, name: "INSERT" },
+      { kind: "table_privilege" as const, table, name: "UPDATE" },
+      {
+        kind: "forbidden_table_privilege" as const,
+        table,
+        name: "DELETE",
+      },
+    ]),
+    ...["SELECT", "INSERT"].map((name) => ({
+      kind: "table_privilege" as const,
+      table: "financial_closes",
+      name,
+    })),
+    ...["UPDATE", "DELETE"].map((name) => ({
+      kind: "forbidden_table_privilege" as const,
+      table: "financial_closes",
+      name,
+    })),
   ];
 
   return objects;
@@ -722,7 +798,13 @@ export async function findSchemaDrift(db: Queryable): Promise<SchemaDrift> {
       ('sms_provider_event_conflict_reviews'::text, 'UPDATE'::text),
       ('sms_provider_event_conflict_reviews'::text, 'DELETE'::text),
       ('sms_provider_event_resolutions'::text, 'UPDATE'::text),
-      ('sms_provider_event_resolutions'::text, 'DELETE'::text)
+      ('sms_provider_event_resolutions'::text, 'DELETE'::text),
+      ('payment_disputes'::text, 'DELETE'::text),
+      ('payment_processor_payouts'::text, 'DELETE'::text),
+      ('payment_processor_refunds'::text, 'DELETE'::text),
+      ('payment_processor_settlements'::text, 'DELETE'::text),
+      ('financial_closes'::text, 'UPDATE'::text),
+      ('financial_closes'::text, 'DELETE'::text)
     ) required_absence(table_name, privilege_type)
     union all
     select

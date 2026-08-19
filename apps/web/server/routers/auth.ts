@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { hash } from "bcryptjs";
-import { and, eq, isNull } from "drizzle-orm";
+import { compare, hash } from "bcryptjs";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, publicProcedure, protectedProcedure } from "../trpc";
 import { users, practices, locations } from "@openpims/db";
@@ -17,7 +17,10 @@ import {
 } from "@/lib/billing/plans";
 import { createAuthToken, consumeAuthToken } from "@/lib/auth-tokens";
 import { PASSWORD_HASH_COST } from "@/lib/auth-hashing";
-import { authPasswordInput } from "@/lib/auth-password";
+import {
+  AUTH_PASSWORD_MAX_LENGTH,
+  authPasswordInput,
+} from "@/lib/auth-password";
 import {
   sendPasswordResetEmail,
   sendWelcomeEmail,
@@ -48,6 +51,110 @@ import {
   FIRST_GOALS,
   onboardingIntentForGoal,
 } from "@/lib/onboarding/clinic-profile";
+import {
+  consumeRecoveryCodeHash,
+  decryptMfaSecret,
+  encryptMfaSecret,
+  generateRecoveryCodes,
+  generateTotpSecret,
+  hashRecoveryCode,
+  matchingTotpCounter,
+  mfaEncryptionConfigured,
+  totpProvisioningUri,
+} from "@/lib/mfa";
+
+const MFA_ENROLLMENT_TTL_MS = 10 * 60 * 1000;
+const currentPasswordInput = z.string().min(1).max(AUTH_PASSWORD_MAX_LENGTH);
+const mfaCodeInput = z.string().trim().min(6).max(64);
+
+async function mfaUser(
+  database: Database,
+  userId: string,
+  practiceId: string,
+) {
+  const [user] = await database
+    .select({
+      id: users.id,
+      email: users.email,
+      passwordHash: users.passwordHash,
+      sessionVersion: users.sessionVersion,
+      mfaSecretEncrypted: users.mfaSecretEncrypted,
+      mfaEnabledAt: users.mfaEnabledAt,
+      mfaLastUsedTotpCounter: users.mfaLastUsedTotpCounter,
+      mfaRecoveryCodeHashes: users.mfaRecoveryCodeHashes,
+      mfaPendingSecretEncrypted: users.mfaPendingSecretEncrypted,
+      mfaPendingExpiresAt: users.mfaPendingExpiresAt,
+      practiceName: practices.name,
+    })
+    .from(users)
+    .innerJoin(
+      practices,
+      and(eq(practices.id, users.practiceId), isNull(practices.deletedAt)),
+    )
+    .where(
+      and(
+        eq(users.id, userId),
+        eq(users.practiceId, practiceId),
+        isNull(users.deletedAt),
+      ),
+    )
+    .limit(1);
+  return user ?? null;
+}
+
+async function requireCurrentPassword(input: {
+  database: Database;
+  userId: string;
+  practiceId: string;
+  password: string;
+  ip?: string | null;
+}) {
+  await assertPreAuthRateLimit({
+    key: `mfa-password:${input.userId}:${input.ip || "unknown"}`,
+    limit: 8,
+    windowMs: 15 * 60 * 1000,
+    message: "Too many verification attempts. Please try again later.",
+    logContext: "mfaPassword",
+  });
+  const user = await mfaUser(
+    input.database,
+    input.userId,
+    input.practiceId,
+  );
+  if (!user || !(await compare(input.password, user.passwordHash))) {
+    throw new TRPCError({
+      code: "UNAUTHORIZED",
+      message: "The current password was not accepted.",
+    });
+  }
+  return user;
+}
+
+function verifyActiveMfaFactor(
+  user: NonNullable<Awaited<ReturnType<typeof mfaUser>>>,
+  code: string,
+):
+  | { type: "totp"; counter: number }
+  | { type: "recovery"; remaining: string[] }
+  | null {
+  if (!user.mfaEnabledAt || !user.mfaSecretEncrypted) return null;
+  const secret = decryptMfaSecret(user.mfaSecretEncrypted);
+  const counter = matchingTotpCounter(secret, code);
+  if (
+    counter !== null &&
+    (user.mfaLastUsedTotpCounter === null ||
+      counter > user.mfaLastUsedTotpCounter)
+  ) {
+    return { type: "totp", counter };
+  }
+  const hashes = Array.isArray(user.mfaRecoveryCodeHashes)
+    ? user.mfaRecoveryCodeHashes
+    : [];
+  const recovery = consumeRecoveryCodeHash(hashes, code);
+  return recovery.accepted
+    ? { type: "recovery", remaining: recovery.remaining }
+    : null;
+}
 
 /** Display name from explicit input, else derived from the email local-part. */
 function deriveName(name: string | undefined, email: string): string {
@@ -769,7 +876,10 @@ export const authRouter = createRouter({
       const passwordHash = await hash(input.password, PASSWORD_HASH_COST);
       const [updated] = await ctx.db
         .update(users)
-        .set({ passwordHash })
+        .set({
+          passwordHash,
+          sessionVersion: sql`${users.sessionVersion} + 1`,
+        })
         .where(and(eq(users.id, result.userId), isNull(users.deletedAt)))
         .returning({ id: users.id });
       if (!updated) {
@@ -802,7 +912,11 @@ export const authRouter = createRouter({
       const passwordHash = await hash(input.password, PASSWORD_HASH_COST);
       const [updated] = await ctx.db
         .update(users)
-        .set({ passwordHash, emailVerifiedAt: new Date() })
+        .set({
+          passwordHash,
+          emailVerifiedAt: new Date(),
+          sessionVersion: sql`${users.sessionVersion} + 1`,
+        })
         .where(and(eq(users.id, result.userId), isNull(users.deletedAt)))
         .returning({ id: users.id });
       if (!updated) {
@@ -813,6 +927,266 @@ export const authRouter = createRouter({
       }
       return { ok: true };
     }),
+
+  mfaStatus: protectedProcedure.query(async ({ ctx }) => {
+    const user = await mfaUser(ctx.db, ctx.user.id, ctx.practiceId);
+    if (!user) throw new TRPCError({ code: "UNAUTHORIZED" });
+    return {
+      available: mfaEncryptionConfigured(),
+      enabled: Boolean(user.mfaEnabledAt && user.mfaSecretEncrypted),
+      enabledAt: user.mfaEnabledAt,
+      recoveryCodesRemaining: Array.isArray(user.mfaRecoveryCodeHashes)
+        ? user.mfaRecoveryCodeHashes.length
+        : 0,
+      enrollmentPending:
+        Boolean(user.mfaPendingSecretEncrypted) &&
+        Boolean(
+          user.mfaPendingExpiresAt && user.mfaPendingExpiresAt > new Date(),
+        ),
+    };
+  }),
+
+  beginMfaEnrollment: protectedProcedure
+    .input(z.object({ password: currentPasswordInput }))
+    .mutation(async ({ ctx, input }) => {
+      if (!mfaEncryptionConfigured()) {
+        throw new TRPCError({
+          code: "SERVICE_UNAVAILABLE",
+          message: "Two-step verification is not configured on this deployment.",
+        });
+      }
+      const user = await requireCurrentPassword({
+        database: ctx.db,
+        userId: ctx.user.id,
+        practiceId: ctx.practiceId,
+        password: input.password,
+        ip: ctx.ip,
+      });
+      if (user.mfaEnabledAt) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Two-step verification is already enabled.",
+        });
+      }
+
+      const secret = generateTotpSecret();
+      const expiresAt = new Date(Date.now() + MFA_ENROLLMENT_TTL_MS);
+      const [updated] = await ctx.db
+        .update(users)
+        .set({
+          mfaPendingSecretEncrypted: encryptMfaSecret(secret),
+          mfaPendingExpiresAt: expiresAt,
+        })
+        .where(
+          and(
+            eq(users.id, ctx.user.id),
+            eq(users.practiceId, ctx.practiceId),
+            eq(users.sessionVersion, user.sessionVersion),
+            isNull(users.deletedAt),
+          ),
+        )
+        .returning({ id: users.id });
+      if (!updated) throw new TRPCError({ code: "UNAUTHORIZED" });
+      return {
+        secret,
+        provisioningUri: totpProvisioningUri({
+          secret,
+          email: user.email,
+          practiceName: user.practiceName,
+        }),
+        expiresAt,
+      };
+    }),
+
+  confirmMfaEnrollment: protectedProcedure
+    .input(z.object({ code: mfaCodeInput.regex(/^\d{6}$/) }))
+    .mutation(async ({ ctx, input }) => {
+      if (!mfaEncryptionConfigured()) {
+        throw new TRPCError({ code: "SERVICE_UNAVAILABLE" });
+      }
+      const user = await mfaUser(ctx.db, ctx.user.id, ctx.practiceId);
+      if (
+        !user?.mfaPendingSecretEncrypted ||
+        !user.mfaPendingExpiresAt ||
+        user.mfaPendingExpiresAt <= new Date()
+      ) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "This setup expired. Start two-step verification again.",
+        });
+      }
+      let secret: string;
+      try {
+        secret = decryptMfaSecret(user.mfaPendingSecretEncrypted);
+      } catch {
+        throw new TRPCError({ code: "PRECONDITION_FAILED" });
+      }
+      if (matchingTotpCounter(secret, input.code) === null) {
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: "That authentication code was not accepted.",
+        });
+      }
+
+      const recoveryCodes = generateRecoveryCodes();
+      const recoveryHashes = recoveryCodes.map(hashRecoveryCode);
+      const [updated] = await ctx.db
+        .update(users)
+        .set({
+          mfaSecretEncrypted: user.mfaPendingSecretEncrypted,
+          mfaEnabledAt: new Date(),
+          mfaLastUsedTotpCounter: null,
+          mfaRecoveryCodeHashes: recoveryHashes,
+          mfaPendingSecretEncrypted: null,
+          mfaPendingExpiresAt: null,
+          sessionVersion: sql`${users.sessionVersion} + 1`,
+        })
+        .where(
+          and(
+            eq(users.id, ctx.user.id),
+            eq(users.practiceId, ctx.practiceId),
+            eq(users.sessionVersion, user.sessionVersion),
+            eq(
+              users.mfaPendingSecretEncrypted,
+              user.mfaPendingSecretEncrypted,
+            ),
+            isNull(users.deletedAt),
+          ),
+        )
+        .returning({ id: users.id });
+      if (!updated) throw new TRPCError({ code: "UNAUTHORIZED" });
+      return { recoveryCodes };
+    }),
+
+  regenerateMfaRecoveryCodes: protectedProcedure
+    .input(
+      z.object({ password: currentPasswordInput, code: mfaCodeInput }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const user = await requireCurrentPassword({
+        database: ctx.db,
+        userId: ctx.user.id,
+        practiceId: ctx.practiceId,
+        password: input.password,
+        ip: ctx.ip,
+      });
+      let factor: ReturnType<typeof verifyActiveMfaFactor>;
+      try {
+        factor = verifyActiveMfaFactor(user, input.code);
+      } catch {
+        factor = null;
+      }
+      if (!factor) {
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: "The authentication code was not accepted.",
+        });
+      }
+      const recoveryCodes = generateRecoveryCodes();
+      const existingHashes = Array.isArray(user.mfaRecoveryCodeHashes)
+        ? user.mfaRecoveryCodeHashes
+        : [];
+      const factorGuard =
+        factor.type === "totp"
+          ? sql`(${users.mfaLastUsedTotpCounter} is null or ${users.mfaLastUsedTotpCounter} < ${factor.counter})`
+          : sql`${users.mfaRecoveryCodeHashes} = ${JSON.stringify(existingHashes)}::jsonb`;
+      const [updated] = await ctx.db
+        .update(users)
+        .set({
+          mfaRecoveryCodeHashes: recoveryCodes.map(hashRecoveryCode),
+          ...(factor.type === "totp"
+            ? { mfaLastUsedTotpCounter: factor.counter }
+            : {}),
+          sessionVersion: sql`${users.sessionVersion} + 1`,
+        })
+        .where(
+          and(
+            eq(users.id, ctx.user.id),
+            eq(users.practiceId, ctx.practiceId),
+            eq(users.sessionVersion, user.sessionVersion),
+            factorGuard,
+            isNull(users.deletedAt),
+          ),
+        )
+        .returning({ id: users.id });
+      if (!updated) throw new TRPCError({ code: "UNAUTHORIZED" });
+      return { recoveryCodes };
+    }),
+
+  disableMfa: protectedProcedure
+    .input(
+      z.object({ password: currentPasswordInput, code: mfaCodeInput }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const user = await requireCurrentPassword({
+        database: ctx.db,
+        userId: ctx.user.id,
+        practiceId: ctx.practiceId,
+        password: input.password,
+        ip: ctx.ip,
+      });
+      let factor: ReturnType<typeof verifyActiveMfaFactor>;
+      try {
+        factor = verifyActiveMfaFactor(user, input.code);
+      } catch {
+        factor = null;
+      }
+      if (!factor) {
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: "The authentication code was not accepted.",
+        });
+      }
+      const existingHashes = Array.isArray(user.mfaRecoveryCodeHashes)
+        ? user.mfaRecoveryCodeHashes
+        : [];
+      const factorGuard =
+        factor.type === "totp"
+          ? sql`(${users.mfaLastUsedTotpCounter} is null or ${users.mfaLastUsedTotpCounter} < ${factor.counter})`
+          : sql`${users.mfaRecoveryCodeHashes} = ${JSON.stringify(existingHashes)}::jsonb`;
+      const [updated] = await ctx.db
+        .update(users)
+        .set({
+          mfaSecretEncrypted: null,
+          mfaEnabledAt: null,
+          mfaLastUsedTotpCounter: null,
+          mfaRecoveryCodeHashes: null,
+          mfaPendingSecretEncrypted: null,
+          mfaPendingExpiresAt: null,
+          sessionVersion: sql`${users.sessionVersion} + 1`,
+        })
+        .where(
+          and(
+            eq(users.id, ctx.user.id),
+            eq(users.practiceId, ctx.practiceId),
+            eq(users.sessionVersion, user.sessionVersion),
+            factorGuard,
+            isNull(users.deletedAt),
+          ),
+        )
+        .returning({ id: users.id });
+      if (!updated) throw new TRPCError({ code: "UNAUTHORIZED" });
+      return { ok: true };
+    }),
+
+  /** Revoke this identity's JWTs across every browser and device. */
+  revokeAllSessions: protectedProcedure.mutation(async ({ ctx }) => {
+    const [updated] = await ctx.db
+      .update(users)
+      .set({ sessionVersion: sql`${users.sessionVersion} + 1` })
+      .where(
+        and(
+          eq(users.id, ctx.user.id),
+          eq(users.practiceId, ctx.practiceId),
+          isNull(users.deletedAt),
+        ),
+      )
+      .returning({ id: users.id });
+    if (!updated) {
+      throw new TRPCError({ code: "UNAUTHORIZED" });
+    }
+    return { ok: true };
+  }),
 
   me: protectedProcedure.query(async ({ ctx }) => {
     const [user] = await ctx.db

@@ -300,6 +300,42 @@ describe("committed Drizzle migrations", () => {
     ).not.toContain("VALIDATE CONSTRAINT");
   });
 
+  it("registers immutable clinic financial evidence and release-gates its RLS", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries: Array<{ tag: string }> };
+    const payoutTag = journal.entries.find((entry) =>
+      entry.tag.startsWith("0093_"),
+    )?.tag;
+    expect(payoutTag).toBeTruthy();
+    const payoutMigration = readRepoFile(
+      `packages/db/drizzle/${payoutTag}.sql`,
+    );
+    expect(payoutMigration).toContain(
+      'CREATE TABLE "payment_processor_payouts"',
+    );
+    expect(payoutMigration).toContain(
+      'CREATE TABLE "payment_processor_refunds"',
+    );
+
+    const rls = readRepoFile("packages/db/rls/enable-rls.sql");
+    for (const table of [
+      "financial_closes",
+      "payment_disputes",
+      "payment_processor_payouts",
+      "payment_processor_refunds",
+      "payment_processor_settlements",
+    ]) {
+      expect(rls).toContain(table);
+    }
+    expect(rls).toContain(
+      "GRANT SELECT, INSERT ON financial_closes TO openpims_app",
+    );
+    expect(rls).toContain(
+      "GRANT SELECT, INSERT, UPDATE ON payment_processor_settlements, payment_processor_refunds, payment_processor_payouts, payment_disputes TO openpims_app",
+    );
+  });
+
   it("keeps replica state system-only and storage events append-only", () => {
     const rls = readRepoFile("packages/db/rls/enable-rls.sql");
 

@@ -8,6 +8,15 @@ const mocks = vi.hoisted(() => ({
   createBillingPortalSession: vi.fn(async () => ({
     url: "https://billing.stripe.com/billing-portal",
   })),
+  readSubscriptionCadenceSnapshot: vi.fn(async () => ({
+    currentCadence: "month" as const,
+    scheduledCadence: null,
+    effectiveAt: null,
+  })),
+  scheduleSubscriptionAnnualAtRenewal: vi.fn(async () => ({
+    effectiveAt: "2026-08-01T00:00:00.000Z",
+    alreadyScheduled: false,
+  })),
   countBillableLocationsAndSeats: vi.fn(async () => ({
     locationCount: 2,
     billableSeatCount: 4,
@@ -21,6 +30,9 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/stripe", () => ({
   createSubscriptionCheckoutSession: mocks.createSubscriptionCheckoutSession,
   createBillingPortalSession: mocks.createBillingPortalSession,
+  readSubscriptionCadenceSnapshot: mocks.readSubscriptionCadenceSnapshot,
+  scheduleSubscriptionAnnualAtRenewal:
+    mocks.scheduleSubscriptionAnnualAtRenewal,
 }));
 
 vi.mock("@/lib/app-url", () => ({
@@ -116,6 +128,15 @@ afterEach(() => {
   });
   mocks.createBillingPortalSession.mockResolvedValue({
     url: "https://billing.stripe.com/billing-portal",
+  });
+  mocks.readSubscriptionCadenceSnapshot.mockResolvedValue({
+    currentCadence: "month",
+    scheduledCadence: null,
+    effectiveAt: null,
+  });
+  mocks.scheduleSubscriptionAnnualAtRenewal.mockResolvedValue({
+    effectiveAt: "2026-08-01T00:00:00.000Z",
+    alreadyScheduled: false,
   });
   mocks.countBillableLocationsAndSeats.mockResolvedValue({
     locationCount: 2,
@@ -216,6 +237,56 @@ describe("subscription checkout", () => {
     });
     expect(mocks.createSubscriptionCheckoutSession).not.toHaveBeenCalled();
     expect(mocks.countBillableLocationsAndSeats).not.toHaveBeenCalled();
+  });
+
+  it("schedules monthly-to-annual billing at renewal with provider ownership inputs", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_monthly");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION_ANNUAL", "price_annual");
+    const db = createDb([
+      [practice({ tier: "cloud", billingStatus: "active" })],
+      [
+        practice({
+          tier: "cloud",
+          billingStatus: "active",
+          stripeCustomerId: "cus_123",
+          stripeSubscriptionId: "sub_123",
+        }),
+      ],
+    ]);
+
+    await expect(callerWithDb(db).scheduleAnnualAtRenewal()).resolves.toEqual({
+      effectiveAt: "2026-08-01T00:00:00.000Z",
+      alreadyScheduled: false,
+      annualTotalUsd: 1580,
+    });
+    expect(mocks.scheduleSubscriptionAnnualAtRenewal).toHaveBeenCalledWith({
+      subscriptionId: "sub_123",
+      customerId: "cus_123",
+      practiceId: PRACTICE_ID,
+      monthlyPriceId: "price_monthly",
+      annualPriceId: "price_annual",
+      locationCount: 2,
+    });
+  });
+
+  it("blocks annual scheduling during recovery and before activation", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_monthly");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION_ANNUAL", "price_annual");
+    const db = createDb([
+      [practice({ recoveryHold: true })],
+      [practice()],
+    ]);
+    const caller = callerWithDb(db);
+
+    await expect(caller.scheduleAnnualAtRenewal()).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+    await expect(caller.scheduleAnnualAtRenewal()).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: "Start the monthly plan before switching to annual billing.",
+    });
+    expect(mocks.scheduleSubscriptionAnnualAtRenewal).not.toHaveBeenCalled();
   });
 
   it("does not call Stripe checkout or portal providers while held", async () => {

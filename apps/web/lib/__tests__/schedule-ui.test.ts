@@ -91,6 +91,20 @@ describe("schedule appointment form UX", () => {
     expect(source).not.toContain("disabled={createAppointment.isPending}");
   });
 
+  it("makes the New Appointment workflow keyboard and screen-reader accessible", () => {
+    const source = readFileSync("app/(dashboard)/schedule/page.tsx", "utf8");
+
+    expect(source).toContain('aria-label="Close appointment form"');
+    expect(source).toContain('htmlFor="new-appointment-date"');
+    expect(source).toContain('id="new-appointment-date"');
+    expect(source).toContain('htmlFor="new-appointment-start-time"');
+    expect(source).toContain('id="new-appointment-start-time"');
+    expect(source).toContain("modalRef.current?.focus()");
+    expect(source).toContain("modalRef.current.querySelectorAll<HTMLElement>(");
+    expect(source).toContain('e.key !== "Tab"');
+    expect(source).toContain("previouslyFocusedElement.focus()");
+  });
+
   it("builds booking instants from the practice timezone instead of the browser timezone", () => {
     const source = readFileSync("app/(dashboard)/schedule/page.tsx", "utf8");
 

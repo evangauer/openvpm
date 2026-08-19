@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const ROUTE_SOURCE = readFileSync(
   fileURLToPath(new URL("./route.ts", import.meta.url)),
-  "utf8"
+  "utf8",
 );
 
 const mocks = vi.hoisted(() => {
@@ -12,7 +12,9 @@ const mocks = vi.hoisted(() => {
   const select = vi.fn(() => {
     const result = selectResults.shift() ?? [];
     const resultPromise = () =>
-      result instanceof Error ? Promise.reject(result) : Promise.resolve(result);
+      result instanceof Error
+        ? Promise.reject(result)
+        : Promise.resolve(result);
     const builder = {
       from: vi.fn(() => builder),
       where: vi.fn(() => builder),
@@ -20,7 +22,7 @@ const mocks = vi.hoisted(() => {
       for: vi.fn(() => resultPromise()),
       then: (
         resolve: (value: unknown[]) => unknown,
-        reject?: (error: unknown) => unknown
+        reject?: (error: unknown) => unknown,
       ) => resultPromise().then(resolve, reject),
     };
     return builder;
@@ -34,12 +36,12 @@ const mocks = vi.hoisted(() => {
       url: "https://checkout.stripe.com/portal-checkout",
     })),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
-      fn(db)
+      fn(db),
     ),
     billingEnforced: vi.fn(() => false),
     hasHostedFullAccess: vi.fn(() => true),
     getChargeableStripeConnectAccountId: vi.fn(
-      async (): Promise<string | null> => null
+      async (): Promise<string | null> => null,
     ),
     stripeConnectApplicationFeeAmount: vi.fn((): number | undefined => 250),
     rateLimit: vi.fn(async () => ({
@@ -50,15 +52,18 @@ const mocks = vi.hoisted(() => {
     rateLimitResponseHeaders: vi.fn(
       (
         limit: number,
-        result: { remaining: number; resetAt: Date }
+        result: { remaining: number; resetAt: Date },
       ): Record<string, string> => ({
         "Retry-After": String(
-          Math.max(1, Math.ceil((result.resetAt.getTime() - Date.now()) / 1000))
+          Math.max(
+            1,
+            Math.ceil((result.resetAt.getTime() - Date.now()) / 1000),
+          ),
         ),
         "X-RateLimit-Limit": String(limit),
         "X-RateLimit-Remaining": String(result.remaining),
         "X-RateLimit-Reset": result.resetAt.toISOString(),
-      })
+      }),
     ),
   };
 });
@@ -113,7 +118,7 @@ function portalRawRequest(body: string, headers?: HeadersInit) {
         ...headers,
       },
       body,
-    }
+    },
   );
   Object.defineProperty(request, "nextUrl", {
     value: new URL("https://portal.example.com/api/portal/checkout"),
@@ -167,6 +172,7 @@ function practice(overrides: Record<string, unknown> = {}) {
 afterEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
+  vi.unstubAllEnvs();
   mocks.selectResults.length = 0;
   mocks.createCheckoutSession.mockResolvedValue({
     url: "https://checkout.stripe.com/portal-checkout",
@@ -225,7 +231,7 @@ describe("portal checkout route", () => {
     const response = await POST(
       portalRawRequest("{}", {
         "content-length": String(JSON_REQUEST_BODY_MAX_BYTES + 1),
-      })
+      }),
     );
 
     expect(response.status).toBe(413);
@@ -247,7 +253,7 @@ describe("portal checkout route", () => {
     });
 
     const response = await POST(
-      portalRequest({ token: "portal-token", invoiceId: INVOICE_ID })
+      portalRequest({ token: "portal-token", invoiceId: INVOICE_ID }),
     );
 
     expect(response.status).toBe(429);
@@ -255,7 +261,7 @@ describe("portal checkout route", () => {
     expect(response.headers.get("X-RateLimit-Limit")).toBe("30");
     expect(response.headers.get("X-RateLimit-Remaining")).toBe("0");
     expect(response.headers.get("X-RateLimit-Reset")).toBe(
-      "2026-06-27T13:00:00.000Z"
+      "2026-06-27T13:00:00.000Z",
     );
     await expect(response.json()).resolves.toEqual({
       error:
@@ -280,7 +286,7 @@ describe("portal checkout route", () => {
 
     try {
       const response = await POST(
-        portalRequest({ token: "portal-token", invoiceId: INVOICE_ID })
+        portalRequest({ token: "portal-token", invoiceId: INVOICE_ID }),
       );
 
       expect(response.status).toBe(429);
@@ -288,7 +294,7 @@ describe("portal checkout route", () => {
       expect(response.headers.get("X-RateLimit-Limit")).toBe("30");
       expect(response.headers.get("X-RateLimit-Remaining")).toBe("0");
       expect(response.headers.get("X-RateLimit-Reset")).toBe(
-        "2026-06-27T13:00:00.000Z"
+        "2026-06-27T13:00:00.000Z",
       );
       await expect(response.json()).resolves.toEqual({
         error:
@@ -296,7 +302,7 @@ describe("portal checkout route", () => {
       });
       expect(consoleError).toHaveBeenCalledWith(
         "[portal-checkout] rate limit failed:",
-        expect.any(Error)
+        expect.any(Error),
       );
       expect(mocks.rateLimit).toHaveBeenCalledWith({
         key: "portal-checkout:ip:unknown",
@@ -326,7 +332,7 @@ describe("portal checkout route", () => {
       });
 
     const response = await POST(
-      portalRequest({ token: "portal-token", invoiceId: INVOICE_ID })
+      portalRequest({ token: "portal-token", invoiceId: INVOICE_ID }),
     );
 
     expect(response.status).toBe(429);
@@ -334,7 +340,7 @@ describe("portal checkout route", () => {
     expect(response.headers.get("X-RateLimit-Limit")).toBe("10");
     expect(response.headers.get("X-RateLimit-Remaining")).toBe("0");
     expect(response.headers.get("X-RateLimit-Reset")).toBe(
-      "2026-06-27T13:00:00.000Z"
+      "2026-06-27T13:00:00.000Z",
     );
     await expect(response.json()).resolves.toEqual({
       error:
@@ -351,7 +357,7 @@ describe("portal checkout route", () => {
       windowMs: 60 * 60 * 1000,
     });
     expect(mocks.rateLimit).not.toHaveBeenCalledWith(
-      expect.objectContaining({ key: "portal-checkout:portal-token" })
+      expect.objectContaining({ key: "portal-checkout:portal-token" }),
     );
     expect(mocks.withSystem).not.toHaveBeenCalled();
     expect(mocks.createCheckoutSession).not.toHaveBeenCalled();
@@ -373,7 +379,7 @@ describe("portal checkout route", () => {
 
     try {
       const response = await POST(
-        portalRequest({ token: "portal-token", invoiceId: INVOICE_ID })
+        portalRequest({ token: "portal-token", invoiceId: INVOICE_ID }),
       );
 
       expect(response.status).toBe(429);
@@ -381,7 +387,7 @@ describe("portal checkout route", () => {
       expect(response.headers.get("X-RateLimit-Limit")).toBe("10");
       expect(response.headers.get("X-RateLimit-Remaining")).toBe("0");
       expect(response.headers.get("X-RateLimit-Reset")).toBe(
-        "2026-06-27T13:45:00.000Z"
+        "2026-06-27T13:45:00.000Z",
       );
       await expect(response.json()).resolves.toEqual({
         error:
@@ -389,7 +395,7 @@ describe("portal checkout route", () => {
       });
       expect(consoleError).toHaveBeenCalledWith(
         "[portal-checkout] rate limit failed:",
-        expect.any(Error)
+        expect.any(Error),
       );
       expect(mocks.rateLimit).toHaveBeenNthCalledWith(1, {
         key: "portal-checkout:ip:unknown",
@@ -420,8 +426,8 @@ describe("portal checkout route", () => {
     const response = await POST(
       portalRequest(
         { token: "portal-token", invoiceId: INVOICE_ID },
-        { "x-forwarded-for": `${IP}, 198.51.100.5` }
-      )
+        { "x-forwarded-for": `${IP}, 198.51.100.5` },
+      ),
     );
 
     expect(response.status).toBe(429);
@@ -429,7 +435,7 @@ describe("portal checkout route", () => {
     expect(response.headers.get("X-RateLimit-Limit")).toBe("30");
     expect(response.headers.get("X-RateLimit-Remaining")).toBe("0");
     expect(response.headers.get("X-RateLimit-Reset")).toBe(
-      "2026-06-27T12:15:00.000Z"
+      "2026-06-27T12:15:00.000Z",
     );
     await expect(response.json()).resolves.toEqual({
       error:
@@ -451,11 +457,11 @@ describe("portal checkout route", () => {
       [invoice()],
       [{ amount: "10.00" }],
       [{ name: "Biscuit" }],
-      [practice({ currency: "cad" })]
+      [practice({ currency: "cad" })],
     );
 
     const response = await POST(
-      portalRequest({ token: "portal-token", invoiceId: INVOICE_ID })
+      portalRequest({ token: "portal-token", invoiceId: INVOICE_ID }),
     );
 
     expect(response.status).toBe(200);
@@ -468,7 +474,7 @@ describe("portal checkout route", () => {
       windowMs: 60 * 60 * 1000,
     });
     expect(mocks.rateLimit).not.toHaveBeenCalledWith(
-      expect.objectContaining({ key: "portal-checkout:portal-token" })
+      expect.objectContaining({ key: "portal-checkout:portal-token" }),
     );
     expect(mocks.createCheckoutSession).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -478,13 +484,11 @@ describe("portal checkout route", () => {
         clientName: "Jane Client",
         description: "Invoice payment for Biscuit",
         currency: "cad",
-        successUrl:
-          `https://portal.example.com/portal/portal-token/invoices?payment=success&invoice=${INVOICE_ID}`,
-        cancelUrl:
-          `https://portal.example.com/portal/portal-token/invoices?payment=cancelled&invoice=${INVOICE_ID}`,
+        successUrl: `https://portal.example.com/portal/portal-token/invoices?payment=success&invoice=${INVOICE_ID}`,
+        cancelUrl: `https://portal.example.com/portal/portal-token/invoices?payment=cancelled&invoice=${INVOICE_ID}`,
         connectedAccountId: undefined,
         applicationFeeAmount: undefined,
-      })
+      }),
     );
     // Self-host: the platform Stripe key IS the practice's account.
     expect(mocks.getChargeableStripeConnectAccountId).not.toHaveBeenCalled();
@@ -512,16 +516,17 @@ describe("portal checkout route", () => {
       [client()],
       [invoice({ appointmentId: APPOINTMENT_ID })],
       [{ id: APPOINTMENT_ID }],
-      [{ status: "draft" }]
+      [{ status: "draft" }],
     );
 
     const response = await POST(
-      portalRequest({ token: "portal-token", invoiceId: INVOICE_ID })
+      portalRequest({ token: "portal-token", invoiceId: INVOICE_ID }),
     );
 
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toEqual({
-      error: "Finalize the clinical handoff before sending or collecting this visit invoice.",
+      error:
+        "Finalize the clinical handoff before sending or collecting this visit invoice.",
     });
     expect(mocks.createCheckoutSession).not.toHaveBeenCalled();
   });
@@ -534,12 +539,12 @@ describe("portal checkout route", () => {
       [client()],
       [invoice({ appointmentId: APPOINTMENT_ID })],
       [{ id: APPOINTMENT_ID }],
-      new Error("database unavailable: secret detail")
+      new Error("database unavailable: secret detail"),
     );
 
     try {
       const response = await POST(
-        portalRequest({ token: "portal-token", invoiceId: INVOICE_ID })
+        portalRequest({ token: "portal-token", invoiceId: INVOICE_ID }),
       );
 
       expect(response.status).toBe(500);
@@ -548,7 +553,7 @@ describe("portal checkout route", () => {
       });
       expect(consoleError).toHaveBeenCalledWith(
         "[Portal Checkout] Error:",
-        expect.any(Error)
+        expect.any(Error),
       );
       expect(mocks.createCheckoutSession).not.toHaveBeenCalled();
     } finally {
@@ -558,23 +563,24 @@ describe("portal checkout route", () => {
 
   it("hosted: routes portal checkout through the practice's Connect account", async () => {
     mocks.billingEnforced.mockReturnValue(true);
+    vi.stubEnv("STRIPE_CONNECT_APPLICATION_FEE_BPS", "100");
     mocks.getChargeableStripeConnectAccountId.mockResolvedValue("acct_123");
     mocks.selectResults.push(
       [client()],
       [invoice()],
       [{ amount: "10.00" }],
       [{ name: "Biscuit" }],
-      [practice({ tier: "cloud", billingStatus: "active" })]
+      [practice({ tier: "cloud", billingStatus: "active" })],
     );
 
     const response = await POST(
-      portalRequest({ token: "portal-token", invoiceId: INVOICE_ID })
+      portalRequest({ token: "portal-token", invoiceId: INVOICE_ID }),
     );
 
     expect(response.status).toBe(200);
     expect(mocks.getChargeableStripeConnectAccountId).toHaveBeenCalledWith(
       mocks.db,
-      PRACTICE_ID
+      PRACTICE_ID,
     );
     expect(mocks.stripeConnectApplicationFeeAmount).toHaveBeenCalledWith(6500);
     expect(mocks.createCheckoutSession).toHaveBeenCalledWith(
@@ -583,8 +589,31 @@ describe("portal checkout route", () => {
         amount: 6500,
         connectedAccountId: "acct_123",
         applicationFeeAmount: 250,
-      })
+      }),
     );
+  });
+
+  it("hosted: fails closed when the platform fee is missing", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    mocks.getChargeableStripeConnectAccountId.mockResolvedValue("acct_123");
+    mocks.selectResults.push(
+      [client()],
+      [invoice()],
+      [{ amount: "10.00" }],
+      [{ name: "Biscuit" }],
+      [practice({ tier: "cloud", billingStatus: "active" })],
+    );
+
+    const response = await POST(
+      portalRequest({ token: "portal-token", invoiceId: INVOICE_ID }),
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error:
+        "Online payments are temporarily unavailable. Please call the clinic to pay.",
+    });
+    expect(mocks.createCheckoutSession).not.toHaveBeenCalled();
   });
 
   it("hosted: refuses portal checkout when the practice has no chargeable Connect account", async () => {
@@ -595,11 +624,11 @@ describe("portal checkout route", () => {
       [invoice()],
       [{ amount: "10.00" }],
       [{ name: "Biscuit" }],
-      [practice({ tier: "cloud", billingStatus: "active" })]
+      [practice({ tier: "cloud", billingStatus: "active" })],
     );
 
     const response = await POST(
-      portalRequest({ token: "portal-token", invoiceId: INVOICE_ID })
+      portalRequest({ token: "portal-token", invoiceId: INVOICE_ID }),
     );
 
     expect(response.status).toBe(503);
@@ -627,18 +656,18 @@ describe("portal checkout route", () => {
         [invoice()],
         [],
         [{ name: "Biscuit" }],
-        [practice()]
+        [practice()],
       );
 
       const response = await POST(
-        portalRequest({ token: "portal-token", invoiceId: INVOICE_ID })
+        portalRequest({ token: "portal-token", invoiceId: INVOICE_ID }),
       );
 
       expect(response.status).toBe(503);
       await expect(response.json()).resolves.toEqual({
         error: "Payment processing is not configured",
       });
-    }
+    },
   );
 
   it("rejects checkout when the token practice is missing or deleted", async () => {
@@ -646,11 +675,11 @@ describe("portal checkout route", () => {
       [client()],
       [invoice({ patientId: null })],
       [],
-      []
+      [],
     );
 
     const response = await POST(
-      portalRequest({ token: "portal-token", invoiceId: INVOICE_ID })
+      portalRequest({ token: "portal-token", invoiceId: INVOICE_ID }),
     );
 
     expect(response.status).toBe(404);
@@ -666,7 +695,7 @@ describe("portal checkout route", () => {
     mocks.selectResults.push([client()], [invoice({ status: "draft" })]);
 
     const response = await POST(
-      portalRequest({ token: "portal-token", invoiceId: INVOICE_ID })
+      portalRequest({ token: "portal-token", invoiceId: INVOICE_ID }),
     );
 
     expect(response.status).toBe(400);
@@ -680,7 +709,7 @@ describe("portal checkout route", () => {
     mocks.selectResults.push([client()], [invoice({ status: "processing" })]);
 
     const response = await POST(
-      portalRequest({ token: "portal-token", invoiceId: INVOICE_ID })
+      portalRequest({ token: "portal-token", invoiceId: INVOICE_ID }),
     );
 
     expect(response.status).toBe(400);
@@ -693,58 +722,60 @@ describe("portal checkout route", () => {
 
   it("keeps portal checkout status eligibility aligned with the portal invoice UI", () => {
     expect(ROUTE_SOURCE).toContain(
-      'invoice.status !== "sent" && invoice.status !== "overdue"'
+      'invoice.status !== "sent" && invoice.status !== "overdue"',
     );
   });
 
   it("keeps portal checkout patient descriptions scoped to the invoice tenant", () => {
     const patientDescriptionLookup = ROUTE_SOURCE.match(
-      /select\(\{ name: patients\.name \}\)[\s\S]+?\.limit\(1\)/
+      /select\(\{ name: patients\.name \}\)[\s\S]+?\.limit\(1\)/,
     )?.[0];
     expect(patientDescriptionLookup).toContain(
-      "eq(patients.id, invoice.patientId)"
+      "eq(patients.id, invoice.patientId)",
     );
     expect(patientDescriptionLookup).toContain(
-      "eq(patients.clientId, invoice.clientId)"
+      "eq(patients.clientId, invoice.clientId)",
     );
     expect(patientDescriptionLookup).toContain(
-      "eq(patients.practiceId, invoice.practiceId)"
+      "eq(patients.practiceId, invoice.practiceId)",
     );
     expect(patientDescriptionLookup).toContain("isNull(patients.deletedAt)");
   });
 
   it("requires an active practice before portal checkout can use billing state", () => {
     const practiceLookup = ROUTE_SOURCE.match(
-      /select\(\{\s*currency: practices\.currency,[\s\S]+?\.limit\(1\)/
+      /select\(\{\s*currency: practices\.currency,[\s\S]+?\.limit\(1\)/,
     )?.[0];
 
     expect(practiceLookup).toContain("eq(practices.id, invoice.practiceId)");
     expect(practiceLookup).toContain("isNull(practices.deletedAt)");
-    expect(ROUTE_SOURCE).toContain('if (!practice) {');
+    expect(ROUTE_SOURCE).toContain("if (!practice) {");
   });
 
   it("validates Stripe checkout URLs before returning them to portal clients", () => {
     expect(ROUTE_SOURCE).toContain("isSafePortalCheckoutRedirectUrl");
     expect(ROUTE_SOURCE).toContain(
-      "if (!isSafePortalCheckoutRedirectUrl(result?.url))"
+      "if (!isSafePortalCheckoutRedirectUrl(result?.url))",
     );
     expect(ROUTE_SOURCE).not.toContain("if (!result?.url)");
   });
 
   it("keeps portal checkout adjustment totals scoped through the current client invoice", () => {
     const adjustmentLookup = ROUTE_SOURCE.match(
-      /\.from\(invoiceAdjustments\)[\s\S]+?const adjustedCents/
+      /\.from\(invoiceAdjustments\)[\s\S]+?const adjustedCents/,
     )?.[0];
 
     expect(adjustmentLookup).toContain(
-      "eq(invoiceAdjustments.invoiceId, invoice.id)"
+      "eq(invoiceAdjustments.invoiceId, invoice.id)",
     );
     expect(adjustmentLookup).toContain(
-      "where ${invoices.id} = ${invoiceAdjustments.invoiceId}"
+      "where ${invoices.id} = ${invoiceAdjustments.invoiceId}",
     );
-    expect(adjustmentLookup).toContain("and ${invoices.clientId} = ${client.id}");
     expect(adjustmentLookup).toContain(
-      "and ${invoices.practiceId} = ${client.practiceId}"
+      "and ${invoices.clientId} = ${client.id}",
+    );
+    expect(adjustmentLookup).toContain(
+      "and ${invoices.practiceId} = ${client.practiceId}",
     );
     expect(adjustmentLookup).toContain("and ${invoices.deletedAt} is null");
   });

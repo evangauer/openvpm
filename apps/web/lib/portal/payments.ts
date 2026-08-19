@@ -27,9 +27,19 @@ export function buildPortalPaymentReturnUrl(input: {
   return `${origin}/portal/${encodedToken}/invoices?${params.toString()}`;
 }
 
+export function buildInvoicePaymentReturnUrl(input: {
+  origin: string;
+  token: string;
+  status: PortalPaymentStatus;
+}): string {
+  const origin = input.origin.replace(/\/$/, "");
+  const params = new URLSearchParams({ payment: input.status });
+  return `${origin}/pay/${encodeURIComponent(input.token)}?${params.toString()}`;
+}
+
 export function portalPaymentBanner(
   status: string | null,
-  invoiceId?: string | null
+  invoiceId?: string | null,
 ): PortalPaymentBanner | null {
   if (status === "success") {
     return {
@@ -49,7 +59,7 @@ export function portalPaymentBanner(
 }
 
 export function isSafePortalCheckoutRedirectUrl(
-  value: unknown
+  value: unknown,
 ): value is string {
   return isSafeCheckoutRedirectUrl(value);
 }

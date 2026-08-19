@@ -80,4 +80,14 @@ describe("responsive dashboard shell", () => {
     expect(source).toContain("unreadInboxLabel");
     expect(source).toContain("unread inbox conversations");
   });
+
+  it("offers explicit all-device session revocation with confirmation", () => {
+    const source = readFileSync("components/layout/sidebar.tsx", "utf8");
+
+    expect(source).toContain("trpc.auth.revokeAllSessions.useMutation");
+    expect(source).toContain('aria-label="Sign out everywhere"');
+    expect(source).toContain('title="Sign out everywhere?"');
+    expect(source).toContain("<ActionConfirmationDialog");
+    expect(source).toContain('await signOut({ callbackUrl: "/login" })');
+  });
 });

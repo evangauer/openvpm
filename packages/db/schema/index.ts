@@ -12,6 +12,7 @@ export * from "./soap-note-replacements";
 export * from "./prescriptions";
 export * from "./prescription-events";
 export * from "./billing";
+export * from "./finance";
 export * from "./dispense-charge-queue";
 export * from "./communications";
 export * from "./auth";

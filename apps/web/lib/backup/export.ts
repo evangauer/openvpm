@@ -2714,38 +2714,6 @@ export async function exportPracticeData(
     (product) =>
       product.deletedAt == null || referencedProductIds.has(product.id),
   );
-  const referencedUserIds = new Set(
-    [
-      ...prescriptionEventRows.map((event) => event.actorId),
-      ...prescriptionRows.map((prescription) => prescription.prescribedBy),
-      ...clinicalCorrectionRows.map((correction) => correction.correctedBy),
-      ...labReplacementRows.map((replacement) => replacement.actorId),
-      ...soapNoteRows.map((note) => note.authorId),
-      ...soapNoteRows.map((note) => note.finalizedBy),
-      ...soapNoteAddendumRows.map((addendum) => addendum.authorId),
-      ...vitalRows.map((vital) => vital.recordedBy),
-      ...vaccinationRows.map((vaccination) => vaccination.administeredBy),
-      ...labRows.flatMap((result) => [
-        result.orderedBy,
-        result.reviewedBy,
-        result.followUpAssignedTo,
-        result.followUpCompletedBy,
-      ]),
-      ...labResultEventRows.flatMap((event) => [
-        event.actorId,
-        event.followUpAssignedTo,
-      ]),
-      ...appointmentRows.map((appointment) => appointment.doctorId),
-      ...patientMergeRows.map((event) => event.performedBy),
-      ...smsConsentEventRows.map((event) => event.actorUserId),
-      ...smsSendAttemptRows.map((attempt) => attempt.requestedByUserId),
-      ...smsSendAttemptEventRows.map((event) => event.actorUserId),
-      ...fileRows.map((file) => file.uploadedBy),
-    ].filter((id): id is string => typeof id === "string"),
-  );
-  const userRows = allUserRows.filter(
-    (user) => user.deletedAt == null || referencedUserIds.has(user.id),
-  );
   const referencedClientIds = new Set(
     [
       ...patientRows.map((patient) => patient.clientId),
@@ -2761,24 +2729,6 @@ export async function exportPracticeData(
   );
   const clientRows = allClientRows.filter(
     (client) => client.deletedAt == null || referencedClientIds.has(client.id),
-  );
-  const referencedLocationIds = new Set(
-    [
-      ...productRows.map((product) => product.locationId),
-      ...userRows.map((user) => user.locationId),
-      ...appointmentRows.map((appointment) => appointment.locationId),
-      ...smsConsentEventRows.map((event) => event.locationId),
-      ...smsSendAttemptRows.map((attempt) => attempt.locationId),
-      ...allRoomRows.map((room) =>
-        appointmentRows.some((appointment) => appointment.roomId === room.id)
-          ? room.locationId
-          : null,
-      ),
-    ].filter((id): id is string => typeof id === "string"),
-  );
-  const locationRows = allLocationRows.filter(
-    (location) =>
-      location.deletedAt == null || referencedLocationIds.has(location.id),
   );
   const referencedAppointmentTypeIds = new Set(
     appointmentRows
@@ -2906,6 +2856,84 @@ export async function exportPracticeData(
       practiceId,
     ),
   ]);
+
+  // Immutable financial, clinical, communication, and audit history must keep
+  // the staff identities it names even after a user is deactivated. Keep this
+  // list aligned with every RESTORE_REFERENCE_RULES entry whose parent is
+  // `users`; otherwise a generated backup can fail its own restore validation.
+  const referencedUserIds = new Set(
+    [
+      ...smsConsentEventRows.map((event) => event.actorUserId),
+      ...smsSendAttemptRows.map((attempt) => attempt.requestedByUserId),
+      ...smsSendAttemptEventRows.map((event) => event.actorUserId),
+      ...patientMergeRows.map((event) => event.performedBy),
+      ...patientWeightRows.map((weight) => weight.recordedBy),
+      ...allergyRows.map((allergy) => allergy.notedBy),
+      ...appointmentRows.map((appointment) => appointment.doctorId),
+      ...appointmentWaitlistRows.map((entry) => entry.createdBy),
+      ...staffScheduleRows.map((schedule) => schedule.userId),
+      ...paymentRows.map((payment) => payment.receivedBy),
+      ...adjustmentRows.map((adjustment) => adjustment.createdBy),
+      ...soapNoteRows.flatMap((note) => [note.authorId, note.finalizedBy]),
+      ...soapNoteAddendumRows.map((addendum) => addendum.authorId),
+      ...soapNoteReplacementRows.map((replacement) => replacement.actorId),
+      ...vaccinationRows.map((vaccination) => vaccination.administeredBy),
+      ...labRows.flatMap((result) => [
+        result.orderedBy,
+        result.reviewedBy,
+        result.followUpAssignedTo,
+        result.followUpCompletedBy,
+      ]),
+      ...labResultEventRows.flatMap((event) => [
+        event.actorId,
+        event.followUpAssignedTo,
+      ]),
+      ...procedureRows.map((procedure) => procedure.performedBy),
+      ...clinicalNoteRows.map((note) => note.authorId),
+      ...vitalRows.map((vital) => vital.recordedBy),
+      ...clinicalCorrectionRows.map((correction) => correction.correctedBy),
+      ...labReplacementRows.map((replacement) => replacement.actorId),
+      ...caseRows.map((caseRow) => caseRow.primaryVetId),
+      ...treatmentPlanRows.map((plan) => plan.createdBy),
+      ...prescriptionRows.map((prescription) => prescription.prescribedBy),
+      ...prescriptionEventRows.map((event) => event.actorId),
+      ...dispenseChargeRows.map((charge) => charge.resolvedBy),
+      ...visitCloseoutRows.flatMap((closeout) => [
+        closeout.clinicalFinalizedBy,
+        closeout.completedBy,
+      ]),
+      ...fileRows.map((file) => file.uploadedBy),
+      ...controlledSubstanceRows.flatMap((entry) => [
+        entry.performedBy,
+        entry.witnessedBy,
+      ]),
+      ...communicationRows.map((communication) => communication.assignedTo),
+      ...auditLogRows.map((entry) => entry.userId),
+    ].filter((id): id is string => typeof id === "string"),
+  );
+  const userRows = allUserRows.filter(
+    (user) => user.deletedAt == null || referencedUserIds.has(user.id),
+  );
+
+  // Apply the same preservation rule to deleted clinic locations referenced
+  // by restorable configuration and historical records.
+  const referencedLocationIds = new Set(
+    [
+      ...locationMessagingRows.map((messaging) => messaging.locationId),
+      ...smsSuppressionRows.map((suppression) => suppression.locationId),
+      ...smsConsentEventRows.map((event) => event.locationId),
+      ...smsSendAttemptRows.map((attempt) => attempt.locationId),
+      ...userRows.map((user) => user.locationId),
+      ...roomRows.map((room) => room.locationId),
+      ...appointmentRows.map((appointment) => appointment.locationId),
+      ...staffScheduleRows.map((schedule) => schedule.locationId),
+      ...productRows.map((product) => product.locationId),
+    ].filter((id): id is string => typeof id === "string"),
+  );
+  const locationRows = allLocationRows.filter(
+    (location) =>
+      location.deletedAt == null || referencedLocationIds.has(location.id),
+  );
 
   const sections: Record<PracticeExportSection, unknown[]> = {
     locations: locationRows,

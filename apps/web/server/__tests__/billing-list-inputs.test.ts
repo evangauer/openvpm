@@ -10,6 +10,7 @@ vi.mock("@/lib/audit", () => ({
 
 const { billingRouter } = await import("../routers/billing");
 const { LIST_OFFSET_MAX } = await import("../routers/pagination");
+const { clinicEmailFrom } = await import("@/lib/email-env");
 
 const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const USER_ID = "00000000-0000-0000-0000-000000000001";
@@ -47,6 +48,7 @@ describe("billing list input validation", () => {
     const result = [
       {
         practiceName: "Harbor Veterinary Clinic",
+        practiceEmail: "billing@harbor.example",
         taxRatePercent: "8.75",
         currency: "cad",
         country: "CA",
@@ -63,6 +65,8 @@ describe("billing list input validation", () => {
 
     await expect(callerWithDb(db).getTaxConfig()).resolves.toEqual({
       practiceName: "Harbor Veterinary Clinic",
+      practiceEmail: "billing@harbor.example",
+      invoiceEmailFrom: clinicEmailFrom("Harbor Veterinary Clinic"),
       taxRatePercent: "8.75",
       currency: "cad",
       country: "CA",

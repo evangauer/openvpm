@@ -7,6 +7,13 @@ const tracked = execFileSync("git", ["ls-files", "-z"], {
 })
   .split("\0")
   .filter(Boolean);
+const releaseFiles = execFileSync(
+  "git",
+  ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+  { encoding: "utf8" },
+)
+  .split("\0")
+  .filter(Boolean);
 
 const forbiddenNames = new Set([
   "production-target.json",
@@ -31,10 +38,22 @@ const sensitiveContentRules = [
     name: "Vercel access token",
     pattern: /\bvercel_[A-Za-z0-9_-]{20,}\b/,
   },
+  {
+    name: "Stripe secret or restricted API key",
+    pattern: /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}\b/,
+  },
+  {
+    name: "Stripe webhook signing secret",
+    pattern: /\bwhsec_[A-Za-z0-9]{20,}\b/,
+  },
+  {
+    name: "Supabase secret API key",
+    pattern: /\bsb_secret_[A-Za-z0-9._-]{20,}\b/,
+  },
 ];
 
 const findings = [];
-for (const file of tracked) {
+for (const file of releaseFiles) {
   const name = basename(file);
   if (forbiddenNames.has(name)) {
     findings.push({ file, rule: "private migration handoff artifact" });
@@ -81,5 +100,5 @@ if (findings.length > 0) {
 }
 
 console.log(
-  `Open-source release verification passed (${tracked.length} tracked files checked).`,
+  `Open-source release verification passed (${releaseFiles.length} tracked and non-ignored untracked files checked).`,
 );

@@ -249,6 +249,17 @@ describe("self-hosting operations docs", () => {
       "https://app.openvpm.com/api/webhooks/stripe",
     );
     expect(clientInvoiceSection).toContain("- `checkout.session.completed`");
+    for (const event of [
+      "refund.updated",
+      "refund.failed",
+      "charge.dispute.created",
+      "charge.dispute.closed",
+      "payout.paid",
+      "payout.failed",
+      "payout.reconciliation_completed",
+    ]) {
+      expect(clientInvoiceSection).toContain(`- \`${event}\``);
+    }
     expect(clientInvoiceSection).not.toContain("invoice.payment_succeeded");
     expect(subscriptionSection).toContain(
       "https://app.openvpm.com/api/webhooks/stripe-subscription",

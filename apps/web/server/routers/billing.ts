@@ -20,13 +20,19 @@ import {
   type DispensableItem,
 } from "@/lib/inventory/dispense";
 import { appBaseUrl } from "@/lib/app-url";
+import { clinicEmailFrom } from "@/lib/email-env";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
-import { stripeConfigured } from "@/lib/stripe-config";
+import {
+  stripeConfigured,
+  stripeConnectApplicationFeeBps,
+  stripeConnectApplicationFeeConfigured,
+} from "@/lib/stripe-config";
 import {
   createCheckoutSession,
   createConnectAccount,
   createConnectAccountLink,
   createConnectLoginLink,
+  isMissingStripeConnectedAccountError,
   refundStripeCheckoutPayment,
   retrieveConnectAccount,
 } from "@/lib/stripe";
@@ -41,6 +47,7 @@ import {
   InvoiceTaxCalculationError,
 } from "@/lib/billing/invoice-tax";
 import {
+  canSafelyReprovisionStripeConnectAccount,
   STRIPE_CONNECT_PROVIDER,
   stripeConnectAccountState,
   stripeConnectApplicationFeeAmount,
@@ -88,6 +95,10 @@ import {
   visitWorkItems,
   dispenseChargeQueue,
   auditLog,
+  financialCloses,
+  paymentDisputes,
+  paymentProcessorRefunds,
+  paymentProcessorSettlements,
 } from "@openpims/db";
 import {
   clinicalDateInput,
@@ -101,6 +112,14 @@ import {
   assertVisitReconciliationMutable,
   markCompletedVisitCloseoutPaid,
 } from "../visit-billing-integrity";
+import {
+  FINANCIAL_BUSINESS_DATE_PATTERN,
+  loadFinancialDaySummary,
+} from "@/lib/billing/financial-close";
+import {
+  createInvoicePaymentToken,
+  INVOICE_PAYMENT_TOKEN_TTL_MS,
+} from "@/lib/billing/invoice-payment-tokens";
 
 type BillingDb = Pick<
   Database,
@@ -128,7 +147,7 @@ type InvoiceStatus = "draft" | "sent" | "paid" | "overdue" | "void";
 
 async function assertInvoiceItemsNotReconciled(
   ctx: BillingContext,
-  invoiceId: string
+  invoiceId: string,
 ) {
   const rows = await ctx.db.execute(sql`
     select ${visitWorkItems.id}
@@ -160,8 +179,13 @@ const allowedInvoiceStatusTransitions: Record<
   void: [],
 };
 
-function canTransitionInvoiceStatus(current: InvoiceStatus, next: InvoiceStatus) {
-  return current === next || allowedInvoiceStatusTransitions[current].includes(next);
+function canTransitionInvoiceStatus(
+  current: InvoiceStatus,
+  next: InvoiceStatus,
+) {
+  return (
+    current === next || allowedInvoiceStatusTransitions[current].includes(next)
+  );
 }
 
 function invoiceCheckoutReturnUrl({
@@ -195,9 +219,12 @@ const invoiceStatusSchema = z.enum([
   "void",
 ]);
 
-const currencyAmountSchema = z.string().trim().refine((value) => {
-  return BILLING_CURRENCY_AMOUNT_PATTERN.test(value);
-}, "Amount must be a valid currency amount.");
+const currencyAmountSchema = z
+  .string()
+  .trim()
+  .refine((value) => {
+    return BILLING_CURRENCY_AMOUNT_PATTERN.test(value);
+  }, "Amount must be a valid currency amount.");
 
 const paymentAmountSchema = currencyAmountSchema.refine((value) => {
   return moneyToCents(value) > 0;
@@ -205,24 +232,33 @@ const paymentAmountSchema = currencyAmountSchema.refine((value) => {
 
 const nonNegativeMoneySchema = currencyAmountSchema;
 
+const financialBusinessDateInput = z
+  .string()
+  .regex(FINANCIAL_BUSINESS_DATE_PATTERN, "Date must be YYYY-MM-DD.")
+  .refine((value) => {
+    const parsed = new Date(`${value}T00:00:00.000Z`);
+    return !Number.isNaN(parsed.getTime()) &&
+      parsed.toISOString().slice(0, 10) === value;
+  }, "Choose a real calendar date.");
+
 const optionalServiceTextInput = (label: string, max: number) =>
   optionalClinicalTextInput(label, max).transform(
-    (value) => value || undefined
+    (value) => value || undefined,
   );
 
 const servicePriceInput = nonNegativeMoneySchema.transform((value) =>
-  centsToMoney(moneyToCents(value))
+  centsToMoney(moneyToCents(value)),
 );
 
 const serviceInput = z.object({
   name: clinicalTextInput("Service name", BILLING_SERVICE_NAME_MAX_LENGTH),
   code: optionalServiceTextInput(
     "Service code",
-    BILLING_SERVICE_CODE_MAX_LENGTH
+    BILLING_SERVICE_CODE_MAX_LENGTH,
   ),
   category: optionalServiceTextInput(
     "Service category",
-    BILLING_SERVICE_CATEGORY_MAX_LENGTH
+    BILLING_SERVICE_CATEGORY_MAX_LENGTH,
   ),
   defaultPrice: servicePriceInput,
   taxable: z.boolean().default(true),
@@ -246,10 +282,10 @@ function serviceSnapshotConditions(expected: ServiceSnapshot) {
 
 async function lockServiceCatalog(
   database: ServiceCatalogDb,
-  practiceId: string
+  practiceId: string,
 ) {
   await database.execute(
-    sql`select pg_advisory_xact_lock(hashtext(${`service-catalog:${practiceId}`}::text))`
+    sql`select pg_advisory_xact_lock(hashtext(${`service-catalog:${practiceId}`}::text))`,
   );
 }
 
@@ -257,7 +293,7 @@ async function assertServiceIdentityAvailable(
   database: ServiceCatalogDb,
   practiceId: string,
   input: ServiceSnapshot,
-  excludeId?: string
+  excludeId?: string,
 ) {
   const [collision] = await database
     .select({ id: services.id })
@@ -271,9 +307,9 @@ async function assertServiceIdentityAvailable(
           sql`lower(${services.name}) = lower(${input.name})`,
           input.code
             ? sql`lower(${services.code}) = lower(${input.code})`
-            : undefined
-        )
-      )
+            : undefined,
+        ),
+      ),
     )
     .limit(1);
 
@@ -288,17 +324,17 @@ async function assertServiceIdentityAvailable(
 
 const billingNotesInput = optionalClinicalTextInput(
   "Notes",
-  BILLING_NOTES_MAX_LENGTH
+  BILLING_NOTES_MAX_LENGTH,
 );
 const invoiceSearchInput = optionalClinicalTextInput(
   "Search",
-  BILLING_INVOICE_SEARCH_MAX_LENGTH
+  BILLING_INVOICE_SEARCH_MAX_LENGTH,
 );
 const invoiceLineInput = z
   .object({
     description: clinicalTextInput(
       "Line item description",
-      BILLING_INVOICE_LINE_DESCRIPTION_MAX_LENGTH
+      BILLING_INVOICE_LINE_DESCRIPTION_MAX_LENGTH,
     ),
     quantity: z
       .number()
@@ -348,7 +384,7 @@ const createInvoiceInput = z
       .array(invoiceLineInput)
       .max(
         BILLING_INVOICE_MAX_ITEMS,
-        `Invoices can include at most ${BILLING_INVOICE_MAX_ITEMS} items.`
+        `Invoices can include at most ${BILLING_INVOICE_MAX_ITEMS} items.`,
       ),
     dueDate: clinicalDateInput("Due date").optional(),
     isEstimate: z.boolean().optional().default(false),
@@ -356,7 +392,7 @@ const createInvoiceInput = z
   .superRefine((input, ctx) => {
     const subtotalCents = input.items.reduce(
       (sum, item) => sum + moneyToCents(item.unitPrice) * item.quantity,
-      0
+      0,
     );
     if (subtotalCents > BILLING_MAX_MONEY_CENTS) {
       ctx.addIssue({
@@ -376,13 +412,13 @@ const updateInvoiceItemsInput = z
       .min(1, "An invoice must include at least one line item.")
       .max(
         BILLING_INVOICE_MAX_ITEMS,
-        `Invoices can include at most ${BILLING_INVOICE_MAX_ITEMS} items.`
+        `Invoices can include at most ${BILLING_INVOICE_MAX_ITEMS} items.`,
       ),
   })
   .superRefine((input, ctx) => {
     const subtotalCents = input.items.reduce(
       (sum, item) => sum + moneyToCents(item.unitPrice) * item.quantity,
-      0
+      0,
     );
     if (subtotalCents > BILLING_MAX_MONEY_CENTS) {
       ctx.addIssue({
@@ -421,7 +457,9 @@ async function assertActivePractice(ctx: BillingContext) {
 }
 
 async function assertBillingProviderActionsAllowed(ctx: BillingContext) {
-  if (await lockPracticeForExternalSideEffects(ctx.db as Database, ctx.practiceId)) {
+  if (
+    await lockPracticeForExternalSideEffects(ctx.db as Database, ctx.practiceId)
+  ) {
     return;
   }
   throw new TRPCError({
@@ -432,7 +470,7 @@ async function assertBillingProviderActionsAllowed(ctx: BillingContext) {
 
 async function throwServiceMutationMiss(
   ctx: BillingContext,
-  serviceId: string
+  serviceId: string,
 ): Promise<never> {
   const [current] = await ctx.db
     .select({ id: services.id })
@@ -441,8 +479,8 @@ async function throwServiceMutationMiss(
       and(
         eq(services.id, serviceId),
         eq(services.practiceId, ctx.practiceId),
-        isNull(services.deletedAt)
-      )
+        isNull(services.deletedAt),
+      ),
     )
     .limit(1);
 
@@ -458,7 +496,7 @@ async function throwServiceMutationMiss(
 
 async function throwArchivedServiceMutationMiss(
   ctx: BillingContext,
-  serviceId: string
+  serviceId: string,
 ): Promise<never> {
   const [current] = await ctx.db
     .select({ id: services.id })
@@ -467,8 +505,8 @@ async function throwArchivedServiceMutationMiss(
       and(
         eq(services.id, serviceId),
         eq(services.practiceId, ctx.practiceId),
-        isNotNull(services.deletedAt)
-      )
+        isNotNull(services.deletedAt),
+      ),
     )
     .limit(1);
 
@@ -484,7 +522,7 @@ async function throwArchivedServiceMutationMiss(
 
 async function getInvoiceForPractice(
   ctx: BillingContext,
-  invoiceId: string
+  invoiceId: string,
 ): Promise<InvoiceForPayment> {
   const [invoice] = await ctx.db
     .select({
@@ -501,8 +539,8 @@ async function getInvoiceForPractice(
       and(
         eq(invoices.id, invoiceId),
         eq(invoices.practiceId, ctx.practiceId),
-        isNull(invoices.deletedAt)
-      )
+        isNull(invoices.deletedAt),
+      ),
     )
     .limit(1);
 
@@ -544,7 +582,8 @@ function assertCanAdjustInvoice(invoice: InvoiceForPayment) {
   if (invoice.isEstimate) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "Convert the estimate to an invoice before applying an adjustment.",
+      message:
+        "Convert the estimate to an invoice before applying an adjustment.",
     });
   }
   if (invoice.status === "void") {
@@ -651,7 +690,10 @@ function invoiceAdjustmentTotalMatches(expectedCents: number): SQL {
   ), 0) = ${centsToMoney(expectedCents)}::numeric`;
 }
 
-async function listInvoiceAdjustmentRows(ctx: BillingContext, invoiceId: string) {
+async function listInvoiceAdjustmentRows(
+  ctx: BillingContext,
+  invoiceId: string,
+) {
   return ctx.db
     .select({
       amount: invoiceAdjustments.amount,
@@ -662,14 +704,14 @@ async function listInvoiceAdjustmentRows(ctx: BillingContext, invoiceId: string)
       and(
         eq(invoiceAdjustments.invoiceId, invoiceId),
         adjustmentPracticeScope(ctx),
-        isNull(invoiceAdjustments.deletedAt)
-      )
+        isNull(invoiceAdjustments.deletedAt),
+      ),
     );
 }
 
 async function getInvoiceAdjustmentTotalCents(
   ctx: BillingContext,
-  invoiceId: string
+  invoiceId: string,
 ): Promise<number> {
   const rows = await listInvoiceAdjustmentRows(ctx, invoiceId);
   return rows.reduce((sum, row) => sum + moneyToCents(row.amount), 0);
@@ -704,15 +746,42 @@ function serializePaymentAccountStatus(row: PaymentAccountRow | null) {
     payoutsEnabled: row.payoutsEnabled,
     detailsSubmitted: row.detailsSubmitted,
     requirementsCurrentlyDue: normalizeRequirements(
-      row.requirementsCurrentlyDue
+      row.requirementsCurrentlyDue,
     ),
     requirementsDisabledReason: row.requirementsDisabledReason,
     lastSyncedAt: row.lastSyncedAt,
   };
 }
 
+function serializeClientPaymentReadiness(
+  row: PaymentAccountRow | null,
+  connectRequired: boolean,
+) {
+  const account = serializePaymentAccountStatus(row);
+  const applicationFeeBps = stripeConnectApplicationFeeBps();
+  const applicationFeeConfigured =
+    !connectRequired || stripeConnectApplicationFeeConfigured();
+
+  return {
+    ...account,
+    enabled: account.enabled && applicationFeeConfigured,
+    applicationFeeConfigured,
+    applicationFeeBps: applicationFeeBps > 0 ? applicationFeeBps : null,
+  };
+}
+
+function assertHostedConnectApplicationFeeConfigured(): void {
+  if (!stripeConnectApplicationFeeConfigured()) {
+    throw new TRPCError({
+      code: "SERVICE_UNAVAILABLE",
+      message:
+        "Client card payments are paused until the OpenVPM payment fee is configured.",
+    });
+  }
+}
+
 async function getStripeConnectPaymentAccount(
-  ctx: BillingContext
+  ctx: BillingContext,
 ): Promise<PaymentAccountRow | null> {
   const [account] = await ctx.db
     .select()
@@ -721,8 +790,8 @@ async function getStripeConnectPaymentAccount(
       and(
         eq(practicePaymentAccounts.practiceId, ctx.practiceId),
         eq(practicePaymentAccounts.provider, STRIPE_CONNECT_PROVIDER),
-        isNull(practicePaymentAccounts.deletedAt)
-      )
+        isNull(practicePaymentAccounts.deletedAt),
+      ),
     )
     .limit(1);
 
@@ -731,7 +800,7 @@ async function getStripeConnectPaymentAccount(
 
 async function upsertStripeConnectPaymentAccount(
   ctx: BillingContext,
-  account: { id: string } & Parameters<typeof stripeConnectAccountState>[0]
+  account: { id: string } & Parameters<typeof stripeConnectAccountState>[0],
 ) {
   const state = stripeConnectAccountState(account);
   const [row] = await ctx.db
@@ -789,7 +858,7 @@ function adjustmentLabel(type: InvoiceAdjustmentType): string {
 
 async function assertClientBelongsToPractice(
   ctx: BillingContext,
-  clientId: string
+  clientId: string,
 ) {
   const [client] = await ctx.db
     .select({ id: clients.id })
@@ -798,8 +867,8 @@ async function assertClientBelongsToPractice(
       and(
         eq(clients.id, clientId),
         eq(clients.practiceId, ctx.practiceId),
-        isNull(clients.deletedAt)
-      )
+        isNull(clients.deletedAt),
+      ),
     )
     .limit(1);
 
@@ -811,7 +880,7 @@ async function assertClientBelongsToPractice(
 async function assertPatientBelongsToClient(
   ctx: BillingContext,
   patientId: string,
-  clientId: string
+  clientId: string,
 ) {
   const [patient] = await ctx.db
     .select({ id: patients.id })
@@ -821,8 +890,8 @@ async function assertPatientBelongsToClient(
         eq(patients.id, patientId),
         eq(patients.clientId, clientId),
         eq(patients.practiceId, ctx.practiceId),
-        isNull(patients.deletedAt)
-      )
+        isNull(patients.deletedAt),
+      ),
     )
     .limit(1);
 
@@ -838,7 +907,7 @@ async function assertAppointmentBelongsToClientPatient(
   ctx: BillingContext,
   appointmentId: string,
   clientId: string,
-  patientId?: string
+  patientId?: string,
 ) {
   const conditions = [
     eq(appointments.id, appointmentId),
@@ -871,7 +940,7 @@ async function lockAppointmentForVisitBilling(
   appointmentId: string,
   clientId: string,
   patientId: string | undefined,
-  isEstimate: boolean
+  isEstimate: boolean,
 ) {
   const conditions = [
     eq(appointments.id, appointmentId),
@@ -914,7 +983,7 @@ async function lockAppointmentForVisitBilling(
 
 async function assertInvoiceNotCompletedCloseout(
   ctx: BillingContext,
-  invoiceId: string
+  invoiceId: string,
 ) {
   const [closeout] = await ctx.db
     .select({ id: visitCloseouts.id })
@@ -924,8 +993,8 @@ async function assertInvoiceNotCompletedCloseout(
         eq(visitCloseouts.invoiceId, invoiceId),
         eq(visitCloseouts.practiceId, ctx.practiceId),
         eq(visitCloseouts.status, "completed"),
-        isNull(visitCloseouts.deletedAt)
-      )
+        isNull(visitCloseouts.deletedAt),
+      ),
     )
     .limit(1);
   if (closeout) {
@@ -939,7 +1008,7 @@ async function assertInvoiceNotCompletedCloseout(
 
 async function lockAppointmentForInvoiceMutation(
   ctx: BillingContext,
-  appointmentId: string | null | undefined
+  appointmentId: string | null | undefined,
 ) {
   if (!appointmentId) return;
   const [appointment] = await ctx.db
@@ -949,8 +1018,8 @@ async function lockAppointmentForInvoiceMutation(
       and(
         eq(appointments.id, appointmentId),
         eq(appointments.practiceId, ctx.practiceId),
-        isNull(appointments.deletedAt)
-      )
+        isNull(appointments.deletedAt),
+      ),
     )
     .for("update");
   if (!appointment) {
@@ -967,18 +1036,18 @@ async function assertLineItemReferences(
   options: {
     previousItems?: readonly DispensableItem[];
     lockProductsForStock?: boolean;
-  } = {}
+  } = {},
 ) {
   const quantitiesFor = (
     source: readonly DispensableItem[],
-    itemType: DispensableItem["itemType"]
+    itemType: DispensableItem["itemType"],
   ) => {
     const quantities = new Map<string, number>();
     for (const item of source) {
       if (item.itemType !== itemType || !item.itemId) continue;
       quantities.set(
         item.itemId,
-        (quantities.get(item.itemId) ?? 0) + item.quantity
+        (quantities.get(item.itemId) ?? 0) + item.quantity,
       );
     }
     return quantities;
@@ -1005,8 +1074,8 @@ async function assertLineItemReferences(
           .where(
             and(
               inArray(services.id, serviceIds),
-              eq(services.practiceId, ctx.practiceId)
-            )
+              eq(services.practiceId, ctx.practiceId),
+            ),
           )
           .orderBy(services.id)
           .for("share");
@@ -1027,8 +1096,8 @@ async function assertLineItemReferences(
       .where(
         and(
           inArray(products.id, productIds),
-          eq(products.practiceId, ctx.practiceId)
-        )
+          eq(products.practiceId, ctx.practiceId),
+        ),
       )
       .orderBy(products.id);
     productRows = options.lockProductsForStock
@@ -1044,14 +1113,14 @@ async function assertLineItemReferences(
   }
   const previousServiceQuantities = quantitiesFor(
     options.previousItems ?? [],
-    "service"
+    "service",
   );
   if (
     serviceRows.some(
       (row) =>
         row.deletedAt != null &&
         (serviceQuantities.get(row.id) ?? 0) >
-          (previousServiceQuantities.get(row.id) ?? 0)
+          (previousServiceQuantities.get(row.id) ?? 0),
     )
   ) {
     throw new TRPCError({
@@ -1131,7 +1200,7 @@ function invoiceLineTaxTotals(
 }
 
 function stockOwnedItems(
-  items: readonly InvoiceLineInput[]
+  items: readonly InvoiceLineInput[],
 ): DispensableItem[] {
   return items
     .filter(
@@ -1146,14 +1215,14 @@ function stockOwnedItems(
 
 async function trackedStockOwnedItems(
   ctx: BillingContext,
-  items: readonly InvoiceLineInput[]
+  items: readonly InvoiceLineInput[],
 ): Promise<DispensableItem[]> {
   const candidates = stockOwnedItems(items);
   const productIds = [
     ...new Set(
       candidates
         .filter((item) => item.itemType === "product" && item.itemId)
-        .map((item) => item.itemId!)
+        .map((item) => item.itemId!),
     ),
   ];
   if (productIds.length === 0) return candidates;
@@ -1165,12 +1234,12 @@ async function trackedStockOwnedItems(
         inArray(products.id, productIds),
         eq(products.practiceId, ctx.practiceId),
         eq(products.inventoryTracked, true),
-        isNull(products.deletedAt)
-      )
+        isNull(products.deletedAt),
+      ),
     );
   const trackedIds = new Set(trackedRows.map((row) => row.id));
   return candidates.filter(
-    (item) => item.itemType !== "product" || trackedIds.has(item.itemId ?? "")
+    (item) => item.itemType !== "product" || trackedIds.has(item.itemId ?? ""),
   );
 }
 
@@ -1181,7 +1250,7 @@ async function assertPrescriptionChargeSources(
     appointmentId?: string | null;
     patientId?: string | null;
     currentInvoiceId?: string;
-  }
+  },
 ) {
   const sourcedItems = items.filter((item) => item.sourcePrescriptionId);
   const sourceIds = sourcedItems.map((item) => item.sourcePrescriptionId!);
@@ -1214,14 +1283,14 @@ async function assertPrescriptionChargeSources(
         eq(prescriptions.patientId, options.patientId),
         eq(prescriptions.practiceId, ctx.practiceId),
         isNull(prescriptions.deletedAt),
-        isNotNull(prescriptions.productId)
-      )
+        isNotNull(prescriptions.productId),
+      ),
     )
     .orderBy(prescriptions.id)
     .for("share");
   const byId = new Map(linkedPrescriptions.map((rx) => [rx.id, rx]));
   const visitProductIds = new Set(
-    linkedPrescriptions.map((rx) => rx.productId).filter(Boolean)
+    linkedPrescriptions.map((rx) => rx.productId).filter(Boolean),
   );
 
   for (const item of items) {
@@ -1241,11 +1310,13 @@ async function assertPrescriptionChargeSources(
     if (
       !prescription ||
       prescription.productId !== item.itemId ||
-      (prescription.quantity !== null && prescription.quantity !== item.quantity)
+      (prescription.quantity !== null &&
+        prescription.quantity !== item.quantity)
     ) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "Prescription charge no longer matches the visit dispensation.",
+        message:
+          "Prescription charge no longer matches the visit dispensation.",
       });
     }
   }
@@ -1573,7 +1644,7 @@ async function lockDispenseChargeWorkflow(
 
 async function deductProductStock(
   ctx: BillingContext,
-  items: readonly DispensableItem[]
+  items: readonly DispensableItem[],
 ) {
   const deductions = computeStockDeductions([...items]);
   for (const deduction of deductions) {
@@ -1588,8 +1659,8 @@ async function deductProductStock(
           eq(products.practiceId, ctx.practiceId),
           eq(products.inventoryTracked, true),
           isNull(products.deletedAt),
-          sql`${products.stockQuantity} >= ${deduction.quantity}`
-        )
+          sql`${products.stockQuantity} >= ${deduction.quantity}`,
+        ),
       )
       .returning({ id: products.id, stockQuantity: products.stockQuantity });
 
@@ -1604,7 +1675,7 @@ async function deductProductStock(
 
 async function invoiceProductItemsForStock(
   ctx: BillingContext,
-  invoiceId: string
+  invoiceId: string,
 ): Promise<DispensableItem[]> {
   return ctx.db
     .select({
@@ -1619,8 +1690,8 @@ async function invoiceProductItemsForStock(
         eq(invoiceItems.itemId, products.id),
         eq(products.practiceId, ctx.practiceId),
         eq(products.inventoryTracked, true),
-        isNull(products.deletedAt)
-      )
+        isNull(products.deletedAt),
+      ),
     )
     .where(
       and(
@@ -1628,14 +1699,14 @@ async function invoiceProductItemsForStock(
         invoiceItemPracticeScope(ctx),
         isNull(invoiceItems.sourcePrescriptionId),
         isNull(invoiceItems.sourceDispenseChargeId),
-        isNull(invoiceItems.deletedAt)
-      )
+        isNull(invoiceItems.deletedAt),
+      ),
     );
 }
 
 async function restoreProductStock(
   ctx: BillingContext,
-  items: readonly DispensableItem[]
+  items: readonly DispensableItem[],
 ) {
   const restorations = computeStockDeductions([...items]);
   for (const restoration of restorations) {
@@ -1650,15 +1721,16 @@ async function restoreProductStock(
           eq(products.practiceId, ctx.practiceId),
           eq(products.inventoryTracked, true),
           isNull(products.deletedAt),
-          sql`${products.stockQuantity} + ${restoration.quantity} <= ${POSTGRES_INTEGER_MAX}`
-        )
+          sql`${products.stockQuantity} + ${restoration.quantity} <= ${POSTGRES_INTEGER_MAX}`,
+        ),
       )
       .returning({ id: products.id, stockQuantity: products.stockQuantity });
 
     if (!product) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "Unable to restore stock for one or more product invoice lines.",
+        message:
+          "Unable to restore stock for one or more product invoice lines.",
       });
     }
   }
@@ -1672,6 +1744,7 @@ export const billingRouter = createRouter({
     const [practice] = await ctx.db
       .select({
         practiceName: practices.name,
+        practiceEmail: practices.email,
         taxRatePercent: practices.taxRatePercent,
         currency: practices.currency,
         country: practices.country,
@@ -1685,6 +1758,8 @@ export const billingRouter = createRouter({
     }
     return {
       practiceName: practice.practiceName,
+      practiceEmail: practice.practiceEmail ?? null,
+      invoiceEmailFrom: clinicEmailFrom(practice.practiceName),
       taxRatePercent: practice.taxRatePercent ?? "8.00",
       currency: practice.currency ?? "usd",
       country: practice.country ?? "US",
@@ -1696,11 +1771,77 @@ export const billingRouter = createRouter({
     .use(requireRole("admin"))
     .query(async ({ ctx }) => {
       const row = await getStripeConnectPaymentAccount(ctx);
+      const connectRequired = billingEnforced();
       return {
         stripeConfigured: stripeConfigured(),
-        connectRequired: billingEnforced(),
-        ...serializePaymentAccountStatus(row),
+        connectRequired,
+        ...serializeClientPaymentReadiness(row, connectRequired),
       };
+    }),
+
+  createInvoicePaymentLink: protectedProcedure
+    .use(requireRole("admin", "front_desk"))
+    .input(z.object({ invoiceId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
+      const [invoice] = await ctx.db
+        .select({
+          id: invoices.id,
+          clientId: invoices.clientId,
+          status: invoices.status,
+          isEstimate: invoices.isEstimate,
+          appointmentId: invoices.appointmentId,
+        })
+        .from(invoices)
+        .where(
+          and(
+            eq(invoices.id, input.invoiceId),
+            eq(invoices.practiceId, ctx.practiceId),
+            isNull(invoices.deletedAt),
+          ),
+        )
+        .limit(1);
+
+      if (!invoice) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Invoice not found" });
+      }
+      if (
+        invoice.isEstimate ||
+        (invoice.status !== "sent" && invoice.status !== "overdue")
+      ) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Send the invoice before sharing its payment link.",
+        });
+      }
+      await assertVisitInvoiceReadyForFinancialAction(
+        ctx,
+        invoice.appointmentId,
+      );
+
+      const token = createInvoicePaymentToken({
+        invoiceId: invoice.id,
+        clientId: invoice.clientId,
+        practiceId: ctx.practiceId,
+      });
+      const path = `/pay/${encodeURIComponent(token)}`;
+      const ttlDays = Math.floor(
+        INVOICE_PAYMENT_TOKEN_TTL_MS / (24 * 60 * 60 * 1_000),
+      );
+      await ctx.db.insert(auditLog).values({
+        practiceId: ctx.practiceId,
+        userId: ctx.user.id,
+        action: "invoice_payment_link_created",
+        entityType: "invoice",
+        entityId: invoice.id,
+        ipAddress: ctx.ip ?? null,
+        changes: {
+          paymentLinkScope: "invoice_only",
+          paymentLinkTtlDays: ttlDays,
+        },
+      });
+
+      return { path, expiresInDays: ttlDays };
     }),
 
   createPaymentAccountOnboarding: protectedProcedure
@@ -1730,14 +1871,36 @@ export const billingRouter = createRouter({
 
       try {
         const existing = await getStripeConnectPaymentAccount(ctx);
-        const account = existing?.stripeAccountId
-          ? await retrieveConnectAccount(existing.stripeAccountId)
-          : await createConnectAccount({
+        let reprovisioned = false;
+        let account = null;
+        if (existing?.stripeAccountId) {
+          try {
+            account = await retrieveConnectAccount(existing.stripeAccountId);
+          } catch (error) {
+            if (!isMissingStripeConnectedAccountError(error)) throw error;
+            if (!canSafelyReprovisionStripeConnectAccount(existing)) {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message:
+                  "This clinic's existing payment account must be reviewed before reconnecting it to OpenVPM.",
+              });
+            }
+            account = await createConnectAccount({
               practiceId: practice.id,
               email: practice.email,
               country: practice.country,
               businessName: practice.name,
             });
+            reprovisioned = true;
+          }
+        } else {
+          account = await createConnectAccount({
+            practiceId: practice.id,
+            email: practice.email,
+            country: practice.country,
+            businessName: practice.name,
+          });
+        }
 
         if (!account) {
           throw new TRPCError({
@@ -1746,7 +1909,28 @@ export const billingRouter = createRouter({
           });
         }
 
-        await upsertStripeConnectPaymentAccount(ctx, account);
+        if (reprovisioned) {
+          await ctx.db.transaction(async (tx) => {
+            const row = await upsertStripeConnectPaymentAccount(
+              { ...ctx, db: tx },
+              account!,
+            );
+            await tx.insert(auditLog).values({
+              practiceId: ctx.practiceId,
+              userId: ctx.user.id,
+              action: "stripe_connect_reprovisioned",
+              entityType: "practice_payment_account",
+              entityId: row?.id ?? existing!.id,
+              changes: {
+                reason: "Stripe platform account reconfiguration",
+                priorAccountState: "unsubmitted_and_not_operational",
+                nextAccountState: "pending_onboarding",
+              },
+            });
+          });
+        } else {
+          await upsertStripeConnectPaymentAccount(ctx, account);
+        }
 
         const base = appBaseUrl();
         const link = await createConnectAccountLink({
@@ -1786,10 +1970,11 @@ export const billingRouter = createRouter({
 
       const existing = await getStripeConnectPaymentAccount(ctx);
       if (!existing) {
+        const connectRequired = billingEnforced();
         return {
           stripeConfigured: true,
-          connectRequired: billingEnforced(),
-          ...serializePaymentAccountStatus(null),
+          connectRequired,
+          ...serializeClientPaymentReadiness(null, connectRequired),
         };
       }
 
@@ -1803,10 +1988,11 @@ export const billingRouter = createRouter({
         }
 
         const row = await upsertStripeConnectPaymentAccount(ctx, account);
+        const connectRequired = billingEnforced();
         return {
           stripeConfigured: true,
-          connectRequired: billingEnforced(),
-          ...serializePaymentAccountStatus(row ?? null),
+          connectRequired,
+          ...serializeClientPaymentReadiness(row ?? null, connectRequired),
         };
       } catch (err) {
         if (err instanceof TRPCError) throw err;
@@ -2006,7 +2192,8 @@ export const billingRouter = createRouter({
         if (!sourceProduct) {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
-            message: "The dispensed product is no longer available for billing.",
+            message:
+              "The dispensed product is no longer available for billing.",
           });
         }
         const newLine = {
@@ -2401,7 +2588,7 @@ export const billingRouter = createRouter({
         appointmentId: z.string().uuid().optional(),
         limit: z.number().int().min(1).max(100).default(25),
         offset: listOffsetInput,
-      })
+      }),
     )
     .query(async ({ ctx, input }) => {
       const conditions: ReturnType<typeof eq>[] = [
@@ -2455,8 +2642,8 @@ export const billingRouter = createRouter({
             and(
               eq(invoices.clientId, clients.id),
               eq(clients.practiceId, ctx.practiceId),
-              isNull(clients.deletedAt)
-            )
+              isNull(clients.deletedAt),
+            ),
           )
           .leftJoin(
             patients,
@@ -2464,8 +2651,8 @@ export const billingRouter = createRouter({
               eq(invoices.patientId, patients.id),
               eq(patients.clientId, invoices.clientId),
               eq(patients.practiceId, ctx.practiceId),
-              isNull(patients.deletedAt)
-            )
+              isNull(patients.deletedAt),
+            ),
           )
           .where(and(...conditions))
           .orderBy(desc(invoices.createdAt))
@@ -2510,8 +2697,8 @@ export const billingRouter = createRouter({
           and(
             eq(invoices.clientId, clients.id),
             eq(clients.practiceId, ctx.practiceId),
-            isNull(clients.deletedAt)
-          )
+            isNull(clients.deletedAt),
+          ),
         )
         .leftJoin(
           patients,
@@ -2519,20 +2706,23 @@ export const billingRouter = createRouter({
             eq(invoices.patientId, patients.id),
             eq(patients.clientId, invoices.clientId),
             eq(patients.practiceId, ctx.practiceId),
-            isNull(patients.deletedAt)
-          )
+            isNull(patients.deletedAt),
+          ),
         )
         .where(
           and(
             eq(invoices.id, input.id),
             eq(invoices.practiceId, ctx.practiceId),
-            isNull(invoices.deletedAt)
-          )
+            isNull(invoices.deletedAt),
+          ),
         )
         .limit(1);
 
       if (!invoice) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Invoice not found" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Invoice not found",
+        });
       }
 
       const [items, adjustmentRows] = await Promise.all([
@@ -2543,14 +2733,14 @@ export const billingRouter = createRouter({
             and(
               eq(invoiceItems.invoiceId, input.id),
               invoiceItemPracticeScope(ctx),
-              isNull(invoiceItems.deletedAt)
-            )
+              isNull(invoiceItems.deletedAt),
+            ),
           ),
         listInvoiceAdjustmentRows(ctx, input.id),
       ]);
       const adjustedCents = adjustmentRows.reduce(
         (sum, row) => sum + moneyToCents(row.amount),
-        0
+        0,
       );
 
       return {
@@ -2567,7 +2757,7 @@ export const billingRouter = createRouter({
       z.object({
         id: z.string().uuid(),
         status: z.enum(["draft", "sent", "paid", "overdue"]),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const existing = await getInvoiceForPractice(ctx, input.id);
@@ -2608,10 +2798,13 @@ export const billingRouter = createRouter({
       if (input.status === "sent" && existing.appointmentId) {
         return ctx.db.transaction(async (tx) => {
           const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
-          await lockAppointmentForInvoiceMutation(txCtx, existing.appointmentId);
+          await lockAppointmentForInvoiceMutation(
+            txCtx,
+            existing.appointmentId,
+          );
           await assertVisitInvoiceReadyForFinancialAction(
             txCtx,
-            existing.appointmentId
+            existing.appointmentId,
           );
           const [invoice] = await tx
             .update(invoices)
@@ -2652,7 +2845,10 @@ export const billingRouter = createRouter({
       .select()
       .from(services)
       .where(
-        and(eq(services.practiceId, ctx.practiceId), isNull(services.deletedAt))
+        and(
+          eq(services.practiceId, ctx.practiceId),
+          isNull(services.deletedAt),
+        ),
       )
       .orderBy(services.name);
   }),
@@ -2665,8 +2861,8 @@ export const billingRouter = createRouter({
       .where(
         and(
           eq(services.practiceId, ctx.practiceId),
-          isNotNull(services.deletedAt)
-        )
+          isNotNull(services.deletedAt),
+        ),
       )
       .orderBy(services.name);
   }),
@@ -2705,7 +2901,7 @@ export const billingRouter = createRouter({
       serviceInput.extend({
         id: z.string().uuid(),
         expected: serviceInput,
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
@@ -2715,7 +2911,7 @@ export const billingRouter = createRouter({
           tx,
           ctx.practiceId,
           input,
-          input.id
+          input.id,
         );
         const [result] = await tx
           .update(services)
@@ -2731,8 +2927,8 @@ export const billingRouter = createRouter({
               eq(services.id, input.id),
               eq(services.practiceId, ctx.practiceId),
               isNull(services.deletedAt),
-              ...serviceSnapshotConditions(input.expected)
-            )
+              ...serviceSnapshotConditions(input.expected),
+            ),
           )
           .returning();
         return result;
@@ -2748,7 +2944,7 @@ export const billingRouter = createRouter({
       z.object({
         id: z.string().uuid(),
         expected: serviceInput,
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
@@ -2760,8 +2956,8 @@ export const billingRouter = createRouter({
             eq(services.id, input.id),
             eq(services.practiceId, ctx.practiceId),
             isNull(services.deletedAt),
-            ...serviceSnapshotConditions(input.expected)
-          )
+            ...serviceSnapshotConditions(input.expected),
+          ),
         )
         .returning({ id: services.id });
       if (!archived) {
@@ -2775,7 +2971,7 @@ export const billingRouter = createRouter({
       z.object({
         id: z.string().uuid(),
         expected: serviceInput,
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
@@ -2785,7 +2981,7 @@ export const billingRouter = createRouter({
           tx,
           ctx.practiceId,
           input.expected,
-          input.id
+          input.id,
         );
         const [result] = await tx
           .update(services)
@@ -2795,8 +2991,8 @@ export const billingRouter = createRouter({
               eq(services.id, input.id),
               eq(services.practiceId, ctx.practiceId),
               isNotNull(services.deletedAt),
-              ...serviceSnapshotConditions(input.expected)
-            )
+              ...serviceSnapshotConditions(input.expected),
+            ),
           )
           .returning({ id: services.id });
         return result;
@@ -2821,8 +3017,8 @@ export const billingRouter = createRouter({
           and(
             eq(patients.clientId, input.clientId),
             eq(patients.practiceId, ctx.practiceId),
-            isNull(patients.deletedAt)
-          )
+            isNull(patients.deletedAt),
+          ),
         )
         .orderBy(patients.name);
     }),
@@ -2833,14 +3029,18 @@ export const billingRouter = createRouter({
     .mutation(async ({ ctx, input }) => {
       await assertClientBelongsToPractice(ctx, input.clientId);
       if (input.patientId) {
-        await assertPatientBelongsToClient(ctx, input.patientId, input.clientId);
+        await assertPatientBelongsToClient(
+          ctx,
+          input.patientId,
+          input.clientId,
+        );
       }
       if (input.appointmentId) {
         await assertAppointmentBelongsToClientPatient(
           ctx,
           input.appointmentId,
           input.clientId,
-          input.patientId
+          input.patientId,
         );
       }
       // Tax rate is configured per practice (region-aware), not hardcoded.
@@ -2859,14 +3059,14 @@ export const billingRouter = createRouter({
           // Serialize charge capture for one visit so two front-desk tabs
           // cannot both pass the duplicate check and create competing bills.
           await tx.execute(
-            sql`select pg_advisory_xact_lock(hashtextextended(${input.appointmentId}, 0))`
+            sql`select pg_advisory_xact_lock(hashtextextended(${input.appointmentId}, 0))`,
           );
           await lockAppointmentForVisitBilling(
             txCtx,
             input.appointmentId,
             input.clientId,
             input.patientId,
-            input.isEstimate ?? false
+            input.isEstimate ?? false,
           );
           const [existingVisitInvoice] = await tx
             .select({ id: invoices.id })
@@ -2877,8 +3077,8 @@ export const billingRouter = createRouter({
                 eq(invoices.appointmentId, input.appointmentId),
                 eq(invoices.isEstimate, input.isEstimate ?? false),
                 ne(invoices.status, "void"),
-                isNull(invoices.deletedAt)
-              )
+                isNull(invoices.deletedAt),
+              ),
             )
             .limit(1);
           if (existingVisitInvoice) {
@@ -2907,7 +3107,7 @@ export const billingRouter = createRouter({
         if (!(input.isEstimate ?? false)) {
           await deductProductStock(
             txCtx,
-            await trackedStockOwnedItems(txCtx, input.items)
+            await trackedStockOwnedItems(txCtx, input.items),
           );
         }
 
@@ -2946,9 +3146,7 @@ export const billingRouter = createRouter({
               description: item.description,
               quantity: item.quantity,
               unitPrice: item.unitPrice,
-              total: centsToMoney(
-                item.quantity * moneyToCents(item.unitPrice),
-              ),
+              total: centsToMoney(item.quantity * moneyToCents(item.unitPrice)),
               taxable: invoiceLineTaxable(item, taxabilityByReference),
               itemType: item.itemType as "service" | "product",
               itemId: item.itemId ?? null,
@@ -2989,7 +3187,7 @@ export const billingRouter = createRouter({
       return ctx.db.transaction(async (tx) => {
         const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
         await tx.execute(
-          sql`select pg_advisory_xact_lock(hashtextextended(${input.id}, 0))`
+          sql`select pg_advisory_xact_lock(hashtextextended(${input.id}, 0))`,
         );
 
         const [existing] = await tx
@@ -3008,13 +3206,16 @@ export const billingRouter = createRouter({
             and(
               eq(invoices.id, input.id),
               eq(invoices.practiceId, ctx.practiceId),
-              isNull(invoices.deletedAt)
-            )
+              isNull(invoices.deletedAt),
+            ),
           )
           .limit(1);
 
         if (!existing) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Invoice not found" });
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Invoice not found",
+          });
         }
         if (existing.isEstimate) {
           throw new TRPCError({
@@ -3023,13 +3224,19 @@ export const billingRouter = createRouter({
               "Convert or replace the estimate before editing visit invoice charges.",
           });
         }
-        if (existing.updatedAt.getTime() !== input.expectedUpdatedAt.getTime()) {
+        if (
+          existing.updatedAt.getTime() !== input.expectedUpdatedAt.getTime()
+        ) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "Invoice changed in another session. Refresh before saving charges.",
+            message:
+              "Invoice changed in another session. Refresh before saving charges.",
           });
         }
-        if (existing.status !== "draft" || moneyToCents(existing.paidAmount) > 0) {
+        if (
+          existing.status !== "draft" ||
+          moneyToCents(existing.paidAmount) > 0
+        ) {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
             message:
@@ -3049,8 +3256,8 @@ export const billingRouter = createRouter({
               and(
                 eq(appointments.id, existing.appointmentId),
                 eq(appointments.practiceId, ctx.practiceId),
-                isNull(appointments.deletedAt)
-              )
+                isNull(appointments.deletedAt),
+              ),
             )
             .limit(1);
           if (!appointment?.clientId) {
@@ -3064,10 +3271,13 @@ export const billingRouter = createRouter({
             existing.appointmentId,
             appointment.clientId,
             appointment.patientId ?? undefined,
-            false
+            false,
           );
         }
-        const previousItems = await invoiceProductItemsForStock(txCtx, input.id);
+        const previousItems = await invoiceProductItemsForStock(
+          txCtx,
+          input.id,
+        );
         const taxabilityByReference = await assertLineItemReferences(
           txCtx,
           input.items,
@@ -3088,7 +3298,7 @@ export const billingRouter = createRouter({
         await restoreProductStock(txCtx, previousItems);
         await deductProductStock(
           txCtx,
-          await trackedStockOwnedItems(txCtx, input.items)
+          await trackedStockOwnedItems(txCtx, input.items),
         );
 
         const totals = invoiceLineTaxTotals(
@@ -3115,8 +3325,8 @@ export const billingRouter = createRouter({
               eq(invoices.paidAmount, existing.paidAmount ?? "0.00"),
               eq(invoices.updatedAt, input.expectedUpdatedAt),
               noActivePaymentsForInvoice(),
-              noActiveAdjustmentsForInvoice()
-            )
+              noActiveAdjustmentsForInvoice(),
+            ),
           )
           .returning();
 
@@ -3136,8 +3346,8 @@ export const billingRouter = createRouter({
             and(
               eq(invoiceItems.invoiceId, input.id),
               invoiceItemPracticeScope(txCtx),
-              isNull(invoiceItems.deletedAt)
-            )
+              isNull(invoiceItems.deletedAt),
+            ),
           );
 
         await reopenInvoiceDispenseCharges(txCtx, input.id);
@@ -3182,7 +3392,7 @@ export const billingRouter = createRouter({
       z.object({
         search: invoiceSearchInput,
         limit: z.number().int().min(1).max(100).default(50),
-      })
+      }),
     )
     .query(async ({ ctx, input }) => {
       const conditions: SQL[] = [
@@ -3210,16 +3420,23 @@ export const billingRouter = createRouter({
         invoiceId: z.string().uuid(),
         operationId: z.string().uuid(),
         amount: paymentAmountSchema,
-        method: z.enum(["cash", "credit_card", "debit_card", "check", "online", "other"]),
+        method: z.enum([
+          "cash",
+          "credit_card",
+          "debit_card",
+          "check",
+          "online",
+          "other",
+        ]),
         notes: billingNotesInput,
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const operationKey = `dashboard-payment:${ctx.practiceId}:${input.operationId}`;
       const result = await ctx.db.transaction(async (tx) => {
         const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
         await tx.execute(
-          sql`select pg_advisory_xact_lock(hashtextextended(${operationKey}, 0))`
+          sql`select pg_advisory_xact_lock(hashtextextended(${operationKey}, 0))`,
         );
 
         const [existingPayment] = await tx
@@ -3238,29 +3455,34 @@ export const billingRouter = createRouter({
           .where(
             and(
               eq(payments.externalId, operationKey),
-              eq(invoices.practiceId, ctx.practiceId)
-            )
+              eq(invoices.practiceId, ctx.practiceId),
+            ),
           )
           .limit(1);
         if (existingPayment) {
           if (
             existingPayment.invoiceId !== input.invoiceId ||
-            moneyToCents(existingPayment.amount) !== moneyToCents(input.amount) ||
+            moneyToCents(existingPayment.amount) !==
+              moneyToCents(input.amount) ||
             existingPayment.method !== input.method ||
             (existingPayment.notes ?? null) !== (input.notes ?? null)
           ) {
             throw new TRPCError({
               code: "CONFLICT",
-              message: "This payment operation ID was already used for different details.",
+              message:
+                "This payment operation ID was already used for different details.",
             });
           }
           return { payment: existingPayment, replayed: true as const };
         }
 
-        const invoiceIdentity = await getInvoiceForPractice(txCtx, input.invoiceId);
+        const invoiceIdentity = await getInvoiceForPractice(
+          txCtx,
+          input.invoiceId,
+        );
         await lockAppointmentForInvoiceMutation(
           txCtx,
-          invoiceIdentity.appointmentId
+          invoiceIdentity.appointmentId,
         );
         const invoice = invoiceIdentity.appointmentId
           ? await getInvoiceForPractice(txCtx, input.invoiceId)
@@ -3268,13 +3490,13 @@ export const billingRouter = createRouter({
         assertCanRecordPayment(invoice);
         await assertVisitInvoiceReadyForFinancialAction(
           txCtx,
-          invoice.appointmentId
+          invoice.appointmentId,
         );
         const totalCents = moneyToCents(invoice.total);
         const paidBeforeCents = moneyToCents(invoice.paidAmount);
         const adjustedCents = await getInvoiceAdjustmentTotalCents(
           txCtx,
-          input.invoiceId
+          input.invoiceId,
         );
         const amountCents = moneyToCents(input.amount);
         const balanceCents = invoiceBalanceCents(invoice, adjustedCents);
@@ -3305,8 +3527,8 @@ export const billingRouter = createRouter({
               eq(invoices.isEstimate, false),
               eq(invoices.status, invoice.status),
               eq(invoices.paidAmount, invoice.paidAmount ?? "0"),
-              invoiceAdjustmentTotalMatches(adjustedCents)
-            )
+              invoiceAdjustmentTotalMatches(adjustedCents),
+            ),
           )
           .returning({ id: invoices.id });
 
@@ -3398,15 +3620,15 @@ export const billingRouter = createRouter({
           users,
           and(
             eq(payments.receivedBy, users.id),
-            eq(users.practiceId, ctx.practiceId)
-          )
+            eq(users.practiceId, ctx.practiceId),
+          ),
         )
         .where(
           and(
             eq(payments.invoiceId, input.invoiceId),
             paymentPracticeScope(ctx),
-            isNull(payments.deletedAt)
-          )
+            isNull(payments.deletedAt),
+          ),
         )
         .orderBy(desc(payments.receivedAt));
     }),
@@ -3429,10 +3651,10 @@ export const billingRouter = createRouter({
         amount: paymentAmountSchema.optional(),
         reason: clinicalTextInput(
           "Refund reason",
-          BILLING_ADJUSTMENT_REASON_MAX_LENGTH
+          BILLING_ADJUSTMENT_REASON_MAX_LENGTH,
         ).min(5, "Explain why the payment is being refunded."),
         dueDate: clinicalDateInput("Due date").optional(),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       await assertBillingProviderActionsAllowed(ctx);
@@ -3449,13 +3671,16 @@ export const billingRouter = createRouter({
           and(
             eq(payments.id, input.paymentId),
             paymentPracticeScope(ctx),
-            isNull(payments.deletedAt)
-          )
+            isNull(payments.deletedAt),
+          ),
         )
         .limit(1);
 
       if (!payment) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Payment not found" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Payment not found",
+        });
       }
 
       const originalCents = moneyToCents(payment.amount);
@@ -3477,17 +3702,49 @@ export const billingRouter = createRouter({
       }
 
       const refundExternalId = `refund:payment:${payment.id}`;
-      const invoiceIdentity = await getInvoiceForPractice(ctx, payment.invoiceId);
+      const invoiceIdentity = await getInvoiceForPractice(
+        ctx,
+        payment.invoiceId,
+      );
 
       const result = await ctx.db.transaction(async (tx) => {
         const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
         await lockAppointmentForInvoiceMutation(
           txCtx,
-          invoiceIdentity.appointmentId
+          invoiceIdentity.appointmentId,
         );
         await tx.execute(
-          sql`select pg_advisory_xact_lock(hashtextextended(${refundExternalId}, 0))`
+          sql`select pg_advisory_xact_lock(hashtextextended(${refundExternalId}, 0))`,
         );
+
+        const [processorSettlement] = await tx
+          .select({
+            id: paymentProcessorSettlements.id,
+            connectedAccountId:
+              paymentProcessorSettlements.connectedAccountId,
+          })
+          .from(paymentProcessorSettlements)
+          .where(
+            and(
+              eq(paymentProcessorSettlements.paymentId, payment.id),
+              eq(
+                paymentProcessorSettlements.practiceId,
+                ctx.practiceId,
+              ),
+              isNull(paymentProcessorSettlements.deletedAt),
+            ),
+          )
+          .limit(1);
+        const isConnectPayment = payment.externalId?.startsWith(
+          "stripe:connect:",
+        );
+        if (isConnectPayment && !processorSettlement) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "This Connect payment is missing settlement evidence and cannot be refunded safely.",
+          });
+        }
 
         const [existingRefund] = await tx
           .select({ id: payments.id })
@@ -3495,8 +3752,8 @@ export const billingRouter = createRouter({
           .where(
             and(
               eq(payments.externalId, refundExternalId),
-              isNull(payments.deletedAt)
-            )
+              isNull(payments.deletedAt),
+            ),
           )
           .limit(1);
         if (existingRefund) {
@@ -3511,7 +3768,7 @@ export const billingRouter = createRouter({
           : invoiceIdentity;
         const adjustedCents = await getInvoiceAdjustmentTotalCents(
           txCtx,
-          payment.invoiceId
+          payment.invoiceId,
         );
         const paidBeforeCents = moneyToCents(invoice.paidAmount);
         if (amountCents > paidBeforeCents) {
@@ -3538,15 +3795,19 @@ export const billingRouter = createRouter({
                   eq(visitCloseouts.appointmentId, invoice.appointmentId),
                   eq(visitCloseouts.invoiceId, invoice.id),
                   eq(visitCloseouts.status, "completed"),
-                  isNull(visitCloseouts.deletedAt)
-                )
+                  isNull(visitCloseouts.deletedAt),
+                ),
               )
               .limit(1)
               .for("update")
           : [];
         const reopensCompletedPaidCloseout =
           reopensInvoice && closeout?.chargeDisposition === "paid";
-        if (reopensCompletedPaidCloseout && !invoice.dueDate && !input.dueDate) {
+        if (
+          reopensCompletedPaidCloseout &&
+          !invoice.dueDate &&
+          !input.dueDate
+        ) {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
             message:
@@ -3589,16 +3850,15 @@ export const billingRouter = createRouter({
               eq(invoices.isEstimate, false),
               eq(invoices.status, invoice.status),
               eq(invoices.paidAmount, invoice.paidAmount ?? "0"),
-              invoiceAdjustmentTotalMatches(adjustedCents)
-            )
+              invoiceAdjustmentTotalMatches(adjustedCents),
+            ),
           )
           .returning({ id: invoices.id });
 
         if (!updatedInvoice) {
           throw new TRPCError({
             code: "BAD_REQUEST",
-            message:
-              "Invoice changed while refunding. Refresh and try again.",
+            message: "Invoice changed while refunding. Refresh and try again.",
           });
         }
 
@@ -3617,8 +3877,8 @@ export const billingRouter = createRouter({
                 eq(visitCloseouts.status, "completed"),
                 eq(visitCloseouts.chargeDisposition, "paid"),
                 eq(visitCloseouts.revision, closeout.revision),
-                isNull(visitCloseouts.deletedAt)
-              )
+                isNull(visitCloseouts.deletedAt),
+              ),
             )
             .returning({ id: visitCloseouts.id });
           if (!updatedCloseout) {
@@ -3652,11 +3912,11 @@ export const billingRouter = createRouter({
             priorChargeDisposition: closeout?.chargeDisposition ?? null,
             nextChargeDisposition: reopensCompletedPaidCloseout
               ? "accounts_receivable"
-              : closeout?.chargeDisposition ?? null,
+              : (closeout?.chargeDisposition ?? null),
             priorCloseoutRevision: closeout?.revision ?? null,
             nextCloseoutRevision: reopensCompletedPaidCloseout
               ? closeout.revision + 1
-              : closeout?.revision ?? null,
+              : (closeout?.revision ?? null),
           },
         });
 
@@ -3677,6 +3937,38 @@ export const billingRouter = createRouter({
         });
 
         if (stripeRefund) {
+          if (
+            stripeRefund.connectedAccountId &&
+            stripeRefund.connectedAccountId !==
+              processorSettlement?.connectedAccountId
+          ) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "Stripe returned refund evidence for a different clinic account.",
+            });
+          }
+          const now = new Date();
+          await tx.insert(paymentProcessorRefunds).values({
+            practiceId: ctx.practiceId,
+            settlementId: processorSettlement?.id ?? null,
+            originalPaymentId: payment.id,
+            refundPaymentId: createdRefund!.id,
+            provider: stripeRefund.connectedAccountId
+              ? STRIPE_CONNECT_PROVIDER
+              : "stripe",
+            connectedAccountId: stripeRefund.connectedAccountId ?? null,
+            externalRefundId: stripeRefund.refundId,
+            balanceTransactionId: stripeRefund.balanceTransactionId,
+            currency: stripeRefund.currency,
+            amountCents: stripeRefund.amountCents,
+            balanceAmountCents: stripeRefund.balanceAmountCents,
+            balanceFeeCents: stripeRefund.balanceFeeCents,
+            balanceNetCents: stripeRefund.balanceNetCents,
+            status: stripeRefund.status,
+            providerCreatedAt: stripeRefund.providerCreatedAt,
+            lastSyncedAt: now,
+          });
           await tx
             .update(payments)
             .set({
@@ -3784,8 +4076,8 @@ export const billingRouter = createRouter({
           and(
             eq(invoices.clientId, clients.id),
             eq(clients.practiceId, ctx.practiceId),
-            isNull(clients.deletedAt)
-          )
+            isNull(clients.deletedAt),
+          ),
         )
         .leftJoin(
           patients,
@@ -3793,28 +4085,31 @@ export const billingRouter = createRouter({
             eq(invoices.patientId, patients.id),
             eq(patients.clientId, invoices.clientId),
             eq(patients.practiceId, ctx.practiceId),
-            isNull(patients.deletedAt)
-          )
+            isNull(patients.deletedAt),
+          ),
         )
         .leftJoin(
           practices,
           and(
             eq(invoices.practiceId, practices.id),
             eq(practices.id, ctx.practiceId),
-            isNull(practices.deletedAt)
-          )
+            isNull(practices.deletedAt),
+          ),
         )
         .where(
           and(
             eq(invoices.id, input.invoiceId),
             eq(invoices.practiceId, ctx.practiceId),
-            isNull(invoices.deletedAt)
-          )
+            isNull(invoices.deletedAt),
+          ),
         )
         .limit(1);
 
       if (!invoice) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Invoice not found" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Invoice not found",
+        });
       }
 
       assertCanRecordPayment(invoice);
@@ -3827,14 +4122,14 @@ export const billingRouter = createRouter({
           assertCanRecordPayment(currentInvoice);
           await assertVisitInvoiceReadyForFinancialAction(
             txCtx,
-            currentInvoice.appointmentId
+            currentInvoice.appointmentId,
           );
         });
       }
 
       const adjustedCents = await getInvoiceAdjustmentTotalCents(
         ctx,
-        input.invoiceId
+        input.invoiceId,
       );
       const balanceCents = invoiceBalanceCents(invoice, adjustedCents);
 
@@ -3847,9 +4142,12 @@ export const billingRouter = createRouter({
 
       const connectedAccount = billingEnforced()
         ? assertActiveStripeConnectAccount(
-            await getStripeConnectPaymentAccount(ctx)
+            await getStripeConnectPaymentAccount(ctx),
           )
         : null;
+      if (connectedAccount) {
+        assertHostedConnectApplicationFeeConfigured();
+      }
       const clientName = [invoice.clientFirstName, invoice.clientLastName]
         .filter(Boolean)
         .join(" ");
@@ -3918,7 +4216,7 @@ export const billingRouter = createRouter({
     return {
       stripeConfigured: true,
       connectRequired: true,
-      ...serializePaymentAccountStatus(row),
+      ...serializeClientPaymentReadiness(row, true),
     };
   }),
 
@@ -3942,15 +4240,15 @@ export const billingRouter = createRouter({
           users,
           and(
             eq(invoiceAdjustments.createdBy, users.id),
-            eq(users.practiceId, ctx.practiceId)
-          )
+            eq(users.practiceId, ctx.practiceId),
+          ),
         )
         .where(
           and(
             eq(invoiceAdjustments.invoiceId, input.invoiceId),
             adjustmentPracticeScope(ctx),
-            isNull(invoiceAdjustments.deletedAt)
-          )
+            isNull(invoiceAdjustments.deletedAt),
+          ),
         )
         .orderBy(desc(invoiceAdjustments.createdAt));
     }),
@@ -3968,14 +4266,14 @@ export const billingRouter = createRouter({
           .trim()
           .max(BILLING_ADJUSTMENT_REASON_MAX_LENGTH)
           .optional(),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const operationKey = `dashboard-adjustment:${ctx.practiceId}:${input.operationId}`;
       const result = await ctx.db.transaction(async (tx) => {
         const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
         await tx.execute(
-          sql`select pg_advisory_xact_lock(hashtextextended(${operationKey}, 0))`
+          sql`select pg_advisory_xact_lock(hashtextextended(${operationKey}, 0))`,
         );
 
         const [existingAdjustment] = await tx
@@ -3995,15 +4293,16 @@ export const billingRouter = createRouter({
           .where(
             and(
               eq(invoiceAdjustments.operationKey, operationKey),
-              eq(invoices.practiceId, ctx.practiceId)
-            )
+              eq(invoices.practiceId, ctx.practiceId),
+            ),
           )
           .limit(1);
         if (existingAdjustment) {
           if (
             existingAdjustment.invoiceId !== input.invoiceId ||
             existingAdjustment.type !== input.type ||
-            moneyToCents(existingAdjustment.amount) !== moneyToCents(input.amount) ||
+            moneyToCents(existingAdjustment.amount) !==
+              moneyToCents(input.amount) ||
             (existingAdjustment.reason ?? null) !== (input.reason ?? null)
           ) {
             throw new TRPCError({
@@ -4018,10 +4317,13 @@ export const billingRouter = createRouter({
           };
         }
 
-        const invoiceIdentity = await getInvoiceForPractice(txCtx, input.invoiceId);
+        const invoiceIdentity = await getInvoiceForPractice(
+          txCtx,
+          input.invoiceId,
+        );
         await lockAppointmentForInvoiceMutation(
           txCtx,
-          invoiceIdentity.appointmentId
+          invoiceIdentity.appointmentId,
         );
         const invoice = invoiceIdentity.appointmentId
           ? await getInvoiceForPractice(txCtx, input.invoiceId)
@@ -4029,11 +4331,11 @@ export const billingRouter = createRouter({
         assertCanAdjustInvoice(invoice);
         await assertVisitInvoiceReadyForFinancialAction(
           txCtx,
-          invoice.appointmentId
+          invoice.appointmentId,
         );
         const adjustedBeforeCents = await getInvoiceAdjustmentTotalCents(
           txCtx,
-          input.invoiceId
+          input.invoiceId,
         );
         const amountCents = moneyToCents(input.amount);
         const balanceCents = invoiceBalanceCents(invoice, adjustedBeforeCents);
@@ -4065,8 +4367,8 @@ export const billingRouter = createRouter({
               eq(invoices.isEstimate, invoice.isEstimate),
               eq(invoices.status, invoice.status),
               eq(invoices.paidAmount, invoice.paidAmount ?? "0"),
-              invoiceAdjustmentTotalMatches(adjustedBeforeCents)
-            )
+              invoiceAdjustmentTotalMatches(adjustedBeforeCents),
+            ),
           )
           .returning({ id: invoices.id });
 
@@ -4167,7 +4469,7 @@ export const billingRouter = createRouter({
         await assertInvoiceNotCompletedCloseout(txCtx, input.id);
         const adjustedCents = await getInvoiceAdjustmentTotalCents(
           txCtx,
-          input.id
+          input.id,
         );
         if (moneyToCents(invoice.paidAmount) > 0 || adjustedCents > 0) {
           throw new TRPCError({
@@ -4183,8 +4485,8 @@ export const billingRouter = createRouter({
               eq(visitWorkItems.practiceId, ctx.practiceId),
               eq(visitWorkItems.invoiceId, input.id),
               eq(visitWorkItems.status, "charged"),
-              isNull(visitWorkItems.deletedAt)
-            )
+              isNull(visitWorkItems.deletedAt),
+            ),
           )
           .for("update");
         const [updated] = await tx
@@ -4199,8 +4501,8 @@ export const billingRouter = createRouter({
               eq(invoices.isEstimate, invoice.isEstimate),
               eq(invoices.paidAmount, invoice.paidAmount ?? "0"),
               noActivePaymentsForInvoice(),
-              noActiveAdjustmentsForInvoice()
-            )
+              noActiveAdjustmentsForInvoice(),
+            ),
           )
           .returning();
 
@@ -4234,12 +4536,12 @@ export const billingRouter = createRouter({
                 eq(visitWorkItems.practiceId, ctx.practiceId),
                 inArray(
                   visitWorkItems.id,
-                  linkedWork.map((work) => work.id)
+                  linkedWork.map((work) => work.id),
                 ),
                 eq(visitWorkItems.status, "charged"),
                 eq(visitWorkItems.invoiceId, input.id),
-                isNull(visitWorkItems.deletedAt)
-              )
+                isNull(visitWorkItems.deletedAt),
+              ),
             );
         }
         await tx.insert(auditLog).values({
@@ -4264,6 +4566,172 @@ export const billingRouter = createRouter({
       return voided;
     }),
 
+  // --- Clinic-day financial close and statements ---
+
+  financialDayStatement: protectedProcedure
+    .use(requireRole("admin", "front_desk"))
+    .input(z.object({ businessDate: financialBusinessDateInput }))
+    .query(async ({ ctx, input }) => {
+      const summary = await loadFinancialDaySummary(
+        ctx.db as Database,
+        ctx.practiceId,
+        input.businessDate,
+      );
+      const cutoffAtIso = summary.cutoffAt.toISOString();
+      const [close, disputes] = await Promise.all([
+        ctx.db
+          .select()
+          .from(financialCloses)
+          .where(
+            and(
+              eq(financialCloses.practiceId, ctx.practiceId),
+              eq(financialCloses.businessDate, input.businessDate),
+              isNull(financialCloses.deletedAt),
+            ),
+          )
+          .limit(1),
+        ctx.db
+          .select({
+            id: paymentDisputes.id,
+            status: paymentDisputes.status,
+            amountCents: paymentDisputes.amountCents,
+            currency: paymentDisputes.currency,
+            reason: paymentDisputes.reason,
+            evidenceDueBy: paymentDisputes.evidenceDueBy,
+            providerCreatedAt: paymentDisputes.providerCreatedAt,
+            closedAt: paymentDisputes.closedAt,
+            chargeId: paymentProcessorSettlements.chargeId,
+          })
+          .from(paymentDisputes)
+          .innerJoin(
+            paymentProcessorSettlements,
+            and(
+              eq(
+                paymentProcessorSettlements.id,
+                paymentDisputes.settlementId,
+              ),
+              eq(
+                paymentProcessorSettlements.practiceId,
+                ctx.practiceId,
+              ),
+            ),
+          )
+          .where(
+            and(
+              eq(paymentDisputes.practiceId, ctx.practiceId),
+              isNull(paymentDisputes.deletedAt),
+              sql`${paymentDisputes.providerCreatedAt} < ${cutoffAtIso}::timestamptz`,
+              sql`(${paymentDisputes.closedAt} is null or ${paymentDisputes.closedAt} >= ${cutoffAtIso}::timestamptz)`,
+            ),
+          )
+          .orderBy(desc(paymentDisputes.providerCreatedAt)),
+      ]);
+      return { summary, close: close[0] ?? null, disputes };
+    }),
+
+  listFinancialCloses: protectedProcedure
+    .use(requireRole("admin", "front_desk"))
+    .query(({ ctx }) =>
+      ctx.db
+        .select()
+        .from(financialCloses)
+        .where(
+          and(
+            eq(financialCloses.practiceId, ctx.practiceId),
+            isNull(financialCloses.deletedAt),
+          ),
+        )
+        .orderBy(desc(financialCloses.businessDate))
+        .limit(90),
+    ),
+
+  closeFinancialDay: billingAdminProcedure
+    .input(
+      z.object({
+        businessDate: financialBusinessDateInput,
+        confirmation: z.string().max(32),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const expectedConfirmation = `CLOSE:${input.businessDate}`;
+      if (input.confirmation !== expectedConfirmation) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Confirmation must exactly match ${expectedConfirmation}.`,
+        });
+      }
+
+      return ctx.db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${`financial-close:${ctx.practiceId}:${input.businessDate}`}, 0))`,
+        );
+        const [existing] = await tx
+          .select()
+          .from(financialCloses)
+          .where(
+            and(
+              eq(financialCloses.practiceId, ctx.practiceId),
+              eq(financialCloses.businessDate, input.businessDate),
+              isNull(financialCloses.deletedAt),
+            ),
+          )
+          .limit(1);
+        if (existing) return { close: existing, replayed: true as const };
+
+        const summary = await loadFinancialDaySummary(
+          tx as unknown as Database,
+          ctx.practiceId,
+          input.businessDate,
+        );
+        if (summary.cutoffAt.getTime() > Date.now()) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "This clinic day has not ended in the practice timezone yet.",
+          });
+        }
+        if (summary.unreconciledCount > 0) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: `${summary.unreconciledCount} online payment(s) still need Stripe settlement reconciliation.`,
+          });
+        }
+
+        const [close] = await tx
+          .insert(financialCloses)
+          .values({
+            practiceId: ctx.practiceId,
+            businessDate: input.businessDate,
+            timezone: summary.timezone,
+            cutoffAt: summary.cutoffAt,
+            closedBy: ctx.user.id,
+            paymentCount: summary.paymentCount,
+            grossReceiptsCents: summary.grossReceiptsCents,
+            refundsCents: summary.refundsCents,
+            netReceiptsCents: summary.netReceiptsCents,
+            cashCents: summary.cashCents,
+            checkCents: summary.checkCents,
+            cardAndOnlineCents: summary.cardAndOnlineCents,
+            otherCents: summary.otherCents,
+            processorGrossCents: summary.processorGrossCents,
+            processorFeeCents: summary.processorFeeCents,
+            applicationFeeCents: summary.applicationFeeCents,
+            clinicNetCents: summary.clinicNetCents,
+            paidOutCents: summary.paidOutCents,
+            openDisputeCents: summary.openDisputeCents,
+            unreconciledCount: summary.unreconciledCount,
+          })
+          .returning();
+        if (!close) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "The financial close could not be recorded.",
+          });
+        }
+        return { close, replayed: false as const };
+      });
+    }),
+
   // --- Estimates ---
 
   convertEstimateToInvoice: protectedProcedure
@@ -4286,15 +4754,16 @@ export const billingRouter = createRouter({
               eq(invoices.isEstimate, true),
               eq(invoices.status, existing.status),
               eq(invoices.paidAmount, existing.paidAmount ?? "0"),
-              isNull(invoices.deletedAt)
-            )
+              isNull(invoices.deletedAt),
+            ),
           )
           .returning();
 
         if (!invoice) {
           throw new TRPCError({
             code: "BAD_REQUEST",
-            message: "Estimate changed while converting. Refresh and try again.",
+            message:
+              "Estimate changed while converting. Refresh and try again.",
           });
         }
 

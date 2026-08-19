@@ -175,6 +175,34 @@ afterEach(() => {
 });
 
 describe("file replica identity", () => {
+  it("serializes raw SQL timestamps as ISO scalars for bundled runtimes", () => {
+    expect(FILE_REPLICATION_SOURCE).toContain(
+      "const staleBeforeIso = input.staleBefore.toISOString()",
+    );
+    expect(FILE_REPLICATION_SOURCE).toContain(
+      "${staleBeforeIso}::timestamptz",
+    );
+    expect(FILE_REPLICATION_SOURCE).toContain(
+      "const freshAfterIso = new Date(Date.now() - VERIFY_AFTER_MS).toISOString()",
+    );
+    expect(FILE_REPLICATION_SOURCE).toContain(
+      "${freshAfterIso}::timestamptz",
+    );
+    expect(FILE_REPLICATION_SOURCE).not.toContain(
+      "r.verified_at < ${input.staleBefore}",
+    );
+  });
+
+  it("does not count incomplete uploads as replica coverage obligations", () => {
+    const coverage = FILE_REPLICATION_SOURCE.match(
+      /export async function getFileReplicaCoverage[\s\S]*?export async function reconcileFileReplicas/,
+    )?.[0];
+
+    expect(coverage).toContain(
+      "f.storage_status not in ('pending_upload', 'cleanup_pending')",
+    );
+  });
+
   it("uses content-addressed object keys and deterministic recovery catalogs", () => {
     expect(checksum).toBe(
       "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",

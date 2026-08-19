@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { users } from "@openpims/db";
+import { hash } from "bcryptjs";
+import {
+  decryptMfaSecret,
+  encryptMfaSecret,
+  totpCodeAt,
+} from "@/lib/mfa";
 
 const mocks = vi.hoisted(() => ({
   rateLimit: vi.fn(async () => ({
@@ -201,7 +207,9 @@ function createRegistrationDb(opts?: { insertRows?: unknown[] }) {
   const insert = vi.fn(() => ({ values: insertValues }));
 
   const updateWhere = vi.fn(async () => undefined);
-  const updateSet = vi.fn(() => ({ where: updateWhere }));
+  const updateSet = vi.fn((_values: Record<string, unknown>) => ({
+    where: updateWhere,
+  }));
   const update = vi.fn(() => ({ set: updateSet }));
 
   let transactionDepth = 0;
@@ -238,7 +246,9 @@ function createAuthUpdateDb(opts?: { returningRows?: unknown[][] }) {
   const updateWhere = vi.fn((_condition: unknown) => ({
     returning: updateReturning,
   }));
-  const updateSet = vi.fn(() => ({ where: updateWhere }));
+  const updateSet = vi.fn((_values: Record<string, unknown>) => ({
+    where: updateWhere,
+  }));
   const update = vi.fn(() => ({ set: updateSet }));
 
   const db: Record<string, unknown> = {
@@ -255,7 +265,29 @@ function createAuthUpdateDb(opts?: { returningRows?: unknown[][] }) {
   };
 }
 
+function createMfaDb(userRow: Record<string, unknown>) {
+  const selectLimit = vi.fn(async () => [userRow]);
+  const selectWhere = vi.fn(() => ({ limit: selectLimit }));
+  const selectInnerJoin = vi.fn(() => ({ where: selectWhere }));
+  const selectFrom = vi.fn(() => ({ innerJoin: selectInnerJoin }));
+  const select = vi.fn(() => ({ from: selectFrom }));
+  const updateReturning = vi.fn(async () => [{ id: "user-1" }]);
+  const updateWhere = vi.fn(() => ({ returning: updateReturning }));
+  const updateSet = vi.fn((_values: Record<string, unknown>) => ({
+    where: updateWhere,
+  }));
+  const update = vi.fn(() => ({ set: updateSet }));
+  const db: Record<string, unknown> = {
+    transaction: async (fn: (tx: unknown) => unknown) => fn(db),
+    execute: vi.fn(async () => undefined),
+    select,
+    update,
+  };
+  return { db, updateSet, updateWhere };
+}
+
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.clearAllMocks();
   mocks.rateLimit.mockResolvedValue({
     success: true,
@@ -1169,7 +1201,7 @@ describe("auth router token validation", () => {
   });
 
   it("accepts issued 64-hex tokens for verification, reset, and invite flows", async () => {
-    const { db, updateWhere } = createAuthUpdateDb({
+    const { db, updateWhere, updateSet } = createAuthUpdateDb({
       returningRows: [
         [{ id: "user-1" }],
         [{ id: "user-1" }],
@@ -1208,6 +1240,105 @@ describe("auth router token validation", () => {
     for (const call of updateWhere.mock.calls) {
       expect(sqlIncludesValue(call[0], users.deletedAt)).toBe(true);
     }
+    expect(updateSet.mock.calls[1]?.[0]).toMatchObject({
+      passwordHash: expect.any(String),
+      sessionVersion: expect.anything(),
+    });
+    expect(updateSet.mock.calls[2]?.[0]).toMatchObject({
+      passwordHash: expect.any(String),
+      emailVerifiedAt: expect.any(Date),
+      sessionVersion: expect.anything(),
+    });
+  });
+
+  it("revokes every session generation for the authenticated identity", async () => {
+    const { db, updateSet, updateWhere } = createAuthUpdateDb();
+
+    await expect(callerWithSession(db).revokeAllSessions()).resolves.toEqual({
+      ok: true,
+    });
+
+    expect(updateSet).toHaveBeenCalledWith({
+      sessionVersion: expect.anything(),
+    });
+    const condition = updateWhere.mock.calls[0]?.[0];
+    expect(sqlIncludesValue(condition, users.id)).toBe(true);
+    expect(sqlIncludesValue(condition, users.practiceId)).toBe(true);
+    expect(sqlIncludesValue(condition, users.deletedAt)).toBe(true);
+  });
+
+  it("starts MFA enrollment only after current-password verification", async () => {
+    vi.stubEnv("MFA_ENCRYPTION_KEY", Buffer.alloc(32, 9).toString("base64"));
+    const passwordHash = await hash("current-password", 4);
+    const { db, updateSet } = createMfaDb({
+      id: "user-1",
+      email: "admin@example.com",
+      passwordHash,
+      sessionVersion: 1,
+      mfaEnabledAt: null,
+      mfaSecretEncrypted: null,
+      mfaRecoveryCodeHashes: null,
+      mfaPendingSecretEncrypted: null,
+      mfaPendingExpiresAt: null,
+      mfaLastUsedTotpCounter: null,
+      practiceName: "Neighborhood Vet",
+    });
+
+    const result = await callerWithSession(db).beginMfaEnrollment({
+      password: "current-password",
+    });
+
+    expect(result.secret).toMatch(/^[A-Z2-7]{32}$/);
+    expect(result.provisioningUri).toContain("otpauth://totp/");
+    const pending = updateSet.mock.calls[0]?.[0] as {
+      mfaPendingSecretEncrypted?: string;
+      mfaPendingExpiresAt?: Date;
+    };
+    expect(pending.mfaPendingExpiresAt).toBeInstanceOf(Date);
+    expect(decryptMfaSecret(pending.mfaPendingSecretEncrypted!)).toBe(
+      result.secret,
+    );
+  });
+
+  it("enables MFA with hashed recovery codes and revokes older sessions", async () => {
+    vi.stubEnv("MFA_ENCRYPTION_KEY", Buffer.alloc(32, 5).toString("base64"));
+    const secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+    const pending = encryptMfaSecret(secret);
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const { db, updateSet } = createMfaDb({
+      id: "user-1",
+      email: "admin@example.com",
+      passwordHash: "unused",
+      sessionVersion: 3,
+      mfaEnabledAt: null,
+      mfaSecretEncrypted: null,
+      mfaRecoveryCodeHashes: null,
+      mfaPendingSecretEncrypted: pending,
+      mfaPendingExpiresAt: new Date(now + 60_000),
+      mfaLastUsedTotpCounter: null,
+      practiceName: "Neighborhood Vet",
+    });
+
+    const result = await callerWithSession(db).confirmMfaEnrollment({
+      code: totpCodeAt(secret, now),
+    });
+
+    expect(result.recoveryCodes).toHaveLength(10);
+    const enabled = updateSet.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(enabled).toMatchObject({
+      mfaSecretEncrypted: pending,
+      mfaEnabledAt: expect.any(Date),
+      mfaPendingSecretEncrypted: null,
+      mfaPendingExpiresAt: null,
+      sessionVersion: expect.anything(),
+    });
+    expect(enabled.mfaRecoveryCodeHashes).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^[0-9a-f]{64}$/)]),
+    );
+    expect(enabled.mfaRecoveryCodeHashes).not.toEqual(
+      expect.arrayContaining(result.recoveryCodes),
+    );
   });
 
   it("rejects issued auth tokens when the target user is deleted", async () => {

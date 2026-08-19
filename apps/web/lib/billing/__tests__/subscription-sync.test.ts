@@ -5,9 +5,12 @@ const mocks = vi.hoisted(() => ({
   retrieve: vi.fn(),
   update: vi.fn(),
   create: vi.fn(),
+  syncScheduleQuantity: vi.fn(async () => "none" as const),
 }));
 
 vi.mock("@/lib/stripe", () => ({
+  requireVerifiedStripeAccount: vi.fn(async () => undefined),
+  syncOpenVpmAnnualScheduleLocationQuantity: mocks.syncScheduleQuantity,
   stripe: {
     subscriptions: { retrieve: mocks.retrieve },
     subscriptionItems: { update: mocks.update, create: mocks.create },
@@ -22,6 +25,7 @@ import {
 afterEach(() => {
   vi.clearAllMocks();
   vi.unstubAllEnvs();
+  mocks.syncScheduleQuantity.mockResolvedValue("none");
 });
 
 describe("countBillableStaffRows", () => {
@@ -165,6 +169,13 @@ describe("billing sync practice scoping", () => {
     });
 
     expect(mocks.update).toHaveBeenCalledWith("si_annual", { quantity: 1 });
+    expect(mocks.syncScheduleQuantity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: "practice-annual",
+        annualPriceId: "price_annual",
+        locationCount: 1,
+      }),
+    );
     expect(mocks.create).not.toHaveBeenCalled();
     expect(writeWhere).toHaveBeenCalledOnce();
   });

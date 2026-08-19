@@ -140,7 +140,7 @@ export async function GET(
 
     const [activeUser] = await withSystem(db, (tx) =>
       tx
-        .select({ id: users.id })
+        .select({ id: users.id, sessionVersion: users.sessionVersion })
         .from(users)
         .innerJoin(
           practices,
@@ -155,7 +155,11 @@ export async function GET(
         )
         .limit(1),
     );
-    if (!activeUser) {
+    if (
+      !activeUser ||
+      !Number.isInteger(session.user.sessionVersion) ||
+      activeUser.sessionVersion !== session.user.sessionVersion
+    ) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
   }

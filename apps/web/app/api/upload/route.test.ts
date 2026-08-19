@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => {
   class ManagedUploadStateError extends ManagedUploadConflictError {}
   const activeAccount = (overrides: Record<string, unknown> = {}) => ({
     userId,
+    sessionVersion: 1,
     role: "admin",
     tier: "free",
     billingStatus: "trialing",
@@ -84,7 +85,7 @@ const mocks = vi.hoisted(() => {
     updateSets,
     updateReturningResults,
     getServerSession: vi.fn(async () => ({
-      user: { id: userId, practiceId },
+      user: { id: userId, practiceId, sessionVersion: 1 },
     })),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
       fn(tx),
@@ -199,7 +200,11 @@ afterEach(() => {
   mocks.billingEnforced.mockReturnValue(false);
   mocks.hasHostedFullAccess.mockReturnValue(true);
   mocks.getServerSession.mockResolvedValue({
-    user: { id: mocks.userId, practiceId: mocks.practiceId },
+    user: {
+      id: mocks.userId,
+      practiceId: mocks.practiceId,
+      sessionVersion: 1,
+    },
   });
   mocks.rateLimit.mockResolvedValue({
     success: true,

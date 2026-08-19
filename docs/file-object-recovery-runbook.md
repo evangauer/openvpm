@@ -60,15 +60,19 @@ FILE_REPLICA_REQUIRED=true
 FILE_REPLICA_ENABLED=false
 FILE_REPLICA_ALL_PRACTICES=false
 FILE_REPLICA_PRACTICE_IDS=<confirmed-pilot-practice-uuid>
+FILE_REPLICA_PROVIDER=s3 # or vercel_blob
 FILE_REPLICA_S3_ENDPOINT=... # omit only for AWS S3
 FILE_REPLICA_S3_REGION=...
 FILE_REPLICA_S3_ACCESS_KEY=...
 FILE_REPLICA_S3_SECRET_KEY=...
 FILE_REPLICA_S3_BUCKET=...
+# Private Vercel Blob alternative; use a dedicated store token and leave the
+# replica S3 fields blank.
+FILE_REPLICA_BLOB_READ_WRITE_TOKEN=...
 CRON_HEARTBEAT_FILE_REPLICAS_URL=...
 ```
 
-The target must resolve to a different endpoint/bucket identity from the
+The target must resolve to a different storage-target identity from the
 primary. After staging the configuration:
 
 1. run the count-only

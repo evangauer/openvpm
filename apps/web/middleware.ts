@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
-import { applySecurityHeaders } from "./lib/security-headers";
+import {
+  applySecurityHeaders,
+  buildContentSecurityPolicy,
+} from "./lib/security-headers";
 import { nextAuthSecret } from "./lib/auth-secret";
 
 const PUBLIC_PATH_PREFIXES = [
@@ -13,13 +16,16 @@ const PUBLIC_PATH_PREFIXES = [
   "/clinic-fit",
   "/email-preferences",
   "/forgot-password",
+  "/help",
   "/legal",
   "/login",
+  "/pay",
   "/portal",
   "/register",
   "/reset-password",
   "/sign",
   "/sms",
+  "/staff-copilot-demo",
   "/verify-email",
 ];
 
@@ -43,16 +49,34 @@ function isVercelObservabilityPath(pathname: string): boolean {
   return /^\/[a-f0-9]{16}\/(?:script\.js|view|event|session)$/i.test(pathname);
 }
 
+function requestNonce(): string {
+  return btoa(crypto.randomUUID());
+}
+
+function nextWithNonce(request: NextRequest, nonce: string): NextResponse {
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set("x-nonce", nonce);
+  // Next.js reads the request-side CSP while rendering and extracts this nonce
+  // for framework, page, and inline bootstrap scripts. The same policy is set
+  // on the response by applySecurityHeaders below.
+  requestHeaders.set(
+    "Content-Security-Policy",
+    buildContentSecurityPolicy(nonce),
+  );
+  return NextResponse.next({ request: { headers: requestHeaders } });
+}
+
 export async function middleware(request: NextRequest) {
   const requestUrl = new URL(request.url);
   const pathname = requestUrl.pathname;
+  const nonce = requestNonce();
 
   if (isVercelObservabilityPath(pathname)) {
-    return applySecurityHeaders(NextResponse.next());
+    return applySecurityHeaders(nextWithNonce(request, nonce), { nonce });
   }
 
   if (isPublicPath(pathname)) {
-    return applySecurityHeaders(NextResponse.next());
+    return applySecurityHeaders(nextWithNonce(request, nonce), { nonce });
   }
 
   const secret = nextAuthSecret();
@@ -67,11 +91,11 @@ export async function middleware(request: NextRequest) {
     if (nextPath !== "/") {
       loginUrl.searchParams.set("next", nextPath);
     }
-    return applySecurityHeaders(NextResponse.redirect(loginUrl));
+    return applySecurityHeaders(NextResponse.redirect(loginUrl), { nonce });
   }
 
-  const response = NextResponse.next();
-  return applySecurityHeaders(response);
+  const response = nextWithNonce(request, nonce);
+  return applySecurityHeaders(response, { nonce });
 }
 
 export const config = {

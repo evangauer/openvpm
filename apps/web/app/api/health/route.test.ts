@@ -66,6 +66,10 @@ const mocks = vi.hoisted(() => ({
     ready: true,
     initialized: true,
   })),
+  verifyStripeAccountIdentity: vi.fn(async () => ({
+    ok: true,
+    detail: "Stripe account identity verified",
+  })),
 }));
 
 vi.mock("@openpims/db/client", () => ({
@@ -120,20 +124,33 @@ vi.mock("@/lib/platform-email-preferences", () => ({
     mocks.platformEmailIdentityConfigurationReady,
 }));
 
+vi.mock("@/lib/stripe", () => ({
+  verifyStripeAccountIdentity: mocks.verifyStripeAccountIdentity,
+}));
+
 const { GET } = await import("./route");
 
 function stubHostedRequiredEnvs() {
   vi.stubEnv("NEXTAUTH_URL", "https://app.example");
   vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.example");
   vi.stubEnv("NEXTAUTH_SECRET", "secret");
+  vi.stubEnv("MFA_ENCRYPTION_KEY", Buffer.alloc(32, 3).toString("base64"));
   vi.stubEnv("DATABASE_URL", "postgres://app@db.example/openvpm");
   vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_123");
+  vi.stubEnv("STRIPE_EXPECTED_ACCOUNT_ID", "acct_openvpm");
   vi.stubEnv("STRIPE_WEBHOOK_SECRET", "whsec_invoice");
   vi.stubEnv("STRIPE_CONNECT_WEBHOOK_SECRET", "whsec_connect");
+  vi.stubEnv("STRIPE_CONNECT_V2_WEBHOOK_SECRET", "whsec_connect_v2");
+  vi.stubEnv("STRIPE_CONNECT_V2_ENABLED", "true");
+  vi.stubEnv("STRIPE_CONNECT_APPLICATION_FEE_BPS", "100");
   vi.stubEnv("STRIPE_SUBSCRIPTION_WEBHOOK_SECRET", "whsec_123");
+  vi.stubEnv("STRIPE_SUBSCRIPTION_PAYMENT_METHOD_CONFIGURATION", "pmc_openvpm");
+  vi.stubEnv("STRIPE_BILLING_PORTAL_CONFIGURATION", "bpc_openvpm");
   vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
   vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION_ANNUAL", "price_location_annual");
   vi.stubEnv("STRIPE_TAX_ENABLED", "true");
+  vi.stubEnv("STRIPE_CLOUD_PRODUCT_TAX_CODE", "txcd_10103001");
+  vi.stubEnv("STRIPE_REQUIRED_TAX_REGISTRATIONS", "US-NY:state_sales_tax");
   vi.stubEnv("S3_ENDPOINT", "https://storage.example");
   vi.stubEnv("S3_ACCESS_KEY", "access");
   vi.stubEnv("S3_SECRET_KEY", "secret");
@@ -240,6 +257,10 @@ afterEach(() => {
     ready: true,
     initialized: true,
   });
+  mocks.verifyStripeAccountIdentity.mockResolvedValue({
+    ok: true,
+    detail: "Stripe account identity verified",
+  });
 });
 
 describe("health route schema drift", () => {
@@ -340,11 +361,15 @@ describe("health route", () => {
     expect(json.checks.hostedCore.detail).toBe(
       "4 required hosted configuration values are missing",
     );
+    expect(json.checks.hostedMfaEncryption).toEqual({
+      ok: false,
+      detail: "Hosted MFA encryption is missing or invalid",
+    });
     expect(json.checks.hostedAppUrls.detail).toBe(
       "2 required hosted app URL values are missing",
     );
     expect(json.checks.hostedBilling.detail).toBe(
-      "6 required hosted configuration values are missing",
+      "14 required hosted configuration values are missing",
     );
     expect(json.checks.hostedSubscriptionTax).toEqual({
       ok: false,
@@ -358,6 +383,7 @@ describe("health route", () => {
     );
     const body = JSON.stringify(json);
     expect(body).not.toContain("NEXTAUTH_SECRET");
+    expect(body).not.toContain("MFA_ENCRYPTION_KEY");
     expect(body).not.toContain("NEXTAUTH_URL");
     expect(body).not.toContain("NEXT_PUBLIC_APP_URL");
     expect(body).not.toContain("DATABASE_URL");
@@ -647,6 +673,10 @@ describe("health route", () => {
       ok: true,
       detail: "Hosted billing envs present",
     });
+    expect(json.checks.hostedStripeAccount).toEqual({
+      ok: true,
+      detail: "Stripe account identity verified",
+    });
     expect(json.checks.hostedSubscriptionTax).toEqual({
       ok: true,
       detail: "Hosted subscription tax is enabled",
@@ -656,6 +686,25 @@ describe("health route", () => {
       detail: "Hosted app URLs are valid HTTPS origins",
     });
     expect(JSON.stringify(json)).not.toContain("STRIPE_PRICE_CLOUD_USER");
+  });
+
+  it("fails hosted readiness when the Stripe credential belongs to another account", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    mocks.verifyStripeAccountIdentity.mockResolvedValueOnce({
+      ok: false,
+      detail: "Stripe account identity does not match",
+    });
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedStripeAccount).toEqual({
+      ok: false,
+      detail: "Stripe account identity does not match",
+    });
+    expect(JSON.stringify(json)).not.toContain("acct_openvpm");
   });
 
   it("requires the annual Cloud price for hosted readiness", async () => {
@@ -670,6 +719,21 @@ describe("health route", () => {
     expect(json.checks.hostedBilling).toEqual({
       ok: false,
       detail: "1 required hosted configuration value is missing",
+    });
+  });
+
+  it("requires a valid Connect application fee for hosted readiness", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    vi.stubEnv("STRIPE_CONNECT_APPLICATION_FEE_BPS", "1.5");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedConnectApplicationFee).toEqual({
+      ok: false,
+      detail: "Hosted Connect application fee is missing or invalid",
     });
   });
 
@@ -703,6 +767,24 @@ describe("health route", () => {
       detail: "1 required hosted configuration value is missing",
     });
     expect(JSON.stringify(json)).not.toContain("STRIPE_CONNECT_WEBHOOK_SECRET");
+  });
+
+  it("requires the separate Accounts v2 webhook secret", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    vi.stubEnv("STRIPE_CONNECT_V2_WEBHOOK_SECRET", "   ");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedBilling).toEqual({
+      ok: false,
+      detail: "1 required hosted configuration value is missing",
+    });
+    expect(JSON.stringify(json)).not.toContain(
+      "STRIPE_CONNECT_V2_WEBHOOK_SECRET",
+    );
   });
 
   it("requires Stripe Tax to be explicitly enabled for hosted readiness", async () => {
@@ -1011,6 +1093,29 @@ describe("health route", () => {
     const body = JSON.stringify(json);
     expect(body).not.toContain("storage.example");
     expect(body).not.toContain("clinic-private-bucket");
+  });
+
+  it("accepts a private Blob primary without requiring S3 credentials", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    vi.stubEnv("FILE_STORAGE_PROVIDER", "vercel_blob");
+    vi.stubEnv("BLOB_READ_WRITE_TOKEN", "vercel_blob_rw_test");
+    vi.stubEnv("S3_ENDPOINT", "");
+    vi.stubEnv("S3_ACCESS_KEY", "");
+    vi.stubEnv("S3_SECRET_KEY", "");
+    vi.stubEnv("S3_BUCKET", "");
+    vi.stubEnv("S3_REGION", "");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(mocks.checkObjectStorageHealth).toHaveBeenCalledTimes(1);
+    expect(json.checks.hostedStorage).toEqual({
+      ok: true,
+      detail: "Object storage bucket reachable",
+    });
+    expect(JSON.stringify(json)).not.toContain("vercel_blob_rw_test");
   });
 
   it("keeps an intentionally absent file replica advisory", async () => {

@@ -16,11 +16,14 @@ import {
   ArrowRightLeft,
   Download,
   Mail,
+  Link2,
   Ban,
   CreditCard,
   CalendarClock,
   Pill,
   Undo2,
+  BookCheck,
+  CircleAlert,
 } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
@@ -80,7 +83,7 @@ function canManageBillingRole(role?: string | null): boolean {
 
 function formatBillingDateInput(
   value: Date | string,
-  timeZone?: string | null
+  timeZone?: string | null,
 ) {
   if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
     const [year, month, day] = value.split("-").map(Number) as [
@@ -90,7 +93,7 @@ function formatBillingDateInput(
     ];
     return new Date(Date.UTC(year, month - 1, day)).toLocaleDateString(
       "en-US",
-      { timeZone: "UTC" }
+      { timeZone: "UTC" },
     );
   }
 
@@ -99,7 +102,7 @@ function formatBillingDateInput(
 
 function formatBillingInstantDate(
   value: Date | string,
-  timeZone?: string | null
+  timeZone?: string | null,
 ) {
   const options: Intl.DateTimeFormatOptions = {
     dateStyle: "short",
@@ -138,7 +141,11 @@ function getDisplayStatus(invoice: {
   ) {
     return { label: "settled", style: STATUS_STYLES.settled };
   }
-  if (paid + adjusted > 0 && paid + adjusted < total && invoice.status !== "paid") {
+  if (
+    paid + adjusted > 0 &&
+    paid + adjusted < total &&
+    invoice.status !== "paid"
+  ) {
     return { label: "partial", style: STATUS_STYLES.partial };
   }
   return {
@@ -237,7 +244,7 @@ export default function BillingPage() {
   const handleStatusChange = (
     e: React.MouseEvent,
     id: string,
-    status: "sent"
+    status: "sent",
   ) => {
     e.stopPropagation();
     updateStatus.mutate({ id, status });
@@ -284,9 +291,7 @@ export default function BillingPage() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="font-heading text-xl font-semibold">Billing</h2>
-          <p className="text-sm text-muted-foreground">
-            Invoices and payments
-          </p>
+          <p className="text-sm text-muted-foreground">Invoices and payments</p>
         </div>
         {canManageBilling && (
           <Button asChild>
@@ -350,6 +355,13 @@ export default function BillingPage() {
           </p>
         </div>
       </div>
+
+      {canManageBilling && billingSettingsReady ? (
+        <FinancialClosePanel
+          timeZone={billingTimeZone}
+          canClose={session?.user?.role === "admin"}
+        />
+      ) : null}
 
       {/* Status filter tabs */}
       <div className="mt-6 flex items-center gap-1 border-b border-border">
@@ -418,13 +430,15 @@ export default function BillingPage() {
                     isExpanded={expandedId === invoice.id}
                     onToggle={() =>
                       setExpandedId(
-                        expandedId === invoice.id ? null : invoice.id
+                        expandedId === invoice.id ? null : invoice.id,
                       )
                     }
                     onStatusChange={handleStatusChange}
                     onConvertEstimate={handleConvertEstimate}
                     onVoidInvoice={handleVoidInvoice}
                     practiceName={verifiedBillingConfig.practiceName}
+                    practiceEmail={verifiedBillingConfig.practiceEmail}
+                    invoiceEmailFrom={verifiedBillingConfig.invoiceEmailFrom}
                     billingTimeZone={billingTimeZone}
                     canManageBilling={canManageBilling}
                     isMutating={
@@ -513,6 +527,154 @@ export default function BillingPage() {
         onConfirm={confirmInvoiceVoid}
       />
     </div>
+  );
+}
+
+function previousClinicBusinessDate(timeZone?: string | null): string {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timeZone ?? undefined,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const parts = Object.fromEntries(
+    formatter
+      .formatToParts(new Date())
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  );
+  const today = new Date(
+    Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day)),
+  );
+  today.setUTCDate(today.getUTCDate() - 1);
+  return today.toISOString().slice(0, 10);
+}
+
+function FinancialClosePanel({
+  timeZone,
+  canClose,
+}: {
+  timeZone?: string | null;
+  canClose: boolean;
+}) {
+  const formatCurrency = useCurrencyFormatter();
+  const utils = trpc.useUtils();
+  const [businessDate, setBusinessDate] = useState("");
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  useEffect(() => {
+    if (!businessDate) setBusinessDate(previousClinicBusinessDate(timeZone));
+  }, [businessDate, timeZone]);
+  const validDate = /^\d{4}-\d{2}-\d{2}$/.test(businessDate);
+  const statement = trpc.billing.financialDayStatement.useQuery(
+    { businessDate },
+    { enabled: validDate, retry: false },
+  );
+  const closeDay = trpc.billing.closeFinancialDay.useMutation({
+    onSuccess: async ({ replayed }) => {
+      setConfirmOpen(false);
+      toast.success(replayed ? "Clinic day was already closed" : "Clinic day closed");
+      await Promise.all([
+        utils.billing.financialDayStatement.invalidate({ businessDate }),
+        utils.billing.listFinancialCloses.invalidate(),
+      ]);
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const close = statement.data?.close;
+  const summary = close ?? statement.data?.summary;
+  const money = (cents: number) => formatCurrency(cents / 100);
+
+  return (
+    <section className="mt-6 rounded-lg border border-border bg-card">
+      <div className="flex flex-col gap-3 border-b border-border p-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div className="flex items-center gap-2">
+            <BookCheck className="h-4 w-4 text-primary" />
+            <h3 className="font-heading font-semibold">Daily financial close</h3>
+            {close ? <Badge variant="success">Closed</Badge> : null}
+          </div>
+          <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
+            Balance what the clinic recorded against Stripe gross, processing
+            fee, OpenVPM fee, clinic proceeds, payouts, refunds, and disputes.
+          </p>
+        </div>
+        <label className="text-sm font-medium">
+          Clinic date
+          <Input
+            className="mt-1 w-44"
+            type="date"
+            value={businessDate}
+            onChange={(event) => setBusinessDate(event.target.value)}
+          />
+        </label>
+      </div>
+
+      {statement.isLoading ? (
+        <div className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Building statement
+        </div>
+      ) : statement.error ? (
+        <div className="p-4 text-sm text-destructive" role="alert">
+          {statement.error.message}
+        </div>
+      ) : summary ? (
+        <div className="space-y-4 p-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {[
+              ["Gross receipts", money(summary.grossReceiptsCents)],
+              ["Refunds", money(summary.refundsCents)],
+              ["Net receipts", money(summary.netReceiptsCents)],
+              ["Stripe gross", money(summary.processorGrossCents)],
+              ["Stripe processing", money(summary.processorFeeCents)],
+              ["OpenVPM fee", money(summary.applicationFeeCents)],
+              ["Clinic proceeds", money(summary.clinicNetCents)],
+              ["Paid out", money(summary.paidOutCents)],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-md bg-muted/50 p-3">
+                <p className="text-xs text-muted-foreground">{label}</p>
+                <p className="mt-1 font-heading text-lg font-semibold">{value}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex flex-col gap-3 rounded-md border border-border p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="font-medium">
+                {summary.unreconciledCount === 0
+                  ? "Every Connect payment has settlement evidence"
+                  : `${summary.unreconciledCount} Connect transaction(s) need reconciliation`}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {money(summary.openDisputeCents)} in disputes open at this
+                cutoff. Online payments use Stripe Connect; integrated
+                card-present Terminal is not enabled in this launch scope.
+              </p>
+            </div>
+            {summary.unreconciledCount > 0 ? (
+              <CircleAlert className="h-5 w-5 shrink-0 text-destructive" />
+            ) : canClose && !close ? (
+              <Button onClick={() => setConfirmOpen(true)}>Close clinic day</Button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      <ActionConfirmationDialog
+        open={confirmOpen}
+        title={`Close ${businessDate}?`}
+        description="This stores an immutable snapshot. Later refunds, payouts, or disputes appear in later operational statements instead of rewriting what staff closed."
+        confirmLabel="Close clinic day"
+        isPending={closeDay.isPending}
+        onCancel={() => setConfirmOpen(false)}
+        onConfirm={() =>
+          closeDay.mutate({
+            businessDate,
+            confirmation: `CLOSE:${businessDate}`,
+          })
+        }
+      />
+    </section>
   );
 }
 
@@ -681,7 +843,8 @@ function DispenseChargeQueuePanel({
                   {formatBillingInstantDate(item.createdAt, billingTimeZone)}
                   {item.appointmentId ? (
                     <>
-                      {" "}·{" "}
+                      {" "}
+                      ·{" "}
                       <Link
                         href={`/encounters/${item.appointmentId}#charge-capture`}
                         className="underline underline-offset-2"
@@ -783,7 +946,6 @@ function DispenseChargeQueuePanel({
         onCancel={closeWaiveDialog}
         onConfirm={confirmWaive}
       />
-
     </section>
   );
 }
@@ -805,8 +967,7 @@ function WellnessBillingPanel({
   });
   const dueMembershipsMissing =
     settingsReady && !dueQuery.isLoading && !dueQuery.error && !dueQuery.data;
-  const dueMembershipsUnavailable =
-    !!dueQuery.error || dueMembershipsMissing;
+  const dueMembershipsUnavailable = !!dueQuery.error || dueMembershipsMissing;
   const verifiedDueMemberships =
     dueQuery.isLoading || dueMembershipsUnavailable || !dueQuery.data
       ? null
@@ -815,7 +976,7 @@ function WellnessBillingPanel({
   const totalDue = verifiedDueMemberships
     ? verifiedDueMemberships.reduce(
         (sum, row) => sum + Number(row.price ?? 0),
-        0
+        0,
       )
     : 0;
 
@@ -867,12 +1028,12 @@ function WellnessBillingPanel({
               {dueQuery.isLoading
                 ? "Checking due memberships..."
                 : dueQuery.error
-                ? dueQuery.error.message
-                : dueMembershipsMissing
-                ? "Unable to load due wellness memberships. Please retry."
-                : `${dueMemberships.length} scheduled invoice${
-                    dueMemberships.length === 1 ? "" : "s"
-                  } due, ${formatCurrency(totalDue)} before tax`}
+                  ? dueQuery.error.message
+                  : dueMembershipsMissing
+                    ? "Unable to load due wellness memberships. Please retry."
+                    : `${dueMemberships.length} scheduled invoice${
+                        dueMemberships.length === 1 ? "" : "s"
+                      } due, ${formatCurrency(totalDue)} before tax`}
             </p>
             {!dueMembershipsUnavailable && !dueQuery.isLoading && (
               <p className="mt-1 text-xs text-muted-foreground">
@@ -946,7 +1107,7 @@ function WellnessBillingPanel({
                   <td className="px-4 py-3 text-muted-foreground">
                     {formatBillingDateInput(
                       row.nextBillingDate,
-                      billingTimeZone
+                      billingTimeZone,
                     )}
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums">
@@ -970,6 +1131,8 @@ function InvoiceRow({
   onConvertEstimate,
   onVoidInvoice,
   practiceName,
+  practiceEmail,
+  invoiceEmailFrom,
   billingTimeZone,
   canManageBilling,
   isMutating,
@@ -992,14 +1155,12 @@ function InvoiceRow({
   };
   isExpanded: boolean;
   onToggle: () => void;
-  onStatusChange: (
-    e: React.MouseEvent,
-    id: string,
-    status: "sent"
-  ) => void;
+  onStatusChange: (e: React.MouseEvent, id: string, status: "sent") => void;
   onConvertEstimate: (e: React.MouseEvent, id: string) => void;
   onVoidInvoice: (e: React.MouseEvent, id: string) => void;
   practiceName: string;
+  practiceEmail: string | null;
+  invoiceEmailFrom: string;
   billingTimeZone?: string | null;
   canManageBilling: boolean;
   isMutating: boolean;
@@ -1007,7 +1168,7 @@ function InvoiceRow({
   const formatCurrency = useCurrencyFormatter();
   const detail = trpc.billing.getInvoice.useQuery(
     { id: invoice.id },
-    { enabled: isExpanded }
+    { enabled: isExpanded },
   );
 
   const displayStatus = getDisplayStatus(invoice);
@@ -1076,16 +1237,16 @@ function InvoiceRow({
             {canManageBilling &&
               !invoice.isEstimate &&
               invoice.status === "draft" && (
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={isMutating}
-                onClick={(e) => onStatusChange(e, invoice.id, "sent")}
-                title="Mark as Sent"
-              >
-                <Send className="h-3.5 w-3.5" />
-              </Button>
-            )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={isMutating}
+                  onClick={(e) => onStatusChange(e, invoice.id, "sent")}
+                  title="Mark as Sent"
+                >
+                  <Send className="h-3.5 w-3.5" />
+                </Button>
+              )}
             {canManageBilling &&
               !invoice.isEstimate &&
               (invoice.status === "sent" || invoice.status === "overdue") && (
@@ -1121,7 +1282,11 @@ function InvoiceRow({
       </tr>
       {isExpanded && (
         <tr className="border-b border-border last:border-0">
-          <td colSpan={9} className="bg-muted/20 px-8 py-4" data-tour="invoice-detail">
+          <td
+            colSpan={9}
+            className="bg-muted/20 px-8 py-4"
+            data-tour="invoice-detail"
+          >
             {detail.isLoading ? (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -1155,10 +1320,14 @@ function InvoiceRow({
                         onClick={async (e) => {
                           e.stopPropagation();
                           const d = detail.data!;
-                          const clientName = [d.clientFirstName, d.clientLastName]
+                          const clientName = [
+                            d.clientFirstName,
+                            d.clientLastName,
+                          ]
                             .filter(Boolean)
                             .join(" ");
-                          const { generateInvoicePdf } = await import("@/lib/pdf");
+                          const { generateInvoicePdf } =
+                            await import("@/lib/pdf");
                           generateInvoicePdf({
                             practiceName,
                             clientName,
@@ -1167,16 +1336,16 @@ function InvoiceRow({
                             invoiceDate: d.createdAt
                               ? formatBillingInstantDate(
                                   d.createdAt,
-                                  billingTimeZone
+                                  billingTimeZone,
                                 )
                               : formatBillingInstantDate(
                                   new Date(),
-                                  billingTimeZone
+                                  billingTimeZone,
                                 ),
                             dueDate: d.dueDate
                               ? formatBillingDateInput(
                                   d.dueDate,
-                                  billingTimeZone
+                                  billingTimeZone,
                                 )
                               : undefined,
                             status: "estimate",
@@ -1215,8 +1384,7 @@ function InvoiceRow({
                   <span className="text-muted-foreground">
                     Client:{" "}
                     <span className="text-foreground font-medium">
-                      {detail.data.clientFirstName}{" "}
-                      {detail.data.clientLastName}
+                      {detail.data.clientFirstName} {detail.data.clientLastName}
                     </span>
                   </span>
                   {detail.data.clientEmail && (
@@ -1228,73 +1396,80 @@ function InvoiceRow({
                 {detail.data.items.length > 0 ? (
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-border">
-                        <th className="py-2 text-left font-medium text-muted-foreground">
-                          Description
-                        </th>
-                        <th className="py-2 text-left font-medium text-muted-foreground">
-                          Type
-                        </th>
-                        <th className="py-2 text-right font-medium text-muted-foreground">
-                          Qty
-                        </th>
-                        <th className="py-2 text-right font-medium text-muted-foreground">
-                          Unit Price
-                        </th>
-                        <th className="py-2 text-right font-medium text-muted-foreground">
-                          Total
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {detail.data.items.map((item) => (
-                        <tr
-                          key={item.id}
-                          className="border-b border-border/50 last:border-0"
-                        >
-                          <td className="py-2">{item.description}</td>
-                          <td className="py-2 capitalize text-muted-foreground">
-                            {item.itemType} · {item.taxable ? "taxable" : "not taxable"}
+                      <thead>
+                        <tr className="border-b border-border">
+                          <th className="py-2 text-left font-medium text-muted-foreground">
+                            Description
+                          </th>
+                          <th className="py-2 text-left font-medium text-muted-foreground">
+                            Type
+                          </th>
+                          <th className="py-2 text-right font-medium text-muted-foreground">
+                            Qty
+                          </th>
+                          <th className="py-2 text-right font-medium text-muted-foreground">
+                            Unit Price
+                          </th>
+                          <th className="py-2 text-right font-medium text-muted-foreground">
+                            Total
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {detail.data.items.map((item) => (
+                          <tr
+                            key={item.id}
+                            className="border-b border-border/50 last:border-0"
+                          >
+                            <td className="py-2">{item.description}</td>
+                            <td className="py-2 capitalize text-muted-foreground">
+                              {item.itemType} ·{" "}
+                              {item.taxable ? "taxable" : "not taxable"}
+                            </td>
+                            <td className="py-2 text-right tabular-nums">
+                              {item.quantity}
+                            </td>
+                            <td className="py-2 text-right tabular-nums">
+                              {formatCurrency(item.unitPrice)}
+                            </td>
+                            <td className="py-2 text-right tabular-nums">
+                              {formatCurrency(item.total)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr className="border-t border-border">
+                          <td
+                            colSpan={4}
+                            className="py-2 text-right font-medium"
+                          >
+                            Subtotal
                           </td>
                           <td className="py-2 text-right tabular-nums">
-                            {item.quantity}
-                          </td>
-                          <td className="py-2 text-right tabular-nums">
-                            {formatCurrency(item.unitPrice)}
-                          </td>
-                          <td className="py-2 text-right tabular-nums">
-                            {formatCurrency(item.total)}
+                            {formatCurrency(detail.data.subtotal)}
                           </td>
                         </tr>
-                      ))}
-                    </tbody>
-                    <tfoot>
-                      <tr className="border-t border-border">
-                        <td colSpan={4} className="py-2 text-right font-medium">
-                          Subtotal
-                        </td>
-                        <td className="py-2 text-right tabular-nums">
-                          {formatCurrency(detail.data.subtotal)}
-                        </td>
-                      </tr>
-                      <tr>
-                        <td colSpan={4} className="py-1 text-right text-muted-foreground">
-                          Tax
-                        </td>
-                        <td className="py-1 text-right tabular-nums text-muted-foreground">
-                          {formatCurrency(detail.data.tax)}
-                        </td>
-                      </tr>
-                      <tr className="font-semibold">
-                        <td colSpan={4} className="py-2 text-right">
-                          Total
-                        </td>
-                        <td className="py-2 text-right tabular-nums">
-                          {formatCurrency(detail.data.total)}
-                        </td>
-                      </tr>
-                    </tfoot>
+                        <tr>
+                          <td
+                            colSpan={4}
+                            className="py-1 text-right text-muted-foreground"
+                          >
+                            Tax
+                          </td>
+                          <td className="py-1 text-right tabular-nums text-muted-foreground">
+                            {formatCurrency(detail.data.tax)}
+                          </td>
+                        </tr>
+                        <tr className="font-semibold">
+                          <td colSpan={4} className="py-2 text-right">
+                            Total
+                          </td>
+                          <td className="py-2 text-right tabular-nums">
+                            {formatCurrency(detail.data.total)}
+                          </td>
+                        </tr>
+                      </tfoot>
                     </table>
                   </div>
                 ) : (
@@ -1341,10 +1516,14 @@ function InvoiceRow({
                         onClick={async (e) => {
                           e.stopPropagation();
                           const d = detail.data!;
-                          const clientName = [d.clientFirstName, d.clientLastName]
+                          const clientName = [
+                            d.clientFirstName,
+                            d.clientLastName,
+                          ]
                             .filter(Boolean)
                             .join(" ");
-                          const { generateInvoicePdf } = await import("@/lib/pdf");
+                          const { generateInvoicePdf } =
+                            await import("@/lib/pdf");
                           generateInvoicePdf({
                             practiceName,
                             clientName,
@@ -1353,16 +1532,16 @@ function InvoiceRow({
                             invoiceDate: d.createdAt
                               ? formatBillingInstantDate(
                                   d.createdAt,
-                                  billingTimeZone
+                                  billingTimeZone,
                                 )
                               : formatBillingInstantDate(
                                   new Date(),
-                                  billingTimeZone
+                                  billingTimeZone,
                                 ),
                             dueDate: d.dueDate
                               ? formatBillingDateInput(
                                   d.dueDate,
-                                  billingTimeZone
+                                  billingTimeZone,
                                 )
                               : undefined,
                             status: d.status,
@@ -1386,8 +1565,32 @@ function InvoiceRow({
                       {canManageBilling &&
                         (invoice.status === "sent" ||
                           invoice.status === "overdue") && (
-                        <EmailInvoiceButton invoiceId={invoice.id} />
-                      )}
+                          <>
+                            <EmailInvoiceButton
+                              invoiceId={invoice.id}
+                              recipient={detail.data.clientEmail}
+                              clientName={[
+                                detail.data.clientFirstName,
+                                detail.data.clientLastName,
+                              ]
+                                .filter(Boolean)
+                                .join(" ")}
+                              from={invoiceEmailFrom}
+                              replyTo={practiceEmail}
+                              practiceName={practiceName}
+                              amountDue={formatCurrency(detail.data.balanceDue)}
+                              dueDate={
+                                detail.data.dueDate
+                                  ? formatBillingDateInput(
+                                      detail.data.dueDate,
+                                      billingTimeZone,
+                                    )
+                                  : null
+                              }
+                            />
+                            <InvoicePaymentLinkButton invoiceId={invoice.id} />
+                          </>
+                        )}
                     </div>
                   </div>
                 )}
@@ -1418,33 +1621,169 @@ function InvoiceRow({
   );
 }
 
-function EmailInvoiceButton({ invoiceId }: { invoiceId: string }) {
+function EmailInvoiceButton({
+  invoiceId,
+  recipient,
+  clientName,
+  from,
+  replyTo,
+  practiceName,
+  amountDue,
+  dueDate,
+}: {
+  invoiceId: string;
+  recipient: string | null;
+  clientName: string;
+  from: string;
+  replyTo: string | null;
+  practiceName: string;
+  amountDue: string;
+  dueDate: string | null;
+}) {
+  const [open, setOpen] = useState(false);
   const sendInvoiceEmail = trpc.notifications.sendInvoiceEmail.useMutation({
     onSuccess: () => {
-      toast.success("Invoice emailed");
+      setOpen(false);
+      toast.success("Invoice and payment link emailed");
     },
     onError: (err) => {
       toast.error(err.message);
     },
   });
 
+  const subject = `Invoice from ${practiceName} – ${amountDue}`;
+
   return (
-    <Button
-      variant="outline"
-      size="sm"
-      disabled={sendInvoiceEmail.isPending}
-      onClick={(e) => {
-        e.stopPropagation();
-        sendInvoiceEmail.mutate({ invoiceId });
-      }}
-    >
-      {sendInvoiceEmail.isPending ? (
-        <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-      ) : (
+    <>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={sendInvoiceEmail.isPending || !recipient}
+        title={
+          recipient
+            ? "Review email before sending"
+            : "Client has no email on file"
+        }
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen(true);
+        }}
+      >
         <Mail className="mr-1 h-3.5 w-3.5" />
-      )}
-      Email Invoice
-    </Button>
+        Email payment link
+      </Button>
+      <ActionConfirmationDialog
+        open={open}
+        title="Review invoice email"
+        description="Check the recipient and payment details before sending. The live balance and delivery eligibility are checked again when you send."
+        confirmLabel="Send email"
+        isPending={sendInvoiceEmail.isPending}
+        onCancel={() => setOpen(false)}
+        onConfirm={() => sendInvoiceEmail.mutate({ invoiceId })}
+      >
+        <div className="overflow-hidden rounded-xl border border-border bg-background text-sm">
+          <dl className="divide-y divide-border">
+            {[
+              [
+                "To",
+                `${clientName || "Client"} <${recipient ?? "No email on file"}>`,
+              ],
+              ["From", from],
+              [
+                "Replies go to",
+                replyTo ?? "No clinic reply address configured",
+              ],
+              ["Subject", subject],
+              ["Amount due", amountDue],
+              ["Due", dueDate ?? "No due date"],
+            ].map(([label, value]) => (
+              <div
+                key={label}
+                className="grid gap-1 px-4 py-3 sm:grid-cols-[8rem_1fr]"
+              >
+                <dt className="font-medium text-muted-foreground">{label}</dt>
+                <dd className="break-words text-foreground">{value}</dd>
+              </div>
+            ))}
+          </dl>
+          <div className="border-t border-border bg-teal-50 px-4 py-3 text-xs leading-5 text-teal-900">
+            The button opens a payment-only page for this invoice. The private
+            link expires after 30 days and does not open the client&apos;s
+            medical portal.
+          </div>
+        </div>
+      </ActionConfirmationDialog>
+    </>
+  );
+}
+
+function InvoicePaymentLinkButton({ invoiceId }: { invoiceId: string }) {
+  const [open, setOpen] = useState(false);
+  const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
+  const createLink = trpc.billing.createInvoicePaymentLink.useMutation({
+    onSuccess: (result) => {
+      if (!/^\/pay\/[^/?#]+$/.test(result.path)) {
+        toast.error("Payment link is unavailable. Please try again.");
+        return;
+      }
+      setPaymentUrl(new URL(result.path, window.location.origin).toString());
+      setOpen(true);
+    },
+    onError: (error) => toast.error(error.message),
+  });
+
+  const copyLink = () => {
+    if (!paymentUrl) return;
+    void navigator.clipboard
+      .writeText(paymentUrl)
+      .then(() => {
+        setOpen(false);
+        toast.success("Payment link copied");
+      })
+      .catch(() => {
+        toast.error("Could not copy the link. Open it and copy the address.");
+      });
+  };
+
+  return (
+    <>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={createLink.isPending}
+        title="Create a private payment-only link"
+        onClick={(event) => {
+          event.stopPropagation();
+          createLink.mutate({ invoiceId });
+        }}
+      >
+        {createLink.isPending ? (
+          <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <Link2 className="mr-1 h-3.5 w-3.5" />
+        )}
+        Get payment link
+      </Button>
+      <ActionConfirmationDialog
+        open={open}
+        title="Share payment link"
+        description="This private link opens only this invoice, expires after 30 days, and does not open the client's medical portal."
+        confirmLabel="Copy link"
+        onCancel={() => setOpen(false)}
+        onConfirm={copyLink}
+      >
+        {paymentUrl ? (
+          <a
+            className="text-sm font-medium text-primary underline underline-offset-4"
+            href={paymentUrl}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Open client payment page
+          </a>
+        ) : null}
+      </ActionConfirmationDialog>
+    </>
   );
 }
 
@@ -1474,7 +1813,7 @@ function PaymentSection({
   const [paymentMethod, setPaymentMethod] = useState<string>("cash");
   const [paymentNotes, setPaymentNotes] = useState("");
   const [adjustmentType, setAdjustmentType] = useState<"credit" | "write_off">(
-    "credit"
+    "credit",
   );
   const [adjustmentAmount, setAdjustmentAmount] = useState("");
   const [adjustmentReason, setAdjustmentReason] = useState("");
@@ -1871,83 +2210,83 @@ function PaymentSection({
       ) : paymentsQuery.data && paymentsQuery.data.length > 0 ? (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border">
-              <th className="py-2 text-left font-medium text-muted-foreground">
-                Date
-              </th>
-              <th className="py-2 text-right font-medium text-muted-foreground">
-                Amount
-              </th>
-              <th className="py-2 text-left font-medium text-muted-foreground">
-                Method
-              </th>
-              <th className="py-2 text-left font-medium text-muted-foreground">
-                Received By
-              </th>
-              <th className="py-2 text-left font-medium text-muted-foreground">
-                Notes
-              </th>
-              {canRefund && <th className="py-2" />}
-            </tr>
-          </thead>
-          <tbody>
-            {paymentsQuery.data.map((payment) => (
-              <tr
-                key={payment.id}
-                className="border-b border-border/50 last:border-0"
-              >
-                <td className="py-2 text-muted-foreground">
-                  {payment.receivedAt
-                    ? formatBillingInstantDate(
-                        payment.receivedAt,
-                        billingTimeZone
-                      )
-                    : "\u2014"}
-                </td>
-                <td
-                  className={`py-2 text-right tabular-nums font-medium ${
-                    Number(payment.amount) < 0
-                      ? "text-destructive"
-                      : "text-green-600"
-                  }`}
-                >
-                  {formatCurrency(payment.amount)}
-                </td>
-                <td className="py-2 capitalize text-muted-foreground">
-                  {payment.method?.replace(/_/g, " ") ?? "\u2014"}
-                </td>
-                <td className="py-2 text-muted-foreground">
-                  {payment.receivedByName ?? "\u2014"}
-                </td>
-                <td className="py-2 text-muted-foreground">
-                  {payment.notes || "\u2014"}
-                </td>
-                {canRefund && (
-                  <td className="py-2 text-right">
-                    {Number(payment.amount) > 0 && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive"
-                        disabled={refundPayment.isPending}
-                        onClick={() => {
-                          setRefundReason("");
-                          setRefundDueDate(invoiceDueDate ?? "");
-                          setRefundTarget({
-                            paymentId: payment.id,
-                            amount: payment.amount,
-                          });
-                        }}
-                      >
-                        Refund
-                      </Button>
-                    )}
-                  </td>
-                )}
+            <thead>
+              <tr className="border-b border-border">
+                <th className="py-2 text-left font-medium text-muted-foreground">
+                  Date
+                </th>
+                <th className="py-2 text-right font-medium text-muted-foreground">
+                  Amount
+                </th>
+                <th className="py-2 text-left font-medium text-muted-foreground">
+                  Method
+                </th>
+                <th className="py-2 text-left font-medium text-muted-foreground">
+                  Received By
+                </th>
+                <th className="py-2 text-left font-medium text-muted-foreground">
+                  Notes
+                </th>
+                {canRefund && <th className="py-2" />}
               </tr>
-            ))}
-          </tbody>
+            </thead>
+            <tbody>
+              {paymentsQuery.data.map((payment) => (
+                <tr
+                  key={payment.id}
+                  className="border-b border-border/50 last:border-0"
+                >
+                  <td className="py-2 text-muted-foreground">
+                    {payment.receivedAt
+                      ? formatBillingInstantDate(
+                          payment.receivedAt,
+                          billingTimeZone,
+                        )
+                      : "\u2014"}
+                  </td>
+                  <td
+                    className={`py-2 text-right tabular-nums font-medium ${
+                      Number(payment.amount) < 0
+                        ? "text-destructive"
+                        : "text-green-600"
+                    }`}
+                  >
+                    {formatCurrency(payment.amount)}
+                  </td>
+                  <td className="py-2 capitalize text-muted-foreground">
+                    {payment.method?.replace(/_/g, " ") ?? "\u2014"}
+                  </td>
+                  <td className="py-2 text-muted-foreground">
+                    {payment.receivedByName ?? "\u2014"}
+                  </td>
+                  <td className="py-2 text-muted-foreground">
+                    {payment.notes || "\u2014"}
+                  </td>
+                  {canRefund && (
+                    <td className="py-2 text-right">
+                      {Number(payment.amount) > 0 && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive"
+                          disabled={refundPayment.isPending}
+                          onClick={() => {
+                            setRefundReason("");
+                            setRefundDueDate(invoiceDueDate ?? "");
+                            setRefundTarget({
+                              paymentId: payment.id,
+                              amount: payment.amount,
+                            });
+                          }}
+                        >
+                          Refund
+                        </Button>
+                      )}
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
           </table>
         </div>
       ) : (
@@ -1959,54 +2298,54 @@ function PaymentSection({
       ) : adjustmentsQuery.data && adjustmentsQuery.data.length > 0 ? (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border">
-              <th className="py-2 text-left font-medium text-muted-foreground">
-                Date
-              </th>
-              <th className="py-2 text-left font-medium text-muted-foreground">
-                Type
-              </th>
-              <th className="py-2 text-right font-medium text-muted-foreground">
-                Amount
-              </th>
-              <th className="py-2 text-left font-medium text-muted-foreground">
-                Created By
-              </th>
-              <th className="py-2 text-left font-medium text-muted-foreground">
-                Reason
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {adjustmentsQuery.data.map((adjustment) => (
-              <tr
-                key={adjustment.id}
-                className="border-b border-border/50 last:border-0"
-              >
-                <td className="py-2 text-muted-foreground">
-                  {adjustment.createdAt
-                    ? formatBillingInstantDate(
-                        adjustment.createdAt,
-                        billingTimeZone
-                      )
-                    : "\u2014"}
-                </td>
-                <td className="py-2 capitalize text-muted-foreground">
-                  {adjustment.type.replace(/_/g, " ")}
-                </td>
-                <td className="py-2 text-right tabular-nums font-medium text-teal-600">
-                  {formatCurrency(adjustment.amount)}
-                </td>
-                <td className="py-2 text-muted-foreground">
-                  {adjustment.createdByName ?? "\u2014"}
-                </td>
-                <td className="py-2 text-muted-foreground">
-                  {adjustment.reason || "\u2014"}
-                </td>
+            <thead>
+              <tr className="border-b border-border">
+                <th className="py-2 text-left font-medium text-muted-foreground">
+                  Date
+                </th>
+                <th className="py-2 text-left font-medium text-muted-foreground">
+                  Type
+                </th>
+                <th className="py-2 text-right font-medium text-muted-foreground">
+                  Amount
+                </th>
+                <th className="py-2 text-left font-medium text-muted-foreground">
+                  Created By
+                </th>
+                <th className="py-2 text-left font-medium text-muted-foreground">
+                  Reason
+                </th>
               </tr>
-            ))}
-          </tbody>
+            </thead>
+            <tbody>
+              {adjustmentsQuery.data.map((adjustment) => (
+                <tr
+                  key={adjustment.id}
+                  className="border-b border-border/50 last:border-0"
+                >
+                  <td className="py-2 text-muted-foreground">
+                    {adjustment.createdAt
+                      ? formatBillingInstantDate(
+                          adjustment.createdAt,
+                          billingTimeZone,
+                        )
+                      : "\u2014"}
+                  </td>
+                  <td className="py-2 capitalize text-muted-foreground">
+                    {adjustment.type.replace(/_/g, " ")}
+                  </td>
+                  <td className="py-2 text-right tabular-nums font-medium text-teal-600">
+                    {formatCurrency(adjustment.amount)}
+                  </td>
+                  <td className="py-2 text-muted-foreground">
+                    {adjustment.createdByName ?? "\u2014"}
+                  </td>
+                  <td className="py-2 text-muted-foreground">
+                    {adjustment.reason || "\u2014"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
           </table>
         </div>
       ) : (

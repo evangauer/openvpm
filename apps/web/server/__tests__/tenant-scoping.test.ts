@@ -50,4 +50,17 @@ describe("tenant scoping", () => {
     expect(source).toContain('"admin.resendSmsSendAttempt"');
     expect(source).toContain('"admin.reconcileSmsDeliveryEvent"');
   });
+
+  it("keeps only Stripe account management available to lapsed clinic admins", () => {
+    const source = readFileSync(
+      fileURLToPath(new URL("../trpc.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(source).toContain('"billing.createPaymentAccountOnboarding"');
+    expect(source).toContain('"billing.refreshPaymentAccount"');
+    expect(source).toContain('"billing.openPaymentAccountDashboard"');
+    expect(source).not.toContain('"billing.createInvoice"');
+    expect(source).not.toContain('"billing.recordPayment"');
+    expect(source).not.toContain('"notifications.sendInvoiceEmail"');
+  });
 });

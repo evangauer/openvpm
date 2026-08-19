@@ -44,7 +44,7 @@ const mocks = vi.hoisted(() => {
     fileMetadata,
     selectResults,
     getServerSession: vi.fn(async () => ({
-      user: { id: userId, practiceId },
+      user: { id: userId, practiceId, sessionVersion: 1 },
     })),
     readPrimaryObject: vi.fn(),
     readReplicaObject: vi.fn(),
@@ -105,7 +105,11 @@ afterEach(() => {
   vi.unstubAllEnvs();
   mocks.selectResults.length = 0;
   mocks.getServerSession.mockResolvedValue({
-    user: { id: mocks.userId, practiceId: mocks.practiceId },
+    user: {
+      id: mocks.userId,
+      practiceId: mocks.practiceId,
+      sessionVersion: 1,
+    },
   });
 });
 
@@ -257,7 +261,7 @@ describe("file proxy response headers", () => {
 
   it("serves private document files as attachments with nosniff", async () => {
     mocks.selectResults.push(
-      [{ id: mocks.userId }],
+      [{ id: mocks.userId, sessionVersion: 1 }],
       [
         mocks.fileMetadata({
           fileName: "lab.pdf",
@@ -290,7 +294,7 @@ describe("file proxy response headers", () => {
   it("serves a checksum-verified replica when the primary provider fails", async () => {
     const replicaBody = new Uint8Array([1, 2, 3]);
     mocks.selectResults.push(
-      [{ id: mocks.userId }],
+      [{ id: mocks.userId, sessionVersion: 1 }],
       [
         mocks.fileMetadata({
           fileName: "lab report.pdf",
@@ -343,7 +347,7 @@ describe("file proxy response headers", () => {
 
   it("does not serve a replica whose stored version is provider-null", async () => {
     mocks.selectResults.push(
-      [{ id: mocks.userId }],
+      [{ id: mocks.userId, sessionVersion: 1 }],
       [
         mocks.fileMetadata({
           fileName: "lab.pdf",
@@ -372,7 +376,7 @@ describe("file proxy response headers", () => {
 
   it("does not report a missing primary as definitive when replica verification fails", async () => {
     mocks.selectResults.push(
-      [{ id: mocks.userId }],
+      [{ id: mocks.userId, sessionVersion: 1 }],
       [
         mocks.fileMetadata({
           fileName: "lab.pdf",
@@ -404,7 +408,7 @@ describe("file proxy response headers", () => {
 
   it("treats oversized storage objects as missing", async () => {
     mocks.selectResults.push(
-      [{ id: mocks.userId }],
+      [{ id: mocks.userId, sessionVersion: 1 }],
       [
         mocks.fileMetadata({
           fileName: "lab.pdf",
@@ -430,7 +434,7 @@ describe("file proxy response headers", () => {
   });
 
   it("does not fetch private objects without active file metadata", async () => {
-    mocks.selectResults.push([{ id: mocks.userId }], []);
+    mocks.selectResults.push([{ id: mocks.userId, sessionVersion: 1 }], []);
 
     const response = await GET(
       fileRequest(`${mocks.practiceId}/documents/lab.pdf`),
@@ -463,6 +467,7 @@ describe("file proxy response headers", () => {
       user: {
         id: mocks.userId,
         practiceId: "00000000-0000-0000-0000-000000000099",
+        sessionVersion: 1,
       },
     });
 

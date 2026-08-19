@@ -64,6 +64,7 @@ const DYNAMIC_ROUTES: Array<[RegExp, string]> = [
   [/^\/encounters\/[^/]+$/, "/encounters/:id"],
   [/^\/patients\/[^/]+\/edit$/, "/patients/:id/edit"],
   [/^\/patients\/[^/]+$/, "/patients/:id"],
+  [/^\/pay\/[^/]+$/, "/pay/:token"],
   [/^\/portal\/[^/]+\/appointments$/, "/portal/:token/appointments"],
   [/^\/portal\/[^/]+\/book$/, "/portal/:token/book"],
   [/^\/portal\/[^/]+\/invoices$/, "/portal/:token/invoices"],
@@ -86,13 +87,13 @@ export function classifyClientError(error: Error): ClientErrorFamily {
 }
 
 export function sanitizeClientErrorDigest(
-  digest: string | null | undefined
+  digest: string | null | undefined,
 ): string | null {
   return digest && SAFE_DIGEST_RE.test(digest) ? digest : null;
 }
 
 export function sanitizeClientErrorPath(
-  input: string | null | undefined
+  input: string | null | undefined,
 ): string | null {
   if (!input) return null;
 

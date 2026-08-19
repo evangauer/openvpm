@@ -17,6 +17,7 @@ import {
   locations,
   rooms,
   emailSuppressions,
+  auditLog,
 } from "@openpims/db";
 import {
   sendAppointmentReminder,
@@ -58,6 +59,8 @@ import {
   RECOVERY_HOLD_BLOCK_MESSAGE,
 } from "@/lib/recovery-hold";
 import { assertOutboundEmailAllowed } from "@/lib/outbound-email-security";
+import { appBaseUrl } from "@/lib/app-url";
+import { createInvoicePaymentToken } from "@/lib/billing/invoice-payment-tokens";
 
 const DEFAULT_PRACTICE_NAME = "your clinic";
 
@@ -209,6 +212,7 @@ async function practiceNotificationSettings(ctx: {
 }): Promise<{
   name: string;
   phone: string | null;
+  email: string | null;
   timezone: string | null;
   currency: string;
   country: string;
@@ -217,6 +221,7 @@ async function practiceNotificationSettings(ctx: {
     .select({
       name: practices.name,
       phone: practices.phone,
+      email: practices.email,
       timezone: practices.timezone,
       currency: practices.currency,
       country: practices.country,
@@ -232,6 +237,7 @@ async function practiceNotificationSettings(ctx: {
   return {
     name: practiceDisplayName(practice.name),
     phone: practice.phone ?? null,
+    email: practice.email ?? null,
     timezone: practice.timezone ?? null,
     currency: practice.currency ?? "usd",
     country: practice.country ?? "US",
@@ -307,7 +313,9 @@ export const notificationsRouter = createRouter({
           practiceName: practices.name,
           practicePhone: practices.phone,
           practiceTimezone: practices.timezone,
-          locationId: sql<string | null>`coalesce(${appointments.locationId}, ${rooms.locationId})`,
+          locationId: sql<
+            string | null
+          >`coalesce(${appointments.locationId}, ${rooms.locationId})`,
         })
         .from(appointments)
         .leftJoin(
@@ -712,6 +720,16 @@ export const notificationsRouter = createRouter({
         practice.country,
       );
 
+      const paymentToken = createInvoicePaymentToken({
+        invoiceId: invoice.id,
+        clientId: invoice.clientId,
+        practiceId: ctx.practiceId,
+      });
+      const portalUrl = new URL(
+        `/pay/${encodeURIComponent(paymentToken)}`,
+        appBaseUrl(),
+      ).toString();
+
       await assertStaffOutboundEmailAllowed(ctx, "invoice");
       const emailResult = await sendInvoiceEmail({
         to: clientEmail,
@@ -726,6 +744,8 @@ export const notificationsRouter = createRouter({
           : undefined,
         practiceName: practice.name,
         practicePhone: practice.phone ?? undefined,
+        practiceEmail: practice.email ?? undefined,
+        portalUrl,
       });
       if (!emailResult.success) {
         throw new TRPCError({
@@ -743,6 +763,22 @@ export const notificationsRouter = createRouter({
         content: `Invoice sent — amount due: ${totalFormatted}`,
         status: "sent",
         providerMessageId: emailResult.id,
+      });
+
+      await ctx.db.insert(auditLog).values({
+        practiceId: ctx.practiceId,
+        userId: ctx.user.id,
+        action: "invoice_email_sent",
+        entityType: "invoice",
+        entityId: invoice.id,
+        ipAddress: ctx.ip ?? null,
+        changes: {
+          amountDue: totalFormatted,
+          paymentLinkScope: "invoice_only",
+          paymentLinkTtlDays: 30,
+          replyToConfigured: Boolean(practice.email),
+          providerMessageId: emailResult.id ?? null,
+        },
       });
 
       return { success: true };
@@ -845,7 +881,9 @@ export const notificationsRouter = createRouter({
           practiceName: practices.name,
           practicePhone: practices.phone,
           practiceTimezone: practices.timezone,
-          locationId: sql<string | null>`coalesce(${appointments.locationId}, ${rooms.locationId})`,
+          locationId: sql<
+            string | null
+          >`coalesce(${appointments.locationId}, ${rooms.locationId})`,
         })
         .from(appointments)
         .leftJoin(

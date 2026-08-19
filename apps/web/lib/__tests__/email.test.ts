@@ -228,6 +228,56 @@ describe("sendEmail", () => {
     ).resolves.toMatchObject({ success: true, id: "email-invoice-1" });
   });
 
+  it("gives invoice recipients a clear private payment entry point", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-invoice-1" } });
+    const { sendInvoiceEmail } = await loadEmail();
+
+    await sendInvoiceEmail({
+      to: "client@example.com",
+      clientName: "Ada Lovelace",
+      invoiceTotal: "$123.45",
+      portalUrl: "https://app.openvpm.com/pay/invoice-payment-token",
+      practiceName: "Neighborhood Veterinary",
+      practiceEmail: "billing@neighborhood.example",
+    });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload.html).toContain("View invoice and pay");
+    expect(payload.html).toContain(
+      'href="https://app.openvpm.com/pay/invoice-payment-token"',
+    );
+    expect(payload.html).toContain("No account or password is required");
+    expect(payload.html).toContain("opens only this invoice");
+    expect(payload).toMatchObject({
+      from: '"Neighborhood Veterinary via OpenVPM" <noreply@mail.openvpm.com>',
+      replyTo: "billing@neighborhood.example",
+      subject: "Invoice from Neighborhood Veterinary – $123.45",
+    });
+  });
+
+  it("escapes invoice display data and strips sender header injection", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-invoice-2" } });
+    const { sendInvoiceEmail } = await loadEmail();
+
+    await sendInvoiceEmail({
+      to: "client@example.com",
+      clientName: '<img src=x onerror="alert(1)">',
+      invoiceTotal: "$10.00\r\nBcc: attacker@example.com",
+      practiceName: 'Clinic "Name"\r\nBcc: attacker@example.com',
+      portalUrl: "https://app.openvpm.com/pay/safe-token",
+    });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload.html).toContain("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;");
+    expect(payload.html).not.toContain('<img src=x onerror="alert(1)">');
+    expect(payload.subject).not.toContain("\r");
+    expect(payload.subject).not.toContain("\n");
+    expect(payload.from).not.toContain("\r");
+    expect(payload.from).not.toContain("\n");
+  });
+
   it("keeps verification provider evidence and says the trial is already active", async () => {
     vi.stubEnv("RESEND_API_KEY", "re_test");
     mocks.resendSend.mockResolvedValue({ data: { id: "email-verify-1" } });
@@ -514,7 +564,7 @@ describe("lifecycle email branding", () => {
       },
     });
     expect(payload.html).toContain("https://app.openvpm.com/?setup=resume");
-    expect(payload.html).toContain("no call or credit card required");
+    expect(payload.html).toContain("no call or payment method required");
     expect(payload.html).toContain("do not email patient files");
     expect(payload.html).toContain("/email-preferences?token=");
   });

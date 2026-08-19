@@ -6,6 +6,8 @@ import { practices } from "@openpims/db";
 import {
   createSubscriptionCheckoutSession,
   createBillingPortalSession,
+  readSubscriptionCadenceSnapshot,
+  scheduleSubscriptionAnnualAtRenewal,
 } from "@/lib/stripe";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
 import {
@@ -70,11 +72,36 @@ export const subscriptionRouter = createRouter({
     }
 
     const enforced = billingEnforced();
-    let counts = await countBillableLocationsAndSeats(ctx.db, ctx.practiceId);
-    let billingSync: BillingSyncState | null = await readBillingSyncState(
+    const counts = await countBillableLocationsAndSeats(ctx.db, ctx.practiceId);
+    const billingSync: BillingSyncState | null = await readBillingSyncState(
       ctx.db,
       ctx.practiceId
     );
+    let providerCadence: Awaited<
+      ReturnType<typeof readSubscriptionCadenceSnapshot>
+    > | null = null;
+    let billingProviderStatus: "not_applicable" | "verified" | "unavailable" =
+      "not_applicable";
+    if (
+      enforced &&
+      practice.stripeCustomerId &&
+      practice.stripeSubscriptionId
+    ) {
+      const monthlyPriceId = cloudCheckoutPriceIds("month").locationPriceId;
+      const annualPriceId = cloudCheckoutPriceIds("year").locationPriceId;
+      try {
+        providerCadence = await readSubscriptionCadenceSnapshot({
+          subscriptionId: practice.stripeSubscriptionId,
+          customerId: practice.stripeCustomerId,
+          practiceId: ctx.practiceId,
+          monthlyPriceId,
+          annualPriceId,
+        });
+        billingProviderStatus = "verified";
+      } catch {
+        billingProviderStatus = "unavailable";
+      }
+    }
     const period = currentPeriodMonth();
     const [smsUsed, aiUsed] = enforced
       ? await Promise.all([
@@ -109,7 +136,11 @@ export const subscriptionRouter = createRouter({
         counts.billableSeatCount,
       ),
       annualLocationUnitPriceUsd: CLOUD_LOCATION_UNIT_PRICE_ANNUAL_USD,
-      currentBillingCadence: billingSync?.billingCadence ?? null,
+      currentBillingCadence:
+        providerCadence?.currentCadence ?? billingSync?.billingCadence ?? null,
+      scheduledBillingCadence: providerCadence?.scheduledCadence ?? null,
+      scheduledBillingEffectiveAt: providerCadence?.effectiveAt ?? null,
+      billingProviderStatus,
       billingOptions: CLOUD_BILLING_OPTIONS.map((option) => ({
         ...option,
         totalUsd:
@@ -254,6 +285,76 @@ export const subscriptionRouter = createRouter({
       }
       return { url: checkoutUrl };
     }),
+
+  /** Schedule a monthly clinic subscription to become annual at renewal. */
+  scheduleAnnualAtRenewal: adminProcedure.mutation(async ({ ctx }) => {
+    const [practice] = await ctx.db
+      .select({
+        stripeCustomerId: practices.stripeCustomerId,
+        stripeSubscriptionId: practices.stripeSubscriptionId,
+        recoveryHold: practices.recoveryHold,
+      })
+      .from(practices)
+      .where(activePracticeWhere(ctx.practiceId))
+      .limit(1)
+      .for("share", { of: practices });
+
+    if (!practice) throw practiceNotFound();
+    if (practice.recoveryHold) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: RECOVERY_HOLD_BLOCK_MESSAGE,
+      });
+    }
+    if (!practice.stripeCustomerId || !practice.stripeSubscriptionId) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "Start the monthly plan before switching to annual billing.",
+      });
+    }
+    const monthlyPriceId = cloudCheckoutPriceIds("month").locationPriceId;
+    const annualPriceId = cloudCheckoutPriceIds("year").locationPriceId;
+    if (!monthlyPriceId || !annualPriceId) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "Annual billing is not configured on this server.",
+      });
+    }
+    const counts = await countBillableLocationsAndSeats(ctx.db, ctx.practiceId);
+    try {
+      const result = await scheduleSubscriptionAnnualAtRenewal({
+        subscriptionId: practice.stripeSubscriptionId,
+        customerId: practice.stripeCustomerId,
+        practiceId: ctx.practiceId,
+        monthlyPriceId,
+        annualPriceId,
+        locationCount: counts.locationCount,
+      });
+      return {
+        ...result,
+        annualTotalUsd: estimatedCloudBaseAnnualUsd(
+          counts.locationCount,
+          counts.billableSeatCount,
+        ),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      const userSafeMessages = [
+        "The Stripe subscription does not belong to this clinic. No billing change was made.",
+        "Resolve the subscription's payment status before changing its billing schedule.",
+        "This clinic is already billed annually.",
+        "The connected Stripe subscription is not an OpenVPM monthly plan.",
+        "This subscription already has another Stripe schedule. Contact OpenVPM support before changing it.",
+        "This subscription has custom Stripe billing rules. Contact OpenVPM support before changing its schedule.",
+      ];
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: userSafeMessages.includes(message)
+          ? message
+          : "We couldn't schedule annual billing safely. No immediate plan change was made; contact OpenVPM support.",
+      });
+    }
+  }),
 
   /** Open the Stripe Billing Portal to manage/cancel an existing subscription. */
   openBillingPortal: adminProcedure.mutation(async ({ ctx }) => {

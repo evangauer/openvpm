@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 
 const ROUTE_SOURCE = readFileSync(
   new URL("./route.ts", import.meta.url),
-  "utf8"
+  "utf8",
 );
 
 const mocks = vi.hoisted(() => {
@@ -18,16 +18,33 @@ const mocks = vi.hoisted(() => {
       for: vi.fn(async () => result),
       then: (
         resolve: (value: unknown[]) => unknown,
-        reject?: (error: unknown) => unknown
+        reject?: (error: unknown) => unknown,
       ) => Promise.resolve(result).then(resolve, reject),
     };
     return builder;
   });
 
-  const insertConflict = vi.fn(async () => undefined);
-  const insertValues = vi.fn((_values: unknown) => ({
-    onConflictDoNothing: insertConflict,
-  }));
+  const insertReturningResults: unknown[][] = [];
+  const insertConflict = vi.fn();
+  const insertConflictUpdate = vi.fn(async () => undefined);
+  const insertReturning = vi.fn(
+    async () => insertReturningResults.shift() ?? [{ id: "payment_created" }],
+  );
+  const insertValues = vi.fn((_values: unknown) => {
+    const builder = {
+      onConflictDoNothing: (options: unknown) => {
+        insertConflict(options);
+        return builder;
+      },
+      onConflictDoUpdate: insertConflictUpdate,
+      returning: insertReturning,
+      then: (
+        resolve: (value: unknown) => unknown,
+        reject?: (error: unknown) => unknown,
+      ) => Promise.resolve(undefined).then(resolve, reject),
+    };
+    return builder;
+  });
   const insert = vi.fn(() => ({ values: insertValues }));
 
   const updateReturning = vi.fn(async () => [{ id: "invoice_updated" }]);
@@ -45,14 +62,76 @@ const mocks = vi.hoisted(() => {
     execute,
     insertValues,
     insertConflict,
+    insertConflictUpdate,
+    insertReturningResults,
     updateSet,
     updateWhere,
     captureStripeCheckoutAuthorization: vi.fn(
-      async (input: { amountCents: number }) => ({
+      async (input: {
+        amountCents: number;
+        expectedApplicationFeeAmount?: number;
+      }) => ({
         amountCapturedCents: input.amountCents,
-      })
+        applicationFeeAmountCents:
+          input.amountCents === 5000
+            ? 50
+            : (input.expectedApplicationFeeAmount ?? 0),
+      }),
     ),
     constructConnectWebhookEvent: vi.fn(),
+    retrieveStripeCheckoutSettlement: vi.fn(
+      async (input: {
+        connectedAccountId: string;
+        checkoutSessionId: string;
+        paymentIntentId: string;
+        expectedGrossCents: number;
+        expectedApplicationFeeCents: number;
+      }) => ({
+        connectedAccountId: input.connectedAccountId,
+        checkoutSessionId: input.checkoutSessionId,
+        paymentIntentId: input.paymentIntentId,
+        chargeId: "ch_settlement",
+        balanceTransactionId: "txn_settlement",
+        currency: "usd",
+        grossAmountCents: input.expectedGrossCents,
+        processorFeeCents: 100,
+        applicationFeeCents: input.expectedApplicationFeeCents,
+        clinicNetCents:
+          input.expectedGrossCents - input.expectedApplicationFeeCents - 100,
+        balanceStatus: "pending" as const,
+        availableOn: new Date("2026-08-20T00:00:00Z"),
+      }),
+    ),
+    retrieveStripePayoutReconciliation: vi.fn(
+      async (input: { connectedAccountId: string; payoutId: string }) => ({
+        connectedAccountId: input.connectedAccountId,
+        payoutId: input.payoutId,
+        currency: "usd",
+        amountCents: 4750,
+        status: "paid" as const,
+        automatic: true,
+        reconciliationComplete: true,
+        balanceTransactionIds: ["txn_settlement"],
+        arrivalAt: new Date("2026-08-21T00:00:00Z"),
+        providerCreatedAt: new Date("2026-08-20T00:00:00Z"),
+        failureCode: null,
+        failureMessage: null,
+      }),
+    ),
+    retrieveStripeRefundEvidence: vi.fn(
+      async (input: { connectedAccountId: string; refundId: string }) => ({
+        refundId: input.refundId,
+        connectedAccountId: input.connectedAccountId,
+        amountCents: 5000,
+        currency: "usd",
+        status: "failed" as const,
+        balanceTransactionId: null,
+        balanceAmountCents: null,
+        balanceFeeCents: null,
+        balanceNetCents: null,
+        providerCreatedAt: new Date("2026-08-20T00:00:00Z"),
+      }),
+    ),
     claimStripeEvent: vi.fn(async () => true),
     refundInvalidStripeCheckoutPayment: vi.fn(async () => ({
       outcome: "authorization_canceled" as const,
@@ -71,6 +150,10 @@ vi.mock("@/lib/tenant-db", () => ({
 vi.mock("@/lib/stripe", () => ({
   captureStripeCheckoutAuthorization: mocks.captureStripeCheckoutAuthorization,
   constructConnectWebhookEvent: mocks.constructConnectWebhookEvent,
+  retrieveStripeCheckoutSettlement: mocks.retrieveStripeCheckoutSettlement,
+  retrieveStripePayoutReconciliation:
+    mocks.retrieveStripePayoutReconciliation,
+  retrieveStripeRefundEvidence: mocks.retrieveStripeRefundEvidence,
   INVOICE_CHECKOUT_CAPTURE_MODE: "manual_v1",
   refundInvalidStripeCheckoutPayment: mocks.refundInvalidStripeCheckoutPayment,
 }));
@@ -105,13 +188,51 @@ function stripeRequest() {
 afterEach(() => {
   vi.clearAllMocks();
   mocks.selectResults.length = 0;
+  mocks.insertReturningResults.length = 0;
   mocks.claimStripeEvent.mockResolvedValue(true);
   mocks.captureStripeCheckoutAuthorization.mockImplementation(
-    async (input: { amountCents: number }) => ({
+    async (input: {
+      amountCents: number;
+      expectedApplicationFeeAmount?: number;
+    }) => ({
       amountCapturedCents: input.amountCents,
-    })
+      applicationFeeAmountCents:
+        input.amountCents === 5000
+          ? 50
+          : (input.expectedApplicationFeeAmount ?? 0),
+    }),
   );
   mocks.execute.mockResolvedValue([]);
+  mocks.retrieveStripePayoutReconciliation.mockImplementation(
+    async (input: { connectedAccountId: string; payoutId: string }) => ({
+      connectedAccountId: input.connectedAccountId,
+      payoutId: input.payoutId,
+      currency: "usd",
+      amountCents: 4750,
+      status: "paid" as const,
+      automatic: true,
+      reconciliationComplete: true,
+      balanceTransactionIds: ["txn_settlement"],
+      arrivalAt: new Date("2026-08-21T00:00:00Z"),
+      providerCreatedAt: new Date("2026-08-20T00:00:00Z"),
+      failureCode: null,
+      failureMessage: null,
+    }),
+  );
+  mocks.retrieveStripeRefundEvidence.mockImplementation(
+    async (input: { connectedAccountId: string; refundId: string }) => ({
+      refundId: input.refundId,
+      connectedAccountId: input.connectedAccountId,
+      amountCents: 5000,
+      currency: "usd",
+      status: "failed" as const,
+      balanceTransactionId: null,
+      balanceAmountCents: null,
+      balanceFeeCents: null,
+      balanceNetCents: null,
+      providerCreatedAt: new Date("2026-08-20T00:00:00Z"),
+    }),
+  );
   mocks.refundInvalidStripeCheckoutPayment.mockResolvedValue({
     outcome: "authorization_canceled",
   });
@@ -123,7 +244,7 @@ describe("Stripe Connect webhook", () => {
       new Request("https://openvpm.test/api/webhooks/stripe-connect", {
         method: "POST",
         body: "{}",
-      }) as never
+      }) as never,
     );
 
     expect(response.status).toBe(400);
@@ -164,7 +285,7 @@ describe("Stripe Connect webhook", () => {
         detailsSubmitted: true,
         requirementsCurrentlyDue: [],
         requirementsDisabledReason: null,
-      })
+      }),
     );
   });
 
@@ -249,8 +370,7 @@ describe("Stripe Connect webhook", () => {
 
     await expect(response.json()).resolves.toEqual({ received: true });
     expect(mocks.refundInvalidStripeCheckoutPayment).toHaveBeenCalledWith({
-      externalId:
-        "stripe:connect:acct_deleted:checkout:cs_deleted_account",
+      externalId: "stripe:connect:acct_deleted:checkout:cs_deleted_account",
       amountCents: 12500,
       idempotencyKey:
         "invalid:stripe:connect:acct_deleted:checkout:cs_deleted_account",
@@ -269,6 +389,7 @@ describe("Stripe Connect webhook", () => {
           metadata: {
             source: "client_invoice_connect",
             stripeConnectAccountId: "acct_123",
+            openvpmApplicationFeeAmount: "125",
           },
         },
       },
@@ -300,27 +421,32 @@ describe("Stripe Connect webhook", () => {
             captureMode: "manual_v1",
             source: "client_invoice_connect",
             stripeConnectAccountId: "acct_123",
+            openvpmApplicationFeeAmount: "125",
           },
         },
       },
     });
     mocks.selectResults.push(
       [{ practiceId: "practice_123", stripeAccountId: "acct_123" }],
-      [{
-        id: "invoice_123",
-        practiceId: "practice_123",
-      }],
-      [{
-        id: "invoice_123",
-        practiceId: "practice_123",
-        total: "125.00",
-        paidAmount: "75.00",
-        status: "sent",
-        isEstimate: false,
-      }],
+      [
+        {
+          id: "invoice_123",
+          practiceId: "practice_123",
+        },
+      ],
+      [
+        {
+          id: "invoice_123",
+          practiceId: "practice_123",
+          total: "125.00",
+          paidAmount: "75.00",
+          status: "sent",
+          isEstimate: false,
+        },
+      ],
       [],
       [],
-      [{ total: "125.00" }]
+      [{ total: "125.00" }],
     );
 
     const response = await POST(stripeRequest());
@@ -331,14 +457,126 @@ describe("Stripe Connect webhook", () => {
       amountCents: 5000,
       checkoutSessionId: "cs_connect_123",
       connectedAccountId: "acct_123",
+      expectedApplicationFeeAmount: 125,
     });
     expect(mocks.insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
         amount: "50.00",
         externalId: "stripe:connect:acct_123:checkout:cs_connect_123",
-      })
+      }),
+    );
+    expect(mocks.retrieveStripeCheckoutSettlement).toHaveBeenCalledWith({
+      connectedAccountId: "acct_123",
+      checkoutSessionId: "cs_connect_123",
+      paymentIntentId: "pi_connect_123",
+      expectedGrossCents: 5000,
+      expectedApplicationFeeCents: 50,
+    });
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: "practice_123",
+        paymentId: "payment_created",
+        balanceTransactionId: "txn_settlement",
+        grossAmountCents: 5000,
+        processorFeeCents: 100,
+        applicationFeeCents: 50,
+        clinicNetCents: 4850,
+      }),
     );
     expect(mocks.refundInvalidStripeCheckoutPayment).not.toHaveBeenCalled();
+  });
+
+  it("refreshes only refunds already attributed to OpenVPM", async () => {
+    mocks.constructConnectWebhookEvent.mockResolvedValueOnce({
+      id: "evt_refund_failed",
+      account: "acct_123",
+      type: "refund.failed",
+      data: { object: { id: "re_123" } },
+    });
+    mocks.selectResults.push([{ id: "processor_refund_123" }]);
+
+    const response = await POST(stripeRequest());
+
+    await expect(response.json()).resolves.toEqual({ received: true });
+    expect(mocks.retrieveStripeRefundEvidence).toHaveBeenCalledWith({
+      connectedAccountId: "acct_123",
+      refundId: "re_123",
+    });
+    expect(mocks.updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "failed" }),
+    );
+  });
+
+  it("records actual payouts and maps completed balance transactions", async () => {
+    mocks.constructConnectWebhookEvent.mockResolvedValueOnce({
+      id: "evt_payout_paid",
+      account: "acct_123",
+      type: "payout.paid",
+      data: { object: { id: "po_123" } },
+    });
+    mocks.selectResults.push([{ practiceId: "practice_123" }]);
+
+    const response = await POST(stripeRequest());
+
+    await expect(response.json()).resolves.toEqual({ received: true });
+    expect(mocks.retrieveStripePayoutReconciliation).toHaveBeenCalledWith({
+      connectedAccountId: "acct_123",
+      payoutId: "po_123",
+    });
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: "practice_123",
+        externalPayoutId: "po_123",
+        amountCents: 4750,
+        status: "paid",
+        reconciliationComplete: true,
+      }),
+    );
+    expect(mocks.updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payoutId: "po_123",
+        payoutStatus: "paid",
+      }),
+    );
+  });
+
+  it("projects disputes only for charges in the OpenVPM settlement ledger", async () => {
+    mocks.constructConnectWebhookEvent.mockResolvedValueOnce({
+      id: "evt_dispute_created",
+      account: "acct_123",
+      type: "charge.dispute.created",
+      data: {
+        object: {
+          id: "dp_123",
+          charge: "ch_settlement",
+          status: "needs_response",
+          amount: 5000,
+          currency: "USD",
+          reason: "fraudulent",
+          created: 1787000000,
+          evidence_details: { due_by: 1787600000 },
+        },
+      },
+    });
+    mocks.selectResults.push([
+      { id: "settlement_123", practiceId: "practice_123" },
+    ]);
+
+    const response = await POST(stripeRequest());
+
+    expect(response.status).toBe(200);
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: "practice_123",
+        settlementId: "settlement_123",
+        externalDisputeId: "dp_123",
+        chargeId: "ch_settlement",
+        status: "needs_response",
+        amountCents: 5000,
+        currency: "usd",
+      }),
+    );
+    expect(mocks.insertConflictUpdate).toHaveBeenCalled();
   });
 
   it("leaves a held-practice Connect event retryable without capturing money", async () => {
@@ -356,6 +594,7 @@ describe("Stripe Connect webhook", () => {
             captureMode: "manual_v1",
             source: "client_invoice_connect",
             stripeConnectAccountId: "acct_123",
+            openvpmApplicationFeeAmount: "125",
           },
         },
       },
@@ -390,6 +629,7 @@ describe("Stripe Connect webhook", () => {
             invoiceId: "invoice_123",
             captureMode: "manual_v1",
             stripeConnectAccountId: "acct_123",
+            openvpmApplicationFeeAmount: "125",
           },
         },
       },
@@ -412,18 +652,20 @@ describe("Stripe Connect webhook", () => {
       [],
       [],
       [{ total: "125.00" }],
-      [{
-        id: CLOSEOUT_ID,
-        chargeDisposition: "accounts_receivable",
-        revision: 8,
-      }]
+      [
+        {
+          id: CLOSEOUT_ID,
+          chargeDisposition: "accounts_receivable",
+          revision: 8,
+        },
+      ],
     );
 
     const response = await POST(stripeRequest());
 
     await expect(response.json()).resolves.toEqual({ received: true });
     expect(mocks.updateSet).toHaveBeenCalledWith(
-      expect.objectContaining({ chargeDisposition: "paid", revision: 9 })
+      expect.objectContaining({ chargeDisposition: "paid", revision: 9 }),
     );
     expect(mocks.insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -438,7 +680,7 @@ describe("Stripe Connect webhook", () => {
           priorRevision: 8,
           nextRevision: 9,
         }),
-      })
+      }),
     );
   });
 
@@ -461,13 +703,15 @@ describe("Stripe Connect webhook", () => {
     });
     mocks.selectResults.push(
       [{ practiceId: "practice_123", stripeAccountId: "acct_123" }],
-      [{
-        id: "invoice_123",
-        practiceId: "practice_123",
-        appointmentId: APPOINTMENT_ID,
-      }],
+      [
+        {
+          id: "invoice_123",
+          practiceId: "practice_123",
+          appointmentId: APPOINTMENT_ID,
+        },
+      ],
       [{ id: APPOINTMENT_ID }],
-      [{ status: "draft" }]
+      [{ status: "draft" }],
     );
 
     const response = await POST(stripeRequest());
@@ -500,13 +744,15 @@ describe("Stripe Connect webhook", () => {
     });
     mocks.selectResults.push(
       [{ practiceId: "practice_123", stripeAccountId: "acct_123" }],
-      [{
-        id: "invoice_123",
-        practiceId: "practice_123",
-        appointmentId: APPOINTMENT_ID,
-      }],
+      [
+        {
+          id: "invoice_123",
+          practiceId: "practice_123",
+          appointmentId: APPOINTMENT_ID,
+        },
+      ],
       [{ id: APPOINTMENT_ID }],
-      [{ status: "clinical_finalized" }]
+      [{ status: "clinical_finalized" }],
     );
     mocks.execute.mockRejectedValueOnce(new Error("database unavailable"));
 
@@ -531,25 +777,30 @@ describe("Stripe Connect webhook", () => {
             captureMode: "manual_v1",
             source: "client_invoice_connect",
             stripeConnectAccountId: "acct_123",
+            openvpmApplicationFeeAmount: "125",
           },
         },
       },
     });
     mocks.selectResults.push(
       [{ practiceId: "practice_123", stripeAccountId: "acct_123" }],
-      [{
-        id: "invoice_123",
-        practiceId: "practice_123",
-      }],
-      [{
-        id: "invoice_123",
-        practiceId: "practice_123",
-        total: "125.00",
-        paidAmount: "0.00",
-        status: "void",
-        isEstimate: false,
-      }],
-      []
+      [
+        {
+          id: "invoice_123",
+          practiceId: "practice_123",
+        },
+      ],
+      [
+        {
+          id: "invoice_123",
+          practiceId: "practice_123",
+          total: "125.00",
+          paidAmount: "0.00",
+          status: "void",
+          isEstimate: false,
+        },
+      ],
+      [],
     );
 
     const response = await POST(stripeRequest());
@@ -567,7 +818,7 @@ describe("Stripe Connect webhook", () => {
       .find(
         (value) =>
           (value as { action?: string }).action ===
-          "stripe_checkout_invalid_resolved"
+          "stripe_checkout_invalid_resolved",
       ) as Record<string, any>;
     expect(auditWrite).toEqual(
       expect.objectContaining({
@@ -579,8 +830,7 @@ describe("Stripe Connect webhook", () => {
           eventId: "evt_connect_void",
           endpoint: "client-invoice-connect",
           sessionId: "cs_connect_void",
-          externalId:
-            "stripe:connect:acct_123:checkout:cs_connect_void",
+          externalId: "stripe:connect:acct_123:checkout:cs_connect_void",
           invoiceId: "invoice_123",
           practiceId: "practice_123",
           connectedAccountId: "acct_123",
@@ -590,7 +840,7 @@ describe("Stripe Connect webhook", () => {
           refundAmountCents: null,
           checkoutAmountCents: 12500,
         }),
-      })
+      }),
     );
     expect(auditWrite.entityId).toBe(auditWrite.id);
     expect(mocks.insertConflict).toHaveBeenCalledWith({ target: auditLog.id });
@@ -599,7 +849,7 @@ describe("Stripe Connect webhook", () => {
   it("locks a linked appointment before the invoice row", () => {
     expect(ROUTE_SOURCE.indexOf(".from(appointments)")).toBeGreaterThan(-1);
     expect(ROUTE_SOURCE.indexOf(".from(appointments)")).toBeLessThan(
-      ROUTE_SOURCE.indexOf('.for("update", { of: invoices })')
+      ROUTE_SOURCE.indexOf('.for("update", { of: invoices })'),
     );
   });
 });

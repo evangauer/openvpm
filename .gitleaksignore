@@ -1,0 +1,24 @@
+# Reviewed historical generic-api-key false positives in deterministic portal
+# and API-auth test fixtures. Fingerprint-level ignores do not suppress future
+# findings in these files.
+2f5e07f1542e8127943593dcac9ee37eee9e5185:apps/web/app/api/portal/checkout/route.test.ts:generic-api-key:90
+2f5e07f1542e8127943593dcac9ee37eee9e5185:apps/web/lib/__tests__/api-auth-authenticate.test.ts:generic-api-key:88
+2f5e07f1542e8127943593dcac9ee37eee9e5185:apps/web/server/__tests__/portal-booking-inputs.test.ts:generic-api-key:34
+2f5e07f1542e8127943593dcac9ee37eee9e5185:apps/web/server/__tests__/portal-booking-inputs.test.ts:generic-api-key:36
+2f5e07f1542e8127943593dcac9ee37eee9e5185:apps/web/server/__tests__/portal-messages.test.ts:generic-api-key:34
+2f5e07f1542e8127943593dcac9ee37eee9e5185:apps/web/server/__tests__/portal-messages.test.ts:generic-api-key:36
+2f5e07f1542e8127943593dcac9ee37eee9e5185:apps/web/server/__tests__/portal-read-rate-limits.test.ts:generic-api-key:30
+43cc734d418d7b70aaef5ff8b13f9ab81dd8592b:apps/web/app/api/portal/checkout/route.test.ts:generic-api-key:90
+43cc734d418d7b70aaef5ff8b13f9ab81dd8592b:apps/web/lib/__tests__/api-auth-authenticate.test.ts:generic-api-key:88
+43cc734d418d7b70aaef5ff8b13f9ab81dd8592b:apps/web/server/__tests__/portal-booking-inputs.test.ts:generic-api-key:34
+43cc734d418d7b70aaef5ff8b13f9ab81dd8592b:apps/web/server/__tests__/portal-booking-inputs.test.ts:generic-api-key:36
+43cc734d418d7b70aaef5ff8b13f9ab81dd8592b:apps/web/server/__tests__/portal-messages.test.ts:generic-api-key:34
+43cc734d418d7b70aaef5ff8b13f9ab81dd8592b:apps/web/server/__tests__/portal-messages.test.ts:generic-api-key:36
+43cc734d418d7b70aaef5ff8b13f9ab81dd8592b:apps/web/server/__tests__/portal-read-rate-limits.test.ts:generic-api-key:30
+b27d54fc3ad63f1a54aadbf99d327ea7dd6fbc32:apps/web/app/api/portal/checkout/route.test.ts:generic-api-key:76
+b27d54fc3ad63f1a54aadbf99d327ea7dd6fbc32:apps/web/server/__tests__/portal-booking-inputs.test.ts:generic-api-key:30
+b27d54fc3ad63f1a54aadbf99d327ea7dd6fbc32:apps/web/server/__tests__/portal-booking-inputs.test.ts:generic-api-key:32
+b27d54fc3ad63f1a54aadbf99d327ea7dd6fbc32:apps/web/server/__tests__/portal-read-rate-limits.test.ts:generic-api-key:30
+be2c3a47537b7e14fe4aa842a58431d03eeaa94f:apps/web/server/__tests__/portal-messages.test.ts:generic-api-key:32
+e03d16aac035a237121ae36a6e304128008ac6cc:apps/web/lib/__tests__/api-auth-authenticate.test.ts:generic-api-key:65
+fa1cd022674e24c1bed37f25b9ff20442640ef35:apps/web/server/__tests__/portal-messages.test.ts:generic-api-key:35

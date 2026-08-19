@@ -41,6 +41,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { EmptyState } from "@/components/common/empty-state";
+import { ActionConfirmationDialog } from "@/components/common/action-confirmation-dialog";
 import { AccentColorPicker } from "@/components/brand/accent-color-picker";
 import { MessagingTab } from "@/components/settings/messaging-tab";
 import { BookingTab } from "@/components/settings/booking-tab";
@@ -1387,9 +1388,11 @@ function redirectToClientPaymentUrl(url: unknown) {
 function BillingTab() {
   const utils = trpc.useUtils();
   const searchParams = useSearchParams();
+  const connectReturnHandled = useRef(false);
   const [selectedCadence, setSelectedCadence] = useState<BillingCadence>(() =>
     billingCadenceFromQuery(searchParams.get("plan")),
   );
+  const [showAnnualConfirmation, setShowAnnualConfirmation] = useState(false);
   const {
     data,
     isLoading,
@@ -1432,6 +1435,35 @@ function BillingTab() {
     },
     onError: (e) => toast.error(e.message),
   });
+  const scheduleAnnual =
+    trpc.subscription.scheduleAnnualAtRenewal.useMutation({
+      onSuccess: async (result) => {
+        setShowAnnualConfirmation(false);
+        await utils.subscription.get.invalidate();
+        toast.success(
+          result.alreadyScheduled
+            ? "Annual billing is already scheduled"
+            : "Annual billing is scheduled for the next renewal",
+        );
+      },
+      onError: (e) => toast.error(e.message),
+    });
+
+  // Stripe redirects the clinic back after onboarding, but the local payment
+  // account snapshot can still reflect the state from before that flow. Sync
+  // once on return so the clinic sees the real charge and payout readiness
+  // without having to discover and click the manual Refresh action.
+  useEffect(() => {
+    if (
+      searchParams.get("connect") !== "return" ||
+      connectReturnHandled.current
+    ) {
+      return;
+    }
+
+    connectReturnHandled.current = true;
+    refreshPaymentAccount.mutate();
+  }, [refreshPaymentAccount, searchParams]);
 
   if (billingError) {
     return (
@@ -1510,6 +1542,15 @@ function BillingTab() {
     .filter((option) => option.purchasable)
     .map((option) => option.cadence);
   const firstActivation = !data.hasSubscription;
+  const annualAvailable = availableCadences.includes("year");
+  const annualEffectiveLabel = data.scheduledBillingEffectiveAt
+    ? new Intl.DateTimeFormat("en-US", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        timeZone: data.timezone?.trim() || "UTC",
+      }).format(new Date(data.scheduledBillingEffectiveAt))
+    : "your next renewal date";
   const checkoutStatus = searchParams.get("checkout");
   // Only surface the sync note when something actually needs attention.
   const showSyncNote =
@@ -1635,30 +1676,67 @@ function BillingTab() {
               </div>
             </>
           ) : (
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-sm font-medium">
-                  {data.currentBillingCadence === "year"
-                    ? `$${data.estimatedAnnualBase} per year`
-                    : `$${data.estimatedMonthlyBase} per month`}
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Update payment details, invoices, or cancellation securely in
-                  Stripe.
-                </p>
+            <div>
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-medium">
+                    {data.currentBillingCadence === "year"
+                      ? `$${data.estimatedAnnualBase} per year`
+                      : `$${data.estimatedMonthlyBase} per month`}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Update payment details, invoices, or cancellation securely
+                    in Stripe.
+                  </p>
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  {data.currentBillingCadence === "month" &&
+                  annualAvailable &&
+                  !data.scheduledBillingCadence &&
+                  data.billingProviderStatus === "verified" &&
+                  (data.billingStatus === "active" ||
+                    data.billingStatus === "trialing") ? (
+                    <Button
+                      variant="outline"
+                      disabled={scheduleAnnual.isPending}
+                      onClick={() => setShowAnnualConfirmation(true)}
+                    >
+                      Switch to annual at renewal
+                    </Button>
+                  ) : null}
+                  <Button
+                    variant="outline"
+                    disabled={portal.isPending}
+                    onClick={() => portal.mutate()}
+                  >
+                    {portal.isPending ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <CreditCard className="mr-2 h-4 w-4" />
+                    )}
+                    Manage billing
+                  </Button>
+                </div>
               </div>
-              <Button
-                variant="outline"
-                disabled={portal.isPending}
-                onClick={() => portal.mutate()}
-              >
-                {portal.isPending ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                ) : (
-                  <CreditCard className="mr-2 h-4 w-4" />
-                )}
-                Manage billing
-              </Button>
+              {data.scheduledBillingCadence === "year" ? (
+                <div className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">
+                  <p className="font-medium">Annual billing is scheduled</p>
+                  <p className="mt-1">
+                    Monthly billing continues through {annualEffectiveLabel}.
+                    Then Stripe will bill ${data.estimatedAnnualBase} per year
+                    for the current {data.locationCount} location
+                    {data.locationCount === 1 ? "" : "s"}. No immediate charge
+                    was created.
+                  </p>
+                </div>
+              ) : null}
+              {data.billingProviderStatus === "unavailable" ? (
+                <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                  OpenVPM could not verify the live Stripe billing schedule.
+                  Payment-method management remains available, but schedule
+                  changes are paused until verification succeeds.
+                </div>
+              ) : null}
             </div>
           )}
 
@@ -1713,6 +1791,25 @@ function BillingTab() {
         onRefresh={() => refreshPaymentAccount.mutate()}
         onDashboard={() => openPaymentAccountDashboard.mutate()}
       />
+
+      <ActionConfirmationDialog
+        open={showAnnualConfirmation}
+        title="Switch to annual billing at renewal?"
+        description={`Your monthly plan will continue until its current billing period ends. Stripe will then bill $${data.estimatedAnnualBase} per year for ${data.locationCount} location${data.locationCount === 1 ? "" : "s"}. There is no charge today, and your clinic workspace will not change.`}
+        confirmLabel="Schedule annual billing"
+        isPending={scheduleAnnual.isPending}
+        onCancel={() => setShowAnnualConfirmation(false)}
+        onConfirm={() => scheduleAnnual.mutate()}
+      >
+        <div className="rounded-md bg-muted/50 p-3 text-sm">
+          <p className="font-medium">What will happen</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5 text-muted-foreground">
+            <li>No immediate charge or proration</li>
+            <li>Your monthly plan stays active through renewal</li>
+            <li>Future invoices use the annual location count</li>
+          </ul>
+        </div>
+      </ActionConfirmationDialog>
     </div>
   );
 }
@@ -1741,6 +1838,8 @@ function ClientPaymentProcessingSection({
           | "not_configured"
           | "not_required";
         enabled: boolean;
+        applicationFeeConfigured?: boolean;
+        applicationFeeBps?: number | null;
         chargesEnabled?: boolean;
         payoutsEnabled?: boolean;
         detailsSubmitted?: boolean;
@@ -1803,6 +1902,23 @@ function ClientPaymentProcessingSection({
               ? "Stripe Connect lets the clinic collect card payments from pet owners into its own Stripe account."
               : "This installation can use its configured Stripe key for client invoice payments. Stripe Connect is required for hosted OpenVPM Cloud clinics."}
           </p>
+          {data?.connectRequired && data.status !== "active" ? (
+            <div className="mt-4 rounded-md border border-border bg-muted/40 p-4 text-sm">
+              <p className="font-medium text-foreground">
+                Have these ready for Stripe
+              </p>
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-muted-foreground">
+                <li>Legal business and tax details</li>
+                <li>Owner or representative identification</li>
+                <li>Bank account for clinic payouts</li>
+              </ul>
+              <p className="mt-3 text-muted-foreground">
+                Stripe securely collects this information. When you finish,
+                you will return here and OpenVPM will check that card payments
+                and payouts are ready.
+              </p>
+            </div>
+          ) : null}
         </div>
         <div className="flex flex-wrap gap-2">
           {canShowSetup && (
@@ -1856,7 +1972,7 @@ function ClientPaymentProcessingSection({
       )}
       {error && <p className="mt-4 text-sm text-destructive">{error}</p>}
       {!isLoading && !error && data && (
-        <div className="mt-4 grid gap-3 border-t border-border pt-4 text-sm sm:grid-cols-3">
+        <div className="mt-4 grid gap-3 border-t border-border pt-4 text-sm sm:grid-cols-4">
           <div>
             <p className="text-muted-foreground">Stripe API</p>
             <p className="font-medium">
@@ -1879,6 +1995,16 @@ function ClientPaymentProcessingSection({
                 : data.connectRequired
                   ? "Pending"
                   : "N/A"}
+            </p>
+          </div>
+          <div>
+            <p className="text-muted-foreground">OpenVPM fee</p>
+            <p className="font-medium">
+              {!data.connectRequired
+                ? "N/A"
+                : data.applicationFeeConfigured && data.applicationFeeBps
+                  ? `${data.applicationFeeBps / 100}% from clinic proceeds`
+                  : "Missing — payments paused"}
             </p>
           </div>
           {data.requirementsCurrentlyDue?.length ? (
@@ -4153,7 +4279,7 @@ function DataTab() {
           dry-run first so you see duplicates and missing matches before
           anything is saved. Common column names from AVImark, Cornerstone, and
           ezyVet are recognized. Shepherd migrations are currently guided so we
-          can verify the clinic's exact export format. Owner and patient IDs
+          can verify the clinic&apos;s exact export format. Owner and patient IDs
           stay linked across files, even when an owner has no email.
         </p>
 

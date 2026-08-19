@@ -237,6 +237,17 @@ describe("billing invoice payment actions", () => {
     );
   });
 
+  it("offers an audited payment-link fallback when provider email is unavailable", () => {
+    expect(source).toContain("function InvoicePaymentLinkButton");
+    expect(source).toContain("createInvoicePaymentLink.useMutation");
+    expect(source).toContain("Get payment link");
+    expect(source).toContain("Share payment link");
+    expect(source).toContain("Open client payment page");
+    expect(source).toContain("expires after 30 days");
+    expect(source).toContain("does not open the client's medical portal");
+    expect(source).toContain("navigator.clipboard");
+  });
+
   it("uses accessible in-app dialogs for irreversible billing actions", () => {
     expect(source).toContain("<ActionConfirmationDialog");
     expect(source).toContain('title="Void invoice?"');
@@ -288,7 +299,10 @@ describe("billing invoice payment actions", () => {
     expect(source).toContain(
       "canManageBilling &&\n    isBillingAmountWithinBalance(paymentAmount"
     );
-    expect(source).toContain("<EmailInvoiceButton invoiceId={invoice.id} />");
+    expect(source).toContain("<EmailInvoiceButton");
+    expect(source).toContain("invoiceId={invoice.id}");
+    expect(source).toContain("from={invoiceEmailFrom}");
+    expect(source).toContain("replyTo={practiceEmail}");
   });
 
   it("keeps payment and adjustment forms aligned to shared billing bounds", () => {
@@ -371,6 +385,25 @@ describe("billing invoice payment actions", () => {
       "new Date(adjustment.createdAt).toLocaleDateString"
     );
     expect(source).not.toContain("billingConfig.data?.timezone");
+  });
+
+  it("provides an immutable, clinic-timezone daily close for online payments", () => {
+    expect(source).toContain(
+      "trpc.billing.financialDayStatement.useQuery",
+    );
+    expect(source).toContain("trpc.billing.closeFinancialDay.useMutation");
+    expect(source).toContain("Daily financial close");
+    expect(source).toContain("Gross receipts");
+    expect(source).toContain("Stripe processing");
+    expect(source).toContain("OpenVPM fee");
+    expect(source).toContain("Clinic proceeds");
+    expect(source).toContain("Paid out");
+    expect(source).toContain(
+      "card-present Terminal is not enabled in this launch scope",
+    );
+    expect(source).toContain("confirmation: `CLOSE:${businessDate}`");
+    expect(source).toContain("canManageBilling && billingSettingsReady");
+    expect(source).toContain("const summary = close ?? statement.data?.summary");
   });
 
   it("uses the loaded clinic name in both estimate and invoice PDFs", () => {
