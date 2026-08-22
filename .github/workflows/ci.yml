@@ -161,6 +161,7 @@ jobs:
           REMINDER_POLICY_DB_INTEGRATION: "1"
         run: pnpm --filter @openpims/web exec vitest run lib/messaging/__tests__/appointment-reminder-eligibility.integration.test.ts
 
-      - run: pnpm --filter @openpims/db db:rls:test
+      - name: Prove tenant/RLS pool-reuse isolation
+        run: pnpm --filter @openpims/db db:rls:test
 
       - run: pnpm --filter @openpims/db db:migration-runs:test

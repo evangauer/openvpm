@@ -68,6 +68,7 @@ const appUrl = appRoleUrl(ownerUrl);
 
 const owner = postgres(ownerUrl, { max: 1 });
 const app = postgres(appUrl, { max: 1 });
+const appPeer = postgres(appUrl, { max: 1 });
 
 const aId = randomUUID();
 const bId = randomUUID();
@@ -231,6 +232,14 @@ async function appTransaction<T>(
   fn: (tx: typeof app) => Promise<T>,
 ): Promise<T> {
   return app.begin((tx) => fn(tx as unknown as typeof app)) as Promise<T>;
+}
+
+async function appPeerTransaction<T>(
+  fn: (tx: typeof appPeer) => Promise<T>,
+): Promise<T> {
+  return appPeer.begin((tx) =>
+    fn(tx as unknown as typeof appPeer),
+  ) as Promise<T>;
 }
 
 function check(name: string, ok: boolean) {
@@ -1355,6 +1364,73 @@ try {
   check(
     "historical SOAP replacement restore remains cycle-safe",
     historicalReplacementCycleBlocked,
+  );
+
+  const [appRoleIdentity] = await app<
+    Array<{
+      current_role: string;
+      session_role: string;
+      rolsuper: boolean;
+      rolcreaterole: boolean;
+      rolcreatedb: boolean;
+      rolreplication: boolean;
+      rolbypassrls: boolean;
+    }>
+  >`select
+      current_user as current_role,
+      session_user as session_role,
+      r.rolsuper,
+      r.rolcreaterole,
+      r.rolcreatedb,
+      r.rolreplication,
+      r.rolbypassrls
+    from pg_roles r
+    where r.rolname = current_user`;
+  check(
+    "RLS harness runs as the exact least-privilege application role",
+    appRoleIdentity?.current_role === "openpims_app" &&
+      appRoleIdentity.session_role === "openpims_app" &&
+      appRoleIdentity.rolsuper === false &&
+      appRoleIdentity.rolcreaterole === false &&
+      appRoleIdentity.rolcreatedb === false &&
+      appRoleIdentity.rolreplication === false &&
+      appRoleIdentity.rolbypassrls === false,
+  );
+
+  const tenantCatalog = await owner<
+    Array<{
+      table_name: string;
+      rls_enabled: boolean;
+      policy_count: number;
+      app_can_select: boolean;
+    }>
+  >`select
+      c.relname as table_name,
+      c.relrowsecurity as rls_enabled,
+      (select count(*)::int from pg_policy p where p.polrelid = c.oid) as policy_count,
+      has_table_privilege('openpims_app', c.oid, 'SELECT') as app_can_select
+    from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public'
+      and c.relkind in ('r', 'p')
+      and (
+        c.relname = 'practices'
+        or exists (
+          select 1
+          from pg_attribute a
+          where a.attrelid = c.oid
+            and a.attname = 'practice_id'
+            and a.attnum > 0
+            and not a.attisdropped
+        )
+      )
+    order by c.relname`;
+  const tenantCatalogViolations = tenantCatalog.filter(
+    (row) => !row.rls_enabled || row.policy_count < 1 || !row.app_can_select,
+  );
+  check(
+    "every live tenant/root table has RLS, a policy, and app read coverage",
+    tenantCatalog.length > 0 && tenantCatalogViolations.length === 0,
   );
 
   // Tenant A context sees only A's rows.
@@ -3125,6 +3201,383 @@ try {
     noContextStaffSchedules.length === 0,
   );
 
+  type ContextEvidence = {
+    backend_pid: number;
+    practice_id: string | null;
+    bypass: boolean;
+    patient_count: number;
+    prescription_count: number;
+    invoice_count: number;
+    communication_count: number;
+  };
+
+  const tenantACommit = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    const [evidence] = await tx<Array<ContextEvidence>>`select
+        pg_backend_pid() as backend_pid,
+        app_current_practice_id()::text as practice_id,
+        app_rls_bypass() as bypass,
+        (select count(*)::int from patients where id in (${aPatient}, ${bPatient})) as patient_count,
+        (select count(*)::int from prescriptions where id in (${aPrescription}, ${bPrescription})) as prescription_count,
+        (select count(*)::int from invoices where id in (${aInvoice}, ${bInvoice})) as invoice_count,
+        (select count(*)::int from communications where id in (${aCommunication}, ${bCommunication})) as communication_count`;
+    const patientWrites =
+      await tx`update patients set name = name where id in (${aPatient}, ${bPatient}) returning id`;
+    const prescriptionWrites =
+      await tx`update prescriptions set status = status where id in (${aPrescription}, ${bPrescription}) returning id`;
+    const invoiceWrites =
+      await tx`update invoices set status = status where id in (${aInvoice}, ${bInvoice}) returning id`;
+    const communicationWrites =
+      await tx`update communications set status = status where id in (${aCommunication}, ${bCommunication}) returning id`;
+    check(
+      "tenant A can mutate only A's representative patient/clinical/billing/operational rows",
+      patientWrites.length === 1 &&
+        patientWrites[0]!.id === aPatient &&
+        prescriptionWrites.length === 1 &&
+        prescriptionWrites[0]!.id === aPrescription &&
+        invoiceWrites.length === 1 &&
+        invoiceWrites[0]!.id === aInvoice &&
+        communicationWrites.length === 1 &&
+        communicationWrites[0]!.id === aCommunication,
+    );
+    return evidence!;
+  });
+  check(
+    "tenant A reads only A's representative patient/clinical/billing/operational rows",
+    tenantACommit.practice_id === aId &&
+      tenantACommit.bypass === false &&
+      tenantACommit.patient_count === 1 &&
+      tenantACommit.prescription_count === 1 &&
+      tenantACommit.invoice_count === 1 &&
+      tenantACommit.communication_count === 1,
+  );
+
+  const [afterTenantCommit] = await app<
+    Array<{
+      backend_pid: number;
+      practice_id: string | null;
+      bypass: boolean;
+      visible_clients: number;
+    }>
+  >`select
+      pg_backend_pid() as backend_pid,
+      app_current_practice_id()::text as practice_id,
+      app_rls_bypass() as bypass,
+      (select count(*)::int from clients where practice_id in (${aId}, ${bId})) as visible_clients`;
+  check(
+    "tenant context is cleared after commit on the same pooled backend",
+    afterTenantCommit?.backend_pid === tenantACommit.backend_pid &&
+      afterTenantCommit.practice_id === null &&
+      afterTenantCommit.bypass === false &&
+      afterTenantCommit.visible_clients === 0,
+  );
+
+  const tenantBCommit = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${bId}, true)`;
+    const [evidence] = await tx<
+      Array<{
+        backend_pid: number;
+        practice_id: string | null;
+        visible_practice_id: string | null;
+      }>
+    >`select
+        pg_backend_pid() as backend_pid,
+        app_current_practice_id()::text as practice_id,
+        (select practice_id::text from clients where practice_id in (${aId}, ${bId}) limit 1) as visible_practice_id`;
+    return evidence!;
+  });
+  check(
+    "one pooled backend can switch from tenant A to B without inheriting A",
+    tenantBCommit.backend_pid === tenantACommit.backend_pid &&
+      tenantBCommit.practice_id === bId &&
+      tenantBCommit.visible_practice_id === bId,
+  );
+
+  const expectedTenantRollback = new Error("expected tenant rollback");
+  let tenantRollbackPid: number | undefined;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      const [row] = await tx<Array<{ backend_pid: number }>>`
+        select pg_backend_pid() as backend_pid`;
+      tenantRollbackPid = row?.backend_pid;
+      throw expectedTenantRollback;
+    });
+  } catch (error) {
+    if (error !== expectedTenantRollback) throw error;
+  }
+  const [afterTenantRollback] = await app<
+    Array<{
+      backend_pid: number;
+      practice_id: string | null;
+      bypass: boolean;
+      visible_clients: number;
+    }>
+  >`select
+      pg_backend_pid() as backend_pid,
+      app_current_practice_id()::text as practice_id,
+      app_rls_bypass() as bypass,
+      (select count(*)::int from clients where practice_id in (${aId}, ${bId})) as visible_clients`;
+  check(
+    "tenant context is cleared after rollback on the same pooled backend",
+    tenantRollbackPid === tenantACommit.backend_pid &&
+      afterTenantRollback?.backend_pid === tenantRollbackPid &&
+      afterTenantRollback.practice_id === null &&
+      afterTenantRollback.bypass === false &&
+      afterTenantRollback.visible_clients === 0,
+  );
+
+  const bypassCommit = await appTransaction(async (tx) => {
+    await tx`select set_config('app.rls_bypass', 'on', true)`;
+    const [row] = await tx<
+      Array<{ backend_pid: number; visible_clients: number }>
+    >`select
+        pg_backend_pid() as backend_pid,
+        (select count(*)::int from clients where practice_id in (${aId}, ${bId})) as visible_clients`;
+    return row!;
+  });
+  const [afterBypassCommit] = await app<
+    Array<{
+      backend_pid: number;
+      practice_id: string | null;
+      bypass: boolean;
+      visible_clients: number;
+    }>
+  >`select
+      pg_backend_pid() as backend_pid,
+      app_current_practice_id()::text as practice_id,
+      app_rls_bypass() as bypass,
+      (select count(*)::int from clients where practice_id in (${aId}, ${bId})) as visible_clients`;
+  check(
+    "system bypass is bounded to its committed transaction",
+    bypassCommit.backend_pid === tenantACommit.backend_pid &&
+      bypassCommit.visible_clients === 2 &&
+      afterBypassCommit?.backend_pid === bypassCommit.backend_pid &&
+      afterBypassCommit.practice_id === null &&
+      afterBypassCommit.bypass === false &&
+      afterBypassCommit.visible_clients === 0,
+  );
+
+  const expectedBypassRollback = new Error("expected bypass rollback");
+  let bypassRollbackPid: number | undefined;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      const [row] = await tx<Array<{ backend_pid: number }>>`
+        select pg_backend_pid() as backend_pid`;
+      bypassRollbackPid = row?.backend_pid;
+      throw expectedBypassRollback;
+    });
+  } catch (error) {
+    if (error !== expectedBypassRollback) throw error;
+  }
+  const [afterBypassRollback] = await app<
+    Array<{
+      backend_pid: number;
+      practice_id: string | null;
+      bypass: boolean;
+      visible_clients: number;
+    }>
+  >`select
+      pg_backend_pid() as backend_pid,
+      app_current_practice_id()::text as practice_id,
+      app_rls_bypass() as bypass,
+      (select count(*)::int from clients where practice_id in (${aId}, ${bId})) as visible_clients`;
+  check(
+    "system bypass is cleared after rollback on the same pooled backend",
+    bypassRollbackPid === tenantACommit.backend_pid &&
+      afterBypassRollback?.backend_pid === bypassRollbackPid &&
+      afterBypassRollback.practice_id === null &&
+      afterBypassRollback.bypass === false &&
+      afterBypassRollback.visible_clients === 0,
+  );
+
+  async function withConcurrentRendezvous<T>(
+    label: string,
+    run: (waitForPeer: () => Promise<void>) => Promise<T>,
+  ): Promise<T> {
+    let ready = 0;
+    let release: () => void = () => undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const bothReady = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const deadline = new Promise<void>((_, reject) => {
+      timeout = setTimeout(
+        () => reject(new Error(`${label} rendezvous timed out`)),
+        5_000,
+      );
+    });
+    async function waitForPeer() {
+      ready += 1;
+      if (ready === 2) release();
+      await Promise.race([bothReady, deadline]);
+    }
+    try {
+      return await run(waitForPeer);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  }
+  const [concurrentA, concurrentB] = await withConcurrentRendezvous(
+    "two-tenant session",
+    (waitForPeer) =>
+      Promise.all([
+        appTransaction(async (tx) => {
+          await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+          const [identity] = await tx<
+            Array<{ backend_pid: number; practice_id: string | null }>
+          >`select pg_backend_pid() as backend_pid, app_current_practice_id()::text as practice_id`;
+          await waitForPeer();
+          const rows =
+            await tx`select practice_id from clients where practice_id in (${aId}, ${bId})`;
+          return { ...identity!, rows };
+        }),
+        appPeerTransaction(async (tx) => {
+          await tx`select set_config('app.current_practice_id', ${bId}, true)`;
+          const [identity] = await tx<
+            Array<{ backend_pid: number; practice_id: string | null }>
+          >`select pg_backend_pid() as backend_pid, app_current_practice_id()::text as practice_id`;
+          await waitForPeer();
+          const rows =
+            await tx`select practice_id from clients where practice_id in (${aId}, ${bId})`;
+          return { ...identity!, rows };
+        }),
+      ]),
+  );
+  check(
+    "two concurrent application sessions cannot cross-contaminate tenant context",
+    concurrentA.backend_pid !== concurrentB.backend_pid &&
+      concurrentA.practice_id === aId &&
+      concurrentA.rows.length === 1 &&
+      concurrentA.rows[0]!.practice_id === aId &&
+      concurrentB.practice_id === bId &&
+      concurrentB.rows.length === 1 &&
+      concurrentB.rows[0]!.practice_id === bId,
+  );
+  const [[afterConcurrentA], [afterConcurrentB]] = await Promise.all([
+    app<
+      Array<{
+        backend_pid: number;
+        practice_id: string | null;
+        bypass: boolean;
+      }>
+    >`select pg_backend_pid() as backend_pid,
+        app_current_practice_id()::text as practice_id,
+        app_rls_bypass() as bypass`,
+    appPeer<
+      Array<{
+        backend_pid: number;
+        practice_id: string | null;
+        bypass: boolean;
+      }>
+    >`select pg_backend_pid() as backend_pid,
+        app_current_practice_id()::text as practice_id,
+        app_rls_bypass() as bypass`,
+  ]);
+  check(
+    "both concurrent backends clear tenant and bypass context after commit",
+    afterConcurrentA?.backend_pid === concurrentA.backend_pid &&
+      afterConcurrentA.practice_id === null &&
+      afterConcurrentA.bypass === false &&
+      afterConcurrentB?.backend_pid === concurrentB.backend_pid &&
+      afterConcurrentB.practice_id === null &&
+      afterConcurrentB.bypass === false,
+  );
+
+  const [concurrentTenant, concurrentSystem] = await withConcurrentRendezvous(
+    "tenant/system session",
+    (waitForPeer) =>
+      Promise.all([
+        appTransaction(async (tx) => {
+          await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+          const [identity] = await tx<
+            Array<{
+              backend_pid: number;
+              practice_id: string | null;
+              bypass: boolean;
+            }>
+          >`select pg_backend_pid() as backend_pid,
+              app_current_practice_id()::text as practice_id,
+              app_rls_bypass() as bypass`;
+          await waitForPeer();
+          const rows =
+            await tx`select practice_id from clients where practice_id in (${aId}, ${bId})`;
+          return { ...identity!, rows };
+        }),
+        appPeerTransaction(async (tx) => {
+          await tx`select set_config('app.rls_bypass', 'on', true)`;
+          const [identity] = await tx<
+            Array<{
+              backend_pid: number;
+              practice_id: string | null;
+              bypass: boolean;
+            }>
+          >`select pg_backend_pid() as backend_pid,
+              app_current_practice_id()::text as practice_id,
+              app_rls_bypass() as bypass`;
+          await waitForPeer();
+          const rows =
+            await tx`select practice_id from clients where practice_id in (${aId}, ${bId})`;
+          return { ...identity!, rows };
+        }),
+      ]),
+  );
+  check(
+    "a concurrent system session cannot grant bypass to a tenant session",
+    concurrentTenant.backend_pid !== concurrentSystem.backend_pid &&
+      concurrentTenant.practice_id === aId &&
+      concurrentTenant.bypass === false &&
+      concurrentTenant.rows.length === 1 &&
+      concurrentTenant.rows[0]!.practice_id === aId &&
+      concurrentSystem.practice_id === null &&
+      concurrentSystem.bypass === true &&
+      concurrentSystem.rows.length === 2,
+  );
+  const [[afterTenantSystemA], [afterTenantSystemB]] = await Promise.all([
+    app<
+      Array<{
+        backend_pid: number;
+        practice_id: string | null;
+        bypass: boolean;
+      }>
+    >`select pg_backend_pid() as backend_pid,
+        app_current_practice_id()::text as practice_id,
+        app_rls_bypass() as bypass`,
+    appPeer<
+      Array<{
+        backend_pid: number;
+        practice_id: string | null;
+        bypass: boolean;
+      }>
+    >`select pg_backend_pid() as backend_pid,
+        app_current_practice_id()::text as practice_id,
+        app_rls_bypass() as bypass`,
+  ]);
+  check(
+    "tenant/system concurrency clears both contexts after commit",
+    afterTenantSystemA?.backend_pid === concurrentTenant.backend_pid &&
+      afterTenantSystemA.practice_id === null &&
+      afterTenantSystemA.bypass === false &&
+      afterTenantSystemB?.backend_pid === concurrentSystem.backend_pid &&
+      afterTenantSystemB.practice_id === null &&
+      afterTenantSystemB.bypass === false,
+  );
+
+  console.log(
+    `  evidence ${JSON.stringify({
+      role: appRoleIdentity?.current_role,
+      tenantTables: tenantCatalog.length,
+      fixturePracticeIds: [aId, bId],
+      reusedBackendPid: tenantACommit.backend_pid,
+      concurrentBackendPids: [concurrentA.backend_pid, concurrentB.backend_pid],
+      tenantSystemBackendPids: [
+        concurrentTenant.backend_pid,
+        concurrentSystem.backend_pid,
+      ],
+    })}`,
+  );
+
   // Product analytics is system-only even with a valid tenant context. The
   // public ingestion route writes under an explicit system transaction.
   const hiddenFunnelRows = await appTransaction(async (tx) => {
@@ -4083,6 +4536,7 @@ try {
   });
   await owner.end();
   await app.end();
+  await appPeer.end();
 }
 
 if (failures > 0) {
