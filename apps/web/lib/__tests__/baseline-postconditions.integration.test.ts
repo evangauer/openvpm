@@ -164,6 +164,6 @@ describeWithBaselinePostgres(
           ),
         );
       }
-    });
+    }, 60_000);
   },
 );
