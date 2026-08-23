@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { eq, and, isNull, asc, inArray, sql } from "drizzle-orm";
+import { eq, and, isNull, asc, inArray, sql, or } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import {
@@ -35,6 +35,12 @@ import {
   TREATMENT_TEMPLATE_NAME_MAX_LENGTH,
   TREATMENT_TEMPLATE_UNIT_PRICE_PATTERN,
 } from "@/lib/templates/policy";
+import {
+  escapeTemplateCatalogLike,
+  hasDuplicateTemplateCatalogItems,
+  TEMPLATE_CATALOG_RESULT_LIMIT,
+  TEMPLATE_CATALOG_SEARCH_MAX_LENGTH,
+} from "@/lib/templates/catalog-search";
 
 type TemplatesDb = Pick<Database, "select" | "update">;
 
@@ -120,15 +126,25 @@ const templateMutableInput = {
   ),
 };
 
-const createTemplateInput = z.object({
-  ...templateMutableInput,
-  items: z
-    .array(templateItemInput)
-    .max(
-      TREATMENT_TEMPLATE_MAX_ITEMS,
-      `Templates can include at most ${TREATMENT_TEMPLATE_MAX_ITEMS} items.`
-    ),
-});
+const createTemplateInput = z
+  .object({
+    ...templateMutableInput,
+    items: z
+      .array(templateItemInput)
+      .max(
+        TREATMENT_TEMPLATE_MAX_ITEMS,
+        `Templates can include at most ${TREATMENT_TEMPLATE_MAX_ITEMS} items.`,
+      ),
+  })
+  .superRefine((input, ctx) => {
+    if (hasDuplicateTemplateCatalogItems(input.items)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["items"],
+        message: "A service or product can only appear once in a template.",
+      });
+    }
+  });
 
 function activePracticeWhere(practiceId: string) {
   return and(eq(practices.id, practiceId), isNull(practices.deletedAt));
@@ -353,15 +369,75 @@ export const templatesRouter = createRouter({
       .orderBy(asc(treatmentTemplates.name));
   }),
 
-  listProducts: protectedProcedure
+  searchCatalog: protectedProcedure
     .use(requireRole("admin"))
-    .query(async ({ ctx }) => {
+    .input(
+      z.object({
+        itemType: z.enum(["service", "product"]),
+        search: z
+          .string()
+          .trim()
+          .max(TEMPLATE_CATALOG_SEARCH_MAX_LENGTH)
+          .default(""),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
-      return ctx.db
+      const escapedSearch = escapeTemplateCatalogLike(input.search);
+      const containsPattern = `%${escapedSearch}%`;
+      const prefixPattern = `${escapedSearch}%`;
+
+      if (input.itemType === "service") {
+        const rows = await ctx.db
+          .select({
+            id: services.id,
+            name: services.name,
+            code: services.code,
+            category: services.category,
+            unitPrice: services.defaultPrice,
+          })
+          .from(services)
+          .where(
+            and(
+              eq(services.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(services.deletedAt),
+              input.search
+                ? or(
+                    sql`${services.name} ilike ${containsPattern} escape '\\'`,
+                    sql`${services.code} ilike ${containsPattern} escape '\\'`,
+                    sql`${services.category} ilike ${containsPattern} escape '\\'`,
+                  )
+                : undefined,
+            ),
+          )
+          .orderBy(
+            input.search
+              ? sql`case
+                  when lower(${services.name}) = lower(${input.search}) then 0
+                  when lower(${services.code}) = lower(${input.search}) then 1
+                  when ${services.name} ilike ${prefixPattern} escape '\\' then 2
+                  when ${services.code} ilike ${prefixPattern} escape '\\' then 3
+                  else 4
+                end`
+              : sql`0`,
+            sql`lower(${services.name})`,
+            sql`lower(coalesce(${services.code}, ''))`,
+            asc(services.id),
+          )
+          .limit(TEMPLATE_CATALOG_RESULT_LIMIT);
+        return rows.map((row) => ({
+          ...row,
+          itemType: "service" as const,
+        }));
+      }
+
+      const rows = await ctx.db
         .select({
           id: products.id,
           name: products.name,
-          sku: products.sku,
+          code: products.sku,
+          category: products.category,
           unitPrice: products.unitPrice,
         })
         .from(products)
@@ -369,10 +445,32 @@ export const templatesRouter = createRouter({
           and(
             eq(products.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(products.deletedAt)
-          )
+            isNull(products.deletedAt),
+            input.search
+              ? or(
+                  sql`${products.name} ilike ${containsPattern} escape '\\'`,
+                  sql`${products.sku} ilike ${containsPattern} escape '\\'`,
+                  sql`${products.category} ilike ${containsPattern} escape '\\'`,
+                )
+              : undefined,
+          ),
         )
-        .orderBy(asc(products.name), asc(products.id));
+        .orderBy(
+          input.search
+            ? sql`case
+                when lower(${products.name}) = lower(${input.search}) then 0
+                when lower(${products.sku}) = lower(${input.search}) then 1
+                when ${products.name} ilike ${prefixPattern} escape '\\' then 2
+                when ${products.sku} ilike ${prefixPattern} escape '\\' then 3
+                else 4
+              end`
+            : sql`0`,
+          sql`lower(${products.name})`,
+          sql`lower(coalesce(${products.sku}, ''))`,
+          asc(products.id),
+        )
+        .limit(TEMPLATE_CATALOG_RESULT_LIMIT);
+      return rows.map((row) => ({ ...row, itemType: "product" as const }));
     }),
 
   getById: protectedProcedure

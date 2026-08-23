@@ -47,6 +47,10 @@ import { BookingTab } from "@/components/settings/booking-tab";
 import { ProviderHours } from "@/components/settings/provider-hours";
 import { MigrationHelpRequest } from "@/components/onboarding/migration-help-request";
 import { ServicesTab } from "@/components/settings/services-tab";
+import {
+  TemplateCatalogPicker,
+  type TemplateCatalogItem,
+} from "@/components/templates/catalog-picker";
 import { useWelcome } from "@/components/welcome/welcome-provider";
 import { cn, isValidEmail } from "@/lib/utils";
 import { toast } from "sonner";
@@ -4980,12 +4984,6 @@ function TemplatesTab() {
     error: templatesError,
     refetch: refetchTemplates,
   } = trpc.templates.list.useQuery();
-  const {
-    data: templateProducts,
-    isLoading: templateProductsLoading,
-    error: templateProductsError,
-    refetch: refetchTemplateProducts,
-  } = trpc.templates.listProducts.useQuery(undefined, { enabled: showAdd });
   const createMutation = trpc.templates.create.useMutation({
     onSuccess: () => {
       utils.templates.list.invalidate();
@@ -5091,18 +5089,18 @@ function TemplatesTab() {
     );
   };
 
-  const selectTemplateProduct = (index: number, productId: string) => {
-    const product = templateProducts?.find(
-      (candidate) => candidate.id === productId,
-    );
+  const selectTemplateCatalogItem = (
+    index: number,
+    catalogItem: TemplateCatalogItem | null,
+  ) => {
     setAddItems((currentItems) =>
       currentItems.map((item, itemIndex) =>
         itemIndex === index
           ? {
               ...item,
-              itemId: product?.id ?? null,
-              description: product?.name ?? "",
-              defaultUnitPrice: product?.unitPrice ?? "0",
+              itemId: catalogItem?.id ?? null,
+              description: catalogItem?.name ?? "",
+              defaultUnitPrice: catalogItem?.unitPrice ?? "0",
             }
           : item,
       ),
@@ -5119,14 +5117,9 @@ function TemplatesTab() {
       sortOrder: index,
     }))
     .filter((item) => item.description.length > 0);
-  const activeTemplateProductIds = new Set(
-    templateProducts?.map((product) => product.id) ?? [],
-  );
-  const hasActiveTemplateProductLink = (itemId?: string | null) =>
-    Boolean(itemId && activeTemplateProductIds.has(itemId));
+  const hasCatalogLink = (itemId?: string | null) => Boolean(itemId);
   const isTemplateItemFormValid = (item: TemplateItem) =>
-    (item.itemType !== "product" ||
-      hasActiveTemplateProductLink(item.itemId)) &&
+    hasCatalogLink(item.itemId) &&
     item.description.trim().length > 0 &&
     item.description.trim().length <=
       TREATMENT_TEMPLATE_ITEM_DESCRIPTION_MAX_LENGTH &&
@@ -5136,23 +5129,8 @@ function TemplatesTab() {
       item.defaultUnitPrice,
       item.defaultQuantity,
     );
-  const templateProductsMissing =
-    !templateProductsLoading && !templateProductsError && !templateProducts;
-  const templateProductCatalogUnavailable =
-    templateProductsLoading ||
-    Boolean(templateProductsError) ||
-    templateProductsMissing;
-  const hasProductRows = addItems.some((item) => item.itemType === "product");
-  const hasUnlinkedProductRows = addItems.some(
-    (item) =>
-      item.itemType === "product" && !hasActiveTemplateProductLink(item.itemId),
-  );
-  const hasStaleProductRows = addItems.some(
-    (item) =>
-      item.itemType === "product" &&
-      Boolean(item.itemId) &&
-      !templateProductCatalogUnavailable &&
-      !hasActiveTemplateProductLink(item.itemId),
+  const hasUnlinkedCatalogRows = addItems.some(
+    (item) => !hasCatalogLink(item.itemId),
   );
   const canCreateTemplate =
     addForm.name.trim().length > 0 &&
@@ -5162,8 +5140,7 @@ function TemplatesTab() {
     templateItemsToCreate.length > 0 &&
     templateItemsToCreate.length <= TREATMENT_TEMPLATE_MAX_ITEMS &&
     templateItemsToCreate.every(isTemplateItemFormValid) &&
-    !hasUnlinkedProductRows &&
-    (!hasProductRows || !templateProductCatalogUnavailable) &&
+    !hasUnlinkedCatalogRows &&
     !createMutation.isPending;
 
   const selectedTemplate = templateList?.find(
@@ -5392,53 +5369,27 @@ function TemplatesTab() {
             {addItems.map((item, index) => (
               <div
                 key={index}
-                className="grid grid-cols-[1fr_auto_auto_auto_auto] items-center gap-2"
+                className="grid grid-cols-2 items-center gap-2 lg:grid-cols-[minmax(0,1fr)_auto_auto_auto_auto]"
               >
-                {item.itemType === "product" ? (
-                  <select
-                    aria-label={`Inventory product ${index + 1}`}
-                    className="h-10 min-w-0 rounded-md border border-input bg-background px-2 text-sm"
-                    value={item.itemId ?? ""}
-                    aria-invalid={
-                      Boolean(item.itemId) &&
-                      !templateProductCatalogUnavailable &&
-                      !hasActiveTemplateProductLink(item.itemId)
-                    }
-                    disabled={
-                      templateProductCatalogUnavailable ||
-                      templateProducts?.length === 0
-                    }
-                    onChange={(e) =>
-                      selectTemplateProduct(index, e.target.value)
-                    }
-                  >
-                    <option value="">
-                      {templateProductsLoading
-                        ? "Loading inventory products..."
-                        : templateProductsError || templateProductsMissing
-                          ? "Inventory products unavailable"
-                          : templateProducts?.length === 0
-                            ? "No inventory products found"
-                            : "Choose an inventory product"}
-                    </option>
-                    {templateProducts?.map((product) => (
-                      <option key={product.id} value={product.id}>
-                        {product.name}
-                        {product.sku ? ` (${product.sku})` : ""} —{" "}
-                        {formatCurrency(product.unitPrice)}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <Input
-                    placeholder="Item description"
-                    maxLength={TREATMENT_TEMPLATE_ITEM_DESCRIPTION_MAX_LENGTH}
-                    value={item.description}
-                    onChange={(e) =>
-                      updateItem(index, "description", e.target.value)
+                <div className="col-span-2 min-w-0 lg:col-span-1">
+                  <TemplateCatalogPicker
+                    itemType={item.itemType}
+                    value={item.itemId ?? null}
+                    selectedLabel={item.description}
+                    excludedIds={addItems
+                      .filter(
+                        (candidate, candidateIndex) =>
+                          candidateIndex !== index &&
+                          candidate.itemType === item.itemType &&
+                          Boolean(candidate.itemId),
+                      )
+                      .map((candidate) => candidate.itemId!)}
+                    formatPrice={formatCurrency}
+                    onSelect={(catalogItem) =>
+                      selectTemplateCatalogItem(index, catalogItem)
                     }
                   />
-                )}
+                </div>
                 <select
                   aria-label={`Item type ${index + 1}`}
                   className="h-10 rounded-md border border-input bg-background px-2 text-sm"
@@ -5459,7 +5410,7 @@ function TemplatesTab() {
                   min={TREATMENT_TEMPLATE_ITEM_QUANTITY_MIN}
                   max={TREATMENT_TEMPLATE_ITEM_QUANTITY_MAX}
                   step={1}
-                  className="w-20"
+                  className="w-full lg:w-20"
                   value={item.defaultQuantity}
                   onChange={(e) =>
                     updateItem(
@@ -5475,7 +5426,7 @@ function TemplatesTab() {
                   min={0}
                   max={TREATMENT_TEMPLATE_UNIT_PRICE_MAX}
                   step="0.01"
-                  className="w-28"
+                  className="w-full lg:w-28"
                   value={item.defaultUnitPrice}
                   onChange={(e) =>
                     updateItem(index, "defaultUnitPrice", e.target.value)
@@ -5484,6 +5435,7 @@ function TemplatesTab() {
                 <Button
                   size="sm"
                   variant="ghost"
+                  aria-label={`Remove item ${index + 1}`}
                   disabled={addItems.length <= 1}
                   onClick={() => removeItemRow(index)}
                 >
@@ -5491,35 +5443,10 @@ function TemplatesTab() {
                 </Button>
               </div>
             ))}
-            {hasProductRows &&
-            (templateProductsError || templateProductsMissing) ? (
-              <div className="flex flex-wrap items-center gap-2 text-sm text-destructive">
-                <span>
-                  Inventory products could not load. Product template items are
-                  disabled until the catalog is available.
-                </span>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => void refetchTemplateProducts()}
-                >
-                  Retry
-                </Button>
-              </div>
-            ) : null}
-            {hasProductRows &&
-            !templateProductCatalogUnavailable &&
-            templateProducts?.length === 0 ? (
+            {hasUnlinkedCatalogRows ? (
               <p className="text-sm text-muted-foreground">
-                Add an inventory product before creating a product template
-                item.
-              </p>
-            ) : null}
-            {hasStaleProductRows ? (
-              <p role="alert" className="text-sm text-destructive">
-                A selected inventory product is no longer active. Choose an
-                active product before creating this template.
+                Search for and select an active service or inventory product for
+                every template row.
               </p>
             ) : null}
             <Button

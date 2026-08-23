@@ -146,6 +146,14 @@ jobs:
           PATIENT_SEARCH_DB_INTEGRATION: "1"
         run: pnpm --filter @openpims/web exec vitest run server/__tests__/patient-search.integration.test.ts
 
+      # Template catalog selection is a clinic-facing data boundary. Exercise
+      # the real router as the least-privilege app role and prove literal,
+      # bounded, deterministic, active-only, tenant-isolated search behavior.
+      - name: Execute template catalog search contract
+        env:
+          TEMPLATE_CATALOG_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/template-catalog-search.integration.test.ts
+
       # Compile, bind, and execute the exact read-only SQL used by the shared
       # platform-admin and daily SMS operations queues. Unit tests cannot catch
       # postgres.js timestamp encoders or correlated identifier rendering.

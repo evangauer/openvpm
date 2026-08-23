@@ -21,7 +21,7 @@ describe("treatment template settings UI", () => {
     expect(source).toContain("Templates");
     expect(source).toContain("trpc.templates.create.useMutation");
     expect(source).toContain("trpc.templates.getById.useQuery");
-    expect(source).toContain("trpc.templates.listProducts.useQuery");
+    expect(source).toContain("<TemplateCatalogPicker");
   });
 
   it("keeps template create controls aligned to shared policy", () => {
@@ -41,49 +41,48 @@ describe("treatment template settings UI", () => {
     expect(isTreatmentTemplateItemTotalValid("99999999.99", 2)).toBe(false);
     expect(source).toContain("maxLength={TREATMENT_TEMPLATE_NAME_MAX_LENGTH}");
     expect(source).toContain(
-      "maxLength={TREATMENT_TEMPLATE_DESCRIPTION_MAX_LENGTH}"
+      "maxLength={TREATMENT_TEMPLATE_DESCRIPTION_MAX_LENGTH}",
     );
     expect(source).toContain(
-      "maxLength={TREATMENT_TEMPLATE_ITEM_DESCRIPTION_MAX_LENGTH}"
+      "item.description.trim().length <=\n      TREATMENT_TEMPLATE_ITEM_DESCRIPTION_MAX_LENGTH",
     );
     expect(source).toContain("min={TREATMENT_TEMPLATE_ITEM_QUANTITY_MIN}");
     expect(source).toContain("max={TREATMENT_TEMPLATE_ITEM_QUANTITY_MAX}");
     expect(source).toContain("max={TREATMENT_TEMPLATE_UNIT_PRICE_MAX}");
     expect(source).toContain(
-      "disabled={addItems.length >= TREATMENT_TEMPLATE_MAX_ITEMS}"
+      "disabled={addItems.length >= TREATMENT_TEMPLATE_MAX_ITEMS}",
     );
     expect(source).toContain("const templateItemsToCreate = addItems");
     expect(source).toContain("const canCreateTemplate =");
     expect(source).toContain(
-      "templateItemsToCreate.every(isTemplateItemFormValid)"
+      "templateItemsToCreate.every(isTemplateItemFormValid)",
     );
     expect(source).toContain("disabled={!canCreateTemplate}");
     expect(source).toContain("items: templateItemsToCreate");
   });
 
-  it("links product template rows to inventory and fails closed without the catalog", () => {
+  it("links service and product rows through the searchable catalog picker", () => {
     expect(source).toContain("itemId?: string | null");
-    expect(source).toContain("const selectTemplateProduct =");
-    expect(source).toContain("itemId: product?.id ?? null");
-    expect(source).toContain("description: product?.name ?? \"\"");
-    expect(source).toContain("defaultUnitPrice: product?.unitPrice ?? \"0\"");
+    expect(source).toContain("const selectTemplateCatalogItem =");
+    expect(source).toContain("itemId: catalogItem?.id ?? null");
+    expect(source).toContain('description: catalogItem?.name ?? ""');
+    expect(source).toContain('defaultUnitPrice: catalogItem?.unitPrice ?? "0"');
     expect(source).toContain("itemId: item.itemId || undefined");
-    expect(source).toContain(
-      'item.itemType !== "product" ||\n      hasActiveTemplateProductLink(item.itemId)',
-    );
-    expect(source).toContain("const hasUnlinkedProductRows = addItems.some(");
-    expect(source).toContain("const activeTemplateProductIds = new Set(");
-    expect(source).toContain("const hasActiveTemplateProductLink =");
-    expect(source).toContain("const hasStaleProductRows = addItems.some(");
-    expect(source).toContain("!hasActiveTemplateProductLink(item.itemId)");
-    expect(source).toContain("!hasUnlinkedProductRows");
-    expect(source).toContain("!templateProductCatalogUnavailable");
-    expect(source).toContain("Inventory products could not load");
-    expect(source).toContain("onClick={() => void refetchTemplateProducts()}");
-    expect(source).toContain('aria-invalid={');
-    expect(source).toContain('role="alert"');
-    expect(source).toContain("selected inventory product is no longer active");
+    expect(source).toContain("const hasUnlinkedCatalogRows = addItems.some(");
+    expect(source).toContain("!hasUnlinkedCatalogRows");
+    expect(source).toContain("excludedIds={addItems");
+    expect(source).toContain("candidate.itemType === item.itemType");
+    expect(source).toContain("Search for and select an active service");
     expect(source).toContain("item.hasActiveProductLink !== true");
     expect(source).toContain("Missing or archived inventory product");
+  });
+
+  it("uses a responsive item grid and labels row removal", () => {
+    expect(source).toContain(
+      'className="grid grid-cols-2 items-center gap-2 lg:grid-cols-[minmax(0,1fr)_auto_auto_auto_auto]"',
+    );
+    expect(source).toContain("aria-label={`Remove item ${index + 1}`}");
+    expect(source).toContain('className="w-full lg:w-20"');
+    expect(source).toContain('className="w-full lg:w-28"');
   });
 });

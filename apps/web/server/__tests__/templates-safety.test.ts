@@ -277,46 +277,111 @@ describe("treatment template safety", () => {
     expect(insertValues).not.toHaveBeenCalled();
   });
 
-  it("lists active tenant inventory products for template setup", async () => {
+  it("searches active tenant service and product catalogs for template setup", async () => {
+    const serviceOptions = [
+      {
+        id: SERVICE_ID,
+        name: "Wellness exam",
+        code: "EXAM",
+        category: "Wellness",
+        unitPrice: "75.00",
+      },
+    ];
     const productOptions = [
       {
         id: PRODUCT_ID,
         name: "Dental chews",
-        sku: "DENTAL-1",
+        code: "DENTAL-1",
+        category: "Dental",
         unitPrice: "12.00",
       },
     ];
     const { db, select } = createDb({
-      selectResults: [[{ id: PRACTICE_ID }], productOptions],
+      selectResults: [
+        [{ id: PRACTICE_ID }],
+        serviceOptions,
+        [{ id: PRACTICE_ID }],
+        productOptions,
+      ],
     });
 
-    await expect(callerWithDb(db).listProducts()).resolves.toEqual(
-      productOptions,
+    await expect(
+      callerWithDb(db).searchCatalog({ itemType: "service", search: "exam" }),
+    ).resolves.toEqual(
+      serviceOptions.map((item) => ({ ...item, itemType: "service" })),
     );
-    expect(select).toHaveBeenCalledTimes(2);
+    await expect(
+      callerWithDb(db).searchCatalog({ itemType: "product", search: "dental" }),
+    ).resolves.toEqual(
+      productOptions.map((item) => ({ ...item, itemType: "product" })),
+    );
+    expect(select).toHaveBeenCalledTimes(4);
   });
 
-  it("keeps the template product catalog admin-only and tenant-scoped", async () => {
+  it("keeps template catalog search admin-only, bounded, and tenant-scoped", async () => {
     const { db, select } = createDb();
 
     await expect(
-      callerWithDb(db, "veterinarian").listProducts(),
+      callerWithDb(db, "veterinarian").searchCatalog({
+        itemType: "service",
+        search: "exam",
+      }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(select).not.toHaveBeenCalled();
 
     const source = readFileSync("server/routers/templates.ts", "utf8");
-    const listProductsBlock = source.slice(
-      source.indexOf("listProducts:"),
+    const searchCatalogBlock = source.slice(
+      source.indexOf("searchCatalog:"),
       source.indexOf("getById:"),
     );
-    expect(listProductsBlock).toContain('requireRole("admin")');
-    expect(listProductsBlock).toContain(
+    expect(searchCatalogBlock).toContain('requireRole("admin")');
+    expect(searchCatalogBlock).toContain("TEMPLATE_CATALOG_RESULT_LIMIT");
+    expect(searchCatalogBlock).toContain("escapeTemplateCatalogLike");
+    expect(searchCatalogBlock).toContain("escape '\\\\'");
+    expect(searchCatalogBlock).toContain(
       "eq(products.practiceId, ctx.practiceId)",
     );
-    expect(listProductsBlock).toContain(
+    expect(searchCatalogBlock).toContain(
+      "eq(services.practiceId, ctx.practiceId)",
+    );
+    expect(searchCatalogBlock).toContain(
       "activePracticePredicate(ctx.practiceId)",
     );
-    expect(listProductsBlock).toContain("isNull(products.deletedAt)");
+    expect(searchCatalogBlock).toContain("isNull(products.deletedAt)");
+    expect(searchCatalogBlock).toContain("isNull(services.deletedAt)");
+    expect(searchCatalogBlock).toContain("asc(products.id)");
+    expect(searchCatalogBlock).toContain("asc(services.id)");
+  });
+
+  it("rejects duplicate linked catalog items before DB work", async () => {
+    const { db, select, insertValues } = createDb();
+
+    await expect(
+      callerWithDb(db).create({
+        name: "Duplicate exam",
+        items: [
+          {
+            itemType: "service",
+            itemId: SERVICE_ID,
+            description: "Wellness exam",
+            defaultQuantity: 1,
+            defaultUnitPrice: "75.00",
+            sortOrder: 0,
+          },
+          {
+            itemType: "service",
+            itemId: SERVICE_ID,
+            description: "Wellness exam",
+            defaultQuantity: 1,
+            defaultUnitPrice: "75.00",
+            sortOrder: 1,
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    expect(select).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
   });
 
   it("reports missing and archived product links without exposing catalog data", async () => {
@@ -1073,7 +1138,9 @@ describe("treatment template safety", () => {
       message: "Practice not found",
     });
 
-    await expect(caller.listProducts()).rejects.toMatchObject({
+    await expect(
+      caller.searchCatalog({ itemType: "product", search: "" }),
+    ).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
     });
