@@ -1,6 +1,16 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { eq, and, isNull, ilike, or, sql, desc, inArray } from "drizzle-orm";
+import {
+  eq,
+  and,
+  isNull,
+  or,
+  sql,
+  desc,
+  inArray,
+  type SQL,
+  type SQLWrapper,
+} from "drizzle-orm";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import {
   appointmentWaitlist,
@@ -41,6 +51,7 @@ import {
   staffSmsConsentEventKey,
 } from "@/lib/messaging/consent-events";
 import { recordActivationAfterClientCreated } from "@/lib/funnel-events-server";
+import { clientSearchContainsPattern } from "@/lib/clients/search";
 
 const clientNameInput = z.string().trim().min(1).max(CLIENT_NAME_MAX_LENGTH);
 const clientEmailInput = z
@@ -98,6 +109,11 @@ type ClientsContext = {
   db: Pick<Database, "select">;
   practiceId: string;
 };
+
+function literalClientSearchMatch(column: SQLWrapper, value: string): SQL {
+  const pattern = clientSearchContainsPattern(value);
+  return sql`${column} ilike ${pattern} escape '\\'`;
+}
 
 function activePracticePredicate(practiceId: string) {
   return sql`exists (
@@ -201,14 +217,14 @@ export const clientsRouter = createRouter({
       if (input.search) {
         conditions.push(
           or(
-            ilike(clients.firstName, `%${input.search}%`),
-            ilike(clients.lastName, `%${input.search}%`),
-            ilike(
+            literalClientSearchMatch(clients.firstName, input.search),
+            literalClientSearchMatch(clients.lastName, input.search),
+            literalClientSearchMatch(
               sql`concat_ws(' ', ${clients.firstName}, ${clients.lastName})`,
-              `%${input.search}%`,
+              input.search,
             ),
-            ilike(clients.email, `%${input.search}%`),
-            ilike(clients.phone, `%${input.search}%`),
+            literalClientSearchMatch(clients.email, input.search),
+            literalClientSearchMatch(clients.phone, input.search),
           )!,
         );
       }
@@ -266,14 +282,14 @@ export const clientsRouter = createRouter({
             activePracticePredicate(ctx.practiceId),
             isNull(clients.deletedAt),
             or(
-              ilike(clients.firstName, `%${input.query}%`),
-              ilike(clients.lastName, `%${input.query}%`),
-              ilike(
+              literalClientSearchMatch(clients.firstName, input.query),
+              literalClientSearchMatch(clients.lastName, input.query),
+              literalClientSearchMatch(
                 sql`concat_ws(' ', ${clients.firstName}, ${clients.lastName})`,
-                `%${input.query}%`,
+                input.query,
               ),
-              ilike(clients.email, `%${input.query}%`),
-              ilike(clients.phone, `%${input.query}%`),
+              literalClientSearchMatch(clients.email, input.query),
+              literalClientSearchMatch(clients.phone, input.query),
             ),
           ),
         )

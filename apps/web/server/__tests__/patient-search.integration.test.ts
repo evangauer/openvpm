@@ -6,6 +6,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { describe, expect, it } from "vitest";
 import * as schema from "../../../../packages/db/schema/index";
+import { clientsRouter } from "../routers/clients";
 import { patientsRouter } from "../routers/patients";
 import { withTenant } from "@/lib/tenant-db";
 
@@ -60,33 +61,49 @@ describeWithPatientSearchPostgres(
         if (!practiceA || !practiceB)
           throw new Error("failed to seed practices");
 
-        const [grayOwner, percentOwner, otherOwner, crossTenantOwner] =
-          await ownerDb
-            .insert(schema.clients)
-            .values([
-              {
-                practiceId: practiceA.id,
-                firstName: "Morgan",
-                lastName: "Gray",
-              },
-              {
-                practiceId: practiceA.id,
-                firstName: "Literal",
-                lastName: "Owner",
-              },
-              {
-                practiceId: practiceA.id,
-                firstName: "Exact",
-                lastName: "Patient",
-              },
-              {
-                practiceId: practiceB.id,
-                firstName: "Morgan",
-                lastName: "Gray",
-              },
-            ])
-            .returning({ id: schema.clients.id });
-        if (!grayOwner || !percentOwner || !otherOwner || !crossTenantOwner) {
+        const [
+          grayOwner,
+          percentOwner,
+          wildcardClient,
+          otherOwner,
+          crossTenantOwner,
+        ] = await ownerDb
+          .insert(schema.clients)
+          .values([
+            {
+              practiceId: practiceA.id,
+              firstName: "Morgan",
+              lastName: "Gray",
+            },
+            {
+              practiceId: practiceA.id,
+              firstName: "50%_off",
+              lastName: "Literal",
+            },
+            {
+              practiceId: practiceA.id,
+              firstName: "50xxoff",
+              lastName: "Wildcard Decoy",
+            },
+            {
+              practiceId: practiceA.id,
+              firstName: "Exact",
+              lastName: "Patient",
+            },
+            {
+              practiceId: practiceB.id,
+              firstName: "Morgan",
+              lastName: "Gray",
+            },
+          ])
+          .returning({ id: schema.clients.id });
+        if (
+          !grayOwner ||
+          !percentOwner ||
+          !wildcardClient ||
+          !otherOwner ||
+          !crossTenantOwner
+        ) {
           throw new Error("failed to seed clients");
         }
 
@@ -102,13 +119,13 @@ describeWithPatientSearchPostgres(
               },
               {
                 practiceId: practiceA.id,
-                clientId: percentOwner.id,
+                clientId: grayOwner.id,
                 name: "50%_off",
                 species: "feline",
               },
               {
                 practiceId: practiceA.id,
-                clientId: percentOwner.id,
+                clientId: otherOwner.id,
                 name: "50xxoff",
                 species: "feline",
               },
@@ -152,6 +169,11 @@ describeWithPatientSearchPostgres(
         });
         const caller = (db: typeof ownerDb, practiceId: string) =>
           patientsRouter.createCaller({
+            db,
+            session: session(practiceId),
+          } as never);
+        const clientCaller = (db: typeof ownerDb, practiceId: string) =>
+          clientsRouter.createCaller({
             db,
             session: session(practiceId),
           } as never);
@@ -223,6 +245,31 @@ describeWithPatientSearchPostgres(
         expect(literal.map((patient) => patient.id)).not.toContain(
           wildcardDecoy.id,
         );
+
+        const literalClient = await clientCaller(ownerDb, practiceA.id).search({
+          query: "50%_off",
+        });
+        expect(literalClient.map((client) => client.id)).toEqual([
+          percentOwner.id,
+        ]);
+        expect(literalClient.map((client) => client.id)).not.toContain(
+          wildcardClient.id,
+        );
+
+        const normalClient = await clientCaller(ownerDb, practiceA.id).search({
+          query: "Morgan Gray",
+        });
+        expect(normalClient.map((client) => client.id)).toEqual([grayOwner.id]);
+
+        const listedClients = await clientCaller(ownerDb, practiceA.id).list({
+          search: "50%_off",
+          limit: 25,
+          offset: 0,
+        });
+        expect(listedClients.items.map((client) => client.id)).toEqual([
+          percentOwner.id,
+        ]);
+        expect(listedClients.total).toBe(1);
 
         const listed = await runAsTenant(practiceA.id, (tenantCaller) =>
           tenantCaller.list({
