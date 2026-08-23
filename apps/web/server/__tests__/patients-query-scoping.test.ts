@@ -16,6 +16,20 @@ describe("patients query scoping", () => {
     expect(clientLeftJoins.length).toBeGreaterThanOrEqual(3);
   });
 
+  it("uses bounded literal patient + owner tokens with stable quick-search order", () => {
+    expect(source).toContain("patientOwnerSearchConditions");
+    expect(source).toContain("patientSearchTokens(value).map");
+    expect(source).toContain("literalPatientSearchMatch(patients.name, token)");
+    expect(source).toContain("literalPatientSearchMatch(patients.breed, token)");
+    expect(source).toContain("literalPatientSearchMatch(clients.firstName, token)");
+    expect(source).toContain("literalPatientSearchMatch(clients.lastName, token)");
+    expect(source).toContain("escape '\\\\'");
+    expect(source).toContain("patientSearchOrder(input.query)");
+    expect(source).toContain("when lower(${patients.name}) = ${phrase} then 0");
+    expect(source).toContain("asc(patients.id)");
+    expect(source).toContain(".limit(10)");
+  });
+
   it("requires an active practice for patient reads, writes, and merge dependencies", () => {
     expect(source).toContain("function activePracticePredicate");
     expect(source).toContain("function assertActivePractice");

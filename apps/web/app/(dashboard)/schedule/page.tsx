@@ -2143,7 +2143,7 @@ function BookingForm({
             ) : (
               <div className="relative mt-1">
                 <Input
-                  placeholder="Search patients..."
+                  placeholder="Search patients or owners..."
                   value={patientSearch}
                   maxLength={APPOINTMENT_PATIENT_SEARCH_MAX_LENGTH}
                   aria-invalid={!canSearchPatients}

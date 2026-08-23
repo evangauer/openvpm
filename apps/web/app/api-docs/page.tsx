@@ -176,7 +176,8 @@ const sections: Section[] = [
       {
         name: "patients.search",
         method: "GET",
-        description: "Quick search patients by name. Returns up to 10 results.",
+        description:
+          "Quick search by patient, owner, or breed. Returns up to 10 deterministically ordered results.",
         input: `{ query: string }`,
         response: `Patient[]`,
       },

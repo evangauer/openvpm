@@ -289,6 +289,14 @@ export function CommandSearch({
                         {patient.breed}
                       </span>
                     )}
+                    {(patient.clientFirstName || patient.clientLastName) && (
+                      <span className="text-muted-foreground">
+                        Owner:{" "}
+                        {[patient.clientFirstName, patient.clientLastName]
+                          .filter(Boolean)
+                          .join(" ")}
+                      </span>
+                    )}
                   </Command.Item>
                 ))}
               </Command.Group>

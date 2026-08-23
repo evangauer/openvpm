@@ -117,7 +117,7 @@ export default function PatientsPage() {
         <div className="relative w-full min-w-0 sm:max-w-sm sm:flex-1">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
-            placeholder="Search patients..."
+            placeholder="Search patients or owners..."
             value={search}
             maxLength={PATIENT_SEARCH_MAX_LENGTH}
             onChange={(e) => setSearch(e.target.value)}

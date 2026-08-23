@@ -4,7 +4,6 @@ import {
   and,
   isNull,
   isNotNull,
-  ilike,
   or,
   sql,
   desc,
@@ -12,7 +11,7 @@ import {
   inArray,
   asc,
 } from "drizzle-orm";
-import type { SQLWrapper } from "drizzle-orm";
+import type { SQL, SQLWrapper } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import {
@@ -69,6 +68,12 @@ import {
   PATIENT_SEARCH_MAX_LENGTH,
 } from "@/lib/patients/policy";
 import { listOffsetInput } from "./pagination";
+import {
+  hasBoundedPatientSearchTokens,
+  normalizePatientSearchPhrase,
+  patientSearchContainsPattern,
+  patientSearchTokens,
+} from "@/lib/patients/search";
 
 const patientSpeciesInput = z.enum([
   "canine",
@@ -106,11 +111,19 @@ const patientSearchInput = z
   .string()
   .trim()
   .max(PATIENT_SEARCH_MAX_LENGTH)
-  .optional();
+  .optional()
+  .refine(
+    (value) => value === undefined || hasBoundedPatientSearchTokens(value),
+    {
+      message: "Search query has too many distinct words.",
+    },
+  );
 const patientSearchQueryInput = clinicalTextInput(
   "Search query",
   PATIENT_SEARCH_MAX_LENGTH,
-);
+).refine(hasBoundedPatientSearchTokens, {
+  message: "Search query has too many distinct words.",
+});
 const patientNameInput = clinicalTextInput(
   "Patient name",
   PATIENT_NAME_MAX_LENGTH,
@@ -173,6 +186,38 @@ type PatientsContext = {
   db: Pick<Database, "select">;
   practiceId: string;
 };
+
+function literalPatientSearchMatch(column: SQLWrapper, token: string): SQL {
+  const pattern = patientSearchContainsPattern(token);
+  return sql`${column} ilike ${pattern} escape '\\'`;
+}
+
+function patientOwnerSearchConditions(value: string): SQL[] {
+  return patientSearchTokens(value).map(
+    (token) =>
+      or(
+        literalPatientSearchMatch(patients.name, token),
+        literalPatientSearchMatch(patients.breed, token),
+        literalPatientSearchMatch(clients.firstName, token),
+        literalPatientSearchMatch(clients.lastName, token),
+      )!,
+  );
+}
+
+function patientSearchOrder(value: string): SQL[] {
+  const phrase = normalizePatientSearchPhrase(value);
+  return [
+    sql`case
+      when lower(${patients.name}) = ${phrase} then 0
+      when lower(btrim(${clients.firstName} || ' ' || ${clients.lastName})) = ${phrase} then 1
+      else 2
+    end`,
+    sql`lower(${patients.name}) asc`,
+    sql`lower(${clients.lastName}) asc nulls last`,
+    sql`lower(${clients.firstName}) asc nulls last`,
+    asc(patients.id),
+  ];
+}
 
 const patientIdentitySelection = {
   id: patients.id,
@@ -802,19 +847,14 @@ export const patientsRouter = createRouter({
       }),
     )
     .query(async ({ ctx, input }) => {
-      const conditions: ReturnType<typeof eq>[] = [
+      const conditions: SQL[] = [
         eq(patients.practiceId, ctx.practiceId),
         activePracticePredicate(ctx.practiceId),
         isNull(patients.deletedAt),
       ];
 
       if (input.search) {
-        conditions.push(
-          or(
-            ilike(patients.name, `%${input.search}%`),
-            ilike(patients.breed, `%${input.search}%`),
-          )!,
-        );
+        conditions.push(...patientOwnerSearchConditions(input.search));
       }
       if (input.species) {
         conditions.push(eq(patients.species, input.species));
@@ -822,6 +862,24 @@ export const patientsRouter = createRouter({
       if (input.status) {
         conditions.push(eq(patients.status, input.status));
       }
+
+      const countQuery = input.search
+        ? ctx.db
+            .select({ count: sql<number>`count(*)` })
+            .from(patients)
+            .leftJoin(
+              clients,
+              and(
+                eq(patients.clientId, clients.id),
+                eq(clients.practiceId, ctx.practiceId),
+                isNull(clients.deletedAt),
+              ),
+            )
+            .where(and(...conditions))
+        : ctx.db
+            .select({ count: sql<number>`count(*)` })
+            .from(patients)
+            .where(and(...conditions));
 
       const [items, countResult] = await Promise.all([
         ctx.db
@@ -849,13 +907,14 @@ export const patientsRouter = createRouter({
             ),
           )
           .where(and(...conditions))
-          .orderBy(desc(patients.createdAt))
+          .orderBy(
+            ...(input.search
+              ? patientSearchOrder(input.search)
+              : [desc(patients.createdAt), asc(patients.id)]),
+          )
           .limit(input.limit)
           .offset(input.offset),
-        ctx.db
-          .select({ count: sql<number>`count(*)` })
-          .from(patients)
-          .where(and(...conditions)),
+        countQuery,
       ]);
 
       return {
@@ -872,14 +931,11 @@ export const patientsRouter = createRouter({
       }),
     )
     .query(async ({ ctx, input }) => {
-      const conditions = [
+      const conditions: SQL[] = [
         eq(patients.practiceId, ctx.practiceId),
         activePracticePredicate(ctx.practiceId),
         isNull(patients.deletedAt),
-        or(
-          ilike(patients.name, `%${input.query}%`),
-          ilike(patients.breed, `%${input.query}%`),
-        )!,
+        ...patientOwnerSearchConditions(input.query),
       ];
       if (input.status) {
         conditions.push(eq(patients.status, input.status));
@@ -903,6 +959,7 @@ export const patientsRouter = createRouter({
           ),
         )
         .where(and(...conditions))
+        .orderBy(...patientSearchOrder(input.query))
         .limit(10);
     }),
 

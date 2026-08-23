@@ -196,7 +196,7 @@ export default function CareRemindersPage() {
                       id="care-reminder-patient"
                       value={patientQuery}
                       onChange={(event) => setPatientQuery(event.target.value)}
-                      placeholder="Search active patients"
+                      placeholder="Search active patients or owners"
                       autoComplete="off"
                     />
                     {patientSearch.isFetching ? (

@@ -253,6 +253,12 @@ describe("patients mutation safety", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
+      callerWithDb(db).search({
+        query: "one two three four five six seven eight nine",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    await expect(
       callerWithDb(db).addWeight({
         patientId: PATIENT_ID,
         weightKg: "12.3456",

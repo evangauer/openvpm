@@ -62,6 +62,8 @@ describe("command search UI", () => {
     expect(source).toContain(
       "{hasQuery && !searchUnavailable && clientResults.length > 0 && ("
     );
+    expect(source).toContain("patient.clientFirstName || patient.clientLastName");
+    expect(source).toContain("Owner:");
     expect(source).not.toContain("const patientResults = patients.data ?? []");
     expect(source).not.toContain("const clientResults = clients.data ?? []");
   });

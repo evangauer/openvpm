@@ -300,7 +300,7 @@ function PatientAssignmentPanel({
             maxLength={APPOINTMENT_PATIENT_SEARCH_MAX_LENGTH}
             aria-label="Search patient to attach"
             aria-invalid={!searchIsValid}
-            placeholder="Search patient name or breed"
+            placeholder="Search patient, owner, or breed"
             onChange={(event) => setSearch(event.target.value)}
           />
           {!searchIsValid ? (

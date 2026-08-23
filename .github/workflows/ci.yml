@@ -138,6 +138,14 @@ jobs:
       - name: Execute finance schema adoption contract
         run: pnpm --filter @openpims/db db:finance-adoption:test
 
+      # Exercise the clinic-facing patient + owner search through the real
+      # router and least-privilege RLS role. The fixture proves literal LIKE
+      # escaping, deterministic bounds, context cleanup, and cross-tenant deny.
+      - name: Execute patient and owner search database contract
+        env:
+          PATIENT_SEARCH_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/patient-search.integration.test.ts
+
       # Compile, bind, and execute the exact read-only SQL used by the shared
       # platform-admin and daily SMS operations queues. Unit tests cannot catch
       # postgres.js timestamp encoders or correlated identifier rendering.
