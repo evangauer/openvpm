@@ -13,6 +13,7 @@
     "db:seed": "pnpm --filter @openpims/db db:seed",
     "db:reset": "pnpm --filter @openpims/db db:reset",
     "db:rls": "pnpm --filter @openpims/db db:rls",
+    "db:rls:preflight": "pnpm --filter @openpims/db db:rls:preflight",
     "db:rls:test": "pnpm --filter @openpims/db db:rls:test",
     "db:drift": "pnpm --filter @openpims/db db:drift",
     "db:baseline": "pnpm --filter @openpims/db db:baseline",

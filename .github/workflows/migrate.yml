@@ -48,6 +48,12 @@ jobs:
           DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
         run: pnpm db:drift
 
+      - name: Verify RLS deployment ownership
+        if: steps.configured.outputs.ready == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: pnpm db:rls:preflight
+
       - name: Apply migrations
         if: steps.configured.outputs.ready == 'true'
         env:
@@ -97,6 +103,12 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
         run: pnpm db:drift
+
+      - name: Verify RLS deployment ownership
+        if: steps.configured.outputs.ready == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
+        run: pnpm db:rls:preflight
 
       - name: Apply migrations
         if: steps.configured.outputs.ready == 'true'

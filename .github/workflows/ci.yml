@@ -107,6 +107,9 @@ jobs:
       # tenant isolation against a real Postgres on every PR.
       - run: pnpm --filter @openpims/db db:migrate
 
+      - name: Execute RLS ownership preflight contract
+        run: pnpm --filter @openpims/db db:rls:preflight:test
+
       # A data-only migration has no schema snapshot to prove it ran. Exercise
       # the baseline command against a disposable database and prove that exact
       # and later cutoffs both fail without a ledger until live data is safe.
