@@ -182,6 +182,25 @@ describeWithTemplateCatalogPostgres(
         `;
         expect(noContext).toEqual({ services: 0, products: 0 });
 
+        const initialServices = await caller(practiceA.id).searchCatalog({
+          itemType: "service",
+          search: "",
+        });
+        expect(initialServices).toHaveLength(TEMPLATE_CATALOG_RESULT_LIMIT);
+        expect(initialServices.map((item) => item.name)).toEqual(
+          [...initialServices.map((item) => item.name)].sort((left, right) =>
+            left.localeCompare(right, undefined, { sensitivity: "base" }),
+          ),
+        );
+
+        const initialProducts = await caller(practiceA.id).searchCatalog({
+          itemType: "product",
+          search: "",
+        });
+        expect(initialProducts.map((item) => item.id)).toEqual([
+          exactProduct.id,
+        ]);
+
         const exact = await caller(practiceA.id).searchCatalog({
           itemType: "service",
           search: "exam",
