@@ -6,6 +6,7 @@ import {
   text,
   timestamp,
   boolean,
+  integer,
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
@@ -30,6 +31,8 @@ export const users = pgTable(
     ...baseColumns(),
     email: varchar("email", { length: 255 }).notNull().unique(),
     passwordHash: varchar("password_hash", { length: 255 }).notNull(),
+    /** Increment to revoke every JWT issued for an older identity generation. */
+    sessionVersion: integer("session_version").notNull().default(1),
     name: varchar("name", { length: 255 }).notNull(),
     role: userRoleEnum("role").notNull().default("front_desk"),
     // Authorization and clinical identity are intentionally separate. A

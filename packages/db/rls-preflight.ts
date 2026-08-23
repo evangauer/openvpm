@@ -53,6 +53,7 @@ export async function inspectRlsDeploymentCapability(
           'reject_clinic_pilot_event_mutation',
           'restore_soap_note_addendum',
           'restore_soap_note_replacement',
+          'validate_payment_processor_refund_tenant',
           'validate_sms_provider_event_resolution_insert'
         ]::text[])
 

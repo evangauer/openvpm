@@ -253,6 +253,111 @@ export function criticalDatabaseContract(): DeclaredDatabaseObject[] {
       table: "file_storage_events",
       name,
     })),
+    ...["financial_closes_actor_tenant_fk"].map((name) => ({
+      kind: "constraint" as const,
+      table: "financial_closes",
+      name,
+    })),
+    ...["payment_disputes_settlement_tenant_fk"].map((name) => ({
+      kind: "constraint" as const,
+      table: "payment_disputes",
+      name,
+    })),
+    ...["payment_processor_payouts_account_tenant_fk"].map((name) => ({
+      kind: "constraint" as const,
+      table: "payment_processor_payouts",
+      name,
+    })),
+    ...[
+      "payment_processor_refunds_settlement_payment_tenant_fk",
+      "payment_processor_refunds_account_tenant_fk",
+    ].map((name) => ({
+      kind: "constraint" as const,
+      table: "payment_processor_refunds",
+      name,
+    })),
+    ...[
+      "payment_processor_settlements_invoice_tenant_fk",
+      "payment_processor_settlements_payment_invoice_fk",
+      "payment_processor_settlements_account_tenant_fk",
+    ].map((name) => ({
+      kind: "constraint" as const,
+      table: "payment_processor_settlements",
+      name,
+    })),
+    ...[
+      ["invoices", "invoices_practice_id_uq"],
+      ["payments", "payments_invoice_id_uq"],
+      [
+        "practice_payment_accounts",
+        "practice_payment_accounts_tenant_provider_account_uq",
+      ],
+      [
+        "payment_processor_settlements",
+        "payment_processor_settlements_practice_id_uq",
+      ],
+      [
+        "payment_processor_settlements",
+        "payment_processor_settlements_tenant_payment_uq",
+      ],
+    ].map(([table, name]) => ({
+      kind: "index" as const,
+      table,
+      name,
+    })),
+    {
+      kind: "trigger",
+      table: "payment_processor_refunds",
+      name: "payment_processor_refunds_tenant_guard",
+    },
+    ...[
+      "financial_closes",
+      "payment_disputes",
+      "payment_processor_payouts",
+      "payment_processor_refunds",
+      "payment_processor_settlements",
+    ].map((table) => ({
+      kind: "rls_policy" as const,
+      table,
+      name: "tenant_isolation",
+    })),
+    ...[
+      "payment_disputes",
+      "payment_processor_payouts",
+      "payment_processor_refunds",
+      "payment_processor_settlements",
+    ].flatMap((table) =>
+      ["SELECT", "INSERT", "UPDATE"].map((name) => ({
+        kind: "table_privilege" as const,
+        table,
+        name,
+      })),
+    ),
+    ...[
+      "payment_disputes",
+      "payment_processor_payouts",
+      "payment_processor_refunds",
+      "payment_processor_settlements",
+    ].map((table) => ({
+      kind: "forbidden_table_privilege" as const,
+      table,
+      name: "DELETE",
+    })),
+    ...["SELECT", "INSERT"].map((name) => ({
+      kind: "table_privilege" as const,
+      table: "financial_closes",
+      name,
+    })),
+    ...["UPDATE", "DELETE"].map((name) => ({
+      kind: "forbidden_table_privilege" as const,
+      table: "financial_closes",
+      name,
+    })),
+    {
+      kind: "forbidden_function_privilege",
+      table: "validate_payment_processor_refund_tenant",
+      name: "EXECUTE",
+    },
     {
       kind: "constraint",
       table: "sms_provider_events",
@@ -488,18 +593,9 @@ export function criticalDatabaseContract(): DeclaredDatabaseObject[] {
     })),
     ...[
       ["client_contacts", "client_contacts_client_tenant_fk"],
-      [
-        "historical_appointments",
-        "historical_appointments_patient_tenant_fk",
-      ],
-      [
-        "historical_appointments",
-        "historical_appointments_client_tenant_fk",
-      ],
-      [
-        "external_prescriptions",
-        "external_prescriptions_patient_tenant_fk",
-      ],
+      ["historical_appointments", "historical_appointments_patient_tenant_fk"],
+      ["historical_appointments", "historical_appointments_client_tenant_fk"],
+      ["external_prescriptions", "external_prescriptions_patient_tenant_fk"],
       [
         "external_prescription_fills",
         "external_prescription_fills_prescription_tenant_fk",
@@ -546,10 +642,7 @@ export function criticalDatabaseContract(): DeclaredDatabaseObject[] {
         "external_prescription_fills_external_id_uq",
       ],
       ["external_lab_reports", "external_lab_reports_external_id_uq"],
-      [
-        "external_lab_observations",
-        "external_lab_observations_external_id_uq",
-      ],
+      ["external_lab_observations", "external_lab_observations_external_id_uq"],
       [
         "legacy_financial_documents",
         "legacy_financial_documents_external_id_uq",
@@ -558,10 +651,7 @@ export function criticalDatabaseContract(): DeclaredDatabaseObject[] {
         "legacy_financial_line_items",
         "legacy_financial_line_items_external_id_uq",
       ],
-      [
-        "legacy_financial_payments",
-        "legacy_financial_payments_external_id_uq",
-      ],
+      ["legacy_financial_payments", "legacy_financial_payments_external_id_uq"],
       [
         "legacy_financial_allocations",
         "legacy_financial_allocations_external_id_uq",
@@ -722,7 +812,13 @@ export async function findSchemaDrift(db: Queryable): Promise<SchemaDrift> {
       ('sms_provider_event_conflict_reviews'::text, 'UPDATE'::text),
       ('sms_provider_event_conflict_reviews'::text, 'DELETE'::text),
       ('sms_provider_event_resolutions'::text, 'UPDATE'::text),
-      ('sms_provider_event_resolutions'::text, 'DELETE'::text)
+      ('sms_provider_event_resolutions'::text, 'DELETE'::text),
+      ('payment_processor_settlements'::text, 'DELETE'::text),
+      ('payment_processor_refunds'::text, 'DELETE'::text),
+      ('payment_processor_payouts'::text, 'DELETE'::text),
+      ('payment_disputes'::text, 'DELETE'::text),
+      ('financial_closes'::text, 'UPDATE'::text),
+      ('financial_closes'::text, 'DELETE'::text)
     ) required_absence(table_name, privilege_type)
     union all
     select
@@ -749,7 +845,10 @@ export async function findSchemaDrift(db: Queryable): Promise<SchemaDrift> {
     join pg_catalog.pg_namespace function_namespace
       on function_namespace.oid = function_object.pronamespace
     where function_namespace.nspname = 'public'
-      and function_object.proname = 'validate_sms_provider_event_resolution_insert'
+      and function_object.proname in (
+        'validate_sms_provider_event_resolution_insert',
+        'validate_payment_processor_refund_tenant'
+      )
       and function_object.pronargs = 0
   `);
 

@@ -53,8 +53,8 @@ DECLARE
   tbls text[] := array[
     'api_keys','appointment_types','appointment_waitlist','appointments','audit_log','booking_pages',
     'capture_sessions','care_reminders','cases','client_contacts','clients','clinical_notes','clinical_record_corrections','communications','consent_forms','consent_requests','controlled_substance_log','dispense_charge_queue','email_suppressions',
-    'external_lab_observations','external_lab_reports','external_prescription_fills','external_prescriptions','files','historical_appointments','historical_documents','insurance_claims','insurance_policies','invoices','lab_result_events','lab_result_replacements','lab_results','legacy_financial_allocations','legacy_financial_documents','legacy_financial_line_items','legacy_financial_payments','location_messaging','messaging_registration_events','messaging_registrations','migration_runs',
-    'locations','patient_merge_events','patients','practice_payment_accounts','prescription_events','prescriptions','problem_list','procedures','products','purchase_orders',
+    'external_lab_observations','external_lab_reports','external_prescription_fills','external_prescriptions','files','financial_closes','historical_appointments','historical_documents','insurance_claims','insurance_policies','invoices','lab_result_events','lab_result_replacements','lab_results','legacy_financial_allocations','legacy_financial_documents','legacy_financial_line_items','legacy_financial_payments','location_messaging','messaging_registration_events','messaging_registrations','migration_runs',
+    'locations','patient_merge_events','patients','payment_disputes','payment_processor_payouts','payment_processor_refunds','payment_processor_settlements','practice_payment_accounts','prescription_events','prescriptions','problem_list','procedures','products','purchase_orders',
     'recurring_series','rooms','services','sms_consent_events','sms_send_attempt_events','sms_send_attempts','sms_suppressions','soap_note_addenda','soap_note_replacements','soap_notes','staff_schedules','suppliers',
     'treatment_plans','treatment_templates','usage_records','users','vaccination_records',
     'visit_closeouts','visit_work_items','vital_signs','webhooks','wellness_enrollments','wellness_plans'
@@ -71,6 +71,19 @@ BEGIN
     );
   END LOOP;
 END$$;
+
+-- Processor evidence is clinic-scoped but never deletable. Settlement,
+-- refund, payout, and dispute projections may be reconciled in place by a
+-- provider worker. A financial close is an append-only staff attestation.
+REVOKE ALL ON payment_processor_settlements, payment_processor_refunds,
+  payment_processor_payouts, payment_disputes, financial_closes
+  FROM openpims_app;
+GRANT SELECT, INSERT, UPDATE ON payment_processor_settlements,
+  payment_processor_refunds, payment_processor_payouts, payment_disputes
+  TO openpims_app;
+GRANT SELECT, INSERT ON financial_closes TO openpims_app;
+REVOKE ALL ON FUNCTION public.validate_payment_processor_refund_tenant()
+  FROM PUBLIC, openpims_app;
 
 -- Object-replica evidence is operational recovery state, not clinic-editable
 -- data. Only an explicit system context may read or write it; the composite
@@ -510,7 +523,10 @@ BEGIN
   FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format(
-        'REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_provider_identity_conflicts, auth_email_webhook_conflicts, auth_tokens, clinic_pilot_events, clinic_pilots, clinical_record_corrections, demo_accesses, dispense_charge_queue, file_object_replicas, file_storage_events, funnel_events, lab_result_events, lab_result_replacements, messaging_registration_events, patient_allergies, patient_merge_events, platform_email_identity, platform_email_preference_events, platform_email_preferences, practice_conversion_milestones, prescription_events, sessions, sms_delivery_event_history, sms_delivery_events, sms_provider_event_conflict_reviews, sms_provider_event_conflicts, sms_provider_event_resolutions, sms_provider_events, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
+        'REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_provider_identity_conflicts, auth_email_webhook_conflicts, auth_tokens, clinic_pilot_events, clinic_pilots, clinical_record_corrections, demo_accesses, dispense_charge_queue, file_object_replicas, file_storage_events, financial_closes, funnel_events, lab_result_events, lab_result_replacements, messaging_registration_events, patient_allergies, patient_merge_events, payment_disputes, payment_processor_payouts, payment_processor_refunds, payment_processor_settlements, platform_email_identity, platform_email_preference_events, platform_email_preferences, practice_conversion_milestones, prescription_events, sessions, sms_delivery_event_history, sms_delivery_events, sms_provider_event_conflict_reviews, sms_provider_event_conflicts, sms_provider_event_resolutions, sms_provider_events, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
+      );
+      EXECUTE format(
+        'REVOKE ALL ON FUNCTION public.validate_payment_processor_refund_tenant() FROM %I', r
       );
     END IF;
   END LOOP;

@@ -88,6 +88,9 @@ export const practicePaymentAccounts = pgTable(
     stripeAccountUq: uniqueIndex(
       "practice_payment_accounts_stripe_account_uq"
     ).on(table.stripeAccountId),
+    tenantProviderAccountUq: uniqueIndex(
+      "practice_payment_accounts_tenant_provider_account_uq"
+    ).on(table.practiceId, table.provider, table.stripeAccountId),
     practiceStatusIdx: index("practice_payment_accounts_status_idx").on(
       table.practiceId,
       table.deletedAt,
@@ -206,6 +209,10 @@ export const invoices = pgTable(
     visitTargetUq: uniqueIndex("invoices_visit_target_uq").on(
       table.practiceId,
       table.appointmentId,
+      table.id
+    ),
+    practiceIdUq: uniqueIndex("invoices_practice_id_uq").on(
+      table.practiceId,
       table.id
     ),
   })
@@ -457,6 +464,10 @@ export const payments = pgTable(
       table.receivedAt
     ),
     externalIdUq: uniqueIndex("payments_external_id_uq").on(table.externalId),
+    invoiceIdUq: uniqueIndex("payments_invoice_id_uq").on(
+      table.invoiceId,
+      table.id
+    ),
   })
 );
 

@@ -603,9 +603,18 @@ describe("committed Drizzle migrations", () => {
     expect(replicaPolicy).toContain("USING (app_rls_bypass())");
     expect(replicaPolicy).toContain("WITH CHECK (app_rls_bypass())");
     expect(replicaPolicy).not.toContain("app_current_practice_id");
-    expect(rls).toContain(
-      "dispense_charge_queue, file_object_replicas, file_storage_events, funnel_events",
+    const apiRoleRevokes = rls.slice(
+      rls.indexOf("'REVOKE ALL ON auth_email_attempts"),
+      rls.indexOf("FROM %I', r"),
     );
+    for (const table of [
+      "dispense_charge_queue",
+      "file_object_replicas",
+      "file_storage_events",
+      "funnel_events",
+    ]) {
+      expect(apiRoleRevokes).toContain(table);
+    }
   });
 
   it("adds durable replica leases and append-only storage evidence", () => {

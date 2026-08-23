@@ -132,6 +132,12 @@ jobs:
 
       - run: pnpm --filter @openpims/db db:rls
 
+      # Recreate the exact staging-era 0093 state in a disposable database,
+      # preserve existing settlement evidence through 0094, and attack every
+      # finance tenant/privilege boundary with the restricted application role.
+      - name: Execute finance schema adoption contract
+        run: pnpm --filter @openpims/db db:finance-adoption:test
+
       # Compile, bind, and execute the exact read-only SQL used by the shared
       # platform-admin and daily SMS operations queues. Unit tests cannot catch
       # postgres.js timestamp encoders or correlated identifier rendering.
