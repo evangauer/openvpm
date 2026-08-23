@@ -498,8 +498,6 @@ async function analyzePatientMerge(
     });
   }
 
-  const targetAppointments = alias(appointments, "merge_target_appointments");
-  const targetWaitlist = alias(appointmentWaitlist, "merge_target_waitlist");
   const [row] = await db
     .select({
       sourceHasIncomingAliases: sql<number>`(
@@ -524,36 +522,36 @@ async function analyzePatientMerge(
           and ${appointments.clientId} = ${mergePatient.clientId}
           and ${appointments.deletedAt} is null
           and ${appointments.status} in ('scheduled', 'confirmed')
-          and ${appointments.startTime} > ${now}
+          and ${appointments.startTime} > ${now.toISOString()}
       )`,
       appointmentHistory: sql<number>`(
         select count(*)::int from ${appointments}
         where ${appointments.practiceId} = ${practiceId}
           and ${appointments.patientId} = ${mergeId}
-          and not (
+          and (
             ${appointments.clientId} = ${mergePatient.clientId}
             and ${appointments.deletedAt} is null
             and ${appointments.status} in ('scheduled', 'confirmed')
-            and ${appointments.startTime} > ${now}
-          )
+            and ${appointments.startTime} > ${now.toISOString()}
+          ) is not true
       )`,
       appointmentCollisions: sql<number>`(
-        select count(*)::int from ${appointments}
-        where ${appointments.practiceId} = ${practiceId}
-          and ${appointments.patientId} = ${mergeId}
-          and ${appointments.clientId} = ${mergePatient.clientId}
-          and ${appointments.deletedAt} is null
-          and ${appointments.status} in ('scheduled', 'confirmed')
-          and ${appointments.startTime} > ${now}
+        select count(*)::int from appointments as merge_source_appointments
+        where merge_source_appointments.practice_id = ${practiceId}
+          and merge_source_appointments.patient_id = ${mergeId}
+          and merge_source_appointments.client_id = ${mergePatient.clientId}
+          and merge_source_appointments.deleted_at is null
+          and merge_source_appointments.status in ('scheduled', 'confirmed')
+          and merge_source_appointments.start_time > ${now.toISOString()}
           and exists (
-            select 1 from ${targetAppointments}
-            where ${targetAppointments.practiceId} = ${practiceId}
-              and ${targetAppointments.patientId} = ${keepId}
-              and ${targetAppointments.clientId} = ${keepPatient.clientId}
-              and ${targetAppointments.deletedAt} is null
-              and ${targetAppointments.status} in ('scheduled', 'confirmed')
-              and ${targetAppointments.startTime} = ${appointments.startTime}
-              and ${targetAppointments.endTime} = ${appointments.endTime}
+            select 1 from appointments as merge_target_appointments
+            where merge_target_appointments.practice_id = ${practiceId}
+              and merge_target_appointments.patient_id = ${keepId}
+              and merge_target_appointments.client_id = ${keepPatient.clientId}
+              and merge_target_appointments.deleted_at is null
+              and merge_target_appointments.status in ('scheduled', 'confirmed')
+              and merge_target_appointments.start_time = merge_source_appointments.start_time
+              and merge_target_appointments.end_time = merge_source_appointments.end_time
           )
       )`,
       waitingListEntries: sql<number>`(
@@ -575,22 +573,22 @@ async function analyzePatientMerge(
           )
       )`,
       waitlistCollisions: sql<number>`(
-        select count(*)::int from ${appointmentWaitlist}
-        where ${appointmentWaitlist.practiceId} = ${practiceId}
-          and ${appointmentWaitlist.patientId} = ${mergeId}
-          and ${appointmentWaitlist.clientId} = ${mergePatient.clientId}
-          and ${appointmentWaitlist.deletedAt} is null
-          and ${appointmentWaitlist.status} = 'waiting'
+        select count(*)::int from appointment_waitlist as merge_source_waitlist
+        where merge_source_waitlist.practice_id = ${practiceId}
+          and merge_source_waitlist.patient_id = ${mergeId}
+          and merge_source_waitlist.client_id = ${mergePatient.clientId}
+          and merge_source_waitlist.deleted_at is null
+          and merge_source_waitlist.status = 'waiting'
           and exists (
-            select 1 from ${targetWaitlist}
-            where ${targetWaitlist.practiceId} = ${practiceId}
-              and ${targetWaitlist.patientId} = ${keepId}
-              and ${targetWaitlist.clientId} = ${keepPatient.clientId}
-              and ${targetWaitlist.deletedAt} is null
-              and ${targetWaitlist.status} = 'waiting'
-              and ${targetWaitlist.typeId} is not distinct from ${appointmentWaitlist.typeId}
-              and ${targetWaitlist.preferredFrom} is not distinct from ${appointmentWaitlist.preferredFrom}
-              and ${targetWaitlist.preferredTo} is not distinct from ${appointmentWaitlist.preferredTo}
+            select 1 from appointment_waitlist as merge_target_waitlist
+            where merge_target_waitlist.practice_id = ${practiceId}
+              and merge_target_waitlist.patient_id = ${keepId}
+              and merge_target_waitlist.client_id = ${keepPatient.clientId}
+              and merge_target_waitlist.deleted_at is null
+              and merge_target_waitlist.status = 'waiting'
+              and merge_target_waitlist.type_id is not distinct from merge_source_waitlist.type_id
+              and merge_target_waitlist.preferred_from is not distinct from merge_source_waitlist.preferred_from
+              and merge_target_waitlist.preferred_to is not distinct from merge_source_waitlist.preferred_to
           )
       )`,
       weights: sql<number>`(select count(*)::int from ${patientWeights} where ${patientWeights.patientId} = ${mergeId})`,
@@ -1389,9 +1387,13 @@ export const patientsRouter = createRouter({
     .use(requireRole("admin"))
     .input(patientMergeInput)
     .mutation(async ({ ctx, input }) => {
+      // protectedProcedure selects SERIALIZABLE on the outer tenant
+      // transaction before setting the RLS tenant context. The nested
+      // transaction here is intentionally only a savepoint: it ensures every
+      // merge write rolls back when tRPC converts a resolver exception into
+      // an error result, and it must not change transaction isolation.
       return ctx.db.transaction(async (tx) => {
         const mergeDb = tx as unknown as Database;
-        await tx.execute(sql`set transaction isolation level serializable`);
         await assertActivePractice({ db: mergeDb, practiceId: ctx.practiceId });
 
         const [existingEvent] = await mergeDb
@@ -1464,7 +1466,7 @@ export const patientsRouter = createRouter({
 
         const movedAppointments = await tx
           .update(appointments)
-          .set({ patientId: input.keepId })
+          .set({ patientId: input.keepId, updatedAt: mergeNow })
           .where(
             and(
               eq(appointments.patientId, input.mergeId),
@@ -1472,7 +1474,7 @@ export const patientsRouter = createRouter({
               eq(appointments.practiceId, ctx.practiceId),
               isNull(appointments.deletedAt),
               inArray(appointments.status, mergeMovableAppointmentStatuses),
-              sql`${appointments.startTime} > ${mergeNow}`,
+              sql`${appointments.startTime} > ${mergeNow.toISOString()}`,
             ),
           )
           .returning({ id: appointments.id });
@@ -1488,7 +1490,7 @@ export const patientsRouter = createRouter({
 
         const movedWaitlistEntries = await tx
           .update(appointmentWaitlist)
-          .set({ patientId: input.keepId })
+          .set({ patientId: input.keepId, updatedAt: mergeNow })
           .where(
             and(
               eq(appointmentWaitlist.patientId, input.mergeId),
@@ -1556,7 +1558,7 @@ export const patientsRouter = createRouter({
 
         const [retiredSource] = await tx
           .update(patients)
-          .set({ deletedAt: mergedAt })
+          .set({ deletedAt: mergedAt, updatedAt: mergedAt })
           .where(
             and(
               eq(patients.id, input.mergeId),

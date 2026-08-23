@@ -826,10 +826,17 @@ describe("patients mutation safety", () => {
         entityId: PATIENT_ID,
       }),
     );
-    expect(updateSet).toHaveBeenNthCalledWith(1, { patientId: PATIENT_ID });
-    expect(updateSet).toHaveBeenNthCalledWith(2, { patientId: PATIENT_ID });
+    expect(updateSet).toHaveBeenNthCalledWith(1, {
+      patientId: PATIENT_ID,
+      updatedAt: expect.any(Date),
+    });
+    expect(updateSet).toHaveBeenNthCalledWith(2, {
+      patientId: PATIENT_ID,
+      updatedAt: expect.any(Date),
+    });
     expect(updateSet).toHaveBeenNthCalledWith(3, {
       deletedAt: expect.any(Date),
+      updatedAt: expect.any(Date),
     });
   });
 

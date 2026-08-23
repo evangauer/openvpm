@@ -72,6 +72,7 @@ jobs:
   rls:
     name: RLS tenant isolation
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:16-alpine
@@ -153,6 +154,15 @@ jobs:
         env:
           TEMPLATE_CATALOG_DB_INTEGRATION: "1"
         run: pnpm --filter @openpims/web exec vitest run server/__tests__/template-catalog-search.integration.test.ts
+
+      # Steven Dennis exposed a real route-level patient merge 500 caused by
+      # changing isolation inside a nested savepoint. Exercise the protected
+      # router as openpims_app and prove the event is written in the outer
+      # SERIALIZABLE tenant transaction with replay and RLS cleanup intact.
+      - name: Execute patient merge transaction contract
+        env:
+          PATIENT_MERGE_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/patient-merge-transaction.integration.test.ts
 
       # Compile, bind, and execute the exact read-only SQL used by the shared
       # platform-admin and daily SMS operations queues. Unit tests cannot catch

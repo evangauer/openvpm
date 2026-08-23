@@ -181,6 +181,95 @@ function practiceNotFound(): TRPCError {
   return new TRPCError({ code: "NOT_FOUND", message: "Practice not found" });
 }
 
+function postgresErrorDetails(error: unknown): {
+  code?: unknown;
+  constraintName?: unknown;
+  message?: unknown;
+} {
+  const visited = new Set<object>();
+  let current = error;
+
+  for (let depth = 0; depth < 6; depth += 1) {
+    if (typeof current !== "object" || current === null) return {};
+    if (visited.has(current)) return {};
+    visited.add(current);
+
+    const candidate = current as {
+      code?: unknown;
+      constraint_name?: unknown;
+      message?: unknown;
+      cause?: unknown;
+    };
+    if (
+      typeof candidate.code === "string" &&
+      /^[0-9A-Z]{5}$/.test(candidate.code)
+    ) {
+      return {
+        code: candidate.code,
+        constraintName: candidate.constraint_name,
+        message: candidate.message,
+      };
+    }
+    current = candidate.cause;
+  }
+
+  return {};
+}
+
+function patientMergeDatabaseError(error: unknown): TRPCError | null {
+  const { code, constraintName, message } = postgresErrorDetails(error);
+
+  if (code === "40001") {
+    return new TRPCError({
+      code: "CONFLICT",
+      message:
+        "Patient records changed during the merge. Refresh both charts and retry.",
+    });
+  }
+
+  if (
+    code === "23505" &&
+    (constraintName === "patient_merge_events_operation_uq" ||
+      constraintName === "patient_merge_events_source_uq")
+  ) {
+    return new TRPCError({
+      code: "CONFLICT",
+      message:
+        "This patient merge conflicts with another completed operation. Refresh both charts before continuing.",
+    });
+  }
+
+  if (
+    code === "23514" &&
+    ((typeof constraintName === "string" &&
+      constraintName.startsWith("patient_merge_events_")) ||
+      message ===
+        "A canonical patient with incoming merge history cannot be retired." ||
+      message ===
+        "A patient already recorded as a merge alias cannot be a merge target.")
+  ) {
+    return new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "The patient merge no longer satisfies the identity safety checks. Refresh both charts before continuing.",
+    });
+  }
+
+  if (
+    code === "23503" &&
+    message ===
+      "Patient merge source and target must belong to the recorded client."
+  ) {
+    return new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "The patient merge no longer satisfies the identity safety checks. Refresh both charts before continuing.",
+    });
+  }
+
+  return null;
+}
+
 /**
  * Public / pre-auth endpoints (registration, the token-based client portal).
  * They have no tenant session and do their own scoping (tokens, email, rate
@@ -235,72 +324,93 @@ export const protectedProcedure = t.procedure.use(
     // Run the whole request in a tenant DB context so Postgres RLS scopes every
     // query to this practice (defense-in-depth behind the app-layer filters).
     const effects: PostCommitEffect[] = [];
-    const result = await withTenant(ctx.db, user.practiceId, async (tx) => {
-      // Hosted read-only guard: block mutations unless the practice has an
-      // active trial or subscription. This MUST run inside withTenant (via tx),
-      // not on the raw connection — under the least-privilege production role
-      // RLS only returns the practices row when app.current_practice_id is set,
-      // so a context-less lookup returns zero rows and would wrongly read-only
-      // every tenant (the owner role used in dev bypasses RLS and hid this).
-      if (
-        type === "mutation" &&
-        billingEnforced() &&
-        !HOSTED_READ_ONLY_MUTATION_ALLOWLIST.has(path)
-      ) {
-        const [practice] = await tx
-          .select({
-            tier: practices.subscriptionTier,
-            billingStatus: practices.billingStatus,
-            trialEndsAt: practices.trialEndsAt,
-          })
-          .from(practices)
-          .where(
-            and(eq(practices.id, user.practiceId), isNull(practices.deletedAt)),
-          )
-          .limit(1);
-        if (!practice) {
-          throw practiceNotFound();
-        }
+    const result = await withTenant(
+      ctx.db,
+      user.practiceId,
+      async (tx) => {
+        // Hosted read-only guard: block mutations unless the practice has an
+        // active trial or subscription. This MUST run inside withTenant (via tx),
+        // not on the raw connection — under the least-privilege production role
+        // RLS only returns the practices row when app.current_practice_id is set,
+        // so a context-less lookup returns zero rows and would wrongly read-only
+        // every tenant (the owner role used in dev bypasses RLS and hid this).
         if (
-          !hasHostedFullAccess(
-            practice.tier,
-            practice.billingStatus,
-            practice.trialEndsAt,
-          )
+          type === "mutation" &&
+          billingEnforced() &&
+          !HOSTED_READ_ONLY_MUTATION_ALLOWLIST.has(path)
         ) {
-          throw new TRPCError({
-            code: "FORBIDDEN",
-            message:
-              "OpenVPM Cloud is read-only until your trial or subscription is active. You can still manage billing and export your data.",
-          });
+          const [practice] = await tx
+            .select({
+              tier: practices.subscriptionTier,
+              billingStatus: practices.billingStatus,
+              trialEndsAt: practices.trialEndsAt,
+            })
+            .from(practices)
+            .where(
+              and(
+                eq(practices.id, user.practiceId),
+                isNull(practices.deletedAt),
+              ),
+            )
+            .limit(1);
+          if (!practice) {
+            throw practiceNotFound();
+          }
+          if (
+            !hasHostedFullAccess(
+              practice.tier,
+              practice.billingStatus,
+              practice.trialEndsAt,
+            )
+          ) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message:
+                "OpenVPM Cloud is read-only until your trial or subscription is active. You can still manage billing and export your data.",
+            });
+          }
         }
-      }
 
-      const result = await next({
-        ctx: {
-          session: ctx.session,
-          user,
-          practiceId: user.practiceId,
-          ip: ctx.ip,
-          db: tx,
-          postCommitEffect: (effect: PostCommitEffect) => {
-            if (type !== "mutation") {
-              throw new Error("Post-commit effects are mutation-only.");
-            }
-            effects.push(effect);
+        const result = await next({
+          ctx: {
+            session: ctx.session,
+            user,
+            practiceId: user.practiceId,
+            ip: ctx.ip,
+            db: tx,
+            postCommitEffect: (effect: PostCommitEffect) => {
+              if (type !== "mutation") {
+                throw new Error("Post-commit effects are mutation-only.");
+              }
+              effects.push(effect);
+            },
           },
-        },
-      });
+        });
 
-      if (type === "mutation" && result.ok) {
-        // Surface deferred clinical invariants while this transaction can
-        // still return a truthful procedure error. The audit is scheduled
-        // only after withTenant confirms the commit succeeded.
-        await tx.execute(sql`set constraints all immediate`);
+        if (path === "patients.merge" && !result.ok) {
+          // tRPC represents resolver exceptions as error results. Rethrowing
+          // here keeps the outer tenant transaction fail-closed and exposes
+          // the wrapped PostgreSQL cause to the narrow merge error mapper.
+          throw result.error;
+        }
+
+        if (type === "mutation" && result.ok) {
+          // Surface deferred clinical invariants while this transaction can
+          // still return a truthful procedure error. The audit is scheduled
+          // only after withTenant confirms the commit succeeded.
+          await tx.execute(sql`set constraints all immediate`);
+        }
+
+        return result;
+      },
+      path === "patients.merge"
+        ? { isolationLevel: "serializable" }
+        : undefined,
+    ).catch((error: unknown) => {
+      if (path === "patients.merge") {
+        const mapped = patientMergeDatabaseError(error);
+        if (mapped) throw mapped;
       }
-
-      return result;
-    }).catch((error: unknown) => {
       if (
         type === "mutation" &&
         typeof error === "object" &&

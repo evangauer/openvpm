@@ -1,6 +1,10 @@
 import { sql } from "drizzle-orm";
 import type { Database } from "@openpims/db/client";
 
+export type TenantTransactionOptions = {
+  isolationLevel?: "serializable";
+};
+
 /**
  * Tenant database context for Postgres Row-Level Security (defense-in-depth
  * behind the app-layer practiceId filters).
@@ -18,8 +22,16 @@ export async function withTenant<T>(
   db: Database,
   practiceId: string,
   fn: (tx: Database) => Promise<T>,
+  options: TenantTransactionOptions = {},
 ): Promise<T> {
   return db.transaction(async (tx) => {
+    if (options.isolationLevel === "serializable") {
+      // PostgreSQL requires transaction characteristics to be set before the
+      // tenant GUC or any other statement. This must remain on the outermost
+      // transaction; setting it inside a Drizzle savepoint raises SQLSTATE
+      // 25001 and turns otherwise safe patient merges into HTTP 500s.
+      await tx.execute(sql`set transaction isolation level serializable`);
+    }
     await tx.execute(
       sql`select set_config('app.current_practice_id', ${practiceId}, true)`,
     );
