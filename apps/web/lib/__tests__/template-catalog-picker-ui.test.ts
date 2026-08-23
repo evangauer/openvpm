@@ -23,8 +23,19 @@ describe("template catalog picker UI", () => {
     expect(source).toContain('event.key === "Escape"');
     expect(source).toContain('role="listbox"');
     expect(source).toContain('role="option"');
+    expect(source).toContain('role="combobox"');
+    expect(source).toContain("aria-activedescendant={activeOptionId}");
     expect(source).toContain("min-h-11");
     expect(source).toContain("calc(100vw-2rem)");
+  });
+
+  it("does not select results while a deferred query is stale or fetching", () => {
+    expect(source).toContain("const queryIsStale = query !== deferredQuery");
+    expect(source).toContain(
+      "!queryIsStale && !catalogQuery.isFetching && !catalogQuery.error",
+    );
+    expect(source).toContain("if (activeOption) choose(activeOption)");
+    expect(source).toContain("queryIsStale || catalogQuery.isFetching");
   });
 
   it("filters catalog ids already selected in another row", () => {

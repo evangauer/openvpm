@@ -4966,6 +4966,7 @@ const CATEGORY_BADGE: Record<string, string> = {
 };
 
 interface TemplateItem {
+  draftId: number;
   itemType: "service" | "product";
   itemId?: string | null;
   description: string;
@@ -4978,6 +4979,7 @@ function TemplatesTab() {
   const formatCurrency = useCurrencyFormatter();
   const utils = trpc.useUtils();
   const [showAdd, setShowAdd] = useState(false);
+  const nextTemplateItemDraftId = useRef(1);
   const {
     data: templateList,
     isLoading,
@@ -5012,6 +5014,7 @@ function TemplatesTab() {
   });
   const [addItems, setAddItems] = useState<TemplateItem[]>([
     {
+      draftId: 0,
       itemType: "service",
       itemId: null,
       description: "",
@@ -5028,6 +5031,7 @@ function TemplatesTab() {
     setAddForm({ name: "", description: "", category: "other" });
     setAddItems([
       {
+        draftId: nextTemplateItemDraftId.current++,
         itemType: "service",
         itemId: null,
         description: "",
@@ -5042,6 +5046,7 @@ function TemplatesTab() {
     setAddItems((currentItems) => [
       ...currentItems,
       {
+        draftId: nextTemplateItemDraftId.current++,
         itemType: "service",
         itemId: null,
         description: "",
@@ -5060,7 +5065,7 @@ function TemplatesTab() {
 
   const updateItem = (
     index: number,
-    field: keyof TemplateItem,
+    field: Exclude<keyof TemplateItem, "draftId">,
     value: string | number | null,
   ) => {
     setAddItems((currentItems) =>
@@ -5118,7 +5123,7 @@ function TemplatesTab() {
     }))
     .filter((item) => item.description.length > 0);
   const hasCatalogLink = (itemId?: string | null) => Boolean(itemId);
-  const isTemplateItemFormValid = (item: TemplateItem) =>
+  const isTemplateItemFormValid = (item: Omit<TemplateItem, "draftId">) =>
     hasCatalogLink(item.itemId) &&
     item.description.trim().length > 0 &&
     item.description.trim().length <=
@@ -5368,7 +5373,7 @@ function TemplatesTab() {
             <h4 className="text-sm font-medium">Items</h4>
             {addItems.map((item, index) => (
               <div
-                key={index}
+                key={item.draftId}
                 className="grid grid-cols-2 items-center gap-2 lg:grid-cols-[minmax(0,1fr)_auto_auto_auto_auto]"
               >
                 <div className="col-span-2 min-w-0 lg:col-span-1">

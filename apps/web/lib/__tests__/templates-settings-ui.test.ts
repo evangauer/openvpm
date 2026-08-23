@@ -78,6 +78,9 @@ describe("treatment template settings UI", () => {
   });
 
   it("uses a responsive item grid and labels row removal", () => {
+    expect(source).toContain("draftId: number");
+    expect(source).toContain("key={item.draftId}");
+    expect(source).toContain("nextTemplateItemDraftId.current++");
     expect(source).toContain(
       'className="grid grid-cols-2 items-center gap-2 lg:grid-cols-[minmax(0,1fr)_auto_auto_auto_auto]"',
     );

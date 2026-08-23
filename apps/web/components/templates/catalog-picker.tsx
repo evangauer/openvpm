@@ -41,6 +41,7 @@ export function TemplateCatalogPicker({
   const [query, setQuery] = useState("");
   const [highlight, setHighlight] = useState(0);
   const deferredQuery = useDeferredValue(query);
+  const queryIsStale = query !== deferredQuery;
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -57,6 +58,13 @@ export function TemplateCatalogPicker({
       ),
     [catalogQuery.data, excluded, value],
   );
+  const activeOption =
+    !queryIsStale && !catalogQuery.isFetching && !catalogQuery.error
+      ? results[highlight]
+      : undefined;
+  const activeOptionId = activeOption
+    ? `${listboxId}-option-${activeOption.id}`
+    : undefined;
 
   useEffect(() => {
     if (!open) return;
@@ -101,8 +109,7 @@ export function TemplateCatalogPicker({
       setHighlight((current) => Math.max(current - 1, 0));
       event.preventDefault();
     } else if (event.key === "Enter") {
-      const item = results[highlight];
-      if (item) choose(item);
+      if (activeOption) choose(activeOption);
       event.preventDefault();
     } else if (event.key === "Escape") {
       close();
@@ -124,7 +131,11 @@ export function TemplateCatalogPicker({
           !value && "text-muted-foreground",
         )}
         onClick={() => {
-          setOpen((current) => !current);
+          if (open) {
+            close();
+            return;
+          }
+          setOpen(true);
           setTimeout(() => inputRef.current?.focus(), 0);
         }}
         onKeyDown={(event) => {
@@ -147,7 +158,12 @@ export function TemplateCatalogPicker({
             <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
             <input
               ref={inputRef}
+              role="combobox"
               aria-label={`Search ${label}s`}
+              aria-autocomplete="list"
+              aria-expanded="true"
+              aria-controls={listboxId}
+              aria-activedescendant={activeOptionId}
               maxLength={TEMPLATE_CATALOG_SEARCH_MAX_LENGTH}
               value={query}
               placeholder={`Search ${label} name, code, or category`}
@@ -189,9 +205,10 @@ export function TemplateCatalogPicker({
             id={listboxId}
             role="listbox"
             aria-label={`Available ${label}s`}
+            aria-busy={queryIsStale || catalogQuery.isFetching}
             className="max-h-72 overflow-y-auto p-1"
           >
-            {catalogQuery.isFetching ? (
+            {queryIsStale || catalogQuery.isFetching ? (
               <div className="flex items-center justify-center gap-2 px-3 py-6 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" /> Searching...
               </div>
@@ -207,6 +224,7 @@ export function TemplateCatalogPicker({
               results.map((item, index) => (
                 <button
                   key={item.id}
+                  id={`${listboxId}-option-${item.id}`}
                   type="button"
                   role="option"
                   aria-selected={item.id === value}
