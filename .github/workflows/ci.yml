@@ -147,6 +147,15 @@ jobs:
           PATIENT_SEARCH_DB_INTEGRATION: "1"
         run: pnpm --filter @openpims/web exec vitest run server/__tests__/patient-search.integration.test.ts
 
+      # Steven Dennis's long-chart workflow crosses multiple clinical tables.
+      # Exercise the exact read-only POST projection as openpims_app, including
+      # literal matching, lifecycle lineage, keyset paging, role gates, RLS,
+      # clinic-local dates, and high-cardinality query-plan evidence.
+      - name: Execute patient history search contract
+        env:
+          PATIENT_HISTORY_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/patient-history.integration.test.ts
+
       # Template catalog selection is a clinic-facing data boundary. Exercise
       # the real router as the least-privilege app role and prove literal,
       # bounded, deterministic, active-only, tenant-isolated search behavior.

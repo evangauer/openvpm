@@ -862,6 +862,57 @@ describe("records target safety", () => {
     expect(select).not.toHaveBeenCalled();
   });
 
+  it("blocks front desk from unified patient history before clinical query execution", async () => {
+    const { db, select } = createDb();
+    const execute = db.execute as ReturnType<typeof vi.fn>;
+
+    await expect(
+      callerWithDb(db, "front_desk").searchPatientHistory({
+        patientId: PATIENT_ID,
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    expect(select).not.toHaveBeenCalled();
+    // protectedProcedure establishes only its transaction-local tenant GUC.
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("validates bounded patient history filters before clinical query execution", async () => {
+    const { db, select } = createDb();
+    const execute = db.execute as ReturnType<typeof vi.fn>;
+    const caller = callerWithDb(db);
+
+    await expect(
+      caller.searchPatientHistory({
+        patientId: PATIENT_ID,
+        query: "x".repeat(121),
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      caller.searchPatientHistory({
+        patientId: PATIENT_ID,
+        recordTypes: [],
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      caller.searchPatientHistory({
+        patientId: PATIENT_ID,
+        recordTypes: ["soap_note", "soap_note"],
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      caller.searchPatientHistory({
+        patientId: PATIENT_ID,
+        fromDate: "2026-08-21",
+        toDate: "2026-08-20",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    expect(select).not.toHaveBeenCalled();
+    // Each rejected call establishes only its transaction-local tenant GUC.
+    expect(execute).toHaveBeenCalledTimes(4);
+  });
+
   it("returns front desk only its assigned open follow-up with clinical values redacted", async () => {
     const assigned = {
       id: RECORD_ID,

@@ -9,6 +9,9 @@ function handler(req: Request) {
     req,
     router: appRouter,
     createContext: createTRPCContext,
+    // Only queries may be method-overridden; mutations remain POST-only.
+    // The history-search client uses this to keep clinical terms out of URLs.
+    allowMethodOverride: true,
     onError({ error, path, type }) {
       captureTrpcError({ error, path, type });
     },

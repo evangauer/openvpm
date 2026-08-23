@@ -131,6 +131,19 @@ import {
   type PrescriptionEventType,
   type PrescriptionStatus,
 } from "@/lib/records/prescription-lifecycle";
+import { isValidClinicalDateInput } from "@/lib/records/date-input";
+import {
+  PATIENT_HISTORY_DEFAULT_PAGE_SIZE,
+  PATIENT_HISTORY_MAX_PAGE_SIZE,
+  PATIENT_HISTORY_QUERY_MAX_LENGTH,
+  PATIENT_HISTORY_RECORD_TYPES,
+  PATIENT_HISTORY_STATE_FILTERS,
+  type PatientHistoryRecordType,
+} from "@/lib/records/patient-history";
+import {
+  buildPatientHistoryQuery,
+  type PatientHistoryRawRow,
+} from "../patient-history";
 
 export { PRESCRIPTION_INSTRUCTIONS_MAX_LENGTH } from "@/lib/records/prescription-policy";
 export {
@@ -153,6 +166,58 @@ const labStatusValues = ["pending", "completed", "reviewed"] as const;
 type LabStatus = (typeof labStatusValues)[number];
 const labResultFlagValues = ["unknown", "normal", "abnormal", "critical"] as const;
 const labFollowUpStatusValues = ["not_required", "open", "completed"] as const;
+
+const patientHistoryDateInput = z.string().refine(isValidClinicalDateInput, {
+  message: "Use a valid date in YYYY-MM-DD format.",
+});
+
+const patientHistoryInput = z
+  .object({
+    patientId: z.string().uuid(),
+    query: z
+      .string()
+      .trim()
+      .min(1)
+      .max(PATIENT_HISTORY_QUERY_MAX_LENGTH)
+      .optional(),
+    recordTypes: z
+      .array(z.enum(PATIENT_HISTORY_RECORD_TYPES))
+      .min(1)
+      .max(PATIENT_HISTORY_RECORD_TYPES.length)
+      .default([...PATIENT_HISTORY_RECORD_TYPES]),
+    state: z.enum(PATIENT_HISTORY_STATE_FILTERS).default("all"),
+    fromDate: patientHistoryDateInput.optional(),
+    toDate: patientHistoryDateInput.optional(),
+    cursor: z
+      .object({
+        occurredAt: z.string().datetime({ offset: true }),
+        recordType: z.enum(PATIENT_HISTORY_RECORD_TYPES),
+        id: z.string().uuid(),
+      })
+      .optional(),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(PATIENT_HISTORY_MAX_PAGE_SIZE)
+      .default(PATIENT_HISTORY_DEFAULT_PAGE_SIZE),
+  })
+  .superRefine((input, ctx) => {
+    if (new Set(input.recordTypes).size !== input.recordTypes.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["recordTypes"],
+        message: "Choose each record type at most once.",
+      });
+    }
+    if (input.fromDate && input.toDate && input.fromDate > input.toDate) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["toDate"],
+        message: "To date must be on or after From date.",
+      });
+    }
+  });
 
 const labStatusTransitions: Record<LabStatus, readonly LabStatus[]> = {
   pending: ["pending", "completed"],
@@ -1137,6 +1202,77 @@ function rethrowSoapLifecycleError(error: unknown): never {
 
 export const recordsRouter = createRouter({
   settings: protectedProcedure.query(async ({ ctx }) => practiceSettings(ctx)),
+
+  // The client sends this query over POST so clinical terms stay out of URLs,
+  // while query semantics preserve viewer access and exclude mutation audits.
+  searchPatientHistory: protectedProcedure
+    .use(requireRole("admin", "veterinarian", "technician", "viewer"))
+    .input(patientHistoryInput)
+    .query(async ({ ctx, input }) => {
+      await assertPatientBelongsToPractice(ctx, input.patientId);
+      const rows = await ctx.db.execute<PatientHistoryRawRow>(
+        buildPatientHistoryQuery({
+          practiceId: ctx.practiceId,
+          input,
+        }),
+      );
+      const populatedRows = rows.filter(
+        (
+          row,
+        ): row is PatientHistoryRawRow & {
+          id: string;
+          recordType: PatientHistoryRecordType;
+          occurredAt: Date | string;
+          displayDate: string;
+          title: string;
+          status: string;
+          corrected: boolean;
+          imported: boolean;
+        } =>
+          Boolean(
+            row.id &&
+            row.recordType &&
+            row.occurredAt &&
+            row.displayDate &&
+            row.title &&
+            row.status,
+          ),
+      );
+      const hasMore = populatedRows.length > input.limit;
+      const pageRows = populatedRows.slice(0, input.limit);
+      const lastRow = pageRows.at(-1);
+      const cursorInstant = lastRow
+        ? new Date(lastRow.occurredAt).toISOString()
+        : null;
+
+      return {
+        items: pageRows.map((row) => ({
+          id: row.id,
+          recordType: row.recordType,
+          occurredAt: row.displayDate,
+          title: row.title,
+          summary: row.summary?.trim() || null,
+          status: row.status,
+          corrected: row.corrected,
+          imported: row.imported,
+          replacesRecordId: row.replacesRecordId,
+          replacementRecordId: row.replacementRecordId,
+          authorLabel: row.authorLabel,
+          authorName: row.authorName,
+          finalizerName: row.finalizerName,
+          visibility: "clinical_chart" as const,
+        })),
+        total: Number(rows[0]?.totalCount ?? 0),
+        nextCursor:
+          hasMore && lastRow && cursorInstant
+            ? {
+                occurredAt: cursorInstant,
+                recordType: lastRow.recordType,
+                id: lastRow.id,
+              }
+            : null,
+      };
+    }),
 
   // SOAP Notes
   listSoapNotes: protectedProcedure

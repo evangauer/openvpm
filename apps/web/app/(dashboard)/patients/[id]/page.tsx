@@ -30,6 +30,7 @@ import { trpc } from "@/lib/trpc";
 import { useCurrencyFormatter } from "@/lib/locale/useCurrency";
 import { EmptyState } from "@/components/common/empty-state";
 import { Button } from "@/components/ui/button";
+import { PatientHistorySearch } from "@/components/patients/patient-history-search";
 import { CapturePhotos } from "@/components/records/capture-photos";
 import { ConsentSign } from "@/components/records/consent-sign";
 import { ClinicalCorrectionControl } from "@/components/records/clinical-correction-control";
@@ -205,6 +206,15 @@ function canCorrectClinicalRecordRole(role?: string | null): boolean {
   return role === "admin" || role === "veterinarian";
 }
 
+function canSearchPatientHistoryRole(role?: string | null): boolean {
+  return (
+    role === "admin" ||
+    role === "veterinarian" ||
+    role === "technician" ||
+    role === "viewer"
+  );
+}
+
 type VitalsFormState = {
   temperatureC: string;
   heartRateBpm: string;
@@ -264,6 +274,9 @@ export default function PatientDetailPage() {
   );
   const canRecordVitals = canRecordVitalsRole(session?.user?.role);
   const canCorrectClinicalRecords = canCorrectClinicalRecordRole(
+    session?.user?.role,
+  );
+  const canSearchPatientHistory = canSearchPatientHistoryRole(
     session?.user?.role,
   );
 
@@ -1008,14 +1021,23 @@ export default function PatientDetailPage() {
       ) : null}
 
       {/* Tab Navigation */}
-      <div className="mt-6 border-b border-border">
-        <div className="flex gap-0">
+      <div className="mt-6 overflow-x-auto border-b border-border">
+        <div
+          role="tablist"
+          aria-label="Patient chart sections"
+          className="flex min-w-max gap-0"
+        >
           {tabs.map((tab) => (
             <button
               key={tab.id}
+              id={`patient-tab-${tab.id}`}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab.id}
+              aria-controls={`patient-panel-${tab.id}`}
               onClick={() => setActiveTab(tab.id)}
               className={cn(
-                "relative px-4 py-2.5 text-sm font-medium transition-colors",
+                "relative min-h-11 px-4 py-2.5 text-sm font-medium transition-colors",
                 activeTab === tab.id
                   ? "text-primary"
                   : "text-muted-foreground hover:text-foreground",
@@ -1031,7 +1053,12 @@ export default function PatientDetailPage() {
       </div>
 
       {/* Tab Content */}
-      <div className="mt-6">
+      <div
+        id={`patient-panel-${activeTab}`}
+        role="tabpanel"
+        aria-labelledby={`patient-tab-${activeTab}`}
+        className="mt-6"
+      >
         {activeTab === "overview" && (
           <div className="rounded-lg border border-border bg-card p-6">
             <h3 className="font-heading text-base font-semibold mb-4">
@@ -1217,6 +1244,7 @@ export default function PatientDetailPage() {
             patientId={patient.id}
             timeZone={recordsTimeZone}
             canCorrectClinicalRecords={canCorrectClinicalRecords}
+            canSearchPatientHistory={canSearchPatientHistory}
           />
         )}
 
@@ -1704,11 +1732,14 @@ function MedicalRecordsTab({
   patientId,
   timeZone,
   canCorrectClinicalRecords,
+  canSearchPatientHistory,
 }: {
   patientId: string;
   timeZone?: string | null;
   canCorrectClinicalRecords: boolean;
+  canSearchPatientHistory: boolean;
 }) {
+  const [historySearchActive, setHistorySearchActive] = useState(false);
   const utils = trpc.useUtils();
   const {
     data: notes,
@@ -1724,34 +1755,32 @@ function MedicalRecordsTab({
   });
   const notesMissing = !isLoading && !error && !notes;
 
-  if (error) {
-    return (
-      <PatientDetailErrorPanel
-        message={`Unable to load medical records. ${error.message}`}
-      />
-    );
-  }
-  if (notesMissing) {
-    return (
-      <PatientDetailErrorPanel message="Unable to load medical records. Please retry." />
-    );
-  }
-  if (isLoading) {
-    return <PatientDetailLoadingPanel label="Loading medical records..." />;
-  }
-  if (!notes || notes.length === 0) {
-    return (
-      <EmptyState
-        icon={FileText}
-        title="No medical records yet"
-        description="SOAP notes written in Records will show up here."
-      />
-    );
-  }
-
   return (
     <div className="space-y-4">
-      {notes.map((note) => {
+      {canSearchPatientHistory ? (
+        <PatientHistorySearch
+          patientId={patientId}
+          timeZone={timeZone}
+          onSearchModeChange={setHistorySearchActive}
+        />
+      ) : null}
+      {!historySearchActive ? (
+        error ? (
+          <PatientDetailErrorPanel
+            message={`Unable to load medical records. ${error.message}`}
+          />
+        ) : notesMissing ? (
+          <PatientDetailErrorPanel message="Unable to load medical records. Please retry." />
+        ) : isLoading ? (
+          <PatientDetailLoadingPanel label="Loading medical records..." />
+        ) : !notes || notes.length === 0 ? (
+          <EmptyState
+            icon={FileText}
+            title="No medical records yet"
+            description="SOAP notes written in Records will show up here."
+          />
+        ) : (
+          notes.map((note) => {
         const hasOtherCurrentAppointmentSoap = Boolean(
           note.appointmentId &&
           notes.some(
@@ -1958,7 +1987,9 @@ function MedicalRecordsTab({
             ) : null}
           </div>
         );
-      })}
+          })
+        )
+      ) : null}
     </div>
   );
 }
