@@ -321,7 +321,12 @@ describeWithPatientSearchPostgres(
               )
             limit 10
           `;
-          expect(JSON.stringify(plan)).toContain("patients_practice_id_uq");
+          // Both indexes begin with the tenant key. The treatment-plan
+          // evidence FK adds the wider patient/client identity index, which
+          // PostgreSQL may prefer over the original practice/id index.
+          expect(JSON.stringify(plan)).toMatch(
+            /patients_practice_(?:id|client_id)_uq/,
+          );
         } finally {
           await ownerSql`reset enable_seqscan`;
         }
