@@ -24,8 +24,8 @@
     "verify:oss-release": "node scripts/verify-oss-release.mjs"
   },
   "devDependencies": {
-    "@playwright/test": "^1.58.2",
-    "turbo": "^2.9.14"
+    "@playwright/test": "^1.62.1",
+    "turbo": "^2.10.11"
   },
   "pnpm": {
     "overrides": {
