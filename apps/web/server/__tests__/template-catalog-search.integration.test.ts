@@ -268,7 +268,12 @@ describeWithTemplateCatalogPostgres(
             order by lower(name), id
             limit ${TEMPLATE_CATALOG_RESULT_LIMIT}
           `;
-          expect(JSON.stringify(plan)).toContain("services_practice_name_idx");
+          // Both indexes begin with the tenant key. The treatment-plan
+          // evidence FK adds a practice/service identity index, which the
+          // planner may prefer for this leading-wildcard query.
+          expect(JSON.stringify(plan)).toMatch(
+            /services_practice_(?:name_idx|id_uq)/,
+          );
         } finally {
           await ownerSql`reset enable_seqscan`;
         }
