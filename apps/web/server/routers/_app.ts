@@ -33,6 +33,7 @@ import { messagingRouter } from "./messaging";
 import { bookingRouter } from "./booking";
 import { careRemindersRouter } from "./care-reminders";
 import { migrationArchiveRouter } from "./migration-archive";
+import { visitTreatmentPlansRouter } from "./visit-treatment-plans";
 
 export const appRouter = createRouter({
   auth: authRouter,
@@ -69,6 +70,7 @@ export const appRouter = createRouter({
   booking: bookingRouter,
   careReminders: careRemindersRouter,
   migrationArchive: migrationArchiveRouter,
+  visitTreatmentPlans: visitTreatmentPlansRouter,
 });
 
 export type AppRouter = typeof appRouter;

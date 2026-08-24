@@ -141,6 +141,15 @@ jobs:
           pnpm --filter @openpims/db db:treatment-plan-evidence:test
           pnpm --filter @openpims/db db:treatment-plan-concurrency:test
 
+      # The staff authoring API is dark by default. Exercise the complete
+      # protected route with the least-privilege app role against disposable
+      # real PostgreSQL, including replay, rollback, RLS, and two-writer races.
+      - name: Execute treatment-plan staff authoring contract
+        env:
+          TREATMENT_PLAN_AUTHORING_DB_INTEGRATION: "1"
+          TREATMENT_PLAN_AUTHORING_ENABLED: "true"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/visit-treatment-plan-authoring.integration.test.ts
+
       # Recreate the exact staging-era 0093 state in a disposable database,
       # preserve existing settlement evidence through 0094, advance through
       # later migrations, and attack every finance tenant/privilege boundary
