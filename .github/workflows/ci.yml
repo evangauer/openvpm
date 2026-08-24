@@ -133,6 +133,14 @@ jobs:
 
       - run: pnpm --filter @openpims/db db:rls
 
+      # Client treatment-plan decisions are legal record evidence. Prove the
+      # sealed revision/response graph, signature hash binding, replay refusal,
+      # immutable grants, and tenant/no-context isolation in real PostgreSQL.
+      - name: Execute treatment-plan evidence contract
+        run: |
+          pnpm --filter @openpims/db db:treatment-plan-evidence:test
+          pnpm --filter @openpims/db db:treatment-plan-concurrency:test
+
       # Recreate the exact staging-era 0093 state in a disposable database,
       # preserve existing settlement evidence through 0094, and attack every
       # finance tenant/privilege boundary with the restricted application role.

@@ -57,6 +57,7 @@ DECLARE
     'locations','patient_merge_events','patients','payment_disputes','payment_processor_payouts','payment_processor_refunds','payment_processor_settlements','practice_payment_accounts','prescription_events','prescriptions','problem_list','procedures','products','purchase_orders',
     'recurring_series','rooms','services','sms_consent_events','sms_send_attempt_events','sms_send_attempts','sms_suppressions','soap_note_addenda','soap_note_replacements','soap_notes','staff_schedules','suppliers',
     'treatment_plans','treatment_templates','usage_records','users','vaccination_records',
+    'visit_treatment_plan_response_lines','visit_treatment_plan_responses','visit_treatment_plan_revision_lines','visit_treatment_plan_revisions','visit_treatment_plans',
     'visit_closeouts','visit_work_items','vital_signs','webhooks','wellness_enrollments','wellness_plans'
   ];
 BEGIN
@@ -151,6 +152,35 @@ REVOKE ALL ON soap_note_replacements FROM openpims_app;
 GRANT SELECT, INSERT ON soap_note_replacements TO openpims_app;
 REVOKE ALL ON FUNCTION restore_soap_note_replacement(uuid,timestamptz,uuid,uuid,uuid,uuid,uuid,text,uuid,text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION restore_soap_note_replacement(uuid,timestamptz,uuid,uuid,uuid,uuid,uuid,text,uuid,text) TO openpims_app;
+
+-- Visit treatment-plan revisions and signed responses are legal decision
+-- evidence. Tenant code may stage child rows and seal a header in one
+-- transaction, but it can never rewrite or remove a sealed snapshot. The
+-- root identity remains status-updatable for later workflow slices.
+REVOKE ALL ON visit_treatment_plan_revisions,
+  visit_treatment_plan_revision_lines,
+  visit_treatment_plan_responses,
+  visit_treatment_plan_response_lines
+  FROM openpims_app;
+GRANT SELECT, INSERT ON visit_treatment_plan_revisions,
+  visit_treatment_plan_revision_lines,
+  visit_treatment_plan_responses,
+  visit_treatment_plan_response_lines
+  TO openpims_app;
+REVOKE DELETE ON visit_treatment_plans FROM openpims_app;
+GRANT SELECT, INSERT, UPDATE ON visit_treatment_plans TO openpims_app;
+
+REVOKE ALL ON FUNCTION compute_visit_treatment_plan_revision_sha256(uuid,uuid,uuid,integer,text,numeric,numeric,numeric) FROM PUBLIC;
+REVOKE ALL ON FUNCTION compute_visit_treatment_plan_response_sha256(uuid,uuid,uuid,uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION compute_visit_treatment_plan_revision_sha256(uuid,uuid,uuid,integer,text,numeric,numeric,numeric) TO openpims_app;
+GRANT EXECUTE ON FUNCTION compute_visit_treatment_plan_response_sha256(uuid,uuid,uuid,uuid) TO openpims_app;
+REVOKE ALL ON FUNCTION validate_visit_treatment_plan_revision_seal() FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION protect_visit_treatment_plan_revision() FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION protect_visit_treatment_plan_revision_line() FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION validate_visit_treatment_plan_response_seal() FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION protect_visit_treatment_plan_response() FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION protect_visit_treatment_plan_response_line() FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION protect_visit_treatment_plan_identity() FROM PUBLIC, openpims_app;
 
 -- Carrier registration events are PHI-free, append-only lifecycle evidence.
 REVOKE ALL ON messaging_registration_events FROM openpims_app;

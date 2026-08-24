@@ -121,6 +121,10 @@ export const services = pgTable(
       table.deletedAt,
       table.name
     ),
+    practiceIdUq: uniqueIndex("services_practice_id_uq").on(
+      table.practiceId,
+      table.id
+    ),
     defaultPriceNonnegative: check(
       "services_default_price_nonnegative",
       sql`${table.defaultPrice} >= 0`

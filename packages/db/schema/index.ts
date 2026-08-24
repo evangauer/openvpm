@@ -20,6 +20,7 @@ export * from "./controlled-substances";
 export * from "./files";
 export * from "./consents";
 export * from "./templates";
+export * from "./treatment-plan-evidence";
 export * from "./insurance";
 export * from "./wellness";
 export * from "./usage";

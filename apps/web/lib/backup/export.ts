@@ -77,6 +77,11 @@ import {
   treatmentTemplates,
   treatmentPlanItems,
   treatmentPlans,
+  visitTreatmentPlanResponseLines,
+  visitTreatmentPlanResponses,
+  visitTreatmentPlanRevisionLines,
+  visitTreatmentPlanRevisions,
+  visitTreatmentPlans,
   users,
   vaccinationRecords,
   vitalSigns,
@@ -225,6 +230,11 @@ export const PRACTICE_EXPORT_SECTIONS = [
   "dispenseChargeQueue",
   "visitCloseouts",
   "files",
+  "visitTreatmentPlans",
+  "visitTreatmentPlanRevisions",
+  "visitTreatmentPlanRevisionLines",
+  "visitTreatmentPlanResponses",
+  "visitTreatmentPlanResponseLines",
   "historicalDocuments",
   "controlledSubstanceLog",
   "communications",
@@ -269,6 +279,13 @@ const PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS = [
   // ledger and clinic-wide review inbox were introduced.
   "labResultEvents",
   "labResultReplacements",
+  // Backward compatibility for backups created before the immutable client
+  // treatment-plan decision ledger.
+  "visitTreatmentPlans",
+  "visitTreatmentPlanRevisions",
+  "visitTreatmentPlanRevisionLines",
+  "visitTreatmentPlanResponses",
+  "visitTreatmentPlanResponseLines",
 ] as const satisfies readonly PracticeExportSection[];
 
 export type PracticeExport = {
@@ -545,6 +562,46 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
   optionalRef("treatmentPlans", "problemId", "problemList"),
   optionalRef("treatmentPlans", "createdBy", "users"),
   requiredRef("treatmentPlanItems", "planId", "treatmentPlans"),
+  requiredRef("visitTreatmentPlans", "clientId", "clients"),
+  requiredRef("visitTreatmentPlans", "patientId", "patients"),
+  optionalRef("visitTreatmentPlans", "appointmentId", "appointments"),
+  requiredRef("visitTreatmentPlans", "createdBy", "users"),
+  requiredRef("visitTreatmentPlanRevisions", "planId", "visitTreatmentPlans"),
+  requiredRef("visitTreatmentPlanRevisions", "authoredBy", "users"),
+  requiredRef(
+    "visitTreatmentPlanRevisionLines",
+    "planId",
+    "visitTreatmentPlans",
+  ),
+  requiredRef(
+    "visitTreatmentPlanRevisionLines",
+    "revisionId",
+    "visitTreatmentPlanRevisions",
+  ),
+  optionalRef("visitTreatmentPlanRevisionLines", "serviceId", "services"),
+  optionalRef("visitTreatmentPlanRevisionLines", "productId", "products"),
+  requiredRef("visitTreatmentPlanResponses", "planId", "visitTreatmentPlans"),
+  requiredRef(
+    "visitTreatmentPlanResponses",
+    "revisionId",
+    "visitTreatmentPlanRevisions",
+  ),
+  requiredRef("visitTreatmentPlanResponses", "signedFileId", "files"),
+  requiredRef(
+    "visitTreatmentPlanResponseLines",
+    "revisionId",
+    "visitTreatmentPlanRevisions",
+  ),
+  requiredRef(
+    "visitTreatmentPlanResponseLines",
+    "responseId",
+    "visitTreatmentPlanResponses",
+  ),
+  requiredRef(
+    "visitTreatmentPlanResponseLines",
+    "revisionLineId",
+    "visitTreatmentPlanRevisionLines",
+  ),
   requiredRef("prescriptions", "patientId", "patients"),
   optionalRef("prescriptions", "appointmentId", "appointments"),
   optionalRef("prescriptions", "productId", "products"),
@@ -2490,7 +2547,7 @@ export async function exportPracticeData(
     historicalAppointmentRows,
     appointmentWaitlistRows,
     staffScheduleRows,
-    serviceRows,
+    allServiceRows,
     allProductRows,
     treatmentTemplateRows,
     supplierRows,
@@ -2516,6 +2573,11 @@ export async function exportPracticeData(
     labReplacementRows,
     caseRows,
     treatmentPlanRows,
+    visitTreatmentPlanRows,
+    visitTreatmentPlanRevisionRows,
+    visitTreatmentPlanRevisionLineRows,
+    visitTreatmentPlanResponseRows,
+    visitTreatmentPlanResponseLineRows,
     allPrescriptionRows,
     prescriptionEventRows,
     externalPrescriptionRows,
@@ -2553,7 +2615,7 @@ export async function exportPracticeData(
     allPracticeRows(db, historicalAppointments, practiceId),
     activeRows(db, appointmentWaitlist, practiceId),
     activeRows(db, staffSchedules, practiceId),
-    activeRows(db, services, practiceId),
+    allPracticeRows(db, services, practiceId),
     allPracticeRows(db, products, practiceId),
     activeRows(db, treatmentTemplates, practiceId),
     activeRows(db, suppliers, practiceId),
@@ -2579,6 +2641,11 @@ export async function exportPracticeData(
     allPracticeRows(db, labResultReplacements, practiceId),
     activeRows(db, cases, practiceId),
     activeRows(db, treatmentPlans, practiceId),
+    allPracticeRows(db, visitTreatmentPlans, practiceId),
+    allPracticeRows(db, visitTreatmentPlanRevisions, practiceId),
+    allPracticeRows(db, visitTreatmentPlanRevisionLines, practiceId),
+    allPracticeRows(db, visitTreatmentPlanResponses, practiceId),
+    allPracticeRows(db, visitTreatmentPlanResponseLines, practiceId),
     allPracticeRows(db, prescriptions, practiceId),
     allPracticeRows(db, prescriptionEvents, practiceId),
     allPracticeRows(db, externalPrescriptions, practiceId),
@@ -2594,9 +2661,12 @@ export async function exportPracticeData(
     allPracticeRows(db, communications, practiceId),
   ]);
 
-  const referencedHistoricalFileIds = historicalDocumentRows.map(
-    (document) => document.fileId as string,
-  );
+  const referencedHistoricalFileIds = [
+    ...historicalDocumentRows.map((document) => document.fileId as string),
+    ...visitTreatmentPlanResponseRows.map(
+      (response) => response.signedFileId as string,
+    ),
+  ];
   const fileRows = await activeFileRows(
     db,
     practiceId,
@@ -2669,6 +2739,7 @@ export async function exportPracticeData(
       ...labRows.map((result) => result.appointmentId),
       ...labResultEventRows.map((event) => event.appointmentId),
       ...fileRows.map((file) => file.appointmentId),
+      ...visitTreatmentPlanRows.map((plan) => plan.appointmentId),
     ].filter((id): id is string => typeof id === "string"),
   );
   const appointmentRows = allAppointmentRows.filter(
@@ -2694,6 +2765,7 @@ export async function exportPracticeData(
       ...historicalDocumentRows.map((document) => document.patientId),
       ...fileRows.map((file) => restoredFilePatientId(file)),
       ...appointmentRows.map((appointment) => appointment.patientId),
+      ...visitTreatmentPlanRows.map((plan) => plan.patientId),
       ...patientMergeRows.flatMap((event) => [
         event.sourcePatientId,
         event.targetPatientId,
@@ -2708,6 +2780,7 @@ export async function exportPracticeData(
     [
       ...prescriptionEventRows.map((event) => event.productId),
       ...prescriptionRows.map((prescription) => prescription.productId),
+      ...visitTreatmentPlanRevisionLineRows.map((line) => line.productId),
     ].filter((id): id is string => typeof id === "string"),
   );
   const productRows = allProductRows.filter(
@@ -2741,6 +2814,8 @@ export async function exportPracticeData(
       ...smsSendAttemptRows.map((attempt) => attempt.requestedByUserId),
       ...smsSendAttemptEventRows.map((event) => event.actorUserId),
       ...fileRows.map((file) => file.uploadedBy),
+      ...visitTreatmentPlanRows.map((plan) => plan.createdBy),
+      ...visitTreatmentPlanRevisionRows.map((revision) => revision.authoredBy),
     ].filter((id): id is string => typeof id === "string"),
   );
   const userRows = allUserRows.filter(
@@ -2757,10 +2832,20 @@ export async function exportPracticeData(
       ...historicalAppointmentRows.map((appointment) => appointment.clientId),
       ...legacyFinancialDocumentRows.map((document) => document.clientId),
       ...legacyFinancialPaymentRows.map((payment) => payment.clientId),
+      ...visitTreatmentPlanRows.map((plan) => plan.clientId),
     ].filter((id): id is string => typeof id === "string"),
   );
   const clientRows = allClientRows.filter(
     (client) => client.deletedAt == null || referencedClientIds.has(client.id),
+  );
+  const referencedServiceIds = new Set(
+    visitTreatmentPlanRevisionLineRows
+      .map((line) => line.serviceId)
+      .filter((id): id is string => typeof id === "string"),
+  );
+  const serviceRows = allServiceRows.filter(
+    (service) =>
+      service.deletedAt == null || referencedServiceIds.has(service.id),
   );
   const referencedLocationIds = new Set(
     [
@@ -2978,6 +3063,11 @@ export async function exportPracticeData(
     caseEntries: caseEntryRows,
     treatmentPlans: treatmentPlanRows,
     treatmentPlanItems: treatmentPlanItemRows,
+    visitTreatmentPlans: visitTreatmentPlanRows,
+    visitTreatmentPlanRevisions: visitTreatmentPlanRevisionRows,
+    visitTreatmentPlanRevisionLines: visitTreatmentPlanRevisionLineRows,
+    visitTreatmentPlanResponses: visitTreatmentPlanResponseRows,
+    visitTreatmentPlanResponseLines: visitTreatmentPlanResponseLineRows,
     prescriptions: prescriptionRows,
     prescriptionEvents: prescriptionEventRows,
     externalPrescriptions: externalPrescriptionRows,
@@ -3493,6 +3583,23 @@ async function restorePracticeDataRows(
       fileUrl: canonicalFileUrl(row.fileKey),
     })),
     { practiceId },
+  );
+  await restorePracticeRows("visitTreatmentPlans", visitTreatmentPlans);
+  await restorePracticeRows(
+    "visitTreatmentPlanRevisions",
+    visitTreatmentPlanRevisions,
+  );
+  await restorePracticeRows(
+    "visitTreatmentPlanRevisionLines",
+    visitTreatmentPlanRevisionLines,
+  );
+  await restorePracticeRows(
+    "visitTreatmentPlanResponses",
+    visitTreatmentPlanResponses,
+  );
+  await restorePracticeRows(
+    "visitTreatmentPlanResponseLines",
+    visitTreatmentPlanResponseLines,
   );
   await restorePracticeRows("historicalDocuments", historicalDocuments);
   await restorePracticeRows("controlledSubstanceLog", controlledSubstanceLog);

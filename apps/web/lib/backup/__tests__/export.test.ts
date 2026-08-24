@@ -501,6 +501,15 @@ describe("summarizePracticeExport", () => {
     expect(PRACTICE_EXPORT_SECTIONS).toContain("insuranceClaims");
     expect(PRACTICE_EXPORT_SECTIONS).toContain("treatmentTemplates");
     expect(PRACTICE_EXPORT_SECTIONS).toContain("treatmentTemplateItems");
+    expect(PRACTICE_EXPORT_SECTIONS).toContain("visitTreatmentPlans");
+    expect(PRACTICE_EXPORT_SECTIONS).toContain("visitTreatmentPlanRevisions");
+    expect(PRACTICE_EXPORT_SECTIONS).toContain(
+      "visitTreatmentPlanRevisionLines",
+    );
+    expect(PRACTICE_EXPORT_SECTIONS).toContain("visitTreatmentPlanResponses");
+    expect(PRACTICE_EXPORT_SECTIONS).toContain(
+      "visitTreatmentPlanResponseLines",
+    );
     expect(PRACTICE_EXPORT_SECTIONS).toContain("wellnessPlans");
     expect(PRACTICE_EXPORT_SECTIONS).toContain("wellnessEnrollments");
     expect(PRACTICE_EXPORT_SECTIONS).toContain("locationMessaging");

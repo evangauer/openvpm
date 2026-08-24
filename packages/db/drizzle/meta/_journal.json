@@ -666,6 +666,13 @@
       "when": 1787516368297,
       "tag": "0094_finance_tenant_integrity",
       "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1787530069579,
+      "tag": "0095_thick_titania",
+      "breakpoints": true
     }
   ]
 }

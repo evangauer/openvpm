@@ -75,6 +75,11 @@ export const patients = pgTable(
       table.practiceId,
       table.id,
     ),
+    practiceClientIdUq: uniqueIndex("patients_practice_client_id_uq").on(
+      table.practiceId,
+      table.id,
+      table.clientId,
+    ),
     practiceIdx: index("patients_practice_idx").on(
       table.practiceId,
       table.deletedAt,
