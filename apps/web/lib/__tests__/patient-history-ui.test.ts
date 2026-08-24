@@ -38,9 +38,7 @@ describe("patient history search UI", () => {
     expect(recordsRouter).toContain(
       "The client sends this query over POST so clinical terms stay out of URLs",
     );
-    expect(providers).toContain(
-      'operation.path === "records.searchPatientHistory"',
-    );
+    expect(providers).toContain('"records.searchPatientHistory"');
     expect(providers).toContain('methodOverride: "POST"');
     expect(trpcRoute).toContain("allowMethodOverride: true");
     expect(component).not.toContain("useSearchParams");

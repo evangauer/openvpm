@@ -22,6 +22,7 @@ const CLIENT_ID = "00000000-0000-0000-0000-000000000002";
 const PATIENT_ID = "00000000-0000-0000-0000-000000000003";
 const SERVICE_ID = "00000000-0000-0000-0000-000000000004";
 const OPERATION_ID = "00000000-0000-0000-0000-000000000005";
+const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000006";
 
 function callerFor(role: string) {
   const tx = {
@@ -78,12 +79,41 @@ describe("visit treatment-plan authoring safety", () => {
     expect(db.transaction).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps composer reads and catalog pricing dark with the authoring flag off", async () => {
+    const { caller } = callerFor("admin");
+    const context = {
+      clientId: CLIENT_ID,
+      patientId: PATIENT_ID,
+      appointmentId: APPOINTMENT_ID,
+    };
+    await expect(caller.getForAppointment(context)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+    await expect(
+      caller.searchCatalog({ search: "exam" }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(
+      caller.quote({ ...context, items: validCreateInput.items }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
   it.each(["front_desk", "viewer"])(
     "rejects the %s role before authoring",
     async (role) => {
       vi.stubEnv("TREATMENT_PLAN_AUTHORING_ENABLED", "true");
       const { caller } = callerFor(role);
       await expect(caller.create(validCreateInput)).rejects.toMatchObject({
+        code: "FORBIDDEN",
+      });
+    },
+  );
+
+  it.each(["front_desk", "viewer"])(
+    "rejects the %s role before composer reads",
+    async (role) => {
+      vi.stubEnv("TREATMENT_PLAN_AUTHORING_ENABLED", "true");
+      const { caller } = callerFor(role);
+      await expect(caller.searchCatalog({ search: "" })).rejects.toMatchObject({
         code: "FORBIDDEN",
       });
     },
@@ -115,6 +145,11 @@ describe("visit treatment-plan authoring safety", () => {
     expect(ROUTER_SOURCE).toContain("eq(products.practiceId, practiceId)");
     expect(ROUTER_SOURCE).toContain("isNull(services.deletedAt)");
     expect(ROUTER_SOURCE).toContain("isNull(products.deletedAt)");
+    expect(ROUTER_SOURCE).toContain(
+      "eq(visitTreatmentPlans.appointmentId, input.appointmentId)",
+    );
+    expect(ROUTER_SOURCE).toContain("escapeTemplateCatalogLike(input.search)");
+    expect(ROUTER_SOURCE).toContain(".slice(0, TEMPLATE_CATALOG_RESULT_LIMIT)");
   });
 
   it("does not import or mutate downstream billing, inventory, queue, or consent surfaces", () => {

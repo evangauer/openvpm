@@ -251,6 +251,77 @@ describeWithAuthoringPostgres(
         const raceDbB = drizzle(raceSqlB, { schema });
         const caller = callerFor(appDb, practice.id, staff.id);
 
+        const composerContext = {
+          clientId: client.id,
+          patientId: patient.id,
+          appointmentId: appointment.id,
+        };
+        await expect(
+          caller.visitTreatmentPlans.getForAppointment(composerContext),
+        ).resolves.toBeNull();
+
+        const catalog = await caller.visitTreatmentPlans.searchCatalog({
+          search: "synthetic",
+        });
+        expect(catalog.map((item) => item.id)).toContain(medication.id);
+        expect(catalog.map((item) => item.id)).not.toContain(
+          otherMedication.id,
+        );
+        expect(catalog.length).toBeLessThanOrEqual(20);
+        await expect(
+          callerFor(
+            appDb,
+            practice.id,
+            staff.id,
+            "front_desk",
+          ).visitTreatmentPlans.searchCatalog({ search: "" }),
+        ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+        const literalWildcard = await caller.visitTreatmentPlans.searchCatalog({
+          search: "%_\\",
+        });
+        expect(literalWildcard).toEqual([]);
+
+        const quote = await caller.visitTreatmentPlans.quote({
+          ...composerContext,
+          items: [
+            {
+              itemType: "service",
+              itemId: examService.id,
+              quantity: "1",
+            },
+            {
+              itemType: "product",
+              itemId: medication.id,
+              quantity: "2.5",
+            },
+          ],
+        });
+        expect(quote).toMatchObject({
+          currency: "USD",
+          subtotal: "80.85",
+          tax: "2.55",
+          total: "83.40",
+        });
+        expect(quote.lines).toHaveLength(2);
+        await expect(
+          caller.visitTreatmentPlans.quote({
+            ...composerContext,
+            items: [
+              {
+                itemType: "product",
+                itemId: otherMedication.id,
+                quantity: "1",
+              },
+            ],
+          }),
+        ).rejects.toMatchObject({ code: "NOT_FOUND" });
+        const [plansAfterQuote] = await ownerDb
+          .select({ value: count() })
+          .from(schema.visitTreatmentPlans)
+          .where(eq(schema.visitTreatmentPlans.practiceId, practice.id));
+        expect(plansAfterQuote?.value).toBe(0);
+
         const createOperationId = randomUUID();
         const createInput = {
           operationId: createOperationId,
@@ -302,6 +373,18 @@ describeWithAuthoringPostgres(
           lineSubtotal: "30.85",
           taxAmount: "2.55",
         });
+        const reloaded =
+          await caller.visitTreatmentPlans.getForAppointment(composerContext);
+        expect(reloaded?.plan.id).toBe(created.plan.id);
+        expect(reloaded?.revision.id).toBe(created.revision.id);
+        expect(reloaded?.lines).toEqual(created.lines);
+
+        const otherClinicView = await callerFor(
+          appDb,
+          otherPractice.id,
+          otherStaff.id,
+        ).visitTreatmentPlans.getForAppointment(composerContext);
+        expect(otherClinicView).toBeNull();
 
         const replay = await caller.visitTreatmentPlans.create(createInput);
         expect(replay.plan.id).toBe(created.plan.id);

@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import type { inferRouterOutputs } from "@trpc/server";
@@ -74,6 +75,14 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { EmptyState } from "@/components/common/empty-state";
 import type { AppRouter } from "@/server/routers/_app";
+
+const TreatmentPlanComposer = dynamic(
+  () =>
+    import("@/components/encounters/treatment-plan-composer").then(
+      (module) => module.TreatmentPlanComposer,
+    ),
+  { ssr: false, loading: () => null },
+);
 
 type RouterOutputs = inferRouterOutputs<AppRouter>;
 type CloseoutQueryState = {
@@ -798,6 +807,17 @@ export default function EncounterWorkspacePage() {
               visitStateReady={visitClinicalStateReady}
               visitOpen={visitOpenForClinicalEntry}
               timeZone={taxConfigQuery.data?.timezone}
+            />
+          ) : null}
+
+          {canRecordVitals(role) &&
+          appointment.patientId &&
+          appointment.clientId ? (
+            <TreatmentPlanComposer
+              appointmentId={appointment.id}
+              clientId={appointment.clientId}
+              patientId={appointment.patientId}
+              patientName={appointment.patientName ?? "Patient"}
             />
           ) : null}
 

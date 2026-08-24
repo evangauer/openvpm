@@ -21,7 +21,11 @@ export function Providers({ children }: { children: React.ReactNode }) {
       links: [
         splitLink({
           condition: (operation) =>
-            operation.path === "records.searchPatientHistory",
+            [
+              "records.searchPatientHistory",
+              "visitTreatmentPlans.searchCatalog",
+              "visitTreatmentPlans.quote",
+            ].includes(operation.path),
           true: httpBatchLink({
             url: "/api/trpc",
             transformer: superjson,

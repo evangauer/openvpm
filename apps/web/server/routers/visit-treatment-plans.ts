@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import {
@@ -20,6 +20,11 @@ import type { Database } from "@openpims/db/client";
 import { centsToMoney, moneyToCents } from "@/lib/billing/invoice-balance";
 import { rowsFromExecute } from "@/lib/db/execute-rows";
 import { clinicalTextInput } from "@/lib/records/clinical-inputs";
+import {
+  escapeTemplateCatalogLike,
+  TEMPLATE_CATALOG_RESULT_LIMIT,
+  TEMPLATE_CATALOG_SEARCH_MAX_LENGTH,
+} from "@/lib/templates/catalog-search";
 import {
   canonicalQuantity,
   priceTreatmentPlanLines,
@@ -74,6 +79,20 @@ const revisePlanInput = z.object({
   expectedRevisionNumber: z.number().int().min(1),
   items: planItemsInput,
 });
+
+const planContextInput = z.object({
+  clientId: z.string().uuid(),
+  patientId: z.string().uuid(),
+  appointmentId: z.string().uuid(),
+});
+
+const quotePlanInput = planContextInput.extend({ items: planItemsInput });
+
+type TreatmentPlanContextInput = {
+  clientId: string;
+  patientId: string;
+  appointmentId?: string;
+};
 
 type TreatmentPlanTransaction = Parameters<
   Parameters<Database["transaction"]>[0]
@@ -265,7 +284,7 @@ function exactReplay(
 async function assertCreateContext(
   database: TreatmentPlanDatabase,
   practiceId: string,
-  input: z.infer<typeof createPlanInput>,
+  input: TreatmentPlanContextInput,
 ) {
   const [practice] = await database
     .select({
@@ -329,6 +348,65 @@ async function assertCreateContext(
   }
 
   return practice;
+}
+
+function catalogResultRank(
+  item: { name: string; code: string | null },
+  search: string,
+): number {
+  if (!search) return 4;
+  const query = search.toLowerCase();
+  const name = item.name.toLowerCase();
+  const code = item.code?.toLowerCase() ?? "";
+  if (name === query) return 0;
+  if (code === query) return 1;
+  if (name.startsWith(query)) return 2;
+  if (code.startsWith(query)) return 3;
+  return 4;
+}
+
+function compareCatalogResults(
+  left: { id: string; name: string; code: string | null },
+  right: { id: string; name: string; code: string | null },
+  search: string,
+): number {
+  const rank =
+    catalogResultRank(left, search) - catalogResultRank(right, search);
+  if (rank !== 0) return rank;
+  const name = left.name
+    .toLowerCase()
+    .localeCompare(right.name.toLowerCase(), "en");
+  if (name !== 0) return name;
+  const code = (left.code ?? "")
+    .toLowerCase()
+    .localeCompare((right.code ?? "").toLowerCase(), "en");
+  return code || left.id.localeCompare(right.id);
+}
+
+function serializeQuote(
+  lines: readonly PricedTreatmentPlanLine[],
+  taxRatePercent: string,
+  currency: string,
+) {
+  const priced = priceTreatmentPlanLines(lines, taxRatePercent);
+  return {
+    currency: currency.toUpperCase(),
+    subtotal: centsToMoney(priced.subtotalCents),
+    tax: centsToMoney(priced.taxCents),
+    total: centsToMoney(priced.totalCents),
+    lines: priced.lines.map((line) => ({
+      sortOrder: line.sortOrder,
+      description: line.description,
+      offeredQuantity: line.offeredQuantity,
+      unitPrice: centsToMoney(line.unitPriceCents),
+      lineSubtotal: centsToMoney(line.lineSubtotalCents),
+      taxAmount: centsToMoney(line.taxAmountCents),
+      lineTotal: centsToMoney(line.lineTotalCents),
+      itemType: line.itemType,
+      serviceId: line.serviceId,
+      productId: line.productId,
+    })),
+  };
 }
 
 async function resolveCatalogLines(
@@ -569,6 +647,119 @@ async function readPreview(
 }
 
 export const visitTreatmentPlansRouter = createRouter({
+  getForAppointment: protectedProcedure
+    .use(clinicalRole)
+    .input(planContextInput)
+    .query(async ({ ctx, input }) => {
+      assertAuthoringEnabled();
+      const [plan] = await ctx.db
+        .select({ id: visitTreatmentPlans.id })
+        .from(visitTreatmentPlans)
+        .where(
+          and(
+            eq(visitTreatmentPlans.practiceId, ctx.practiceId),
+            eq(visitTreatmentPlans.clientId, input.clientId),
+            eq(visitTreatmentPlans.patientId, input.patientId),
+            eq(visitTreatmentPlans.appointmentId, input.appointmentId),
+            eq(visitTreatmentPlans.status, "open"),
+            activePracticePredicate(ctx.practiceId),
+          ),
+        )
+        .orderBy(
+          desc(visitTreatmentPlans.createdAt),
+          desc(visitTreatmentPlans.id),
+        )
+        .limit(1);
+      return plan ? readPreview(ctx.db, ctx.practiceId, plan.id) : null;
+    }),
+
+  searchCatalog: protectedProcedure
+    .use(clinicalRole)
+    .input(
+      z.object({
+        search: z
+          .string()
+          .trim()
+          .max(TEMPLATE_CATALOG_SEARCH_MAX_LENGTH)
+          .default(""),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      assertAuthoringEnabled();
+      const escapedSearch = escapeTemplateCatalogLike(input.search);
+      const containsPattern = `%${escapedSearch}%`;
+      const serviceRows = await ctx.db
+        .select({
+          id: services.id,
+          name: services.name,
+          code: services.code,
+          category: services.category,
+          unitPrice: services.defaultPrice,
+        })
+        .from(services)
+        .where(
+          and(
+            eq(services.practiceId, ctx.practiceId),
+            isNull(services.deletedAt),
+            activePracticePredicate(ctx.practiceId),
+            input.search
+              ? or(
+                  sql`${services.name} ilike ${containsPattern} escape '\\'`,
+                  sql`${services.code} ilike ${containsPattern} escape '\\'`,
+                  sql`${services.category} ilike ${containsPattern} escape '\\'`,
+                )
+              : undefined,
+          ),
+        )
+        .orderBy(sql`lower(${services.name})`, asc(services.id))
+        .limit(TEMPLATE_CATALOG_RESULT_LIMIT);
+      const productRows = await ctx.db
+        .select({
+          id: products.id,
+          name: products.name,
+          code: products.sku,
+          category: products.category,
+          unitPrice: products.unitPrice,
+        })
+        .from(products)
+        .where(
+          and(
+            eq(products.practiceId, ctx.practiceId),
+            isNull(products.deletedAt),
+            activePracticePredicate(ctx.practiceId),
+            input.search
+              ? or(
+                  sql`${products.name} ilike ${containsPattern} escape '\\'`,
+                  sql`${products.sku} ilike ${containsPattern} escape '\\'`,
+                  sql`${products.category} ilike ${containsPattern} escape '\\'`,
+                )
+              : undefined,
+          ),
+        )
+        .orderBy(sql`lower(${products.name})`, asc(products.id))
+        .limit(TEMPLATE_CATALOG_RESULT_LIMIT);
+      return [
+        ...serviceRows.map((row) => ({ ...row, itemType: "service" as const })),
+        ...productRows.map((row) => ({ ...row, itemType: "product" as const })),
+      ]
+        .sort((left, right) => compareCatalogResults(left, right, input.search))
+        .slice(0, TEMPLATE_CATALOG_RESULT_LIMIT);
+    }),
+
+  quote: protectedProcedure
+    .use(clinicalRole)
+    .input(quotePlanInput)
+    .query(async ({ ctx, input }) => {
+      assertAuthoringEnabled();
+      const practice = await assertCreateContext(ctx.db, ctx.practiceId, input);
+      const lines = await resolveCatalogLines(
+        ctx.db,
+        ctx.practiceId,
+        input.items,
+      );
+      return serializeQuote(lines, practice.taxRatePercent, practice.currency);
+    }),
+
   preview: protectedProcedure
     .use(clinicalRole)
     .input(
