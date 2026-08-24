@@ -209,6 +209,19 @@ try {
        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)`,
   );
 
+  // The adoption assertions above deliberately stop at 0094. Advance the
+  // disposable database through any later migrations before applying the
+  // current RLS contract; RLS must continue to fail closed when a current
+  // tenant table is genuinely missing.
+  for (const migrationFile of readdirSync(migrationDir)
+    .filter((name) => /^\d{4}_.+\.sql$/.test(name))
+    .filter((name) => Number(name.slice(0, 4)) > 94)
+    .sort()) {
+    await owner
+      .unsafe(readFileSync(join(migrationDir, migrationFile), "utf8"))
+      .simple();
+  }
+
   await owner.end();
   owner = undefined;
 
