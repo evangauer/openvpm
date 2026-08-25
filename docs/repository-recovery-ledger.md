@@ -5,8 +5,11 @@ It turns the branch and pull-request backlog into explicit recovery decisions.
 It is intentionally conservative: an item remains preserved until its successor
 has passed current checks and an owner approves the recorded disposition.
 
-The deployed baseline for this ledger is `development`, `staging`, and `main`
-at `b2d07cd970dcb4b0fef276bcdeb0dbb105e6f6ca`. The prior deployed baseline
+The deployed baseline for this ledger is `staging` and `main` at
+`b2d07cd970dcb4b0fef276bcdeb0dbb105e6f6ca`. Protected `development` has
+advanced through reviewed recovery work to
+`1e41d5d7b90906cddc3a227952f17def33c31e19`; that work has not been promoted
+or deployed. The prior deployed baseline
 `cc6fd16cc8d414f181d278546e2a1213300732a0` and the prior `staging` tip
 `0f139422c331b1d57a7862a7d0aa7724055341db` remain in dedicated safety refs
 and the verified offline all-refs bundle. The cleanup owner also holds separate
@@ -42,18 +45,45 @@ They are evidence for triage, not acceptance evidence for the underlying code.
 | [#203](https://github.com/evangauer/openvpm/pull/203) | First-clinic-win subscription conversion | Draft, stacked on #202; 58 files | `recover` | Separate product behavior from generated or fixture-heavy changes |
 | [#204](https://github.com/evangauer/openvpm/pull/204) | SMS pilot activation preflight | Draft, conflicting; 13 files | `recover` | Security/operations review; preserve all default-off and fee-bearing interlocks |
 | [#205](https://github.com/evangauer/openvpm/pull/205) | Clinic-launch integration stack | Draft, conflicting; 130 files | `evidence-only` | Umbrella branch contains the component stack; use it to trace provenance and tests, never as a wholesale merge |
-| [#219](https://github.com/evangauer/openvpm/pull/219) | Patient merge and migration safety | Draft, conflicting; 13 files | `recover` | Database/RLS specialist review and fresh real-Postgres evidence required |
+| [#219](https://github.com/evangauer/openvpm/pull/219) | Patient merge and migration safety | Draft, conflicting; 13 files; historical real-PostgreSQL job failed on a nonexistent fixture table | `recover` | Database/RLS specialist review, corrected fixtures, and fresh real-Postgres tenant/concurrency evidence required |
 | [#220](https://github.com/evangauer/openvpm/pull/220) | pnpm/action-setup update | Behind; 2 files | `recreate` | Re-run Dependabot after governance baseline; retain pinning and supply-chain checks |
 | [#221](https://github.com/evangauer/openvpm/pull/221) | Privacy-safe acquisition reporting | Draft, behind; 7 files | `recover` | Reconcile overlap with #200 and re-review reporting privacy |
 | [#222](https://github.com/evangauer/openvpm/pull/222) | P0 one-click billing integration | Draft, conflicting; 136 files | `evidence-only` | High-risk integration aggregate; decompose billing, auth, migration, and operational changes into independently testable recoveries |
 | [#224](https://github.com/evangauer/openvpm/pull/224) | Development dependency group | Behind; 7 files | `recreate` | Regenerate after baseline and review breaking toolchain changes separately |
 | [#230](https://github.com/evangauer/openvpm/pull/230) | Production dependency group | Behind; 4 files | `recreate` | Split security fixes from broad upgrades and prove runtime compatibility |
-| [#240](https://github.com/evangauer/openvpm/pull/240) | Repository governance | Rebase-merged and deployed as `b2d07cd9`; exact-SHA migration/release rehearsal, health, and smoke checks passed | `close-approved` | Governance value is in all three protected canonical branches; the source branch may be deleted after this ledger update merges |
+| [#240](https://github.com/evangauer/openvpm/pull/240) | Repository governance | Rebase-merged and deployed as `b2d07cd9`; exact-SHA migration/release rehearsal, health, and smoke checks passed | `close-approved` | Governance value is in all three protected canonical branches; source branch `codex/repository-governance` was deleted after PR #241 preserved the ledger evidence |
+| [#242](https://github.com/evangauer/openvpm/pull/242) | Subscription lifecycle email recovery | Squash-merged into `development` as `1e41d5d7`; exact-head and exact-merge CI, CodeQL, migration, RLS, and PostgreSQL outbox gates passed | `close-approved` | Reviewed tree is preserved by the merge; successor branch `codex/recover-lifecycle-emails` and its clean worktree were deleted after tree-equivalence proof; original evidence branch `feat/lifecycle-emails` remains preserved |
 
 The stacked work represented by #198-#205 has one integration tip in #205.
 That containment is a preservation fact only; it does not make #205 a safe
 release candidate. #222 is a separate large aggregate with substantial overlap
 and must not be merged beside or on top of #205.
+
+### Current-base triage checkpoint
+
+The 13 still-open pull requests were re-audited against fixed
+`development@1e41d5d7b90906cddc3a227952f17def33c31e19` after the lifecycle-email
+recovery. None is safe to merge as-is: every item targets stale `main` or a
+stale feature base, and the product branches are 36 to 51 Development commits
+behind. Historical green checks are inventory evidence, not release evidence
+against the current base.
+
+The next safety/value queue is:
+
+1. #219 patient-merge safety, because identity and merge errors can cause
+   irreversible customer-data harm; its old real-PostgreSQL job failed against
+   a nonexistent `merge_target_appointments` fixture.
+2. #198 encounter/billing conversion, decomposed into billing ownership,
+   medication handoff, idempotency, and tenant/concurrency proofs before stacked
+   #199 is considered.
+3. #221 privacy-safe acquisition outcomes, reconciled with #200 before either
+   reporting model advances.
+4. #204 default-off SMS pilot controls before any fee-bearing pilot activation.
+
+#205 and #222 remain evidence-only aggregate sources until focused successors
+preserve their unique value. #199 and #203 remain blocked behind their stack
+bases. The three Dependabot pull requests remain `recreate`, not merge or bulk
+rebase candidates.
 
 ## High-priority branch-only recovery
 
@@ -63,7 +93,7 @@ bundle and dedicated safety refs.
 
 | Source | Preserved tip | Main divergence at inventory | Decision | First review |
 | --- | --- | --- | --- | --- |
-| `feat/lifecycle-emails` | `24a3347ced908f725f72260667d6f48c2f701ee9` | 4 unique commits; 219 behind | `recover` via draft [#242](https://github.com/evangauer/openvpm/pull/242) | Narrow confirmation/cancellation recovery preserves post-commit state checks and idempotency; durable provider-failure redrive remains an explicit review risk |
+| `feat/lifecycle-emails` | `24a3347ced908f725f72260667d6f48c2f701ee9` | 4 unique commits; 219 behind at inventory | `close-approved` via merged [#242](https://github.com/evangauer/openvpm/pull/242) | Rebuilt as a transactional outbox with immutable attempts, final eligibility fencing, ambiguous-outcome handling, provider-safe redrive, and executable PostgreSQL concurrency/RLS evidence |
 | `feat/activation-funnel` | `09e4fadd41742103e6c8092a9497134138100759` | 3 commits at inventory; two already merged via #29, one stale UI-only tip remains | `evidence-only` | Review found no analytics implementation to recover; current empty states, onboarding redirect, and billing-state-aware trial badge supersede the remaining copy/route changes |
 | `codex/onboarding-first-day-density` | `68959b3a3ca088b00144ac846e91e4ab266f5af6` | 1 unique commit; 32 behind | `recover` | Separate the committed onboarding polish from the much larger dirty worktree |
 
@@ -115,15 +145,45 @@ recovery branch. Recover the intended schema change against current
 upgrade from a production-shaped database, and re-run migration integrity,
 drift, RLS, and rollback/forward-repair review.
 
+The current canonical Development migration tail is `0097`. The next available
+ordinal appears to be `0098` only until another migration merges; migration
+recoveries must be serialized and regenerate from the then-current tail.
+Current-base review identified these explicit P1 no-go sources:
+
+- #199 carries old `0086`-`0088` migrations/snapshots; its dispense-charge
+  event and operation-identity semantics require a new current-tail migration.
+- #203 carries an old `0086` migration/snapshot and overlaps the current
+  conversion-evidence and milestone schema.
+- #205 carries the aggregate old `0086`-`0089` sequence and remains
+  evidence-only.
+- #222 carries old `0094`-`0095` MFA migrations that collide with canonical
+  finance and treatment migrations. Its `0091`-`0093` SQL is byte-identical to
+  canonical history; the snapshots have matching schema content and lineage
+  IDs but formatting-different bytes, so they still cannot replace canonical
+  append-only history.
+- The dirty primary checkout's older finance schema omits current composite
+  tenant foreign keys. The dirty nutrition-extension migration also orders a
+  composite foreign key before its required unique index and fails on clean
+  PostgreSQL. Neither worktree is a rebase or copy source.
+
+The dirty primary checkout also contains generated local
+`supabase/.temp/linked-project.json` state linked to the production project.
+Do not run mutating Supabase CLI commands from that checkout or commit/copy the
+metadata. Canonical `.gitignore` excludes the entire generated
+`supabase/.temp/` directory as a preventive control; the existing local file is
+left untouched.
+
 ## Recovery order
 
-1. Land and rehearse repository governance without changing the production
-   application or database.
-2. Establish protected `development` and `staging` at the deployed baseline.
-3. Recover lifecycle email behavior as the first branch-only loss-risk item.
-4. Decompose #198-#205 into domain-sized recovery pull requests.
-5. Review #219 independently because patient identity and migration safety are
+1. **Completed:** land and rehearse repository governance without changing the
+   production application or database.
+2. **Completed:** establish protected `development` and `staging` at the
+   deployed baseline.
+3. **Completed:** recover lifecycle email behavior as the first branch-only
+   loss-risk item through PR #242.
+4. Review #219 independently because patient identity and migration safety are
    release-blocking boundaries.
+5. Decompose #198-#205 into domain-sized recovery pull requests.
 6. Treat #222 as an evidence source and extract only changes not already
    recovered from the clinic-launch stack.
 7. Recreate dependency updates from the then-current lockfile.
@@ -158,7 +218,9 @@ The first `development` branch-creation push had an all-zero
 that one bootstrap event instead of comparing the commit to itself. The same
 commit's `staging` fast-forward supplied a real prior SHA and passed all CI.
 Normal pull requests into `development` provide a real base SHA; this ledger
-update is the first protected-flow exercise of that path.
+was proven by documentation-only PR #241 as the first protected-flow exercise
+of that path; it merged as `f75c8580`. PR #242 then became the first protected
+Development recovery with application and migration work.
 
 ## Orca retirement gate and grace period
 
@@ -189,6 +251,22 @@ secret-bearing contents. Until the full gate and grace period are satisfied,
 do not remove or prune Orca worktrees, delete their branches, or remove safety
 refs.
 
+The read-only worktree classification accounts for all 22 registered Orca
+worktrees: 12 are exact merged heads or incorporated ancestors, eight are clean
+stale baseline/readiness clones with no unique commits, one clean old ancestor
+requires owner confirmation, and one contains the already-preserved final-newline
+journal change. No unpreserved unique Orca WIP was found. This classification
+is a future cleanup order, not deletion authorization: readiness clones first,
+then merged-head worktrees, the owner-confirmation item only after confirmation,
+the dirty journal worktree only after independent encrypted preservation, and
+Orca's stale `main` worktree last.
+
+The retirement gate is currently NO-GO because no independent encrypted copy
+with custodian/date is evidenced, the grace clock has not started, Development
+and Staging lack isolated deployment resources, no complete governed
+Development-to-Staging-to-Production cycle has occurred, and final live Orca
+state plus manual GitHub App/OAuth-grant audits remain outstanding.
+
 ## Evidence required for a recovery pull request
 
 Every successor records its source branch/PR and the exact commits consulted.
@@ -205,3 +283,49 @@ It must also provide:
 
 This ledger is updated in the same pull request as each disposition. A cleanup
 operation without a ledger update is out of policy.
+
+## Lifecycle-email recovery evidence
+
+PR #242 was rebased onto `development@f75c8580` and independently reviewed at
+exact head `66b5238383e4f0131bc5cfc7cfc149ca3dbb06b5`. Five release-blocking findings
+were closed before merge: the final practice-state eligibility fence, safe
+classification of ambiguous Resend outcomes, per-job poison containment,
+immutable attempt evidence, and executable PostgreSQL concurrency/isolation
+coverage. The final review found no remaining code P0/P1.
+
+The pull request passed full test/build, migration history, RLS tenant
+isolation, CodeQL, and quarantined Vercel statuses. It was squash-merged only
+into `development` as `1e41d5d7b90906cddc3a227952f17def33c31e19`.
+Post-merge CI run `32888444655` and CodeQL run `32888444416` both passed on
+that exact merge SHA, including the lifecycle-email database contract.
+`staging` and `main` remained at the deployed baseline.
+
+The reviewed head and merged commit have the identical Git tree
+`56f2c1d70bd5ef7b7d60be4b51203b40695bc6e3`. Only after that proof, the merged
+successor branch `codex/recover-lifecycle-emails` and its clean non-Orca
+worktree were deleted. Original evidence branch `feat/lifecycle-emails` remains
+preserved at its inventoried tip. Two local PostgreSQL databases created solely
+for the release gate were dropped after the post-merge gate passed; they
+contained disposable fixtures and remain reproducible from the committed test
+script.
+
+## Dependency update routing
+
+Dependabot scheduled version updates are explicitly targeted at `development`
+for both npm and GitHub Actions. GitHub reads this configuration from the
+repository default branch, so the routing becomes operational only after this
+governance change completes the reviewed promotion path to `main`; merging it
+into Development alone does not change Dependabot behavior. See GitHub's
+[`dependabot.yml` location contract](https://docs.github.com/en/code-security/concepts/supply-chain-security/about-the-dependabot-yml-file)
+and [`target-branch` reference](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference#target-branch).
+
+Dependabot security updates are a documented exception: GitHub always opens
+them against the repository default branch, which remains deployed `main`.
+The npm grouping and open-pull-request-limit settings under the non-default
+target also do not apply to those security updates.
+Those pull requests are not implicitly approved for direct production merge.
+Use the incident/hotfix path for an urgent release and immediately forward-port
+it, or recreate the fix from current Development and close the default-branch
+PR only after the successor is preserved. Existing PRs #220, #224, and #230
+remain `recreate`; this routing declaration does not make their stale diffs
+current or approve them for merge.
