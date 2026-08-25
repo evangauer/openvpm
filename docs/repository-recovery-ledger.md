@@ -63,7 +63,7 @@ bundle and dedicated safety refs.
 
 | Source | Preserved tip | Main divergence at inventory | Decision | First review |
 | --- | --- | --- | --- | --- |
-| `feat/lifecycle-emails` | `24a3347ced908f725f72260667d6f48c2f701ee9` | 4 unique commits; 219 behind | `recover` | Email event correctness, retries, privacy, and subscription-state semantics |
+| `feat/lifecycle-emails` | `24a3347ced908f725f72260667d6f48c2f701ee9` | 4 unique commits; 219 behind | `recover` via draft [#242](https://github.com/evangauer/openvpm/pull/242) | Narrow confirmation/cancellation recovery preserves post-commit state checks and idempotency; durable provider-failure redrive remains an explicit review risk |
 | `feat/activation-funnel` | `09e4fadd41742103e6c8092a9497134138100759` | 3 commits at inventory; two already merged via #29, one stale UI-only tip remains | `evidence-only` | Review found no analytics implementation to recover; current empty states, onboarding redirect, and billing-state-aware trial badge supersede the remaining copy/route changes |
 | `codex/onboarding-first-day-density` | `68959b3a3ca088b00144ac846e91e4ab266f5af6` | 1 unique commit; 32 behind | `recover` | Separate the committed onboarding polish from the much larger dirty worktree |
 
