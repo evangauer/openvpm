@@ -139,6 +139,7 @@ CREATE TABLE "lifecycle_email_jobs" (
 );
 --> statement-breakpoint
 ALTER TABLE "practices" ADD COLUMN "subscription_generation" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "lifecycle_email_jobs_practice_id_uq" ON "lifecycle_email_jobs" USING btree ("practice_id","id");--> statement-breakpoint
 ALTER TABLE "lifecycle_email_attempts" ADD CONSTRAINT "lifecycle_email_attempts_practice_id_practices_id_fk" FOREIGN KEY ("practice_id") REFERENCES "public"."practices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "lifecycle_email_attempts" ADD CONSTRAINT "lifecycle_email_attempts_job_tenant_fk" FOREIGN KEY ("practice_id","job_id") REFERENCES "public"."lifecycle_email_jobs"("practice_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "lifecycle_email_jobs" ADD CONSTRAINT "lifecycle_email_jobs_practice_id_practices_id_fk" FOREIGN KEY ("practice_id") REFERENCES "public"."practices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -146,12 +147,72 @@ ALTER TABLE "lifecycle_email_jobs" ADD CONSTRAINT "lifecycle_email_jobs_communic
 CREATE UNIQUE INDEX "lifecycle_email_attempts_job_attempt_uq" ON "lifecycle_email_attempts" USING btree ("job_id","attempt_number");--> statement-breakpoint
 CREATE INDEX "lifecycle_email_attempts_job_history_idx" ON "lifecycle_email_attempts" USING btree ("practice_id","job_id","attempt_number");--> statement-breakpoint
 CREATE UNIQUE INDEX "lifecycle_email_attempts_provider_message_uq" ON "lifecycle_email_attempts" USING btree ("provider","provider_message_id") WHERE "lifecycle_email_attempts"."provider_message_id" is not null;--> statement-breakpoint
-CREATE UNIQUE INDEX "lifecycle_email_jobs_practice_id_uq" ON "lifecycle_email_jobs" USING btree ("practice_id","id");--> statement-breakpoint
 CREATE UNIQUE INDEX "lifecycle_email_jobs_communication_uq" ON "lifecycle_email_jobs" USING btree ("practice_id","communication_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "lifecycle_email_jobs_dedupe_key_uq" ON "lifecycle_email_jobs" USING btree ("dedupe_key");--> statement-breakpoint
 CREATE INDEX "lifecycle_email_jobs_due_idx" ON "lifecycle_email_jobs" USING btree ("next_attempt_at","created_at","id") WHERE "lifecycle_email_jobs"."state" in ('pending', 'retry', 'blocked_recovery');--> statement-breakpoint
 CREATE INDEX "lifecycle_email_jobs_lease_idx" ON "lifecycle_email_jobs" USING btree ("lease_expires_at","created_at","id") WHERE "lifecycle_email_jobs"."state" = 'delivering';--> statement-breakpoint
 ALTER TABLE "practices" ADD CONSTRAINT "practices_subscription_generation_check" CHECK ("practices"."subscription_generation" >= 0);--> statement-breakpoint
+
+CREATE OR REPLACE FUNCTION guard_lifecycle_email_attempt_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = ''
+AS $body$
+DECLARE
+  is_owner boolean;
+BEGIN
+  is_owner := current_user = (
+    SELECT pg_catalog.pg_get_userbyid(class.relowner)
+    FROM pg_catalog.pg_class class
+    JOIN pg_catalog.pg_namespace namespace
+      ON namespace.oid = class.relnamespace
+    WHERE namespace.nspname = TG_TABLE_SCHEMA
+      AND class.relname = TG_TABLE_NAME
+  );
+
+  IF TG_OP = 'DELETE' THEN
+    IF is_owner
+      AND coalesce(pg_catalog.current_setting('app.ledger_maintenance', true), '') = 'on'
+    THEN
+      RETURN OLD;
+    END IF;
+    RAISE EXCEPTION USING
+      ERRCODE = '55000',
+      MESSAGE = 'Lifecycle email attempts may only be deleted during owner maintenance.';
+  END IF;
+
+  IF NEW.id IS DISTINCT FROM OLD.id
+    OR NEW.created_at IS DISTINCT FROM OLD.created_at
+    OR NEW.practice_id IS DISTINCT FROM OLD.practice_id
+    OR NEW.job_id IS DISTINCT FROM OLD.job_id
+    OR NEW.attempt_number IS DISTINCT FROM OLD.attempt_number
+    OR NEW.provider IS DISTINCT FROM OLD.provider
+    OR NEW.request_fingerprint_sha256 IS DISTINCT FROM OLD.request_fingerprint_sha256
+  THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '55000',
+      MESSAGE = 'Lifecycle email attempt identity is immutable.';
+  END IF;
+
+  IF OLD.resolved_at IS NOT NULL
+    OR NEW.resolved_at IS NULL
+    OR OLD.outcome IS NOT NULL
+    OR OLD.provider_message_id IS NOT NULL
+    OR OLD.failure_code IS NOT NULL
+    OR OLD.failure_detail IS NOT NULL
+  THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '55000',
+      MESSAGE = 'Lifecycle email attempt state transition is not permitted.';
+  END IF;
+
+  RETURN NEW;
+END;
+$body$;--> statement-breakpoint
+CREATE TRIGGER lifecycle_email_attempts_state_guard
+  BEFORE UPDATE OR DELETE ON lifecycle_email_attempts
+  FOR EACH ROW EXECUTE FUNCTION guard_lifecycle_email_attempt_mutation();--> statement-breakpoint
+REVOKE ALL ON FUNCTION public.guard_lifecycle_email_attempt_mutation() FROM PUBLIC;--> statement-breakpoint
 
 -- Provider dispatch evidence is operational system state, never tenant-visible.
 ALTER TABLE public.lifecycle_email_jobs ENABLE ROW LEVEL SECURITY;--> statement-breakpoint

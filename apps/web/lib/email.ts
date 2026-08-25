@@ -59,6 +59,7 @@ export interface EmailProviderEvidence {
   failureCode?:
     | "provider_not_configured"
     | "provider_rejected"
+    | "provider_outcome_ambiguous"
     | "send_timeout"
     | "provider_exception"
     | "missing_provider_id";
@@ -231,12 +232,22 @@ async function dispatchEmail(
           : error,
       );
       const timedOut = controller.signal.aborted;
+      const outcomeUnknown =
+        timedOut ||
+        error.name === "concurrent_idempotent_requests" ||
+        error.name === "invalid_idempotent_request" ||
+        error.statusCode === null ||
+        error.statusCode >= 500;
       return {
         success: false,
         provider,
         error: timedOut ? emailSendTimeoutMessage() : error.message,
-        outcome: timedOut ? "outcome_unknown" : "definite_failure",
-        failureCode: timedOut ? "send_timeout" : "provider_rejected",
+        outcome: outcomeUnknown ? "outcome_unknown" : "definite_failure",
+        failureCode: timedOut
+          ? "send_timeout"
+          : outcomeUnknown
+            ? "provider_outcome_ambiguous"
+            : "provider_rejected",
       };
     }
 

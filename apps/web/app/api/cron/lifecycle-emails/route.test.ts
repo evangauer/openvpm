@@ -18,6 +18,7 @@ const { GET } = await import("./route");
 
 const METRICS = {
   claimed: 2,
+  errors: 0,
   delivered: 1,
   retried: 1,
   blocked: 0,
@@ -56,6 +57,20 @@ describe("lifecycle email cron", () => {
       detail: "Durable subscription lifecycle email sweep completed",
       metrics: METRICS,
     });
+  });
+
+  it("reports a degraded heartbeat when a claimed job is contained", async () => {
+    mocks.runLifecycleEmailBatch.mockResolvedValueOnce({
+      ...METRICS,
+      errors: 1,
+    });
+    const response = await GET(
+      new Request("https://openvpm.test/api/cron/lifecycle-emails"),
+    );
+    expect(response.status).toBe(200);
+    expect(mocks.reportCronHeartbeat).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "degraded" }),
+    );
   });
 
   it("reports a redacted failure without leaking the thrown detail", async () => {

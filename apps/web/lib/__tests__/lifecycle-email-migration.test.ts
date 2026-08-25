@@ -16,6 +16,20 @@ describe("durable lifecycle email migration", () => {
     expect(migration).toContain("lifecycle_email_attempts_job_attempt_uq");
     expect(migration).toContain("lifecycle_email_jobs_communication_tenant_fk");
     expect(migration).toContain("lifecycle_email_attempts_job_tenant_fk");
+    expect(
+      migration.indexOf("lifecycle_email_jobs_practice_id_uq"),
+    ).toBeLessThan(migration.indexOf("lifecycle_email_attempts_job_tenant_fk"));
+    expect(migration).toContain("lifecycle_email_attempts_state_guard");
+    expect(migration).toContain("guard_lifecycle_email_attempt_mutation");
+    expect(migration).toContain(
+      "Lifecycle email attempt identity is immutable",
+    );
+    expect(migration).toContain(
+      "Lifecycle email attempt state transition is not permitted",
+    );
+    expect(migration).toContain(
+      "Lifecycle email attempts may only be deleted during owner maintenance",
+    );
   });
 
   it("enables deny-by-default system-only RLS in both migration and canonical policy", () => {

@@ -13,7 +13,10 @@ export async function GET(request: Request) {
   try {
     const metrics = await runLifecycleEmailBatch();
     const degraded =
-      metrics.failed > 0 || metrics.outcomeUnknown > 0 || metrics.blocked > 0;
+      metrics.errors > 0 ||
+      metrics.failed > 0 ||
+      metrics.outcomeUnknown > 0 ||
+      metrics.blocked > 0;
     await reportCronHeartbeat({
       job: "lifecycle-emails",
       status: degraded ? "degraded" : "ok",

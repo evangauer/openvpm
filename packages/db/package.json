@@ -26,6 +26,7 @@
     "db:treatment-plan-concurrency:test": "tsx test-treatment-plan-concurrency.ts",
     "db:sms-provider-resolutions:test": "tsx test-sms-provider-event-resolutions.ts",
     "db:migration-runs:test": "tsx test-migration-runs.ts",
+    "db:lifecycle-email-outbox:test": "tsx test-lifecycle-email-outbox.ts",
     "db:migrations:check": "pnpm --filter @openpims/web exec vitest run lib/__tests__/migration-journal-integrity.test.ts lib/__tests__/db-migrations.test.ts",
     "db:drift": "tsx check-drift.ts",
     "db:baseline": "tsx baseline.ts",

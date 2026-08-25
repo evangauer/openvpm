@@ -189,7 +189,7 @@ export const lifecycleEmailJobs = pgTable(
   }),
 );
 
-/** One row per provider call. An unresolved row is durable crash-window proof. */
+/** One row per reserved provider call. An unresolved row is crash-window proof. */
 export const lifecycleEmailAttempts = pgTable(
   "lifecycle_email_attempts",
   {

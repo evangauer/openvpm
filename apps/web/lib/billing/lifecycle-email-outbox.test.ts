@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("@openpims/db/client", () => ({ db: {}, Database: {} }));
 vi.mock("@/lib/alerts", () => ({ alertOps: vi.fn() }));
@@ -20,8 +20,14 @@ const SCHEMA_SOURCE = readFileSync(
 let helpers: typeof import("./lifecycle-email-outbox");
 
 beforeAll(async () => {
+  vi.stubEnv(
+    "EMAIL_PREFERENCE_IDENTITY_SECRET",
+    "lifecycle-test-identity-secret-at-least-32-bytes",
+  );
   helpers = await import("./lifecycle-email-outbox");
 });
+
+afterAll(() => vi.unstubAllEnvs());
 
 describe("subscription lifecycle email outbox safety model", () => {
   it("binds recipient identity without persisting the address or rendered body", () => {
@@ -35,6 +41,7 @@ describe("subscription lifecycle email outbox safety model", () => {
     );
     expect(a).toBe(b);
     expect(a).toMatch(/^[0-9a-f]{64}$/);
+    expect(SOURCE).toContain("emailPreferenceRecipientHash");
     expect(SCHEMA_SOURCE).not.toMatch(/recipientEmail|renderedHtml|emailBody/);
   });
 
@@ -111,9 +118,38 @@ describe("subscription lifecycle email outbox safety model", () => {
     expect(SOURCE).toContain("idempotencyKey: job.providerIdempotencyKey");
   });
 
+  it("holds the practice eligibility fence across the bounded provider call", () => {
+    const fence = SOURCE.slice(
+      SOURCE.indexOf("async function dispatchWithEligibilityFence"),
+      SOURCE.indexOf("async function resolveReservedWithoutDispatch"),
+    );
+    expect(fence).toContain('.for("update")');
+    expect(fence).toContain("practice?.recoveryHold");
+    expect(fence).toContain("practice.subscriptionGeneration");
+    expect(fence.indexOf('.for("update")')).toBeLessThan(
+      fence.indexOf("dispatchPreparedEmailWithProviderEvidence(prepared)"),
+    );
+  });
+
   it("uses skip-locked claiming plus lease-token CAS for concurrency", () => {
     expect(SOURCE).toContain('.for("update", { skipLocked: true })');
     expect(SOURCE).toContain("eq(lifecycleEmailJobs.leaseToken, claimed.leaseToken)");
+  });
+
+  it("contains per-job failures, preserves ambiguous evidence, and continues", () => {
+    const batch = SOURCE.slice(
+      SOURCE.indexOf("export async function runLifecycleEmailBatch"),
+      SOURCE.indexOf("async function claimNextJob"),
+    );
+    const recovery = SOURCE.slice(
+      SOURCE.indexOf("async function recoverClaimedJobAfterError"),
+      SOURCE.indexOf("async function claimNextJob"),
+    );
+    expect(batch).toContain("recoverClaimedJobAfterError");
+    expect(batch).toContain("metrics.errors++");
+    expect(recovery).toContain("worker_error_after_reservation");
+    expect(recovery).toContain("worker_error_before_reservation");
+    expect(recovery).toContain('state: ambiguous ? "retry" : "pending"');
   });
 
   it("revalidates recovery, contact, generation, and cancellation identity", () => {
@@ -128,5 +164,13 @@ describe("subscription lifecycle email outbox safety model", () => {
     expect(SOURCE).toContain('practice.billingStatus === "canceled"');
     expect(SOURCE).toContain("practice.stripeSubscriptionId === null");
     expect(SOURCE).toContain('state: "suppressed_stale"');
+  });
+
+  it("closes the generic communication ledger for terminal unknown outcomes", () => {
+    const terminalUnknown = SOURCE.slice(
+      SOURCE.indexOf("async function completeUnknown"),
+    );
+    expect(terminalUnknown).toContain('.set({ status: "failed" })');
+    expect(terminalUnknown).toContain("communicationId");
   });
 });

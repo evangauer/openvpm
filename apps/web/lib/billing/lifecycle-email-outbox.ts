@@ -9,6 +9,7 @@ import {
 import { db, type Database } from "@openpims/db/client";
 import { alertOps } from "@/lib/alerts";
 import { billingContactEmail } from "@/lib/billing/contact";
+import { emailPreferenceRecipientHash } from "@/lib/email-preferences";
 import {
   dispatchPreparedEmailWithProviderEvidence,
   emailProviderForDispatch,
@@ -32,6 +33,7 @@ const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 20 * 60_000, 60 * 60_000];
 
 export type LifecycleEmailBatchMetrics = {
   claimed: number;
+  errors: number;
   delivered: number;
   retried: number;
   blocked: number;
@@ -39,6 +41,11 @@ export type LifecycleEmailBatchMetrics = {
   failed: number;
   outcomeUnknown: number;
 };
+
+type LifecycleEmailProcessResult = Exclude<
+  keyof LifecycleEmailBatchMetrics,
+  "claimed" | "errors"
+>;
 
 type ClaimedJob = {
   id: string;
@@ -114,6 +121,7 @@ export async function runLifecycleEmailBatch(
 ): Promise<LifecycleEmailBatchMetrics> {
   const metrics: LifecycleEmailBatchMetrics = {
     claimed: 0,
+    errors: 0,
     delivered: 0,
     retried: 0,
     blocked: 0,
@@ -127,10 +135,85 @@ export async function runLifecycleEmailBatch(
     const claimed = await claimNextJob(iterationNow);
     if (!claimed) break;
     metrics.claimed++;
-    const result = await processClaimedJob(claimed, iterationNow);
-    metrics[result]++;
+    try {
+      const result = await processClaimedJob(claimed, iterationNow);
+      metrics[result]++;
+    } catch {
+      metrics.errors++;
+      try {
+        await recoverClaimedJobAfterError(claimed, iterationNow);
+      } catch {
+        console.error(
+          "[lifecycle-emails] failed to recover claimed job; details redacted",
+        );
+      }
+      try {
+        await alertOps(
+          "Lifecycle email worker error",
+          `job=${claimed.id} outcome=worker_error`,
+        );
+      } catch {
+        // The durable lease/backoff state and cron heartbeat remain authoritative.
+      }
+    }
   }
   return metrics;
+}
+
+async function recoverClaimedJobAfterError(
+  claimed: ClaimedJob,
+  now: Date,
+): Promise<void> {
+  await withSystem(db, async (tx) => {
+    const [job] = await tx
+      .select({
+        id: lifecycleEmailJobs.id,
+        attemptCount: lifecycleEmailJobs.attemptCount,
+      })
+      .from(lifecycleEmailJobs)
+      .where(
+        and(
+          eq(lifecycleEmailJobs.id, claimed.id),
+          eq(lifecycleEmailJobs.state, "delivering"),
+          eq(lifecycleEmailJobs.leaseToken, claimed.leaseToken),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (!job) return;
+
+    const [unresolvedAttempt] = await tx
+      .select({ id: lifecycleEmailAttempts.id })
+      .from(lifecycleEmailAttempts)
+      .where(
+        and(
+          eq(lifecycleEmailAttempts.jobId, job.id),
+          isNull(lifecycleEmailAttempts.resolvedAt),
+        ),
+      )
+      .limit(1);
+    const ambiguous = Boolean(unresolvedAttempt);
+    await tx
+      .update(lifecycleEmailJobs)
+      .set({
+        state: ambiguous ? "retry" : "pending",
+        nextAttemptAt: new Date(
+          now.getTime() +
+            (ambiguous
+              ? retryDelayMs(Math.max(job.attemptCount, 1))
+              : RECOVERY_RECHECK_MS),
+        ),
+        leaseToken: null,
+        leaseExpiresAt: null,
+        ...(ambiguous ? { lastOutcome: "outcome_unknown" as const } : {}),
+        lastErrorCode: ambiguous
+          ? "worker_error_after_reservation"
+          : "worker_error_before_reservation",
+        lastErrorDetail: null,
+        updatedAt: now,
+      })
+      .where(eq(lifecycleEmailJobs.id, job.id));
+  });
 }
 
 async function claimNextJob(now: Date): Promise<ClaimedJob | null> {
@@ -178,7 +261,7 @@ async function claimNextJob(now: Date): Promise<ClaimedJob | null> {
 async function processClaimedJob(
   claimed: ClaimedJob,
   now: Date,
-): Promise<keyof Omit<LifecycleEmailBatchMetrics, "claimed">> {
+): Promise<LifecycleEmailProcessResult> {
   const loaded = await loadClaimedJob(claimed);
   if (!loaded) return "suppressed";
 
@@ -196,17 +279,169 @@ async function processClaimedJob(
       : reservation.action;
   }
 
-  // Important safety boundary: the provider call happens only after the
-  // attempt reservation transaction has committed. No practice row lock or
-  // tenant transaction is held while the network outcome is uncertain.
-  const evidence = await dispatchPreparedEmailWithProviderEvidence(prepared);
+  const dispatch = await dispatchWithEligibilityFence(
+    claimed,
+    loaded,
+    prepared,
+    fingerprint,
+    recipientHash(loaded.practiceId, prepared.to),
+    reservation.attemptId,
+    now,
+  );
+  if (dispatch.action !== "evidence") return dispatch.action;
   return persistProviderOutcome(
     claimed,
     reservation.attemptId,
     reservation.attemptNumber,
-    evidence,
+    dispatch.evidence,
     now,
   );
+}
+
+/**
+ * Hold the practice row lock across the bounded provider call. Every relevant
+ * contact, recovery, deletion, and subscription mutation updates this row, so
+ * PostgreSQL orders that mutation either before this final check or after the
+ * send. The durable reservation and stable provider key make a crash after the
+ * external side effect safely retryable.
+ */
+async function dispatchWithEligibilityFence(
+  claimed: ClaimedJob,
+  loaded: EligibleJob,
+  prepared: EmailDispatchOptions,
+  fingerprint: string,
+  preparedRecipientHash: string,
+  attemptId: string,
+  now: Date,
+): Promise<
+  | { action: "evidence"; evidence: EmailProviderEvidence }
+  | { action: "blocked" | "suppressed" | "outcomeUnknown" }
+> {
+  return withSystem(db, async (tx) => {
+    const [job] = await tx
+      .select({
+        id: lifecycleEmailJobs.id,
+        communicationId: lifecycleEmailJobs.communicationId,
+        requestFingerprintSha256:
+          lifecycleEmailJobs.requestFingerprintSha256,
+        subscriptionGeneration: lifecycleEmailJobs.subscriptionGeneration,
+      })
+      .from(lifecycleEmailJobs)
+      .where(
+        and(
+          eq(lifecycleEmailJobs.id, claimed.id),
+          eq(lifecycleEmailJobs.state, "delivering"),
+          eq(lifecycleEmailJobs.leaseToken, claimed.leaseToken),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (!job) return { action: "outcomeUnknown" } as const;
+
+    const [practice] = await tx
+      .select({
+        email: practices.email,
+        deletedAt: practices.deletedAt,
+        recoveryHold: practices.recoveryHold,
+        billingStatus: practices.billingStatus,
+        stripeSubscriptionId: practices.stripeSubscriptionId,
+        subscriptionGeneration: practices.subscriptionGeneration,
+      })
+      .from(practices)
+      .where(eq(practices.id, loaded.practiceId))
+      .limit(1)
+      .for("update");
+
+    if (practice?.recoveryHold) {
+      await resolveReservedWithoutDispatch(
+        tx,
+        attemptId,
+        now,
+        "recovery_hold_before_dispatch",
+      );
+      await tx
+        .update(lifecycleEmailJobs)
+        .set({
+          state: "blocked_recovery",
+          nextAttemptAt: new Date(now.getTime() + RECOVERY_RECHECK_MS),
+          leaseToken: null,
+          leaseExpiresAt: null,
+          lastOutcome: "definite_failure",
+          lastErrorCode: "recovery_hold_before_dispatch",
+          lastErrorDetail: null,
+          updatedAt: now,
+        })
+        .where(eq(lifecycleEmailJobs.id, job.id));
+      return { action: "blocked" } as const;
+    }
+
+    const recipient = billingContactEmail(practice?.email);
+    const recipientCurrent =
+      recipient !== null &&
+      recipientHash(loaded.practiceId, recipient) ===
+        loaded.recipientHashSha256 &&
+      preparedRecipientHash === loaded.recipientHashSha256;
+    const identityCurrent =
+      practice?.deletedAt === null &&
+      practice.subscriptionGeneration === job.subscriptionGeneration &&
+      (loaded.kind === "subscription_confirmed"
+        ? practice.billingStatus === "active" &&
+          practice.stripeSubscriptionId === loaded.subscriptionId
+        : practice.billingStatus === "canceled" &&
+          practice.stripeSubscriptionId === null);
+    if (!recipientCurrent || !identityCurrent) {
+      await resolveReservedWithoutDispatch(
+        tx,
+        attemptId,
+        now,
+        "stale_before_dispatch",
+      );
+      await suppressStale(tx, job.id, job.communicationId, now);
+      return { action: "suppressed" } as const;
+    }
+
+    if (job.requestFingerprintSha256 !== fingerprint) {
+      await resolveReservedWithoutDispatch(
+        tx,
+        attemptId,
+        now,
+        "request_fingerprint_changed_before_dispatch",
+      );
+      await completeUnknown(
+        tx,
+        job.id,
+        job.communicationId,
+        now,
+        "request_fingerprint_changed_before_dispatch",
+      );
+      return { action: "outcomeUnknown" } as const;
+    }
+
+    const evidence = await dispatchPreparedEmailWithProviderEvidence(prepared);
+    return { action: "evidence", evidence } as const;
+  });
+}
+
+async function resolveReservedWithoutDispatch(
+  tx: Database,
+  attemptId: string,
+  now: Date,
+  code: string,
+) {
+  await tx
+    .update(lifecycleEmailAttempts)
+    .set({
+      resolvedAt: now,
+      outcome: "definite_failure",
+      failureCode: code,
+      failureDetail: null,
+    })
+    .where(
+      and(
+        eq(lifecycleEmailAttempts.id, attemptId),
+        isNull(lifecycleEmailAttempts.resolvedAt),
+      ),
+    );
 }
 
 async function loadClaimedJob(claimed: ClaimedJob): Promise<EligibleJob | null> {
@@ -339,7 +574,13 @@ async function reserveAttempt(
       job.requestFingerprintSha256 &&
       job.requestFingerprintSha256 !== fingerprint
     ) {
-      await completeUnknown(tx, job.id, now, "request_fingerprint_changed");
+      await completeUnknown(
+        tx,
+        job.id,
+        job.communicationId,
+        now,
+        "request_fingerprint_changed",
+      );
       return { action: "unknown" };
     }
 
@@ -366,6 +607,7 @@ async function reserveAttempt(
           await completeUnknown(
             tx,
             job.id,
+            job.communicationId,
             now,
             "provider_changed_after_unknown",
           );
@@ -375,7 +617,13 @@ async function reserveAttempt(
           now.getTime() - new Date(job.firstAttemptAt).getTime() >=
           UNKNOWN_RETRY_WINDOW_MS
         ) {
-          await completeUnknown(tx, job.id, now, "idempotency_window_expired");
+          await completeUnknown(
+            tx,
+            job.id,
+            job.communicationId,
+            now,
+            "idempotency_window_expired",
+          );
           return { action: "unknown" };
         }
       }
@@ -410,7 +658,7 @@ async function persistProviderOutcome(
   attemptNumber: number,
   evidence: EmailProviderEvidence,
   now: Date,
-): Promise<keyof Omit<LifecycleEmailBatchMetrics, "claimed">> {
+): Promise<LifecycleEmailProcessResult> {
   const result = await withSystem(db, async (tx) => {
     const [job] = await tx
       .select({
@@ -497,7 +745,13 @@ async function persistProviderOutcome(
     });
     if (failureAction !== "retry") {
       if (failureAction === "outcome_unknown") {
-        await completeUnknown(tx, job.id, now, errorCode);
+        await completeUnknown(
+          tx,
+          job.id,
+          job.communicationId,
+          now,
+          errorCode,
+        );
         return "outcomeUnknown" as const;
       }
       await tx
@@ -582,6 +836,7 @@ async function suppressStale(
 async function completeUnknown(
   tx: Database,
   jobId: string,
+  communicationId: string,
   now: Date,
   code: string,
 ) {
@@ -599,14 +854,23 @@ async function completeUnknown(
       updatedAt: now,
     })
     .where(eq(lifecycleEmailJobs.id, jobId));
+  // The generic communication ledger has no "unknown" status. Mark the
+  // terminal, unconfirmed outcome as failed so it cannot masquerade as queued;
+  // lifecycle_email_jobs remains the authoritative manual-review record.
+  await tx
+    .update(communications)
+    .set({ status: "failed" })
+    .where(eq(communications.id, communicationId));
 }
 
 export function recipientHash(practiceId: string, recipient: string): string {
-  return createHash("sha256")
-    .update(
-      `openvpm-lifecycle-recipient:v1:${practiceId}:${recipient.trim().toLowerCase()}`,
-    )
-    .digest("hex");
+  const hash = emailPreferenceRecipientHash(
+    `openvpm-lifecycle-recipient:v1:${practiceId}:${recipient.trim().toLowerCase()}`,
+  );
+  if (!hash) {
+    throw new Error("Lifecycle email recipient identity key is not configured");
+  }
+  return hash;
 }
 
 export function requestFingerprint(request: EmailDispatchOptions): string {
