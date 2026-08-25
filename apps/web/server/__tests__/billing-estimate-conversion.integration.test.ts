@@ -55,6 +55,29 @@ async function within<T>(
   }
 }
 
+async function waitForBlockedProductQueries(
+  sql: SqlClient,
+  databaseName: string,
+  minimum: number,
+): Promise<void> {
+  await within(
+    (async () => {
+      for (;;) {
+        const [row] = await sql<Array<{ count: number }>>`
+          select count(*)::int as count
+          from pg_stat_activity
+          where datname = ${databaseName}
+            and wait_event_type = 'Lock'
+            and query ilike '%products%'
+        `;
+        if ((row?.count ?? 0) >= minimum) return;
+        await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+      }
+    })(),
+    `${minimum} blocked product queries`,
+  );
+}
+
 function rejectionDetails(reason: unknown): string {
   const details: string[] = [];
   const seen = new Set<unknown>();
@@ -269,6 +292,27 @@ describeWithPostgres("atomic estimate conversion PostgreSQL contract", () => {
         );
         return { id, updatedAt };
       };
+      const createProductTemplate = async (
+        fixture: Fixture,
+        productId: string,
+      ) => {
+        const id = randomUUID();
+        await ownerDb.insert(schema.treatmentTemplates).values({
+          id,
+          practiceId: fixture.practiceId,
+          name: `Synthetic medication template ${id}`,
+        });
+        await ownerDb.insert(schema.treatmentTemplateItems).values({
+          templateId: id,
+          itemType: "product",
+          itemId: productId,
+          description: "Synthetic templated medication",
+          defaultQuantity: 2,
+          defaultUnitPrice: "15.00",
+          sortOrder: 0,
+        });
+        return id;
+      };
       const callerContext = (fixture: Fixture) =>
         ({
           db: appDb,
@@ -325,6 +369,16 @@ describeWithPostgres("atomic estimate conversion PostgreSQL contract", () => {
       const otherTenantEstimate = await createEstimate(otherTenantFixture, [
         { productId: otherTenantProduct, quantity: 2 },
       ]);
+      const otherTenantTemplate = await createProductTemplate(
+        otherTenantFixture,
+        otherTenantProduct,
+      );
+      await expect(
+        templatesCaller(raceFixture).applyToInvoice({
+          templateId: otherTenantTemplate,
+          invoiceId: otherTenantEstimate.id,
+        }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
       await expect(
         caller(raceFixture).convertEstimateToInvoice({
           id: otherTenantEstimate.id,
@@ -343,14 +397,10 @@ describeWithPostgres("atomic estimate conversion PostgreSQL contract", () => {
       // captured before the template edit must not deduct stock or convert the
       // now-stale estimate.
       const staleTemplateFixture = await createFixture();
-      const staleTemplateProduct = await createProduct(
-        staleTemplateFixture,
-        7,
-      );
-      const staleTemplateEstimate = await createEstimate(
-        staleTemplateFixture,
-        [{ productId: staleTemplateProduct, quantity: 2 }],
-      );
+      const staleTemplateProduct = await createProduct(staleTemplateFixture, 7);
+      const staleTemplateEstimate = await createEstimate(staleTemplateFixture, [
+        { productId: staleTemplateProduct, quantity: 2 },
+      ]);
       const templateId = randomUUID();
       await ownerDb.insert(schema.treatmentTemplates).values({
         id: templateId,
@@ -392,6 +442,179 @@ describeWithPostgres("atomic estimate conversion PostgreSQL contract", () => {
         .from(schema.invoices)
         .where(eq(schema.invoices.id, staleTemplateEstimate.id));
       expect(staleTemplateState?.isEstimate).toBe(true);
+
+      // A standalone refill can hold the product lock before its queue row is
+      // visible. Force that order: the template's first evidence read sees no
+      // queue row, then waits behind the refill on the product. Its post-lock
+      // recheck must observe the committed queue work and roll back every
+      // template write without deducting the medication a second time.
+      const templateRefillFixture = await createFixture();
+      const templateRefillProduct = await createProduct(
+        templateRefillFixture,
+        10,
+      );
+      const templateRefillPrescription = randomUUID();
+      await ownerDb.insert(schema.prescriptions).values({
+        id: templateRefillPrescription,
+        practiceId: templateRefillFixture.practiceId,
+        patientId: templateRefillFixture.patientId,
+        appointmentId: null,
+        medicationName: "Synthetic standalone refill medication",
+        dosage: "25 mg",
+        frequency: "Once daily",
+        quantity: 2,
+        productId: templateRefillProduct,
+        refillsRemaining: 1,
+        prescribedBy: templateRefillFixture.userId,
+        startDate: "2026-08-01",
+        status: "active",
+      });
+      await ownerDb.insert(schema.prescriptionEvents).values({
+        practiceId: templateRefillFixture.practiceId,
+        prescriptionId: templateRefillPrescription,
+        patientId: templateRefillFixture.patientId,
+        productId: templateRefillProduct,
+        eventType: "created",
+        quantity: 2,
+        statusBefore: null,
+        statusAfter: "active",
+        refillsBefore: null,
+        refillsAfter: 1,
+        actorId: templateRefillFixture.userId,
+        actorName: "Synthetic billing operator",
+      });
+      const templateRefillInvoice = await caller(
+        templateRefillFixture,
+      ).createInvoice({
+        clientId: templateRefillFixture.clientId,
+        patientId: templateRefillFixture.patientId,
+        appointmentId: templateRefillFixture.appointmentId,
+        isEstimate: false,
+        items: [
+          {
+            description: "Synthetic exam service",
+            quantity: 1,
+            unitPrice: "5.00",
+            itemType: "service",
+          },
+        ],
+      });
+      const templateRefillTemplate = await createProductTemplate(
+        templateRefillFixture,
+        templateRefillProduct,
+      );
+      const templateRefillVersion = templateRefillInvoice.updatedAt;
+      let releaseProductBarrier!: () => void;
+      const productBarrierRelease = new Promise<void>((resolveRelease) => {
+        releaseProductBarrier = resolveRelease;
+      });
+      let markProductBarrierReady!: () => void;
+      const productBarrierReady = new Promise<void>((resolveReady) => {
+        markProductBarrierReady = resolveReady;
+      });
+      const productBarrier = ownerSql.begin(async (barrierTx) => {
+        const barrierSql = barrierTx as unknown as SqlClient;
+        await barrierSql`
+          select id
+          from products
+          where id = ${templateRefillProduct}
+          for update
+        `;
+        markProductBarrierReady();
+        await productBarrierRelease;
+      });
+      await within(productBarrierReady, "template/refill product barrier");
+      const refillAttempt = recordsCaller(
+        templateRefillFixture,
+      ).recordPrescriptionRefill({
+        id: templateRefillPrescription,
+        operationId: randomUUID(),
+        note: "Synthetic ordered template/refill drill",
+      });
+      await waitForBlockedProductQueries(adminSql, databaseName, 1);
+      const templateAttempt = templatesCaller(
+        templateRefillFixture,
+      ).applyToInvoice({
+        templateId: templateRefillTemplate,
+        invoiceId: templateRefillInvoice.id,
+      });
+      const templateRejection = expect(templateAttempt).rejects.toMatchObject({
+        code: "PRECONDITION_FAILED",
+        message: expect.stringContaining("medication billing queue"),
+      });
+      try {
+        await waitForBlockedProductQueries(adminSql, databaseName, 2);
+      } finally {
+        releaseProductBarrier();
+        await within(productBarrier, "template/refill product release");
+      }
+      await within(refillAttempt, "standalone refill completion");
+      await within(templateRejection, "blocked template recheck");
+      expect(await stock(templateRefillProduct)).toBe(8);
+      const templateRefillQueue = await ownerDb
+        .select({
+          id: schema.dispenseChargeQueue.id,
+          status: schema.dispenseChargeQueue.status,
+        })
+        .from(schema.dispenseChargeQueue)
+        .where(
+          eq(
+            schema.dispenseChargeQueue.prescriptionId,
+            templateRefillPrescription,
+          ),
+        );
+      expect(templateRefillQueue).toEqual([
+        { id: expect.any(String), status: "pending" },
+      ]);
+      const templateRefillItems = await ownerDb
+        .select({ id: schema.invoiceItems.id })
+        .from(schema.invoiceItems)
+        .where(eq(schema.invoiceItems.invoiceId, templateRefillInvoice.id));
+      expect(templateRefillItems).toHaveLength(1);
+      const [templateRefillInvoiceState] = await ownerDb
+        .select({ updatedAt: schema.invoices.updatedAt })
+        .from(schema.invoices)
+        .where(eq(schema.invoices.id, templateRefillInvoice.id));
+      expect(templateRefillInvoiceState?.updatedAt).toEqual(
+        templateRefillVersion,
+      );
+
+      // Once that dispense is sourced to its own invoice, it is historical
+      // evidence rather than unresolved work for the visit invoice. A deleted
+      // prescription from the visit is likewise not a live source. Neither may
+      // block a later explicitly applied product template.
+      await caller(templateRefillFixture).createDispenseChargeInvoice({
+        id: templateRefillQueue[0]!.id,
+        acknowledgeLegacyReview: false,
+      });
+      await ownerDb.insert(schema.prescriptions).values({
+        id: randomUUID(),
+        practiceId: templateRefillFixture.practiceId,
+        patientId: templateRefillFixture.patientId,
+        appointmentId: templateRefillFixture.appointmentId,
+        medicationName: "Deleted synthetic visit medication",
+        dosage: "25 mg",
+        frequency: "Once daily",
+        quantity: 2,
+        productId: templateRefillProduct,
+        refillsRemaining: 0,
+        prescribedBy: templateRefillFixture.userId,
+        startDate: "2026-08-01",
+        status: "active",
+        deletedAt: new Date(),
+      });
+      await expect(
+        templatesCaller(templateRefillFixture).applyToInvoice({
+          templateId: templateRefillTemplate,
+          invoiceId: templateRefillInvoice.id,
+        }),
+      ).resolves.toMatchObject({ id: templateRefillInvoice.id });
+      expect(await stock(templateRefillProduct)).toBe(6);
+      const templateRefillItemsAfterHistorical = await ownerDb
+        .select({ id: schema.invoiceItems.id })
+        .from(schema.invoiceItems)
+        .where(eq(schema.invoiceItems.invoiceId, templateRefillInvoice.id));
+      expect(templateRefillItemsAfterHistorical).toHaveLength(2);
 
       const trackedProduct = await createProduct(raceFixture, 10, true);
       const untrackedProduct = await createProduct(raceFixture, 0, false);

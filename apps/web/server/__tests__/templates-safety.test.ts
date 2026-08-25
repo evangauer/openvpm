@@ -20,6 +20,9 @@ const SERVICE_ID = "00000000-0000-0000-0000-000000000005";
 const INVOICE_ID = "00000000-0000-0000-0000-000000000006";
 const SECOND_SERVICE_ID = "00000000-0000-0000-0000-000000000007";
 const SECOND_PRODUCT_ID = "00000000-0000-0000-0000-000000000008";
+const CLIENT_ID = "00000000-0000-0000-0000-000000000009";
+const PATIENT_ID = "00000000-0000-0000-0000-00000000000a";
+const APPOINTMENT_ID = "00000000-0000-0000-0000-00000000000b";
 
 function callerWithDb(db: Record<string, unknown>, role = "admin") {
   const session = {
@@ -585,7 +588,7 @@ describe("treatment template safety", () => {
     expect(updateSet).toHaveBeenCalledWith({ deletedAt: expect.any(Date) });
   });
 
-  it("applies a template to a tenant invoice and recalculates active items", async () => {
+  it("applies a service-only template without imposing the visit product gate", async () => {
     const { db, insertValues, updateSet, lockFor, execute } = createDb({
       selectResults: [
         [{ id: PRACTICE_ID }],
@@ -596,6 +599,9 @@ describe("treatment template safety", () => {
             status: "draft",
             paidAmount: "0.00",
             isEstimate: false,
+            clientId: CLIENT_ID,
+            patientId: PATIENT_ID,
+            appointmentId: APPOINTMENT_ID,
           },
         ],
         [
@@ -644,8 +650,9 @@ describe("treatment template safety", () => {
       total: "165.00",
       updatedAt: expect.anything(),
     });
-    expect(lockFor).toHaveBeenCalledTimes(1);
-    expect(lockFor).toHaveBeenCalledWith("share");
+    expect(lockFor).toHaveBeenCalledTimes(2);
+    expect(lockFor).toHaveBeenNthCalledWith(1, "update");
+    expect(lockFor).toHaveBeenNthCalledWith(2, "share");
     expect(execute).toHaveBeenCalled();
   });
 
@@ -773,11 +780,238 @@ describe("treatment template safety", () => {
         expect.objectContaining({ itemId: SECOND_PRODUCT_ID }),
       ]),
     );
-    expect(lockFor).toHaveBeenCalledTimes(2);
-    expect(lockFor).toHaveBeenNthCalledWith(1, "share");
+    expect(lockFor).toHaveBeenCalledTimes(3);
+    expect(lockFor).toHaveBeenNthCalledWith(1, "update");
     expect(lockFor).toHaveBeenNthCalledWith(2, "share");
+    expect(lockFor).toHaveBeenNthCalledWith(3, "share");
     // Four request setup/read queries + two catalog batches + totals + tax.
     expect(select).toHaveBeenCalledTimes(8);
+  });
+
+  it.each(["pending", "waived"] as const)(
+    "blocks a current-visit %s dispense before inventory or invoice writes",
+    async (status) => {
+      const { db, insertValues, updateSet, lockFor } = createDb({
+        selectResults: [
+          [{ id: PRACTICE_ID }],
+          [{ id: TEMPLATE_ID }],
+          [
+            {
+              id: INVOICE_ID,
+              status: "draft",
+              paidAmount: "0.00",
+              isEstimate: false,
+              clientId: CLIENT_ID,
+              patientId: PATIENT_ID,
+              appointmentId: APPOINTMENT_ID,
+            },
+          ],
+          [
+            {
+              description: "Dispensed medication",
+              defaultQuantity: 2,
+              defaultUnitPrice: "15.00",
+              itemType: "product",
+              itemId: PRODUCT_ID,
+            },
+          ],
+          [
+            {
+              id: APPOINTMENT_ID,
+              clientId: CLIENT_ID,
+              patientId: PATIENT_ID,
+              status: "in_exam",
+            },
+          ],
+          [],
+          [{ id: `${status}-dispense`, status, invoiceId: null }],
+        ],
+      });
+
+      await expect(
+        callerWithDb(db).applyToInvoice({
+          templateId: TEMPLATE_ID,
+          invoiceId: INVOICE_ID,
+        }),
+      ).rejects.toMatchObject({
+        code: "PRECONDITION_FAILED",
+        message: expect.stringContaining("medication billing queue"),
+      });
+
+      expect(lockFor).toHaveBeenNthCalledWith(1, "update");
+      expect(lockFor).toHaveBeenNthCalledWith(2, "update");
+      expect(lockFor).toHaveBeenNthCalledWith(3, "share");
+      expect(lockFor).toHaveBeenNthCalledWith(4, "update");
+      expect(insertValues).not.toHaveBeenCalled();
+      expect(updateSet).not.toHaveBeenCalled();
+    },
+  );
+
+  it("blocks an active product prescription from the exact invoice visit", async () => {
+    const { db, insertValues, updateSet, lockFor } = createDb({
+      selectResults: [
+        [{ id: PRACTICE_ID }],
+        [{ id: TEMPLATE_ID }],
+        [
+          {
+            id: INVOICE_ID,
+            status: "draft",
+            paidAmount: "0.00",
+            isEstimate: false,
+            clientId: CLIENT_ID,
+            patientId: PATIENT_ID,
+            appointmentId: APPOINTMENT_ID,
+          },
+        ],
+        [
+          {
+            description: "Visit medication",
+            defaultQuantity: 1,
+            defaultUnitPrice: "15.00",
+            itemType: "product",
+            itemId: PRODUCT_ID,
+          },
+        ],
+        [
+          {
+            id: APPOINTMENT_ID,
+            clientId: CLIENT_ID,
+            patientId: PATIENT_ID,
+            status: "in_exam",
+          },
+        ],
+        [{ id: "current-visit-prescription" }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).applyToInvoice({
+        templateId: TEMPLATE_ID,
+        invoiceId: INVOICE_ID,
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    expect(lockFor).toHaveBeenNthCalledWith(1, "update");
+    expect(lockFor).toHaveBeenNthCalledWith(2, "update");
+    expect(lockFor).toHaveBeenNthCalledWith(3, "share");
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("blocks a dispense already sourced to this invoice before writes", async () => {
+    const { db, insertValues, updateSet, lockFor } = createDb({
+      selectResults: [
+        [{ id: PRACTICE_ID }],
+        [{ id: TEMPLATE_ID }],
+        [
+          {
+            id: INVOICE_ID,
+            status: "draft",
+            paidAmount: "0.00",
+            isEstimate: false,
+            clientId: CLIENT_ID,
+            patientId: PATIENT_ID,
+            appointmentId: null,
+          },
+        ],
+        [
+          {
+            description: "Dispensed medication",
+            defaultQuantity: 2,
+            defaultUnitPrice: "15.00",
+            itemType: "product",
+            itemId: PRODUCT_ID,
+          },
+        ],
+        [{ id: "sourced-dispense", status: "invoiced", invoiceId: INVOICE_ID }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).applyToInvoice({
+        templateId: TEMPLATE_ID,
+        invoiceId: INVOICE_ID,
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    expect(lockFor).toHaveBeenCalledTimes(2);
+    expect(lockFor).toHaveBeenNthCalledWith(1, "update");
+    expect(lockFor).toHaveBeenNthCalledWith(2, "update");
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("allows unrelated medication history and keeps untracked stock unchanged", async () => {
+    const { db, insertValues, updateSet, lockFor } = createDb({
+      selectResults: [
+        [{ id: PRACTICE_ID }],
+        [{ id: TEMPLATE_ID }],
+        [
+          {
+            id: INVOICE_ID,
+            status: "draft",
+            paidAmount: "0.00",
+            isEstimate: false,
+            clientId: CLIENT_ID,
+            patientId: PATIENT_ID,
+            appointmentId: APPOINTMENT_ID,
+          },
+        ],
+        [
+          {
+            description: "Untracked take-home product",
+            defaultQuantity: 2,
+            defaultUnitPrice: "15.00",
+            itemType: "product",
+            itemId: PRODUCT_ID,
+          },
+        ],
+        [
+          {
+            id: APPOINTMENT_ID,
+            clientId: CLIENT_ID,
+            patientId: PATIENT_ID,
+            status: "in_exam",
+          },
+        ],
+        [],
+        [],
+        [{ id: PRODUCT_ID, taxable: true }],
+        [],
+        [],
+        [{ quantity: 2, unitPrice: "15.00", taxable: true }],
+        [{ taxRatePercent: "0.00" }],
+      ],
+      updatedRows: [
+        {
+          id: INVOICE_ID,
+          subtotal: "30.00",
+          tax: "0.00",
+          total: "30.00",
+        },
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).applyToInvoice({
+        templateId: TEMPLATE_ID,
+        invoiceId: INVOICE_ID,
+      }),
+    ).resolves.toMatchObject({ id: INVOICE_ID, total: "30.00" });
+
+    expect(insertValues).toHaveBeenCalledWith([
+      expect.objectContaining({ itemId: PRODUCT_ID, quantity: 2 }),
+    ]);
+    // Only the invoice totals/version update runs; no untracked stock update.
+    expect(updateSet).toHaveBeenCalledTimes(1);
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ total: "30.00", updatedAt: expect.anything() }),
+    );
+    expect(lockFor).toHaveBeenNthCalledWith(1, "update");
+    expect(lockFor).toHaveBeenNthCalledWith(2, "update");
+    expect(lockFor).toHaveBeenNthCalledWith(3, "share");
+    expect(lockFor).toHaveBeenNthCalledWith(4, "update");
+    expect(lockFor).toHaveBeenNthCalledWith(5, "update");
   });
 
   it("deducts product stock when applying a template to a real invoice", async () => {
@@ -954,7 +1188,7 @@ describe("treatment template safety", () => {
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
-    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(transaction).toHaveBeenCalledTimes(2);
     expect(insertValues).not.toHaveBeenCalled();
     expect(updateSet).not.toHaveBeenCalled();
   });
@@ -982,7 +1216,7 @@ describe("treatment template safety", () => {
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
-    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(transaction).toHaveBeenCalledTimes(2);
     expect(insertValues).not.toHaveBeenCalled();
     expect(updateSet).not.toHaveBeenCalled();
   });
@@ -1062,8 +1296,9 @@ describe("treatment template safety", () => {
 
     expect(insertValues).not.toHaveBeenCalled();
     expect(updateSet).not.toHaveBeenCalled();
-    expect(lockFor).toHaveBeenCalledTimes(1);
-    expect(lockFor).toHaveBeenCalledWith("share");
+    expect(lockFor).toHaveBeenCalledTimes(2);
+    expect(lockFor).toHaveBeenNthCalledWith(1, "update");
+    expect(lockFor).toHaveBeenNthCalledWith(2, "share");
   });
 
   it("rejects product references that are not active in the tenant", async () => {
@@ -1104,8 +1339,9 @@ describe("treatment template safety", () => {
 
     expect(insertValues).not.toHaveBeenCalled();
     expect(updateSet).not.toHaveBeenCalled();
-    expect(lockFor).toHaveBeenCalledTimes(1);
-    expect(lockFor).toHaveBeenCalledWith("share");
+    expect(lockFor).toHaveBeenCalledTimes(2);
+    expect(lockFor).toHaveBeenNthCalledWith(1, "update");
+    expect(lockFor).toHaveBeenNthCalledWith(2, "share");
   });
 
   it("keeps batched catalog locks active, tenant-scoped, and deterministic", () => {
@@ -1135,9 +1371,38 @@ describe("treatment template safety", () => {
       source.indexOf("function nextInvoiceUpdatedAtSql"),
       source.indexOf("const templateItemBaseInput"),
     );
-    expect(versionSql).toContain("date_trunc('milliseconds', clock_timestamp())");
+    expect(versionSql).toContain(
+      "date_trunc('milliseconds', clock_timestamp())",
+    );
     expect(versionSql).toContain("${invoices.updatedAt}");
     expect(versionSql.match(/interval '1 millisecond'/g)).toHaveLength(2);
+    const medicationGuard = source.slice(
+      source.indexOf("function unsourcedTemplateProductIds"),
+      source.indexOf("export const templatesRouter"),
+    );
+    expect(medicationGuard).toContain(
+      "eq(dispenseChargeQueue.practiceId, ctx.practiceId)",
+    );
+    expect(medicationGuard).toContain(
+      "eq(dispenseChargeQueue.patientId, invoice.patientId)",
+    );
+    expect(medicationGuard).toContain('row.status === "pending"');
+    expect(medicationGuard).toContain('row.status === "waived"');
+    expect(medicationGuard).toContain(
+      "eq(prescriptions.appointmentId, invoice.appointmentId)",
+    );
+    expect(medicationGuard).toContain("isNull(prescriptions.deletedAt)");
+    expect(medicationGuard).toContain('row.status === "invoiced"');
+    expect(medicationGuard).toContain("row.invoiceId === invoiceId");
+    expect(applyBlock.indexOf("pg_advisory_xact_lock")).toBeLessThan(
+      applyBlock.indexOf("lockAndAssertNoUnsourcedMedicationTemplateConflict"),
+    );
+    expect(
+      applyBlock.indexOf("lockAndAssertNoUnsourcedMedicationTemplateConflict"),
+    ).toBeLessThan(applyBlock.indexOf("lockActiveTemplateCatalogItems"));
+    expect(applyBlock.indexOf("lockActiveTemplateCatalogItems")).toBeLessThan(
+      applyBlock.indexOf("recheckUnsourcedMedicationTemplateConflict"),
+    );
   });
 
   it("rejects template reads and writes when the practice is missing or deleted", async () => {
