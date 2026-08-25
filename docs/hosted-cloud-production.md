@@ -441,6 +441,25 @@ than a deployment-local database. Optional platform email fails closed when the
 required preference configuration is missing or invalid; security, receipt,
 and service email is unaffected.
 
+Subscription confirmation and cancellation notices use the durable
+`lifecycle_email_jobs` outbox. The Stripe webhook commits each job with the
+billing transition; `/api/cron/lifecycle-emails` leases and delivers jobs every
+five minutes with a stable Resend idempotency key. Monitor its dedicated
+heartbeat. A terminal `outcome_unknown` means the provider result could not be
+proved inside Resend's retry window and requires redacted operator review; do
+not replay it with a new key. Recovery-held clinics remain queued and unsent.
+Recipient identity is HMAC-bound with `EMAIL_PREFERENCE_IDENTITY_SECRET`; a
+missing key fails enqueue closed and the stored job contains no address or body.
+The worker holds a short practice-row eligibility lock only across the bounded
+provider request so contact, recovery, and subscription changes cannot race the
+final send decision.
+
+Rollback is forward-only: pause the lifecycle-email cron, roll back the full
+application change, and leave the additive schema and delivery evidence intact.
+Before re-enabling delivery, reconcile queued jobs or invalidate them by an
+authoritative subscription-generation change. Never replay an unresolved job
+with a new provider idempotency key.
+
 The daily `/api/cron/setup-recovery` sweep sends at most two optional setup
 emails to the clinic's earliest verified admin. The first is eligible only after
 24 hours without setup progress; the second requires at least 72 hours of both
@@ -582,6 +601,7 @@ set job-specific URLs (`CRON_HEARTBEAT_REMINDERS_URL`,
 `CRON_HEARTBEAT_ACTIVATION_DIGEST_URL`,
 `CRON_HEARTBEAT_SMS_OPERATIONS_URL`,
 `CRON_HEARTBEAT_SMS_PROVIDER_EVENTS_URL`,
+`CRON_HEARTBEAT_LIFECYCLE_EMAILS_URL`,
 `CRON_HEARTBEAT_CONVERSION_RECONCILE_URL`,
 `CRON_HEARTBEAT_PRESCRIPTION_EXPIRY_URL`) when your external monitor expects one URL
 per scheduled job. URL templates may include `{job}` and `{status}` tokens.

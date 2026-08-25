@@ -63,6 +63,10 @@
       "schedule": "*/5 * * * *"
     },
     {
+      "path": "/api/cron/lifecycle-emails",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/cron/conversion-reconcile",
       "schedule": "35 * * * *"
     }

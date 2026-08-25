@@ -133,6 +133,16 @@ jobs:
 
       - run: pnpm --filter @openpims/db db:rls
 
+      # Subscription notices cross Stripe transactions, a durable outbox,
+      # provider idempotency, and final-state suppression. Exercise atomic
+      # enqueue, SKIP LOCKED workers, lease/CAS recovery, immutable attempts,
+      # RLS, terminal outcomes, and the practice-row dispatch fence in the
+      # fully migrated disposable PostgreSQL service.
+      - name: Execute lifecycle-email outbox database contract
+        env:
+          LIFECYCLE_EMAIL_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/db db:lifecycle-email-outbox:test
+
       # Client treatment-plan decisions are legal record evidence. Prove the
       # sealed revision/response graph, signature hash binding, replay refusal,
       # immutable grants, and tenant/no-context isolation in real PostgreSQL.

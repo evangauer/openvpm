@@ -46,6 +46,9 @@ const mocks = vi.hoisted(() => {
     ),
     sendPaymentReceiptEmail: vi.fn(async () => undefined),
     sendPaymentFailedEmail: vi.fn(async () => undefined),
+    sendSubscriptionConfirmedEmail: vi.fn(async () => undefined),
+    sendSubscriptionCanceledEmail: vi.fn(async () => undefined),
+    enqueueSubscriptionLifecycleEmail: vi.fn(async () => true),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
       fn(db),
     ),
@@ -85,10 +88,16 @@ vi.mock("@/lib/alerts", () => ({
 vi.mock("@/lib/email", () => ({
   sendPaymentReceiptEmail: mocks.sendPaymentReceiptEmail,
   sendPaymentFailedEmail: mocks.sendPaymentFailedEmail,
+  sendSubscriptionConfirmedEmail: mocks.sendSubscriptionConfirmedEmail,
+  sendSubscriptionCanceledEmail: mocks.sendSubscriptionCanceledEmail,
 }));
 
 vi.mock("@/lib/email-lifecycle", () => ({
   sendLifecycleEmail: mocks.sendLifecycleEmail,
+}));
+
+vi.mock("@/lib/billing/lifecycle-email-outbox", () => ({
+  enqueueSubscriptionLifecycleEmail: mocks.enqueueSubscriptionLifecycleEmail,
 }));
 
 vi.mock("@/lib/conversion-milestones", () => ({
@@ -181,6 +190,17 @@ function subscriptionUpdatedEvent(
     created: EVENT_CREATED,
     data: {
       object: stripeSubscription(status),
+    },
+  };
+}
+
+function subscriptionDeletedEvent() {
+  return {
+    id: "evt_subscription_deleted",
+    type: "customer.subscription.deleted",
+    created: EVENT_CREATED,
+    data: {
+      object: stripeSubscription("canceled"),
     },
   };
 }
@@ -343,6 +363,74 @@ describe("Stripe subscription webhook", () => {
     expect(
       mocks.projectStripeConversionMilestonesForEvent,
     ).toHaveBeenCalledWith(mocks.db, "evt_checkout");
+    expect(mocks.sendLifecycleEmail).not.toHaveBeenCalled();
+    expect(mocks.sendSubscriptionConfirmedEmail).not.toHaveBeenCalled();
+  });
+
+  it("transactionally queues a normalized, idempotent confirmation for the current active subscription", async () => {
+    process.env.STRIPE_PRICE_CLOUD_LOCATION = PRICE_ID;
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
+      checkoutCompletedEvent(),
+    );
+    mocks.retrieveSubscription.mockResolvedValueOnce(
+      stripeSubscription("active"),
+    );
+    mocks.updateReturns.push(
+      [{ id: PRACTICE_ID }],
+      [{ id: PRACTICE_ID, subscriptionGeneration: 4 }],
+    );
+    mocks.selectResults.push([
+      {
+        id: PRACTICE_ID,
+        email: " Owner@Example.COM ",
+        name: "Westside Vet",
+        timezone: "UTC",
+      },
+    ]);
+
+    const response = await POST(stripeRequest());
+
+    await expect(response.json()).resolves.toEqual({ received: true });
+    expect(mocks.enqueueSubscriptionLifecycleEmail).toHaveBeenCalledWith(
+      mocks.db,
+      {
+        practiceId: PRACTICE_ID,
+        practiceName: "Westside Vet",
+        recipient: "owner@example.com",
+        kind: "subscription_confirmed",
+        subscriptionId: SUBSCRIPTION_ID,
+        subscriptionGeneration: 4,
+        dedupeKey: `lc:confirmed:${SUBSCRIPTION_ID}`,
+      },
+    );
+    expect(mocks.sendSubscriptionConfirmedEmail).not.toHaveBeenCalled();
+  });
+
+  it("captures the confirmation recipient for worker-side stale-contact suppression", async () => {
+    process.env.STRIPE_PRICE_CLOUD_LOCATION = PRICE_ID;
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
+      checkoutCompletedEvent(),
+    );
+    mocks.retrieveSubscription.mockResolvedValueOnce(
+      stripeSubscription("active"),
+    );
+    mocks.updateReturns.push([{ id: PRACTICE_ID }], [{ id: PRACTICE_ID }]);
+    mocks.selectResults.push([
+      {
+        id: PRACTICE_ID,
+        email: "old-owner@example.com",
+        name: "Westside Vet",
+        timezone: "UTC",
+      },
+    ]);
+    const response = await POST(stripeRequest());
+
+    await expect(response.json()).resolves.toEqual({ received: true });
+    expect(mocks.enqueueSubscriptionLifecycleEmail).toHaveBeenCalledWith(
+      mocks.db,
+      expect.objectContaining({ recipient: "old-owner@example.com" }),
+    );
+    expect(mocks.sendSubscriptionConfirmedEmail).not.toHaveBeenCalled();
   });
 
   it("does not sync Checkout quantities when no active practice was updated", async () => {
@@ -390,6 +478,103 @@ describe("Stripe subscription webhook", () => {
     expect(
       mocks.projectStripeConversionMilestonesForEvent,
     ).not.toHaveBeenCalled();
+  });
+
+  it("transactionally queues a cancellation notice only after the stored subscription is cleared", async () => {
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
+      subscriptionDeletedEvent(),
+    );
+    mocks.updateReturns.push([
+      { id: PRACTICE_ID, subscriptionGeneration: 8 },
+    ]);
+    mocks.selectResults.push([
+      {
+        id: PRACTICE_ID,
+        email: " Owner@Example.COM ",
+        name: "Westside Vet",
+        timezone: "UTC",
+      },
+    ]);
+
+    const response = await POST(stripeRequest());
+
+    await expect(response.json()).resolves.toEqual({ received: true });
+    expect(mocks.updateSet).toHaveBeenCalledWith(expect.objectContaining({
+      subscriptionTier: "free",
+      billingStatus: "canceled",
+      stripeSubscriptionId: null,
+      subscriptionGeneration: expect.anything(),
+    }));
+    expect(mocks.enqueueSubscriptionLifecycleEmail).toHaveBeenCalledWith(
+      mocks.db,
+      {
+        practiceId: PRACTICE_ID,
+        practiceName: "Westside Vet",
+        recipient: "owner@example.com",
+        kind: "subscription_canceled",
+        subscriptionId: SUBSCRIPTION_ID,
+        subscriptionGeneration: 8,
+        dedupeKey: `lc:canceled:${SUBSCRIPTION_ID}`,
+      },
+    );
+    expect(mocks.sendSubscriptionCanceledEmail).not.toHaveBeenCalled();
+  });
+
+  it("captures the cancellation recipient for worker-side stale-contact suppression", async () => {
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
+      subscriptionDeletedEvent(),
+    );
+    mocks.updateReturns.push([{ id: PRACTICE_ID }]);
+    mocks.selectResults.push([
+      {
+        id: PRACTICE_ID,
+        email: "old-owner@example.com",
+        name: "Westside Vet",
+        timezone: "UTC",
+      },
+    ]);
+    const response = await POST(stripeRequest());
+
+    await expect(response.json()).resolves.toEqual({ received: true });
+    expect(mocks.enqueueSubscriptionLifecycleEmail).toHaveBeenCalledWith(
+      mocks.db,
+      expect.objectContaining({ recipient: "old-owner@example.com" }),
+    );
+    expect(mocks.sendSubscriptionCanceledEmail).not.toHaveBeenCalled();
+  });
+
+  it("does not send a cancellation notice for a stale subscription deletion", async () => {
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
+      subscriptionDeletedEvent(),
+    );
+    mocks.updateReturns.push([]);
+
+    const response = await POST(stripeRequest());
+
+    await expect(response.json()).resolves.toEqual({ received: true });
+    expect(mocks.sendLifecycleEmail).not.toHaveBeenCalled();
+    expect(mocks.enqueueSubscriptionLifecycleEmail).not.toHaveBeenCalled();
+    expect(mocks.sendSubscriptionCanceledEmail).not.toHaveBeenCalled();
+  });
+
+  it("queues cancellation state for worker-side generation revalidation", async () => {
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
+      subscriptionDeletedEvent(),
+    );
+    mocks.updateReturns.push([{ id: PRACTICE_ID }]);
+    mocks.selectResults.push([
+      {
+        id: PRACTICE_ID,
+        email: "owner@example.com",
+        name: "Westside Vet",
+        timezone: "UTC",
+      },
+    ]);
+    const response = await POST(stripeRequest());
+
+    await expect(response.json()).resolves.toEqual({ received: true });
+    expect(mocks.enqueueSubscriptionLifecycleEmail).toHaveBeenCalled();
+    expect(mocks.sendSubscriptionCanceledEmail).not.toHaveBeenCalled();
   });
 
   it("does not manufacture payment evidence from a zero-dollar invoice", async () => {

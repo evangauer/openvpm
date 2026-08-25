@@ -21,6 +21,14 @@ import {
   FirstClinicWinEmail,
   type FirstClinicWinEmailProps,
 } from "./templates/FirstClinicWinEmail";
+import {
+  SubscriptionConfirmedEmail,
+  type SubscriptionConfirmedEmailProps,
+} from "./templates/SubscriptionConfirmedEmail";
+import {
+  SubscriptionCanceledEmail,
+  type SubscriptionCanceledEmailProps,
+} from "./templates/SubscriptionCanceledEmail";
 
 export interface RenderedEmail {
   subject: string;
@@ -82,5 +90,23 @@ export async function renderFirstClinicWinEmail(
   return {
     subject: "Your first real OpenVPM visit is complete",
     html: await render(<FirstClinicWinEmail {...p} />),
+  };
+}
+
+export async function renderSubscriptionConfirmedEmail(
+  p: SubscriptionConfirmedEmailProps,
+): Promise<RenderedEmail> {
+  return {
+    subject: "You're on OpenVPM Cloud",
+    html: await render(<SubscriptionConfirmedEmail {...p} />),
+  };
+}
+
+export async function renderSubscriptionCanceledEmail(
+  p: SubscriptionCanceledEmailProps,
+): Promise<RenderedEmail> {
+  return {
+    subject: "Your OpenVPM Cloud subscription was canceled",
+    html: await render(<SubscriptionCanceledEmail {...p} />),
   };
 }

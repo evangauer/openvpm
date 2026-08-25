@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { and, eq, isNull, or } from "drizzle-orm";
+import { and, eq, isNull, or, sql } from "drizzle-orm";
 import type Stripe from "stripe";
 import { db } from "@openpims/db/client";
 import { practices } from "@openpims/db";
@@ -11,8 +11,12 @@ import {
 import { syncPracticeSubscriptionQuantities } from "@/lib/billing/subscription-sync";
 import { alertOps } from "@/lib/alerts";
 import { withSystem } from "@/lib/tenant-db";
-import { sendPaymentReceiptEmail, sendPaymentFailedEmail } from "@/lib/email";
+import {
+  sendPaymentReceiptEmail,
+  sendPaymentFailedEmail,
+} from "@/lib/email";
 import { sendLifecycleEmail } from "@/lib/email-lifecycle";
+import { enqueueSubscriptionLifecycleEmail } from "@/lib/billing/lifecycle-email-outbox";
 import {
   attachStripeEventPractice,
   claimStripeEvent,
@@ -160,7 +164,31 @@ export async function POST(req: NextRequest) {
             // access never depends on customer.subscription.* event ordering.
             const subscription =
               await stripe.subscriptions.retrieve(subscriptionId);
-            await applySubscription(tx, subscription, activePracticeId);
+            const appliedPractice = await applySubscription(
+              tx,
+              subscription,
+              activePracticeId,
+            );
+            if (
+              appliedPractice &&
+              normalizeBillingStatus(subscription.status) === "active"
+            ) {
+              const practice = await practiceById(tx, appliedPractice.id);
+              const to = billingContactEmail(practice?.email);
+              if (practice && to) {
+                const dedupeKey = `lc:confirmed:${subscription.id}`;
+                await enqueueSubscriptionLifecycleEmail(tx, {
+                  practiceId: practice.id,
+                  practiceName: practice.name ?? "your practice",
+                  recipient: to,
+                  kind: "subscription_confirmed",
+                  subscriptionId: subscription.id,
+                  subscriptionGeneration:
+                    appliedPractice.subscriptionGeneration,
+                  dedupeKey,
+                });
+              }
+            }
           }
           break;
         }
@@ -184,12 +212,13 @@ export async function POST(req: NextRequest) {
           const sub = event.data.object as Stripe.Subscription;
           const practiceId = await resolvePracticeIdForSubscription(tx, sub);
           if (practiceId) {
-            await tx
+            const [canceledPractice] = await tx
               .update(practices)
               .set({
                 subscriptionTier: "free",
                 billingStatus: "canceled",
                 stripeSubscriptionId: null,
+                subscriptionGeneration: sql`${practices.subscriptionGeneration} + 1`,
               })
               .where(
                 and(
@@ -197,7 +226,28 @@ export async function POST(req: NextRequest) {
                   eq(practices.stripeSubscriptionId, sub.id),
                   isNull(practices.deletedAt),
                 ),
-              );
+              )
+              .returning({
+                id: practices.id,
+                subscriptionGeneration: practices.subscriptionGeneration,
+              });
+            if (canceledPractice) {
+              const practice = await practiceById(tx, canceledPractice.id);
+              const to = billingContactEmail(practice?.email);
+              if (practice && to) {
+                const dedupeKey = `lc:canceled:${sub.id}`;
+                await enqueueSubscriptionLifecycleEmail(tx, {
+                  practiceId: practice.id,
+                  practiceName: practice.name ?? "your practice",
+                  recipient: to,
+                  kind: "subscription_canceled",
+                  subscriptionId: sub.id,
+                  subscriptionGeneration:
+                    canceledPractice.subscriptionGeneration,
+                  dedupeKey,
+                });
+              }
+            }
           }
           break;
         }
@@ -222,10 +272,8 @@ export async function POST(req: NextRequest) {
               // omitted or arrived out of order.
               const subscription =
                 await stripe.subscriptions.retrieve(subscriptionId);
-              subscriptionPracticeId = await applySubscription(
-                tx,
-                subscription,
-              );
+              subscriptionPracticeId =
+                (await applySubscription(tx, subscription))?.id ?? null;
             }
             const practice = subscriptionPracticeId
               ? await practiceById(tx, subscriptionPracticeId)
@@ -280,7 +328,7 @@ export async function POST(req: NextRequest) {
             const authoritativeStatus = normalizeBillingStatus(
               subscription.status,
             );
-            const practiceId = await applySubscription(tx, subscription);
+            const practiceId = (await applySubscription(tx, subscription))?.id;
             const practice = practiceId
               ? await practiceById(tx, practiceId)
               : null;
@@ -377,7 +425,7 @@ async function applySubscription(
   tx: typeof db,
   sub: Stripe.Subscription,
   practiceIdHint?: string | null,
-): Promise<string | null> {
+): Promise<{ id: string; subscriptionGeneration: number } | null> {
   const practiceId = await resolvePracticeIdForSubscription(
     tx,
     sub,
@@ -391,13 +439,20 @@ async function applySubscription(
     typeof sub.customer === "string" ? sub.customer : sub.customer?.id;
   const billingStatus = normalizeBillingStatus(sub.status);
   const terminalWithoutSubscriptionIdentity = billingStatus === "canceled";
+  const storedSubscriptionId = terminalWithoutSubscriptionIdentity
+    ? null
+    : sub.id;
 
   const [practice] = await tx
     .update(practices)
     .set({
       ...(tier ? { subscriptionTier: tier } : {}),
       billingStatus,
-      stripeSubscriptionId: terminalWithoutSubscriptionIdentity ? null : sub.id,
+      stripeSubscriptionId: storedSubscriptionId,
+      subscriptionGeneration: sql`${practices.subscriptionGeneration} + case
+        when ${practices.billingStatus} is distinct from ${billingStatus}
+          or ${practices.stripeSubscriptionId} is distinct from ${storedSubscriptionId}
+        then 1 else 0 end`,
       ...(customerId ? { stripeCustomerId: customerId } : {}),
       trialEndsAt: sub.trial_end ? new Date(sub.trial_end * 1000) : null,
     })
@@ -411,7 +466,10 @@ async function applySubscription(
         ),
       ),
     )
-    .returning({ id: practices.id });
+    .returning({
+      id: practices.id,
+      subscriptionGeneration: practices.subscriptionGeneration,
+    });
   if (!practice) {
     console.warn(
       "[Stripe Subscription Webhook] subscription for missing/deleted practice:",
@@ -427,7 +485,7 @@ async function applySubscription(
       subscriptionId: sub.id,
     });
   }
-  return practice.id;
+  return practice;
 }
 
 function conversionEvidenceForEvent(
