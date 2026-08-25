@@ -64,13 +64,25 @@ bundle and dedicated safety refs.
 | Source | Preserved tip | Main divergence at inventory | Decision | First review |
 | --- | --- | --- | --- | --- |
 | `feat/lifecycle-emails` | `24a3347ced908f725f72260667d6f48c2f701ee9` | 4 unique commits; 219 behind | `recover` | Email event correctness, retries, privacy, and subscription-state semantics |
-| `feat/activation-funnel` | `09e4fadd41742103e6c8092a9497134138100759` | 3 unique commits; 219 behind | `recover` | Product fit, current onboarding behavior, and analytics privacy |
+| `feat/activation-funnel` | `09e4fadd41742103e6c8092a9497134138100759` | 3 commits at inventory; two already merged via #29, one stale UI-only tip remains | `evidence-only` | Review found no analytics implementation to recover; current empty states, onboarding redirect, and billing-state-aware trial badge supersede the remaining copy/route changes |
 | `codex/onboarding-first-day-density` | `68959b3a3ca088b00144ac846e91e4ab266f5af6` | 1 unique commit; 32 behind | `recover` | Separate the committed onboarding polish from the much larger dirty worktree |
 
 Twenty-two locally held worktree heads were absent from cached remote refs at
 inventory time. They are preserved in the verified bundle. Each remains
 `hold` until a domain owner maps it to current product behavior; no bulk push
 or deletion is authorized.
+
+The `feat/activation-funnel` source was re-reviewed against the deployed
+baseline. Commits `3812e872` and `97b52c0a` are already represented by PR #29
+and its merge commit `58d0cc42`. The remaining `09e4fadd` changes only trial
+badge urgency/copy, client/patient empty-state presentation, and deletion of
+the `/onboarding` route; it contains no analytics capture, aggregation, or
+privacy filtering. Current code has role-aware and error-safe empty states,
+retains `/onboarding` as a compatibility redirect, and models trial/billing
+states without the old pressure-oriented copy. Four focused current-base test
+files passed (28 tests), so no replay branch or successor pull request is
+needed. PRs #200 and #221 remain separate recovery candidates with distinct
+provenance.
 
 ## Dirty-worktree register
 
