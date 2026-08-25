@@ -7,6 +7,8 @@ import {
   renderPaymentReceiptEmail,
   renderPaymentFailedEmail,
   renderFirstClinicWinEmail,
+  renderSubscriptionConfirmedEmail,
+  renderSubscriptionCanceledEmail,
 } from "@openpims/email";
 import {
   createEmailPreferenceLinks,
@@ -880,6 +882,49 @@ export async function sendPaymentFailedEmail(data: {
     amount: data.amount,
     nextRetryDate: data.nextRetryDate,
     billingUrl,
+  });
+  return sendEmail({
+    to: data.to,
+    subject,
+    html,
+    replyTo: brand.supportEmail,
+    idempotencyKey: data.idempotencyKey,
+  });
+}
+
+/** Confirmation sent after Checkout resolves to a currently active subscription. */
+export async function sendSubscriptionConfirmedEmail(data: {
+  to: string;
+  practiceName: string;
+  idempotencyKey?: string;
+}): Promise<{ success: boolean; id?: string; error?: string }> {
+  const brand = openvpmBrand();
+  const { subject, html } = await renderSubscriptionConfirmedEmail({
+    brand,
+    practiceName: data.practiceName,
+  });
+  return sendEmail({
+    to: data.to,
+    subject,
+    html,
+    replyTo: brand.supportEmail,
+    idempotencyKey: data.idempotencyKey,
+  });
+}
+
+/** Notice sent after Stripe confirms that the stored subscription was deleted. */
+export async function sendSubscriptionCanceledEmail(data: {
+  to: string;
+  practiceName: string;
+  reactivateUrl?: string;
+  idempotencyKey?: string;
+}): Promise<{ success: boolean; id?: string; error?: string }> {
+  const brand = openvpmBrand();
+  const { subject, html } = await renderSubscriptionCanceledEmail({
+    brand,
+    practiceName: data.practiceName,
+    reactivateUrl:
+      data.reactivateUrl ?? `${brand.appUrl}/settings?tab=billing`,
   });
   return sendEmail({
     to: data.to,

@@ -11,7 +11,12 @@ import {
 import { syncPracticeSubscriptionQuantities } from "@/lib/billing/subscription-sync";
 import { alertOps } from "@/lib/alerts";
 import { withSystem } from "@/lib/tenant-db";
-import { sendPaymentReceiptEmail, sendPaymentFailedEmail } from "@/lib/email";
+import {
+  sendPaymentReceiptEmail,
+  sendPaymentFailedEmail,
+  sendSubscriptionConfirmedEmail,
+  sendSubscriptionCanceledEmail,
+} from "@/lib/email";
 import { sendLifecycleEmail } from "@/lib/email-lifecycle";
 import {
   attachStripeEventPractice,
@@ -160,7 +165,54 @@ export async function POST(req: NextRequest) {
             // access never depends on customer.subscription.* event ordering.
             const subscription =
               await stripe.subscriptions.retrieve(subscriptionId);
-            await applySubscription(tx, subscription, activePracticeId);
+            const appliedPracticeId = await applySubscription(
+              tx,
+              subscription,
+              activePracticeId,
+            );
+            if (
+              appliedPracticeId &&
+              normalizeBillingStatus(subscription.status) === "active"
+            ) {
+              const practice = await practiceById(tx, appliedPracticeId);
+              const to = billingContactEmail(practice?.email);
+              if (practice && to) {
+                const dedupeKey = `lc:confirmed:${subscription.id}`;
+                postCommitEffects.push(() =>
+                  sendLifecycleEmail({
+                    practiceId: practice.id,
+                    to,
+                    emailType: "subscription_confirmed",
+                    dedupeKey,
+                    category: "transactional",
+                    stillEligible: async (emailTx) => {
+                      const [current] = await emailTx
+                        .select({ id: practices.id })
+                        .from(practices)
+                        .where(
+                          and(
+                            eq(practices.id, practice.id),
+                            eq(practices.billingStatus, "active"),
+                            eq(
+                              practices.stripeSubscriptionId,
+                              subscription.id,
+                            ),
+                            isNull(practices.deletedAt),
+                          ),
+                        )
+                        .limit(1);
+                      return Boolean(current);
+                    },
+                    send: () =>
+                      sendSubscriptionConfirmedEmail({
+                        to,
+                        practiceName: practice.name ?? "your practice",
+                        idempotencyKey: dedupeKey,
+                      }),
+                  }),
+                );
+              }
+            }
           }
           break;
         }
@@ -184,7 +236,7 @@ export async function POST(req: NextRequest) {
           const sub = event.data.object as Stripe.Subscription;
           const practiceId = await resolvePracticeIdForSubscription(tx, sub);
           if (practiceId) {
-            await tx
+            const [canceledPractice] = await tx
               .update(practices)
               .set({
                 subscriptionTier: "free",
@@ -197,7 +249,45 @@ export async function POST(req: NextRequest) {
                   eq(practices.stripeSubscriptionId, sub.id),
                   isNull(practices.deletedAt),
                 ),
-              );
+              )
+              .returning({ id: practices.id });
+            if (canceledPractice) {
+              const practice = await practiceById(tx, canceledPractice.id);
+              const to = billingContactEmail(practice?.email);
+              if (practice && to) {
+                const dedupeKey = `lc:canceled:${sub.id}`;
+                postCommitEffects.push(() =>
+                  sendLifecycleEmail({
+                    practiceId: practice.id,
+                    to,
+                    emailType: "subscription_canceled",
+                    dedupeKey,
+                    category: "transactional",
+                    stillEligible: async (emailTx) => {
+                      const [current] = await emailTx
+                        .select({ id: practices.id })
+                        .from(practices)
+                        .where(
+                          and(
+                            eq(practices.id, practice.id),
+                            eq(practices.billingStatus, "canceled"),
+                            isNull(practices.stripeSubscriptionId),
+                            isNull(practices.deletedAt),
+                          ),
+                        )
+                        .limit(1);
+                      return Boolean(current);
+                    },
+                    send: () =>
+                      sendSubscriptionCanceledEmail({
+                        to,
+                        practiceName: practice.name ?? "your practice",
+                        idempotencyKey: dedupeKey,
+                      }),
+                  }),
+                );
+              }
+            }
           }
           break;
         }
