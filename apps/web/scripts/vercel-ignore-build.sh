@@ -3,12 +3,10 @@
 # Exit 0 skips the build; exit 1 lets it proceed.
 #
 # - Production deployments always build.
-# - An explicit operator-only override can force a protected preview rebuild.
-# - The public demo deployment (NEXT_PUBLIC_DEMO_MODE=true) tracks
-#   production only; its preview builds are skipped as duplicates.
-# - Preview builds are skipped when nothing that ships in the web app
-#   changed. turbo-ignore walks the workspace graph, so pushes that only
-#   touch docs, e2e specs, or infra stop producing throwaway builds.
+# - Preview builds are quarantined because the 2026-08-25 environment audit
+#   found production-capable provider credentials in Preview scope.
+# - An explicit operator-only override can force one protected canary after
+#   its environment has passed the credential-isolation checklist.
 
 set -u
 
@@ -20,15 +18,6 @@ if [ "${OPENVPM_FORCE_PREVIEW_BUILD:-}" = "true" ]; then
   exit 1
 fi
 
-if [ "${NEXT_PUBLIC_DEMO_MODE:-}" = "true" ]; then
-  exit 0
-fi
-case "${VERCEL_PROJECT_PRODUCTION_URL:-}" in
-  demo.*) exit 0 ;;
-esac
-
-# turbo-ignore exits 0 when @openpims/web and its workspace dependencies
-# are unchanged since the last deployment (falling back to the parent
-# commit). Any failure falls through to building, never to skipping.
-npx --yes turbo-ignore "@openpims/web" || exit 1
+# Do not infer preview safety from changed files, demo flags, branch names, or
+# package metadata. Lifting this quarantine is a reviewed environment action.
 exit 0

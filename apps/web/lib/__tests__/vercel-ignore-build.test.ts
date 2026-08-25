@@ -30,4 +30,12 @@ describe("Vercel ignored build policy", () => {
     // Vercel interprets exit 0 as "skip this deployment".
     expect(ignoredBuildStatus({})).toBe(0);
   });
+
+  it("also skips ordinary app-mode previews while credentials are quarantined", () => {
+    expect(ignoredBuildStatus({ NEXT_PUBLIC_DEMO_MODE: "false" })).toBe(0);
+  });
+
+  it("always lets production builds proceed to the release-SHA gate", () => {
+    expect(ignoredBuildStatus({ VERCEL_ENV: "production" })).toBe(1);
+  });
 });
