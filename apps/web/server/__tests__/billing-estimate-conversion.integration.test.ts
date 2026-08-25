@@ -15,6 +15,7 @@ vi.mock("@/lib/webhook-dispatcher", () => ({
 }));
 
 const repoRoot = resolve(process.cwd(), "../..");
+type SqlClient = ReturnType<typeof postgres>;
 const describeWithPostgres =
   process.env.BILLING_CONVERSION_DB_INTEGRATION === "1"
     ? describe.sequential
@@ -140,10 +141,12 @@ describeWithPostgres("atomic estimate conversion PostgreSQL contract", () => {
       const ownerDb = drizzle(ownerSql, { schema });
       const appDb = drizzle(appSql, { schema });
       process.env.DATABASE_URL = appUrl.toString();
-      const [{ billingRouter }, { recordsRouter }] = await Promise.all([
-        import("../routers/billing"),
-        import("../routers/records"),
-      ]);
+      const [{ billingRouter }, { recordsRouter }, { templatesRouter }] =
+        await Promise.all([
+          import("../routers/billing"),
+          import("../routers/records"),
+          import("../routers/templates"),
+        ]);
 
       type Fixture = {
         practiceId: string;
@@ -283,6 +286,8 @@ describeWithPostgres("atomic estimate conversion PostgreSQL contract", () => {
         billingRouter.createCaller(callerContext(fixture));
       const recordsCaller = (fixture: Fixture) =>
         recordsRouter.createCaller(callerContext(fixture));
+      const templatesCaller = (fixture: Fixture) =>
+        templatesRouter.createCaller(callerContext(fixture));
       const stock = async (productId: string) => {
         const [row] = await ownerDb
           .select({ stockQuantity: schema.products.stockQuantity })
@@ -334,6 +339,60 @@ describeWithPostgres("atomic estimate conversion PostgreSQL contract", () => {
       expect(otherTenantState?.isEstimate).toBe(true);
       expect(await conversionAuditCount(otherTenantFixture.practiceId)).toBe(0);
 
+      // Template application is a versioned invoice mutation. A confirmation
+      // captured before the template edit must not deduct stock or convert the
+      // now-stale estimate.
+      const staleTemplateFixture = await createFixture();
+      const staleTemplateProduct = await createProduct(
+        staleTemplateFixture,
+        7,
+      );
+      const staleTemplateEstimate = await createEstimate(
+        staleTemplateFixture,
+        [{ productId: staleTemplateProduct, quantity: 2 }],
+      );
+      const templateId = randomUUID();
+      await ownerDb.insert(schema.treatmentTemplates).values({
+        id: templateId,
+        practiceId: staleTemplateFixture.practiceId,
+        name: "Synthetic stale confirmation template",
+      });
+      await ownerDb.insert(schema.treatmentTemplateItems).values({
+        templateId,
+        itemType: "service",
+        description: "Synthetic template service",
+        defaultQuantity: 1,
+        defaultUnitPrice: "5.00",
+        sortOrder: 0,
+      });
+      const templateApplied = await templatesCaller(
+        staleTemplateFixture,
+      ).applyToInvoice({
+        templateId,
+        invoiceId: staleTemplateEstimate.id,
+      });
+      expect(templateApplied.updatedAt.getTime()).toBeGreaterThanOrEqual(
+        staleTemplateEstimate.updatedAt.getTime() + 1,
+      );
+      await expect(
+        caller(staleTemplateFixture).convertEstimateToInvoice({
+          id: staleTemplateEstimate.id,
+          expectedUpdatedAt: staleTemplateEstimate.updatedAt,
+        }),
+      ).rejects.toMatchObject({
+        code: "CONFLICT",
+        message: "Estimate changed. Refresh before converting it.",
+      });
+      expect(await stock(staleTemplateProduct)).toBe(7);
+      expect(await conversionAuditCount(staleTemplateFixture.practiceId)).toBe(
+        0,
+      );
+      const [staleTemplateState] = await ownerDb
+        .select({ isEstimate: schema.invoices.isEstimate })
+        .from(schema.invoices)
+        .where(eq(schema.invoices.id, staleTemplateEstimate.id));
+      expect(staleTemplateState?.isEstimate).toBe(true);
+
       const trackedProduct = await createProduct(raceFixture, 10, true);
       const untrackedProduct = await createProduct(raceFixture, 0, false);
       const raceLines = [
@@ -367,9 +426,45 @@ describeWithPostgres("atomic estimate conversion PostgreSQL contract", () => {
       expect(await stock(untrackedProduct)).toBe(0);
       expect(await conversionAuditCount(raceFixture.practiceId)).toBe(1);
 
-      // Slice A and conversion now share appointment-first row locking after
-      // the invoice advisory lock. A same-visit refill must win without a
-      // deadlock, while the unsourced medication estimate fails closed.
+      // Exact duplicate confirmations serialize on the invoice key. One wins;
+      // the second observes the converted row and cannot repeat stock/audit.
+      const duplicateFixture = await createFixture();
+      const duplicateProduct = await createProduct(duplicateFixture, 10);
+      const duplicateEstimate = await createEstimate(duplicateFixture, [
+        { productId: duplicateProduct, quantity: 2 },
+      ]);
+      const duplicateRace = await within(
+        Promise.allSettled([
+          caller(duplicateFixture).convertEstimateToInvoice({
+            id: duplicateEstimate.id,
+            expectedUpdatedAt: duplicateEstimate.updatedAt,
+          }),
+          caller(duplicateFixture).convertEstimateToInvoice({
+            id: duplicateEstimate.id,
+            expectedUpdatedAt: duplicateEstimate.updatedAt,
+          }),
+        ]),
+        "duplicate estimate conversion",
+      );
+      assertNoDeadlock(duplicateRace);
+      expect(
+        duplicateRace.filter((result) => result.status === "fulfilled"),
+      ).toHaveLength(1);
+      assertSingleDomainRejection(duplicateRace, "CONFLICT");
+      const duplicateRejection = duplicateRace.find(
+        (result): result is PromiseRejectedResult =>
+          result.status === "rejected",
+      );
+      expect(rejectionDetails(duplicateRejection?.reason)).toContain(
+        "Estimate changed. Refresh before converting it.",
+      );
+      expect(await stock(duplicateProduct)).toBe(8);
+      expect(await conversionAuditCount(duplicateFixture.practiceId)).toBe(1);
+
+      // Hold the estimate's serialization key so an older/unlinked
+      // prescription refill can commit its visit-linked queue work first.
+      // Conversion must then revalidate that work and fail without a second
+      // stock movement.
       const refillFixture = await createFixture();
       const refillProduct = await createProduct(refillFixture, 10);
       const prescriptionId = randomUUID();
@@ -377,7 +472,7 @@ describeWithPostgres("atomic estimate conversion PostgreSQL contract", () => {
         id: prescriptionId,
         practiceId: refillFixture.practiceId,
         patientId: refillFixture.patientId,
-        appointmentId: refillFixture.appointmentId,
+        appointmentId: null,
         medicationName: "Synthetic medication",
         dosage: "25 mg",
         frequency: "Once daily",
@@ -405,28 +500,60 @@ describeWithPostgres("atomic estimate conversion PostgreSQL contract", () => {
       const refillEstimate = await createEstimate(refillFixture, [
         { productId: refillProduct, quantity: 2 },
       ]);
-      const refillRace = await within(
-        Promise.allSettled([
-          caller(refillFixture).convertEstimateToInvoice({
-            id: refillEstimate.id,
-            expectedUpdatedAt: refillEstimate.updatedAt,
-          }),
+      let releaseInvoiceBarrier!: () => void;
+      const invoiceBarrierRelease = new Promise<void>((resolveRelease) => {
+        releaseInvoiceBarrier = resolveRelease;
+      });
+      let markInvoiceBarrierReady!: () => void;
+      const invoiceBarrierReady = new Promise<void>((resolveReady) => {
+        markInvoiceBarrierReady = resolveReady;
+      });
+      const invoiceBarrier = appSql.begin(async (barrierTx) => {
+        const barrierSql = barrierTx as unknown as SqlClient;
+        await barrierSql`
+          select pg_advisory_xact_lock(
+            hashtextextended(${refillEstimate.id}, 0)
+          )
+        `;
+        markInvoiceBarrierReady();
+        await invoiceBarrierRelease;
+      });
+      await within(invoiceBarrierReady, "invoice barrier acquisition");
+      let conversionSettled = false;
+      const blockedConversion = caller(refillFixture).convertEstimateToInvoice({
+        id: refillEstimate.id,
+        expectedUpdatedAt: refillEstimate.updatedAt,
+      });
+      void blockedConversion.then(
+        () => {
+          conversionSettled = true;
+        },
+        () => {
+          conversionSettled = true;
+        },
+      );
+      try {
+        await within(
           recordsCaller(refillFixture).recordPrescriptionRefill({
             id: prescriptionId,
             operationId: randomUUID(),
             appointmentId: refillFixture.appointmentId,
-            note: "Synthetic conversion/refill drill",
+            note: "Synthetic ordered conversion/refill drill",
           }),
-        ]),
-        "conversion/refill serialization",
-      );
-      assertNoDeadlock(refillRace);
-      expect(refillRace[0]).toEqual(
-        expect.objectContaining({ status: "rejected" }),
-      );
-      expect(refillRace[1]).toEqual(
-        expect.objectContaining({ status: "fulfilled" }),
-      );
+          "ordered refill commit",
+        );
+        expect(conversionSettled).toBe(false);
+      } finally {
+        releaseInvoiceBarrier();
+        await within(invoiceBarrier, "invoice barrier release");
+      }
+      await expect(
+        within(blockedConversion, "blocked conversion revalidation"),
+      ).rejects.toMatchObject({
+        code: "PRECONDITION_FAILED",
+        message:
+          "Charge this patient's already-dispensed medication from the medication billing queue so inventory is not deducted twice.",
+      });
       expect(await stock(refillProduct)).toBe(8);
       const [refillState] = await ownerDb
         .select({ refillsRemaining: schema.prescriptions.refillsRemaining })
@@ -438,6 +565,12 @@ describeWithPostgres("atomic estimate conversion PostgreSQL contract", () => {
         .from(schema.dispenseChargeQueue)
         .where(eq(schema.dispenseChargeQueue.prescriptionId, prescriptionId));
       expect(refillQueue).toEqual([{ status: "pending" }]);
+      expect(await conversionAuditCount(refillFixture.practiceId)).toBe(0);
+      const [blockedEstimateState] = await ownerDb
+        .select({ isEstimate: schema.invoices.isEstimate })
+        .from(schema.invoices)
+        .where(eq(schema.invoices.id, refillEstimate.id));
+      expect(blockedEstimateState?.isEstimate).toBe(true);
 
       // A later insufficient row rolls back an earlier successful stock update,
       // the estimate flip, and its audit as one transaction.
@@ -513,6 +646,11 @@ describeWithPostgres("atomic estimate conversion PostgreSQL contract", () => {
           ),
         );
       expect(actualInvoices).toHaveLength(1);
+
+      const [postRouteNoContext] = await appSql<Array<{ count: number }>>`
+        select count(*)::int as count from invoices
+      `;
+      expect(postRouteNoContext?.count).toBe(0);
     } finally {
       process.env.DATABASE_URL = originalDatabaseUrl;
       if (appSql) await appSql.end();

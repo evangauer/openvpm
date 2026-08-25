@@ -1527,10 +1527,20 @@ describe("billing invoice integrity", () => {
       ]),
     );
     expect(insertValues).toHaveBeenCalledWith(
-      expect.objectContaining({
+      {
+        practiceId: PRACTICE_ID,
+        userId: USER_ID,
         action: "estimate_converted",
+        entityType: "invoice",
         entityId: INVOICE_ID,
-      }),
+        changes: {
+          priorStatus: "draft",
+          nextStatus: "draft",
+          visitLinked: false,
+          itemCount: 1,
+          productLineCount: 1,
+        },
+      },
     );
   });
 
@@ -1590,6 +1600,84 @@ describe("billing invoice integrity", () => {
 
     expect(updateSet).not.toHaveBeenCalled();
   });
+
+  it("rejects an empty estimate before inventory or audit writes", async () => {
+    const { db, updateSet, insertValues } = createDb({
+      selectResults: [
+        [{ appointmentId: null }],
+        [
+          {
+            id: INVOICE_ID,
+            clientId: CLIENT_ID,
+            patientId: PATIENT_ID,
+            appointmentId: null,
+            total: "0.00",
+            paidAmount: "0.00",
+            status: "draft",
+            isEstimate: true,
+            dueDate: null,
+            updatedAt: UPDATED_AT,
+          },
+        ],
+        [],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).convertEstimateToInvoice({
+        id: INVOICE_ID,
+        expectedUpdatedAt: UPDATED_AT,
+      }),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: "Add at least one line item before converting this estimate.",
+    });
+
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { sourcePrescriptionId: PRESCRIPTION_ID, sourceDispenseChargeId: null },
+    { sourcePrescriptionId: null, sourceDispenseChargeId: DISPENSE_CHARGE_ID },
+  ])(
+    "rejects a legacy sourced medication estimate before inventory or audit writes",
+    async (source) => {
+      const { db, updateSet, insertValues } = createDb({
+        selectResults: [
+          [{ appointmentId: null }],
+          [
+            {
+              id: INVOICE_ID,
+              clientId: CLIENT_ID,
+              patientId: PATIENT_ID,
+              appointmentId: null,
+              total: "30.00",
+              paidAmount: "0.00",
+              status: "draft",
+              isEstimate: true,
+              dueDate: null,
+              updatedAt: UPDATED_AT,
+            },
+          ],
+          [{ ...productLine, ...source }],
+        ],
+      });
+
+      await expect(
+        callerWithDb(db).convertEstimateToInvoice({
+          id: INVOICE_ID,
+          expectedUpdatedAt: UPDATED_AT,
+        }),
+      ).rejects.toMatchObject({
+        code: "PRECONDITION_FAILED",
+        message: expect.stringContaining("dispensed-medication line"),
+      });
+
+      expect(updateSet).not.toHaveBeenCalled();
+      expect(insertValues).not.toHaveBeenCalled();
+    },
+  );
 
   it("rejects conversion when product stock is insufficient", async () => {
     const { db, updateSet } = createDb({

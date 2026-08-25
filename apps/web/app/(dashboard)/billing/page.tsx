@@ -219,7 +219,7 @@ export default function BillingPage() {
 
   const convertEstimate = trpc.billing.convertEstimateToInvoice.useMutation({
     onSuccess: () => {
-      toast.success("Estimate converted to invoice");
+      toast.success("Estimate converted to draft invoice");
     },
     onError: (err) => {
       toast.error(err.message);

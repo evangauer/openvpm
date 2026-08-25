@@ -4290,7 +4290,7 @@ export const billingRouter = createRouter({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      // This lookup chooses the visit lock and captures a version only. Every
+      // This lookup chooses the visit serialization identity only. Every
       // mutable fact is re-read after the locks inside the transaction.
       const [identity] = await ctx.db
         .select({
@@ -4312,8 +4312,8 @@ export const billingRouter = createRouter({
 
       return ctx.db.transaction(async (tx) => {
         const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
-        // Match invoice edit/void ordering: invoice advisory lock first. Visit
-        // creation then shares the appointment advisory/row lock below.
+        // Serialize this estimate first, then share the appointment
+        // advisory/row lock used by visit-linked invoice and refill paths.
         await tx.execute(
           sql`select pg_advisory_xact_lock(hashtextextended(${input.id}, 0))`
         );
@@ -4386,13 +4386,13 @@ export const billingRouter = createRouter({
         if (!existing) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Invoice not found" });
         }
-        assertCanConvertEstimate(existing);
         if (existing.updatedAt.getTime() !== expectedUpdatedAt.getTime()) {
           throw new TRPCError({
             code: "CONFLICT",
             message: "Estimate changed. Refresh before converting it.",
           });
         }
+        assertCanConvertEstimate(existing);
         if (existing.appointmentId !== identity.appointmentId) {
           throw new TRPCError({
             code: "CONFLICT",

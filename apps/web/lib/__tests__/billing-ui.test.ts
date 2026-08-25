@@ -197,6 +197,9 @@ describe("billing invoice payment actions", () => {
     expect(source).toContain(
       "expectedUpdatedAt: pendingEstimateConversion.updatedAt",
     );
+    expect(source).toContain(
+      'toast.success("Estimate converted to draft invoice")',
+    );
     expect(source).toContain("isPending={convertEstimate.isPending}");
     expect(source).toContain("if (convertEstimate.isPending) return");
     expect(source).not.toContain("window.confirm");
