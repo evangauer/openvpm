@@ -1,20 +1,21 @@
 name: Apply migrations
 
-# Schema changes ship with the code that needs them. Each environment is an
-# explicit job so no matrix expression can receive broad access to repository
-# secrets or choose a secret name dynamically.
+# Each environment is an explicit job so no matrix expression can receive
+# broad access to repository secrets or choose a secret name dynamically.
+# Nonproduction jobs remain manual until isolated resources and fingerprints
+# have passed the credential-isolation canary.
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       target:
         description: Environment to migrate
         required: true
         type: choice
-        default: demo
+        default: development
         options:
+          - development
+          - staging
           - demo
           - production
       production_confirmation:
@@ -22,27 +23,50 @@ on:
         required: false
         type: string
       release_sha:
-        description: Exact 40-character main commit to migrate
-        required: false
+        description: Exact 40-character commit on the target canonical branch
+        required: true
         type: string
 
 permissions:
   contents: read
 
-concurrency:
-  group: apply-migrations-${{ inputs.target || 'demo' }}
-  queue: max
-  cancel-in-progress: false
-
 jobs:
-  reject-non-main-dispatch:
-    name: reject non-main dispatch
-    if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+  reject-invalid-production-dispatch:
+    name: reject invalid production dispatch
+    if: inputs.target == 'production' && github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - run: |
-          echo "::error::Migration dispatches must run from the main branch."
+          echo "::error::Production migration dispatches must run from the main branch."
           exit 1
+
+  validate-nonproduction-request:
+    name: validate nonproduction request
+    if: inputs.target != 'production'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require exact canonical ref and revision
+        env:
+          TARGET: ${{ inputs.target }}
+          REQUESTED_RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          case "$TARGET" in
+            development) expected_ref="refs/heads/development" ;;
+            staging) expected_ref="refs/heads/staging" ;;
+            demo) expected_ref="refs/heads/main" ;;
+            *)
+              echo "::error::Unsupported nonproduction migration target."
+              exit 1
+              ;;
+          esac
+          if [ "$GITHUB_REF" != "$expected_ref" ]; then
+            echo "::error::Migration target must run from its canonical branch."
+            exit 1
+          fi
+          if [[ ! "$REQUESTED_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || [ "$REQUESTED_RELEASE_SHA" != "$GITHUB_SHA" ]; then
+            echo "::error::Migration release SHA must match the exact dispatched commit."
+            exit 1
+          fi
 
   validate-production-request:
     name: validate production request
@@ -68,6 +92,10 @@ jobs:
     needs: validate-production-request
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.target == 'production'
     environment: Production
+    concurrency:
+      group: apply-migrations-production
+      queue: max
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -126,59 +154,252 @@ jobs:
           DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
         run: pnpm db:drift
 
-  demo:
-    name: demo
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.target == 'demo')
+  development:
+    name: development
+    needs: validate-nonproduction-request
+    if: inputs.target == 'development'
+    environment: Development
+    concurrency:
+      group: apply-migrations-development
+      queue: max
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.release_sha }}
+          persist-credentials: false
+      - name: Verify checked-out revision
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
       - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
-
-      - name: Check environment is configured
-        id: configured
+      - name: Verify committed migration history
+        run: pnpm --filter @openpims/db db:migrations:check
+      - name: Require environment-scoped database controls
         env:
-          DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          APP_DB_PASSWORD: ${{ secrets.OPENPIMS_APP_DB_PASSWORD }}
+          TARGET_FINGERPRINT: ${{ vars.DATABASE_TARGET_FINGERPRINT }}
+          FORBIDDEN_FINGERPRINTS: ${{ vars.FORBIDDEN_DATABASE_TARGET_FINGERPRINTS }}
         run: |
-          if [ -z "$DATABASE_URL" ]; then
-            echo "::notice::DEMO_DATABASE_URL is not set — skipping demo."
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          fi
-
+          for value in "$DATABASE_URL" "$APP_DB_PASSWORD" "$TARGET_FINGERPRINT" "$FORBIDDEN_FINGERPRINTS"; do
+            if [[ -z "$value" || "$value" =~ ^[[:space:]]*$ ]]; then
+              echo "::error::Development database controls are not configured."
+              exit 1
+            fi
+          done
+      - name: Verify Development code contract (synthetic)
+        env:
+          OPENVPM_ENVIRONMENT: development
+          HOSTED_BILLING_ENABLED: "true"
+        run: pnpm --filter @openpims/web environment:validate
+      - name: Verify database target identity
+        env:
+          OPENVPM_ENVIRONMENT: development
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_TARGET_FINGERPRINT: ${{ vars.DATABASE_TARGET_FINGERPRINT }}
+          FORBIDDEN_DATABASE_TARGET_FINGERPRINTS: ${{ vars.FORBIDDEN_DATABASE_TARGET_FINGERPRINTS }}
+        run: pnpm db:target:check
+      - name: Verify applied history is a committed prefix
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MIGRATION_CONFORMANCE_MODE: prefix
+        run: pnpm db:migrations:conformance
       - name: Schema state before
-        if: steps.configured.outputs.ready == 'true'
         continue-on-error: true
         env:
-          DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: pnpm db:drift
-
       - name: Verify RLS deployment ownership
-        if: steps.configured.outputs.ready == 'true'
         env:
-          DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: pnpm db:rls:preflight
-
       - name: Apply migrations
-        if: steps.configured.outputs.ready == 'true'
         env:
-          DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: pnpm db:migrate
-
       - name: Re-apply row-level security
-        if: steps.configured.outputs.ready == 'true'
         env:
-          DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
           OPENPIMS_APP_DB_PASSWORD: ${{ secrets.OPENPIMS_APP_DB_PASSWORD }}
         run: pnpm db:rls
-
       - name: Verify schema matches the code
-        if: steps.configured.outputs.ready == 'true'
         env:
-          DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: pnpm db:drift
+      - name: Verify exact applied migration history
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MIGRATION_CONFORMANCE_MODE: exact
+        run: pnpm db:migrations:conformance
+
+  staging:
+    name: staging
+    needs: validate-nonproduction-request
+    if: inputs.target == 'staging'
+    environment: Staging
+    concurrency:
+      group: apply-migrations-staging
+      queue: max
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.release_sha }}
+          persist-credentials: false
+      - name: Verify checked-out revision
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - name: Verify committed migration history
+        run: pnpm --filter @openpims/db db:migrations:check
+      - name: Require environment-scoped database controls
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          APP_DB_PASSWORD: ${{ secrets.OPENPIMS_APP_DB_PASSWORD }}
+          TARGET_FINGERPRINT: ${{ vars.DATABASE_TARGET_FINGERPRINT }}
+          FORBIDDEN_FINGERPRINTS: ${{ vars.FORBIDDEN_DATABASE_TARGET_FINGERPRINTS }}
+        run: |
+          for value in "$DATABASE_URL" "$APP_DB_PASSWORD" "$TARGET_FINGERPRINT" "$FORBIDDEN_FINGERPRINTS"; do
+            if [[ -z "$value" || "$value" =~ ^[[:space:]]*$ ]]; then
+              echo "::error::Staging database controls are not configured."
+              exit 1
+            fi
+          done
+      - name: Verify Staging code contract (synthetic)
+        env:
+          OPENVPM_ENVIRONMENT: staging
+          HOSTED_BILLING_ENABLED: "true"
+        run: pnpm --filter @openpims/web environment:validate
+      - name: Verify database target identity
+        env:
+          OPENVPM_ENVIRONMENT: staging
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_TARGET_FINGERPRINT: ${{ vars.DATABASE_TARGET_FINGERPRINT }}
+          FORBIDDEN_DATABASE_TARGET_FINGERPRINTS: ${{ vars.FORBIDDEN_DATABASE_TARGET_FINGERPRINTS }}
+        run: pnpm db:target:check
+      - name: Verify applied history is a committed prefix
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MIGRATION_CONFORMANCE_MODE: prefix
+        run: pnpm db:migrations:conformance
+      - name: Schema state before
+        continue-on-error: true
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: pnpm db:drift
+      - name: Verify RLS deployment ownership
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: pnpm db:rls:preflight
+      - name: Apply migrations
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: pnpm db:migrate
+      - name: Re-apply row-level security
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          OPENPIMS_APP_DB_PASSWORD: ${{ secrets.OPENPIMS_APP_DB_PASSWORD }}
+        run: pnpm db:rls
+      - name: Verify schema matches the code
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: pnpm db:drift
+      - name: Verify exact applied migration history
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MIGRATION_CONFORMANCE_MODE: exact
+        run: pnpm db:migrations:conformance
+
+  demo:
+    name: demo
+    needs: validate-nonproduction-request
+    if: inputs.target == 'demo'
+    environment: Demo
+    concurrency:
+      group: apply-migrations-demo
+      queue: max
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.release_sha }}
+          persist-credentials: false
+      - name: Verify checked-out revision
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - name: Verify committed migration history
+        run: pnpm --filter @openpims/db db:migrations:check
+      - name: Require environment-scoped database controls
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          APP_DB_PASSWORD: ${{ secrets.OPENPIMS_APP_DB_PASSWORD }}
+          TARGET_FINGERPRINT: ${{ vars.DATABASE_TARGET_FINGERPRINT }}
+          FORBIDDEN_FINGERPRINTS: ${{ vars.FORBIDDEN_DATABASE_TARGET_FINGERPRINTS }}
+        run: |
+          for value in "$DATABASE_URL" "$APP_DB_PASSWORD" "$TARGET_FINGERPRINT" "$FORBIDDEN_FINGERPRINTS"; do
+            if [[ -z "$value" || "$value" =~ ^[[:space:]]*$ ]]; then
+              echo "::error::Demo database controls are not configured."
+              exit 1
+            fi
+          done
+      - name: Verify Demo code contract (synthetic)
+        env:
+          OPENVPM_ENVIRONMENT: demo
+          HOSTED_BILLING_ENABLED: "false"
+          NEXT_PUBLIC_DEMO_MODE: "true"
+        run: pnpm --filter @openpims/web environment:validate
+      - name: Verify database target identity
+        env:
+          OPENVPM_ENVIRONMENT: demo
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_TARGET_FINGERPRINT: ${{ vars.DATABASE_TARGET_FINGERPRINT }}
+          FORBIDDEN_DATABASE_TARGET_FINGERPRINTS: ${{ vars.FORBIDDEN_DATABASE_TARGET_FINGERPRINTS }}
+        run: pnpm db:target:check
+      - name: Verify applied history is a committed prefix
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MIGRATION_CONFORMANCE_MODE: prefix
+        run: pnpm db:migrations:conformance
+      - name: Schema state before
+        continue-on-error: true
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: pnpm db:drift
+      - name: Verify RLS deployment ownership
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: pnpm db:rls:preflight
+      - name: Apply migrations
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: pnpm db:migrate
+      - name: Re-apply row-level security
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          OPENPIMS_APP_DB_PASSWORD: ${{ secrets.OPENPIMS_APP_DB_PASSWORD }}
+        run: pnpm db:rls
+      - name: Verify schema matches the code
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: pnpm db:drift
+      - name: Verify exact applied migration history
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MIGRATION_CONFORMANCE_MODE: exact
+        run: pnpm db:migrations:conformance

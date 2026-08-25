@@ -9,6 +9,26 @@ OpenVPM has two operating modes:
 - **Self-host / OSS:** leave `HOSTED_BILLING_ENABLED` unset. Hosted billing gates and usage metering are disabled, and Stripe subscription envs are optional.
 - **OpenVPM Cloud:** set `HOSTED_BILLING_ENABLED=true`. Hosted billing, trials, read-only lapsed state, usage metering, and Stripe subscription management are active.
 
+Managed deployments must also set `OPENVPM_ENVIRONMENT` to exactly one of
+`development`, `staging`, `demo`, or `production`. Local and self-hosted OSS
+installs may leave it unset. The application build and `/api/health` both reject
+an invalid managed environment without returning configuration values.
+
+Development and Staging use the Cloud business tier for behavioral parity, but
+their default contract keeps provider mutations and real fees off: SMS
+provisioning/sending/inbound flags and scopes are empty, broad replica rollout
+is disabled, the Stripe Connect application fee is zero, and any configured
+Stripe secret is test-mode. Demo requires `NEXT_PUBLIC_DEMO_MODE=true` and
+hosted billing off. Production requires hosted billing on and forbids demo mode
+and `OPENVPM_EXPOSE_AUTH_LINKS`.
+
+The manual database jobs are an inert pre-provisioning control. Do not populate
+their GitHub environment secrets or target fingerprints until dedicated
+projects and forbidden-target fingerprints have been reviewed. Do not use the
+populated legacy staging project as replacement Staging, and do not enable
+automatic branch migrations or Vercel preview builds until the isolation canary
+has passed.
+
 This boundary is intentional. Do not add hosted-only requirements to the self-host path.
 
 ## Public Website Flow
@@ -68,6 +88,7 @@ same app-role credential you will put in hosted `DATABASE_URL`.
 Set these on the hosted app deployment:
 
 ```env
+OPENVPM_ENVIRONMENT=production
 HOSTED_BILLING_ENABLED=true
 # Default-off. Set both only after reviewing the verified-admin recipient
 # cohort; the timestamp is the prospective closeout eligibility boundary.
@@ -162,10 +183,16 @@ the gate evaluates it only in a newly created or redeployed build.
    40-character `main` commit, and type `MIGRATE_PRODUCTION`.
 2. Wait for the RLS ownership preflight, migration, RLS reapplication, and final
    drift check to pass.
-3. Set `PRODUCTION_RELEASE_SHA` to that same commit in the app and demo Vercel
+3. In Vercel, set and verify `OPENVPM_ENVIRONMENT=production` on the app
+   project's Production scope. Set `OPENVPM_ENVIRONMENT=demo` on the demo
+   project's deployment scope. Do this before setting the release lock or
+   redeploying either candidate.
+4. Set `PRODUCTION_RELEASE_SHA` to that same commit in the app and demo Vercel
    projects, then redeploy the exact candidate in each project.
-4. Verify `/api/health` and the release smoke path before recording success.
-5. Clear or rotate the value so the approval cannot apply to a later commit.
+5. Verify `/api/health` reports the intended deployment environment and the
+   release smoke path passes before recording success.
+6. Clear or rotate the release-lock value so the approval cannot apply to a
+   later commit.
 
 The GitHub `Production` environment must have an independent required reviewer
 before this is treated as two-person approval. See

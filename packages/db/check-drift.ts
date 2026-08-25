@@ -22,75 +22,73 @@ if (!url) {
   console.error("DATABASE_URL not set");
   process.exit(1);
 }
+const databaseUrl = url;
 
 // Supabase's transaction pooler rejects the prepared statements postgres-js
 // uses by default; mirror the app client's handling so this works everywhere.
-const pooled = isPooledDatabaseConnection(url);
-
-const client = postgres(url, { max: 1, prepare: !pooled });
-const db = drizzle(client);
-
-// Show which database was inspected without ever printing the password.
-function safeTarget(raw: string): string {
-  try {
-    const parsed = new URL(raw);
-    return `${parsed.host}${parsed.pathname}`;
-  } catch {
-    return "(unparseable DATABASE_URL)";
-  }
-}
+const pooled = isPooledDatabaseConnection(databaseUrl);
 
 async function main() {
-  console.log(`Checking schema drift against ${safeTarget(url!)}`);
-  const drift = await findSchemaDrift(db);
+  let client: ReturnType<typeof postgres> | undefined;
+  try {
+    client = postgres(databaseUrl, { max: 1, prepare: !pooled });
+    const db = drizzle(client);
 
-  if (driftIsClean(drift)) {
-    console.log("OK — database schema matches the deployed code.");
-    return 0;
-  }
+    // Deployment logs intentionally identify only the logical environment. A
+    // Supabase hostname can reveal its project ref even after credentials are
+    // removed, so never print any DATABASE_URL component here.
+    console.log("Checking database schema drift.");
+    const drift = await findSchemaDrift(db);
 
-  console.error("\nDRIFT DETECTED — the database is behind the code.\n");
-
-  if (drift.missingTables.length > 0) {
-    console.error(`Missing tables (${drift.missingTables.length}):`);
-    for (const table of drift.missingTables) console.error(`  - ${table}`);
-    console.error("");
-  }
-
-  if (drift.missingColumns.length > 0) {
-    console.error(`Missing columns (${drift.missingColumns.length}):`);
-    for (const { table, column } of drift.missingColumns) {
-      console.error(`  - ${table}.${column}`);
+    if (driftIsClean(drift)) {
+      console.log("OK — database schema matches the deployed code.");
+      return 0;
     }
-    console.error("");
-  }
 
-  if (drift.invalidObjects.length > 0) {
+    console.error("\nDRIFT DETECTED — the database is behind the code.\n");
+
+    if (drift.missingTables.length > 0) {
+      console.error(`Missing tables (${drift.missingTables.length}):`);
+      for (const table of drift.missingTables) console.error(`  - ${table}`);
+      console.error("");
+    }
+
+    if (drift.missingColumns.length > 0) {
+      console.error(`Missing columns (${drift.missingColumns.length}):`);
+      for (const { table, column } of drift.missingColumns) {
+        console.error(`  - ${table}.${column}`);
+      }
+      console.error("");
+    }
+
+    if (drift.invalidObjects.length > 0) {
+      console.error(
+        `Critical database controls missing or invalid (${drift.invalidObjects.length}):`,
+      );
+      for (const { kind, table, name } of drift.invalidObjects) {
+        console.error(`  - ${kind}: ${table}.${name}`);
+      }
+      console.error("");
+    }
+
     console.error(
-      `Critical database controls missing or invalid (${drift.invalidObjects.length}):`,
+      "Apply the outstanding migrations and RLS policy, then validate staged constraints before deploying the application.",
     );
-    for (const { kind, table, name } of drift.invalidObjects) {
-      console.error(`  - ${kind}: ${table}.${name}`);
+    return 1;
+  } catch {
+    console.error(
+      "Drift check failed: database state could not be safely validated.",
+    );
+    return 1;
+  } finally {
+    if (client) {
+      try {
+        await client.end();
+      } catch {
+        // Connection teardown details can contain the target hostname.
+      }
     }
-    console.error("");
   }
-
-  console.error(
-    "Apply the outstanding migrations and RLS policy, then validate staged constraints before deploying the application.",
-  );
-  return 1;
 }
 
-main()
-  .then(async (code) => {
-    await client.end();
-    process.exit(code);
-  })
-  .catch(async (err) => {
-    console.error(
-      "Drift check failed:",
-      err instanceof Error ? err.message : err,
-    );
-    await client.end();
-    process.exit(1);
-  });
+process.exitCode = await main();

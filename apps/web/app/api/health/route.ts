@@ -39,6 +39,7 @@ import {
 } from "@/lib/email-preferences";
 import { platformEmailIdentityConfigurationReady } from "@/lib/platform-email-preferences";
 import { hostedSmsCredentialIssueCount } from "@/lib/messaging/hosted-sms-readiness";
+import { inspectDeploymentEnvironment } from "@/lib/deployment-environment";
 
 export const dynamic = "force-dynamic";
 
@@ -471,6 +472,16 @@ export async function GET() {
     string,
     { ok: boolean; detail?: string; advisory?: boolean }
   > = {};
+
+  const deploymentEnvironment = inspectDeploymentEnvironment();
+  checks.deploymentEnvironment = {
+    ok: deploymentEnvironment.ok,
+    detail: deploymentEnvironment.ok
+      ? `${deploymentEnvironment.environment} environment uses the ${deploymentEnvironment.businessTier} business tier`
+      : `${deploymentEnvironment.issues.length} deployment environment configuration issue${
+          deploymentEnvironment.issues.length === 1 ? "" : "s"
+        } detected`,
+  };
 
   let databaseReachable = false;
   try {

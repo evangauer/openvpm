@@ -49,7 +49,11 @@ describe("RLS deployment ownership preflight", () => {
     expect(preflight).toBeGreaterThanOrEqual(0);
     expect(preflight).toBeLessThan(roleLookup);
     expect(preflight).toBeLessThan(policyApply);
-    expect(source).toContain("err instanceof Error ? err.message : err");
+    expect(source).toContain("err instanceof RlsDeploymentCapabilityError");
+    expect(source).toContain(
+      "database operation could not be safely completed",
+    );
+    expect(source).not.toContain("err instanceof Error ? err.message : err");
   });
 
   it("gates both hosted environments before migrations", () => {

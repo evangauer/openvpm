@@ -108,6 +108,11 @@ jobs:
       # tenant isolation against a real Postgres on every PR.
       - run: pnpm --filter @openpims/db db:migrate
 
+      - name: Verify migrated ledger exactly matches committed history
+        env:
+          MIGRATION_CONFORMANCE_MODE: exact
+        run: pnpm --filter @openpims/db db:migrations:conformance
+
       - name: Execute RLS ownership preflight contract
         run: pnpm --filter @openpims/db db:rls:preflight:test
 
