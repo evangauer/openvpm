@@ -8,17 +8,66 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      target:
+        description: Environment to migrate
+        required: true
+        type: choice
+        default: demo
+        options:
+          - demo
+          - production
+      production_confirmation:
+        description: Type MIGRATE_PRODUCTION for a production run
+        required: false
+        type: string
+      release_sha:
+        description: Exact 40-character main commit to migrate
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: apply-migrations
+  group: apply-migrations-${{ inputs.target || 'demo' }}
+  queue: max
   cancel-in-progress: false
 
 jobs:
+  reject-non-main-dispatch:
+    name: reject non-main dispatch
+    if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "::error::Migration dispatches must run from the main branch."
+          exit 1
+
+  validate-production-request:
+    name: validate production request
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.target == 'production'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require exact revision confirmation
+        env:
+          PRODUCTION_CONFIRMATION: ${{ inputs.production_confirmation }}
+          REQUESTED_RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          if [ "$PRODUCTION_CONFIRMATION" != "MIGRATE_PRODUCTION" ]; then
+            echo "::error::Production migration confirmation did not match MIGRATE_PRODUCTION."
+            exit 1
+          fi
+          if [[ ! "$REQUESTED_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || [ "$REQUESTED_RELEASE_SHA" != "$GITHUB_SHA" ]; then
+            echo "::error::Production migration release SHA must match the exact dispatched main commit."
+            exit 1
+          fi
+
   production:
     name: production
+    needs: validate-production-request
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.target == 'production'
+    environment: Production
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -29,17 +78,21 @@ jobs:
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
 
-      - name: Check environment is configured
+      - name: Require production database credentials
         id: configured
         env:
           DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+          APP_DB_PASSWORD: ${{ secrets.OPENPIMS_APP_DB_PASSWORD }}
         run: |
-          if [ -z "$DATABASE_URL" ]; then
-            echo "::notice::PRODUCTION_DATABASE_URL is not set — skipping production."
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=true" >> "$GITHUB_OUTPUT"
+          if [[ -z "$DATABASE_URL" || "$DATABASE_URL" =~ ^[[:space:]]*$ ]]; then
+            echo "::error::PRODUCTION_DATABASE_URL is not configured."
+            exit 1
           fi
+          if [[ -z "$APP_DB_PASSWORD" || "$APP_DB_PASSWORD" =~ ^[[:space:]]*$ ]]; then
+            echo "::error::OPENPIMS_APP_DB_PASSWORD is not configured."
+            exit 1
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
 
       - name: Schema state before
         if: steps.configured.outputs.ready == 'true'
@@ -75,6 +128,7 @@ jobs:
 
   demo:
     name: demo
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.target == 'demo')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

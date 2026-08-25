@@ -1,0 +1,15 @@
+# Default ownership. Add GitHub teams here as they are onboarded.
+* @evangauer
+
+# Production, security, identity, billing, and tenant-data boundaries.
+/.github/ @evangauer
+/apps/web/middleware.ts @evangauer
+/apps/web/lib/auth* @evangauer
+/apps/web/lib/billing/ @evangauer
+/apps/web/lib/stripe* @evangauer
+/apps/web/app/api/webhooks/ @evangauer
+/apps/web/server/routers/auth.ts @evangauer
+/apps/web/server/routers/billing.ts @evangauer
+/packages/db/ @evangauer
+/apps/web/scripts/vercel-build.sh @evangauer
+/apps/web/vercel.json @evangauer

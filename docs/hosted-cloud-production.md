@@ -77,6 +77,9 @@ NEXTAUTH_URL=https://app.openvpm.com
 NEXT_PUBLIC_APP_URL=https://app.openvpm.com
 NEXTAUTH_SECRET=...
 DATABASE_URL=...
+# Transitional production release lock. Set only to the exact approved
+# 40-character commit, redeploy that revision, then clear or rotate it.
+PRODUCTION_RELEASE_SHA=
 
 STRIPE_SECRET_KEY=...
 STRIPE_WEBHOOK_SECRET=...
@@ -142,6 +145,32 @@ CRON_HEARTBEAT_URL=...
 CRON_HEARTBEAT_FILE_REPLICAS_URL=...
 PLATFORM_ADMIN_EMAILS=...
 ```
+
+### Transitional production release gate
+
+Until staging can promote one immutable artifact, every Vercel Production build
+fails closed unless `PRODUCTION_RELEASE_SHA` exactly matches
+`VERCEL_GIT_COMMIT_SHA`. A merge to `main` creates a candidate; it is not an
+approval.
+
+Keep **Automatically expose System Environment Variables** enabled on the app
+and demo Vercel projects so `VERCEL_GIT_COMMIT_SHA` is available. Changing or
+clearing a Vercel environment variable does not alter an existing deployment;
+the gate evaluates it only in a newly created or redeployed build.
+
+1. Dispatch **Apply migrations** from `main` for `production`, enter the exact
+   40-character `main` commit, and type `MIGRATE_PRODUCTION`.
+2. Wait for the RLS ownership preflight, migration, RLS reapplication, and final
+   drift check to pass.
+3. Set `PRODUCTION_RELEASE_SHA` to that same commit in the app and demo Vercel
+   projects, then redeploy the exact candidate in each project.
+4. Verify `/api/health` and the release smoke path before recording success.
+5. Clear or rotate the value so the approval cannot apply to a later commit.
+
+The GitHub `Production` environment must have an independent required reviewer
+before this is treated as two-person approval. See
+[`repository-governance.md`](repository-governance.md) for the target promotion
+model.
 
 `STRIPE_PRICE_CLOUD_USER` and `STRIPE_PRICE_CLOUD` are legacy-only. They must not be used for new checkout or required hosted readiness.
 
