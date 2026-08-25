@@ -28,10 +28,11 @@ export function SubscriptionCanceledEmail({
       </Paragraph>
 
       <InfoCard tone="brand">
-        <Label>Your data is safe</Label>
+        <Label>Cancellation does not delete data</Label>
         <Paragraph>
-          Canceling does not delete your practice data. You can review your
-          billing settings or reactivate from OpenVPM.
+          Canceling your subscription does not by itself delete your practice
+          data. You can review your billing settings or reactivate from
+          OpenVPM.
         </Paragraph>
       </InfoCard>
 
