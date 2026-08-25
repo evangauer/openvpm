@@ -6,6 +6,7 @@ import {
   invoices,
   auditLog,
   clinicalRecordCorrections,
+  dispenseChargeQueue,
   labResults,
   prescriptions,
   procedures,
@@ -203,34 +204,43 @@ export async function syncVisitWorkItems(ctx: VisitBillingContext, appointmentId
 export async function assertNoUnresolvedVisitWork(
   ctx: VisitBillingContext,
   appointmentId: string,
-  message = "Resolve every performed vaccination, lab, procedure, and prescription as charged, no charge, or void/corrected before checkout."
+  message = "Resolve every performed vaccination, lab, procedure, prescription, and medication dispense as charged, no charge, waived, or void/corrected before checkout."
 ) {
   const rows = await ctx.db.execute(sql`
-    select ${visitWorkItems.id}
-    from ${visitWorkItems}
-    left join ${invoiceItems}
-      on ${invoiceItems.id} = ${visitWorkItems.invoiceItemId}
-    left join ${invoices}
-      on ${invoices.id} = ${visitWorkItems.invoiceId}
-      and ${invoices.practiceId} = ${ctx.practiceId}
-      and ${invoices.appointmentId} = ${appointmentId}
-    where ${visitWorkItems.practiceId} = ${ctx.practiceId}
-      and ${visitWorkItems.appointmentId} = ${appointmentId}
-      and (
-        ${visitWorkItems.status} = 'unresolved'
-        or (
-          ${visitWorkItems.status} = 'charged'
-          and (
-            ${invoiceItems.id} is null
-            or ${invoiceItems.deletedAt} is not null
-            or ${invoices.id} is null
-            or ${invoices.deletedAt} is not null
-            or ${invoices.status} = 'void'
+    select unresolved.id
+    from (
+      select ${visitWorkItems.id} as id, ${visitWorkItems.createdAt} as created_at
+      from ${visitWorkItems}
+      left join ${invoiceItems}
+        on ${invoiceItems.id} = ${visitWorkItems.invoiceItemId}
+      left join ${invoices}
+        on ${invoices.id} = ${visitWorkItems.invoiceId}
+        and ${invoices.practiceId} = ${ctx.practiceId}
+        and ${invoices.appointmentId} = ${appointmentId}
+      where ${visitWorkItems.practiceId} = ${ctx.practiceId}
+        and ${visitWorkItems.appointmentId} = ${appointmentId}
+        and (
+          ${visitWorkItems.status} = 'unresolved'
+          or (
+            ${visitWorkItems.status} = 'charged'
+            and (
+              ${invoiceItems.id} is null
+              or ${invoiceItems.deletedAt} is not null
+              or ${invoices.id} is null
+              or ${invoices.deletedAt} is not null
+              or ${invoices.status} = 'void'
+            )
           )
         )
-      )
-      and ${visitWorkItems.deletedAt} is null
-    order by ${visitWorkItems.createdAt}, ${visitWorkItems.id}
+        and ${visitWorkItems.deletedAt} is null
+      union all
+      select ${dispenseChargeQueue.id} as id, ${dispenseChargeQueue.createdAt} as created_at
+      from ${dispenseChargeQueue}
+      where ${dispenseChargeQueue.practiceId} = ${ctx.practiceId}
+        and ${dispenseChargeQueue.appointmentId} = ${appointmentId}
+        and ${dispenseChargeQueue.status} = 'pending'
+    ) unresolved
+    order by unresolved.created_at, unresolved.id
     limit 1
   `);
   if (rowsFromExecute<{ id: string }>(rows).length > 0) {
@@ -273,7 +283,7 @@ export async function assertVisitInvoiceReadyForFinancialAction(
   await assertNoUnresolvedVisitWork(
     ctx,
     appointmentId,
-    "Resolve every performed vaccination, lab, procedure, and prescription before sending or collecting this visit invoice."
+    "Resolve every performed vaccination, lab, procedure, prescription, and medication dispense before sending or collecting this visit invoice."
   );
 }
 

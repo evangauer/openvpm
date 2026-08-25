@@ -1586,7 +1586,7 @@ describe("billing invoice integrity", () => {
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message:
-        "Resolve every performed vaccination, lab, procedure, and prescription before sending or collecting this visit invoice.",
+        "Resolve every performed vaccination, lab, procedure, prescription, and medication dispense before sending or collecting this visit invoice.",
     });
     expect(execute).toHaveBeenCalledTimes(8);
     expect(updateSet).not.toHaveBeenCalled();

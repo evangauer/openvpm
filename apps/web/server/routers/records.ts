@@ -2944,22 +2944,51 @@ export const recordsRouter = createRouter({
         });
         if (replay) return replay;
 
-        const prescription = await lockPrescriptionForLifecycle(
-          txCtx,
-          input.id,
-        );
+        let routedPatientId: string | null = null;
         if (input.appointmentId) {
+          const [prescriptionIdentity] = await tx
+            .select({ patientId: prescriptions.patientId })
+            .from(prescriptions)
+            .where(
+              and(
+                eq(prescriptions.id, input.id),
+                eq(prescriptions.practiceId, ctx.practiceId),
+                activePracticePredicate(ctx.practiceId),
+                isNull(prescriptions.deletedAt),
+              ),
+            )
+            .limit(1);
+          if (!prescriptionIdentity) {
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: "Prescription not found",
+            });
+          }
+          routedPatientId = prescriptionIdentity.patientId;
           await assertAppointmentBelongsToPatient(
             txCtx,
             input.appointmentId,
-            prescription.patientId,
+            routedPatientId,
           );
           await lockOpenAppointmentForClinicalWork(
             txCtx,
             input.appointmentId,
-            prescription.patientId,
+            routedPatientId,
             "prescriptions",
           );
+        }
+        // Visit-linked work follows appointment -> prescription -> product.
+        // Keep refills in that canonical order to avoid a lock cycle with
+        // invoice and charge-capture paths.
+        const prescription = await lockPrescriptionForLifecycle(
+          txCtx,
+          input.id,
+        );
+        if (routedPatientId && prescription.patientId !== routedPatientId) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Prescription patient changed. Refresh and try again.",
+          });
         }
         const today = await practiceDateInput(txCtx);
         const effectiveStatus = effectivePrescriptionStatus({
