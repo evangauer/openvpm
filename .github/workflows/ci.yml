@@ -201,6 +201,14 @@ jobs:
           PATIENT_MERGE_DB_INTEGRATION: "1"
         run: pnpm --filter @openpims/web exec vitest run server/__tests__/patient-merge-transaction.integration.test.ts
 
+      # A refill can belong to an older prescription while its dispense charge
+      # belongs to the current visit. Prove the queue row remains visible in
+      # closeout history and blocks checkout/financial handoff under RLS.
+      - name: Execute visit-dispense closure contract
+        env:
+          VISIT_DISPENSE_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/visit-dispense-closure.integration.test.ts
+
       # Compile, bind, and execute the exact read-only SQL used by the shared
       # platform-admin and daily SMS operations queues. Unit tests cannot catch
       # postgres.js timestamp encoders or correlated identifier rendering.

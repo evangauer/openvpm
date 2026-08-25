@@ -216,6 +216,12 @@ describe("encounter prescription lifecycle semantics", () => {
     expect(routerSource).toContain(
       'medication.effectiveStatus === "active"',
     );
+    expect(routerSource).toContain(".from(dispenseChargeQueue)");
+    expect(routerSource).toContain(
+      "eq(dispenseChargeQueue.appointmentId, input.appointmentId)",
+    );
+    expect(routerSource).toContain("visitDispenseIdsAlreadyIncluded");
+    expect(routerSource).toContain("new Map<string");
 
     const pageSource = readFileSync(
       new URL(
