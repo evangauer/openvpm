@@ -123,6 +123,8 @@ vi.mock("@/lib/platform-email-preferences", () => ({
 const { GET } = await import("./route");
 
 function stubHostedRequiredEnvs() {
+  vi.stubEnv("OPENVPM_ENVIRONMENT", "production");
+  vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
   vi.stubEnv("NEXTAUTH_URL", "https://app.example");
   vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.example");
   vi.stubEnv("NEXTAUTH_SECRET", "secret");
@@ -312,6 +314,21 @@ describe("health route schema drift", () => {
 });
 
 describe("health route", () => {
+  it("fails closed without leaking values when a managed environment is invalid", async () => {
+    vi.stubEnv("VERCEL", "1");
+    vi.stubEnv("VERCEL_ENV", "preview");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.deploymentEnvironment).toEqual({
+      ok: false,
+      detail: "1 deployment environment configuration issue detected",
+    });
+    expect(JSON.stringify(json)).not.toContain("OPENVPM_ENVIRONMENT");
+  });
+
   it("does not expose raw database errors in unauthenticated health checks", async () => {
     mocks.dbExecute.mockRejectedValueOnce(
       new Error("password=secret host=prod-db connection refused"),

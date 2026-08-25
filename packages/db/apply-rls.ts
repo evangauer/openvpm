@@ -32,6 +32,8 @@ try {
   const [exists] =
     await sql`select 1 from pg_roles where rolname = 'openpims_app'`;
   const appPw = nonBlankEnv("OPENPIMS_APP_DB_PASSWORD");
+  const rotateExistingPassword =
+    process.env.OPENPIMS_ROTATE_APP_DB_PASSWORD?.trim() === "true";
   if (!exists) {
     if (!appPw) {
       console.error(
@@ -43,10 +45,20 @@ try {
     const q = appPw.replace(/'/g, "''"); // escape single quotes
     await sql.unsafe(`CREATE ROLE openpims_app LOGIN PASSWORD '${q}'`);
     console.log("✓ created openpims_app role");
-  } else if (appPw) {
+  } else if (rotateExistingPassword) {
+    if (!appPw) {
+      console.error(
+        "OPENPIMS_ROTATE_APP_DB_PASSWORD=true requires OPENPIMS_APP_DB_PASSWORD.",
+      );
+      process.exit(1);
+    }
     const q = appPw.replace(/'/g, "''");
     await sql.unsafe(`ALTER ROLE openpims_app PASSWORD '${q}'`);
     console.log("✓ rotated openpims_app password");
+  } else if (appPw) {
+    console.log(
+      "✓ openpims_app role exists; ordinary RLS reapply left its password unchanged",
+    );
   }
 
   // Simple protocol so the multi-statement / DO-block migration runs as one.

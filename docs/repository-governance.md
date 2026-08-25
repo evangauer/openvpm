@@ -209,6 +209,49 @@ Before enabling either canonical non-production branch:
 6. record the Vercel project, deployment, source SHA, variable-scope audit, and
    smoke-test evidence before lifting the quarantine.
 
+### Inert environment control plane
+
+The repository contains manual, explicit database jobs for `Development`,
+`Staging`, and `Demo`. Their presence does not mean those environments are
+provisioned or approved. They intentionally have no push trigger and cannot
+mutate a database until an operator supplies all of the following in the
+matching GitHub environment:
+
+- a dedicated `DATABASE_URL` and `OPENPIMS_APP_DB_PASSWORD` secret;
+- a `DATABASE_TARGET_FINGERPRINT` variable derived from that environment's
+  Supabase project ref; and
+- `FORBIDDEN_DATABASE_TARGET_FINGERPRINTS` containing at least Production's
+  fingerprint and every other environment that target must not share.
+
+The target check parses the connection locally and emits only a boolean result;
+it never prints a URL, host, username, project ref, credential, or fingerprint.
+Every manual run must be dispatched from the target's canonical branch and the
+typed 40-character SHA must equal both the workflow event SHA and checked-out
+HEAD. Fixed per-environment concurrency serializes database mutation.
+
+New nonproduction databases must have an empty Drizzle ledger or an exact
+prefix of the committed journal before mutation. After migration, RLS reapply,
+and drift validation, their ledger must exactly match the commit. Do not enable
+this strict hash gate for Production until the historically divergent 0086
+entry has a separate reviewed reconciliation decision. Never point the Staging
+job at the populated legacy staging project or copy that project's migration
+registry into its replacement.
+
+`OPENVPM_ENVIRONMENT` is mandatory for managed Vercel deployments and accepts
+only `development`, `staging`, `demo`, or `production`. It remains optional for
+local/self-hosted OSS compatibility. Development and Staging exercise the Cloud
+business tier, but automatic provider mutations, broad rollout scopes, live
+Stripe credentials, and non-zero platform fees fail the environment contract.
+Demo remains non-hosted and explicitly demo-mode. Production requires the Cloud
+tier and forbids demo mode and exposed authentication links.
+
+The code-only control plane must land before resource provisioning. Creating
+projects, installing or moving credentials, rotating Production values,
+lifting preview quarantine, and enabling automatic branch migrations are
+separate reviewed environment actions. Automatic Development and Staging
+migrations may be added only after a protected canary proves their credentials
+cannot reach Production.
+
 The placeholder `openvpm-docs` project is separately quarantined with an
 Ignored Build Step of `test ! -f .vercel-deploy-enabled`. Adding that sentinel
 is an explicit release decision requiring a focused docs pull request, build

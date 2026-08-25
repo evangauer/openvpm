@@ -49,6 +49,19 @@ try {
   await admin.unsafe(`create role "${foreignRole}" nologin`);
   await admin.unsafe(`create database "${databaseName}" owner "${runnerRole}"`);
 
+  runner = postgres(runnerUrl.toString(), { max: 1 });
+  const empty = await inspectRlsDeploymentCapability(runner);
+  if (
+    empty.currentRole !== runnerRole ||
+    !rlsDeploymentCapabilityIsReady(empty)
+  ) {
+    throw new Error(
+      `empty-schema owner did not pass preflight: ${JSON.stringify(empty)}`,
+    );
+  }
+  await runner.end();
+  runner = undefined;
+
   execFileSync("pnpm", ["--filter", "@openpims/db", "db:migrate"], {
     cwd: repoRoot,
     env: { ...process.env, DATABASE_URL: runnerUrl.toString() },

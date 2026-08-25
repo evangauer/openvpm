@@ -9,6 +9,26 @@ OpenVPM has two operating modes:
 - **Self-host / OSS:** leave `HOSTED_BILLING_ENABLED` unset. Hosted billing gates and usage metering are disabled, and Stripe subscription envs are optional.
 - **OpenVPM Cloud:** set `HOSTED_BILLING_ENABLED=true`. Hosted billing, trials, read-only lapsed state, usage metering, and Stripe subscription management are active.
 
+Managed deployments must also set `OPENVPM_ENVIRONMENT` to exactly one of
+`development`, `staging`, `demo`, or `production`. Local and self-hosted OSS
+installs may leave it unset. The application build and `/api/health` both reject
+an invalid managed environment without returning configuration values.
+
+Development and Staging use the Cloud business tier for behavioral parity, but
+their default contract keeps provider mutations and real fees off: SMS
+provisioning/sending/inbound flags and scopes are empty, broad replica rollout
+is disabled, the Stripe Connect application fee is zero, and any configured
+Stripe secret is test-mode. Demo requires `NEXT_PUBLIC_DEMO_MODE=true` and
+hosted billing off. Production requires hosted billing on and forbids demo mode
+and `OPENVPM_EXPOSE_AUTH_LINKS`.
+
+The manual database jobs are an inert pre-provisioning control. Do not populate
+their GitHub environment secrets or target fingerprints until dedicated
+projects and forbidden-target fingerprints have been reviewed. Do not use the
+populated legacy staging project as replacement Staging, and do not enable
+automatic branch migrations or Vercel preview builds until the isolation canary
+has passed.
+
 This boundary is intentional. Do not add hosted-only requirements to the self-host path.
 
 ## Public Website Flow

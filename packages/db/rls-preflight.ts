@@ -76,8 +76,8 @@ export async function inspectRlsDeploymentCapability(
           ),
         array[]::text[]
       ) as "unmanageableObjects"
-    from managed_objects
-    cross join actor
+    from actor
+    left join managed_objects on true
     group by actor.rolsuper
   `;
 

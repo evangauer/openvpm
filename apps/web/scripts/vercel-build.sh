@@ -29,4 +29,5 @@ if [ "${VERCEL_ENV:-}" = "production" ]; then
   done
 fi
 
+pnpm environment:validate
 pnpm build

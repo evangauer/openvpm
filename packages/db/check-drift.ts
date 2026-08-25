@@ -30,18 +30,11 @@ const pooled = isPooledDatabaseConnection(url);
 const client = postgres(url, { max: 1, prepare: !pooled });
 const db = drizzle(client);
 
-// Show which database was inspected without ever printing the password.
-function safeTarget(raw: string): string {
-  try {
-    const parsed = new URL(raw);
-    return `${parsed.host}${parsed.pathname}`;
-  } catch {
-    return "(unparseable DATABASE_URL)";
-  }
-}
-
 async function main() {
-  console.log(`Checking schema drift against ${safeTarget(url!)}`);
+  // Deployment logs intentionally identify only the logical environment. A
+  // Supabase hostname can reveal its project ref even after credentials are
+  // removed, so never print any DATABASE_URL component here.
+  console.log("Checking database schema drift.");
   const drift = await findSchemaDrift(db);
 
   if (driftIsClean(drift)) {
