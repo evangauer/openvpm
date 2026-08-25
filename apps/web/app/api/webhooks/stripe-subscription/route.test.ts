@@ -48,6 +48,7 @@ const mocks = vi.hoisted(() => {
     sendPaymentFailedEmail: vi.fn(async () => undefined),
     sendSubscriptionConfirmedEmail: vi.fn(async () => undefined),
     sendSubscriptionCanceledEmail: vi.fn(async () => undefined),
+    enqueueSubscriptionLifecycleEmail: vi.fn(async () => true),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
       fn(db),
     ),
@@ -93,6 +94,10 @@ vi.mock("@/lib/email", () => ({
 
 vi.mock("@/lib/email-lifecycle", () => ({
   sendLifecycleEmail: mocks.sendLifecycleEmail,
+}));
+
+vi.mock("@/lib/billing/lifecycle-email-outbox", () => ({
+  enqueueSubscriptionLifecycleEmail: mocks.enqueueSubscriptionLifecycleEmail,
 }));
 
 vi.mock("@/lib/conversion-milestones", () => ({
@@ -362,7 +367,7 @@ describe("Stripe subscription webhook", () => {
     expect(mocks.sendSubscriptionConfirmedEmail).not.toHaveBeenCalled();
   });
 
-  it("sends a normalized, idempotent confirmation only for the current active subscription", async () => {
+  it("transactionally queues a normalized, idempotent confirmation for the current active subscription", async () => {
     process.env.STRIPE_PRICE_CLOUD_LOCATION = PRICE_ID;
     mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
       checkoutCompletedEvent(),
@@ -370,41 +375,38 @@ describe("Stripe subscription webhook", () => {
     mocks.retrieveSubscription.mockResolvedValueOnce(
       stripeSubscription("active"),
     );
-    mocks.updateReturns.push([{ id: PRACTICE_ID }], [{ id: PRACTICE_ID }]);
-    mocks.selectResults.push(
-      [
-        {
-          id: PRACTICE_ID,
-          email: " Owner@Example.COM ",
-          name: "Westside Vet",
-          timezone: "UTC",
-        },
-      ],
-      [{ id: PRACTICE_ID, email: "owner@example.com" }],
+    mocks.updateReturns.push(
+      [{ id: PRACTICE_ID }],
+      [{ id: PRACTICE_ID, subscriptionGeneration: 4 }],
     );
-    invokeLifecycleSendOnce();
+    mocks.selectResults.push([
+      {
+        id: PRACTICE_ID,
+        email: " Owner@Example.COM ",
+        name: "Westside Vet",
+        timezone: "UTC",
+      },
+    ]);
 
     const response = await POST(stripeRequest());
 
     await expect(response.json()).resolves.toEqual({ received: true });
-    expect(mocks.sendLifecycleEmail).toHaveBeenCalledWith(
-      expect.objectContaining({
+    expect(mocks.enqueueSubscriptionLifecycleEmail).toHaveBeenCalledWith(
+      mocks.db,
+      {
         practiceId: PRACTICE_ID,
-        to: "owner@example.com",
-        emailType: "subscription_confirmed",
+        practiceName: "Westside Vet",
+        recipient: "owner@example.com",
+        kind: "subscription_confirmed",
+        subscriptionId: SUBSCRIPTION_ID,
+        subscriptionGeneration: 4,
         dedupeKey: `lc:confirmed:${SUBSCRIPTION_ID}`,
-        category: "transactional",
-        stillEligible: expect.any(Function),
-      }),
+      },
     );
-    expect(mocks.sendSubscriptionConfirmedEmail).toHaveBeenCalledWith({
-      to: "owner@example.com",
-      practiceName: "Westside Vet",
-      idempotencyKey: `lc:confirmed:${SUBSCRIPTION_ID}`,
-    });
+    expect(mocks.sendSubscriptionConfirmedEmail).not.toHaveBeenCalled();
   });
 
-  it("suppresses a queued confirmation if the billing contact changes before send", async () => {
+  it("captures the confirmation recipient for worker-side stale-contact suppression", async () => {
     process.env.STRIPE_PRICE_CLOUD_LOCATION = PRICE_ID;
     mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
       checkoutCompletedEvent(),
@@ -413,27 +415,20 @@ describe("Stripe subscription webhook", () => {
       stripeSubscription("active"),
     );
     mocks.updateReturns.push([{ id: PRACTICE_ID }], [{ id: PRACTICE_ID }]);
-    mocks.selectResults.push(
-      [
-        {
-          id: PRACTICE_ID,
-          email: "old-owner@example.com",
-          name: "Westside Vet",
-          timezone: "UTC",
-        },
-      ],
-      [{ id: PRACTICE_ID, email: "new-owner@example.com" }],
-    );
-    invokeLifecycleSendOnce();
-
+    mocks.selectResults.push([
+      {
+        id: PRACTICE_ID,
+        email: "old-owner@example.com",
+        name: "Westside Vet",
+        timezone: "UTC",
+      },
+    ]);
     const response = await POST(stripeRequest());
 
     await expect(response.json()).resolves.toEqual({ received: true });
-    expect(mocks.sendLifecycleEmail).toHaveBeenCalledWith(
-      expect.objectContaining({
-        to: "old-owner@example.com",
-        stillEligible: expect.any(Function),
-      }),
+    expect(mocks.enqueueSubscriptionLifecycleEmail).toHaveBeenCalledWith(
+      mocks.db,
+      expect.objectContaining({ recipient: "old-owner@example.com" }),
     );
     expect(mocks.sendSubscriptionConfirmedEmail).not.toHaveBeenCalled();
   });
@@ -485,75 +480,65 @@ describe("Stripe subscription webhook", () => {
     ).not.toHaveBeenCalled();
   });
 
-  it("sends a cancellation notice only after the stored subscription is cleared", async () => {
+  it("transactionally queues a cancellation notice only after the stored subscription is cleared", async () => {
     mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
       subscriptionDeletedEvent(),
     );
-    mocks.updateReturns.push([{ id: PRACTICE_ID }]);
-    mocks.selectResults.push(
-      [
-        {
-          id: PRACTICE_ID,
-          email: " Owner@Example.COM ",
-          name: "Westside Vet",
-          timezone: "UTC",
-        },
-      ],
-      [{ id: PRACTICE_ID, email: "owner@example.com" }],
-    );
-    invokeLifecycleSendOnce();
+    mocks.updateReturns.push([
+      { id: PRACTICE_ID, subscriptionGeneration: 8 },
+    ]);
+    mocks.selectResults.push([
+      {
+        id: PRACTICE_ID,
+        email: " Owner@Example.COM ",
+        name: "Westside Vet",
+        timezone: "UTC",
+      },
+    ]);
 
     const response = await POST(stripeRequest());
 
     await expect(response.json()).resolves.toEqual({ received: true });
-    expect(mocks.updateSet).toHaveBeenCalledWith({
+    expect(mocks.updateSet).toHaveBeenCalledWith(expect.objectContaining({
       subscriptionTier: "free",
       billingStatus: "canceled",
       stripeSubscriptionId: null,
-    });
-    expect(mocks.sendLifecycleEmail).toHaveBeenCalledWith(
-      expect.objectContaining({
+      subscriptionGeneration: expect.anything(),
+    }));
+    expect(mocks.enqueueSubscriptionLifecycleEmail).toHaveBeenCalledWith(
+      mocks.db,
+      {
         practiceId: PRACTICE_ID,
-        to: "owner@example.com",
-        emailType: "subscription_canceled",
+        practiceName: "Westside Vet",
+        recipient: "owner@example.com",
+        kind: "subscription_canceled",
+        subscriptionId: SUBSCRIPTION_ID,
+        subscriptionGeneration: 8,
         dedupeKey: `lc:canceled:${SUBSCRIPTION_ID}`,
-        category: "transactional",
-        stillEligible: expect.any(Function),
-      }),
+      },
     );
-    expect(mocks.sendSubscriptionCanceledEmail).toHaveBeenCalledWith({
-      to: "owner@example.com",
-      practiceName: "Westside Vet",
-      idempotencyKey: `lc:canceled:${SUBSCRIPTION_ID}`,
-    });
+    expect(mocks.sendSubscriptionCanceledEmail).not.toHaveBeenCalled();
   });
 
-  it("suppresses a queued cancellation if the billing contact changes before send", async () => {
+  it("captures the cancellation recipient for worker-side stale-contact suppression", async () => {
     mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
       subscriptionDeletedEvent(),
     );
     mocks.updateReturns.push([{ id: PRACTICE_ID }]);
-    mocks.selectResults.push(
-      [
-        {
-          id: PRACTICE_ID,
-          email: "old-owner@example.com",
-          name: "Westside Vet",
-          timezone: "UTC",
-        },
-      ],
-      [{ id: PRACTICE_ID, email: "new-owner@example.com" }],
-    );
-    invokeLifecycleSendOnce();
-
+    mocks.selectResults.push([
+      {
+        id: PRACTICE_ID,
+        email: "old-owner@example.com",
+        name: "Westside Vet",
+        timezone: "UTC",
+      },
+    ]);
     const response = await POST(stripeRequest());
 
     await expect(response.json()).resolves.toEqual({ received: true });
-    expect(mocks.sendLifecycleEmail).toHaveBeenCalledWith(
-      expect.objectContaining({
-        to: "old-owner@example.com",
-        stillEligible: expect.any(Function),
-      }),
+    expect(mocks.enqueueSubscriptionLifecycleEmail).toHaveBeenCalledWith(
+      mocks.db,
+      expect.objectContaining({ recipient: "old-owner@example.com" }),
     );
     expect(mocks.sendSubscriptionCanceledEmail).not.toHaveBeenCalled();
   });
@@ -568,33 +553,27 @@ describe("Stripe subscription webhook", () => {
 
     await expect(response.json()).resolves.toEqual({ received: true });
     expect(mocks.sendLifecycleEmail).not.toHaveBeenCalled();
+    expect(mocks.enqueueSubscriptionLifecycleEmail).not.toHaveBeenCalled();
     expect(mocks.sendSubscriptionCanceledEmail).not.toHaveBeenCalled();
   });
 
-  it("suppresses a queued cancellation notice if subscription state changes before send", async () => {
+  it("queues cancellation state for worker-side generation revalidation", async () => {
     mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
       subscriptionDeletedEvent(),
     );
     mocks.updateReturns.push([{ id: PRACTICE_ID }]);
-    mocks.selectResults.push(
-      [
-        {
-          id: PRACTICE_ID,
-          email: "owner@example.com",
-          name: "Westside Vet",
-          timezone: "UTC",
-        },
-      ],
-      [],
-    );
-    invokeLifecycleSendOnce();
-
+    mocks.selectResults.push([
+      {
+        id: PRACTICE_ID,
+        email: "owner@example.com",
+        name: "Westside Vet",
+        timezone: "UTC",
+      },
+    ]);
     const response = await POST(stripeRequest());
 
     await expect(response.json()).resolves.toEqual({ received: true });
-    expect(mocks.sendLifecycleEmail).toHaveBeenCalledWith(
-      expect.objectContaining({ stillEligible: expect.any(Function) }),
-    );
+    expect(mocks.enqueueSubscriptionLifecycleEmail).toHaveBeenCalled();
     expect(mocks.sendSubscriptionCanceledEmail).not.toHaveBeenCalled();
   });
 

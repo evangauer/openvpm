@@ -40,6 +40,12 @@ export const practices = pgTable(
     billingStatus: varchar("billing_status", { length: 24 })
       .notNull()
       .default("none"),
+    // Monotonic fence for subscription identity/status transitions. Durable
+    // billing-email jobs capture this value and refuse delivery after a newer
+    // subscription generation supersedes the event that created them.
+    subscriptionGeneration: integer("subscription_generation")
+      .notNull()
+      .default(0),
     trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
     // Region/locale — gates currency, tax, formatting, and (later) regulatory
     // behavior. Defaults keep existing US practices working unchanged.
@@ -100,6 +106,10 @@ export const practices = pgTable(
     recoveryHoldEvidenceCheck: check(
       "practices_recovery_hold_evidence_check",
       sql`not ${table.recoveryHold} or (${table.recoveryHoldSetAt} is not null and ${table.recoveryHoldReason} is not null and ${table.recoveryHoldReason} ~ '[^[:space:]]')`,
+    ),
+    subscriptionGenerationCheck: check(
+      "practices_subscription_generation_check",
+      sql`${table.subscriptionGeneration} >= 0`,
     ),
   }),
 );

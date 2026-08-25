@@ -15,6 +15,7 @@ export * from "./billing";
 export * from "./finance";
 export * from "./dispense-charge-queue";
 export * from "./communications";
+export * from "./lifecycle-email-jobs";
 export * from "./auth";
 export * from "./controlled-substances";
 export * from "./files";

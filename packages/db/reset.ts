@@ -31,6 +31,8 @@ const TABLES = [
   "auth_email_provider_identity_conflicts",
   "auth_email_delivery_events",
   "auth_email_attempts",
+  "lifecycle_email_attempts",
+  "lifecycle_email_jobs",
   "usage_records",
   "controlled_substance_log",
   "payments",

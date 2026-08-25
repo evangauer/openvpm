@@ -141,7 +141,7 @@ function ctaButton(label: string, url: string): string {
 // Core send function
 // ---------------------------------------------------------------------------
 
-interface EmailDispatchOptions {
+export interface EmailDispatchOptions {
   to: string;
   subject: string;
   html: string;
@@ -286,6 +286,19 @@ export function verificationEmailProvider(): EmailProvider {
   if (emailDemoMode()) return "console";
   if (getResend()) return "resend";
   return billingEnforced() ? "resend" : "console";
+}
+
+/** Provider identity used when durably reserving any email attempt. */
+export const emailProviderForDispatch = verificationEmailProvider;
+
+/**
+ * Dispatch an already-rendered request and return provider evidence. Durable
+ * outboxes fingerprint this exact object before crossing the provider boundary.
+ */
+export function dispatchPreparedEmailWithProviderEvidence(
+  options: EmailDispatchOptions,
+): Promise<EmailProviderEvidence> {
+  return dispatchEmail(options);
 }
 
 export async function sendEmail(
@@ -898,18 +911,27 @@ export async function sendSubscriptionConfirmedEmail(data: {
   practiceName: string;
   idempotencyKey?: string;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
+  return sendEmail(await prepareSubscriptionConfirmedEmail(data));
+}
+
+export async function prepareSubscriptionConfirmedEmail(data: {
+  to: string;
+  practiceName: string;
+  idempotencyKey?: string;
+}): Promise<EmailDispatchOptions> {
   const brand = openvpmBrand();
   const { subject, html } = await renderSubscriptionConfirmedEmail({
     brand,
     practiceName: data.practiceName,
   });
-  return sendEmail({
+  return {
     to: data.to,
     subject,
     html,
+    from: defaultEmailFrom(),
     replyTo: brand.supportEmail,
     idempotencyKey: data.idempotencyKey,
-  });
+  };
 }
 
 /** Notice sent after Stripe confirms that the stored subscription was deleted. */
@@ -919,6 +941,15 @@ export async function sendSubscriptionCanceledEmail(data: {
   reactivateUrl?: string;
   idempotencyKey?: string;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
+  return sendEmail(await prepareSubscriptionCanceledEmail(data));
+}
+
+export async function prepareSubscriptionCanceledEmail(data: {
+  to: string;
+  practiceName: string;
+  reactivateUrl?: string;
+  idempotencyKey?: string;
+}): Promise<EmailDispatchOptions> {
   const brand = openvpmBrand();
   const { subject, html } = await renderSubscriptionCanceledEmail({
     brand,
@@ -926,11 +957,12 @@ export async function sendSubscriptionCanceledEmail(data: {
     reactivateUrl:
       data.reactivateUrl ?? `${brand.appUrl}/settings?tab=billing`,
   });
-  return sendEmail({
+  return {
     to: data.to,
     subject,
     html,
+    from: defaultEmailFrom(),
     replyTo: brand.supportEmail,
     idempotencyKey: data.idempotencyKey,
-  });
+  };
 }
