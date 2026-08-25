@@ -256,6 +256,69 @@ async function testAttemptImmutability() {
   );
 }
 
+async function testTerminalOutcomeShapes() {
+  const definite = await insertJob(owner, "definite-failure");
+  const unknown = await insertJob(owner, "outcome-unknown");
+  const invalid = await insertJob(owner, "invalid-terminal-shape");
+  const definiteAttempt = randomUUID();
+  const unknownAttempt = randomUUID();
+  await owner`insert into lifecycle_email_attempts (
+    id, practice_id, job_id, attempt_number, provider,
+    request_fingerprint_sha256, resolved_at, outcome, failure_code
+  ) values
+    (${definiteAttempt}, ${practiceId}, ${definite.jobId}, 1, 'resend',
+      ${"e".repeat(64)}, clock_timestamp(), 'definite_failure', 'provider_rejected'),
+    (${unknownAttempt}, ${practiceId}, ${unknown.jobId}, 1, 'resend',
+      ${"f".repeat(64)}, clock_timestamp(), 'outcome_unknown', 'send_timeout')`;
+  await owner`update lifecycle_email_jobs set
+    state = 'failed', attempt_count = 1, next_attempt_at = null,
+    completed_at = clock_timestamp(), last_outcome = 'definite_failure',
+    last_error_code = 'provider_rejected'
+    where id = ${definite.jobId}`;
+  await owner`update communications set status = 'failed'
+    where id = ${definite.communicationId}`;
+  await owner`update lifecycle_email_jobs set
+    state = 'outcome_unknown', attempt_count = 1, next_attempt_at = null,
+    completed_at = clock_timestamp(), last_outcome = 'outcome_unknown',
+    last_error_code = 'send_timeout'
+    where id = ${unknown.jobId}`;
+  await owner`update communications set status = 'failed'
+    where id = ${unknown.communicationId}`;
+  const terminalRows = await owner<
+    { state: string; last_outcome: string; communication_status: string }[]
+  >`select job.state, job.last_outcome, communication.status as communication_status
+    from lifecycle_email_jobs job
+    join communications communication on communication.id = job.communication_id
+    where job.id in (${definite.jobId}, ${unknown.jobId})
+    order by job.state`;
+  check(
+    terminalRows.some(
+      (row) =>
+        row.state === "failed" &&
+        row.last_outcome === "definite_failure" &&
+        row.communication_status === "failed",
+    ),
+    "definite provider failure must project a failed terminal state",
+  );
+  check(
+    terminalRows.some(
+      (row) =>
+        row.state === "outcome_unknown" &&
+        row.last_outcome === "outcome_unknown" &&
+        row.communication_status === "failed",
+    ),
+    "unknown provider outcome must remain distinct and close the communication ledger",
+  );
+  await expectSqlState(
+    () => owner`update lifecycle_email_jobs set
+      state = 'outcome_unknown', next_attempt_at = null,
+      completed_at = clock_timestamp(), last_outcome = 'definite_failure'
+      where id = ${invalid.jobId}`,
+    "23514",
+    "mismatched terminal outcome shape",
+  );
+}
+
 async function testDispatchFence() {
   let releaseFence!: () => void;
   let reportFence!: () => void;
@@ -303,6 +366,7 @@ try {
   await testSkipLocked();
   await testLeaseCasAndCrashRecovery();
   await testAttemptImmutability();
+  await testTerminalOutcomeShapes();
   await testDispatchFence();
   console.log("Lifecycle-email PostgreSQL release gate passed.");
 } finally {
