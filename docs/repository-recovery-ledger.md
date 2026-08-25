@@ -79,10 +79,11 @@ badge urgency/copy, client/patient empty-state presentation, and deletion of
 the `/onboarding` route; it contains no analytics capture, aggregation, or
 privacy filtering. Current code has role-aware and error-safe empty states,
 retains `/onboarding` as a compatibility redirect, and models trial/billing
-states without the old pressure-oriented copy. Four focused current-base test
-files passed (28 tests), so no replay branch or successor pull request is
-needed. PRs #200 and #221 remain separate recovery candidates with distinct
-provenance.
+states without the old pressure-oriented copy. The focused current-base suites
+`analytics-privacy.test.ts`, `dashboard-onboarding-ui.test.ts`,
+`trial-badge-ui.test.ts`, and `funnel-analytics.test.ts` passed (28 tests), so
+no replay branch or successor pull request is needed. PRs #200 and #221 remain
+separate recovery candidates with distinct provenance.
 
 ## Dirty-worktree register
 
