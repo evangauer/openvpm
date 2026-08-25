@@ -37,4 +37,29 @@ describe("repository promotion controls", () => {
     expect(production).not.toContain("skipping production");
     expect(demo).toContain("github.event_name == 'push'");
   });
+
+  it("keeps backlog cleanup evidence-gated and migration collisions on hold", () => {
+    const policy = repoFile("docs/repository-governance.md");
+    const ledger = repoFile("docs/repository-recovery-ledger.md");
+
+    expect(policy).toContain("repository-recovery-ledger.md");
+    expect(ledger).toContain("Only `close-approved` permits closing");
+    expect(ledger).toContain("cc6fd16cc8d414f181d278546e2a1213300732a0");
+    expect(ledger).toContain("#205");
+    expect(ledger).toContain("#222");
+    expect(ledger).toContain("feat/lifecycle-emails");
+    expect(ledger).toContain("The local `0094` and `0095` names collide");
+    expect(ledger).toContain("No migration or snapshot from these worktrees");
+  });
+
+  it("requires non-production credential isolation before lifting preview quarantine", () => {
+    const policy = repoFile("docs/repository-governance.md");
+
+    expect(policy).toContain("Preview and non-production credential isolation");
+    expect(policy).toContain("must never receive a credential that can mutate Production");
+    expect(policy).toContain("rotate any");
+    expect(policy).toContain("Production credential that was previously available");
+    expect(policy).toContain("test ! -f .vercel-deploy-enabled");
+    expect(policy).toContain("Do not protect `development` or `staging`");
+  });
 });

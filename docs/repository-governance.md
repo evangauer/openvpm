@@ -168,6 +168,42 @@ Production promotion is serialized: only one release or migration operation may
 modify Production at a time. Health checks and smoke tests must complete before
 the release is declared successful.
 
+## Preview and non-production credential isolation
+
+Pull-request code is untrusted until it has passed review. A preview deployment
+must never receive a credential that can mutate Production, even when the
+preview uses a separate database. Development and Staging require distinct
+databases, auth/session secrets, mail/provider credentials, webhook endpoints
+and signing secrets, object-storage credentials, billing test-mode keys, and
+least-privilege cloud identities. Default-off provider and fee-bearing flags
+remain off in both environments.
+
+The 2026-08-25 audit found that `openvpm-app` Preview used a different database
+but several Preview credentials had values identical to Production, including
+Stripe, Resend, webhook, MFA, cron, and replica credentials. New non-production
+builds are therefore quarantined in Vercel while credentials are separated and
+rotated. The `openvpm` demo project already skipped non-production builds and
+now remains under the same quarantine boundary. This is an incident-prevention
+control, not the completed Development or Staging environment.
+
+Before enabling either canonical non-production branch:
+
+1. provision environment-specific data stores and provider test accounts;
+2. create new non-production credentials rather than copying Production;
+3. remove every Production-capable credential from Preview and rotate any
+   Production credential that was previously available to preview code;
+4. configure explicit Development and Staging branch/environment mappings;
+5. prove a canary pull request receives only its intended environment and
+   cannot access Production data or providers; and
+6. record the Vercel project, deployment, source SHA, variable-scope audit, and
+   smoke-test evidence before lifting the quarantine.
+
+The placeholder `openvpm-docs` project is separately quarantined with an
+Ignored Build Step of `test ! -f .vercel-deploy-enabled`. Adding that sentinel
+is an explicit release decision requiring a focused docs pull request, build
+evidence, domains and environment review, and an owner. Package metadata alone
+must not infer that unfinished docs WIP is ready to deploy.
+
 ## Rollback and incident path
 
 When a release causes harm or threatens data, tenant isolation, security, or
@@ -196,6 +232,8 @@ independent review, tenant-safety checks, or release recording.
 ## Branch and pull-request cleanup
 
 Cleanup is an evidence-preservation exercise, not a bulk deletion event.
+The active item-by-item decisions are recorded in the
+[repository recovery and cleanup ledger](repository-recovery-ledger.md).
 
 ### Phase 0: Stabilize
 
@@ -312,6 +350,12 @@ The initial control rollout is:
 6. Implement build-once artifact recording and promotion, then rehearse a
    normal release and rollback before resuming routine production delivery.
 7. Run the phased branch and pull-request inventory, recovery, and cleanup.
+
+Do not protect `development` or `staging` while they still point at the old
+deployed baseline: that baseline's CI workflow emits canonical-branch checks
+only for `main`, which would deadlock required checks. First merge, deploy, and
+verify the governance commit on `main`; then create or fast-forward both
+branches to that exact deployed SHA and apply their no-bypass protections.
 
 Any step that would rewrite or delete a remote ref requires a preserved
 reference, a reviewed change record, and explicit maintainer approval.
