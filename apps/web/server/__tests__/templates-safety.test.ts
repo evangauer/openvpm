@@ -642,6 +642,7 @@ describe("treatment template safety", () => {
       subtotal: "150.00",
       tax: "15.00",
       total: "165.00",
+      updatedAt: expect.anything(),
     });
     expect(lockFor).toHaveBeenCalledTimes(1);
     expect(lockFor).toHaveBeenCalledWith("share");
@@ -837,6 +838,7 @@ describe("treatment template safety", () => {
       subtotal: "36.00",
       tax: "0.00",
       total: "36.00",
+      updatedAt: expect.anything(),
     });
     expect(lockFor).toHaveBeenCalledWith("update");
   });
@@ -884,6 +886,7 @@ describe("treatment template safety", () => {
       subtotal: "36.00",
       tax: "0.00",
       total: "36.00",
+      updatedAt: expect.anything(),
     });
   });
 
@@ -1125,6 +1128,16 @@ describe("treatment template safety", () => {
     const applyBlock = source.slice(source.indexOf("applyToInvoice:"));
     expect(applyBlock).toContain("pg_advisory_xact_lock");
     expect(applyBlock).toContain("hashtextextended(${input.invoiceId}, 0)");
+    expect(applyBlock.indexOf("pg_advisory_xact_lock")).toBeLessThan(
+      applyBlock.indexOf("nextInvoiceUpdatedAtSql()"),
+    );
+    const versionSql = source.slice(
+      source.indexOf("function nextInvoiceUpdatedAtSql"),
+      source.indexOf("const templateItemBaseInput"),
+    );
+    expect(versionSql).toContain("date_trunc('milliseconds', clock_timestamp())");
+    expect(versionSql).toContain("${invoices.updatedAt}");
+    expect(versionSql.match(/interval '1 millisecond'/g)).toHaveLength(2);
   });
 
   it("rejects template reads and writes when the practice is missing or deleted", async () => {

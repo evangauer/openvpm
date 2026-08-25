@@ -65,6 +65,13 @@ const moneyInput = z
 const PRODUCT_LINK_REQUIRED_MESSAGE =
   "Every product template item must be linked to an active inventory product.";
 
+function nextInvoiceUpdatedAtSql() {
+  return sql`greatest(
+    date_trunc('milliseconds', clock_timestamp()) + interval '1 millisecond',
+    date_trunc('milliseconds', ${invoices.updatedAt}) + interval '1 millisecond'
+  )`;
+}
+
 const templateItemBaseInput = z.object({
   itemType: z.enum(["service", "product"]),
   itemId: z.string().uuid().optional(),
@@ -954,6 +961,9 @@ export const templatesRouter = createRouter({
             subtotal: centsToMoney(totals.subtotalCents),
             tax: centsToMoney(totals.taxCents),
             total: centsToMoney(totals.totalCents),
+            // Keep the invoice version visible to millisecond-precision clients
+            // monotonic while holding the shared invoice serialization lock.
+            updatedAt: nextInvoiceUpdatedAtSql(),
           })
           .where(
             and(

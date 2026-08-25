@@ -101,12 +101,13 @@ function createDb(opts: {
   const insert = vi.fn(() => ({ values: insertValues }));
 
   const updateReturns = [...(opts.updateReturns ?? [[]])];
-  const updateSet = vi.fn(() => {
+  const updateSet = vi.fn((values: unknown) => {
     writeCount += 1;
     return {
       where: vi.fn(() => ({
         returning: vi.fn(async () => updateReturns.shift() ?? []),
       })),
+      values,
     };
   });
   const update = vi.fn(() => ({ set: updateSet }));
@@ -144,13 +145,32 @@ afterEach(() => {
 });
 
 describe("billing invoice integrity", () => {
+  it("requires the displayed estimate version before conversion DB work", async () => {
+    const { db, select, updateSet, insertValues } = createDb({
+      selectResults: [],
+    });
+
+    await expect(
+      callerWithDb(db).convertEstimateToInvoice({
+        id: INVOICE_ID,
+      } as never),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    expect(select).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("keeps estimate conversion restricted to billing manager roles", async () => {
     const { db, select, updateSet, insertValues } = createDb({
       selectResults: [],
     });
 
     await expect(
-      callerWithDb(db, "viewer").convertEstimateToInvoice({ id: INVOICE_ID }),
+      callerWithDb(db, "viewer").convertEstimateToInvoice({
+        id: INVOICE_ID,
+        expectedUpdatedAt: UPDATED_AT,
+      }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     expect(select).not.toHaveBeenCalled();
@@ -1442,36 +1462,82 @@ describe("billing invoice integrity", () => {
   });
 
   it("deducts product stock when converting an estimate to an invoice", async () => {
-    const { db, updateSet } = createDb({
+    const converted = {
+      id: INVOICE_ID,
+      isEstimate: false,
+      status: "draft",
+      updatedAt: new Date(UPDATED_AT.getTime() + 1),
+    };
+    const { db, updateSet, insertValues, lockCalls, execute } = createDb({
       selectResults: [
+        [{ appointmentId: null, updatedAt: UPDATED_AT }],
         [
           {
             id: INVOICE_ID,
+            clientId: CLIENT_ID,
+            patientId: PATIENT_ID,
+            appointmentId: null,
             total: "30.00",
             paidAmount: "0.00",
             status: "draft",
             isEstimate: true,
+            dueDate: null,
+            updatedAt: UPDATED_AT,
           },
         ],
-        [{ itemType: "product", itemId: PRODUCT_ID, quantity: 2 }],
+        [
+          {
+            ...productLine,
+            sourcePrescriptionId: null,
+            sourceDispenseChargeId: null,
+          },
+        ],
+        [],
+        [{ id: PRODUCT_ID, deletedAt: null, taxable: true }],
+        [{ id: PRODUCT_ID }],
       ],
-      updateReturns: [
-        [{ id: INVOICE_ID, isEstimate: false }],
-        [{ id: PRODUCT_ID, stockQuantity: 8 }],
-      ],
+      updateReturns: [[{ id: PRODUCT_ID, stockQuantity: 8 }], [converted]],
     });
 
     await expect(
-      callerWithDb(db).convertEstimateToInvoice({ id: INVOICE_ID }),
+      callerWithDb(db).convertEstimateToInvoice({
+        id: INVOICE_ID,
+        expectedUpdatedAt: UPDATED_AT,
+      }),
     ).resolves.toMatchObject({ isEstimate: false });
 
-    expect(updateSet).toHaveBeenCalledWith({ isEstimate: false });
+    expect(execute).toHaveBeenCalledWith(expect.anything());
     expect(updateSet).toHaveBeenCalledTimes(2);
+    expect(updateSet.mock.calls[1]?.[0]).toMatchObject({
+      isEstimate: false,
+      status: "draft",
+    });
+    expect(lockCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mode: "share",
+          inTransaction: true,
+          writesBeforeLock: 0,
+        }),
+        expect.objectContaining({
+          mode: "update",
+          inTransaction: true,
+          writesBeforeLock: 0,
+        }),
+      ]),
+    );
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "estimate_converted",
+        entityId: INVOICE_ID,
+      }),
+    );
   });
 
   it("rejects void estimate conversion before inventory changes", async () => {
     const { db, updateSet } = createDb({
       selectResults: [
+        [{ appointmentId: null, updatedAt: UPDATED_AT }],
         [
           {
             id: INVOICE_ID,
@@ -1479,13 +1545,17 @@ describe("billing invoice integrity", () => {
             paidAmount: "0.00",
             status: "void",
             isEstimate: true,
+            updatedAt: UPDATED_AT,
           },
         ],
       ],
     });
 
     await expect(
-      callerWithDb(db).convertEstimateToInvoice({ id: INVOICE_ID }),
+      callerWithDb(db).convertEstimateToInvoice({
+        id: INVOICE_ID,
+        expectedUpdatedAt: UPDATED_AT,
+      }),
     ).rejects.toMatchObject({
       code: "BAD_REQUEST",
       message: "Cannot convert a void estimate.",
@@ -1497,6 +1567,7 @@ describe("billing invoice integrity", () => {
   it("rejects stale estimate conversion before inventory changes", async () => {
     const { db, updateSet } = createDb({
       selectResults: [
+        [{ appointmentId: null, updatedAt: UPDATED_AT }],
         [
           {
             id: INVOICE_ID,
@@ -1504,44 +1575,63 @@ describe("billing invoice integrity", () => {
             paidAmount: "0.00",
             status: "draft",
             isEstimate: true,
+            updatedAt: new Date(UPDATED_AT.getTime() + 1),
           },
         ],
-        [{ itemType: "product", itemId: PRODUCT_ID, quantity: 2 }],
       ],
-      updateReturns: [[]],
     });
 
     await expect(
-      callerWithDb(db).convertEstimateToInvoice({ id: INVOICE_ID }),
-    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+      callerWithDb(db).convertEstimateToInvoice({
+        id: INVOICE_ID,
+        expectedUpdatedAt: UPDATED_AT,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
 
-    expect(updateSet).toHaveBeenCalledTimes(1);
-    expect(updateSet).toHaveBeenCalledWith({ isEstimate: false });
+    expect(updateSet).not.toHaveBeenCalled();
   });
 
   it("rejects conversion when product stock is insufficient", async () => {
     const { db, updateSet } = createDb({
       selectResults: [
+        [{ appointmentId: null, updatedAt: UPDATED_AT }],
         [
           {
             id: INVOICE_ID,
+            clientId: CLIENT_ID,
+            patientId: PATIENT_ID,
+            appointmentId: null,
             total: "30.00",
             paidAmount: "0.00",
             status: "draft",
             isEstimate: true,
+            dueDate: null,
+            updatedAt: UPDATED_AT,
           },
         ],
-        [{ itemType: "product", itemId: PRODUCT_ID, quantity: 2 }],
+        [
+          {
+            ...productLine,
+            sourcePrescriptionId: null,
+            sourceDispenseChargeId: null,
+          },
+        ],
+        [],
+        [{ id: PRODUCT_ID, deletedAt: null, taxable: true }],
+        [{ id: PRODUCT_ID }],
       ],
-      updateReturns: [[{ id: INVOICE_ID, isEstimate: false }], []],
+      updateReturns: [[]],
     });
 
     await expect(
-      callerWithDb(db).convertEstimateToInvoice({ id: INVOICE_ID }),
+      callerWithDb(db).convertEstimateToInvoice({
+        id: INVOICE_ID,
+        expectedUpdatedAt: UPDATED_AT,
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
-    expect(updateSet).toHaveBeenCalledWith({ isEstimate: false });
-    expect(updateSet).toHaveBeenCalledTimes(2);
+    expect(updateSet).toHaveBeenCalledTimes(1);
+    expect(updateSet.mock.calls[0]?.[0]).toHaveProperty("stockQuantity");
   });
 
   it("rejects voiding through the generic status endpoint", async () => {

@@ -187,6 +187,43 @@ describe("billing invoice form UX", () => {
 describe("billing invoice payment actions", () => {
   const source = readFileSync("app/(dashboard)/billing/page.tsx", "utf8");
 
+  it("requires explicit versioned confirmation before converting an estimate", () => {
+    expect(source).toContain('title="Convert estimate to invoice?"');
+    expect(source).toContain(
+      "This deducts tracked product stock and creates a draft invoice.",
+    );
+    expect(source).toContain("It does not charge the client");
+    expect(source).toContain("automatically reconcile visit work");
+    expect(source).toContain(
+      "expectedUpdatedAt: pendingEstimateConversion.updatedAt",
+    );
+    expect(source).toContain("isPending={convertEstimate.isPending}");
+    expect(source).toContain("if (convertEstimate.isPending) return");
+    expect(source).not.toContain("window.confirm");
+  });
+
+  it("refreshes every conversion-dependent surface after success or failure", () => {
+    const conversionBlock = source.slice(
+      source.indexOf(
+        "const convertEstimate = trpc.billing.convertEstimateToInvoice",
+      ),
+      source.indexOf("const voidInvoice ="),
+    );
+    expect(conversionBlock).toContain("onSettled:");
+    expect(conversionBlock).toContain("Promise.all([");
+    expect(conversionBlock).toContain("utils.billing.listInvoices.invalidate()");
+    expect(conversionBlock).toContain("utils.billing.getInvoice.invalidate");
+    expect(conversionBlock).toContain("utils.billing.listProducts.invalidate()");
+    expect(conversionBlock).toContain("utils.inventory.list.invalidate()");
+    expect(conversionBlock).toContain(
+      "utils.billing.listDispenseChargeQueue.invalidate()",
+    );
+    expect(conversionBlock).toContain("utils.encounters.getCloseout.invalidate");
+    expect(conversionBlock).toContain(
+      "utils.encounters.getVisitReconciliation.invalidate",
+    );
+  });
+
   it("only offers payment collection for sent or overdue invoice balances", () => {
     expect(source).toContain(
       'canManageBilling &&\n    (invoiceStatus === "sent" || invoiceStatus === "overdue") &&\n    remaining > 0',
