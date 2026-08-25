@@ -52,3 +52,6 @@ package-lock.json
 .mcp.json
 .codex/
 .gstack/
+
+# Local Supabase CLI project linkage and generated state
+/supabase/.temp/

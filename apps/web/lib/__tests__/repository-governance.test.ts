@@ -1,6 +1,9 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
+const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
 const repoFile = (path: string) =>
   readFileSync(new URL(`../../../../${path}`, import.meta.url), "utf8");
 
@@ -12,6 +15,36 @@ describe("repository promotion controls", () => {
     expect(workflow.match(/branches: \[development, staging, main\]/g)).toHaveLength(
       2,
     );
+  });
+
+  it("targets scheduled dependency version updates at development", () => {
+    const dependabot = repoFile(".github/dependabot.yml");
+    const updateBlocks = dependabot
+      .split(/^  - package-ecosystem: /m)
+      .slice(1)
+      .map((block) => {
+        const [ecosystem] = block.split("\n", 1);
+        return [ecosystem.trim(), block] as const;
+      });
+    const updates = new Map(updateBlocks);
+
+    expect(updates.get("npm")).toMatch(/^    target-branch: development$/m);
+    expect(updates.get("github-actions")).toMatch(
+      /^    target-branch: development$/m,
+    );
+    expect([...updates.values()].join("\n")).not.toMatch(
+      /^    target-branch: main$/m,
+    );
+  });
+
+  it("excludes local Supabase project linkage from repository state", () => {
+    const ignoredPath = execFileSync(
+      "git",
+      ["check-ignore", "--no-index", "supabase/.temp/linked-project.json"],
+      { cwd: repoRoot, encoding: "utf8" },
+    ).trim();
+
+    expect(ignoredPath).toBe("supabase/.temp/linked-project.json");
   });
 
   it("keeps production migrations manual, main-only, and exact-revision bound", () => {
