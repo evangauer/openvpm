@@ -42,9 +42,11 @@ describeWithPatientMergePostgres(
       let appSql: ReturnType<typeof postgres> | undefined;
       let raceSqlA: ReturnType<typeof postgres> | undefined;
       let raceSqlB: ReturnType<typeof postgres> | undefined;
-      await adminSql.unsafe(`create database "${databaseName}"`);
+      let databaseCreated = false;
 
       try {
+        await adminSql.unsafe(`create database "${databaseName}"`);
+        databaseCreated = true;
         execFileSync("pnpm", ["--filter", "@openpims/db", "db:migrate"], {
           cwd: repoRoot,
           env: { ...process.env, DATABASE_URL: databaseUrl.toString() },
@@ -100,6 +102,22 @@ describeWithPatientMergePostgres(
           .returning({ id: schema.clients.id });
         if (!client) throw new Error("failed to seed client");
 
+        const [otherPractice] = await ownerDb
+          .insert(schema.practices)
+          .values({ name: "Synthetic Other Merge Clinic" })
+          .returning({ id: schema.practices.id });
+        if (!otherPractice) throw new Error("failed to seed other practice");
+
+        const [otherClient] = await ownerDb
+          .insert(schema.clients)
+          .values({
+            practiceId: otherPractice.id,
+            firstName: "Other",
+            lastName: "Tenant",
+          })
+          .returning({ id: schema.clients.id });
+        if (!otherClient) throw new Error("failed to seed other client");
+
         const [
           keepPatient,
           sourcePatient,
@@ -109,6 +127,10 @@ describeWithPatientMergePostgres(
           raceSourcePatient,
           lineageKeepPatient,
           lineageSourcePatient,
+          collisionKeepPatient,
+          collisionSourcePatient,
+          distinctRaceKeepPatient,
+          distinctRaceSourcePatient,
         ] = await ownerDb
           .insert(schema.patients)
           .values([
@@ -160,6 +182,30 @@ describeWithPatientMergePostgres(
               name: "Synthetic Lineage Duplicate",
               species: "feline",
             },
+            {
+              practiceId: practice.id,
+              clientId: client.id,
+              name: "Synthetic Collision Canonical",
+              species: "canine",
+            },
+            {
+              practiceId: practice.id,
+              clientId: client.id,
+              name: "Synthetic Collision Duplicate",
+              species: "canine",
+            },
+            {
+              practiceId: practice.id,
+              clientId: client.id,
+              name: "Synthetic Distinct Race Canonical",
+              species: "feline",
+            },
+            {
+              practiceId: practice.id,
+              clientId: client.id,
+              name: "Synthetic Distinct Race Duplicate",
+              species: "feline",
+            },
           ])
           .returning({ id: schema.patients.id });
         if (
@@ -170,47 +216,99 @@ describeWithPatientMergePostgres(
           !raceKeepPatient ||
           !raceSourcePatient ||
           !lineageKeepPatient ||
-          !lineageSourcePatient
+          !lineageSourcePatient ||
+          !collisionKeepPatient ||
+          !collisionSourcePatient ||
+          !distinctRaceKeepPatient ||
+          !distinctRaceSourcePatient
         ) {
           throw new Error("failed to seed patients");
         }
 
+        const [otherPatient] = await ownerDb
+          .insert(schema.patients)
+          .values({
+            practiceId: otherPractice.id,
+            clientId: otherClient.id,
+            name: "Synthetic Other Tenant Patient",
+            species: "canine",
+          })
+          .returning({ id: schema.patients.id });
+        if (!otherPatient) throw new Error("failed to seed other patient");
+
         const futureStart = new Date(Date.now() + 86_400_000);
         const futureEnd = new Date(futureStart.getTime() + 1_800_000);
-        const [successAppointment, retryAppointment, raceAppointment] =
-          await ownerDb
-            .insert(schema.appointments)
-            .values([
-              {
-                practiceId: practice.id,
-                locationId: location.id,
-                clientId: client.id,
-                patientId: sourcePatient.id,
-                startTime: futureStart,
-                endTime: futureEnd,
-              },
-              {
-                practiceId: practice.id,
-                locationId: location.id,
-                clientId: client.id,
-                patientId: retrySourcePatient.id,
-                startTime: new Date(futureStart.getTime() + 3_600_000),
-                endTime: new Date(futureEnd.getTime() + 3_600_000),
-              },
-              {
-                practiceId: practice.id,
-                locationId: location.id,
-                clientId: client.id,
-                patientId: raceSourcePatient.id,
-                startTime: new Date(futureStart.getTime() + 7_200_000),
-                endTime: new Date(futureEnd.getTime() + 7_200_000),
-              },
-            ])
-            .returning({
-              id: schema.appointments.id,
-              updatedAt: schema.appointments.updatedAt,
-            });
-        const [successWaitlist, retryWaitlist, raceWaitlist] = await ownerDb
+        const collisionStart = new Date(futureStart.getTime() + 10_800_000);
+        const collisionEnd = new Date(collisionStart.getTime() + 1_800_000);
+        const [
+          successAppointment,
+          retryAppointment,
+          raceAppointment,
+          collisionTargetAppointment,
+          collisionSourceAppointment,
+          distinctRaceAppointment,
+        ] = await ownerDb
+          .insert(schema.appointments)
+          .values([
+            {
+              practiceId: practice.id,
+              locationId: location.id,
+              clientId: client.id,
+              patientId: sourcePatient.id,
+              startTime: futureStart,
+              endTime: futureEnd,
+            },
+            {
+              practiceId: practice.id,
+              locationId: location.id,
+              clientId: client.id,
+              patientId: retrySourcePatient.id,
+              startTime: new Date(futureStart.getTime() + 3_600_000),
+              endTime: new Date(futureEnd.getTime() + 3_600_000),
+            },
+            {
+              practiceId: practice.id,
+              locationId: location.id,
+              clientId: client.id,
+              patientId: raceSourcePatient.id,
+              startTime: new Date(futureStart.getTime() + 7_200_000),
+              endTime: new Date(futureEnd.getTime() + 7_200_000),
+            },
+            {
+              practiceId: practice.id,
+              locationId: location.id,
+              clientId: client.id,
+              patientId: collisionKeepPatient.id,
+              startTime: collisionStart,
+              endTime: collisionEnd,
+            },
+            {
+              practiceId: practice.id,
+              locationId: location.id,
+              clientId: client.id,
+              patientId: collisionSourcePatient.id,
+              startTime: collisionStart,
+              endTime: collisionEnd,
+            },
+            {
+              practiceId: practice.id,
+              locationId: location.id,
+              clientId: client.id,
+              patientId: distinctRaceSourcePatient.id,
+              startTime: new Date(collisionStart.getTime() + 3_600_000),
+              endTime: new Date(collisionEnd.getTime() + 3_600_000),
+            },
+          ])
+          .returning({
+            id: schema.appointments.id,
+            updatedAt: schema.appointments.updatedAt,
+          });
+        const [
+          successWaitlist,
+          retryWaitlist,
+          raceWaitlist,
+          distinctRaceWaitlist,
+        ] = await ownerDb
           .insert(schema.appointmentWaitlist)
           .values([
             {
@@ -231,6 +329,12 @@ describeWithPatientMergePostgres(
               patientId: raceSourcePatient.id,
               createdBy: admin.id,
             },
+            {
+              practiceId: practice.id,
+              clientId: client.id,
+              patientId: distinctRaceSourcePatient.id,
+              createdBy: admin.id,
+            },
           ])
           .returning({
             id: schema.appointmentWaitlist.id,
@@ -240,9 +344,13 @@ describeWithPatientMergePostgres(
           !successAppointment ||
           !retryAppointment ||
           !raceAppointment ||
+          !collisionTargetAppointment ||
+          !collisionSourceAppointment ||
+          !distinctRaceAppointment ||
           !successWaitlist ||
           !retryWaitlist ||
-          !raceWaitlist
+          !raceWaitlist ||
+          !distinctRaceWaitlist
         ) {
           throw new Error("failed to seed movable scheduling records");
         }
@@ -369,6 +477,43 @@ describeWithPatientMergePostgres(
           replayed: true,
         });
 
+        const collisionPreview = await caller.patients.previewMerge({
+          keepId: collisionKeepPatient.id,
+          mergeId: collisionSourcePatient.id,
+        });
+        expect(collisionPreview).toMatchObject({
+          allowed: false,
+          blockerCounts: { appointmentCollisions: 1 },
+          movableCounts: { futureAppointments: 1 },
+        });
+        const collisionOperationId = randomUUID();
+        await expect(
+          caller.patients.merge({
+            keepId: collisionKeepPatient.id,
+            mergeId: collisionSourcePatient.id,
+            reason: "Synthetic conflicting appointment proof.",
+            operationId: collisionOperationId,
+          }),
+        ).rejects.toMatchObject({
+          code: "PRECONDITION_FAILED",
+          message: expect.stringContaining(
+            "collide with an appointment already on the target chart",
+          ),
+        });
+
+        const crossTenantOperationId = randomUUID();
+        await expect(
+          caller.patients.merge({
+            keepId: keepPatient.id,
+            mergeId: otherPatient.id,
+            reason: "Synthetic cross-tenant isolation proof.",
+            operationId: crossTenantOperationId,
+          }),
+        ).rejects.toMatchObject({
+          code: "NOT_FOUND",
+          message: "The patient to merge was not found.",
+        });
+
         await expect(
           caller.patients.merge({
             keepId: keepPatient.id,
@@ -467,6 +612,39 @@ describeWithPatientMergePostgres(
           replayed: true,
         });
 
+        const distinctRaceOperationIds = [randomUUID(), randomUUID()] as const;
+        const distinctRaceInput = {
+          keepId: distinctRaceKeepPatient.id,
+          mergeId: distinctRaceSourcePatient.id,
+          reason: "Synthetic concurrent merge race.",
+        };
+        const firstDistinctRaceCall = raceCallerA.patients.merge({
+          ...distinctRaceInput,
+          operationId: distinctRaceOperationIds[0],
+        });
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+        const distinctRaceResults = await Promise.allSettled([
+          firstDistinctRaceCall,
+          raceCallerB.patients.merge({
+            ...distinctRaceInput,
+            operationId: distinctRaceOperationIds[1],
+          }),
+        ]);
+        expect(
+          distinctRaceResults.filter((result) => result.status === "fulfilled"),
+        ).toHaveLength(1);
+        expect(
+          distinctRaceResults.filter((result) => result.status === "rejected"),
+        ).toMatchObject([
+          {
+            reason: {
+              code: "CONFLICT",
+              message:
+                "Patient records changed during the merge. Refresh both charts and retry.",
+            },
+          },
+        ]);
+
         const [state] = await ownerSql<
           Array<{
             sourceDeleted: boolean;
@@ -493,6 +671,21 @@ describeWithPatientMergePostgres(
             lineagePatientsActive: number;
             lineageEvents: number;
             lineageAudits: number;
+            collisionPatientsActive: number;
+            collisionEvents: number;
+            collisionAudits: number;
+            collisionObservations: number;
+            collisionTargetPatientId: string;
+            collisionSourcePatientId: string;
+            collisionTargetTimestampPreserved: boolean;
+            collisionSourceTimestampPreserved: boolean;
+            otherPatientActive: boolean;
+            crossTenantEvents: number;
+            distinctRaceSourceDeleted: boolean;
+            distinctRaceEvents: number;
+            distinctRaceAudits: number;
+            distinctRaceAppointmentMoved: boolean;
+            distinctRaceWaitlistMoved: boolean;
           }>
         >`
           select
@@ -519,7 +712,22 @@ describeWithPatientMergePostgres(
             (select patient_id = ${raceKeepPatient.id} from appointment_waitlist where id = ${raceWaitlist.id}) as "raceWaitlistMoved",
             (select count(*)::int from patients where id in (${lineageKeepPatient.id}, ${lineageSourcePatient.id}) and deleted_at is null) as "lineagePatientsActive",
             (select count(*)::int from patient_merge_events where operation_id = ${lineageOperationId}) as "lineageEvents",
-            (select count(*)::int from audit_log where action = 'merged' and entity_id = ${lineageKeepPatient.id}) as "lineageAudits"
+            (select count(*)::int from audit_log where action = 'merged' and entity_id = ${lineageKeepPatient.id}) as "lineageAudits",
+            (select count(*)::int from patients where id in (${collisionKeepPatient.id}, ${collisionSourcePatient.id}) and deleted_at is null) as "collisionPatientsActive",
+            (select count(*)::int from patient_merge_events where operation_id = ${collisionOperationId}) as "collisionEvents",
+            (select count(*)::int from audit_log where action = 'merged' and entity_id = ${collisionKeepPatient.id}) as "collisionAudits",
+            (select count(*)::int from patient_merge_transaction_observations where operation_id = ${collisionOperationId}) as "collisionObservations",
+            (select patient_id from appointments where id = ${collisionTargetAppointment.id}) as "collisionTargetPatientId",
+            (select patient_id from appointments where id = ${collisionSourceAppointment.id}) as "collisionSourcePatientId",
+            (select date_trunc('milliseconds', updated_at) = ${collisionTargetAppointment.updatedAt.toISOString()}::timestamptz from appointments where id = ${collisionTargetAppointment.id}) as "collisionTargetTimestampPreserved",
+            (select date_trunc('milliseconds', updated_at) = ${collisionSourceAppointment.updatedAt.toISOString()}::timestamptz from appointments where id = ${collisionSourceAppointment.id}) as "collisionSourceTimestampPreserved",
+            (select deleted_at is null from patients where id = ${otherPatient.id}) as "otherPatientActive",
+            (select count(*)::int from patient_merge_events where operation_id = ${crossTenantOperationId}) as "crossTenantEvents",
+            (select deleted_at is not null from patients where id = ${distinctRaceSourcePatient.id}) as "distinctRaceSourceDeleted",
+            (select count(*)::int from patient_merge_events where operation_id in (${distinctRaceOperationIds[0]}, ${distinctRaceOperationIds[1]})) as "distinctRaceEvents",
+            (select count(*)::int from audit_log where action = 'merged' and entity_id = ${distinctRaceKeepPatient.id}) as "distinctRaceAudits",
+            (select patient_id = ${distinctRaceKeepPatient.id} from appointments where id = ${distinctRaceAppointment.id}) as "distinctRaceAppointmentMoved",
+            (select patient_id = ${distinctRaceKeepPatient.id} from appointment_waitlist where id = ${distinctRaceWaitlist.id}) as "distinctRaceWaitlistMoved"
         `;
         expect(state).toEqual({
           sourceDeleted: true,
@@ -546,6 +754,21 @@ describeWithPatientMergePostgres(
           lineagePatientsActive: 2,
           lineageEvents: 0,
           lineageAudits: 0,
+          collisionPatientsActive: 2,
+          collisionEvents: 0,
+          collisionAudits: 0,
+          collisionObservations: 0,
+          collisionTargetPatientId: collisionKeepPatient.id,
+          collisionSourcePatientId: collisionSourcePatient.id,
+          collisionTargetTimestampPreserved: true,
+          collisionSourceTimestampPreserved: true,
+          otherPatientActive: true,
+          crossTenantEvents: 0,
+          distinctRaceSourceDeleted: true,
+          distinctRaceEvents: 1,
+          distinctRaceAudits: 1,
+          distinctRaceAppointmentMoved: true,
+          distinctRaceWaitlistMoved: true,
         });
 
         const [noContext] = await appSql<Array<{ patients: number }>>`
@@ -557,10 +780,15 @@ describeWithPatientMergePostgres(
         if (raceSqlA) await raceSqlA.end();
         if (appSql) await appSql.end();
         if (ownerSql) await ownerSql.end();
-        await adminSql.unsafe(
-          `drop database if exists "${databaseName}" with (force)`,
-        );
-        await adminSql.end();
+        try {
+          if (databaseCreated) {
+            await adminSql.unsafe(
+              `drop database if exists "${databaseName}" with (force)`,
+            );
+          }
+        } finally {
+          await adminSql.end();
+        }
       }
     }, 120_000);
   },
