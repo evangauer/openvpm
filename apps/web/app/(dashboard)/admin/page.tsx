@@ -134,6 +134,7 @@ export default function AdminPage() {
       utils.admin.overview.invalidate();
       utils.admin.activationFunnel.invalidate();
       utils.admin.activationRecovery.invalidate();
+      utils.admin.journeyFunnel.invalidate();
     },
     onError: (err) => setAnalyticsError(err.message),
   });
@@ -1246,6 +1247,122 @@ export default function AdminPage() {
                   ) : null}
                 </tbody>
               </table>
+            </div>
+
+            <div className="mt-6">
+              <h3 className="font-heading text-base font-semibold">
+                Acquisition outcomes · registrations in the past {journey.days}
+                days
+              </h3>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Restricted aggregate cohorts use fixed product-owned channel
+                buckets and canonical milestones. Rates use registered practices
+                as the denominator; missing values stay Unknown and unrecognized
+                values become Other without being displayed.
+              </p>
+              <div className="mt-3 overflow-x-auto rounded-md border border-border">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border bg-muted/30 text-left text-muted-foreground">
+                      <th className="px-3 py-2 font-medium">Source</th>
+                      <th className="px-3 py-2 font-medium">Medium</th>
+                      <th className="px-3 py-2 font-medium">Campaign</th>
+                      <th className="px-3 py-2 font-medium">Registered</th>
+                      <th className="px-3 py-2 font-medium">Activated</th>
+                      <th className="px-3 py-2 font-medium">Payment method</th>
+                      <th className="px-3 py-2 font-medium">
+                        Positive payment
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {journey.acquisitionOutcomes.map((outcome) => (
+                      <tr
+                        key={`${outcome.source}:${outcome.medium}:${outcome.campaign}`}
+                      >
+                        <td className="px-3 py-2 font-medium">
+                          {outcome.source}
+                        </td>
+                        <td className="px-3 py-2">{outcome.medium}</td>
+                        <td className="px-3 py-2">{outcome.campaign}</td>
+                        <td className="px-3 py-2 tabular-nums">
+                          {outcome.registrations}
+                        </td>
+                        <td className="px-3 py-2 tabular-nums">
+                          {outcome.activated}{" "}
+                          <span className="text-xs text-muted-foreground">
+                            {formatPct(outcome.activationRate)}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 tabular-nums">
+                          {outcome.paymentMethodCollected}{" "}
+                          <span className="text-xs text-muted-foreground">
+                            {formatPct(outcome.paymentMethodRate)}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 tabular-nums">
+                          {outcome.firstPositivePayment}{" "}
+                          <span className="text-xs text-muted-foreground">
+                            {formatPct(outcome.positivePaymentRate)}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                    {journey.acquisitionOutcomes.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={7}
+                          className="px-3 py-6 text-center text-muted-foreground"
+                        >
+                          No registered acquisition cohorts in this window.
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+              {journey.acquisitionOutcomesTruncated ? (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Showing the top {journey.acquisitionOutcomeRowLimit} bucket
+                  combinations in deterministic order; additional combinations
+                  are omitted.
+                </p>
+              ) : null}
+            </div>
+
+            <div className="mt-6">
+              <h3 className="font-heading text-base font-semibold">
+                Period activity · milestone events in the past {journey.days}
+                days
+              </h3>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                {[
+                  ["Registered", journey.periodActivity.registrations],
+                  ["Activated", journey.periodActivity.activated],
+                  [
+                    "Payment method",
+                    journey.periodActivity.paymentMethodCollected,
+                  ],
+                  [
+                    "Positive payment",
+                    journey.periodActivity.firstPositivePayment,
+                  ],
+                ].map(([label, value]) => (
+                  <div
+                    key={String(label)}
+                    className="rounded-md bg-muted/30 p-3"
+                  >
+                    <p className="text-xs text-muted-foreground">{label}</p>
+                    <p className="mt-1 font-heading text-xl font-bold tabular-nums">
+                      {value}
+                    </p>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">
+                These counts use the exact milestone occurrence time and are not
+                a signup cohort conversion rate.
+              </p>
             </div>
             <p className="mt-3 text-xs text-muted-foreground">
               Anonymous first touch is carried across openvpm.com, demo, and
