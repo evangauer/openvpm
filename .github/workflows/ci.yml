@@ -209,6 +209,14 @@ jobs:
           VISIT_DISPENSE_DB_INTEGRATION: "1"
         run: pnpm --filter @openpims/web exec vitest run server/__tests__/visit-dispense-closure.integration.test.ts
 
+      # Converting an estimate is one stock-owning state transition. Prove that
+      # concurrent visit billing converges, tracked stock changes once, and all
+      # stock/invoice/audit writes roll back together under least-privilege RLS.
+      - name: Execute estimate conversion database contract
+        env:
+          BILLING_CONVERSION_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/billing-estimate-conversion.integration.test.ts
+
       # Compile, bind, and execute the exact read-only SQL used by the shared
       # platform-admin and daily SMS operations queues. Unit tests cannot catch
       # postgres.js timestamp encoders or correlated identifier rendering.

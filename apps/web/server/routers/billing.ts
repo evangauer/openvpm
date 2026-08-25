@@ -642,6 +642,19 @@ function noActiveAdjustmentsForInvoice(): SQL {
   )`;
 }
 
+function invoiceUpdatedAtMatches(expectedUpdatedAt: Date): SQL {
+  // postgres.js decodes timestamptz into a JavaScript Date and therefore drops
+  // PostgreSQL's sub-millisecond precision. Compare at the precision callers
+  // can faithfully round-trip.
+  const start = expectedUpdatedAt.toISOString();
+  const end = new Date(expectedUpdatedAt.getTime() + 1).toISOString();
+  return sql`${invoices.updatedAt} >= ${start}::timestamptz and ${invoices.updatedAt} < ${end}::timestamptz`;
+}
+
+function nextInvoiceUpdatedAt(currentUpdatedAt: Date): Date {
+  return new Date(Math.max(Date.now(), currentUpdatedAt.getTime() + 1));
+}
+
 function invoiceAdjustmentTotalMatches(expectedCents: number): SQL {
   return sql`coalesce((
     select sum(${invoiceAdjustments.amount})
@@ -4268,17 +4281,222 @@ export const billingRouter = createRouter({
 
   convertEstimateToInvoice: protectedProcedure
     .use(requireRole("admin", "front_desk"))
-    .input(z.object({ id: z.string().uuid() }))
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        // Conversion can deduct tracked inventory, so callers must confirm the
+        // exact estimate version they displayed to the user.
+        expectedUpdatedAt: z.date(),
+      })
+    )
     .mutation(async ({ ctx, input }) => {
-      const existing = await getInvoiceForPractice(ctx, input.id);
-      assertCanConvertEstimate(existing);
-
-      const items = await invoiceProductItemsForStock(ctx, input.id);
+      // This lookup chooses the visit serialization identity only. Every
+      // mutable fact is re-read after the locks inside the transaction.
+      const [identity] = await ctx.db
+        .select({
+          appointmentId: invoices.appointmentId,
+        })
+        .from(invoices)
+        .where(
+          and(
+            eq(invoices.id, input.id),
+            eq(invoices.practiceId, ctx.practiceId),
+            isNull(invoices.deletedAt)
+          )
+        )
+        .limit(1);
+      if (!identity) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Invoice not found" });
+      }
+      const expectedUpdatedAt = input.expectedUpdatedAt;
 
       return ctx.db.transaction(async (tx) => {
+        const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
+        // Serialize this estimate first, then share the appointment
+        // advisory/row lock used by visit-linked invoice and refill paths.
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${input.id}, 0))`
+        );
+
+        let appointment:
+          | {
+              id: string;
+              clientId: string | null;
+              patientId: string | null;
+              status: (typeof appointments.$inferSelect)["status"];
+            }
+          | undefined;
+        if (identity.appointmentId) {
+          await tx.execute(
+            sql`select pg_advisory_xact_lock(hashtextextended(${identity.appointmentId}, 0))`
+          );
+          [appointment] = await tx
+            .select({
+              id: appointments.id,
+              clientId: appointments.clientId,
+              patientId: appointments.patientId,
+              status: appointments.status,
+            })
+            .from(appointments)
+            .where(
+              and(
+                eq(appointments.id, identity.appointmentId),
+                eq(appointments.practiceId, ctx.practiceId),
+                isNull(appointments.deletedAt)
+              )
+            )
+            .for("update");
+          if (!appointment) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: "The linked appointment is no longer available.",
+            });
+          }
+          if (appointment.status !== "in_exam") {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "Start the exam before converting this visit estimate to an invoice.",
+            });
+          }
+        }
+
+        const [existing] = await tx
+          .select({
+            id: invoices.id,
+            clientId: invoices.clientId,
+            patientId: invoices.patientId,
+            appointmentId: invoices.appointmentId,
+            total: invoices.total,
+            paidAmount: invoices.paidAmount,
+            status: invoices.status,
+            isEstimate: invoices.isEstimate,
+            dueDate: invoices.dueDate,
+            updatedAt: invoices.updatedAt,
+          })
+          .from(invoices)
+          .where(
+            and(
+              eq(invoices.id, input.id),
+              eq(invoices.practiceId, ctx.practiceId),
+              isNull(invoices.deletedAt)
+            )
+          )
+          .for("update");
+        if (!existing) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Invoice not found" });
+        }
+        if (existing.updatedAt.getTime() !== expectedUpdatedAt.getTime()) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Estimate changed. Refresh before converting it.",
+          });
+        }
+        assertCanConvertEstimate(existing);
+        if (existing.appointmentId !== identity.appointmentId) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Estimate visit changed. Refresh before converting it.",
+          });
+        }
+        if (
+          appointment &&
+          (appointment.clientId !== existing.clientId ||
+            appointment.patientId !== existing.patientId)
+        ) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "The estimate no longer matches the visit client and patient.",
+          });
+        }
+
+        if (existing.appointmentId) {
+          const [activeInvoice] = await tx
+            .select({ id: invoices.id })
+            .from(invoices)
+            .where(
+              and(
+                eq(invoices.practiceId, ctx.practiceId),
+                eq(invoices.appointmentId, existing.appointmentId),
+                ne(invoices.id, input.id),
+                eq(invoices.isEstimate, false),
+                ne(invoices.status, "void"),
+                isNull(invoices.deletedAt)
+              )
+            )
+            .limit(1);
+          if (activeInvoice) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "This visit already has an active invoice. Open it instead of converting another estimate.",
+            });
+          }
+        }
+
+        const items = await tx
+          .select({
+            description: invoiceItems.description,
+            quantity: invoiceItems.quantity,
+            unitPrice: invoiceItems.unitPrice,
+            itemType: invoiceItems.itemType,
+            itemId: invoiceItems.itemId,
+            sourcePrescriptionId: invoiceItems.sourcePrescriptionId,
+            sourceDispenseChargeId: invoiceItems.sourceDispenseChargeId,
+          })
+          .from(invoiceItems)
+          .where(
+            and(
+              eq(invoiceItems.invoiceId, input.id),
+              invoiceItemPracticeScope(txCtx),
+              isNull(invoiceItems.deletedAt)
+            )
+          )
+          .orderBy(invoiceItems.id)
+          .for("share");
+        if (items.length === 0) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "Add at least one line item before converting this estimate.",
+          });
+        }
+        if (
+          items.some(
+            (item) => item.sourcePrescriptionId || item.sourceDispenseChargeId
+          )
+        ) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "This estimate contains a dispensed-medication line. Rebuild the medication charge from Charge capture or the medication billing queue before converting.",
+          });
+        }
+
+        await assertPrescriptionChargeSources(txCtx, items, {
+          appointmentId: existing.appointmentId,
+          patientId: existing.patientId,
+          currentInvoiceId: input.id,
+        });
+        await assertDispenseChargeSources(txCtx, items, {
+          clientId: existing.clientId,
+          patientId: existing.patientId,
+          appointmentId: existing.appointmentId,
+          currentInvoiceId: input.id,
+          isEstimate: false,
+        });
+        await assertLineItemReferences(txCtx, items, {
+          lockProductsForStock: true,
+        });
+        await deductProductStock(
+          txCtx,
+          await trackedStockOwnedItems(txCtx, items)
+        );
+
+        const convertedAt = nextInvoiceUpdatedAt(existing.updatedAt);
         const [invoice] = await tx
           .update(invoices)
-          .set({ isEstimate: false })
+          .set({ isEstimate: false, status: "draft", updatedAt: convertedAt })
           .where(
             and(
               eq(invoices.id, input.id),
@@ -4286,6 +4504,9 @@ export const billingRouter = createRouter({
               eq(invoices.isEstimate, true),
               eq(invoices.status, existing.status),
               eq(invoices.paidAmount, existing.paidAmount ?? "0"),
+              invoiceUpdatedAtMatches(expectedUpdatedAt),
+              noActivePaymentsForInvoice(),
+              noActiveAdjustmentsForInvoice(),
               isNull(invoices.deletedAt)
             )
           )
@@ -4293,15 +4514,29 @@ export const billingRouter = createRouter({
 
         if (!invoice) {
           throw new TRPCError({
-            code: "BAD_REQUEST",
+            code: "CONFLICT",
             message: "Estimate changed while converting. Refresh and try again.",
           });
         }
 
-        const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
-        await deductProductStock(txCtx, items);
+        await tx.insert(auditLog).values({
+          practiceId: ctx.practiceId,
+          userId: ctx.user.id,
+          action: "estimate_converted",
+          entityType: "invoice",
+          entityId: input.id,
+          changes: {
+            priorStatus: existing.status,
+            nextStatus: "draft",
+            visitLinked: Boolean(existing.appointmentId),
+            itemCount: items.length,
+            productLineCount: items.filter(
+              (item) => item.itemType === "product"
+            ).length,
+          },
+        });
 
-        return invoice;
+        return invoice!;
       });
     }),
 });
