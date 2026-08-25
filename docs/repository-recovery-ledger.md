@@ -45,7 +45,7 @@ They are evidence for triage, not acceptance evidence for the underlying code.
 | [#222](https://github.com/evangauer/openvpm/pull/222) | P0 one-click billing integration | Draft, conflicting; 136 files | `evidence-only` | High-risk integration aggregate; decompose billing, auth, migration, and operational changes into independently testable recoveries |
 | [#224](https://github.com/evangauer/openvpm/pull/224) | Development dependency group | Behind; 7 files | `recreate` | Regenerate after baseline and review breaking toolchain changes separately |
 | [#230](https://github.com/evangauer/openvpm/pull/230) | Production dependency group | Behind; 4 files | `recreate` | Split security fixes from broad upgrades and prove runtime compatibility |
-| [#240](https://github.com/evangauer/openvpm/pull/240) | Repository governance | Draft; core checks pass | `governance` | Complete environment credentials, independent ownership, and release rehearsal before merge |
+| [#240](https://github.com/evangauer/openvpm/pull/240) | Repository governance | Draft; core checks pass | `governance` | Complete final review, merge through the gate, then execute the exact-SHA release rehearsal before canonical branch bootstrap |
 
 The stacked work represented by #198-#205 has one integration tip in #205.
 That containment is a preservation fact only; it does not make #205 a safe

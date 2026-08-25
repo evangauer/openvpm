@@ -186,6 +186,17 @@ rotated. The `openvpm` demo project already skipped non-production builds and
 now remains under the same quarantine boundary. This is an incident-prevention
 control, not the completed Development or Staging environment.
 
+The initial containment narrowed shared Resend and auth secrets to Production,
+removed only Preview credential entries proven byte-identical to retained
+Production copies, removed the stale branch-specific build override, and
+enabled Vercel Authentication for every app deployment except the customer
+custom domains. The remaining app Preview secrets are limited to a distinct
+database, auth secret, Blob token, and GCP service account; the demo Preview has
+a distinct database only. This scoping—not the repository-owned ignore
+script—is the security boundary, because pull-request code can modify its own
+`vercel.json`. The ignore script remains defense in depth. Historical exposure
+still makes the retained Production values rotation candidates.
+
 Before enabling either canonical non-production branch:
 
 1. provision environment-specific data stores and provider test accounts;
