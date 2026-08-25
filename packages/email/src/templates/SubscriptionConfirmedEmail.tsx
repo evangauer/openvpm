@@ -22,15 +22,15 @@ export function SubscriptionConfirmedEmail({
     >
       <Heading>You&apos;re on OpenVPM Cloud</Heading>
       <Paragraph>
-        Thanks for subscribing, {practiceName}. Your Cloud subscription is
-        active, and everything you set up before subscribing is still here.
+        Thanks for subscribing, {practiceName}. Your OpenVPM Cloud subscription
+        is active.
       </Paragraph>
 
       <InfoCard tone="brand">
-        <Label>Your workspace</Label>
+        <Label>Your subscription</Label>
         <Paragraph>
-          Your team can keep working in OpenVPM with your current plan. Receipts
-          for successful charges are sent separately.
+          Your team can keep working in OpenVPM with your current plan. You can
+          review plan and billing details in Settings.
         </Paragraph>
       </InfoCard>
 

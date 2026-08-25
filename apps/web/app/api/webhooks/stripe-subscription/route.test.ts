@@ -380,7 +380,7 @@ describe("Stripe subscription webhook", () => {
           timezone: "UTC",
         },
       ],
-      [{ id: PRACTICE_ID }],
+      [{ id: PRACTICE_ID, email: "owner@example.com" }],
     );
     invokeLifecycleSendOnce();
 
@@ -402,6 +402,40 @@ describe("Stripe subscription webhook", () => {
       practiceName: "Westside Vet",
       idempotencyKey: `lc:confirmed:${SUBSCRIPTION_ID}`,
     });
+  });
+
+  it("suppresses a queued confirmation if the billing contact changes before send", async () => {
+    process.env.STRIPE_PRICE_CLOUD_LOCATION = PRICE_ID;
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
+      checkoutCompletedEvent(),
+    );
+    mocks.retrieveSubscription.mockResolvedValueOnce(
+      stripeSubscription("active"),
+    );
+    mocks.updateReturns.push([{ id: PRACTICE_ID }], [{ id: PRACTICE_ID }]);
+    mocks.selectResults.push(
+      [
+        {
+          id: PRACTICE_ID,
+          email: "old-owner@example.com",
+          name: "Westside Vet",
+          timezone: "UTC",
+        },
+      ],
+      [{ id: PRACTICE_ID, email: "new-owner@example.com" }],
+    );
+    invokeLifecycleSendOnce();
+
+    const response = await POST(stripeRequest());
+
+    await expect(response.json()).resolves.toEqual({ received: true });
+    expect(mocks.sendLifecycleEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "old-owner@example.com",
+        stillEligible: expect.any(Function),
+      }),
+    );
+    expect(mocks.sendSubscriptionConfirmedEmail).not.toHaveBeenCalled();
   });
 
   it("does not sync Checkout quantities when no active practice was updated", async () => {
@@ -465,7 +499,7 @@ describe("Stripe subscription webhook", () => {
           timezone: "UTC",
         },
       ],
-      [{ id: PRACTICE_ID }],
+      [{ id: PRACTICE_ID, email: "owner@example.com" }],
     );
     invokeLifecycleSendOnce();
 
@@ -492,6 +526,36 @@ describe("Stripe subscription webhook", () => {
       practiceName: "Westside Vet",
       idempotencyKey: `lc:canceled:${SUBSCRIPTION_ID}`,
     });
+  });
+
+  it("suppresses a queued cancellation if the billing contact changes before send", async () => {
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(
+      subscriptionDeletedEvent(),
+    );
+    mocks.updateReturns.push([{ id: PRACTICE_ID }]);
+    mocks.selectResults.push(
+      [
+        {
+          id: PRACTICE_ID,
+          email: "old-owner@example.com",
+          name: "Westside Vet",
+          timezone: "UTC",
+        },
+      ],
+      [{ id: PRACTICE_ID, email: "new-owner@example.com" }],
+    );
+    invokeLifecycleSendOnce();
+
+    const response = await POST(stripeRequest());
+
+    await expect(response.json()).resolves.toEqual({ received: true });
+    expect(mocks.sendLifecycleEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "old-owner@example.com",
+        stillEligible: expect.any(Function),
+      }),
+    );
+    expect(mocks.sendSubscriptionCanceledEmail).not.toHaveBeenCalled();
   });
 
   it("does not send a cancellation notice for a stale subscription deletion", async () => {

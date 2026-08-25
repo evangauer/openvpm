@@ -187,7 +187,10 @@ export async function POST(req: NextRequest) {
                     category: "transactional",
                     stillEligible: async (emailTx) => {
                       const [current] = await emailTx
-                        .select({ id: practices.id })
+                        .select({
+                          id: practices.id,
+                          email: practices.email,
+                        })
                         .from(practices)
                         .where(
                           and(
@@ -201,7 +204,10 @@ export async function POST(req: NextRequest) {
                           ),
                         )
                         .limit(1);
-                      return Boolean(current);
+                      return (
+                        Boolean(current) &&
+                        billingContactEmail(current?.email) === to
+                      );
                     },
                     send: () =>
                       sendSubscriptionConfirmedEmail({
@@ -265,7 +271,10 @@ export async function POST(req: NextRequest) {
                     category: "transactional",
                     stillEligible: async (emailTx) => {
                       const [current] = await emailTx
-                        .select({ id: practices.id })
+                        .select({
+                          id: practices.id,
+                          email: practices.email,
+                        })
                         .from(practices)
                         .where(
                           and(
@@ -276,7 +285,10 @@ export async function POST(req: NextRequest) {
                           ),
                         )
                         .limit(1);
-                      return Boolean(current);
+                      return (
+                        Boolean(current) &&
+                        billingContactEmail(current?.email) === to
+                      );
                     },
                     send: () =>
                       sendSubscriptionCanceledEmail({
