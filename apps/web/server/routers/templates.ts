@@ -7,6 +7,9 @@ import {
   treatmentTemplateItems,
   invoices,
   invoiceItems,
+  appointments,
+  dispenseChargeQueue,
+  prescriptions,
   practices,
   products,
   services,
@@ -362,6 +365,118 @@ async function deductTemplateProductStock(
       });
     }
   }
+}
+
+function unsourcedTemplateProductIds(items: readonly TemplateInvoiceItem[]) {
+  return [
+    ...new Set(
+      items
+        .filter((item) => item.itemType === "product" && item.itemId)
+        .map((item) => item.itemId!),
+    ),
+  ].sort();
+}
+
+async function blockingDispenseChargeRows(
+  ctx: TemplatesContext,
+  invoice: {
+    id: string;
+    patientId: string | null;
+  },
+  productIds: string[],
+  lock: boolean,
+) {
+  if (!invoice.patientId || productIds.length === 0) return [];
+  const query = ctx.db
+    .select({ id: dispenseChargeQueue.id })
+    .from(dispenseChargeQueue)
+    .where(
+      and(
+        eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+        eq(dispenseChargeQueue.patientId, invoice.patientId),
+        inArray(dispenseChargeQueue.productId, productIds),
+        or(
+          inArray(dispenseChargeQueue.status, ["pending", "waived"]),
+          and(
+            eq(dispenseChargeQueue.status, "invoiced"),
+            eq(dispenseChargeQueue.invoiceId, invoice.id),
+          ),
+        ),
+      ),
+    )
+    .orderBy(asc(dispenseChargeQueue.id));
+  return lock ? query.for("update") : query;
+}
+
+function medicationTemplateConflict(): TRPCError {
+  return new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message:
+      "Review this patient's dispensed medication in the medication billing queue before applying an unsourced product template.",
+  });
+}
+
+async function lockAndAssertNoUnsourcedMedicationTemplateConflict(
+  ctx: TemplatesContext,
+  invoice: {
+    id: string;
+    patientId: string | null;
+    appointmentId: string | null;
+    isEstimate: boolean;
+  },
+  items: readonly TemplateInvoiceItem[],
+) {
+  if (invoice.isEstimate || !invoice.patientId) return [];
+
+  const productIds = unsourcedTemplateProductIds(items);
+  if (productIds.length === 0) return [];
+
+  if (invoice.appointmentId) {
+    const visitPrescriptions = await ctx.db
+      .select({ id: prescriptions.id })
+      .from(prescriptions)
+      .where(
+        and(
+          eq(prescriptions.practiceId, ctx.practiceId),
+          eq(prescriptions.patientId, invoice.patientId),
+          eq(prescriptions.appointmentId, invoice.appointmentId),
+          inArray(prescriptions.productId, productIds),
+          isNull(prescriptions.deletedAt),
+        ),
+      )
+      .orderBy(asc(prescriptions.id))
+      .for("share");
+    if (visitPrescriptions.length > 0) throw medicationTemplateConflict();
+  }
+
+  // A blocking row ends this transaction before product acquisition. Allowed
+  // invoiced-other history is deliberately not locked ahead of products.
+  const blockers = await blockingDispenseChargeRows(
+    ctx,
+    invoice,
+    productIds,
+    true,
+  );
+  if (blockers.length > 0) throw medicationTemplateConflict();
+  return productIds;
+}
+
+async function recheckUnsourcedMedicationTemplateConflict(
+  ctx: TemplatesContext,
+  invoice: { id: string; patientId: string | null; isEstimate: boolean },
+  productIds: string[],
+) {
+  if (invoice.isEstimate) return;
+  // Standalone refill work locks and mutates the product before creating its
+  // queue row. Re-read after deterministic product locks so a refill that won
+  // that race cannot be charged again by an unsourced template.
+  const blockers = await blockingDispenseChargeRows(
+    ctx,
+    invoice,
+    productIds,
+    false,
+  );
+  if (blockers.length > 0) throw medicationTemplateConflict();
 }
 
 export const templatesRouter = createRouter({
@@ -806,13 +921,15 @@ export const templatesRouter = createRouter({
         });
       }
 
-      // Verify invoice belongs to this practice
-      const [invoice] = await ctx.db
+      // This unlocked read chooses the routing boundary only. Every mutable
+      // invoice field is re-read under the canonical locks below.
+      const [routeIdentity] = await ctx.db
         .select({
           id: invoices.id,
-          status: invoices.status,
-          paidAmount: invoices.paidAmount,
           isEstimate: invoices.isEstimate,
+          clientId: invoices.clientId,
+          patientId: invoices.patientId,
+          appointmentId: invoices.appointmentId,
         })
         .from(invoices)
         .where(
@@ -824,24 +941,10 @@ export const templatesRouter = createRouter({
           ),
         )
         .limit(1);
-
-      if (!invoice) {
+      if (!routeIdentity) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Invoice not found",
-        });
-      }
-      if (invoice.status !== "draft") {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "Apply treatment templates before sending the invoice.",
-        });
-      }
-      if (moneyToCents(invoice.paidAmount) > 0) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message:
-            "Cannot apply treatment templates to invoices with payments.",
         });
       }
 
@@ -852,7 +955,9 @@ export const templatesRouter = createRouter({
           sql`select pg_advisory_xact_lock(hashtextextended(${input.invoiceId}, 0))`,
         );
 
-        // Fetch template items
+        // Fetch template items before choosing whether this actual invoice
+        // needs the visit medication lock path. Service-only templates do not
+        // inherit the in-exam requirement.
         const items = await tx
           .select()
           .from(treatmentTemplateItems)
@@ -863,13 +968,122 @@ export const templatesRouter = createRouter({
             ),
           )
           .orderBy(asc(treatmentTemplateItems.sortOrder));
-
         if (items.length === 0) {
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: "Template has no items",
           });
         }
+        const routeProductIds = routeIdentity.isEstimate
+          ? []
+          : unsourcedTemplateProductIds(
+              items.map((item) => ({
+                itemType: item.itemType,
+                itemId: item.itemId,
+                quantity: item.defaultQuantity,
+              })),
+            );
+
+        if (routeIdentity.appointmentId && routeProductIds.length > 0) {
+          // createDispenseChargeInvoice owns this same order: appointment
+          // advisory/row before the visit invoice row.
+          await tx.execute(
+            sql`select pg_advisory_xact_lock(hashtextextended(${routeIdentity.appointmentId}, 0))`,
+          );
+          const [appointment] = await tx
+            .select({
+              id: appointments.id,
+              clientId: appointments.clientId,
+              patientId: appointments.patientId,
+              status: appointments.status,
+            })
+            .from(appointments)
+            .where(
+              and(
+                eq(appointments.id, routeIdentity.appointmentId),
+                eq(appointments.practiceId, ctx.practiceId),
+                isNull(appointments.deletedAt),
+              ),
+            )
+            .for("update");
+          if (
+            !appointment ||
+            appointment.clientId !== routeIdentity.clientId ||
+            appointment.patientId !== routeIdentity.patientId ||
+            appointment.status !== "in_exam"
+          ) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "The linked visit changed. Refresh before applying this treatment template.",
+            });
+          }
+        }
+
+        // Lock and re-read only after the visit boundary. A confirmation that
+        // waited behind another mutation must use current routing and state.
+        const [invoice] = await tx
+          .select({
+            id: invoices.id,
+            status: invoices.status,
+            paidAmount: invoices.paidAmount,
+            isEstimate: invoices.isEstimate,
+            clientId: invoices.clientId,
+            patientId: invoices.patientId,
+            appointmentId: invoices.appointmentId,
+          })
+          .from(invoices)
+          .where(
+            and(
+              eq(invoices.id, input.invoiceId),
+              eq(invoices.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(invoices.deletedAt),
+            ),
+          )
+          .for("update");
+        if (!invoice) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Invoice not found",
+          });
+        }
+        if (
+          invoice.clientId !== routeIdentity.clientId ||
+          invoice.patientId !== routeIdentity.patientId ||
+          invoice.appointmentId !== routeIdentity.appointmentId ||
+          invoice.isEstimate !== routeIdentity.isEstimate
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "Invoice routing changed. Refresh before applying this treatment template.",
+          });
+        }
+        if (invoice.status !== "draft") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Apply treatment templates before sending the invoice.",
+          });
+        }
+        if (moneyToCents(invoice.paidAmount) > 0) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "Cannot apply treatment templates to invoices with payments.",
+          });
+        }
+
+        const medicationProductIds =
+          await lockAndAssertNoUnsourcedMedicationTemplateConflict(
+            { db: tx, practiceId: ctx.practiceId },
+            invoice,
+            items.map((item) => ({
+              itemType: item.itemType,
+              itemId: item.itemId,
+              quantity: item.defaultQuantity,
+            })),
+          );
 
         // Templates snapshot descriptions and prices, but active catalog
         // references still need to be valid when the template is used. This
@@ -882,6 +1096,11 @@ export const templatesRouter = createRouter({
             itemId: item.itemId ?? undefined,
           })),
           { lockProductsForStock: !invoice.isEstimate },
+        );
+        await recheckUnsourcedMedicationTemplateConflict(
+          { db: tx, practiceId: ctx.practiceId },
+          invoice,
+          medicationProductIds,
         );
 
         const invoiceItemRows = items.map((item) => {
