@@ -55,10 +55,11 @@ async function within<T>(
   }
 }
 
-async function waitForBlockedProductQueries(
+async function waitForBlockedQueries(
   sql: SqlClient,
   databaseName: string,
   minimum: number,
+  queryPattern = "%",
 ): Promise<void> {
   await within(
     (async () => {
@@ -68,7 +69,7 @@ async function waitForBlockedProductQueries(
           from pg_stat_activity
           where datname = ${databaseName}
             and wait_event_type = 'Lock'
-            and query ilike '%products%'
+            and query ilike ${queryPattern}
         `;
         if ((row?.count ?? 0) >= minimum) return;
         await new Promise((resolveWait) => setTimeout(resolveWait, 20));
@@ -76,6 +77,14 @@ async function waitForBlockedProductQueries(
     })(),
     `${minimum} blocked product queries`,
   );
+}
+
+function waitForBlockedProductQueries(
+  sql: SqlClient,
+  databaseName: string,
+  minimum: number,
+) {
+  return waitForBlockedQueries(sql, databaseName, minimum, "%products%");
 }
 
 function rejectionDetails(reason: unknown): string {
@@ -583,7 +592,9 @@ describeWithPostgres("atomic estimate conversion PostgreSQL contract", () => {
       // evidence rather than unresolved work for the visit invoice. A deleted
       // prescription from the visit is likewise not a live source. Neither may
       // block a later explicitly applied product template.
-      await caller(templateRefillFixture).createDispenseChargeInvoice({
+      const historicalDispenseInvoice = await caller(
+        templateRefillFixture,
+      ).createDispenseChargeInvoice({
         id: templateRefillQueue[0]!.id,
         acknowledgeLegacyReview: false,
       });
@@ -615,6 +626,205 @@ describeWithPostgres("atomic estimate conversion PostgreSQL contract", () => {
         .from(schema.invoiceItems)
         .where(eq(schema.invoiceItems.invoiceId, templateRefillInvoice.id));
       expect(templateRefillItemsAfterHistorical).toHaveLength(2);
+
+      // updateInvoiceItems owns product -> sourced queue. Hold the product,
+      // queue the historical source edit first, then queue the template. The
+      // template must not pre-lock allowed invoiced-other evidence; both
+      // operations complete without a cycle and only the template moves stock.
+      await ownerDb
+        .update(schema.invoices)
+        .set({ updatedAt: new Date("2026-08-25T18:00:00.000Z") })
+        .where(eq(schema.invoices.id, historicalDispenseInvoice.invoiceId));
+      const [historicalInvoiceState] = await ownerDb
+        .select({ updatedAt: schema.invoices.updatedAt })
+        .from(schema.invoices)
+        .where(eq(schema.invoices.id, historicalDispenseInvoice.invoiceId));
+      const [historicalInvoiceLine] = await ownerDb
+        .select({
+          description: schema.invoiceItems.description,
+          quantity: schema.invoiceItems.quantity,
+          unitPrice: schema.invoiceItems.unitPrice,
+          itemType: schema.invoiceItems.itemType,
+          itemId: schema.invoiceItems.itemId,
+          sourceDispenseChargeId: schema.invoiceItems.sourceDispenseChargeId,
+        })
+        .from(schema.invoiceItems)
+        .where(
+          eq(
+            schema.invoiceItems.invoiceId,
+            historicalDispenseInvoice.invoiceId,
+          ),
+        );
+      expect(historicalInvoiceState).toBeDefined();
+      expect(historicalInvoiceLine?.sourceDispenseChargeId).toBe(
+        templateRefillQueue[0]!.id,
+      );
+      let releaseHistoricalProductBarrier!: () => void;
+      const historicalProductBarrierRelease = new Promise<void>(
+        (resolveRelease) => {
+          releaseHistoricalProductBarrier = resolveRelease;
+        },
+      );
+      let markHistoricalProductBarrierReady!: () => void;
+      const historicalProductBarrierReady = new Promise<void>(
+        (resolveReady) => {
+          markHistoricalProductBarrierReady = resolveReady;
+        },
+      );
+      const historicalProductBarrier = ownerSql.begin(async (barrierTx) => {
+        const barrierSql = barrierTx as unknown as SqlClient;
+        await barrierSql`
+          select id
+          from products
+          where id = ${templateRefillProduct}
+          for update
+        `;
+        markHistoricalProductBarrierReady();
+        await historicalProductBarrierRelease;
+      });
+      await within(
+        historicalProductBarrierReady,
+        "historical edit product barrier",
+      );
+      const historicalEditAttempt = caller(
+        templateRefillFixture,
+      ).updateInvoiceItems({
+        id: historicalDispenseInvoice.invoiceId,
+        expectedUpdatedAt: historicalInvoiceState!.updatedAt,
+        items: [
+          {
+            description: historicalInvoiceLine!.description,
+            quantity: historicalInvoiceLine!.quantity,
+            unitPrice: historicalInvoiceLine!.unitPrice,
+            itemType: historicalInvoiceLine!.itemType,
+            itemId: historicalInvoiceLine!.itemId ?? undefined,
+            sourceDispenseChargeId:
+              historicalInvoiceLine!.sourceDispenseChargeId ?? undefined,
+          },
+        ],
+      });
+      await waitForBlockedProductQueries(adminSql, databaseName, 1);
+      const historicalTemplateAttempt = templatesCaller(
+        templateRefillFixture,
+      ).applyToInvoice({
+        templateId: templateRefillTemplate,
+        invoiceId: templateRefillInvoice.id,
+      });
+      try {
+        await waitForBlockedProductQueries(adminSql, databaseName, 2);
+      } finally {
+        releaseHistoricalProductBarrier();
+        await within(
+          historicalProductBarrier,
+          "historical edit product release",
+        );
+      }
+      const historicalSchedule = await within(
+        Promise.allSettled([historicalEditAttempt, historicalTemplateAttempt]),
+        "historical edit/template schedule",
+      );
+      assertNoDeadlock(historicalSchedule);
+      expect(
+        historicalSchedule.map((result) =>
+          result.status === "fulfilled"
+            ? "fulfilled"
+            : rejectionDetails(result.reason),
+        ),
+      ).toEqual(["fulfilled", "fulfilled"]);
+      expect(await stock(templateRefillProduct)).toBe(4);
+
+      // createDispenseChargeInvoice owns appointment -> invoice. Create a
+      // visit-linked refill, hold the invoice row, and let the dispense path
+      // acquire the appointment boundary before the template starts. The
+      // template must wait on that same appointment order, then reject the now
+      // sourced medication without deadlocking or moving stock again.
+      await ownerDb
+        .update(schema.prescriptions)
+        .set({ refillsRemaining: 1 })
+        .where(eq(schema.prescriptions.id, templateRefillPrescription));
+      await recordsCaller(templateRefillFixture).recordPrescriptionRefill({
+        id: templateRefillPrescription,
+        operationId: randomUUID(),
+        appointmentId: templateRefillFixture.appointmentId,
+        note: "Synthetic visit-linked template/dispense drill",
+      });
+      const [visitDispense] = await ownerDb
+        .select({ id: schema.dispenseChargeQueue.id })
+        .from(schema.dispenseChargeQueue)
+        .where(
+          and(
+            eq(
+              schema.dispenseChargeQueue.prescriptionId,
+              templateRefillPrescription,
+            ),
+            eq(
+              schema.dispenseChargeQueue.appointmentId,
+              templateRefillFixture.appointmentId,
+            ),
+            eq(schema.dispenseChargeQueue.status, "pending"),
+          ),
+        );
+      expect(visitDispense).toBeDefined();
+      expect(await stock(templateRefillProduct)).toBe(2);
+      let releaseVisitInvoiceBarrier!: () => void;
+      const visitInvoiceBarrierRelease = new Promise<void>((resolveRelease) => {
+        releaseVisitInvoiceBarrier = resolveRelease;
+      });
+      let markVisitInvoiceBarrierReady!: () => void;
+      const visitInvoiceBarrierReady = new Promise<void>((resolveReady) => {
+        markVisitInvoiceBarrierReady = resolveReady;
+      });
+      const visitInvoiceBarrier = ownerSql.begin(async (barrierTx) => {
+        const barrierSql = barrierTx as unknown as SqlClient;
+        await barrierSql`
+          select id
+          from invoices
+          where id = ${templateRefillInvoice.id}
+          for update
+        `;
+        markVisitInvoiceBarrierReady();
+        await visitInvoiceBarrierRelease;
+      });
+      await within(visitInvoiceBarrierReady, "visit invoice barrier");
+      const createDispenseAttempt = caller(
+        templateRefillFixture,
+      ).createDispenseChargeInvoice({
+        id: visitDispense!.id,
+        acknowledgeLegacyReview: false,
+      });
+      await waitForBlockedQueries(adminSql, databaseName, 1, "%invoices%");
+      const orderedTemplateAttempt = templatesCaller(
+        templateRefillFixture,
+      ).applyToInvoice({
+        templateId: templateRefillTemplate,
+        invoiceId: templateRefillInvoice.id,
+      });
+      const orderedTemplateRejection = expect(
+        orderedTemplateAttempt,
+      ).rejects.toMatchObject({
+        code: "PRECONDITION_FAILED",
+        message: expect.stringContaining("medication billing queue"),
+      });
+      try {
+        await waitForBlockedQueries(adminSql, databaseName, 2);
+      } finally {
+        releaseVisitInvoiceBarrier();
+        await within(visitInvoiceBarrier, "visit invoice barrier release");
+      }
+      await within(createDispenseAttempt, "visit dispense creation");
+      await within(orderedTemplateRejection, "ordered template rejection");
+      expect(await stock(templateRefillProduct)).toBe(2);
+      const [visitDispenseState] = await ownerDb
+        .select({
+          status: schema.dispenseChargeQueue.status,
+          invoiceId: schema.dispenseChargeQueue.invoiceId,
+        })
+        .from(schema.dispenseChargeQueue)
+        .where(eq(schema.dispenseChargeQueue.id, visitDispense!.id));
+      expect(visitDispenseState).toEqual({
+        status: "invoiced",
+        invoiceId: templateRefillInvoice.id,
+      });
 
       const trackedProduct = await createProduct(raceFixture, 10, true);
       const untrackedProduct = await createProduct(raceFixture, 0, false);

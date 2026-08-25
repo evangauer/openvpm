@@ -44,6 +44,7 @@ function createDb(opts?: {
   updateResults?: unknown[][];
 }) {
   const selectResults = [...(opts?.selectResults ?? [])];
+  let routedInvoiceResult: unknown[] | undefined;
   const lockFor = vi.fn(() => afterWhereForCurrentSelect);
   let afterWhereForCurrentSelect: {
     limit: ReturnType<typeof vi.fn>;
@@ -54,8 +55,25 @@ function createDb(opts?: {
       reject?: (error: unknown) => unknown,
     ) => Promise<unknown>;
   };
-  const select = vi.fn(() => {
-    const result = selectResults.shift() ?? [];
+  const select = vi.fn((selection?: Record<string, unknown>) => {
+    const isInvoiceRouteRead =
+      selection &&
+      "isEstimate" in selection &&
+      "clientId" in selection &&
+      "appointmentId" in selection &&
+      !("status" in selection);
+    const isCurrentInvoiceRead =
+      selection &&
+      "isEstimate" in selection &&
+      "clientId" in selection &&
+      "appointmentId" in selection &&
+      "status" in selection &&
+      "paidAmount" in selection;
+    const result = isCurrentInvoiceRead
+      ? (routedInvoiceResult ?? [])
+      : (selectResults.shift() ?? []);
+    if (isInvoiceRouteRead) routedInvoiceResult = result;
+    if (isCurrentInvoiceRead) routedInvoiceResult = undefined;
     const afterWhere = {
       limit: vi.fn(async () => result),
       orderBy: vi.fn(() => afterWhere),
@@ -691,7 +709,7 @@ describe("treatment template safety", () => {
       message: expect.stringContaining("active inventory product"),
     });
 
-    expect(select).toHaveBeenCalledTimes(4);
+    expect(select).toHaveBeenCalledTimes(5);
     expect(insertValues).not.toHaveBeenCalled();
     expect(updateSet).not.toHaveBeenCalled();
   });
@@ -784,8 +802,8 @@ describe("treatment template safety", () => {
     expect(lockFor).toHaveBeenNthCalledWith(1, "update");
     expect(lockFor).toHaveBeenNthCalledWith(2, "share");
     expect(lockFor).toHaveBeenNthCalledWith(3, "share");
-    // Four request setup/read queries + two catalog batches + totals + tax.
-    expect(select).toHaveBeenCalledTimes(8);
+    // Routing/current invoice reads + template/catalog batches + totals + tax.
+    expect(select).toHaveBeenCalledTimes(9);
   });
 
   it.each(["pending", "waived"] as const)(
@@ -1367,6 +1385,20 @@ describe("treatment template safety", () => {
     expect(applyBlock.indexOf("pg_advisory_xact_lock")).toBeLessThan(
       applyBlock.indexOf("nextInvoiceUpdatedAtSql()"),
     );
+    const invoiceAdvisory = applyBlock.indexOf(
+      "hashtextextended(${input.invoiceId}, 0)",
+    );
+    const appointmentAdvisory = applyBlock.indexOf(
+      "hashtextextended(${routeIdentity.appointmentId}, 0)",
+    );
+    const appointmentRowLock = applyBlock.indexOf(".from(appointments)");
+    const currentInvoiceRowLock = applyBlock.indexOf(
+      "// Lock and re-read only after the visit boundary.",
+    );
+    expect(invoiceAdvisory).toBeGreaterThanOrEqual(0);
+    expect(appointmentAdvisory).toBeGreaterThan(invoiceAdvisory);
+    expect(appointmentRowLock).toBeGreaterThan(appointmentAdvisory);
+    expect(currentInvoiceRowLock).toBeGreaterThan(appointmentRowLock);
     const versionSql = source.slice(
       source.indexOf("function nextInvoiceUpdatedAtSql"),
       source.indexOf("const templateItemBaseInput"),
@@ -1386,14 +1418,22 @@ describe("treatment template safety", () => {
     expect(medicationGuard).toContain(
       "eq(dispenseChargeQueue.patientId, invoice.patientId)",
     );
-    expect(medicationGuard).toContain('row.status === "pending"');
-    expect(medicationGuard).toContain('row.status === "waived"');
+    expect(medicationGuard).toContain(
+      'inArray(dispenseChargeQueue.status, ["pending", "waived"])',
+    );
     expect(medicationGuard).toContain(
       "eq(prescriptions.appointmentId, invoice.appointmentId)",
     );
     expect(medicationGuard).toContain("isNull(prescriptions.deletedAt)");
-    expect(medicationGuard).toContain('row.status === "invoiced"');
-    expect(medicationGuard).toContain("row.invoiceId === invoiceId");
+    expect(medicationGuard).toContain(
+      'eq(dispenseChargeQueue.status, "invoiced")',
+    );
+    expect(medicationGuard).toContain(
+      "eq(dispenseChargeQueue.invoiceId, invoice.id)",
+    );
+    expect(medicationGuard).toContain(
+      "invoiced-other history is deliberately not locked ahead of products.",
+    );
     expect(applyBlock.indexOf("pg_advisory_xact_lock")).toBeLessThan(
       applyBlock.indexOf("lockAndAssertNoUnsourcedMedicationTemplateConflict"),
     );
