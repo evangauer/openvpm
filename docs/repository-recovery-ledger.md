@@ -157,6 +157,34 @@ commit's `staging` fast-forward supplied a real prior SHA and passed all CI.
 Normal pull requests into `development` provide a real base SHA; this ledger
 update is the first protected-flow exercise of that path.
 
+## Orca retirement gate and grace period
+
+Orca is operationally frozen: its app and runtime are stopped, persisted state
+contains no automations or automation runs, and the audit found no running
+process, launch agent, cron entry, repository hook, scheduled workflow,
+repository webhook, deploy key, or Orca-named collaborator. All 22 registered
+Orca worktree heads are exact heads in the verified complete-history bundle.
+The only dirty Orca byte—the final newline in the migration journal—matches
+both its preserved full-index patch hash and synthetic safety commit
+`e30bf89b066f031b6de978047f6f9d9dc4ff3382`.
+
+That evidence authorizes keeping Orca stopped; it does not yet authorize
+declaring formal retirement complete or deleting any Orca worktree. Formal
+disable/revocation waits for isolated Development and Staging deployment proof,
+a complete governed Development-to-Staging-to-Production release, a final live
+Orca state capture, and a manual GitHub App/OAuth-grant audit. Global model and
+host GitHub credentials are shared with non-PIMS work and must not be revoked as
+if they were repository-specific.
+
+The cleanup grace period is 14 calendar days starting when this ledger update
+merges into `development`, and at least one complete governed
+Development-to-Staging-to-Production release after isolated non-production
+resources are enabled, whichever ends later. Before the clock starts, create
+and verify an encrypted copy of the safety directory on independent storage and
+record its custodian without publishing its location or secret-bearing
+contents. Until the full gate and grace period are satisfied, do not remove or
+prune Orca worktrees, delete their branches, or remove safety refs.
+
 ## Evidence required for a recovery pull request
 
 Every successor records its source branch/PR and the exact commits consulted.
