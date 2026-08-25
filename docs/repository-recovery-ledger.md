@@ -5,11 +5,14 @@ It turns the branch and pull-request backlog into explicit recovery decisions.
 It is intentionally conservative: an item remains preserved until its successor
 has passed current checks and an owner approves the recorded disposition.
 
-The deployed baseline for this ledger is `main` at
-`cc6fd16cc8d414f181d278546e2a1213300732a0`. The cleanup owner holds a verified
-offline all-refs bundle plus separate snapshots of every dirty worktree. Those
-archives may contain secrets or private operational data and must not be pushed
-to GitHub or attached to a pull request.
+The deployed baseline for this ledger is `development`, `staging`, and `main`
+at `b2d07cd970dcb4b0fef276bcdeb0dbb105e6f6ca`. The prior deployed baseline
+`cc6fd16cc8d414f181d278546e2a1213300732a0` and the prior `staging` tip
+`0f139422c331b1d57a7862a7d0aa7724055341db` remain in dedicated safety refs
+and the verified offline all-refs bundle. The cleanup owner also holds separate
+snapshots of every dirty worktree. Those archives may contain secrets or
+private operational data and must not be pushed to GitHub or attached to a
+pull request.
 
 ## Decision vocabulary
 
@@ -45,7 +48,7 @@ They are evidence for triage, not acceptance evidence for the underlying code.
 | [#222](https://github.com/evangauer/openvpm/pull/222) | P0 one-click billing integration | Draft, conflicting; 136 files | `evidence-only` | High-risk integration aggregate; decompose billing, auth, migration, and operational changes into independently testable recoveries |
 | [#224](https://github.com/evangauer/openvpm/pull/224) | Development dependency group | Behind; 7 files | `recreate` | Regenerate after baseline and review breaking toolchain changes separately |
 | [#230](https://github.com/evangauer/openvpm/pull/230) | Production dependency group | Behind; 4 files | `recreate` | Split security fixes from broad upgrades and prove runtime compatibility |
-| [#240](https://github.com/evangauer/openvpm/pull/240) | Repository governance | Draft; core checks pass | `governance` | Complete final review, merge through the gate, then execute the exact-SHA release rehearsal before canonical branch bootstrap |
+| [#240](https://github.com/evangauer/openvpm/pull/240) | Repository governance | Rebase-merged and deployed as `b2d07cd9`; exact-SHA migration/release rehearsal, health, and smoke checks passed | `close-approved` | Governance value is in all three protected canonical branches; the source branch may be deleted after this ledger update merges |
 
 The stacked work represented by #198-#205 has one integration tip in #205.
 That containment is a preservation fact only; it does not make #205 a safe
@@ -113,6 +116,33 @@ drift, RLS, and rollback/forward-repair review.
 7. Recreate dependency updates from the then-current lockfile.
 8. Publish a proposed closure list with successor links and a grace period.
 9. Close or delete only entries that reach `close-approved`.
+
+## Governance rollout evidence
+
+PR #240 passed all required CI, CodeQL, RLS, migration-integrity, Vercel, and
+independent P0/P1 review gates before it was rebase-merged. The actual merged
+SHA `b2d07cd970dcb4b0fef276bcdeb0dbb105e6f6ca`—not the pull-request head—was
+used for the protected Production migration run and both Vercel release gates.
+The app and demo custom domains now resolve to deployments sourced from that
+SHA, both health endpoints returned HTTP 200, and both release gates were
+cleared after verification.
+
+`development` was created and `staging` was fast-forwarded to that same
+deployed SHA before protections were applied. All three refs are covered by an
+active no-bypass ruleset requiring pull requests, strict core checks, resolved
+review threads, and linear squash/rebase history while forbidding deletion and
+non-fast-forward updates. Classic protection additionally enforces
+administrators and forbids force-pushes and deletion. Development and Staging
+GitHub environments are restricted to their matching branches, but contain no
+deployment credentials; non-production deployment remains quarantined until
+environment-specific credentials and canary isolation evidence exist.
+
+The first `development` branch-creation push had an all-zero
+`github.event.before` value, so the fail-closed migration-history job rejected
+that one bootstrap event instead of comparing the commit to itself. The same
+commit's `staging` fast-forward supplied a real prior SHA and passed all CI.
+Normal pull requests into `development` provide a real base SHA; this ledger
+update is the first protected-flow exercise of that path.
 
 ## Evidence required for a recovery pull request
 
