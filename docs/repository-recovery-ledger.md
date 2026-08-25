@@ -28,7 +28,7 @@ pull request.
 Only `close-approved` permits closing a pull request or deleting its remote
 branch. Age, conflicts, or failing checks are never sufficient on their own.
 
-## Open pull-request register
+## Pull-request register
 
 The counts and merge state below are the GitHub state observed on 2026-08-25.
 They are evidence for triage, not acceptance evidence for the underlying code.
@@ -132,13 +132,16 @@ drift, RLS, and rollback/forward-repair review.
 
 ## Governance rollout evidence
 
-PR #240 passed all required CI, CodeQL, RLS, migration-integrity, Vercel, and
-independent P0/P1 review gates before it was rebase-merged. The actual merged
-SHA `b2d07cd970dcb4b0fef276bcdeb0dbb105e6f6ca`—not the pull-request head—was
-used for the protected Production migration run and both Vercel release gates.
-The app and demo custom domains now resolve to deployments sourced from that
-SHA, both health endpoints returned HTTP 200, and both release gates were
-cleared after verification.
+PR #240 passed all required CI, CodeQL, RLS, and migration-integrity checks;
+its required Vercel statuses succeeded through the deliberate ignored-build
+Preview quarantine. An independent agent-team P0/P1 release review also
+[recorded a GO verdict](https://github.com/evangauer/openvpm/pull/240#issuecomment-5414736065)
+before the rebase merge. The actual merged SHA
+`b2d07cd970dcb4b0fef276bcdeb0dbb105e6f6ca`—not the pull-request head—was
+then used for the protected Production migration run and both post-merge
+Vercel release gates. The app and demo custom domains now resolve to
+deployments sourced from that SHA, both health endpoints returned HTTP 200,
+and both release gates were cleared after verification.
 
 `development` was created and `staging` was fast-forwarded to that same
 deployed SHA before protections were applied. All three refs are covered by an
@@ -176,14 +179,15 @@ Orca state capture, and a manual GitHub App/OAuth-grant audit. Global model and
 host GitHub credentials are shared with non-PIMS work and must not be revoked as
 if they were repository-specific.
 
-The cleanup grace period is 14 calendar days starting when this ledger update
-merges into `development`, and at least one complete governed
-Development-to-Staging-to-Production release after isolated non-production
-resources are enabled, whichever ends later. Before the clock starts, create
-and verify an encrypted copy of the safety directory on independent storage and
-record its custodian without publishing its location or secret-bearing
-contents. Until the full gate and grace period are satisfied, do not remove or
-prune Orca worktrees, delete their branches, or remove safety refs.
+The cleanup grace period is 14 calendar days starting at the later of this
+ledger update merging into `development` and creation plus verification of an
+encrypted safety-directory copy on independent storage. It also requires at
+least one complete governed Development-to-Staging-to-Production release after
+isolated non-production resources are enabled, whichever ends later. Record
+the independent-copy custodian without publishing its location or
+secret-bearing contents. Until the full gate and grace period are satisfied,
+do not remove or prune Orca worktrees, delete their branches, or remove safety
+refs.
 
 ## Evidence required for a recovery pull request
 
