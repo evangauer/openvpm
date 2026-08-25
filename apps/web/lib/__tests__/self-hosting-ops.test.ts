@@ -80,6 +80,9 @@ describe("self-hosting operations docs", () => {
     expect(readme).not.toContain("| **Email/SMS** | Resend + Twilio |");
 
     expect(requiredHostedEnvBlock).toContain("MESSAGING_PROVIDER=telnyx");
+    expect(requiredHostedEnvBlock).toContain(
+      "OPENVPM_ENVIRONMENT=production",
+    );
     expect(requiredHostedEnvBlock).toContain("TELNYX_API_KEY=...");
     expect(requiredHostedEnvBlock).toContain("TELNYX_PUBLIC_KEY=...");
     expect(requiredHostedEnvBlock).toContain("RESEND_WEBHOOK_SECRET=...");
@@ -93,6 +96,9 @@ describe("self-hosting operations docs", () => {
     expect(requiredHostedEnvBlock).not.toContain("STRIPE_PRICE_CLOUD_USER");
 
     expect(hostedRunbook).toContain("Telnyx is the hosted SMS default");
+    expect(hostedRunbook).toContain(
+      "set and verify `OPENVPM_ENVIRONMENT=production`",
+    );
     expect(hostedRunbook).toContain("Twilio fallback deployment");
     expect(hostedRunbook).toContain(
       "`STRIPE_PRICE_CLOUD_USER` and `STRIPE_PRICE_CLOUD` are legacy-only",

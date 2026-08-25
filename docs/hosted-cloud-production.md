@@ -88,6 +88,7 @@ same app-role credential you will put in hosted `DATABASE_URL`.
 Set these on the hosted app deployment:
 
 ```env
+OPENVPM_ENVIRONMENT=production
 HOSTED_BILLING_ENABLED=true
 # Default-off. Set both only after reviewing the verified-admin recipient
 # cohort; the timestamp is the prospective closeout eligibility boundary.
@@ -182,10 +183,16 @@ the gate evaluates it only in a newly created or redeployed build.
    40-character `main` commit, and type `MIGRATE_PRODUCTION`.
 2. Wait for the RLS ownership preflight, migration, RLS reapplication, and final
    drift check to pass.
-3. Set `PRODUCTION_RELEASE_SHA` to that same commit in the app and demo Vercel
+3. In Vercel, set and verify `OPENVPM_ENVIRONMENT=production` on the app
+   project's Production scope. Set `OPENVPM_ENVIRONMENT=demo` on the demo
+   project's deployment scope. Do this before setting the release lock or
+   redeploying either candidate.
+4. Set `PRODUCTION_RELEASE_SHA` to that same commit in the app and demo Vercel
    projects, then redeploy the exact candidate in each project.
-4. Verify `/api/health` and the release smoke path before recording success.
-5. Clear or rotate the value so the approval cannot apply to a later commit.
+5. Verify `/api/health` reports the intended deployment environment and the
+   release smoke path passes before recording success.
+6. Clear or rotate the release-lock value so the approval cannot apply to a
+   later commit.
 
 The GitHub `Production` environment must have an independent required reviewer
 before this is treated as two-person approval. See

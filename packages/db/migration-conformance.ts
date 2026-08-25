@@ -19,6 +19,32 @@ type Journal = {
 
 export type MigrationConformanceMode = "prefix" | "exact";
 
+// Supabase/PostGIS can own this reference table in public before application
+// migrations run. No other public table is accepted without a Drizzle ledger.
+export type PublicTableIdentity = {
+  name: string;
+  extension: string | null;
+};
+
+export const PROVIDER_OWNED_PUBLIC_TABLE_ALLOWLIST: readonly PublicTableIdentity[] =
+  [{ name: "spatial_ref_sys", extension: "postgis" }];
+
+export function unexpectedPublicApplicationTables(
+  tables: readonly PublicTableIdentity[],
+): string[] {
+  return tables
+    .filter(
+      (table) =>
+        !PROVIDER_OWNED_PUBLIC_TABLE_ALLOWLIST.some(
+          (allowed) =>
+            allowed.name === table.name &&
+            allowed.extension === table.extension,
+        ),
+    )
+    .map((table) => table.name)
+    .sort();
+}
+
 export function expectedMigrationIdentities(
   migrationsDirectory = join(
     dirname(fileURLToPath(import.meta.url)),
@@ -92,6 +118,31 @@ export async function appliedMigrationIdentities(
   return rows.map((row) => ({ hash: row.hash, createdAt: row.createdAt }));
 }
 
+export async function assertEmptyMigrationBaseline(
+  sql: SqlClient,
+): Promise<void> {
+  const rows = await sql<PublicTableIdentity[]>`
+    select c.relname as name, e.extname as extension
+    from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+    left join pg_depend d
+      on d.classid = 'pg_class'::regclass
+      and d.objid = c.oid
+      and d.refclassid = 'pg_extension'::regclass
+      and d.deptype = 'e'
+    left join pg_extension e on e.oid = d.refobjid
+    where n.nspname = 'public'
+      and c.relkind in ('r', 'p', 'f')
+    order by c.relname
+  `;
+  const unexpected = unexpectedPublicApplicationTables(rows);
+  if (unexpected.length > 0) {
+    throw new Error(
+      `Database has ${unexpected.length} public application table(s) without migration history`,
+    );
+  }
+}
+
 function conformanceMode(value: string | undefined): MigrationConformanceMode {
   if (value === "prefix" || value === "exact") return value;
   throw new Error("MIGRATION_CONFORMANCE_MODE must be prefix or exact");
@@ -108,18 +159,22 @@ async function main(): Promise<number> {
   let mode: MigrationConformanceMode;
   try {
     mode = conformanceMode(process.env.MIGRATION_CONFORMANCE_MODE);
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : error);
+  } catch {
+    console.error(
+      "Migration conformance failed: mode must be prefix or exact.",
+    );
     return 1;
   }
 
-  const sql = postgres(databaseUrl, {
-    max: 1,
-    prepare: !isPooledDatabaseConnection(databaseUrl),
-  });
+  let sql: SqlClient | undefined;
   try {
+    sql = postgres(databaseUrl, {
+      max: 1,
+      prepare: !isPooledDatabaseConnection(databaseUrl),
+    });
     const expected = expectedMigrationIdentities();
     const applied = await appliedMigrationIdentities(sql);
+    if (applied.length === 0) await assertEmptyMigrationBaseline(sql);
     const issues = migrationConformanceIssues({ expected, applied, mode });
     if (issues.length > 0) {
       for (const issue of issues) console.error(issue);
@@ -129,14 +184,19 @@ async function main(): Promise<number> {
       `Migration history ${mode} conformance passed (${applied.length} applied).`,
     );
     return 0;
-  } catch (error) {
+  } catch {
     console.error(
-      "Migration conformance failed:",
-      error instanceof Error ? error.message : "unknown error",
+      "Migration conformance failed: database state could not be safely validated.",
     );
     return 1;
   } finally {
-    await sql.end();
+    if (sql) {
+      try {
+        await sql.end();
+      } catch {
+        // Connection teardown details can contain the target hostname.
+      }
+    }
   }
 }
 

@@ -229,13 +229,48 @@ Every manual run must be dispatched from the target's canonical branch and the
 typed 40-character SHA must equal both the workflow event SHA and checked-out
 HEAD. Fixed per-environment concurrency serializes database mutation.
 
+Derive a target fingerprint locally without placing the project ref in shell
+history:
+
+```sh
+printf 'Supabase project ref: '
+IFS= read -r project_ref
+printf 'supabase-project:%s' "$project_ref" | shasum -a 256 | awk '{print $1}'
+unset project_ref
+```
+
+Two reviewers must independently derive the value from the target shown in the
+Supabase Dashboard. They must verify that `DATABASE_TARGET_FINGERPRINT` is set
+on the matching GitHub Environment—not at repository or organization scope—and
+that `FORBIDDEN_DATABASE_TARGET_FINGERPRINTS` contains Production plus every
+other forbidden environment. Never paste a database URL into the derivation
+command. A fingerprint is not a credential, but it is a stable environment
+identifier and should not appear in workflow logs or review screenshots.
+
+The workflow's `Verify ... code contract (synthetic)` step validates the
+repository's intended environment/provider combination with fixed values. It
+does not inspect live Vercel configuration. The Vercel build gate and
+`/api/health` validate the actual target variables and remain the authority for
+deployment configuration.
+
 New nonproduction databases must have an empty Drizzle ledger or an exact
-prefix of the committed journal before mutation. After migration, RLS reapply,
-and drift validation, their ledger must exactly match the commit. Do not enable
+prefix of the committed journal before mutation. A missing or empty ledger is
+accepted only when a read-only preflight finds no application table in
+`public`; `spatial_ref_sys` is the sole allowlist entry, and only when PostgreSQL
+records it as owned by the `postgis` extension. After migration, RLS reapply,
+and drift validation, the ledger must exactly match the commit. Do not enable
 this strict hash gate for Production until the historically divergent 0086
 entry has a separate reviewed reconciliation decision. Never point the Staging
 job at the populated legacy staging project or copy that project's migration
 registry into its replacement.
+
+On a new nonproduction database, the first `db:rls` run creates
+`openpims_app` with the environment-scoped GitHub
+`OPENPIMS_APP_DB_PASSWORD` secret. The Vercel runtime `DATABASE_URL` must use
+that role and the same password. An ordinary RLS reapply deliberately does not
+reconcile or rotate an existing password; a mismatch requires a separately
+approved coordinated rotation using `OPENPIMS_ROTATE_APP_DB_PASSWORD=true` and
+an immediate Vercel credential update.
 
 `OPENVPM_ENVIRONMENT` is mandatory for managed Vercel deployments and accepts
 only `development`, `staging`, `demo`, or `production`. It remains optional for

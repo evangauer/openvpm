@@ -16,6 +16,9 @@ function decodedUsername(url: URL): string {
 export function supabaseProjectRef(databaseUrl: string): string | null {
   try {
     const url = new URL(databaseUrl);
+    if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") {
+      return null;
+    }
     const hostname = url.hostname.toLowerCase();
     const direct = /^db\.([a-z0-9]{15,40})\.supabase\.co$/.exec(hostname);
     if (direct?.[1] && PROJECT_REF_PATTERN.test(direct[1])) return direct[1];

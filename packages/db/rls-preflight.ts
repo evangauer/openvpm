@@ -14,6 +14,13 @@ type RlsCapabilityRow = {
 
 type SqlClient = ReturnType<typeof postgres>;
 
+export class RlsDeploymentCapabilityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RlsDeploymentCapabilityError";
+  }
+}
+
 /**
  * Inspect every public object the idempotent RLS script grants on, alters, or
  * replaces. This is deliberately read-only so deployment can fail before a
@@ -118,7 +125,9 @@ export async function assertRlsDeploymentCapability(
 ): Promise<RlsDeploymentCapability> {
   const capability = await inspectRlsDeploymentCapability(sql);
   if (!rlsDeploymentCapabilityIsReady(capability)) {
-    throw new Error(describeRlsDeploymentCapabilityFailure(capability));
+    throw new RlsDeploymentCapabilityError(
+      describeRlsDeploymentCapabilityFailure(capability),
+    );
   }
   return capability;
 }
@@ -136,18 +145,29 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  const sql = postgres(url, { max: 1 });
+  let sql: SqlClient | undefined;
   try {
+    sql = postgres(url, { max: 1 });
     const capability = await assertRlsDeploymentCapability(sql);
     console.log(
       `✓ RLS ownership preflight passed for role ${capability.currentRole}.`,
     );
     return 0;
   } catch (error) {
-    console.error(error instanceof Error ? error.message : error);
+    console.error(
+      error instanceof RlsDeploymentCapabilityError
+        ? error.message
+        : "RLS ownership preflight failed: database state could not be safely validated.",
+    );
     return 1;
   } finally {
-    await sql.end();
+    if (sql) {
+      try {
+        await sql.end();
+      } catch {
+        // Connection teardown details can contain the target hostname.
+      }
+    }
   }
 }
 

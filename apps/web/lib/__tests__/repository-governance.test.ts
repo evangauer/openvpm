@@ -97,6 +97,7 @@ describe("repository promotion controls", () => {
     expect(workflow).toContain("DATABASE_TARGET_FINGERPRINT");
     expect(workflow).toContain("FORBIDDEN_DATABASE_TARGET_FINGERPRINTS");
     expect(workflow.match(/FORBIDDEN_FINGERPRINTS:/g)).toHaveLength(3);
+    expect(workflow.match(/code contract \(synthetic\)/g)).toHaveLength(3);
   });
 
   it("keeps backlog cleanup evidence-gated and migration collisions on hold", () => {

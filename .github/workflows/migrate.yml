@@ -192,7 +192,7 @@ jobs:
               exit 1
             fi
           done
-      - name: Verify Development environment contract
+      - name: Verify Development code contract (synthetic)
         env:
           OPENVPM_ENVIRONMENT: development
           HOSTED_BILLING_ENABLED: "true"
@@ -275,7 +275,7 @@ jobs:
               exit 1
             fi
           done
-      - name: Verify Staging environment contract
+      - name: Verify Staging code contract (synthetic)
         env:
           OPENVPM_ENVIRONMENT: staging
           HOSTED_BILLING_ENABLED: "true"
@@ -358,7 +358,7 @@ jobs:
               exit 1
             fi
           done
-      - name: Verify Demo environment contract
+      - name: Verify Demo code contract (synthetic)
         env:
           OPENVPM_ENVIRONMENT: demo
           HOSTED_BILLING_ENABLED: "false"
