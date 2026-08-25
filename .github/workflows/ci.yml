@@ -172,6 +172,14 @@ jobs:
       - name: Execute finance schema adoption contract
         run: pnpm --filter @openpims/db db:finance-adoption:test
 
+      # Platform acquisition outcomes aggregate across clinic tenants. Exercise
+      # the exact query as openpims_app and prove system-only access, no-context
+      # isolation, privacy filters, and cohort-versus-period semantics.
+      - name: Execute acquisition outcomes database contract
+        env:
+          JOURNEY_FUNNEL_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run lib/__tests__/journey-funnel.integration.test.ts
+
       # Exercise the clinic-facing patient + owner search through the real
       # router and least-privilege RLS role. The fixture proves literal LIKE
       # escaping, deterministic bounds, context cleanup, and cross-tenant deny.

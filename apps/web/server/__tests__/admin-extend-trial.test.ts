@@ -169,3 +169,15 @@ describe("admin extendTrial", () => {
     expect(mocks.update).not.toHaveBeenCalled();
   });
 });
+
+describe("admin journey funnel", () => {
+  it("rejects callers outside the platform admin allowlist before querying", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+
+    await expect(
+      caller("someone@clinic.example.com").journeyFunnel({ days: 30 })
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.db.execute).not.toHaveBeenCalled();
+    expect(mocks.withSystem).not.toHaveBeenCalled();
+  });
+});

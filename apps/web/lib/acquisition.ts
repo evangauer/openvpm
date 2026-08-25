@@ -1,5 +1,77 @@
 export const ACQUISITION_VALUE_MAX_LENGTH = 80;
 
+/**
+ * Privacy-bounded values exposed by aggregate acquisition reporting. Raw
+ * acquisition tokens are accepted only as input evidence and never returned
+ * to operators unless they resolve to one of these product-owned buckets.
+ */
+export const ACQUISITION_REPORTING_BUCKETS = {
+  source: [
+    "homepage",
+    "navigation",
+    "cloud",
+    "feature",
+    "solution",
+    "role",
+    "comparison",
+    "content",
+    "install",
+    "second_pims",
+    "why",
+    "demo",
+    "clinic_fit",
+    "marketing",
+    "direct",
+    "Other",
+    "Unknown",
+  ],
+  medium: [
+    "product",
+    "organic",
+    "cpc",
+    "paid_social",
+    "email",
+    "referral",
+    "direct",
+    "Other",
+    "Unknown",
+  ],
+  campaign: [
+    "demo_login",
+    "demo_dashboard",
+    "demo_ask_ai",
+    "demo_day_board",
+    "demo_whiteboard",
+    "demo_client_portal",
+    "demo_patients",
+    "demo_clients",
+    "demo_records",
+    "demo_billing",
+    "demo_inbox",
+    "demo_inventory",
+    "demo_reports",
+    "demo_settings",
+    "demo_other",
+    "demo_cta",
+    "launch",
+    "direct",
+    "Other",
+    "Unknown",
+  ],
+} as const;
+
+export type AcquisitionReportingDimension =
+  keyof typeof ACQUISITION_REPORTING_BUCKETS;
+
+export function safeAcquisitionReportingBucket(
+  dimension: AcquisitionReportingDimension,
+  value: unknown
+): string {
+  if (typeof value !== "string" || value.length === 0) return "Unknown";
+  const buckets = ACQUISITION_REPORTING_BUCKETS[dimension] as readonly string[];
+  return buckets.includes(value) ? value : "Other";
+}
+
 const FUNNEL_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
