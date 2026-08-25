@@ -8,7 +8,7 @@ has passed current checks and an owner approves the recorded disposition.
 The deployed baseline for this ledger is `staging` and `main` at
 `b2d07cd970dcb4b0fef276bcdeb0dbb105e6f6ca`. Protected `development` has
 advanced through reviewed recovery work to
-`1e41d5d7b90906cddc3a227952f17def33c31e19`; that work has not been promoted
+`824913647c67e01c88d2c8afd534a86c82b8f78a`; that work has not been promoted
 or deployed. The prior deployed baseline
 `cc6fd16cc8d414f181d278546e2a1213300732a0` and the prior `staging` tip
 `0f139422c331b1d57a7862a7d0aa7724055341db` remain in dedicated safety refs
@@ -38,21 +38,27 @@ They are evidence for triage, not acceptance evidence for the underlying code.
 
 | PR | Topic | Observed state | Decision | Recovery boundary |
 | --- | --- | --- | --- | --- |
-| [#198](https://github.com/evangauer/openvpm/pull/198) | Encounter estimate conversion and medication charge handoff | Conflicting; 19 files | `recover` | Re-prove conversion, charge ownership, idempotency, and tenant boundaries separately |
-| [#199](https://github.com/evangauer/openvpm/pull/199) | Auditable medication charge workflow | Stacked on #198; 39 files | `recover` | Extract only after #198 concepts are mapped; do not merge the stack base-to-tip |
+| [#198](https://github.com/evangauer/openvpm/pull/198) | Encounter estimate conversion and medication charge handoff | Closed as superseded after #245 and #246 merged | `close-approved` | #245 owns refill closeout/history/locking; #246 owns atomic estimate conversion/versioning; original branch remains evidence-only provenance |
+| [#199](https://github.com/evangauer/openvpm/pull/199) | Auditable medication charge workflow | Closed after exact-head no-go audit; stacked on #198 | `close-approved` | #247 recovered the live template medication-source guard; retained branch and remaining transition-ledger/exact-append concepts are evidence-only until fresh current-tail successors exist |
 | [#200](https://github.com/evangauer/openvpm/pull/200) | Onboarding conversion funnel | Conflicting; 16 files | `recover` | Reconcile with #221 and current analytics/privacy contracts |
 | [#202](https://github.com/evangauer/openvpm/pull/202) | Subscription conversion lifecycle | Draft, conflicting; 15 files | `recover` | Reconcile with current billing and webhook idempotency code |
 | [#203](https://github.com/evangauer/openvpm/pull/203) | First-clinic-win subscription conversion | Draft, stacked on #202; 58 files | `recover` | Separate product behavior from generated or fixture-heavy changes |
 | [#204](https://github.com/evangauer/openvpm/pull/204) | SMS pilot activation preflight | Draft, conflicting; 13 files | `recover` | Security/operations review; preserve all default-off and fee-bearing interlocks |
-| [#205](https://github.com/evangauer/openvpm/pull/205) | Clinic-launch integration stack | Draft, conflicting; 130 files | `evidence-only` | Umbrella branch contains the component stack; use it to trace provenance and tests, never as a wholesale merge |
-| [#219](https://github.com/evangauer/openvpm/pull/219) | Patient merge and migration safety | Draft, conflicting; 13 files; historical real-PostgreSQL job failed on a nonexistent fixture table | `recover` | Database/RLS specialist review, corrected fixtures, and fresh real-Postgres tenant/concurrency evidence required |
-| [#220](https://github.com/evangauer/openvpm/pull/220) | pnpm/action-setup update | Behind; 2 files | `recreate` | Re-run Dependabot after governance baseline; retain pinning and supply-chain checks |
+| [#205](https://github.com/evangauer/openvpm/pull/205) | Clinic-launch integration stack | Draft, conflicting; 130 files; all #198-#204 component heads are ancestors | `close-approved` | Its body says not to merge; retain the branch as aggregate provenance after closing the PR |
+| [#219](https://github.com/evangauer/openvpm/pull/219) | Patient merge and migration safety | Closed after #244 merged the corrected current-base recovery | `close-approved` | #244 plus earlier #234 preserve the reviewed behavior and real-PostgreSQL/RLS proof; original branch remains evidence-only provenance |
+| [#220](https://github.com/evangauer/openvpm/pull/220) | pnpm/action-setup update | Green but based on deployed main; both workflow files have since changed | `recover` | Apply only the immutable action SHA to current Development workflows, prove current CI, then close the original and retain its branch |
 | [#221](https://github.com/evangauer/openvpm/pull/221) | Privacy-safe acquisition reporting | Draft, behind; 7 files | `recover` | Reconcile overlap with #200 and re-review reporting privacy |
 | [#222](https://github.com/evangauer/openvpm/pull/222) | P0 one-click billing integration | Draft, conflicting; 136 files | `evidence-only` | High-risk integration aggregate; decompose billing, auth, migration, and operational changes into independently testable recoveries |
-| [#224](https://github.com/evangauer/openvpm/pull/224) | Development dependency group | Behind; 7 files | `recreate` | Regenerate after baseline and review breaking toolchain changes separately |
-| [#230](https://github.com/evangauer/openvpm/pull/230) | Production dependency group | Behind; 4 files | `recreate` | Split security fixes from broad upgrades and prove runtime compatibility |
+| [#224](https://github.com/evangauer/openvpm/pull/224) | Development dependency group | Stale main-based bot output; current email typecheck fails | `close-approved` | Retain the bot branch; regenerate from Development and split major toolchain upgrades |
+| [#230](https://github.com/evangauer/openvpm/pull/230) | Production dependency group | Stale main-based bot output; current build/typecheck and Vercel checks fail | `close-approved` | Retain the bot branch; regenerate from Development and split security fixes from broad majors |
 | [#240](https://github.com/evangauer/openvpm/pull/240) | Repository governance | Rebase-merged and deployed as `b2d07cd9`; exact-SHA migration/release rehearsal, health, and smoke checks passed | `close-approved` | Governance value is in all three protected canonical branches; source branch `codex/repository-governance` was deleted after PR #241 preserved the ledger evidence |
 | [#242](https://github.com/evangauer/openvpm/pull/242) | Subscription lifecycle email recovery | Squash-merged into `development` as `1e41d5d7`; exact-head and exact-merge CI, CodeQL, migration, RLS, and PostgreSQL outbox gates passed | `close-approved` | Reviewed tree is preserved by the merge; successor branch `codex/recover-lifecycle-emails` and its clean worktree were deleted after tree-equivalence proof; original evidence branch `feat/lifecycle-emails` remains preserved |
+| [#243](https://github.com/evangauer/openvpm/pull/243) | Cleanup control plane | Squash-merged into `development` as `2b0b6953` with exact-head and post-merge checks | `close-approved` | Repository governance and cleanup tests/ledger are canonical in Development; temporary branch removed after proof |
+| [#244](https://github.com/evangauer/openvpm/pull/244) | Patient merge recovery | Squash-merged into `development` as `d8d12c4a` with current PostgreSQL/RLS evidence | `close-approved` | Corrected successor supersedes #219; evidence branch retained, temporary recovery branch removed |
+| [#245](https://github.com/evangauer/openvpm/pull/245) | Visit-dispense closeout recovery | Squash-merged into `development` as `c7f3e25f`; source and merge trees match | `close-approved` | Current-base successor preserves the approved closeout slice from #198; temporary branch removed |
+| [#246](https://github.com/evangauer/openvpm/pull/246) | Atomic estimate conversion recovery | Squash-merged into `development` as `38783d14`; source and merge trees match | `close-approved` | Current-base successor preserves conversion/version/inventory behavior from #198; temporary branch removed |
+| [#247](https://github.com/evangauer/openvpm/pull/247) | Live medication-source template guard | Squash-merged into `development` as `570328eb`; forced deadlock schedules and exact post-merge checks passed | `close-approved` | First approved #199 successor slice; temporary branch removed after tree-equivalence proof |
+| [#248](https://github.com/evangauer/openvpm/pull/248) | Environment control plane | Squash-merged into `development` as `82491364`; two review cycles, rebase-equivalence, and exact post-merge checks passed | `close-approved` | Inert code/runbooks only; no hosted resource, secret, mapping, quarantine, Staging, or Main change |
 
 The stacked work represented by #198-#205 has one integration tip in #205.
 That containment is a preservation fact only; it does not make #205 a safe
@@ -61,29 +67,41 @@ and must not be merged beside or on top of #205.
 
 ### Current-base triage checkpoint
 
-The 13 still-open pull requests were re-audited against fixed
-`development@1e41d5d7b90906cddc3a227952f17def33c31e19` after the lifecycle-email
-recovery. None is safe to merge as-is: every item targets stale `main` or a
-stale feature base, and the product branches are 36 to 51 Development commits
-behind. Historical green checks are inventory evidence, not release evidence
-against the current base.
+The ten still-open pull requests were independently re-audited against fixed
+`development@824913647c67e01c88d2c8afd534a86c82b8f78a` after the environment
+control-plane merge. None is safe to merge or rebase wholesale: every item
+targets stale `main` or a stale feature base. Historical green checks are
+inventory evidence, not release evidence against the current base.
 
 The next safety/value queue is:
 
-1. #219 patient-merge safety, because identity and merge errors can cause
-   irreversible customer-data harm; its old real-PostgreSQL job failed against
-   a nonexistent `merge_target_appointments` fixture.
-2. #198 encounter/billing conversion, decomposed into billing ownership,
-   medication handoff, idempotency, and tenant/concurrency proofs before stacked
-   #199 is considered.
-3. #221 privacy-safe acquisition outcomes, reconciled with #200 before either
-   reporting model advances.
-4. #204 default-off SMS pilot controls before any fee-bearing pilot activation.
+1. Reconcile #200 onboarding-funnel semantics with #221 privacy-safe acquisition
+   outcomes and rebuild only a single current-base reporting model.
+2. Rebuild #204 default-off SMS pilot controls against #248's fail-closed
+   environment/provider contract before any fee-bearing activation.
+3. Recover only independently validated trial/grace, entitlement, and
+   webhook-CAS semantics from #202. The authoritative lifecycle-message
+   delivery implementation is #242 and must not regress.
+4. Decompose #203 after #202 into attribution schema, aggregate reporting,
+   default-off campaign, and copy; generate any schema from the then-current
+   migration tail.
+5. Apply only #220's immutable `pnpm/action-setup` SHA to current Development
+   workflows and re-run current supply-chain/CI gates.
 
-#205 and #222 remain evidence-only aggregate sources until focused successors
-preserve their unique value. #199 and #203 remain blocked behind their stack
-bases. The three Dependabot pull requests remain `recreate`, not merge or bulk
-rebase candidates.
+#222 remains a high-risk evidence source until its unique Stripe money movement,
+MFA/session/step-up, and replica-recovery behavior is separately inventoried.
+#205 is approved for closure as an integration-only provenance stack; every
+#198-#204 component head is independently preserved. #224 and #230 are also
+approved for closure as reproducible, stale bot output that fails current
+checks. Their source branches remain retained. #220 stays open until its narrow
+current-base successor exists.
+
+The stale migration lineages remain hard no-go inputs. #203's old `0086`
+collides with canonical `0086`; #205 carries obsolete `0086`-`0089`; and #222's
+MFA `0094`/`0095` collide with canonical finance/treatment history. Never replay
+their journals or snapshots. Consolidate desired schema against current
+Development and generate a serialized fresh-tail migration only when its
+successor is implemented.
 
 ## High-priority branch-only recovery
 
@@ -154,8 +172,9 @@ Current-base review identified these explicit P1 no-go sources:
   event and operation-identity semantics require a new current-tail migration.
 - #203 carries an old `0086` migration/snapshot and overlaps the current
   conversion-evidence and milestone schema.
-- #205 carries the aggregate old `0086`-`0089` sequence and remains
-  evidence-only.
+- #205 carries the aggregate old `0086`-`0089` sequence. Those obsolete
+  migration artifacts remain evidence-only; closing the PR is approved while
+  retaining its source branch.
 - #222 carries old `0094`-`0095` MFA migrations that collide with canonical
   finance and treatment migrations. Its `0091`-`0093` SQL is byte-identical to
   canonical history; the snapshots have matching schema content and lineage
@@ -173,6 +192,84 @@ metadata. Canonical `.gitignore` excludes the entire generated
 `supabase/.temp/` directory as a preventive control; the existing local file is
 left untouched.
 
+## Phase 2 branch and worktree checkpoint
+
+The 2026-08-25 follow-up inventory read current origin heads directly and
+classified 153 local branches, 150 remote heads, and all 101 worktree
+registrations present before the first cleanup. It also reconciled all 245 pull
+requests: 223 merged, 12 closed without merge, and ten open.
+
+The first cleanup removed exactly one dead Git metadata registration for the
+nonexistent temporary path
+`/private/tmp/openvpm-replica-diagnostic.loAEsk`. A repeated
+`git worktree prune --dry-run --verbose` named only that path. No filesystem
+content, branch, pull request, or commit was removed: its head `68959b3a` remains
+at `codex/onboarding-first-day-density`, the dedicated active-tip safety ref,
+and both verified safety bundles. A post-prune dry-run is empty.
+
+The 100 valid worktrees in the audited pre-ledger cohort are intentionally
+retained. This documentation review branch/worktree was created afterward and
+is excluded from the checkpoint counts; it is a temporary merged-branch cleanup
+candidate after exact post-merge proof.
+
+| Classification | Count | Boundary |
+| --- | ---: | --- |
+| Canonical control | 1 | Clean non-Orca `pims-development` at exact protected Development |
+| Orca-owned hold | 22 | Every registration below `/Users/evan/orca/workspaces/pims`; none may be removed before the retirement gate |
+| Valuable preserved WIP | 11 | Dirty non-Orca worktrees plus clean worktrees backing open pull requests |
+| Orphan or owner-unknown | 2 | Clean #219/#199 evidence worktrees; retain until product-value review completes |
+| Merged or superseded candidates | 64 | Clean candidates only; future cleanup still requires grace-period and item-level approval |
+
+Ninety-five audited worktrees are clean and five are dirty. The five dirty
+areas remain the primary mixed checkout, GTM/CRO planning, nutrition extension,
+Resend incident hardening, and the one-line Orca history-filter journal change.
+Their tracked/untracked state is independently preserved. All 47 local-only
+branch tips in the audited pre-ledger cohort are exact objects in the
+complete-history bundle. The temporary ledger-review branch was created after
+that bundle and is preserved by its eventual pull request and merge.
+
+The local Orca `main` worktree is clean but stale at `676f0b09`; it is not
+repository or production authority. No local `staging` branch/worktree exists;
+the protected remote branch is authoritative. Four local refs differ from their
+same-named origin refs (`codex/attachment-replication`,
+`codex/validate-recovery-signature`, `feat/sms-provider-abstraction`, and
+`main`) and must not be mistaken for current remote state.
+
+## Promotion-control checkpoint
+
+Development-to-Staging promotion remains **NO-GO** even though canonical branch
+mutation controls are active and all required checks on Development `82491364`
+passed. Pull requests, strict/current-base checks, linear history, resolved
+threads, deletion protection, non-fast-forward protection, administrator
+enforcement, and no-bypass rules are in place on all three canonical branches.
+
+The remaining release-control blockers are explicit:
+
+- canonical branches require zero approving reviews; code-owner review,
+  stale-review dismissal, and last-push approval are disabled;
+- the repository has only one collaborator, so no independent GitHub approval
+  is currently possible;
+- Staging and Production environment review is assigned to that same user,
+  self-review and administrator bypass remain allowed, and Development has no
+  reviewer;
+- Development and Staging contain no deployment secrets or variables and their
+  manual migration jobs are intentionally inert;
+- Vercel continues to cancel Development, Staging, and pull-request candidates
+  through the quarantine, while canceled contexts are reported as successful;
+- the hosted app/demo configuration does not yet carry the required managed
+  environment/release variables;
+- no required-deployment rule or immutable artifact-promotion workflow proves
+  that the artifact accepted in Staging is the artifact released from Main;
+- CodeQL is not yet required on Development or Staging; and
+- Production migration-ledger conformance remains intentionally deferred until
+  historical `0086` provenance is reconciled.
+
+Do not open a Development-to-Staging promotion pull request yet. First onboard
+an independent maintainer/release owner, then atomically enable independent
+branch and environment review. Provision isolated Development only after the
+approved resource/credential gate, prove the credential-isolation canary, and
+only then prepare replacement Staging and immutable promotion evidence.
+
 ## Recovery order
 
 1. **Completed:** land and rehearse repository governance without changing the
@@ -181,14 +278,25 @@ left untouched.
    deployed baseline.
 3. **Completed:** recover lifecycle email behavior as the first branch-only
    loss-risk item through PR #242.
-4. Review #219 independently because patient identity and migration safety are
-   release-blocking boundaries.
-5. Decompose #198-#205 into domain-sized recovery pull requests.
-6. Treat #222 as an evidence source and extract only changes not already
+4. **Completed:** replace #219 with the corrected current-base patient-merge
+   recovery in #244.
+5. **Completed for approved slices:** replace #198 with #245/#246 and recover
+   the first approved #199 template-guard slice in #247. Remaining transition
+   ledger/exact-append concepts stay evidence-only until fresh successors exist.
+6. **Completed:** merge the inert, independently reviewed environment control
+   plane in #248 without provisioning or changing hosted state.
+7. Record and execute the first approved PR-closure batch (#205, #224, #230)
+   while retaining all three source branches.
+8. Reconcile #200/#221, then rebuild #204 on the current environment contract.
+9. Recover only approved #202/#203 slices and serialize any new migration from
+   the then-current tail.
+10. Treat #222 as an evidence source and extract only changes not already
    recovered from the clinic-launch stack.
-7. Recreate dependency updates from the then-current lockfile.
-8. Publish a proposed closure list with successor links and a grace period.
-9. Close or delete only entries that reach `close-approved`.
+11. Recreate dependency updates from the then-current lockfile.
+12. After independent storage and one governed promotion, publish the final
+   branch/worktree deletion list and begin the 14-day grace period.
+13. Close or delete only entries that reach `close-approved`; keep Orca and all
+   dirty/unknown items on hold until their stricter gates pass.
 
 ## Governance rollout evidence
 
@@ -222,6 +330,15 @@ was proven by documentation-only PR #241 as the first protected-flow exercise
 of that path; it merged as `f75c8580`. PR #242 then became the first protected
 Development recovery with application and migration work.
 
+PRs #243-#248 subsequently advanced only Development through independently
+reviewed cleanup controls, patient merge, visit-dispense closeout, atomic
+estimate conversion, medication template protection, and the inert environment
+control plane. Final Development `82491364` passed exact post-merge CI run
+`32907087580` and CodeQL run `32907087318`; its merge tree matches the reviewed
+#248 source tree. Deployed `main` and `staging` remain `b2d07cd9`. No Supabase
+or Vercel resource, credential, mapping, quarantine, Staging, or Main state was
+changed by #248.
+
 ## Orca retirement gate and grace period
 
 Orca is operationally frozen: its app and runtime are stopped, persisted state
@@ -241,13 +358,14 @@ Orca state capture, and a manual GitHub App/OAuth-grant audit. Global model and
 host GitHub credentials are shared with non-PIMS work and must not be revoked as
 if they were repository-specific.
 
-The cleanup grace period is 14 calendar days starting at the later of this
-ledger update merging into `development` and creation plus verification of an
-encrypted safety-directory copy on independent storage. It also requires at
-least one complete governed Development-to-Staging-to-Production release after
-isolated non-production resources are enabled, whichever ends later. Record
-the independent-copy custodian without publishing its location or
-secret-bearing contents. Until the full gate and grace period are satisfied,
+The cleanup grace period is 14 calendar days starting only after the latest of
+all four prerequisites: this ledger update merges into `development`; an
+encrypted safety-directory copy on independent storage is created and
+verified; one complete governed Development-to-Staging-to-Production release
+finishes after isolated non-production resources are enabled; and the exact
+proposed deletion list is published with owner notice. Record the independent-
+copy custodian without publishing its location or secret-bearing contents.
+Until every prerequisite and the subsequent 14-day grace period are satisfied,
 do not remove or prune Orca worktrees, delete their branches, or remove safety
 refs.
 
@@ -326,6 +444,9 @@ target also do not apply to those security updates.
 Those pull requests are not implicitly approved for direct production merge.
 Use the incident/hotfix path for an urgent release and immediately forward-port
 it, or recreate the fix from current Development and close the default-branch
-PR only after the successor is preserved. Existing PRs #220, #224, and #230
-remain `recreate`; this routing declaration does not make their stale diffs
-current or approve them for merge.
+PR only after the successor is preserved. PR #220 remains open as `recover`
+until its immutable action pin has a current-Development successor. PRs #224
+and #230 are `close-approved` now as stale reproducible bot output; close their
+pull requests while retaining both source branches, then regenerate future
+dependency updates from current Development. This routing declaration does not
+make any stale diff current or approve it for merge.
