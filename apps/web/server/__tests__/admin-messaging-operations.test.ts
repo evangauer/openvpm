@@ -82,6 +82,13 @@ const mocks = vi.hoisted(() => {
       duplicate: false,
     })),
     loadSmsProviderEventResolutionHistory: vi.fn(),
+    loadHostedSmsPilotActivationPreflight: vi.fn(async () => ({
+      stage: "scope_prepared",
+      ok: true,
+      detail: "Hosted SMS pilot scope prepared; inbound and sending remain off",
+      nextAction: "Verify fresh heartbeats, then enable inbound projection.",
+      blockers: [],
+    })),
     MockTelnyxError,
     withTenant: vi.fn(
       async (
@@ -114,6 +121,10 @@ vi.mock("@/lib/messaging/sms-provider-event-remediation", () => ({
   resolveSmsProviderEventInTransaction: mocks.resolveSmsProviderEvent,
   loadSmsProviderEventResolutionHistory:
     mocks.loadSmsProviderEventResolutionHistory,
+}));
+vi.mock("@/lib/messaging/hosted-sms-pilot-preflight", () => ({
+  loadHostedSmsPilotActivationPreflight:
+    mocks.loadHostedSmsPilotActivationPreflight,
 }));
 vi.mock("@/lib/messaging/telnyx-provisioning", () => ({
   createA2pBrand: mocks.createA2pBrand,
@@ -223,6 +234,13 @@ afterEach(() => {
     events: [],
     truncated: false,
   });
+  mocks.loadHostedSmsPilotActivationPreflight.mockResolvedValue({
+    stage: "scope_prepared",
+    ok: true,
+    detail: "Hosted SMS pilot scope prepared; inbound and sending remain off",
+    nextAction: "Verify fresh heartbeats, then enable inbound projection.",
+    blockers: [],
+  });
 });
 
 describe("platform messaging operations", () => {
@@ -307,6 +325,24 @@ describe("platform messaging operations", () => {
     });
     expect(JSON.stringify(result)).not.toContain("legacy-sensitive-value");
     expect(mocks.noStore).toHaveBeenCalled();
+  });
+
+  it("returns the read-only pilot preflight only to platform admins", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+
+    await expect(caller().hostedSmsPilotActivationPreflight()).resolves.toEqual(
+      expect.objectContaining({ stage: "scope_prepared", ok: true }),
+    );
+    expect(mocks.loadHostedSmsPilotActivationPreflight).toHaveBeenCalledWith(
+      mocks.db,
+    );
+    expect(mocks.noStore).toHaveBeenCalled();
+
+    mocks.loadHostedSmsPilotActivationPreflight.mockClear();
+    await expect(
+      caller("clinic@example.com").hostedSmsPilotActivationPreflight(),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.loadHostedSmsPilotActivationPreflight).not.toHaveBeenCalled();
   });
 
   it("returns bounded newest-first PHI-free registration history", async () => {
@@ -571,6 +607,24 @@ describe("platform messaging operations", () => {
     expect(mocks.withSystem).not.toHaveBeenCalled();
     expect(mocks.createA2pBrand).not.toHaveBeenCalled();
   });
+
+  it.each(["1", "TRUE", "yes"])(
+    "blocks malformed provider-mutation flag %s before DB or provider work",
+    async (flag) => {
+      vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+      vi.stubEnv("MESSAGING_PROVISIONING_ENABLED", flag);
+
+      await expect(
+        caller().submitMessagingBrand({
+          practiceId: PRACTICE_ID,
+          confirmProviderCharges: true,
+          retryAfterProviderReview: false,
+        }),
+      ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+      expect(mocks.withSystem).not.toHaveBeenCalled();
+      expect(mocks.createA2pBrand).not.toHaveBeenCalled();
+    },
+  );
 
   it("does not submit fee-bearing provider work while the clinic is held", async () => {
     vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");

@@ -79,6 +79,16 @@ const recoveryTrialStyles: Record<string, string> = {
   no_trial: "bg-gray-100 text-gray-600",
 };
 
+const smsPilotStageLabels: Record<string, string> = {
+  deferred: "Safely deferred",
+  blocked: "Blocked",
+  provisioning_prepared: "Provisioning prepared",
+  scope_prepared: "Scope prepared",
+  inbound_prepared: "Inbound prepared",
+  provider_ready: "Provider ready",
+  active: "Active",
+};
+
 function recoveryLabel(value: string) {
   return value.replaceAll("_", " ");
 }
@@ -118,6 +128,10 @@ export default function AdminPage() {
     trpc.admin.smsOperationsHealth.useQuery(undefined, { retry: false });
   const { data: smsConfiguration, error: smsConfigurationError } =
     trpc.admin.hostedSmsConfiguration.useQuery(undefined, { retry: false });
+  const { data: smsPilotPreflight, error: smsPilotPreflightError } =
+    trpc.admin.hostedSmsPilotActivationPreflight.useQuery(undefined, {
+      retry: false,
+    });
   const [extendTrialError, setExtendTrialError] = useState<string | null>(null);
   const [analyticsError, setAnalyticsError] = useState<string | null>(null);
   const [messagingError, setMessagingError] = useState<string | null>(null);
@@ -327,6 +341,103 @@ export default function AdminPage() {
             </span>
           ) : null}
         </div>
+        {smsPilotPreflight ? (
+          <div className="mt-4 rounded-md border border-border bg-muted/20 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm font-medium">
+                Hosted SMS pilot activation preflight
+              </p>
+              <span
+                className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                  smsPilotPreflight.stage === "blocked"
+                    ? "bg-red-100 text-red-800"
+                    : smsPilotPreflight.stage === "active"
+                      ? "bg-green-100 text-green-800"
+                      : smsPilotPreflight.stage === "deferred"
+                        ? "bg-gray-100 text-gray-700"
+                        : "bg-amber-100 text-amber-800"
+                }`}
+              >
+                {smsPilotStageLabels[smsPilotPreflight.stage] ??
+                  smsPilotPreflight.stage}
+              </span>
+            </div>
+            <p className="mt-2 text-sm">{smsPilotPreflight.detail}</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Next: {smsPilotPreflight.nextAction}
+            </p>
+            {smsPilotPreflight.blockers.length > 0 ? (
+              <p className="mt-2 text-xs text-red-700">
+                Blocking checks: {smsPilotPreflight.blockers.join(", ")}
+              </p>
+            ) : null}
+            <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
+              {[
+                ["Launch flags", smsPilotPreflight.checks.launchFlagsValid],
+                [
+                  "Credential shapes",
+                  smsPilotPreflight.checks.credentialsValid,
+                ],
+                [
+                  "Provisioning scope",
+                  smsPilotPreflight.checks.provisioningScopeExact,
+                ],
+                ["Sending scope", smsPilotPreflight.checks.sendingScopeExact],
+                ["Scopes match", smsPilotPreflight.checks.scopesMatch],
+                ["Practice active", smsPilotPreflight.checks.practiceActive],
+                ["Recovery clear", smsPilotPreflight.checks.recoveryClear],
+                [
+                  "Carrier identity",
+                  smsPilotPreflight.checks.carrierIdentityReady,
+                ],
+                [
+                  "Provider profile",
+                  smsPilotPreflight.checks.providerProfileReady,
+                ],
+                [
+                  "Provider events",
+                  smsPilotPreflight.checks.providerEventsClear,
+                ],
+                [
+                  "Heartbeat delivery",
+                  smsPilotPreflight.checks.heartbeatDeliveryConfigured,
+                ],
+              ].map(([label, ready]) => (
+                <div
+                  key={String(label)}
+                  className="flex items-center justify-between rounded border border-border bg-background px-2 py-1.5"
+                >
+                  <span>{label}</span>
+                  <span
+                    className={
+                      ready === true
+                        ? "font-medium text-green-700"
+                        : ready === null
+                          ? "font-medium text-muted-foreground"
+                          : "font-medium text-red-700"
+                    }
+                  >
+                    {ready === true
+                      ? "Ready"
+                      : ready === null
+                        ? "Not staged"
+                        : "Blocked"}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              This check is read-only. It returns no secret, phone, clinic, or
+              provider identifier and never enables provisioning, inbound
+              projection, or sending. Configured heartbeat delivery does not
+              prove a fresh external receipt.
+            </p>
+          </div>
+        ) : smsPilotPreflightError ? (
+          <p className="mt-3 text-sm text-red-700">
+            Could not load the hosted SMS pilot activation preflight.
+          </p>
+        ) : null}
         {smsConfiguration ? (
           <div className="mt-4 rounded-md border border-border bg-muted/20 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
